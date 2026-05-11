@@ -1,0 +1,21 @@
+App Review Notes – Location Sharing Feature
+
+Location sharing can only be initiated by explicit user action within an active chat session and is disabled by default.
+
+The feature requires an existing PGP encryption setup. If encryption keys are not available, location sharing is not accessible.
+
+When enabled, users select the duration of sharing before it begins. Location data consists of GPS coordinates and is encrypted and transmitted once per minute during active sharing, including when the app is running in the background.
+
+Background location access is used only while sharing is active. No location data is collected or transmitted when sharing is stopped.
+
+For bidirectional sharing, the recipient is prompted to accept the request before any data is exchanged. In “Meeting” mode, both users share their location until they are in close proximity, at which point all shared location data is automatically deleted from both devices.
+
+For one-way sharing, location data is stored locally for a maximum of 7 days or until manually deleted by the user. Deletions are synchronized between devices when the recipient comes online.
+
+The app provides a persistent visual indicator whenever location sharing is active, as well as a global control to stop sharing at any time.
+
+The application is open source:
+https://github.com/AGProjects/sylk-mobile/blob/master/app/app.js
+
+All location-related functionality is clearly marked for review with:
+AppStore GPS Review

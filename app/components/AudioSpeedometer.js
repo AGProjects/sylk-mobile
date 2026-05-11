@@ -32,7 +32,7 @@
 
 import React from 'react';
 import PropTypes from 'prop-types';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Animated } from 'react-native';
 import Svg, { Path, Line, Circle, G, Text as SvgText } from 'react-native-svg';
 
 
@@ -45,6 +45,15 @@ const H  = 110;
 const CX = W / 2;
 const CY = H - 18;
 const R  = W / 2 - 18;
+
+// Pre-reserved layout footprint of the speedometer's content area
+// (SVG dial + metrics row), independent of margins / padding which
+// styles.container already supplies. We pin this on both the
+// pre-data placeholder and the live dial wrapper so the VU meters
+// directly underneath stay anchored at their final position from
+// the moment the screen mounts — when the dial finally renders it
+// fades + slides in from above into the slot we already reserved.
+const CONTENT_HEIGHT = 122; // 110 SVG + 12 metrics row
 
 // Polar -> cartesian. 0° = left (9 o'clock), 90° = up, 180° = right (3 o'clock).
 function polar(angleDeg, radius = R) {
@@ -155,6 +164,14 @@ function lossColor(loss) {
     return '#e67e22';
 }
 
+// True once any of the four metrics has reported a non-zero value —
+// used to decide whether to show the placeholder or the live dial,
+// and to detect the transition that fires the appear animation.
+function _hasMetrics(s) {
+    if (!s) return false;
+    return (s.rtt > 0) || (s.loss > 0) || (s.up > 0) || (s.down > 0);
+}
+
 // ---------- per-call running state ------------------------------------------
 
 // Same trick as NetworkSpeedometer: module-scoped per-call snapshot so a
@@ -202,14 +219,34 @@ export default class AudioSpeedometer extends React.Component {
             ? { ...seeded.snapshot }
             : { up: 0, down: 0, rtt: 0, loss: 0, audioCodec: '', codecMeta: null };
         this._onStats = this._onStats.bind(this);
+        // Animated value driving the one-shot "shift down from above"
+        // appearance: opacity 0→1 + translateY -12→0. Stays at 1 for
+        // the rest of the call so we don't re-trigger the animation
+        // on every metric tick.
+        this._appearAnim = new Animated.Value(seeded && _hasMetrics(seeded.snapshot) ? 1 : 0);
+        this._didAppear = !!(seeded && _hasMetrics(seeded.snapshot));
     }
 
     componentDidMount()    { this._attach(this.props.call); }
     componentWillUnmount() { this._detach(this.props.call); }
-    componentDidUpdate(prevProps) {
+    componentDidUpdate(prevProps, prevState) {
         if (prevProps.call !== this.props.call) {
             this._detach(prevProps.call);
             this._attach(this.props.call);
+        }
+        // Fire the slide-down animation exactly once: the first time
+        // we transition from "no metrics yet" to "have metrics".
+        if (!this._didAppear) {
+            const had = _hasMetrics(prevState);
+            const has = _hasMetrics(this.state);
+            if (!had && has) {
+                this._didAppear = true;
+                Animated.timing(this._appearAnim, {
+                    toValue: 1,
+                    duration: 350,
+                    useNativeDriver: true,
+                }).start();
+            }
         }
     }
 
@@ -324,15 +361,33 @@ export default class AudioSpeedometer extends React.Component {
     render() {
         const { up, down, rtt, loss } = this.state;
 
-        // Don't render anything until at least one metric has reported a
-        // non-zero value. The component is still mounted (so its
-        // call.statistics listener stays attached and snapshots keep
-        // accumulating), but visually it's a no-op until real data
-        // arrives. Prevents a "0ms / 0.0% / no codec" placeholder dial
-        // from flashing onto the screen at the start of each call.
-        const hasData = rtt > 0 || loss > 0 || up > 0 || down > 0;
+        // Until at least one metric has reported a non-zero value we
+        // render an *invisible* placeholder of the same outer
+        // footprint as the live dial. The component is still mounted
+        // (so its call.statistics listener stays attached and
+        // snapshots keep accumulating); the dial itself is hidden.
+        // Reserving the slot here means anything below us in the
+        // layout (the VU meters) sits at its final position from the
+        // moment the screen mounts — when the dial finally appears
+        // it fades + slides into place from above without pushing
+        // the meters down. Also avoids the "0ms / 0.0% / no codec"
+        // placeholder dial flashing in for a frame.
+        const hasData = _hasMetrics(this.state);
+        // Folded view: kill the container's normal vertical
+        // breathing room (marginTop 16, paddingTop 2, marginBottom 6)
+        // AND apply a negative marginTop to absorb the empty space
+        // at the TOP of the SVG itself — the dial is anchored at
+        // the bottom of its 180×110 box (CY = H - 18 = 92, R = 72)
+        // so y=0..20 inside the SVG is just empty pixels. Pulling
+        // the whole container up by ~22 px lets the dial appear
+        // flush against the foldedStatsColumn's top edge.
+        const _foldedZeroMargin = this.props.isFolded ? {
+            marginTop: -22,
+            marginBottom: 0,
+            paddingTop: 0,
+        } : null;
         if (!hasData) {
-            return null;
+            return <View style={[styles.container, { height: CONTENT_HEIGHT }, _foldedZeroMargin]} />;
         }
 
         const cleanCodec = (c) =>
@@ -353,8 +408,21 @@ export default class AudioSpeedometer extends React.Component {
         const rttTip  = polar((rttClamped  / RTT_MAX_MS)   * 180, R - 4);
         const lossTip = polar((lossClamped / LOSS_MAX_PCT) * 180, R - 4);
 
+        // Slide-down + fade-in: pinned to a one-shot animation that
+        // fires the first time metrics arrive (see componentDidUpdate).
+        // useNativeDriver=true so this is silky even when JS is busy.
+        const animatedStyle = {
+            opacity: this._appearAnim,
+            transform: [{
+                translateY: this._appearAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-12, 0],
+                }),
+            }],
+        };
+
         return (
-            <View style={styles.container}>
+            <Animated.View style={[styles.container, { minHeight: CONTENT_HEIGHT }, animatedStyle, _foldedZeroMargin]}>
                 <Svg
                     width={W}
                     height={H}
@@ -424,7 +492,7 @@ export default class AudioSpeedometer extends React.Component {
                     <Text style={{ color: '#ffffff' }}>   </Text>
                     <Text style={{ color: lossColor(loss), fontWeight: '700' }}>{loss.toFixed(1)}%</Text>
                 </Text>
-            </View>
+            </Animated.View>
         );
     }
 }

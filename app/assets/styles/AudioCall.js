@@ -180,30 +180,34 @@ const styles = StyleSheet.create({
   // right. Call buttons occupy the bottom strip, full width.
   foldedTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'space-between',
-    // Room between the NavBar / CallOverlay banner and the caller +
-    // stats row on the Razr cover display.
-    marginTop: 48,
+    marginTop: 36,
     paddingHorizontal: 8,
+    height: 140,
   },
 
   foldedCallerColumn: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingRight: 4,
   },
 
   foldedStatsColumn: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingLeft: 4,
   },
 
   foldedDisplayName: {
-    paddingTop: 6,
+    // Snug under the avatar without overlapping its bottom edge:
+    // strip Paper's default Dialog.Title top padding (paddingTop:0)
+    // but only nudge up a couple of pixels — a heavier negative
+    // marginTop ate into the avatar circle.
+    paddingTop: 0,
+    marginTop: -2,
     // Paper's Dialog.Title defaults to paddingBottom:16 + marginBottom,
     // which leaves a big gap before the SIP URI on the cover display.
     // Zero them out so the URI sits right under the name.
@@ -216,10 +220,43 @@ const styles = StyleSheet.create({
 
   foldedUri: {
     padding: 0,
-    marginTop: -2,
+    // Tuck the URI right under the display name — same logic as
+    // foldedDisplayName above.
+    marginTop: -4,
     fontSize: 12,
     textAlign: 'center',
     color: 'white',
+  },
+
+  // Bottom row directly under foldedTopRow: record pill (left) and
+  // ZRTP badge (right) share one top edge. alignItems:flex-start
+  // pins each child to the row's top so they read as a single line,
+  // even though the pill and badge have slightly different heights.
+  foldedBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginTop: 56,
+  },
+
+  // Each half of foldedBottomRow centers its child horizontally so
+  // the record pill lines up under the avatar column (foldedCaller-
+  // Column above also uses alignItems:center) and the ZRTP badge
+  // lines up under the stats column (foldedStatsColumn above —
+  // same centered alignment). Matching paddings keep the two
+  // columns equal-width so the centers stay aligned with the row
+  // above.
+  foldedBottomLeft: {
+    flex: 1,
+    alignItems: 'center',
+    paddingRight: 4,
+  },
+
+  foldedBottomRight: {
+    flex: 1,
+    alignItems: 'center',
+    paddingLeft: 4,
   },
 
   foldedButtonContainer: {

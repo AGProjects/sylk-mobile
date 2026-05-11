@@ -1,8 +1,7 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
-index af962e0..e2bc94d 100644
 --- a/node_modules/react-native-sylkrtc/lib/call.js
 +++ b/node_modules/react-native-sylkrtc/lib/call.js
-@@ -37,7 +37,30 @@ class Call extends EventEmitter {
+@@ -37,7 +37,30 @@
          this._setup_in_progress = false;  // set while we set the remote description and setup the peer copnnection
          this._headers = []
          this._messages = new Map();
@@ -34,7 +33,7 @@ index af962e0..e2bc94d 100644
          // bind some handlers to this instance
          // this._onDtmf = this._onDtmf.bind(this);
      }
-@@ -108,20 +131,25 @@ class Call extends EventEmitter {
+@@ -108,20 +131,25 @@
      }
  
      getRemoteStreams() {
@@ -72,15 +71,26 @@ index af962e0..e2bc94d 100644
      }
  
      getSenders() {
-@@ -155,12 +183,23 @@ class Call extends EventEmitter {
+@@ -155,14 +183,62 @@
          // Create the RTCPeerConnection
          this._initRTCPeerConnection(pcConfig);
  
 -        this._pc.addStream(options.localStream);
 -        this.emit('localStreamAdded', options.localStream);
-+		options.localStream.getTracks().forEach((track) => {
-+			this._pc.addTrack(track, options.localStream);
-+		});
++        // Capture the audio RTCRtpSender on the way in so we can
++        // attach the modern RTCDTMFSender (`audioSender.dtmf`) once
++        // setLocalDescription resolves below. Without this, callees
++        // could never send DTMF — the answer() path used to throw
++        // away the addTrack return value, which left _audioSender
++        // and therefore _dtmfSender forever null on the callee side.
++        // Mirrors what _initOutgoing already does for the caller.
++        this._audioSender = null;
++        options.localStream.getTracks().forEach((track) => {
++            const sender = this._pc.addTrack(track, options.localStream);
++            if (track.kind === 'audio') {
++                this._audioSender = sender;
++            }
++        });
 +
          this._pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}))
              // success
@@ -95,152 +105,109 @@ index af962e0..e2bc94d 100644
 +                // differs (VP8=3, VP9=3, H264=2, AV1=1) and the receiver
 +                // reads the wrong byte as the v|keyId header.
 +                const answerCodec = utils.pickAnswerVideoCodec(this._incomingSdp);
-+                utils.createLocalSdp(this._pc, 'answer', answerOptions, answerCodec)
++                // Same logic for audio: mirror whichever audio codec
++                // the caller listed first instead of imposing our own
++                // local preference. Keeps offer / answer in agreement
++                // for everything downstream that introspects the
++                // negotiated codec (NetworkSpeedometer, AudioSpeedometer,
++                // BarChart). Falls back to the local preferred audio
++                // codec if the offer can't be parsed.
++                const answerAudioCodec = utils.pickAnswerAudioCodec(this._incomingSdp);
++                utils.createLocalSdp(this._pc, 'answer', answerOptions, answerCodec, answerAudioCodec)
                      .then((sdp) => {
                          DEBUG('Local SDP: %s', sdp);
++                        // Outgoing answer for an incoming call. Logged
++                        // alongside the OUTGOING / INCOMING offer dumps
++                        // above so the full negotiation round-trip is
++                        // greppable from a single log file.
++                        console.log('[sylkrtc][sdp] OUTGOING answer (call=', this._id, ')\n' + sdp);
++                        // DTMF sender becomes available after the
++                        // local description is set inside
++                        // createLocalSdp (above). Same one-tick defer
++                        // _initOutgoing uses, for the same reason.
++                        setTimeout(() => {
++                            if (this._audioSender && this._audioSender.dtmf) {
++                                DEBUG("DTMF sender now available (answerer)");
++                                this._dtmfSender = this._audioSender.dtmf;
++                                this._dtmfSender.addEventListener('tonechange', this._onDtmf);
++                            } else {
++                                DEBUG("No DTMF sender even after answer");
++                            }
++                        }, 0);
                          this._sendAnswer(sdp, options.headers);
-@@ -266,65 +305,73 @@ class Call extends EventEmitter {
-         this._sendTerminate();
-     }
- 
--    sendDtmf(tones, duration=100, interToneGap=70) {
--        DEBUG('sendDtmf()');
--        // if (this._dtmfSender === null) {
--        //     if (this._pc !== null) {
--        //         let track = null;
--        //         try {
--        //             track = this._pc.getLocalStreams()[0].getAudioTracks()[0];
--        //         } catch (e) {
--        //             // ignore
--        //         }
--        //         if (track !== null) {
--        //             DEBUG('Creating DTMF sender');
--        //             this._dtmfSender = this._pc.createDTMFSender(track);
--        //             if (this._dtmfSender) {
--        //                 this._dtmfSender.addEventListener('tonechange', this._onDtmf);
--        //             }
--        //         }
--        //     }
--        // }
--        if (true) {
--            DEBUG('Sending DTMF tones');
--            this._pc.sendDTMF(tones, duration, interToneGap);
--        }
--    }
--
--    // Private API
--
--    _initOutgoing(uri, options={}) {
--        if (uri.indexOf('@') === -1) {
--            throw new Error('Invalid URI');
--        }
-+	sendDtmf(tones, duration = 100, interToneGap = 70) {
-+		DEBUG('sendDtmf()');
-+
-+		if (!this._dtmfSender) {
-+			DEBUG('DTMF sender NOT available');
-+			return false;
-+		}
-+
-+		DEBUG(`Sending DTMF: ${tones}`);
-+		this._dtmfSender.insertDTMF(tones, duration, interToneGap);
-+
-+		return true;
-+	}
-+
-+	// Private API
-+	_initOutgoing(uri, options = {}) {
-+		if (!uri.includes('@')) throw new Error('Invalid URI');
-+		if (!options.localStream) throw new Error('Missing localStream');
-+
-+		this._id = options.id || uuidv4();
-+		this._direction = 'outgoing';
-+		this._remoteIdentity = new utils.Identity(uri);
-+		this._headers = options.headers;
-+		this._audioSender = null;
-+
-+		const pcConfig = options.pcConfig || {
-+			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-+		};
-+		const offerOptions = options.offerOptions;
-+
-+		// Create RTCPeerConnection
-+		this._initRTCPeerConnection(pcConfig);
-+
-+		// ❗ M111: use addTrack instead of addStream
-+		options.localStream.getTracks().forEach((track) => {
-+			const sender = this._pc.addTrack(track, options.localStream);
-+			if (track.kind === 'audio') {
-+				this._audioSender = sender;
-+			}
-+		});
-+
-+		this.emit('localStreamAdded', options.localStream);
-+
-+		// Create the offer
-+		utils.createLocalSdp(this._pc, 'offer', offerOptions, utils.getPreferredVideoCodec())
-+			.then((sdp) => {
-+				DEBUG('Local SDP: %s', sdp);
-+				//
-+				// ✅ DTMF becomes available here — AFTER setLocalDescription()
-+				//
-+				setTimeout(() => {
-+					if (this._audioSender?.dtmf) {
-+						DEBUG("DTMF sender now available");
-+						this._dtmfSender = this._audioSender.dtmf;
-+						this._dtmfSender.addEventListener('tonechange', this._onDtmf);
-+					} else {
-+						DEBUG("No DTMF sender even after negotiate");
-+					}
-+				}, 0);
-+				this._sendCall(uri, sdp);
-+			})
-+			.catch((reason) => {
-+				DEBUG(reason);
-+				this._localTerminate(reason);
-+			});
-+	}
- 
--        if (!options.localStream) {
--            throw new Error('Missing localStream');
--        }
--
--        this._id = options.id || uuidv4();
--        this._direction = 'outgoing';
--        this._remoteIdentity = new utils.Identity(uri);
--        this._headers = options.headers;
--
--        const pcConfig = options.pcConfig || {iceServers:[]};
--        const offerOptions = options.offerOptions;
--
--        // Create the RTCPeerConnection
--        this._initRTCPeerConnection(pcConfig);
--
+                     })
+                     .catch((reason) => {
+@@ -316,8 +392,44 @@
 -        this._pc.addStream(options.localStream);
 -        this.emit('localStreamAdded', options.localStream);
--        utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
--            .then((sdp) => {
--                DEBUG('Local SDP: %s', sdp);
--                this._sendCall(uri, sdp);
--            })
--            .catch((reason) => {
--                DEBUG(reason);
--                this._localTerminate(reason);
--            });
--    }
- 
-     _initIncoming(id, caller, sdp, callId, headers = {}) {
-         this._id = id;
-@@ -333,6 +380,8 @@ class Call extends EventEmitter {
-         this._direction = 'incoming';
-         this._state = 'incoming';
-         this._callId = callId;
-+		this._dtmfSender = null;
-+
-         this._remoteMediaDirections = Object.assign(
-             {audio: [], video:[]}, utils.getMediaDirections(sdp)
++        // M124 / unified-plan: RTCPeerConnection.addStream was
++        // removed; use addTrack per the W3C spec. Capture the audio
++        // RTCRtpSender on the way in so the DTMF setTimeout below
++        // can attach to sender.dtmf once setLocalDescription
++        // resolves. Without this swap, the entire outgoing-call
++        // flow throws on `addStream is not a function` and the call
++        // never actually dials.
++        this._audioSender = null;
++        options.localStream.getTracks().forEach((track) => {
++            const sender = this._pc.addTrack(track, options.localStream);
++            if (track.kind === 'audio') {
++                this._audioSender = sender;
++            }
++        });
++        this.emit('localStreamAdded', options.localStream);
+         utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
+             .then((sdp) => {
+                 DEBUG('Local SDP: %s', sdp);
++                // Surface the negotiation traffic via console.log too —
++                // DEBUG only fires when the `debug` package's namespace
++                // is enabled, which it isn't in production builds. The
++                // SDP dump goes to Metro / device logs (and the on-
++                // device log file via the standard console wiring) so
++                // it's reachable when triaging codec-negotiation or
++                // ICE-gathering issues without needing to flip a debug
++                // flag and rebuild.
++                console.log('[sylkrtc][sdp] OUTGOING offer (call=', this._id,
++                    'to=', uri, ')\n' + sdp);
++                // DTMF sender becomes available after the local
++                // description is set inside createLocalSdp (above).
++                // Same one-tick defer that answer() uses, for the
++                // same reason.
++                setTimeout(() => {
++                    if (this._audioSender && this._audioSender.dtmf) {
++                        DEBUG("DTMF sender now available (caller)");
++                        this._dtmfSender = this._audioSender.dtmf;
++                        this._dtmfSender.addEventListener('tonechange', this._onDtmf);
++                    } else {
++                        DEBUG("No DTMF sender even after offer");
++                    }
++                }, 0);
+                 this._sendCall(uri, sdp);
+             })
+             .catch((reason) => {
+@@ -338,6 +450,11 @@
          );
-@@ -399,7 +448,20 @@ class Call extends EventEmitter {
+         this._headers = Object.keys(headers).map(key => {return {name: key, value: headers[key]}});
+         DEBUG('Remote SDP: %s', sdp);
++        // Surface the offer SDP from the caller in the standard log
++        // stream (see the OUTGOING-offer console.log above for why we
++        // duplicate this from DEBUG).
++        console.log('[sylkrtc][sdp] INCOMING offer (call=', id,
++            'from=', caller && caller.uri, ')\n' + sdp);
+     }
+ 
+     _handleEvent(message) {
+@@ -356,6 +473,10 @@
+                     if (message.sdp !== undefined) {
+                         const sdp = utils.mungeSdp(message.sdp);
+                         DEBUG('Remote SDP: %s', sdp);
++                        // Incoming answer for our outgoing call. Last
++                        // of the four exchange points; pairs with the
++                        // OUTGOING-offer dump in _initOutgoing above.
++                        console.log('[sylkrtc][sdp] INCOMING answer (call=', this._id, ')\n' + sdp);
+                         this._remoteMediaDirections = Object.assign(
+                             {audio: [], video:[]}, utils.getMediaDirections(sdp)
+                         );
+@@ -399,7 +520,20 @@
                  }
                  break;
              case 'message':
@@ -262,7 +229,7 @@ index af962e0..e2bc94d 100644
                  const incomingMessage = this._messages.get(message.message_id);
                  if (!incomingMessage) {
                      if (message.content_type === 'text/pgp-private-key') {
-@@ -423,7 +485,10 @@ class Call extends EventEmitter {
+@@ -423,7 +557,10 @@
                      if (message.disposition_notification &&
                          message.disposition_notification.indexOf('positive-delivery') !== -1
                      ) {
@@ -274,7 +241,7 @@ index af962e0..e2bc94d 100644
                              message.sender.uri,
                              message.message_id,
                              message.timestamp,
-@@ -433,6 +498,17 @@ class Call extends EventEmitter {
+@@ -433,6 +570,17 @@
                  }
                  break;
              case 'disposition-notification':
@@ -292,7 +259,7 @@ index af962e0..e2bc94d 100644
                  const outgoingMessage = this._messages.get(message.message_id);
                  if (outgoingMessage) {
                      if (outgoingMessage.state === 'displayed') {
-@@ -448,26 +524,40 @@ class Call extends EventEmitter {
+@@ -448,26 +596,40 @@
          }
      }
  
@@ -352,10 +319,9 @@ index af962e0..e2bc94d 100644
      _sendRequest(req, cb) {
          this._account._sendRequest(req, cb);
 diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/react-native-sylkrtc/lib/conference.js
-index 33da09d..a388b38 100644
 --- a/node_modules/react-native-sylkrtc/lib/conference.js
 +++ b/node_modules/react-native-sylkrtc/lib/conference.js
-@@ -121,10 +121,15 @@ class Participant extends EventEmitter {
+@@ -121,10 +121,15 @@
          const pc = new RTCPeerConnection(pcConfig);
          this._conference._statistics.addConnection({pc: pc, peerId: this._id});
  
@@ -375,7 +341,7 @@ index 33da09d..a388b38 100644
          pc.addEventListener('icecandidate', (event) => {
              if (event.candidate !== null) {
                  DEBUG('New ICE candidate %o', event.candidate);
-@@ -572,7 +577,10 @@ class ConferenceCall extends EventEmitter {
+@@ -572,7 +577,10 @@
              this._sendTrickle(event.candidate);
          });
  
@@ -388,10 +354,9 @@ index 33da09d..a388b38 100644
          DEBUG('Offer options: %o', offerOptions);
          utils.createLocalSdp(this._pc, 'offer', offerOptions)
 diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
-index ae521ed..dad44b0 100644
 --- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js
 +++ b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
-@@ -19,8 +19,10 @@ function createConnection(options = {}) {
+@@ -19,8 +19,12 @@
  
  
  const utils = {
@@ -401,14 +366,136 @@ index ae521ed..dad44b0 100644
 +    'closeMediaStream'       : _utils.closeMediaStream,
 +    'setPreferredVideoCodec' : _utils.setPreferredVideoCodec,
 +    'getPreferredVideoCodec' : _utils.getPreferredVideoCodec,
++    'setPreferredAudioCodec' : _utils.setPreferredAudioCodec,
++    'getPreferredAudioCodec' : _utils.getPreferredAudioCodec,
  };
  
  
 diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
-index a64c601..b6bb224 100644
 --- a/node_modules/react-native-sylkrtc/lib/utils.js
 +++ b/node_modules/react-native-sylkrtc/lib/utils.js
-@@ -360,6 +360,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -54,7 +54,7 @@
+ }
+ 
+ 
+-function createLocalSdp(pc, type, options, preferredCodec = null) {
++function createLocalSdp(pc, type, options, preferredCodec = null, preferredAudioCodec = null) {
+     if (type !== 'offer' && type !== 'answer') {
+         return Promise.reject('type must be "offer" or "answer", but "' +type+ '" was given');
+     }
+@@ -70,7 +70,7 @@
+                 return pc.setLocalDescription(desc);
+             })
+             .then(() => {
+-                resolve(mungeSdp(pc.localDescription.sdp, preferredCodec));
++                resolve(mungeSdp(pc.localDescription.sdp, preferredCodec, false, preferredAudioCodec));
+             })
+             // failure
+             .catch((error) => {
+@@ -81,7 +81,7 @@
+ }
+ 
+ 
+-function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
++function mungeSdp(sdp, preferredCodec = null, fixmsid=false, preferredAudioCodec = null) {
+     let parsedSdp = transform.parse(sdp);
+     let h264payload = null;
+     let hasProfileLevelId = false;
+@@ -132,6 +132,55 @@
+         }
+     }
+ 
++    // Drop high-clockrate telephone-event variants from the audio
++    // m-line so libwebrtc's DtmfSender falls back to the universally-
++    // compatible 8 kHz one (telephone-event/8000, the RFC 4733 PT
++    // every Asterisk/PSTN/SBC understands).
++    //
++    // Why: libwebrtc picks the telephone-event codec whose clockrate
++    // matches the active audio codec. With opus at 48 kHz active it
++    // emits DTMF as telephone-event/48000 (PT 110 in our SDP). Most
++    // Asterisk versions and every PSTN gateway only detect telephone-
++    // event/8000 — a 48 kHz variant either doesn't get re-mapped on
++    // the trunk or its detector simply ignores it. Result: the
++    // SIP-Simple SDK on the other end happily decoded the digits in
++    // testing (it accepts both rates), but Asterisk voicemail and
++    // PSTN IVRs heard nothing.
++    //
++    // We leave the 8 kHz telephone-event in place. With only that
++    // option, libwebrtc resamples the DTMF event packet timing onto
++    // the 8 kHz clock and ships it on the same audio RTP stream;
++    // Asterisk and PSTN endpoints decode it cleanly. Audio quality
++    // (opus@48 kHz) is unaffected — we're only stripping a redundant
++    // codec line, not changing the active audio codec.
++    for (let media of parsedSdp.media) {
++        if (media.type !== 'audio' || !media.rtp) continue;
++
++        const drop = new Set();
++        for (const rtp of media.rtp) {
++            if (rtp.codec
++                && String(rtp.codec).toLowerCase() === 'telephone-event'
++                && rtp.rate
++                && Number(rtp.rate) !== 8000) {
++                drop.add(rtp.payload);
++            }
++        }
++        if (drop.size === 0) continue;
++
++        // strip from m=audio … <PTs>
++        const payloads = String(media.payloads).split(' ').filter(p => !drop.has(parseInt(p, 10)));
++        media.payloads = payloads.join(' ');
++
++        // strip matching rtpmap / fmtp / rtcp-fb entries
++        media.rtp = media.rtp.filter(r => !drop.has(r.payload));
++        if (media.fmtp) {
++            media.fmtp = media.fmtp.filter(f => !drop.has(f.payload));
++        }
++        if (media.rtcpFb) {
++            media.rtcpFb = media.rtcpFb.filter(f => !drop.has(f.payload));
++        }
++    }
++
+     if (preferredCodec !== null) {
+         const videoMLine = parsedSdp.media.find(m => m.type === 'video');
+         let payloadType = null;
+@@ -156,6 +205,37 @@
+         }
+     }
+ 
++    // Mirror of the video-codec reorder above, but for the audio
++    // m-line. We move the user-preferred audio codec (e.g. "PCMU"
++    // for PSTN-bound calls) to the front of the m=audio payload
++    // list. Telephone-event / CN / red entries are not codec
++    // choices in the user-facing sense and are left wherever
++    // libwebrtc put them — we only promote a real audio codec.
++    if (preferredAudioCodec !== null) {
++        const audioMLine = parsedSdp.media.find(m => m.type === 'audio');
++        let aPayload = null;
++
++        if (audioMLine !== undefined && audioMLine.rtp) {
++            for (let i = 0; i < audioMLine.rtp.length; ++i) {
++                const rtp = audioMLine.rtp[i];
++                if (rtp.codec
++                    && rtp.codec.toLowerCase() === preferredAudioCodec.toLowerCase()) {
++                        aPayload = rtp.payload;
++                        break;
++                    }
++            }
++            if (aPayload !== null) {
++                const payloadTypes = String(audioMLine.payloads).split(' ').map(p => parseInt(p, 10));
++                const payloadIndex = payloadTypes.indexOf(aPayload);
++                if (payloadIndex !== -1) {
++                    payloadTypes.splice(payloadIndex, 1);
++                    payloadTypes.unshift(aPayload);
++                    audioMLine.payloads = payloadTypes.join(' ');
++                }
++            }
++        }
++    }
++
+     return transform.write(parsedSdp);
+ }
+ 
+@@ -360,6 +440,8 @@
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -417,7 +504,7 @@ index a64c601..b6bb224 100644
                      }
                  }
  
-@@ -388,6 +390,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -388,6 +470,8 @@
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -426,7 +513,7 @@ index a64c601..b6bb224 100644
                      }
                  }
  
-@@ -435,6 +439,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -435,6 +519,8 @@
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -435,7 +522,7 @@ index a64c601..b6bb224 100644
                      }
                  }
  
-@@ -469,6 +475,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -469,6 +555,8 @@
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -444,7 +531,7 @@ index a64c601..b6bb224 100644
                      }
                  }
  
-@@ -506,4 +514,56 @@ export function map2obj(stats) {
+@@ -506,4 +594,103 @@
      return o;
  }
  
@@ -501,4 +588,51 @@ index a64c601..b6bb224 100644
 +    return fallback;
 +}
 +
-+export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats, setPreferredVideoCodec, getPreferredVideoCodec, pickAnswerVideoCodec};
++// ----- preferred audio codec ------------------------------------------------
++//
++// Same module-level-default pattern as the video preference above, but for
++// the audio m-line. Recognized values follow the names libwebrtc puts in
++// `a=rtpmap` (case-insensitive on lookup): "opus", "G722", "PCMU", "PCMA".
++// Default 'opus' — best quality and what libwebrtc would normally pick on
++// its own; this only matters when the user wants to force a narrowband
++// codec for PSTN / Asterisk compatibility.
++let _preferredAudioCodec = 'opus';
++
++function setPreferredAudioCodec(codec) {
++    if (typeof codec === 'string' && codec.length > 0) {
++        _preferredAudioCodec = codec;
++    }
++}
++
++function getPreferredAudioCodec() {
++    return _preferredAudioCodec;
++}
++
++// Mirror of pickAnswerVideoCodec for the audio m-line. The answerer
++// must not name a codec the offerer didn't list, so we pick the first
++// real audio codec from the offer's m=audio payloads (skipping
++// telephone-event, comfort-noise, and red — those are signalling /
++// FEC entries, not user-selectable codecs). Falls back to the local
++// preference when the offer can't be parsed.
++function pickAnswerAudioCodec(offerSdp) {
++    const fallback = getPreferredAudioCodec();
++    if (!offerSdp) return fallback;
++    try {
++        const parsed = transform.parse(offerSdp);
++        const audioMLine = parsed.media && parsed.media.find(m => m.type === 'audio');
++        if (!audioMLine || !audioMLine.payloads) return fallback;
++        const payloadOrder = String(audioMLine.payloads).split(' ').map(p => parseInt(p, 10));
++        const ignored = new Set(['telephone-event', 'cn', 'red']);
++        for (const pt of payloadOrder) {
++            const rtp = audioMLine.rtp && audioMLine.rtp.find(r => r.payload === pt);
++            if (!rtp || !rtp.codec) continue;
++            if (ignored.has(rtp.codec.toLowerCase())) continue;
++            return rtp.codec;
++        }
++    } catch (e) {
++        // fall through to local default
++    }
++    return fallback;
++}
++
++export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats, setPreferredVideoCodec, getPreferredVideoCodec, pickAnswerVideoCodec, setPreferredAudioCodec, getPreferredAudioCodec, pickAnswerAudioCodec};

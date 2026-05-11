@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight, KeyboardAvoidingView} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -40,6 +40,13 @@ import ChatBubble from './ChatBubble';
 import LocationBubble from './LocationBubble';
 import ThumbnailGrid from './ThumbnailGrid';
 import AudioProgressSlider from './AudioProgressSlider';
+import VuMeter from './VuMeter';
+import AudioWaveform from './AudioWaveform';
+// In-app emoji picker. Used in renderComposer below — tapping the
+// smiley button dismisses the system IME and opens this picker, so we
+// never trigger the system emoji panel (which doesn't compose well
+// with adjustResize on Android and used to cover the input bar).
+import EmojiPicker from './EmojiPicker';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -48,7 +55,6 @@ import VideoPlayer from 'react-native-video-player';
 const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-camera-roll/camera-roll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
-import AudioRecord from 'react-native-audio-record';
 import FastImage from 'react-native-fast-image';
 import { ActivityIndicator, Animated, Alert } from 'react-native';
 import dayjs from 'dayjs';
@@ -56,15 +62,19 @@ import dayjs from 'dayjs';
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
 
-// Teach react-native-render-html about <button> tags so it stops warning
-// each time an incoming HTML message contains one. We treat it as mixed
-// content (can hold both inline text and block children) — this is the
-// most permissive model and makes the inner label still render as plain
-// text rather than being silently dropped (which is what
-// ignoredDomTags=['button'] would do).
+// Teach react-native-render-html about non-standard / Web-Components tags
+// (<button>, <slot>, …) so it stops warning each time an incoming HTML
+// message contains one. We treat them as mixed content (can hold both
+// inline text and block children) — this is the most permissive model
+// and makes the inner content still render as plain text rather than
+// being silently dropped (which is what ignoredDomTags=[…] would do).
 const customHTMLElementModels = {
     button: HTMLElementModel.fromCustomModel({
         tagName: 'button',
+        contentModel: HTMLContentModel.mixed,
+    }),
+    slot: HTMLElementModel.fromCustomModel({
+        tagName: 'slot',
         contentModel: HTMLContentModel.mixed,
     }),
 };
@@ -147,8 +157,7 @@ class ContactsListBox extends Component {
         this.chatListRef = React.createRef();
         this.flatListRef = null;
         this.default_placeholder = 'Type a message...';
-		this.previousAudioMode = null;
-                
+
         this.state = {
             accountId: this.props.account ? this.props.account.id : null,
             password: this.props.password,
@@ -195,7 +204,17 @@ class ContactsListBox extends Component {
             searchMessages: this.props.searchMessages,
             searchString: this.props.searchString,
             replyingTo: null,
+            // Whether the in-app EmojiPicker is currently displayed.
+            // Driven by the smiley button in renderComposer.
+            emojiPickerVisible: false,
             keyboardVisible: false,
+            // Pixels by which the IME visibly overlaps our window —
+            // computed in _keyboardDidShow as max(0, windowBottom -
+            // keyboardTop). Used as paddingBottom on the chat
+            // container on Android API 34+ where adjustResize and
+            // KeyboardSpacer are unreliable. Reset to 0 on hide.
+            keyboardOverlap: 0,
+            keyboardHeight: 0,
             bubbleWidths: {},
             dark: this.props.dark,
 			messagesMetadata: this.props.messagesMetadata,
@@ -225,6 +244,21 @@ class ContactsListBox extends Component {
 		    loadedMaxIndex: null,      // highest index loaded in focusedMessages
 		    playRecording: this.props.playRecording,
 		    audioRecordingStatus: {},
+		    // Pseudo-VU levels for the call-recording bubble while it's
+		    // playing back. Driven by _audioBubbleVuInterval at ~10 Hz;
+		    // see _startAudioBubbleVuTicker. Currently synthetic (random
+		    // walk smoothed) — swap to real per-100ms peaks pulled from
+		    // message.metadata.peaks once that pipeline lands.
+		    audioBubbleVu: { local: 0, remote: 0 },
+		    // While the user is dragging the slider on a call-recording
+		    // bubble we mirror the live drag percentage here so the
+		    // two waveforms (Remote / Local) re-render with their
+		    // played/unplayed boundary tracking the slider needle in
+		    // real time. Without this they'd stay frozen at the
+		    // pre-drag position until release. Cleared in
+		    // seekAudioMessage and on left-edge auto-commit.
+		    // Shape: { transferId, pct } | null
+		    audioBubbleScrub: null,
 		    callHistoryUrl: this.props.callHistoryUrl,
 		    isAudioRecording: this.props.isAudioRecording,
 		    recordingFile: this.props.recordingFile,
@@ -233,6 +267,11 @@ class ContactsListBox extends Component {
 		    replyContainerHeight: 0,
 		    appState: this.props.appState,
 		    allContacts: this.props.allContacts,
+		    // Which contact source the search/list filters against.
+		    // 'sylk' = the Sylk contacts in this.state.allContacts,
+		    // 'ab'   = the address-book entries in this.state.contacts.
+		    // The toggle in the search bar (URIInput) drives this prop.
+		    contactSource: this.props.contactSource || 'sylk',
 		    groupOfImage: {}, // in what groups does an image appear
 		    imageGroups: {}, // in which group is an image present
 		    selectedImages: [],
@@ -287,12 +326,40 @@ class ContactsListBox extends Component {
               this._keyboardDidHide
             );
 
+        // Stop any in-progress recording playback whenever a call is
+        // about to start (incoming OR outgoing) so audio doesn't contend
+        // with the ringtone or the call itself.
+        this.callStartingListener = DeviceEventEmitter.addListener(
+            'SylkCallStarting',
+            (payload) => {
+                try {
+                    if (this.currentAudioMessage || (this.state.audioRecordingStatus
+                            && 'position' in this.state.audioRecordingStatus)) {
+                        utils.timestampedLog('[applog] [audio] stopping playback because a call is starting',
+                            payload && payload.direction);
+                        this.stopAudioPlayer();
+                    }
+                } catch (e) { /* swallow — never block call handling */ }
+            }
+        );
+
         this.ended = false;
     }
 
     componentWillUnmount() {
         this.keyboardDidShowListener.remove();
         this.keyboardDidHideListener.remove();
+        if (this.callStartingListener) {
+            this.callStartingListener.remove();
+            this.callStartingListener = null;
+        }
+
+        // Tear down the bubble VU ticker so the interval doesn't keep
+        // firing setState on an unmounted component.
+        if (this._audioBubbleVuInterval) {
+            clearInterval(this._audioBubbleVuInterval);
+            this._audioBubbleVuInterval = null;
+        }
 
         this.ended = true;
     }
@@ -312,6 +379,11 @@ class ContactsListBox extends Component {
         if (this.ended) {
             return;
         }
+
+        // [audio-debug] CWRP props.messages-changed log — DISABLED.
+        // Re-enable to confirm whether App.setState({messages}) is
+        // reaching ContactsListBox during playback (frozen-bubble
+        // diagnosis).
 
         if ('messagesMetadata' in nextProps) {
 			 this.setState({messagesMetadata: nextProps.messagesMetadata});
@@ -617,7 +689,8 @@ class ContactsListBox extends Component {
 					   recordingFile: nextProps.recordingFile,
 					   insets: nextProps.insets,
 					   appState: nextProps.appState,
-					   allContacts: nextProps.allContacts
+					   allContacts: nextProps.allContacts,
+					   contactSource: nextProps.contactSource || 'sylk'
 					});
 
         if (nextProps.isTyping) {
@@ -628,11 +701,57 @@ class ContactsListBox extends Component {
     }
 
     _keyboardDidShow(e) {
-       this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
+        // Compute the actual visible overlap between the IME's KEY
+        // surface and our window. Two candidates:
+        //
+        //   rawOverlap = windowBottom - keyboardTop  (winH - screenY)
+        //   rawHeight  = e.endCoordinates.height     (the keyboard's own height)
+        //
+        // On a normal cover-display layout these match. On the Razr
+        // inner display in edge-to-edge mode the window extends down
+        // through the gesture-nav bar, so `winH - screenY` is larger
+        // than the keyboard's actual height by the gesture-bar
+        // height (~48dp on this device — what produced the previous
+        // "hovering up by 20px" / "hovering up by ~48px" reports).
+        // Safe-area's bottom inset reports 0 in edge-to-edge mode so
+        // we can't subtract it directly; instead we clamp overlap to
+        // the keyboard's own height — we never need to compensate
+        // for more than the keyboard itself is.
+        //
+        //   overlap = min(rawOverlap, rawHeight)
+        //
+        // When adjustResize fully shrunk the window rawOverlap is 0
+        // (keyboardTop ≥ windowBottom) and the clamp is a no-op.
+        const winH = Dimensions.get('window').height;
+        const screenY = e && e.endCoordinates && typeof e.endCoordinates.screenY === 'number'
+            ? e.endCoordinates.screenY
+            : null;
+        const rawHeight = e && e.endCoordinates ? Math.round(e.endCoordinates.height) : 0;
+        const rawOverlap = (screenY !== null && winH > screenY)
+            ? Math.round(winH - screenY)
+            : 0;
+        const overlap = Math.max(0, Math.min(rawOverlap, rawHeight));
+        // Per-show diagnostic — uncomment to debug overlap math.
+        // console.log('[keyboardFix] keyboardDidShow',
+        //     'rawHeight=', rawHeight,
+        //     'screenY=', screenY,
+        //     'windowHeight=', Math.round(winH),
+        //     'rawOverlap=', rawOverlap,
+        //     '→ overlap=', overlap);
+        this.setState({
+            keyboardVisible: true,
+            keyboardHeight: rawHeight,
+            keyboardOverlap: overlap,
+        });
     }
 
     _keyboardDidHide() {
-        this.setState({keyboardVisible: false, keyboardHeight: 0, replyingTo: null});
+        this.setState({
+            keyboardVisible: false,
+            keyboardHeight: 0,
+            keyboardOverlap: 0,
+            replyingTo: null,
+        });
         this.textInputRef?.blur();
     }
 
@@ -820,6 +939,55 @@ class ContactsListBox extends Component {
        this.setState({texting: (text.length > 0), text: text})
     }
 
+    // --- In-app emoji picker integration ---
+    //
+    // The composer text + onTextChanged callback only exist inside the
+    // GiftedChat-supplied `composerProps`, which is passed to
+    // renderComposer on each render. We stash the latest pair on `this`
+    // (instance, not state — no need to trigger a re-render just to
+    // remember a callback) so handleEmojiSelected can append to the
+    // current text and push it back into GiftedChat.
+    _composerText = '';
+    _composerOnTextChanged = null;
+
+    toggleEmojiPicker = () => {
+        // Toggle behavior: while the picker is up, tapping the
+        // (now-keyboard-icon) button closes the picker AND brings up
+        // the system keyboard, since the affordance reads as "switch
+        // back to typing". Just flipping the state would only collapse
+        // the picker — we explicitly focus the TextInput so the IME
+        // re-opens. When opening the picker we dismiss the keyboard
+        // first so the two surfaces don't briefly fight for the same
+        // vertical real estate on Android.
+        if (this.state.emojiPickerVisible) {
+            this.setState({ emojiPickerVisible: false }, () => {
+                if (this.textInputRef && typeof this.textInputRef.focus === 'function') {
+                    this.textInputRef.focus();
+                }
+            });
+        } else {
+            Keyboard.dismiss();
+            this.setState({ emojiPickerVisible: true });
+        }
+    };
+
+    closeEmojiPicker = () => {
+        if (this.state.emojiPickerVisible) {
+            this.setState({ emojiPickerVisible: false });
+        }
+    };
+
+    handleEmojiSelected = (emoji) => {
+        // Append to the current composer text. Picker stays open
+        // (we don't call closeEmojiPicker here) so the user can pick
+        // several emoji in a row without re-opening.
+        if (typeof this._composerOnTextChanged === 'function') {
+            const next = (this._composerText || '') + emoji;
+            this._composerText = next;
+            this._composerOnTextChanged(next);
+        }
+    };
+
     resetContact() {
 		this.stopAudioPlayer();
 
@@ -838,7 +1006,7 @@ class ContactsListBox extends Component {
 	renderBubble(props) {
 	  return (
 		<ChatBubble
-		  {...props}  
+		  {...props}
 		  currentMessage={props.currentMessage}
 		  messages={props.messages}
 		  previousMessage={props.previousMessage}
@@ -897,17 +1065,31 @@ class ContactsListBox extends Component {
       paddingBottom: 0,
       borderTopWidth: 0,
     };
-        	  
+
 	  if (this.state.keyboardVisible && Platform.OS === 'android' && Platform.Version >= 34) {
 		  const bottomInset = this.state.insets?.bottom || 0;
 		  //inputToolbarExtraStyles.marginBottom = -bottomInset;
 	  }
-	
+
+	  // Whether the LEFT actions slot has anything to show. Only the
+	  // image-preview delete and the mid-recording pause/delete need
+	  // a left button; the idle "empty composer" case has nothing
+	  // there now (mic moved to the right). When this is false we
+	  // pass renderActions={null} so GiftedChat's InputToolbar
+	  // collapses the left slot entirely — otherwise it reserves a
+	  // ~44px gutter even for an empty View, which leaves blank
+	  // space to the left of the smiley.
+	  const hasLeftAction =
+	    !replyingTo &&
+	    (this.state.sharingMessages.length > 0 ||
+	      this.state.isAudioRecording ||
+	      !!this.state.recordingFile);
+
 	  return (
 		<InputToolbar
 		  {...props}
 		  containerStyle={[styles.inputToolbar, inputToolbarExtraStyles]} // full width
-		  renderActions={!replyingTo ? this.renderCustomActions : null} // left buttons
+		  renderActions={hasLeftAction ? this.renderCustomActions : null} // left buttons
 		  renderComposer={(composerProps) => this.renderComposer(composerProps, replyingTo)}
 		/>
 	  );
@@ -1013,18 +1195,76 @@ class ContactsListBox extends Component {
 			</View>
 		  )}
 	
-		  {/* Real TextInput */}
+		  {/* Smiley button + Real TextInput.
+		      Flex row layout: smiley sits flush on the LEFT of the
+		      text field (WhatsApp / Telegram pattern — the emoji
+		      affordance reads as a left-side input mode toggle, with
+		      the right side reserved for send / mic). TextInput keeps
+		      its original styling (just adds flex: 1) so wrapping /
+		      multiline behavior is unchanged. */}
+		  {/* Stash the latest text + onChange callback on `this` so
+		      handleEmojiSelected can push appended text back into
+		      GiftedChat from outside this render closure. Re-runs
+		      every render, which is what we want — it always points
+		      at the most recent composerProps. */}
+		  {(() => { this._composerText = composerProps.text; this._composerOnTextChanged = composerProps.onTextChanged; return null; })()}
 		  <View
 			onLayout={this.onComposerLayout}
 			style={{
-			  justifyContent: 'center',
-			  alignSelf: 'stretch', // make it fill horizontally
+			  flexDirection: 'row',
+			  alignItems: 'center',
+			  alignSelf: 'stretch',
 			}}
 		  >
+			{/* Smiley button — toggles the in-app EmojiPicker on/off.
+			    The icon switches to a "keyboard" glyph while the
+			    picker is open so the affordance reads as "go back to
+			    typing", matching what tapping it will do. Disabled
+			    while audio recording / image preview to match the
+			    TextInput's `editable` state.
+
+			    height: 44 matches `chatLeftActionsContainer` (the
+			    style used for the left-actions slot) so the smiley's
+			    box is the same vertical extent as the TextInput's
+			    iOS-padded row. Without an explicit height the icon's
+			    intrinsic 36px box was shorter than the TextInput's
+			    44px on iOS — alignItems:'center' on the row centers
+			    each child individually, so the icon ended up
+			    visually lower than the right-side mic/send (which
+			    sit at the toolbar's true baseline). With matched
+			    heights, both halves of the composer share the same
+			    box and align cleanly on iOS and Android. */}
+			{/* Smiley is hidden entirely during audio recording or
+			    while the recording-preview is on screen — there's
+			    nothing to type into during those phases (composer is
+			    `editable={false}`) and the picker would just take up
+			    the whole sheet under a non-functional toggle. The
+			    earlier render kept the icon disabled+dimmed; users
+			    read that as a broken control rather than a contextual
+			    hide, so collapse it to null in those states. */}
+			{(this.state.isAudioRecording || !!this.state.recordingFile) ? null : (
+			<TouchableOpacity
+			  onPress={this.toggleEmojiPicker}
+			  style={{
+				width: 40,
+				height: 44,
+				justifyContent: 'center',
+				alignItems: 'center',
+			  }}
+			  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+			>
+			  <Icon
+			    name={this.state.emojiPickerVisible ? 'keyboard-outline' : 'emoticon-happy-outline'}
+			    size={24}
+			    color="#666"
+			  />
+			</TouchableOpacity>
+			)}
 			<TextInput
 			  ref={(r) => (this.textInputRef = r)}
 			  editable={!this.state.isAudioRecording && !this.state.recordingFile}
 			  style={{
+				flex: 1,
 				fontSize: 16,
 				borderWidth: 0,
 				paddingVertical: Platform.OS === 'ios' ? 12 : 10,
@@ -1045,6 +1285,11 @@ class ContactsListBox extends Component {
 			  // on the same baseline as the Delete and Send icons in
 			  // the input toolbar (the row uses alignItems: 'center').
 			  textAlignVertical="center"
+			  // Tapping the field means the user wants to type — bring
+			  // up the keyboard, hide the emoji picker. Without this
+			  // the keyboard would open ON TOP of the still-visible
+			  // picker and they'd briefly stack.
+			  onFocus={this.closeEmojiPicker}
 			/>
 		  </View>
 		</View>
@@ -1122,12 +1367,28 @@ class ContactsListBox extends Component {
 		);
 	  } else {
 
-		if (this.state.playing) {	
+		if (this.state.playing) {
 		  return <View />;
 		}
-	
+
 		let showButtons = !this.state.texting && !this.state.replyingTo && !this.state.isAudioRecording && !this.state.recordingFile;
-		
+
+		// WhatsApp-style send/mic swap:
+		//  * Composer has text (or replying)  → render the send arrow.
+		//    The send arrow is the GiftedChat <Send> child, so tapping
+		//    it dispatches the same onSend pipeline as before.
+		//  * Composer is empty (idle)         → render a microphone in
+		//    the same slot. Tapping it kicks off audio recording via
+		//    this.props.recordAudio (the same handler the old left
+		//    button used). NOT wrapped in <Send> because we don't
+		//    want a stray tap to send an empty message — the mic is
+		//    its own action.
+		// Active recording + recordingFile cases are handled by the
+		// earlier branches at the top of renderSend.
+		const showSendArrow = this.state.texting || !!this.state.replyingTo;
+		const showMic = !showSendArrow && !this.state.isAudioRecording && !this.state.recordingFile;
+		const sendColor = this.state.texting ? '#2196F3' : 'gray';
+
 		return (
 		  <Send
 			{...props}
@@ -1149,7 +1410,7 @@ class ContactsListBox extends Component {
 				  />
 				</TouchableOpacity>
 			  )}
-	
+
 			  {showButtons && !disableAttachments && (
 				<TouchableOpacity onPress={this.launchImageLibrary} onLongPress={this._pickDocument}>
 				  <Icon
@@ -1162,16 +1423,28 @@ class ContactsListBox extends Component {
 				</TouchableOpacity>
 			  )}
 
-              {!this.state.isAudioRecording && (
-			  <Icon
-				type="font-awesome"
-				name="send"
-				style={styles.chatSendArrow}
-				size={20}
-				color='gray'
-			  />
+			  {showSendArrow && (
+				<Icon
+				  type="font-awesome"
+				  name="send"
+				  style={styles.chatSendArrow}
+				  size={20}
+				  color={sendColor}
+				/>
 			  )}
-			  
+
+			  {showMic && (
+				<TouchableOpacity onPress={this.props.recordAudio}>
+				  <Icon
+					type="font-awesome"
+					name="microphone"
+					style={styles.chatSendArrow}
+					size={22}
+					color="green"
+				  />
+				</TouchableOpacity>
+			  )}
+
 			</View>
 		  </Send>
 		);
@@ -1326,8 +1599,75 @@ class ContactsListBox extends Component {
 		}
     }
 
+	/** Start the synthetic VU-meter ticker that drives the call-recording
+	 *  bubble's stereo meter pair while a clip is playing. Runs at 10 Hz
+	 *  and writes a smoothed random walk into `audioBubbleVu`. The
+	 *  bubble subscribes to that state via render().
+	 *
+	 *  This is deliberately synthetic for now — `react-native-audio-
+	 *  recorder-player` doesn't expose playback amplitude. To turn it
+	 *  into a *real* VU meter, have SylkCallRecorder.java track per-
+	 *  100ms peak per channel during writerLoop, ship the resulting
+	 *  pair of arrays in message.metadata.peaks, and replace the random
+	 *  draw below with `peaks.local[idx]` / `peaks.remote[idx]` where
+	 *  idx is derived from the current playback position. The smoothing
+	 *  envelope can stay either way — softens any granularity. */
+	_startAudioBubbleVuTicker() {
+		if (this._audioBubbleVuInterval) return;
+		this._audioBubbleVuInterval = setInterval(() => {
+			if (this.ended) return;
+			// Speech-like envelope: bias each channel below 0.5, with
+			// occasional bursts. Conversation alternation handled by a
+			// slow-moving balance term that biases one side at a time
+			// (so visually it feels like turn-taking rather than both
+			// parties shouting simultaneously).
+			const t = Date.now() / 1000;
+			const balance = Math.sin(t * 0.45);              // -1..+1 over ~14s
+			const drawL = Math.random() * (balance > 0 ? 0.35 : 0.85);
+			const drawR = Math.random() * (balance > 0 ? 0.85 : 0.35);
+			const prev = this.state.audioBubbleVu || { local: 0, remote: 0 };
+			// Same fast-attack / slow-release smoothing the live call
+			// meter uses — feels consistent across the two surfaces.
+			const smooth = (s, raw) => raw > s ? raw : (s * 0.75 + raw * 0.25);
+			const next = {
+				local : smooth(prev.local,  drawL),
+				remote: smooth(prev.remote, drawR),
+			};
+			if (Math.abs(next.local - prev.local) > 0.01
+			 || Math.abs(next.remote - prev.remote) > 0.01) {
+				this.setState({ audioBubbleVu: next });
+			}
+		}, 100);
+	}
+
+	/** Stop the synthetic VU ticker and zero the levels so the bubble
+	 *  meters collapse the moment playback ends. Idempotent. */
+	_stopAudioBubbleVuTicker() {
+		if (this._audioBubbleVuInterval) {
+			clearInterval(this._audioBubbleVuInterval);
+			this._audioBubbleVuInterval = null;
+		}
+		const prev = this.state.audioBubbleVu;
+		if (prev && (prev.local !== 0 || prev.remote !== 0)) {
+			this.setState({ audioBubbleVu: { local: 0, remote: 0 } });
+		}
+	}
+
 	async startAudioPlayer(message) {
 		const id = message._id;
+
+		// Support-log line for playback start. Greppable as [applog]
+		// ... [audio] start ...; useful when chasing "I tapped play
+		// but nothing happened" reports.
+		try {
+			const _md = (message && message.metadata) || {};
+			const _kind = _md.call_recording === true ? 'call_recording' : 'voice_msg';
+			utils.timestampedLog('[audio] start', _kind,
+				'_id=', message._id,
+				'tid=', _md.transfer_id,
+				'audio=', message.audio,
+				'direction=', message.direction);
+		} catch (_e) {}
 
 		// Send IMDN "displayed" FIRST — before any other work — the moment
 		// the recipient presses Play. Doing this before stopAudioPlayer() and
@@ -1377,6 +1717,20 @@ class ContactsListBox extends Component {
 			},
 		});
 
+		// Kick off the bubble VU-meter ticker only for call recordings
+		// that DON'T have real peaks shipped with them. When peaks are
+		// present the meter is driven directly from the playback
+		// listener (positionMs → peaks index) so a synthetic ticker
+		// would just be wasted setState churn.
+		const _md = message.metadata || {};
+		const _hasPeaks = _md.peaks
+		    && Array.isArray(_md.peaks.l)
+		    && Array.isArray(_md.peaks.r)
+		    && _md.peaks.l.length > 0;
+		if (_md.call_recording === true && !_hasPeaks) {
+			this._startAudioBubbleVuTicker();
+		}
+
 		// iOS playback engine fork. AVAudioPlayer (used by
 		// audioRecorderPlayer on iOS) accepts but doesn't decode certain
 		// MP3 variants (notably VBR Sony recorder output). AVPlayer via
@@ -1413,14 +1767,6 @@ class ContactsListBox extends Component {
 		const path = message.audio.startsWith('file://') ? message.audio : 'file://' + message.audio;
 
 		try {
-		    /*
-			if (Platform.OS === 'android') {
-			    this.previousAudioMode = await AudioRouteModule.getAudioMode();
-			    console.log('Previous audio mode', this.previousAudioMode);
-			    await AudioRouteModule.setAudioMode(0); // MODE_NORMAL
-			}
-			*/
-
 			await audioRecorderPlayer.startPlayer(path);
 
 			// Silence-on-resume seek. If the user scrubbed the slider
@@ -1537,6 +1883,8 @@ class ContactsListBox extends Component {
 						  metadata: message.metadata,
 						  duration: audioRecorderPlayer.mmssss(duration),
 						  position: seekPct,
+						  positionMs: Math.floor(seekPosition),
+						  durationMs: duration,
 						},
 					});
 					// Reset the wall-clock baseline using how much of the
@@ -1596,6 +1944,11 @@ class ContactsListBox extends Component {
 						  metadata: message.metadata,
 						  duration: audioRecorderPlayer.mmssss(duration),
 						  position: percentage,
+						  // positionMs lets the bubble VU meter index
+						  // peaks at native 100ms granularity instead
+						  // of being quantised to whole-percent jumps.
+						  positionMs: current,
+						  durationMs: duration,
 						},
 					  },
 					  () => {
@@ -1609,6 +1962,8 @@ class ContactsListBox extends Component {
 						  metadata: message.metadata,
 						  duration: audioRecorderPlayer.mmssss(duration),
 						  position: percentage,
+						  positionMs: current,
+						  durationMs: duration,
 						}});
 				}
 			});
@@ -1654,11 +2009,79 @@ class ContactsListBox extends Component {
 		// metadata.position when Play is pressed.
 		const pct = Math.max(0, Math.min(100, Math.round(percentage)));
 		message.metadata.position = pct;
+		// Mirror onto message.position too so the slider's progress prop
+		// (which the bubble reads via currentMessage.position) reflects
+		// the released-to value on the very next render — without this
+		// the slider visually snaps back to the pre-drag position for
+		// one frame while updateFileTransferMetadata's parent setState
+		// propagates.
+		message.position = pct;
 		this.props.updateFileTransferMetadata(message.metadata, 'position', pct);
+		// Drag committed — clear the scrub state so the waveforms fall
+		// back to reading currentMessage.position (which is now pct).
+		if (this.state.audioBubbleScrub) {
+			this.setState({ audioBubbleScrub: null });
+		}
+	}
+
+	/** Called by AudioProgressSlider via onSeekChange every move event
+	 *  while the user is dragging. Mirrors the live drag percentage
+	 *  into audioBubbleScrub so the bubble's two waveforms re-render
+	 *  with their played/unplayed boundary tracking the slider needle
+	 *  in real time. Skipped for non-call-recording bubbles.
+	 *
+	 *  We ALSO mutate the target message's `position` field and rebuild
+	 *  the renderMessages array with a fresh reference for that one
+	 *  message — and a fresh array reference overall. This is what
+	 *  actually drives the bubble re-render: GiftedChat's MessageContainer
+	 *  is a PureComponent and the underlying FlatList only flushes its
+	 *  cached row elements when the message item it caches changes
+	 *  identity. extraData on listViewProps isn't enough on its own
+	 *  here. Mutating .position is fine because it's not persisted
+	 *  until seekAudioMessage runs on release.
+	 */
+	onAudioBubbleScrubChange(message, percentage) {
+		const md = message && message.metadata;
+		if (!md || md.call_recording !== true) return;
+		const tid = md.transfer_id;
+		if (!tid) return;
+		const pct = Math.max(0, Math.min(100, Math.round(percentage)));
+		const prev = this.state.audioBubbleScrub;
+		if (prev && prev.transferId === tid && prev.pct === pct) return;
+		// Clone the target message in renderMessages with fresh refs
+		// (top-level + .metadata) so FlatList's row cache invalidates
+		// for THIS bubble specifically; other rows keep their refs and
+		// don't re-render.
+		const oldRender = this.state.renderMessages || [];
+		let touched = false;
+		const newRender = oldRender.map((m) => {
+			if (!m || !m.metadata || m.metadata.transfer_id !== tid) return m;
+			touched = true;
+			return {
+				...m,
+				position: pct,
+				metadata: { ...m.metadata, position: pct },
+			};
+		});
+		const stateUpdate = { audioBubbleScrub: { transferId: tid, pct } };
+		if (touched) stateUpdate.renderMessages = newRender;
+		this.setState(stateUpdate);
 	}
 	
     async stopAudioPlayer() {
-		//console.log('stopAudioPlayer', this.state.audioRecordingStatus);
+		// Support-log line for playback stop. Greppable as [applog]
+		// ... [audio] stop ...; pairs with the [audio] start line so a
+		// playback session shows up as a clean start/stop pair in the
+		// support log.
+		try {
+			const _stMd = (this.state.audioRecordingStatus && this.state.audioRecordingStatus.metadata) || {};
+			const _msg = this.currentAudioMessage || {};
+			const _kind = (_stMd.call_recording === true) ? 'call_recording' : 'voice_msg';
+			utils.timestampedLog('[audio] stop', _kind,
+				'_id=', _msg._id,
+				'tid=', _stMd.transfer_id,
+				'pos=', this.state.audioRecordingStatus && this.state.audioRecordingStatus.position);
+		} catch (_e) {}
 
 		// On Android the player is audioRecorderPlayer. On iOS we drive
 		// the hidden <Video audioOnly> via state — calling stopPlayer
@@ -1667,15 +2090,9 @@ class ContactsListBox extends Component {
 		// platform/session can't keep emitting.
 		try { audioRecorderPlayer.stopPlayer(); } catch (e) { /* ignore */ }
 		try { audioRecorderPlayer.removePlayBackListener(); } catch (e) { /* ignore */ }
-
-		/*
-		if (Platform.OS === 'android') {
-			if (this.previousAudioMode !== null) {
-			    console.log('Reset aduio mode', this.previousAudioMode);
-				await AudioRouteModule.setAudioMode(previousMode);
-			}
-		}
-		*/
+		// Tear down the bubble VU ticker and zero the meters — the
+		// instant playback ends, the bars collapse cleanly.
+		this._stopAudioBubbleVuTicker();
 
 		this.props.stopAudioPlayerFunc();
 
@@ -1969,6 +2386,13 @@ class ContactsListBox extends Component {
     }
     
     onSendMessage(messages) {
+		// Close the emoji picker on send. Otherwise the picker stays
+		// open after the message disappears from the composer, which
+		// looks weird (the user is "done" with this message but the
+		// picker is still occupying the bottom of the chat).
+		if (this.state.emojiPickerVisible) {
+			this.setState({ emojiPickerVisible: false });
+		}
 		const uri = this.state.selectedContact.uri;
 		if (this.state.sharingMessages.length > 0) {
 			this.sharePendingFiles()
@@ -2341,6 +2765,11 @@ class ContactsListBox extends Component {
 		this.getAudioDuration(currentMessage.audio, currentMessage._id);
 	  }
 
+	  // [audio-debug] Render-time snapshot — DISABLED. Re-enable when
+	  // diagnosing playback UI issues (play↔pause toggle stuck, slider
+	  // not advancing, isCurrent mismatch). Logs kind, transfer_id,
+	  // audio path, msg.playing, status.tid + status.pos, isCurrent.
+
 	  // Format raw seconds as "1h 6m 40s" / "23m 14s" / "45s" so a 1394s clip
 	  // reads as "Recording of 23m 14s" instead of "Recording of 1394s".
 	  const formatAudioDuration = (totalSeconds) => {
@@ -2376,6 +2805,52 @@ class ContactsListBox extends Component {
 		  isPlaying = false;
 	  }
 
+	  // Bubble VU meter source. When the recording's metadata carries
+	  // real per-100ms peaks (computed by SylkCallRecorder during the
+	  // writer loop and shipped via file_transfer.peaks), the meter is
+	  // a pure function of playback position — so it can stay visible
+	  // and track scrubs in real time even while paused. Without peaks
+	  // we fall back to the synthetic ticker (only active during
+	  // actual playback, since there's no position-→-level mapping).
+	  let bubbleVu = { local: 0, remote: 0 };
+	  const peaksMeta = currentMessage.metadata && currentMessage.metadata.peaks;
+	  const haveRealPeaks = peaksMeta
+	      && Array.isArray(peaksMeta.l)
+	      && Array.isArray(peaksMeta.r)
+	      && peaksMeta.l.length > 0;
+	  if (haveRealPeaks) {
+	      // Position priority: live playback tick > saved %.
+	      // Always exact-index lookup — the meter shows the actual
+	      // amplitude at the current position, both during playback
+	      // (10 Hz from positionMs) and at rest (saved percent). Pause
+	      // = stopped at saved position, so the bars freeze at exactly
+	      // peaks[idx] for that position. No windowing — the user
+	      // wants the value at the index, not a regional max.
+	      const lenL = peaksMeta.l.length;
+	      const lenR = peaksMeta.r.length;
+	      let frac = 0;
+	      if (isCurrent
+	              && isPlaying
+	              && typeof status?.positionMs === 'number'
+	              && typeof status?.durationMs === 'number'
+	              && status.durationMs > 0) {
+	          frac = status.positionMs / status.durationMs;
+	      } else {
+	          frac = (position || 0) / 100;
+	      }
+	      if (frac < 0) frac = 0;
+	      if (frac > 1) frac = 1;
+	      const idxL = Math.min(lenL - 1, Math.floor(frac * lenL));
+	      const idxR = Math.min(lenR - 1, Math.floor(frac * lenR));
+	      bubbleVu = {
+	          local : (peaksMeta.l[idxL] || 0) / 255,
+	          remote: (peaksMeta.r[idxR] || 0) / 255,
+	      };
+	  } else if (isCurrent && isPlaying) {
+	      // No peaks → synthetic ticker drives the bars.
+	      bubbleVu = this.state.audioBubbleVu || bubbleVu;
+	  }
+
 	  // Compute a slider width that fits within the audio bubble while
 	  // leaving room for the play/pause button and the same side margins
 	  // GiftedChat applies to other bubbles (avatar gutter, bubble padding,
@@ -2400,7 +2875,14 @@ class ContactsListBox extends Component {
 		  style={[
 			styles.roundshape,
 			isIncoming ? {marginLeft: 10} : {marginRight: 10},
-			{marginTop: 0},
+			// Pin the play button to the bottom of the bubble row so
+			// it sits at the same vertical level as the slider (the
+			// last element in the label/waveforms/slider column).
+			// Without this, the row's alignItems: 'center' would
+			// vertically centre the button against the whole stack
+			// and the button would float well above the slider it
+			// controls.
+			{ marginTop: 0, alignSelf: 'flex-end' },
 		  ]}>
 		  <IconButton
 			size={28}
@@ -2440,17 +2922,91 @@ class ContactsListBox extends Component {
 			>
 			  {durationLabel}
 			</Text>
+			{/* Two separate amplitude waveforms — Remote on top, Local
+			    underneath — each rendered as bars-from-baseline so
+			    the user can read each side of the conversation
+			    independently. VU meters live on the in-call screen
+			    only; in the bubble we let the static peaks tell the
+			    story instead. If metadata.peaks is missing, each
+			    AudioWaveform draws a flat dim baseline so you can
+			    tell it's the data that's missing (not the layout).
+			    progress prefers the live scrub value when this bubble
+			    is being dragged so the waveforms' played/unplayed
+			    boundary tracks the slider needle in real time. */}
+			{(() => {
+			    const md = currentMessage.metadata;
+			    if (!md) return null;
+			    // Render the waveforms whenever the message carries
+			    // peaks data, regardless of whether it was tagged as
+			    // a call_recording. This means a forwarded recording
+			    // (which has the call_recording flag stripped on the
+			    // sender's side so it ships as a regular file
+			    // transfer) still draws the same Remote/Local waves
+			    // on the recipient's bubble — they see the same
+			    // audio shape the original sender sees.
+			    const hasL = md.peaks
+			        && Array.isArray(md.peaks.l)
+			        && md.peaks.l.length > 0;
+			    const hasR = md.peaks
+			        && Array.isArray(md.peaks.r)
+			        && md.peaks.r.length > 0;
+			    if (!hasL && !hasR) return null;
+			    const sc = this.state.audioBubbleScrub;
+			    const isScrubbingThis = !!(sc && sc.transferId === md.transfer_id);
+			    const wfProgress = isScrubbingThis ? sc.pct : position;
+			    // Voice-memo case: only the local mic was captured
+			    // (peaks.r is empty), so render a single channel
+			    // without the "Local" label — it's not a multi-leg
+			    // call where the label adds meaning.
+			    const stereo = hasL && hasR;
+			    return (
+			        <React.Fragment>
+			            {hasR ? (
+			                <AudioWaveform
+			                    peaks={md.peaks}
+			                    progress={wfProgress}
+			                    width={sliderWidth}
+			                    height={28}
+			                    barCount={60}
+			                    channel="r"
+			                    label={stereo ? 'Remote' : null}
+			                    playedColor="#3498db"
+			                    unplayedColor="rgba(52, 152, 219, 0.25)"
+			                />
+			            ) : null}
+			            {hasL ? (
+			                <AudioWaveform
+			                    peaks={md.peaks}
+			                    progress={wfProgress}
+			                    width={sliderWidth}
+			                    height={28}
+			                    barCount={60}
+			                    channel="l"
+			                    label={stereo ? 'Local' : null}
+			                    playedColor="#2ecc71"
+			                    unplayedColor="rgba(46, 204, 113, 0.25)"
+			                />
+			            ) : null}
+			        </React.Fragment>
+			    );
+			})()}
+			{/* Slider sits at the bottom of the bubble — under the
+			    waveform and the two VU meters — so the visual stack
+			    reads top-down as: label → recording shape → live
+			    levels → playback control. Same width/edge alignment
+			    as the elements above, so the column stays flush. */}
 			<AudioProgressSlider
 			  progress={position}
 			  width={sliderWidth}
 			  height={4}
 			  knobWidth={6}
 			  knobHeight={20}
-			  color={"orange"}
-			  unfilledColor="rgba(255,255,255,0.4)"
-			  knobColor={"orange"}
+			  color={"#ffffff"}
+			  unfilledColor="rgba(255,255,255,0.3)"
+			  knobColor={"#ffffff"}
 			  onSeekStart={() => this.pauseAudioForScrub(currentMessage)}
 			  onSeek={(pct) => this.seekAudioMessage(currentMessage, pct)}
+			  onSeekChange={(pct) => this.onAudioBubbleScrubChange(currentMessage, pct)}
 			/>
 		  </View>
 
@@ -2802,6 +3358,45 @@ class ContactsListBox extends Component {
         );
     }
 
+    // Support-log detection helper — used by the body-tap, the long-press
+    // "Open" action, and the explicit pressFileBubble fallback below. Any
+    // file_transfer whose filename matches one of these patterns is a
+    // support log capture and should reopen in LogsModal, not FileViewer.
+    _isSupportLogTransfer = (file_transfer) => {
+        if (!file_transfer || !file_transfer.filename) return false;
+        const fn = file_transfer.filename.replace(/\.asc$/, '');
+        // Optional `-<username>` suffix added in the share path so support
+        // can identify whose logs without opening the file. The username
+        // slug is restricted to [a-zA-Z0-9._-] (sanitized at write time).
+        return /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-sylk-logs(-[\w.-]+)?\.txt$/.test(fn) // current YYYY-MM-DD_HH-MM-SS[-username]
+            || /^\d{8}-\d{6}-sylk-logs(-[\w.-]+)?\.txt$/.test(fn)                         // legacy YYYYMMDD-HHMMSS[-username]
+            || /^sylk-logs-[\w.\-:]+\.txt$/i.test(fn)
+            || /^sylk-logs\.txt$/i.test(fn)
+            || /sylk[_-]?logs?/i.test(fn);
+    }
+
+    _routeSupportLogTap = (file_transfer) => {
+        // True if we routed to the LogsModal; false if the caller should
+        // fall back to its normal behaviour.
+        if (!this._isSupportLogTransfer(file_transfer)) return false;
+        if (typeof this.props.openLogAttachment !== 'function') return false;
+        let _path = file_transfer.local_url || '';
+        // Strip a trailing .asc only if a sibling decrypted file exists —
+        // we can't read PGP-armored bytes as plain text. If the file is
+        // still encrypted with no decrypted twin, fall through and let
+        // the normal flow trigger decryption first; the next tap will
+        // reach this routing.
+        if (_path.endsWith('.asc')) return false;
+        if (!_path) return false;
+        const _ownerUri = file_transfer.sender && file_transfer.sender.uri;
+        console.log('[support-share] routing support-log tap to LogsModal',
+            'filename=', file_transfer.filename,
+            'path=', _path,
+            'ownerUri=', _ownerUri);
+        this.props.openLogAttachment(_path, _ownerUri);
+        return true;
+    }
+
     onMessagePress(context, message) {
         if (message.metadata && message.metadata.preview) {
 			return;
@@ -2819,6 +3414,17 @@ class ContactsListBox extends Component {
 
         if (message.metadata && message.metadata.filename) {
             let file_transfer = message.metadata;
+            // Earliest-possible support-log shortcut: if the filename
+            // matches our YYYY-MM-DD_HH-MM-SS-sylk-logs.txt (or legacy
+            // YYYYMMDD-HHMMSS / sylk-logs-*) pattern AND the local file is already
+            // decrypted on disk, skip the rest of the open/decrypt
+            // dance and route straight into the LogsModal. Only the
+            // sender side hits this on first tap (their local copy is
+            // plaintext); the receiver side hits it on the SECOND tap
+            // (after decryption strips the .asc from local_url).
+            if (this._routeSupportLogTap(file_transfer)) {
+                return;
+            }
             if (!file_transfer.local_url) {
 				if (!file_transfer.path) {
 					console.log('File not yet downloaded');
@@ -2883,6 +3489,49 @@ class ContactsListBox extends Component {
             return;
         }
 
+        // Recognise our own support-log attachment filenames and reopen
+        // the LogsModal pointing at the file's contents instead of
+        // handing off to the OS file viewer. That way the user gets the
+        // same filter pills, font controls and tag scanner they have
+        // on the live log, but on a snapshot file. Strip a trailing
+        // .asc on the bare filename too — encrypted attachments live
+        // on disk as <name>.asc until the bubble decryption renames
+        // them.
+        //
+        // Multiple patterns are accepted so logs sent by older app
+        // versions still open inline:
+        //   - YYYY-MM-DD_HH-MM-SS-sylk-logs[-<username>].txt (current format,
+        //     username appended so support can identify the requester)
+        //   - YYYYMMDD-HHMMSS-sylk-logs.txt     (previous format, still in chats)
+        //   - sylk-logs-<ISO timestamp>.txt     (e.g. sylk-logs-2026-05-04T16-40-52-177Z.txt — pre-rename)
+        //   - sylk-logs-*.txt / sylk-logs.txt   (catch-all for any other sylk-logs* variant)
+        // Order matters only for clarity; any one matching is enough.
+        const _filename = (file_transfer.filename || '').replace(/\.asc$/, '');
+        const _supportLogPatterns = [
+            /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-sylk-logs(-[\w.-]+)?\.txt$/, // YYYY-MM-DD_HH-MM-SS-sylk-logs[-username].txt (current)
+            /^\d{8}-\d{6}-sylk-logs(-[\w.-]+)?\.txt$/,    // YYYYMMDD-HHMMSS-sylk-logs[-username].txt (legacy)
+            /^sylk-logs-[\w.\-:]+\.txt$/i,     // legacy ISO-timestamp variant
+            /^sylk-logs\.txt$/i,               // bare fallback name
+            /sylk[_-]?logs?/i,                 // catch-all: any filename containing "sylk-logs", "sylk_logs", "sylklog", etc.
+        ];
+        const isSupportLog = _supportLogPatterns.some((re) => re.test(_filename));
+        console.log('[support-share] openFile detection',
+            'filename=', file_transfer.filename,
+            '_filename=', _filename,
+            'isSupportLog=', isSupportLog,
+            'hasOpenLogAttachment=', typeof this.props.openLogAttachment === 'function');
+        if (isSupportLog && typeof this.props.openLogAttachment === 'function') {
+            // The "log owner" — whose device produced these logs — is
+            // the file_transfer's sender. Pass it along so the modal
+            // can show it as the subtitle. For an outgoing bubble
+            // (user shared their own logs to support), this is the
+            // user's own URI; for an incoming bubble (e.g. support
+            // viewing a user's logs), it's the peer's URI.
+            const ownerUri = file_transfer.sender && file_transfer.sender.uri;
+            this.props.openLogAttachment(file_path, ownerUri);
+            return;
+        }
+
         RNFS.exists(file_path).then((exists) => {
             if (exists) {
                 FileViewer.open(file_path, { showOpenWithDialog: true })
@@ -2911,6 +3560,46 @@ class ContactsListBox extends Component {
             currentMessage.metadata = {};
         }
 
+        // Diagnostic dump for the "Meet me there..." parser. Logs
+        // (a) the bubble's contentType so we know which branch the
+        // long-press will take, (b) a 200-char snippet of the body
+        // (text first, falling back to html), (c) the result of
+        // parseSharedLocationUrl on that body. The most common reason
+        // "Meet me there..." doesn't appear on a Google-Maps-link
+        // message is that the body uses a URL shape we don't
+        // recognise yet (e.g. shortened maps.app.goo.gl, or an
+        // unusual query-param order). The snippet + parse result
+        // gives us everything we need to extend the regex set in one
+        // round-trip. APPLOG'd so it lands in the on-device log file
+        // (Show logs / "Support needed…") rather than the dev console.
+        try {
+            const _bodyForParse = currentMessage.text || currentMessage.html || '';
+            const _snippet = String(_bodyForParse).slice(0, 200);
+            const _parsed = utils.parseSharedLocationUrl(_bodyForParse);
+            // Also probe the broader extractLocationLink so we can
+            // see when the short-URL recogniser kicks in even though
+            // parseSharedLocationUrl returned null.
+            const _link = utils.extractLocationLink(_bodyForParse);
+            const _linkDesc = _link
+                ? (_link.type === 'direct'
+                    ? ('direct ' + _link.coords.latitude.toFixed(5) + ',' + _link.coords.longitude.toFixed(5))
+                    : ('short ' + _link.url))
+                : 'null';
+            /*
+            utils.timestampedLog('[location] long-press diag —',
+                'contentType=', currentMessage.contentType || '(none)',
+                'parseResult=', _parsed
+                    ? (_parsed.latitude.toFixed(5) + ',' + _parsed.longitude.toFixed(5))
+                    : 'null',
+                'extractLink=', _linkDesc,
+                'canSend=', this.props.canSend && this.props.canSend(),
+                'body[0..200]=', JSON.stringify(_snippet));
+                */
+        } catch (e) {
+            console.log('[location] long-press diag failed',
+                e && e.message ? e.message : e);
+        }
+
         // Live-location messages are a different beast from text/file
         // messages: they carry no user-authored body, their content updates
         // in place (each tick rewrites the bubble), and they expire on a
@@ -2925,9 +3614,12 @@ class ContactsListBox extends Component {
 
         // An incoming "Until we meet" meeting-request bubble: an incoming
         // live-location bubble whose metadata carries meeting_request:true.
-        // We show an "Accept meeting request" option only if the request
+        // We show a "Show meeting request..." option only if the request
         // hasn't already been accepted on this device and hasn't expired —
-        // the predicate is supplied by app.js as a prop.
+        // the predicate is supplied by app.js as a prop. Tapping the
+        // option re-opens the full Accept modal (destination preview +
+        // privacy slider + disclosure) rather than accepting immediately;
+        // the trailing ellipsis hints that further input is required.
         const mdForMeeting = currentMessage.metadata || {};
         const meetingReqId =
             (isLiveLocation
@@ -2968,8 +3660,44 @@ class ContactsListBox extends Component {
             // the modal, tapping the bubble's kebab is now their only way
             // back into the acceptance flow.
             if (canAcceptMeeting) {
-                options.push('Accept meeting request');
+                options.push('Show meeting request...');
                 icons.push(<Icon name="handshake" size={20} />);
+            }
+
+            // "Meet me there..." — surfaces only on text-message bubbles
+            // whose body contains a parseable Google Maps link (or geo:
+            // URI). Tapping it opens ShareLocationModal pre-tuned to
+            // the meet-up flow with the parsed coordinates as the
+            // shared destination, so once the peer accepts, the meet
+            // bubble shows all three pins (own / peer / destination).
+            // Same code path the meet-up simulator uses, just driven
+            // by an explicit user-supplied destination instead of an
+            // ad-hoc midpoint.
+            //
+            // Gated on:
+            //   • not a live-location bubble (those have their own
+            //     destination semantics already)
+            //   • currentMessage.text contains a parseable URL — falls
+            //     out cleanly when the body is a regular chat message
+            //     with no map link (parseSharedLocationUrl returns null)
+            //   • the contact is share-able (hasn't been blocked etc.)
+            //     — leverages the same canSend gate as Reply so we
+            //     don't offer an action that can't fire.
+            // extractLocationLink returns either {type: 'direct',
+            // coords} or {type: 'short', url} (or null). Surface "Meet
+            // me there..." for both — for a shortened URL we'll fetch
+            // and resolve on tap (see the action handler below). This
+            // keeps the menu reactive (no async work in render) while
+            // still working for `maps.app.goo.gl/<id>` links that need
+            // a network round-trip to expand.
+            const _meetLink = !isLiveLocation
+                ? utils.extractLocationLink(currentMessage.text || currentMessage.html || '')
+                : null;
+            if (_meetLink
+                    && this.props.canSend
+                    && this.props.canSend()) {
+                options.push('Meet me there...');
+                icons.push(<Icon name="map-marker-account" size={20} />);
             }
 
             //if (currentMessage.direction == 'incoming' && !this.hideItem) {
@@ -3216,24 +3944,42 @@ class ContactsListBox extends Component {
                 let action = options[buttonIndex];
                 if (action === 'Cancel') {
                     this.setState({actionSheetDisplayed: false});
-                } else if (action === 'Accept meeting request') {
-                    // Re-enter the acceptance flow from outside the modal.
-                    // app.js owns the guards (already-accepted / expired /
-                    // NavigationBar-not-ready) so we just forward the args.
-                    console.log('[meeting] kebab: Accept meeting request tapped',
+                } else if (action === 'Show meeting request...') {
+                    // Open the FULL Accept modal (destination preview,
+                    // privacy slider, disclosure, "Do not show this
+                    // again" checkbox) rather than accepting the
+                    // request directly. The modal's own Accept button
+                    // routes through `acceptMeetingRequest` with the
+                    // user's chosen privacy radius. Without this
+                    // re-direction, kebab acceptance would skip the
+                    // slider entirely and the user would have no way
+                    // to pick a privacy radius after dismissing the
+                    // initial auto-popped modal.
+                    console.log('[meeting] kebab: Show meeting request tapped — opening modal',
                         'fromUri=', meetingFromUri,
                         'requestId=', meetingReqId,
                         'expiresAt=', meetingExpiresAt,
-                        'hasHandler=', typeof this.props.acceptMeetingRequest === 'function');
+                        'hasPromptHandler=', typeof this.props.promptMeetingRequest === 'function',
+                        'hasAcceptHandler=', typeof this.props.acceptMeetingRequest === 'function');
                     this.setState({actionSheetDisplayed: false});
-                    if (typeof this.props.acceptMeetingRequest === 'function') {
+                    if (typeof this.props.promptMeetingRequest === 'function') {
+                        this.props.promptMeetingRequest({
+                            fromUri: meetingFromUri,
+                            requestId: meetingReqId,
+                            expiresAt: meetingExpiresAt,
+                        });
+                    } else if (typeof this.props.acceptMeetingRequest === 'function') {
+                        // Fallback for older app.js builds that don't
+                        // expose promptMeetingRequest. Accept directly
+                        // with no slider — same behaviour as before
+                        // the modal-route change.
                         this.props.acceptMeetingRequest({
                             fromUri: meetingFromUri,
                             requestId: meetingReqId,
                             expiresAt: meetingExpiresAt,
                         });
                     } else {
-                        console.warn('[meeting] kebab: acceptMeetingRequest prop missing!');
+                        console.warn('[meeting] kebab: no acceptance handler wired');
                     }
                 } else if (action === 'Copy') {
                     // Location bubbles carry a stringified JSON metadata blob
@@ -3353,6 +4099,27 @@ class ContactsListBox extends Component {
                         console.log('[location] kebab share: no coords on bubble',
                             currentMessage._id);
                     }
+                } else if (action === 'Meet me there...') {
+                    // Hand the LINK descriptor (not yet-resolved coords)
+                    // to NavigationBar.meetMeAt — it opens the share
+                    // panel immediately and resolves any short URL in
+                    // the background while the user is picking a
+                    // duration. Avoids an awkward "tap → silence →
+                    // panel pops" gap on slow networks.
+                    const _link = utils.extractLocationLink(
+                        currentMessage.text || currentMessage.html || '');
+                    this.setState({actionSheetDisplayed: false});
+                    if (!_link || typeof this.props.meetMeAt !== 'function') {
+                        console.log('[location] kebab: Meet me there — no link or no handler',
+                            'hasLink=', !!_link,
+                            'hasHandler=', typeof this.props.meetMeAt === 'function');
+                    } else {
+                        utils.timestampedLog('[location] kebab: Meet me there →',
+                            _link.type, _link.type === 'direct'
+                                ? (_link.coords.latitude.toFixed(5) + ',' + _link.coords.longitude.toFixed(5))
+                                : _link.url);
+                        this.props.meetMeAt(this.state.targetUri, _link);
+                    }
                 } else if (action === 'Full screen') {
                     // Open the location bubble in a full-screen modal.
                     // Mirrors the image-bubble fullscreen pattern below
@@ -3400,6 +4167,26 @@ class ContactsListBox extends Component {
                     console.log('Starting decryption...');
 					this.props.decryptFunc(currentMessage.metadata, true);
                 } else if (action === 'Open') {
+                    // Support-log shortcut: same filename detection as
+                    // openFile() above, applied to the long-press
+                    // contextual-menu "Open" action so that path also
+                    // routes into the LogsModal instead of the OS file
+                    // picker.
+                    const _meta = currentMessage.metadata || {};
+                    const _filename = (_meta.filename || '').replace(/\.asc$/, '');
+                    const _isSupportLog =
+                        /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-sylk-logs(-[\w.-]+)?\.txt$/.test(_filename)
+                        || /^\d{8}-\d{6}-sylk-logs(-[\w.-]+)?\.txt$/.test(_filename)
+                        || /^sylk-logs-[\w.\-:]+\.txt$/i.test(_filename)
+                        || /^sylk-logs\.txt$/i.test(_filename)
+                        || /sylk[_-]?logs?[_-]/i.test(_filename);
+                    if (_isSupportLog && typeof this.props.openLogAttachment === 'function') {
+                        let _path = _meta.local_url || '';
+                        if (_path.endsWith('.asc')) _path = _path.slice(0, -4);
+                        const _ownerUri = _meta.sender && _meta.sender.uri;
+                        this.props.openLogAttachment(_path, _ownerUri);
+                        return;
+                    }
                     FileViewer.open(currentMessage.metadata.local_url, { showOpenWithDialog: true })
                     .then(() => {
                         // success
@@ -3465,7 +4252,51 @@ class ContactsListBox extends Component {
     };
 
     shouldUpdateMessage(props, nextProps) {
-        return true;
+        // Live-location bubbles are lazy-rendered: renderMessageText
+        // returns a lightweight placeholder until the bubble's _id has
+        // been recorded in the sticky renderedMessageIds set (which
+        // gets the id added the first time onViewableItemsChanged
+        // sees it). gifted-chat's Message.shouldComponentUpdate only
+        // watches currentMessage fields, so the placeholder → real
+        // map swap needs an explicit trigger here.
+        // We detect the FIRST-TIME-SEEN transition (false → true) on
+        // renderedMessageIds rather than every visibleMessageIds flip
+        // — once a bubble has been seen it stays seen, and the render
+        // output stops changing, so there's no point in spending a
+        // re-render every time the user scrolls it back into view.
+        // renderedMessageIds is a Set; we forward it as a prop on
+        // GiftedChat so both `props` and `nextProps` carry the
+        // current-and-prior reference for .has() comparison.
+        const cm = (nextProps && nextProps.currentMessage) || (props && props.currentMessage);
+        if (cm && cm.contentType === 'application/sylk-live-location') {
+            const id = cm._id;
+            const prevSeen = !!(props && props.renderedMessageIds
+                && props.renderedMessageIds.has
+                && props.renderedMessageIds.has(id));
+            const nextSeen = !!(nextProps && nextProps.renderedMessageIds
+                && nextProps.renderedMessageIds.has
+                && nextProps.renderedMessageIds.has(id));
+            if (prevSeen !== nextSeen) {
+                return true;
+            }
+        }
+
+        // Audio bubbles: always re-render. Playback state
+        // (playing/position/consumed) flips every tick on the
+        // currently-playing bubble, but gifted-chat's `props` and
+        // `nextProps` here can both already point at the same new
+        // message reference by the time this hook runs — meaning
+        // any prev/next field comparison evaluates to "no change"
+        // and the play↔pause icon stays frozen. Returning true
+        // unconditionally forces gifted-chat's Message to re-render
+        // on every parent update; the cost is small (audio bubbles
+        // are rare in a chat) and React's reconciliation skips
+        // any DOM/native diff if the resulting JSX is identical.
+        const cmAny = (nextProps && nextProps.currentMessage) || (props && props.currentMessage);
+        if (cmAny && cmAny.audio) {
+            return true;
+        }
+        return false;
     }
 
     toggleShareMessageModal() {
@@ -3555,6 +4386,22 @@ class ContactsListBox extends Component {
 	}
 
 	componentDidUpdate(prevProps, prevState) {
+      // External scroll trigger. App.js bumps `chatScrollTrigger`
+      // when an outgoing event (e.g. user just confirmed a Meet me
+      // there share) wants the chat view to scroll to the latest
+      // bubble, regardless of the user's current scroll offset.
+      // We compare against prevProps so a re-render with the same
+      // counter doesn't re-fire the scroll.
+      if (typeof this.props.chatScrollTrigger === 'number'
+              && this.props.chatScrollTrigger !== prevProps.chatScrollTrigger) {
+          // Defer one tick so the new bubble has actually been
+          // committed to the FlatList before we ask it to scroll.
+          setTimeout(() => {
+              try { this.scrollToBottom && this.scrollToBottom(); }
+              catch (e) { /* silent — scroll is best-effort */ }
+          }, 0);
+      }
+
       if (prevState.renderMessages !== this.state.renderMessages) {
 	      //console.log('renderMessages did change', this.state.renderMessages.length);
       }
@@ -3777,7 +4624,7 @@ class ContactsListBox extends Component {
 					// (and the destination chosen for the meet-up)
 					// only appear on the ORIGIN tick — update ticks
 					// don't restamp them. Without this carry-forward
-					// the kebab's "Accept meeting request" option
+					// the kebab's "Show meeting request..." option
 					// disappears the moment the first update tick
 					// lands on the receiver (the gate reads
 					// currentMessage.metadata.meeting_request), even
@@ -4227,8 +5074,140 @@ class ContactsListBox extends Component {
         // messagesMetadata (tick N); fallback to the embedded metadata
         // that was carried on the origin message itself.
         if (currentMessage.contentType === 'application/sylk-live-location') {
-            const latest = this.locationData?.[currentMessage._id]
+            // Lazy render: opening a chat with many historical maps
+            // would otherwise mount one LocationBubble per share —
+            // each kicking off a 3x3 tile-grid fetch (FastImage),
+            // SVG polyline overlay and pin layout — for ticks the
+            // user can't see yet. Gate the heavy bubble on the
+            // viewability state already maintained for images:
+            //   • visibleMessageIds — currently in the FlatList
+            //     viewport (refreshed by onViewableItemsChanged).
+            //   • renderedMessageIds — sticky once-seen set so a
+            //     bubble that has scrolled off-screen stays mounted
+            //     and we don't tear down + rebuild the map (which
+            //     would re-fetch every tile and reset the user's
+            //     zoom / scrub state).
+            // Until either is true, render a same-sized placeholder
+            // so the list doesn't reflow when the real bubble drops
+            // in. The placeholder dimensions match the inline map
+            // footprint (DEFAULT_MAP_WIDTH x DEFAULT_MAP_HEIGHT in
+            // LocationBubble.js, 300 x 200).
+            const _bubbleId = currentMessage._id;
+            const _bubbleVisible = this.state.visibleMessageIds
+                && this.state.visibleMessageIds.includes(_bubbleId);
+            const _bubbleSeen = this.state.renderedMessageIds
+                && this.state.renderedMessageIds.has(_bubbleId);
+            if (!_bubbleVisible && !_bubbleSeen) {
+                return (
+                    <View
+                        style={{
+                            width: 300,
+                            height: 200,
+                            backgroundColor: '#e6e6e6',
+                            borderRadius: 12,
+                            margin: 6,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                        }}
+                    >
+                        <ActivityIndicator size="small" color="#999" />
+                    </View>
+                );
+            }
+            const _latestRaw = this.locationData?.[currentMessage._id]
                 || currentMessage.metadata;
+            // Merge in local-only owner coords (set by app.js's
+            // _setLocalOwnerCoordsForBubble for privacy-deferred
+            // outgoing meet bubbles). Lives outside state.messages
+            // so it survives the SQL-driven rebuild that fires on
+            // chat-navigation. Without this merge, the bubble would
+            // show value=destination on re-entry and read "<1m to
+            // meeting point" because myCoords would haversine to 0.
+            const _localOwn = this.props.localOwnerCoordsByMid
+                && this.props.localOwnerCoordsByMid[currentMessage._id];
+            let latest = (_localOwn
+                    && typeof _localOwn.latitude === 'number'
+                    && typeof _localOwn.longitude === 'number')
+                ? {
+                    ..._latestRaw,
+                    localOwnerCoords: {
+                        latitude: _localOwn.latitude,
+                        longitude: _localOwn.longitude,
+                    },
+                    // Carry the local user's chosen privacy radius
+                    // alongside the coords so LocationBubble can
+                    // render the dashed ring around the local pin —
+                    // for both INCOMING bubbles (accepter's view of
+                    // the request bubble) and OUTGOING bubbles
+                    // (requester's own meet bubble). The wire's
+                    // privacyDeferredRadiusMeters is the OTHER
+                    // party's radius in the incoming case, so we
+                    // use a separate `localOwnerRadiusMeters`
+                    // sourced only from this device's stamp.
+                    localOwnerRadiusMeters:
+                        (typeof _localOwn.radiusMeters === 'number'
+                            && _localOwn.radiusMeters > 0)
+                            ? _localOwn.radiusMeters : null,
+                }
+                : _latestRaw;
+            // Multi-device mirror: when THIS device is a mirror (not
+            // the broadcaster) AND the visible bubble is the OTHER
+            // SIDE's accepter origin for a session WE initiated, the
+            // bubble's natural rendering is "from peer's POV" — its
+            // value=peer coords, peerCoords=us — which on A2 prints
+            // colors swapped vs A1's view (red=peer instead of red=
+            // us). Swap value↔peerCoords + flip the rendered
+            // direction so the same bubble reads identically on
+            // every device of ours: red=us, blue=peer, distance label
+            // computed from us → peer. Only fires when a remote
+            // share is active for this peer (otherwise we ARE the
+            // broadcaster and the bubble's local origin renders
+            // correctly without inversion). `activeRemoteSharesByUri`
+            // is populated by app.js's mirror feed; absent / role!=
+            // 'requester' → no inversion.
+            const _peerUriForBubble = this.props.selectedContact
+                && this.props.selectedContact.uri;
+            const _remoteShare = (this.props.activeRemoteSharesByUri
+                && _peerUriForBubble)
+                ? this.props.activeRemoteSharesByUri[_peerUriForBubble]
+                : null;
+            const _viewerIsMirrorRequester = !!(_remoteShare
+                && _remoteShare.role === 'requester'
+                && currentMessage.direction === 'incoming'
+                && latest && latest.in_reply_to);
+            // `currentMessage` is const-bound from destructured props,
+            // so we use a separate `_msgForBubble` reference for the
+            // (potentially flipped) message handed to LocationBubble.
+            // Original currentMessage stays untouched for any code
+            // outside this if-branch.
+            let _msgForBubble = currentMessage;
+            if (_viewerIsMirrorRequester) {
+                // Swap value (peer's coords) with peerCoords (our
+                // coords as stamped by the mirror feed). LocationBubble
+                // reads `value` for the "owner" pin and `peerCoords`
+                // for the "peer" pin; after swap, owner=us, peer=peer.
+                const _ourCoords = latest.peerCoords;
+                const _peerCoords = latest.value;
+                if (_ourCoords
+                        && typeof _ourCoords.latitude === 'number'
+                        && typeof _ourCoords.longitude === 'number') {
+                    latest = {
+                        ...latest,
+                        value: _ourCoords,
+                        peerCoords: _peerCoords,
+                    };
+                    // Flip rendered direction so the color/label code
+                    // in LocationBubble (`isIncoming`) treats this as
+                    // an outgoing-style bubble: red=ownerName (us),
+                    // blue=peerName (peer). The underlying message in
+                    // state.messages is untouched — only the props
+                    // passed into LocationBubble are flipped.
+                    _msgForBubble = {
+                        ...currentMessage,
+                        direction: 'outgoing',
+                    };
+                }
+            }
             // Trail: the full ordered list of valid GPS fixes for this
             // share. Each tick lives as its own entry in
             // messagesMetadata[origin_id] (kept that way intentionally
@@ -4257,12 +5236,53 @@ class ContactsListBox extends Component {
                 });
             }
             trail.sort((a, b) => a.timestamp - b.timestamp);
+            // Render-time diagnostic for the "no path drawn" report.
+            // Throttled by (bubbleId, rawTicks, validPoints) so we
+            // don't spam metro.log on every memoised re-render of
+            // the same state. Field signal: rawTicks vs validPoints
+            // tells us whether ticks made it into messagesMetadata,
+            // and whether they had real coords. validPoints < 2 →
+            // StaticMap's hasTrail=false → no polyline drawn (by
+            // design); validPoints >= 2 but still no polyline →
+            // bug in StaticMap's render path.
+            const _trailLogKey = currentMessage._id + ':'
+                + _rawTrail.length + ':' + trail.length;
+            if (this._lastTrailLogKey !== _trailLogKey) {
+                this._lastTrailLogKey = _trailLogKey;
+                const _first = trail[0];
+                const _last = trail[trail.length - 1];
+                /*
+                console.log('[location] render trail',
+                    'bubble=' + currentMessage._id,
+                    'rawTicks=' + _rawTrail.length,
+                    'validPoints=' + trail.length,
+                    'first=' + (_first
+                        ? _first.latitude.toFixed(5) + ',' + _first.longitude.toFixed(5)
+                        : 'none'),
+                    'last=' + (_last
+                        ? _last.latitude.toFixed(5) + ',' + _last.longitude.toFixed(5)
+                        : 'none'));
+                        */
+            }
             return (
                 <LocationBubble
-                    currentMessage={currentMessage}
+                    currentMessage={_msgForBubble}
                     metadata={latest}
                     trail={trail}
                     onLongPress={this.onLongMessagePress}
+                    /* Inline fullscreen toggle handler — wired into
+                       the new arrow-expand button below the Focus
+                       button on inline maps. Same effect as the
+                       kebab "Full screen" action: hide app chrome
+                       via setFullScreen(true), then materialise the
+                       fullscreen LocationBubble modal at the bottom
+                       of render() by setting fullScreenLocation. */
+                    onOpenFullScreen={() => {
+                        if (typeof this.props.setFullScreen === 'function') {
+                            this.props.setFullScreen(true);
+                        }
+                        this.setState({fullScreenLocation: currentMessage});
+                    }}
                     ownerName={this.props.myDisplayName}
                     peerName={this.props.selectedContact
                         && (this.props.selectedContact.name
@@ -4976,9 +5996,96 @@ class ContactsListBox extends Component {
 				);
 			}
   
-            return (
-                <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
-                     {currentMessage.metadata && currentMessage.metadata.filename ?
+            // Wrap the file-icon + filename Text in a TouchableOpacity
+            // explicitly. ParsedText (inside CustomMessageText) absorbs
+            // taps on the text node on some platforms — the parent
+            // GiftedChat onPress doesn't fire when the user taps
+            // directly on the filename, only when they tap the
+            // surrounding bubble margin. Routing through this
+            // TouchableOpacity guarantees onMessagePress runs no
+            // matter where inside the bubble content the user taps.
+            // onLongPress forwards to the existing contextual menu.
+            const _isFileBubble = !!(currentMessage.metadata && currentMessage.metadata.filename);
+
+            // "Meet me there..." button rendered INSIDE the bubble,
+            // beneath the message body. Same gating as the kebab
+            // option:
+            //   • text-bubble (no file/audio/video bubbles)
+            //   • body resolves to a maps link via extractLocationLink
+            //   • canSend is true and meetMeAt prop is wired
+            // Tap dispatches the link descriptor to NavigationBar,
+            // which opens the share panel immediately and resolves
+            // shortened URLs in the background. Sized to be obviously
+            // tappable — matches the "primary action" weight of the
+            // text body itself rather than competing with the
+            // timestamp footer.
+            let _meetButton = null;
+            if (!_isFileBubble
+                    && currentMessage.text
+                    && this.props.canSend
+                    && this.props.canSend()) {
+                const _link = utils.extractLocationLink(currentMessage.text || '');
+                if (_link && typeof this.props.meetMeAt === 'function') {
+                    const _onMeetPress = () => {
+                        utils.timestampedLog('[location] inline button: Meet me there →',
+                            _link.type, _link.type === 'direct'
+                                ? (_link.coords.latitude.toFixed(5) + ',' + _link.coords.longitude.toFixed(5))
+                                : _link.url);
+                        this.props.meetMeAt(this.state.targetUri, _link);
+                    };
+                    // Match the share-location button in ReadyBox
+                    // (purpleButton style: rgba(142,68,173,0.9)) so
+                    // the visual language across "this is the
+                    // location share entry-point" surfaces stays
+                    // consistent. Same purple regardless of bubble
+                    // direction — reads cleanly on both white
+                    // (outgoing) and green (incoming) backgrounds and
+                    // tells the user "this opens the share flow".
+                    const _btnBg = 'rgba(142,68,173,0.9)';
+                    const _btnFg = 'white';
+                    _meetButton = (
+                        <View style={{
+                            flexDirection: 'row',
+                            paddingHorizontal: 10,
+                            paddingTop: 4,
+                            paddingBottom: 6,
+                        }}>
+                            <TouchableOpacity
+                                onPress={_onMeetPress}
+                                accessibilityLabel="Meet me at the shared location"
+                                hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}
+                                style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    backgroundColor: _btnBg,
+                                    borderRadius: 14,
+                                    paddingHorizontal: 12,
+                                    paddingVertical: 6,
+                                }}
+                            >
+                                <Icon
+                                    name="map-marker-account"
+                                    size={16}
+                                    color={_btnFg}
+                                    style={{marginRight: 6}}
+                                />
+                                <Text style={{
+                                    color: _btnFg,
+                                    fontSize: 13,
+                                    fontWeight: '600',
+                                }}>
+                                    Meet me there...
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
+                    );
+                }
+            }
+
+            const _innerContent = (
+                <View>
+                    <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
+                         {_isFileBubble ?
 					 <Icon
 					  type="font-awesome"
 					  name="file"
@@ -4997,8 +6104,22 @@ class ContactsListBox extends Component {
 					enableUrlPreview={false} // disables default auto-link open
 				  />
 
+                    </View>
+                    {_meetButton}
                 </View>
             );
+            if (_isFileBubble) {
+                return (
+                    <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => this.onMessagePress(null, currentMessage)}
+                        onLongPress={() => this.onLongMessagePress(null, currentMessage)}
+                    >
+                        {_innerContent}
+                    </TouchableOpacity>
+                );
+            }
+            return _innerContent;
   		}
     };
 
@@ -5119,7 +6240,18 @@ class ContactsListBox extends Component {
 
 	  let consumed = currentMessage.consumed || 0;
 	  const showProgress = !isIncoming && consumed > 0;
-	
+
+	  // The encryption lock is no longer rendered here; it's anchored
+	  // absolutely in the bubble's bottom corner opposite the timestamp
+	  // (see ChatBubble.js customView). That gives a real corner pin —
+	  // a flex sibling here couldn't reach the corner because GiftedChat's
+	  // bottomContainer is content-sized.
+	  //
+	  // The "Meet me there..." text button now lives in ChatBubble's
+	  // customView too — same corner-anchored treatment as the lock,
+	  // so it sits OPPOSITE the timestamp regardless of bubble
+	  // direction. See ChatBubble.js for the rendering.
+
 	  return (
 		<View
 		  style={{
@@ -5146,7 +6278,7 @@ class ContactsListBox extends Component {
 			  />
 			</View>
 		  )}
-	
+
 		  {/* Time text */}
 		  <Text
 			style={[
@@ -5584,9 +6716,24 @@ scrollToMessage(id) {
         let searchExtraItems = [];
         let items = [];
         let matchedContacts = [];
-        let contacts = this.state.allContacts;
+        // Source toggle (Sylk-only / AB-only) lives in the search bar
+        // and arrives here as a prop mirrored into state. When the user
+        // picks 'ab' we drop the Sylk list (state.allContacts) entirely
+        // and let the address-book set (state.contacts, populated at app
+        // start by getABContacts) become the search corpus. Modes that
+        // bypass the toggle UI (share, invite) still see only Sylk
+        // contacts so we don't change their behavior.
+        const allowSourceToggle =
+            !this.state.shareToContacts && !this.state.inviteContacts;
+        const contactSource = allowSourceToggle
+            ? (this.state.contactSource || 'sylk')
+            : 'sylk';
+        let contacts =
+            contactSource === 'ab'
+                ? []
+                : this.state.allContacts;
         //console.log('----');
-                
+
         //console.log('--- Render contacts', this.state.isLoadingEarlier);
         //console.log('--- CL selectedContact', this.state.selectedContact?.messagesMetadata);
 
@@ -5619,9 +6766,27 @@ scrollToMessage(id) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, [this.state.filter]));
         } else {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
-            searchExtraItems = searchExtraItems.concat(this.state.contacts);
 
-            if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact && !this.state.inviteContacts) {
+            // The address-book pile is only mixed in when the user has
+            // explicitly flipped the source toggle to 'ab'. In Sylk mode
+            // we leave searchExtraItems empty so the list shows just
+            // Sylk contacts — that's the toggle's whole point.
+            if (contactSource === 'ab' && Array.isArray(this.state.contacts)) {
+                searchExtraItems = searchExtraItems.concat(this.state.contacts);
+            }
+
+            if (contactSource === 'ab'
+                && !this.state.selectedContact
+                && !this.state.inviteContacts) {
+                // AB mode: show every address-book entry, optionally
+                // narrowed by the search term. Drop the >2-char gate
+                // that the merged-mode path used — the user is now
+                // explicitly browsing the address book and expects to
+                // see entries even with an empty query.
+                matchedContacts = this.state.targetUri
+                    ? searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri))
+                    : searchExtraItems;
+            } else if (this.state.targetUri && this.state.targetUri.length > 2 && !this.state.selectedContact && !this.state.inviteContacts) {
                 matchedContacts = searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri));
             } else if (this.state.selectedContact && this.state.selectedContact.type === 'contact') {
                 matchedContacts.push(this.state.selectedContact);
@@ -5791,14 +6956,56 @@ scrollToMessage(id) {
         const contactsContainer = this.props.orientation === 'landscape' ? styles.contactsLandscapeContainer : styles.contactsPortraitContainer;
         const borderClass = (this.state.filteredMessages.length > 0 && !this.state.chat) ? styles.chatBorder : null;
         
-        let addSpacer = false;
-
-		if (Platform.OS === 'android') {
-		  const androidVersion = Platform.Version;
-		  if (androidVersion >= 34) {
-			  addSpacer = true;
-		  }
-		}
+        // Decide which keyboard-handling strategy is active.
+        //
+        //  * useManualOverlap: Android API 34+, OR a wide-canvas
+        //                     foldable / tablet (isTablet=true OR
+        //                     short-side ≥ 600dp). On these devices
+        //                     adjustResize is unreliable and both
+        //                     KeyboardAvoidingView (offset is
+        //                     hardcoded against the wrong chrome
+        //                     height) and KeyboardSpacer (over-
+        //                     compensates by ~bottomInset) misbehave.
+        //                     We instead compute the actual visible
+        //                     overlap from the keyboard event in
+        //                     _keyboardDidShow and apply it as
+        //                     paddingBottom on the chat container —
+        //                     self-correcting against whatever
+        //                     adjustResize already did.
+        //
+        //  * KAV path (else): legacy Android phone on API < 33 with
+        //                     adjustResize working as designed —
+        //                     keep the original KeyboardAvoidingView
+        //                     wrap with offset = 60+topInset, which
+        //                     was working before.
+        let useManualOverlap = false;
+        let wideCanvas = false;
+        if (Platform.OS === 'android') {
+            const androidVersion = Platform.Version;
+            const _w = Dimensions.get('window').width;
+            const _h = Dimensions.get('window').height;
+            const _shortSide = Math.min(_w, _h);
+            wideCanvas = _shortSide >= 600;
+            if (androidVersion >= 34 || this.state.isTablet || wideCanvas) {
+                useManualOverlap = true;
+            }
+            // Per-render diagnostic — uncomment to debug which
+            // keyboard-handling branch a given device hits.
+            // const _logKey = `${androidVersion}|${this.state.isTablet}|${_shortSide}|${useManualOverlap}`;
+            // if (this._lastKbFixLog !== _logKey) {
+            //     this._lastKbFixLog = _logKey;
+            //     console.log('[keyboardFix] android API=', androidVersion,
+            //         'isTablet=', this.state.isTablet,
+            //         'shortSide=', _shortSide,
+            //         'wideCanvas=', wideCanvas,
+            //         '→ useManualOverlap=', useManualOverlap);
+            // }
+        }
+        // KeyboardSpacer is now off by default — the manual-overlap
+        // path has replaced its role on every Android version where
+        // it would have been useful. Kept addSpacer as a flag for the
+        // single render-time check below so the JSX diff is small.
+        const addSpacer = false;
       
         // debug
         let debug = false;
@@ -5930,6 +7137,15 @@ scrollToMessage(id) {
             }
 		}
 
+		// Hardcoded approximation of the NavigationBar's rendered
+		// height. Fed into KeyboardAvoidingView's
+		// keyboardVerticalOffset on Android phones (isTablet=false),
+		// where the chat sits directly under a single full-width
+		// NavigationBar and `60 + topInset` matches the actual chrome
+		// above the wrapper. NOT used on Android tablets / foldable
+		// inner displays — there the offset doesn't match the real
+		// chrome and the KAV is dropped entirely (see the
+		// KeyboardWrapper block).
 		const navigatorBarHeight = 60;
 		
 		const visibleMessages = chatMessages.filter(msg => {
@@ -5949,9 +7165,43 @@ scrollToMessage(id) {
 		//console.log('visibleMessages', visibleMessages.length);
 		//console.log('chatMessages', chatMessages.length);
 		  		  
-		const KeyboardWrapper = Platform.OS === 'ios'
-			  ? View
-			  : KeyboardAvoidingView;
+		// Pick the keyboard-handling strategy by device class:
+		//
+		//  * iOS:        plain View. GiftedChat's own bottomOffset
+		//                prop plus the wrapper's marginBottom
+		//                (composerHeight - bottomInset + replyHeight)
+		//                handles the IME on iOS.
+		//
+		//  * Android phone (isTablet=false): KeyboardAvoidingView with
+		//                behavior='height' and the historical offset
+		//                of `navigatorBarHeight + topInset`. This is
+		//                what was working on a single-screen phone
+		//                with adjustResize — keep it as-is.
+		//
+		//  * Android tablet / foldable inner display (isTablet=true):
+		//                plain View. The hardcoded 60+topInset offset
+		//                does NOT match the actual chrome above the
+		//                chat panel on a wider canvas (where a
+		//                contacts pane may sit alongside it and the
+		//                NavigationBar height calculation is
+		//                different), and KAV under-shrinks the
+		//                wrapper, leaving the input bar partially
+		//                covered by the IME. Drop KAV here and rely
+		//                purely on adjustResize from the manifest;
+		//                the KeyboardSpacer below catches the API 34+
+		//                edge-to-edge case where adjustResize alone
+		//                isn't enough. effectiveIsTablet is computed
+		//                in app.js#_detectOrientation from the hinge
+		//                sensor + minSide ≥ 450dp rule, so the inner
+		//                display of a Z Fold / Razr inner / Surface
+		//                Duo lands here automatically.
+		// KAV is used only on the legacy-phone branch (Android,
+		// !useManualOverlap). On manual-overlap devices the wrapper
+		// is a passthrough View and the chat container's
+		// paddingBottom carries the keyboard offset — see the JSX
+		// below.
+		const _isLegacyPhone = Platform.OS === 'android' && !useManualOverlap;
+		const KeyboardWrapper = _isLegacyPhone ? KeyboardAvoidingView : View;
 	
         return (
             <SafeAreaView style={[container, {borderColor: 'white', borderWidth: 0}]}>
@@ -6034,12 +7284,52 @@ scrollToMessage(id) {
 			  : null}
 
              {this.showChat ?
-             <View style={[chatContainer, borderClass]}>
+             <View
+                // Key on the rounded window dims so the chat root
+                // remounts on every fold / posture change. Razr cover
+                // (480×410) and inner (408×997) both report as
+                // `portrait` after the folded-state override in
+                // app.js so a key based on `isLandscape` alone
+                // wouldn't change between them — including the dims
+                // means each canvas gets its own component identity
+                // and Paper / GiftedChat children re-run their
+                // measurement / layout passes against the new size.
+                key={(this.state.isLandscape ? 'l' : 'p')
+                    + '-' + Math.round(Dimensions.get('window').width)
+                    + 'x' + Math.round(Dimensions.get('window').height)}
+                style={[
+                    chatContainer,
+                    borderClass,
+                    // On the manual-overlap branch we shift the chat
+                    // content up by the actual visible keyboard
+                    // overlap. This is self-correcting: when
+                    // adjustResize fully shrunk the window
+                    // keyboardOverlap is 0 and this is a no-op; when
+                    // edge-to-edge / a foldable ROM didn't shrink
+                    // fully the overlap matches the residual gap and
+                    // the input bar lands flush above the keyboard.
+                    useManualOverlap ? {paddingBottom: this.state.keyboardOverlap || 0} : null,
+                ]}>
 				<KeyboardWrapper
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
+					  // Key folds (heh) the rounded window dims into
+					  // the wrapper's identity. On the Razr both
+					  // displays render as `portrait` (the folded-
+					  // state override in app.js#_detectOrientation
+					  // forces it on cover; the inner is naturally
+					  // portrait), so a key that only changed on
+					  // `isLandscape` left the wrapper mounted across
+					  // a fold transition and the subtree's cached
+					  // measurements drove the layout. Including the
+					  // window dims in the key forces a remount when
+					  // the canvas actually changes — the chat panel
+					  // re-runs its flex math against the new
+					  // dimensions.
+					  key={(this.state.isLandscape ? 'l' : 'p')
+					      + '-' + Math.round(Dimensions.get('window').width)
+					      + 'x' + Math.round(Dimensions.get('window').height)}
 					  style={[chatContainer, {marginBottom: Platform.OS === 'ios' ? this.state.composerHeight - bottomInset + this.state.replyContainerHeight: 0}]}
 
-					  {...(Platform.OS === 'android'
+					  {...(_isLegacyPhone
 						? {
 							behavior: 'height',
 							keyboardVerticalOffset: navigatorBarHeight + topInset,
@@ -6047,13 +7337,22 @@ scrollToMessage(id) {
 						: {})}
 					>
 
-                <GiftedChat 
+                <GiftedChat
 				  listViewProps={{
 					ref: (ref) => { this.flatListRef = ref; },
 					onViewableItemsChanged: this.onViewableItemsChanged,
 				    onScroll: this.onScroll,
 				    scrollEventThrottle: 16,
 					viewabilityConfig: this.viewabilityConfig,
+				    // Forwards to the underlying FlatList. Lets us
+				    // force item re-renders for parent-state changes
+				    // that aren't reflected in the messages array —
+				    // specifically the live scrub state that drives
+				    // the call-recording bubble's waveforms during a
+				    // drag. Without this, FlatList sees data===data
+				    // and skips re-rendering the items, so the
+				    // waveforms stay frozen at the pre-drag position.
+				    extraData: this.state.audioBubbleScrub,
 				  }}
 				  
 				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}
@@ -6096,7 +7395,22 @@ scrollToMessage(id) {
 					this.renderMessageVideo({ ...props, orderBy: this.state.orderBy })
 				  }
                   renderMessageAudio={this.renderMessageAudio}
-                  //shouldUpdateMessage={this.shouldUpdateMessage}
+                  // shouldUpdateMessage runs alongside Message's
+                  // built-in shouldComponentUpdate; ours adds a
+                  // re-render trigger for live-location bubbles the
+                  // first time they enter the viewport, so the
+                  // lazy-load placeholder in renderMessageText can
+                  // swap to the real LocationBubble exactly once.
+                  // renderedMessageIds is the sticky once-seen Set
+                  // (only grows), forwarded down to Message via
+                  // GiftedChat's restProps so the comparator above
+                  // can do .has(id) on prev vs next props. Using the
+                  // sticky set instead of the volatile
+                  // visibleMessageIds means we don't burn a re-render
+                  // every time the user scrolls a known-rendered
+                  // bubble back into view.
+                  shouldUpdateMessage={this.shouldUpdateMessage}
+                  renderedMessageIds={this.state.renderedMessageIds}
                   renderTime={this.renderTime}
                   renderDay={this.renderDay}
                   placeholder={this.state.placeholder}
@@ -6190,6 +7504,16 @@ scrollToMessage(id) {
 
                 {addSpacer ? <KeyboardSpacer /> : null }
 
+                {/* In-app emoji picker. Rendered as a Modal, so its
+                    physical position in the tree doesn't matter — it
+                    overlays the whole screen when visible. Closing the
+                    picker (backdrop tap, Done button, hardware back) is
+                    routed through closeEmojiPicker. */}
+                <EmojiPicker
+                    visible={this.state.emojiPickerVisible}
+                    onSelect={this.handleEmojiSelected}
+                />
+
               </View>
 
               : (items.length === 1 && this.showReadonlyChat) ?
@@ -6199,6 +7523,7 @@ scrollToMessage(id) {
 					ref: (ref) => { this.flatListRef = ref; },
 					onViewableItemsChanged: this.onViewableItemsChanged,
 					viewabilityConfig: this.viewabilityConfig,
+				    extraData: this.state.audioBubbleScrub,
 				  }}
                   messages={chatMessages}
                   renderInputToolbar={() => { return null }}
@@ -6211,6 +7536,12 @@ scrollToMessage(id) {
                   lockStyle={styles.lock}
                   onLongPress={this.onLongMessagePress}
                   shouldUpdateMessage={this.shouldUpdateMessage}
+                  // Forwarded into Message via GiftedChat's
+                  // restProps so shouldUpdateMessage can detect the
+                  // first-time-seen flip for live-location bubbles
+                  // (lazy-load gate in renderMessageText). Sticky
+                  // set: re-renders happen exactly once per bubble.
+                  renderedMessageIds={this.state.renderedMessageIds}
                   onPress={this.onMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
@@ -6347,7 +7678,28 @@ scrollToMessage(id) {
 			    icon. */}
 			{this.state.fullScreenLocation && (() => {
 				const _msg = this.state.fullScreenLocation;
-				const _latest = this.locationData?.[_msg._id] || _msg.metadata;
+				const _latestRaw = this.locationData?.[_msg._id] || _msg.metadata;
+				// Same local-only owner-coords merge as the inline
+				// renderMessageText path. Without this, opening the
+				// fullscreen view of a privacy-deferred bubble after
+				// chat-navigation would lose the inviter pin / circle.
+				const _localOwn = this.props.localOwnerCoordsByMid
+					&& this.props.localOwnerCoordsByMid[_msg._id];
+				const _latest = (_localOwn
+						&& typeof _localOwn.latitude === 'number'
+						&& typeof _localOwn.longitude === 'number')
+					? {
+						..._latestRaw,
+						localOwnerCoords: {
+							latitude: _localOwn.latitude,
+							longitude: _localOwn.longitude,
+						},
+						localOwnerRadiusMeters:
+							(typeof _localOwn.radiusMeters === 'number'
+								&& _localOwn.radiusMeters > 0)
+								? _localOwn.radiusMeters : null,
+					}
+					: _latestRaw;
 				// Trail: same derivation as renderMessageText so the
 				// fullscreen view shows the same set of points (and
 				// the same scrubber slider state) as the inline
@@ -6425,7 +7777,14 @@ scrollToMessage(id) {
 									// this height — they explicitly chose
 									// "top-left, just lower" over the
 									// no-overlap bottom position.
-									top: 60,
+									// Drops BELOW the map's primary
+									// controls row (Focus + zoom+
+									// both at top:16, 60×60 ending
+									// at y=76) with extra clearance
+									// so it reads as a separate
+									// secondary action well below
+									// the primary controls.
+									top: 140,
 									left: 30,
 									backgroundColor: 'rgba(0,0,0,0.6)',
 									width: 56,
@@ -6509,6 +7868,7 @@ ContactsListBox.propTypes = {
     targetUri       : PropTypes.string,
     selectedContact : PropTypes.object,
     contacts        : PropTypes.array,
+    contactSource   : PropTypes.oneOf(['sylk', 'ab']),
     chat            : PropTypes.bool,
     orientation     : PropTypes.string,
     setTargetUri    : PropTypes.func,

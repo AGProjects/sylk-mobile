@@ -388,7 +388,7 @@ class VideoBox extends Component {
     // optional behavior — DTLS-only between us and the relay).
     zrtpMandatoryFailed(info) {
         if (this.unmounted) return;
-        utils.timestampedLog('[ZRTP] VideoBox received zrtpMandatoryFailed:', info);
+        utils.timestampedLog('[call] [ZRTP] VideoBox received zrtpMandatoryFailed:', info);
         this.setState({
             zrtpMandatoryFailedVisible: true,
             zrtpMandatoryFailedInfo: info,
@@ -612,7 +612,7 @@ class VideoBox extends Component {
 
             this._videoTrackOnMute = () => {
                 utils.timestampedLog(
-                    '[video-track] mute',
+                    '[video-track] [call] mute',
                     'id=', track.id,
                     'enabled=', track.enabled,
                     'callUUID=', this.state.callUUID
@@ -620,7 +620,7 @@ class VideoBox extends Component {
             };
             this._videoTrackOnUnmute = () => {
                 utils.timestampedLog(
-                    '[video-track] unmute',
+                    '[video-track] [call] unmute',
                     'id=', track.id,
                     'enabled=', track.enabled,
                     'callUUID=', this.state.callUUID
@@ -628,7 +628,7 @@ class VideoBox extends Component {
             };
             this._videoTrackOnEnded = () => {
                 utils.timestampedLog(
-                    '[video-track] ended',
+                    '[video-track] [call] ended',
                     'id=', track.id,
                     'callUUID=', this.state.callUUID
                 );
@@ -651,7 +651,7 @@ class VideoBox extends Component {
             this._monitoredVideoTrack = track;
 
             utils.timestampedLog(
-                '[video-track] monitor attached',
+                '[video-track] [call] monitor attached',
                 'id=', track.id,
                 'enabled=', track.enabled,
                 'muted=', track.muted,
@@ -781,7 +781,7 @@ class VideoBox extends Component {
 
 	renderAudioDevicePicker(buttonSize, buttonClass) {
 		const devices = this.props.availableAudioDevices || [];
-		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+		const selectedIcon = utils.availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone-in-talk';
 
 		// Only one device available — there is nothing to switch to, so
 		// don't show the audio-device button at all.
@@ -820,7 +820,7 @@ class VideoBox extends Component {
 				>
 					{devices.map(device => {
 						const isSelected = device === this.props.selectedAudioDevice;
-						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone';
+						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone-in-talk';
 						const deviceName = utils.availableAudioDeviceNames[device] || device;
 						return (
 							<Menu.Item
@@ -859,7 +859,7 @@ class VideoBox extends Component {
 									key={device}
 									size={buttonSize}
 									style={[buttonClass, {marginBottom: 6}]}
-									icon={utils.availableAudioDevicesIconsMap[device] || 'phone'}
+									icon={utils.availableAudioDevicesIconsMap[device] || 'phone-in-talk'}
 									onPress={() => {
 										this.props.selectAudioDevice(device);
 										this.setState({audioDevicePickerVisible: false});
@@ -1651,7 +1651,7 @@ class VideoBox extends Component {
                 label = '⚠ SAS changed';
             } else {
                 bg = 'rgba(230, 120, 0, 0.95)';
-                label = '🔒 zRTP encrypted (tap to verify)';
+                label = '🔒 zRTP end-to-end encrypted';
             }
             const isTappable = this.state.zrtpState === 'key-agreed';
             const inner = (
@@ -1664,11 +1664,30 @@ class VideoBox extends Component {
                     <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>{label}</Text>
                 </View>
             );
-            // Anchor the pill above the call buttons row. Portrait buttons
-            // sit ~50px from bottom + ~60px tall; landscape buttons sit at
-            // the very bottom + ~60px tall. Add a small gap so the pill
-            // doesn't crowd the icons.
-            const bottomOffset = this.state.isLandscape ? 80 : 130;
+            // Dim "Tap to verify" sub-label is always shown (even on
+            // the green verified state) so the pill always invites
+            // the user to re-check / open the SAS dialog. The pill
+            // itself no longer carries the "(tap to verify)" suffix —
+            // the call-to-action lives here as a quieter sub-label
+            // so the pill can stay focused on conveying the encrypted
+            // state.
+            // Anchor the pill above the call buttons row. Phone portrait
+            // buttons sit ~50px from bottom + ~60px tall; phone landscape
+            // buttons sit at the very bottom + ~60px tall. Tablets use
+            // larger icons (size 40) and the buttons row sits higher, so
+            // the pill needs a bigger offset to clear it. Add a small gap
+            // so the pill doesn't crowd the icons.
+            //
+            // Also use a zIndex that sits above the buttons wrapper
+            // (which uses zIndex: 2000) so the pill is never occluded by
+            // the buttons bar — on iPad in particular the buttons row
+            // landed on top of the pill at the previous zIndex.
+            let bottomOffset;
+            if (this.props.isTablet) {
+                bottomOffset = this.state.isLandscape ? 140 : 200;
+            } else {
+                bottomOffset = this.state.isLandscape ? 80 : 130;
+            }
             return (
                 <View pointerEvents="box-none" style={{
                     position: 'absolute',
@@ -1676,11 +1695,23 @@ class VideoBox extends Component {
                     left: 0,
                     right: 0,
                     alignItems: 'center',
-                    zIndex: 1000,
+                    zIndex: 3000,
+                    elevation: 40,
                 }}>
                     {isTappable ? (
                         <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
                     ) : inner}
+                    <Text style={{
+                        color: 'rgba(255, 255, 255, 0.65)',
+                        fontSize: 10,
+                        fontStyle: 'italic',
+                        marginTop: 4,
+                        textShadowColor: 'rgba(0, 0, 0, 0.6)',
+                        textShadowOffset: { width: 0, height: 1 },
+                        textShadowRadius: 2,
+                    }}>
+                        Tap to verify
+                    </Text>
                 </View>
             );
         };

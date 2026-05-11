@@ -5,6 +5,7 @@ import { View, Platform } from 'react-native';
 import UserIcon from './UserIcon';
 import { Chip, Dialog, Portal, Text, Button, Surface, TextInput, Paragraph, RadioButton, Checkbox, Switch } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
+import PlatformToggle from './PlatformToggle';
 
 const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
 
@@ -98,36 +99,21 @@ class DeleteMessageModal extends Component {
                          <Text style={styles.body}>
                              Are you sure you want to delete {this.props.messages?.length} {this.props.messages?.length == 1 ? 'message' : 'messages'}?
                          </Text>
-                        <View style={styles.checkBoxRow}>
-                          {Platform.OS === 'ios' && canDeleteRemote ?
-                           <Switch value={this.state.remoteDelete} onValueChange={(value) => this.toggleRemoteDelete()}/>
-                           : null
-                           }
-                            {Platform.OS === 'android' && canDeleteRemote ?
-                            <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleRemoteDelete()}}/>
-                            : null
-                            }
+                        {canDeleteRemote && (
+                            <PlatformToggle
+                                value={this.state.remoteDelete}
+                                onValueChange={() => this.toggleRemoteDelete()}
+                                label={`Also delete those sent for ${remote_label}`}
+                                style={styles.checkBoxRow}
+                            />
+                        )}
 
-                            {canDeleteRemote ?
-                            <Text> Also delete those sent for {remote_label}</Text>
-                            : null}
-
-                            </View>
-
-                        <View style={styles.checkBoxRow}>
-                          {Platform.OS === 'ios' ?
-                           <Switch value={this.state.afterDelete} onValueChange={(value) => this.toggleAfterDelete()}/>
-                           : null
-                           }
-
-                            {Platform.OS === 'android' ?
-                            <Checkbox status={this.state.afterDelete ? 'checked' : 'unchecked'} onPress={() => {this.toggleAfterDelete()}}/>
-                            : null
-                            }
-                            
-                            <Text> Delete conversation for this day</Text>
-
-                            </View>
+                        <PlatformToggle
+                            value={this.state.afterDelete}
+                            onValueChange={() => this.toggleAfterDelete()}
+                            label="Delete conversation for this day"
+                            style={styles.checkBoxRow}
+                        />
 
                     <View style={styles.buttonRow}>
 

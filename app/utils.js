@@ -13,7 +13,40 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import path from 'path-browserify';
 
 
-const logfile = RNFS.DocumentDirectoryPath + '/logs.txt';
+// Per-account log file. The active accountId is set via
+// setLogAccount() whenever the SIP identity changes (autologin
+// success, sign-in success, account switch, sign-out). All log
+// reads/writes resolve the current path through getLogfilePath()
+// which derives a filename like:
+//   logs.alice@sylk.link.txt
+// on a per-account basis. When no account is in scope (very early
+// boot, signed-out state) we fall back to a generic 'logs.txt' so
+// boot/signout diagnostics still go somewhere.
+//
+// The accountId is sanitised to keep the filename POSIX-safe: SIP
+// URIs already use only [a-zA-Z0-9._@+-] in practice, but we still
+// strip path separators and control characters defensively. The
+// '@' character is kept verbatim — it's legal in filenames on
+// every filesystem we care about.
+let _currentLogAccount = null;
+
+function _sanitiseAccountForFilename(accountId) {
+    if (!accountId || typeof accountId !== 'string') return null;
+    // Replace anything outside the safe set with an underscore. Keeps
+    // '@' (lots of SIP URIs) and '.' (TLDs) intact.
+    return accountId.replace(/[^A-Za-z0-9._@+-]/g, '_');
+}
+
+function setLogAccount(accountId) {
+    _currentLogAccount = _sanitiseAccountForFilename(accountId);
+}
+
+function getLogfilePath() {
+    if (_currentLogAccount) {
+        return RNFS.DocumentDirectoryPath + '/logs.' + _currentLogAccount + '.txt';
+    }
+    return RNFS.DocumentDirectoryPath + '/logs.txt';
+}
 
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
 let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
@@ -53,7 +86,7 @@ function log2file(text) {
     // dev-tooling marker, not user-facing content.
     console.log('[APPLOG] ' + text);
 
-    RNFS.appendFile(logfile, text + '\r\n', 'utf8')
+    RNFS.appendFile(getLogfilePath(), text + '\r\n', 'utf8')
       .catch((err) => {
         console.log(err.message);
       });
@@ -120,6 +153,27 @@ function timestampedLog() {
     }
 
     message += ' ' + txt;
+  }
+
+  // Auto-tag any line whose body mentions the word "call" (or
+  // calls/called/calling) with a [call] prefix so the in-app
+  // log viewer's pill filter has a single canonical tag for the
+  // call subsystem. Doing this once here is cheaper and safer
+  // than editing the ~50 individual timestampedLog call sites
+  // scattered across app.js, and it'll auto-pick up future logs
+  // too. Word-boundary regex so we don't match "callback",
+  // "callKeeper", "calling-card", etc. Skipped when a [call]
+  // token is already present (idempotent on re-runs and on
+  // already-tagged sites like '[call] handle incoming [wss] call').
+  if (/\bcall(s|ed|ing)?\b/i.test(message) && message.indexOf('[call]') === -1) {
+    // Insert just after the leading "<timestamp> " portion so the
+    // format stays "<ts> [call] <rest>".
+    const sp = message.indexOf(' ');
+    if (sp > 0) {
+      message = message.slice(0, sp) + ' [call]' + message.slice(sp);
+    } else {
+      message = '[call] ' + message;
+    }
   }
 
   log2file(message);
@@ -296,6 +350,342 @@ function parseSylkConferenceUrl(url) {
     console.log('parse error:', e);
     return null;
   }
+}
+
+// Extract a {latitude, longitude} pair from a Google Maps URL or geo:
+// URI embedded in arbitrary text. Returns null if no parseable
+// coordinate pair is found. Tolerates extra whitespace, trailing
+// punctuation, surrounding text in the same body, and the most common
+// Google Maps URL variants — both the canonical share-from-mobile
+// formats and the legacy /maps?q= form.
+//
+// Supported patterns (in priority order):
+//   • https://maps.google.com/?q=<lat>,<lng>
+//   • https://www.google.com/maps?q=<lat>,<lng>
+//   • https://www.google.com/maps/?q=<lat>,<lng>
+//   • https://www.google.com/maps/place/<lat>,<lng>/...
+//   • https://www.google.com/maps/search/?api=1&query=<lat>,<lng>
+//   • https://maps.google.com/?q=loc:<lat>,<lng>   (legacy "loc:" prefix)
+//   • geo:<lat>,<lng>[?q=<lat>,<lng>]
+//
+// NOT supported (would require a server lookup): shortened
+// `https://maps.app.goo.gl/...` redirects. The user can long-press the
+// link to open it in Maps and then re-share the resulting full link.
+//
+// Lat must be in [-90, 90], lng in [-180, 180]. Anything outside is
+// rejected as a coincidence (a 6-digit pair in some other URL).
+function parseSharedLocationUrl(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    // Helper: validate and return a normalised pair. Allows up to 7
+    // decimals (which is roughly 1 cm — beyond what consumer GPS
+    // resolves; Google Maps shares 5–6 dp typically).
+    const _check = (latStr, lngStr) => {
+        const lat = parseFloat(latStr);
+        const lng = parseFloat(lngStr);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        if (lat < -90 || lat > 90) return null;
+        if (lng < -180 || lng > 180) return null;
+        return {latitude: lat, longitude: lng};
+    };
+
+    // Common decimal-pair regex used by every URL pattern below.
+    // Reluctant on the decimal portion so trailing slashes / ampersands
+    // don't get greedily eaten.
+    const COORD = '(-?\\d{1,3}(?:\\.\\d{1,7})?),(-?\\d{1,3}(?:\\.\\d{1,7})?)';
+
+    // 1. /place/<lat>,<lng>/    — the "search-then-share-place" output
+    //    e.g. https://www.google.com/maps/place/44.20957,28.62033/...
+    let m = text.match(new RegExp(`/maps/place/${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 2. /search/?api=1&query=<lat>,<lng>  — Google Maps URL Scheme
+    m = text.match(new RegExp(`/maps/search/[^\\s]*?[?&]query=${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 3. ?q=loc:<lat>,<lng>     — legacy Maps "loc:" prefix
+    m = text.match(new RegExp(`[?&]q=loc:${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 4. ?q=<lat>,<lng> or ?query=<lat>,<lng>  — canonical mobile
+    //    share format. maps.google.com, www.google.com/maps,
+    //    google.com/maps all land here.
+    m = text.match(new RegExp(`[?&](?:q|query)=${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 5. geo:<lat>,<lng>        — RFC 5870 geo URI scheme. Optional
+    //    `?q=` suffix is allowed but ignored — the bare prefix already
+    //    carries the coords.
+    m = text.match(new RegExp(`\\bgeo:${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 6. /@<lat>,<lng>,<zoom>z   — Google Maps' viewport-anchor format
+    //    used after redirects from maps.app.goo.gl shorteners. Common
+    //    shapes:
+    //      https://www.google.com/maps/place/<name>/@44.2,28.6,17z/...
+    //      https://www.google.com/maps/@44.2,28.6,15z
+    //      https://www.google.com/maps/dir/.../@44.2,28.6,12z/...
+    //    The `@lat,lng` is the camera viewport centre — for a /place/
+    //    URL it's exactly the place location, for the others it's the
+    //    map view centre, which is the right answer for "where is this
+    //    sharing pointing me".
+    m = text.match(new RegExp(`/@${COORD}(?:,\\d+(?:\\.\\d+)?z)?`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 7. !3d<lat>!4d<lng>        — Google Maps' encoded "data" payload
+    //    that appears in long redirect URLs and embedded HTML. Look
+    //    for the `!3d<lat>!4d<lng>` triplet which always carries the
+    //    canonical place coordinates regardless of viewport.
+    m = text.match(new RegExp(`!3d(-?\\d{1,3}(?:\\.\\d{1,7})?)!4d(-?\\d{1,3}(?:\\.\\d{1,7})?)`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 8. center=<lat>,<lng>      — Maps embed / iframe URL parameter,
+    //    sometimes appears in interstitial HTML response bodies.
+    m = text.match(new RegExp(`[?&]center=${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    // 9. ll=<lat>,<lng>          — Apple Maps query format. Some users
+    //    paste these into our chat too; might as well support them.
+    m = text.match(new RegExp(`[?&]ll=${COORD}`, 'i'));
+    if (m) { const r = _check(m[1], m[2]); if (r) return r; }
+
+    return null;
+}
+
+// Extract a "shareable location link" descriptor from text: either a
+// direct coordinate pair (anything `parseSharedLocationUrl` recognises)
+// OR a shortened-URL that needs network resolution before we can pull
+// coords out of it. Returned shape:
+//
+//   {type: 'direct', coords: {latitude, longitude}}
+//   {type: 'short',  url: '<the short URL>'}
+//   null  — no recognised location link in the text
+//
+// Field-reported case: the user shared `maps.app.goo.gl/<id>` from
+// Google Maps mobile. We can't resolve those offline (the short id
+// is opaque server-side state). Returning a `'short'` descriptor lets
+// the UI surface the action optimistically and defer the fetch+resolve
+// to the moment the user actually taps "Meet me there...".
+//
+// Recognised shorteners:
+//   • https://maps.app.goo.gl/<id>     — Google Maps mobile share
+//   • https://goo.gl/maps/<id>         — legacy Google Maps short URL
+function extractLocationLink(text) {
+    if (!text || typeof text !== 'string') return null;
+    // Direct match takes priority — if the text already contains a
+    // coordinate-bearing URL we don't need a network round-trip.
+    const direct = parseSharedLocationUrl(text);
+    if (direct) {
+        return {type: 'direct', coords: direct};
+    }
+    // Shortened-URL detection. Capture the full short URL so the
+    // resolver can fetch it as-is. The path id is alphanumeric +
+    // hyphens / underscores — restrict to those so we don't grab
+    // adjacent punctuation (the user might write "see <url>." with
+    // a trailing period).
+    const SHORT_PATTERNS = [
+        /https?:\/\/maps\.app\.goo\.gl\/[A-Za-z0-9_-]+/i,
+        /https?:\/\/goo\.gl\/maps\/[A-Za-z0-9_-]+/i,
+    ];
+    for (const re of SHORT_PATTERNS) {
+        const m = text.match(re);
+        if (m) return {type: 'short', url: m[0]};
+    }
+    return null;
+}
+
+// Resolve a shortened Google Maps URL to coordinates by following the
+// HTTP redirect to its canonical form and then re-parsing. Returns a
+// Promise<{latitude, longitude} | null>.
+//
+// Two-stage strategy:
+//   1. Fetch with `redirect: 'follow'`. The shortener responds with a
+//      302 to the canonical maps.google.com URL whose query string or
+//      `/place/<lat>,<lng>/` segment carries the coords. The fetch
+//      runtime exposes the final URL via `response.url`.
+//   2. Pass that final URL to `parseSharedLocationUrl`. If that fails
+//      (e.g. a `place/<name>` URL with no coordinates), fall back to
+//      scanning the response BODY — Google's interstitial HTML
+//      sometimes embeds the coords as `?center=<lat>,<lng>` in a meta
+//      tag or in inline JSON.
+//
+// Network failures, non-2xx responses, and URLs that resolve to a
+// non-coord landing page all return null. Caller should surface a
+// brief "couldn't resolve" hint to the user in that case.
+async function resolveShortLocationUrl(shortUrl) {
+    if (!shortUrl || typeof shortUrl !== 'string') return null;
+    try {
+        // Spoof a desktop Chrome User-Agent — Google's mobile share
+        // URL handlers branch on UA and return different responses for
+        // mobile clients. The canonical /maps/place/.../@lat,lng/...
+        // URL we want comes back reliably for desktop UAs; mobile
+        // UAs sometimes get a bare HTML interstitial with no coords.
+        const _UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        // Full browser-shape headers. Google's edge handlers branch
+        // not just on UA but on the presence/values of Accept and
+        // Accept-Language too; without these we sometimes get a
+        // self-referencing HTML stub instead of the canonical
+        // /maps/place URL we want.
+        const response = await fetch(shortUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: {
+                'User-Agent': _UA,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        });
+        if (!response) {
+            try { timestampedLog('[location] resolveShort: no response for', shortUrl); } catch (e) {}
+            return null;
+        }
+        try {
+            timestampedLog('[location] resolveShort: HTTP', response.status,
+                'shortUrl=', shortUrl,
+                'finalUrl=', response.url);
+        } catch (e) {}
+
+        // Try the redirected URL first — by far the most common case.
+        if (response.url && response.url !== shortUrl) {
+            const fromUrl = parseSharedLocationUrl(response.url);
+            if (fromUrl) {
+                try { timestampedLog('[location] resolveShort: matched final URL'); } catch (e) {}
+                return fromUrl;
+            }
+        }
+
+        // Fall back to scanning the body for coords. Some short URLs
+        // return an interstitial HTML page with the coords embedded.
+        // Cap the read so a giant page doesn't pin memory.
+        try {
+            const body = await response.text();
+            const sampled = body && body.length > 0
+                ? body.slice(0, 200 * 1024)  // 200 KB — modern Maps HTML is ~150 KB
+                : '';
+            if (sampled) {
+                const fromBody = parseSharedLocationUrl(sampled);
+                if (fromBody) {
+                    try { timestampedLog('[location] resolveShort: matched body'); } catch (e) {}
+                    return fromBody;
+                }
+                // Last-ditch: log up to 4000 chars of the body in
+                // chunks so a future "URL we couldn't parse" report
+                // shows the actual embedded data. Google's mobile
+                // share endpoint serves an HTML interstitial with the
+                // destination URL in a `<meta property="al:web:url">`
+                // / `og:url` / `og:image` tag (the static-map URL
+                // usually carries `?center=lat,lng`) — those land
+                // somewhere in the first ~2-3 KB. timestampedLog has
+                // a per-line cap so we chunk long bodies into
+                // multiple lines for full visibility.
+                try {
+                    // Targeted preview: log just the lines that
+                    // typically hold a destination URL — meta tags,
+                    // anchors, and any line containing "lat" / "lng"
+                    // or a coord-like decimal pair. Full dump is
+                    // skipped in favour of these targeted lines so the
+                    // log file doesn't fill with 16KB of JS bootstrap.
+                    const _scanLines = sampled.split(/\n|>/).slice(0, 4000);
+                    const _hits = [];
+                    for (const line of _scanLines) {
+                        if (line.length < 5 || line.length > 600) continue;
+                        if (/<meta\s/i.test(line)
+                                && /(al:web:url|og:url|og:image|twitter:|description)/i.test(line)) {
+                            _hits.push('META ' + line.trim());
+                            continue;
+                        }
+                        if (/<a\s+[^>]*href=/i.test(line)
+                                && /(google\.com\/maps|geo:|@-?\d+\.\d|center=)/i.test(line)) {
+                            _hits.push('A ' + line.trim());
+                            continue;
+                        }
+                        if (/(@-?\d{1,3}\.\d{2,}|!3d-?\d|center=-?\d|"lat"|"lng"|"latitude"|"longitude")/.test(line)) {
+                            _hits.push('GEO ' + line.trim());
+                            continue;
+                        }
+                    }
+                    timestampedLog('[location] resolveShort: NO MATCH —',
+                        'finalUrl=', response.url,
+                        'bodyLen=', sampled.length,
+                        'hits=', _hits.length);
+                    for (let i = 0; i < Math.min(_hits.length, 12); i++) {
+                        timestampedLog('[location] resolveShort: hit[' + (i + 1) + ']',
+                            JSON.stringify(_hits[i].slice(0, 400)));
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {
+            try { timestampedLog('[location] resolveShort: body read failed', e && e.message ? e.message : e); } catch (e2) {}
+        }
+
+        return null;
+    } catch (e) {
+        try { timestampedLog('[location] resolveShort: fetch failed', shortUrl, e && e.message ? e.message : e); } catch (e2) {}
+        return null;
+    }
+}
+
+// Extract a `?q=<value>` parameter from a URL. Used by the meet-me-there
+// fallback path to recover an address string from a Google Maps "share by
+// name" URL like `maps.google.com/?q=Atic+Millennium,+Bulevardul+Mamaia`
+// when no `@<lat>,<lng>` form is reachable. Returns the URL-decoded
+// value (with `+` translated to spaces) or null.
+function extractQueryAddress(url) {
+    if (!url || typeof url !== 'string') return null;
+    const m = url.match(/[?&](?:q|query)=([^&]+)/i);
+    if (!m) return null;
+    let raw = m[1];
+    try {
+        raw = decodeURIComponent(raw);
+    } catch (e) {
+        // Fall through with the encoded value if decode fails.
+    }
+    return raw.replace(/\+/g, ' ').trim() || null;
+}
+
+// Geocode an address via Nominatim (OpenStreetMap's free geocoder).
+// Returns {latitude, longitude} or null on failure / no match.
+//
+// Nominatim usage policy: identify yourself in the User-Agent header
+// (we use the app's bundleId), keep request volume low (we only call
+// once per meet-me-there tap), and don't hammer at high frequency.
+// See https://operations.osmfoundation.org/policies/nominatim/.
+//
+// Latitude / longitude are validated against the same bounds as
+// parseSharedLocationUrl so a malformed or out-of-range response
+// can't produce a phantom destination pin.
+async function geocodeAddress(address) {
+    if (!address || typeof address !== 'string') return null;
+    try {
+        const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q='
+            + encodeURIComponent(address);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Sylk/1.0 (com.agprojects.sylk; meet-me-there)',
+                'Accept': 'application/json',
+            },
+        });
+        if (!response || !response.ok) {
+            try { timestampedLog('[location] geocode: HTTP', response && response.status, 'for', address); } catch (e) {}
+            return null;
+        }
+        const json = await response.json();
+        if (!Array.isArray(json) || json.length === 0) {
+            try { timestampedLog('[location] geocode: no results for', address); } catch (e) {}
+            return null;
+        }
+        const lat = parseFloat(json[0].lat);
+        const lng = parseFloat(json[0].lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+        try { timestampedLog('[location] geocode: matched', address, '→', lat.toFixed(5), ',', lng.toFixed(5)); } catch (e) {}
+        return {latitude: lat, longitude: lng};
+    } catch (e) {
+        try { timestampedLog('[location] geocode: error', e && e.message ? e.message : e); } catch (e2) {}
+        return null;
+    }
 }
 
 function parseSylkCallUrl(url) {
@@ -575,10 +965,16 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         return metadata.duration? 'Movie' : 'Photo';
     }
 
+    // Locally-recorded calls (saveCallRecording in app.js) are stamped
+    // with call_recording AND filename matching `sylk-call-recording-*`.
+    // Render them with a clearer label than the generic "Audio".
+    const isCallRecording = (metadata.call_recording === true)
+        || (file_name && file_name.toLowerCase().startsWith('sylk-call-recording-'));
+
     if (isImage(decrypted_file_name, metadata.filetype)) {
         text = 'Photo';
     } else if (isAudio(decrypted_file_name, metadata.filetype)) {
-        text = 'Audio';
+        text = isCallRecording ? 'Call recording' : 'Audio';
     } else if (isVideo(decrypted_file_name, metadata.filetype)) {
         text = 'Video';
     } else {
@@ -1293,6 +1689,13 @@ exports.getFolderSize = getFolderSize;
 exports.cleanHtml = cleanHtml;
 exports.parseSylkConferenceUrl = parseSylkConferenceUrl;
 exports.parseSylkCallUrl = parseSylkCallUrl;
+exports.parseSharedLocationUrl = parseSharedLocationUrl;
+exports.extractLocationLink = extractLocationLink;
+exports.resolveShortLocationUrl = resolveShortLocationUrl;
+exports.extractQueryAddress = extractQueryAddress;
+exports.geocodeAddress = geocodeAddress;
+exports.setLogAccount = setLogAccount;
+exports.getLogfilePath = getLogfilePath;
 
 
 

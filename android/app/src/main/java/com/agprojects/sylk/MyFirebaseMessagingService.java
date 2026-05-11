@@ -755,6 +755,32 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			callId = callId.trim();
 		}
 
+		// Snapshot the AudioManager mode at the very moment the push
+		// arrives — Telecom will flip it to RINGTONE / IN_COMMUNICATION
+		// over the next few seconds, and AudioRouteModule.stop() uses this
+		// pre-call snapshot as the restore target so the user returns to
+		// whatever mode they were in (NORMAL / RINGTONE / NORMAL with music
+		// focus, etc.) instead of staying stuck on IN_COMMUNICATION.
+		if (event.equals("incoming_session") || event.equals("incoming_conference_request")) {
+			try {
+				android.media.AudioManager am = (android.media.AudioManager)
+						getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
+				if (am != null) {
+					Log.d(LOG_TAG, "[FCM] audio mode at push receipt: "
+							+ AudioRouteModule.getAudioModeDescription(am.getMode())
+							+ " (event=" + event + ", callId=" + callId + ")");
+				}
+				Log.d(LOG_TAG, "[FCM] SylkTelecom.CONNECTIONS at push receipt: size="
+						+ SylkTelecom.CONNECTIONS.size()
+						+ " keys=" + SylkTelecom.CONNECTIONS.keySet());
+				AudioRouteModule.capturePreCallMode(
+						getApplicationContext(),
+						"FCM.onMessageReceived:" + event);
+			} catch (Throwable t) {
+				Log.w(LOG_TAG, "[FCM] failed to capture audio mode at push receipt", t);
+			}
+		}
+
 		SharedPreferences prefs = getApplicationContext().getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);			
 
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("message")) {

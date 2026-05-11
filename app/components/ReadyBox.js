@@ -2,8 +2,9 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing} from 'react-native';
+import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter} from 'react-native';
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
+import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import SoundLevel from "react-native-sound-level";
 
@@ -14,15 +15,25 @@ import ContactsListBox from './ContactsListBox';
 
 import FooterBox from './FooterBox';
 import URIInput from './URIInput';
+import { DTMFPad } from './DTMFModal';
 import utils from '../utils';
 import {Keyboard} from 'react-native';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
-import AudioRecord from 'react-native-audio-record';
+import AudioWaveform from './AudioWaveform';
+import VuMeter from './VuMeter';
+import AudioProgressSlider from './AudioProgressSlider';
 
 import uuid from 'react-native-uuid';
 import fileType from 'react-native-file-type';
-import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import AudioRecorderPlayer, {
+    AudioEncoderAndroidType,
+    AudioSourceAndroidType,
+    AVEncodingOption,
+    AVEncoderAudioQualityIOSType,
+    OutputFormatAndroidType,
+} from 'react-native-audio-recorder-player';
+import RNFS from 'react-native-fs';
 import Sound from 'react-native-sound';
 
 import styles from '../assets/styles/ReadyBox';
@@ -62,6 +73,13 @@ class ReadyBox extends Component {
 			searchContacts: this.props.searchContacts,
 			searchString: '',
 			recordingDuration: 0,
+			// Per-100ms peak amplitude for the in-progress / just-
+			// finished mic recording. Single channel (l) — voice
+			// memos only have the user's mic, no remote side. Gets
+			// attached to the outgoing file_transfer's metadata so
+			// the recipient's bubble draws the same waveform we
+			// preview here.
+			recordingPeaks: [],
 			sortOrder: 'desc',
 			orderBy: 'timestamp',
 			showOrderBar: false,
@@ -74,6 +92,18 @@ class ReadyBox extends Component {
 			// the modal time to animate out. See componentDidUpdate for the
 			// transitions that arm/disarm this.
 			showNoPrivateKeyWarning: false,
+			// Toggle that lets the user pick which contact source to
+			// search across in the Contacts List: 'sylk' = the Sylk
+			// account contacts loaded from the server / local DB,
+			// 'ab' = the system address-book entries loaded once at
+			// app start. Defaults to 'sylk' so behavior matches what
+			// users saw before this toggle existed (Sylk-only).
+			contactSource: 'sylk',
+			// AddressBook-only: dialpad attached to the right of the
+			// search bar. Tapping the dialpad icon toggles this; when
+			// true an inline DTMFPad is rendered below the search bar
+			// and each key press appends a digit to the search field.
+			showAbDialpad: false,
         };
 
         this.ended = false;
@@ -151,12 +181,25 @@ class ReadyBox extends Component {
             this.setState({recordingDuration: nextProps.recordingDuration});
         }
 
+        // When the user exits contact-search mode (the search bar is
+        // collapsing), snap the source toggle back to 'sylk' AND close
+        // the AB dialpad. Without this the next time they open search
+        // they'd land on whatever they last picked — usually 'ab' with
+        // the dialpad expanded — which surprised people who expected
+        // the default Sylk view to come back. Reset early so the
+        // setState below doesn't race with stale toggles.
+        const exitedContactSearch =
+            this.state.searchContacts && !nextProps.searchContacts;
+
         this.setState({
                         searchMessages: nextProps.searchMessages,
                         searchContacts: nextProps.searchContacts,
                         isTyping: nextProps.isTyping,
                         navigationItems: nextProps.navigationItems,
-                        keys: nextProps.keys
+                        keys: nextProps.keys,
+                        ...(exitedContactSearch
+                            ? { contactSource: 'sylk', showAbDialpad: false }
+                            : {})
                         });
     }
 
@@ -173,12 +216,35 @@ class ReadyBox extends Component {
         if (this._isSharingCurrentContact(this.props)) {
             this._startLocationSharePulse();
         }
+
+        // Stop voice-message recording / preview playback whenever a call
+        // is about to start (incoming OR outgoing) so audio doesn't
+        // contend with the ringtone or the call itself.
+        this.callStartingListener = DeviceEventEmitter.addListener(
+            'SylkCallStarting',
+            (payload) => {
+                try {
+                    if (this.state.recording) {
+                        this.stopRecording();
+                    }
+                    if (this.state.playRecording || this.state.previewRecording) {
+                        try { audioRecorderPlayer.stopPlayer(); } catch (_e) {}
+                        try { audioRecorderPlayer.removePlayBackListener(); } catch (_e) {}
+                        this.setState({ playRecording: false, previewRecording: false });
+                    }
+                } catch (e) { /* swallow — never block call handling */ }
+            }
+        );
     }
 
     componentWillUnmount() {
         this.ended = true;
         this._stopLocationSharePulse();
         this._clearNoPrivateKeyWarningTimer();
+        if (this.callStartingListener) {
+            this.callStartingListener.remove();
+            this.callStartingListener = null;
+        }
     }
 
     _clearNoPrivateKeyWarningTimer() {
@@ -474,7 +540,17 @@ class ReadyBox extends Component {
 	   if (this.props.selectedContact) {
 		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
-		   return this.state.searchContacts && this.props.allContacts.length > 10;
+		   // The bar is already gated on the user actively entering
+		   // "search contacts" mode, so the only relevant question is
+		   // whether searchContacts is on. The previous extra clause
+		   // (allContacts.length > 10) hid the Sylk/AddressBook source
+		   // toggle whenever the Sylk list happened to be small — but
+		   // that's precisely when the AB source matters most, since
+		   // the address book is usually orders of magnitude larger
+		   // than a handful of Sylk contacts. Keep the bar visible
+		   // whenever search mode is active, regardless of contact
+		   // count.
+		   return this.state.searchContacts;
 	   }
    }
 
@@ -606,6 +682,16 @@ class ReadyBox extends Component {
             if (ct === 'application/sylk-contact-update') continue;
             if (ct === 'message/imdn') continue;
             if (ct.indexOf('pgp') !== -1) continue;
+            // Live-location bubbles count as bidi proof — see the
+            // matching block in NavigationBar._hasBidirectionalChat
+            // for the rationale (a 60-tick incoming share is clearly
+            // a real relationship and the share button should remain
+            // available).
+            if (ct === 'application/sylk-live-location') {
+                hasOut = true;
+                hasIn = true;
+                return true;
+            }
             const dir = m.direction;
             if (dir === 'outgoing') hasOut = true;
             else if (dir === 'incoming') hasIn = true;
@@ -619,9 +705,19 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.props.call) {
-            return false;
-        }
+        // The historical `if (this.props.call) return false` gate is
+        // intentionally removed: a user on an active audio/video call
+        // who simultaneously navigates into a chat (split-screen, or
+        // simply tapping into a different conversation while the call
+        // continues in the background) should still be able to share
+        // their location. Location sharing has no audio/video
+        // resource overlap with the active call — it's just a
+        // metadata stream — so there's no technical reason to hide
+        // the affordance, and "I'm on the phone, send me your
+        // location" is exactly when the user wants it.
+        // The other ancillary gates below (recording, audio preview,
+        // playback) stay because they DO conflict with the same UI
+        // row the share button lives in.
 
         if (this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
             return false;
@@ -743,6 +839,64 @@ class ReadyBox extends Component {
         */
 
         return true;
+    }
+
+    // Flip the contact-source state used by the in-bar toggle.
+    // ContactsListBox reads this via a prop and limits its filter
+    // to either Sylk contacts (default) or the address-book entries
+    // loaded from the system at app start.
+    handleContactSourceChange(source) {
+        if (source !== 'sylk' && source !== 'ab') {
+            return;
+        }
+        if (this.state.contactSource === source) {
+            return;
+        }
+        // Switching away from AB closes the dialpad — it's only
+        // meaningful in the AddressBook number-entry mode.
+        const next = { contactSource: source };
+        if (source !== 'ab' && this.state.showAbDialpad) {
+            next.showAbDialpad = false;
+        }
+        this.setState(next);
+    }
+
+    // Toggle the AddressBook dialpad attached to the search bar.
+    // Opening the dialpad dismisses the OS soft keyboard — otherwise
+    // both surfaces would fight for the bottom of the screen and the
+    // dialpad would render under the keyboard. Closing the dialpad
+    // doesn't re-summon the keyboard; the user can tap the search
+    // input if they want it back.
+    toggleAbDialpad() {
+        const opening = !this.state.showAbDialpad;
+        this.setState({ showAbDialpad: opening }, () => {
+            if (opening) {
+                Keyboard.dismiss();
+            }
+        });
+    }
+
+    // Each key press from the AB dialpad appends one printable
+    // character to the search-bar value via the same handleSearch
+    // path the keyboard uses. That way the contact list filters
+    // immediately as digits accumulate, and the existing clear-icon
+    // wipes the field if the user wants to start over.
+    handleAbDialpadDigit(digit) {
+        const current = (this.state.targetUri || '');
+        this.handleSearch(current + digit);
+    }
+
+    // Drop the trailing character from the search bar — the dialpad
+    // backspace key. Mistypes happen often when entering a long
+    // number on a small keypad, and deleting one digit at a time
+    // beats clearing the whole field via the × clear-icon and
+    // re-entering everything.
+    handleAbDialpadBackspace() {
+        const current = (this.state.targetUri || '');
+        if (!current.length) {
+            return;
+        }
+        this.handleSearch(current.slice(0, -1));
     }
 
     handleSearch(inputText, contact) {
@@ -946,6 +1100,15 @@ class ReadyBox extends Component {
             return true;
         }
 
+        // AddressBook source mode: only audio calls are meaningful for
+        // raw phone-number entries. Chat would route to a SIP user
+        // that probably doesn't exist (the AB number is a PSTN
+        // destination, not a Sylk account), so we hide the action by
+        // disabling the button while the AB pill is active.
+        if (this.state.contactSource === 'ab') {
+            return true;
+        }
+
         if (this.props.selectedContact) {
             return true;
         }
@@ -1019,6 +1182,11 @@ class ReadyBox extends Component {
             return true;
         }
 
+        // AB mode: phone-number entries can't carry video — disable.
+        if (this.state.contactSource === 'ab') {
+            return true;
+        }
+
         if (uri.indexOf('4444@') > -1) {
             return true;
         }
@@ -1047,6 +1215,12 @@ class ReadyBox extends Component {
 
     get conferenceButtonDisabled() {
         if (!this.props.canSend()) {
+            return true;
+        }
+
+        // AB mode: starting a Sylk conference makes no sense for an
+        // address-book phone-number entry. Disable.
+        if (this.state.contactSource === 'ab') {
             return true;
         }
 
@@ -1258,6 +1432,17 @@ class ReadyBox extends Component {
     get categoryItems() {
         if (this.props.selectedContact) {
             return [...this.categoryFilterItems, ...this.categorySortItems];
+        }
+
+        // When the user has flipped the contact-source toggle to
+        // AddressBook, hide the sort/order buttons. AB entries are a
+        // static system-loaded set with no message timestamps or
+        // per-contact storage to sort by, so the buttons are
+        // meaningless in that mode and just clutter the row. The pills
+        // remain visible (rendered separately on the right side of
+        // this same nav row).
+        if (this.state.contactSource === 'ab') {
+            return [];
         }
 
         if (this.showCategoryBar) {
@@ -1725,14 +1910,37 @@ class ReadyBox extends Component {
                 this.setState({audioSendFinished: false});
             }, 10);
             let msg = await this.props.file2GiftedChat(this.state.recordingFile);
+            // Attach the per-100ms mic peaks captured during
+            // recording so the recipient's bubble draws the same
+            // waveform we previewed locally. Single-channel — the
+            // mic is the only signal — so peaks.r stays empty;
+            // AudioWaveform handles the empty side gracefully.
+            const peaks = this.state.recordingPeaks;
+            if (msg && msg.metadata
+                    && peaks && Array.isArray(peaks) && peaks.length > 0) {
+                msg.metadata.peaks = { l: peaks, r: [] };
+            }
             this.transferFile(msg);
-            this.setState({recordingFile: null, recordingDuration: 0});
+            this.setState({recordingFile: null, recordingDuration: 0, recordingPeaks: []});
         }
     }
 
     async transferFile(msg) {
         msg.metadata.preview = false;
         this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
+        // Ship peaks as a sylk-message-metadata follow-up so the
+        // recipient's bubble can draw the waveform. SylkServer's
+        // file-transfer broadcast strips custom fields like `peaks`,
+        // so without this side-channel the recipient's waveform
+        // renders as a flat baseline. See app.js: sendPeaksMessage.
+        if (msg.metadata && msg.metadata.peaks
+                && typeof this.props.sendPeaksMessage === 'function') {
+            this.props.sendPeaksMessage(
+                msg.metadata.receiver.uri,
+                msg.metadata.transfer_id,
+                msg.metadata.peaks
+            );
+        }
     }
 
     deleteAudioAction(event) {
@@ -1763,11 +1971,11 @@ class ReadyBox extends Component {
     }
 
     deleteAudio() {
-        console.log('Delete audio');
-        this.setState({recordingFile: null, 
+        this.setState({recordingFile: null,
 					   recordingDuration: 0,
-                       recording: false, 
-                       previewRecording: false});
+                       recording: false,
+                       previewRecording: false,
+                       recordingPeaks: []});
 
         if (this.props.selectedContact) {
 			this.props.getMessages(this.props.selectedContact.uri);
@@ -1783,34 +1991,80 @@ class ReadyBox extends Component {
 	}
         
     async onStartRecord () {
-		const audioOptions = {
-			sampleRate: 16000,  // default 44100
-			channels: 1,        // 1 or 2, default 1
-			bitsPerSample: 16,  // 8 or 16, default 16
-			audioSource: 6,     // android only (see below)
-			wavFile: 'sylk-audio-recording.wav' // default 'audio.wav'
-		};
-
 		SoundLevel.start();
-	
+
 		SoundLevel.onNewFrame = (data) => {
 			  // data.value is in dB (e.g., -40 to -5)
 			  // Normalize to 0–1
 			  const normalized = Math.min(Math.max((data.value + 60) / 60, 0), 1);
 			  this.setState({ level: normalized });
 		   };
-         		
-		//console.log('Start audio recording...')
 
         try {
-            AudioRecord.init(audioOptions);
-			// Register listener for incoming audio data
-			AudioRecord.on('data', (data) => {
-			  // `data` is base64-encoded audio chunk
-			  //console.log('Audio chunk received:', data.length);
-			  // You can store or process the chunk here
-			});
-            AudioRecord.start();
+            // Compressed AAC (M4A) recording — voice memos used to
+            // ship as 16 kHz mono 16-bit PCM WAV (~32 KB/s = ~1.9 MB
+            // per minute). Compressed AAC at ~32 kbps is ~4 KB/s
+            // (~240 KB per minute) — an 8× reduction with no audible
+            // quality loss for speech, and the file is playable
+            // everywhere natively (AVFoundation on iOS, MediaPlayer
+            // on Android, every browser, every desktop player).
+            //
+            // The recorder is shared with the playback path
+            // (audioRecorderPlayer is the same module-level instance)
+            // — that's fine because record and play never overlap in
+            // time: we record, stop, then optionally play back from
+            // the saved file.
+            //
+            // Path: cache dir + sylk-audio-recording.m4a. We pass an
+            // explicit path so the file always ends in .m4a — Android's
+            // default ends in .mp4 which file2GiftedChat would route
+            // through the isVideo branch (msg.video = filepath) instead
+            // of msg.audio = filepath, breaking bubble rendering and
+            // playback. iOS already defaults to .m4a but we set it
+            // explicitly there too for symmetry.
+            const recordingPath = `${RNFS.CachesDirectoryPath}/sylk-audio-recording.m4a`;
+            const audioSet = {
+                // iOS — AAC in an .m4a container at 16 kHz mono.
+                AVFormatIDKeyIOS: AVEncodingOption.aac,
+                AVSampleRateKeyIOS: 16000,
+                AVNumberOfChannelsKeyIOS: 1,
+                AVEncoderAudioQualityKeyIOS: AVEncoderAudioQualityIOSType.medium,
+                AVEncoderBitRateKeyIOS: 32000,
+                // Android — AAC in an MP4 container at 16 kHz mono.
+                AudioEncoderAndroid: AudioEncoderAndroidType.AAC,
+                AudioSourceAndroid: AudioSourceAndroidType.MIC,
+                OutputFormatAndroid: OutputFormatAndroidType.MPEG_4,
+                AudioSamplingRateAndroid: 16000,
+                AudioChannelsAndroid: 1,
+                AudioEncodingBitRateAndroid: 32000,
+            };
+
+            // Reset per-recording peak accumulator. Same shape /
+            // granularity Android's SylkCallRecorder uses (per-100ms
+            // 0..255 peak per channel) so the receiver's bubble
+            // renders the waveform with no special handling for
+            // "regular voice memo" vs "call recording". Driven by
+            // currentMetering (dBFS) from addRecordBackListener —
+            // metering ticks roughly every 100 ms with the loudest
+            // sample seen since the previous tick, mapped to 0..255
+            // so it slots straight into the existing peaks pipeline.
+            this._micPeaks = [];
+
+            await audioRecorderPlayer.startRecorder(recordingPath, audioSet, true);
+            audioRecorderPlayer.addRecordBackListener((e) => {
+                // currentMetering is in dBFS (typically -160..0) on
+                // iOS / Android. Treat -50 dB as the noise floor so
+                // ambient room tone doesn't clip the bottom of the
+                // waveform; anything quieter folds to 0. Loudest
+                // possible (0 dB) maps to 255.
+                const db = (typeof e.currentMetering === 'number')
+                    ? e.currentMetering
+                    : -160;
+                const NOISE_FLOOR_DB = -50;
+                const norm = Math.max(0, Math.min(1, (db - NOISE_FLOOR_DB) / -NOISE_FLOOR_DB));
+                this._micPeaks.push(Math.round(norm * 255));
+            });
+
 			this.setState({recording: true});
 
 			this.recordingStopTimer = setTimeout(() => {
@@ -1831,12 +2085,38 @@ class ReadyBox extends Component {
     }
 
     async onStopRecord () {
-        //console.log('onStopRecord...');
-        this.setState({recording: false});
+        // Stop the recording-duration ticker immediately so the
+        // header doesn't keep counting while stopRecorder() resolves.
+        // We deliberately do NOT setState({recording:false}) here —
+        // that would cause an intermediate render where neither
+        // `recording` nor `recordingFile` is set, which the chat
+        // (ContactsListBox: chatMessages = [] when either is set) would
+        // misread as "no recording in progress" and momentarily flash
+        // the previous chat history into view before the next setState
+        // hides it again. Instead we do one combined setState below
+        // that flips recording=false AND recordingFile=result in the
+        // same render pass — no flash.
         this.stopRecordingTimer();
-        const result = await AudioRecord.stop();
+        let result = null;
+        try {
+            result = await audioRecorderPlayer.stopRecorder();
+        } catch (e) {
+            console.log('stopRecorder error', e && e.message);
+        }
+        try { audioRecorderPlayer.removeRecordBackListener(); } catch (_e) {}
+        const finalPeaks = (this._micPeaks || []).slice();
+        this._micPeaks = null;
+        // Single combined setState — flips recording=false AND
+        // installs the recordingFile + peaks in the same render so
+        // ContactsListBox's "hide chat while recordingFile is set"
+        // gate stays true the whole way through. See the no-flash
+        // note at the top of this method.
+        this.setState({
+            recording: false,
+            recordingFile: result,
+            recordingPeaks: finalPeaks,
+        });
         this.audioRecorded(result);
-        this.setState({recordingFile: result});
 		SoundLevel.stop();
     };
 
@@ -1846,6 +2126,7 @@ class ReadyBox extends Component {
             recording: false,
             recordingFile: null,
             recordingDuration: 0,
+            recordingPeaks: [],
             audioSendFinished: false,
             searchString: ''
         });
@@ -1866,7 +2147,11 @@ class ReadyBox extends Component {
 			} catch (e) {
 				console.log('error', e);
 			}
-			this.setState({recording: false, recordingFile: file});
+			// Note: recording=false / recordingFile=file are already
+			// set in the combined setState at the end of onStopRecord
+			// — no duplicate setState here, since that would force an
+			// extra render and we want the transition to be a single
+			// atomic render to avoid flashing the chat history.
         }
     }
     
@@ -2147,23 +2432,104 @@ class ReadyBox extends Component {
                             </View>
                         </View>
                         :
-                        <View style={navigationContainer}>
-                            <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                                horizontal={true}
-                                ref={(ref) => { this.navigationRef = ref; }}
-                                onScrollToIndexFailed={info => {
-                                    const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                    wait.then(() => {
-                                        if (!this.props.selectedContact) {
-                                            this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
+                        <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                                <FlatList contentContainerStyle={styles.navigationButtonGroup}
+                                    horizontal={true}
+                                    showsHorizontalScrollIndicator={false}
+                                    ref={(ref) => { this.navigationRef = ref; }}
+                                    onScrollToIndexFailed={info => {
+                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                        wait.then(() => {
+                                            if (!this.props.selectedContact) {
+                                                this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
+                                            }
+                                        });
+                                    }}
+                                    data={this.categoryItems}
+                                    extraData={this.state}
+                                    keyExtractor={(item, index) => item.key}
+                                    renderItem={this.renderNavigationItem}
+                                />
+                            </View>
+                            {/* Sylk / AddressBook source pills, pinned to
+                                the right edge of the Sort/Order row.
+                                They drive ContactsListBox's search corpus
+                                via state.contactSource — Sylk is the
+                                synced contact list, AddressBook is the
+                                system-wide entries loaded once at app
+                                start. Hidden in share/invite modes
+                                because the toggle isn't meaningful
+                                there. */}
+                            {!this.props.shareToContacts && !this.props.inviteContacts ? (
+                                <View style={readyBoxPillStyles.pillGroup}>
+                                    <TouchableOpacity
+                                        onPress={() => this.handleContactSourceChange('sylk')}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected: this.state.contactSource !== 'ab' }}
+                                        accessibilityLabel={
+                                            this.state.contactSource !== 'ab'
+                                                ? 'Searching Sylk contacts'
+                                                : 'Switch to Sylk contacts'
                                         }
-                                    });
-                                }}
-                                data={this.categoryItems}
-                                extraData={this.state}
-                                keyExtractor={(item, index) => item.key}
-                                renderItem={this.renderNavigationItem}
-                            />
+                                        style={[
+                                            readyBoxPillStyles.pill,
+                                            this.state.contactSource !== 'ab'
+                                                ? readyBoxPillStyles.pillSylkActive
+                                                : readyBoxPillStyles.pillInactive,
+                                        ]}
+                                    >
+                                        <MaterialCommunityIcon
+                                            name="account-circle"
+                                            size={16}
+                                            color={this.state.contactSource !== 'ab' ? '#ffffff' : '#2980b9'}
+                                        />
+                                        <Text
+                                            style={[
+                                                readyBoxPillStyles.pillLabel,
+                                                this.state.contactSource !== 'ab'
+                                                    ? readyBoxPillStyles.pillLabelActive
+                                                    : readyBoxPillStyles.pillLabelSylkInactive,
+                                            ]}
+                                        >
+                                            Sylk
+                                        </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        onPress={() => this.handleContactSourceChange('ab')}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected: this.state.contactSource === 'ab' }}
+                                        accessibilityLabel={
+                                            this.state.contactSource === 'ab'
+                                                ? 'Searching AddressBook'
+                                                : 'Switch to AddressBook'
+                                        }
+                                        style={[
+                                            readyBoxPillStyles.pill,
+                                            readyBoxPillStyles.pillRight,
+                                            this.state.contactSource === 'ab'
+                                                ? readyBoxPillStyles.pillAbActive
+                                                : readyBoxPillStyles.pillInactive,
+                                        ]}
+                                    >
+                                        <MaterialCommunityIcon
+                                            name="book-account"
+                                            size={16}
+                                            color={this.state.contactSource === 'ab' ? '#ffffff' : '#27ae60'}
+                                        />
+                                        <Text
+                                            style={[
+                                                readyBoxPillStyles.pillLabel,
+                                                this.state.contactSource === 'ab'
+                                                    ? readyBoxPillStyles.pillLabelActive
+                                                    : readyBoxPillStyles.pillLabelAbInactive,
+                                            ]}
+                                        >
+                                            AddressBook
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : null}
                         </View>
                     : null}
 
@@ -2190,17 +2556,96 @@ class ReadyBox extends Component {
 
                         {this.showSearchBar ?
                         <View style={URIContainerClass}>
-                            <URIInput
-                                defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
-                                onChange={this.handleSearch}
-                                onSelect={this.handleTargetSelect}
-                                shareToContacts={this.props.shareToContacts}
-                                inviteContacts={this.props.inviteContacts}
-                                searchMessages={this.state.searchMessages}
-                                //autoFocus={this.state.searchMessages}
-                                autoFocus={false}
-                                dark={this.props.dark}
-                            />
+                            <View style={readyBoxDialpadStyles.searchRow}>
+                                <View style={readyBoxDialpadStyles.searchInputWrap}>
+                                    <URIInput
+                                        defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
+                                        onChange={this.handleSearch}
+                                        onSelect={this.handleTargetSelect}
+                                        shareToContacts={this.props.shareToContacts}
+                                        inviteContacts={this.props.inviteContacts}
+                                        searchMessages={this.state.searchMessages}
+                                        contactSource={this.state.contactSource}
+                                        // Show the backspace inside the
+                                        // search bar (left of the ×
+                                        // clear-icon) only while the
+                                        // AB dialpad is open — that's
+                                        // the only mode where digit-
+                                        // by-digit deletion matters.
+                                        showBackspace={
+                                            this.state.contactSource === 'ab'
+                                            && this.state.showAbDialpad
+                                            && !this.props.shareToContacts
+                                            && !this.props.inviteContacts
+                                            && !this.state.searchMessages
+                                        }
+                                        onBackspace={this.handleAbDialpadBackspace}
+                                        //autoFocus={this.state.searchMessages}
+                                        autoFocus={false}
+                                        dark={this.props.dark}
+                                    />
+                                </View>
+                                {/* Dialpad button — only rendered while
+                                    the AddressBook source is active and
+                                    the user isn't in share/invite/
+                                    message-search modes. Tapping it
+                                    expands an inline DTMFPad below the
+                                    search row that types digits into
+                                    the search field, so the user can
+                                    dial a number without summoning the
+                                    OS keyboard. Highlighted when the
+                                    pad is open so the toggle-state is
+                                    obvious. */}
+                                {this.state.contactSource === 'ab'
+                                  && !this.props.shareToContacts
+                                  && !this.props.inviteContacts
+                                  && !this.state.searchMessages ? (
+                                    <IconButton
+                                        icon="dialpad"
+                                        size={22}
+                                        onPress={this.toggleAbDialpad}
+                                        accessibilityLabel={
+                                            this.state.showAbDialpad
+                                                ? 'Hide dialpad'
+                                                : 'Show dialpad'
+                                        }
+                                        style={[
+                                            readyBoxDialpadStyles.iconButton,
+                                            this.state.showAbDialpad
+                                                ? readyBoxDialpadStyles.iconButtonActive
+                                                : null,
+                                        ]}
+                                        iconColor={
+                                            this.state.showAbDialpad
+                                                ? '#ffffff'
+                                                : '#27ae60'
+                                        }
+                                    />
+                                ) : null}
+                            </View>
+                            {this.state.contactSource === 'ab'
+                              && this.state.showAbDialpad
+                              && !this.props.shareToContacts
+                              && !this.props.inviteContacts
+                              && !this.state.searchMessages ? (
+                                <View style={readyBoxDialpadStyles.dialpadWrap}>
+                                    {/* Full-size keys here (no
+                                        `compact`) so the pad reads
+                                        like a real phone keypad —
+                                        the compact preset shrunk the
+                                        keys to ~78% which felt
+                                        cramped for actual number
+                                        entry. The backspace control
+                                        moved INSIDE the search bar
+                                        (URIInput's showBackspace
+                                        prop) and lives left of the ×
+                                        clear-icon, so the dialpad
+                                        itself is just keys now. */}
+                                    <DTMFPad
+                                        onDigit={this.handleAbDialpadDigit}
+                                    />
+                                </View>
+                            ) : null}
                         </View>
                         : null}
 
@@ -2268,7 +2713,12 @@ class ReadyBox extends Component {
                                   </View>
                                   : null }
 
-                                  {this.state.recordingFile?
+                                  {/* Recording-preview Play button moved
+                                      into the recording panel itself,
+                                      next to the slider/wave. The
+                                      action-bar position is hidden to
+                                      avoid duplication. */}
+                                  {false && this.state.recordingFile?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -2485,28 +2935,23 @@ class ReadyBox extends Component {
 
                     { this.state.recording  ?
                         <View style={styles.recordingContainer}>
-						 <View style={{borderBottom: 30}}>
-                            <Title style={styles.activityTitle}>{activityTitle}</Title>
-						 </View>
-						 <View
-								style={{
-								  width: 20,
-								  height: 200,
-								  backgroundColor: "#ddd",
-								  overflow: "hidden",
-								alignSelf: "center",   // <<— Center horizontally inside parent
-								}}
-							  >
-								<View
-								  style={{
-									backgroundColor: "green",
-									width: "100%",
-									height: `${this.state.level * 100}%`,
-									position: "absolute",
-									bottom: 0,
-								  }}
-								/>
-							  </View>
+                            <View style={{borderBottom: 30}}>
+                                <Title style={styles.activityTitle}>{activityTitle}</Title>
+                            </View>
+                            {/* Live VU meter — same widget the in-call
+                                AudioCallBox uses for the live mic
+                                level. Replaces the old vertical green
+                                bar. Fixed 280 px width so it centres
+                                cleanly via alignSelf — percentage
+                                widths inside flex column parents
+                                were rendering off-centre. */}
+                            <View style={{ marginTop: 16, alignSelf: 'center' }}>
+                                <VuMeter
+                                    level={this.state.level || 0}
+                                    label="Recording"
+                                    width={280}
+                                />
+                            </View>
                         </View>
                     : null
                     }
@@ -2514,10 +2959,155 @@ class ReadyBox extends Component {
                     { this.state.recordingFile  ?
                         <View style={styles.recordingContainer}>
                             <Title style={styles.activityTitle}>{activityTitle}</Title>
-                            {this.state.recordingDuration ?
-                            <Text style={styles.subtitle}>{this.state.recordingDuration + ' seconds'}</Text>
-                            :null}
-                            
+                            {(() => {
+                                // Mirror the chat bubble's outgoing audio
+                                // bubble layout exactly: a white rounded
+                                // pill with the duration label on top,
+                                // the single-channel waveform, and the
+                                // slider stacked underneath, with the
+                                // play button anchored on the right.
+                                // What the user sees here is the same
+                                // thing the recipient sees once the
+                                // file lands in the chat.
+                                //
+                                // We render this whenever recordingFile
+                                // is set — regardless of whether peaks
+                                // have landed yet — so there's no flash
+                                // while peaks finish snapshotting.
+                                // AudioWaveform handles an empty peaks
+                                // array by rendering a flat dim baseline
+                                // so the layout doesn't flinch.
+                                const dur = this.state.currentDurationSec || 0;
+                                const pos = this.state.currentPositionSec || 0;
+                                const progress = (this.state.previewRecording && dur > 0)
+                                    ? Math.max(0, Math.min(100, (pos / dur) * 100))
+                                    : 0;
+                                const isPlaying = this.state.previewRecording;
+                                const sliderWidth = 240;
+                                const formatAudioDuration = (totalSeconds) => {
+                                    const s = Math.max(0, Math.floor(totalSeconds || 0));
+                                    const h = Math.floor(s / 3600);
+                                    const m = Math.floor((s % 3600) / 60);
+                                    const sec = s % 60;
+                                    const parts = [];
+                                    if (h > 0) parts.push(`${h}h`);
+                                    if (h > 0 || m > 0) parts.push(`${m}m`);
+                                    parts.push(`${sec}s`);
+                                    return parts.join(' ');
+                                };
+                                const durationLabel = this.state.recordingDuration
+                                    ? `Recording of ${formatAudioDuration(this.state.recordingDuration)}`
+                                    : 'Recording';
+                                // Bubble palette mirrors the outgoing
+                                // GiftedChat audio bubble exactly: no
+                                // fill (transparent), 0.5px white border,
+                                // 16px radius, white text/slider/waveform.
+                                // See ChatBubble.js's audio branch
+                                // (currentMessage.audio) — same wrapper
+                                // styling, just transposed onto a plain
+                                // View since this preview lives outside
+                                // the GiftedChat row.
+                                return (
+                                    <View style={{
+                                        alignSelf: 'center',
+                                        marginTop: 4,
+                                        backgroundColor: 'transparent',
+                                        borderRadius: 16,
+                                        borderWidth: 0.5,
+                                        borderColor: 'white',
+                                        paddingVertical: 8,
+                                        paddingHorizontal: 12,
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                    }}>
+                                        <View style={{
+                                            flexDirection: 'column',
+                                            alignItems: 'flex-end',
+                                            justifyContent: 'center',
+                                            paddingRight: 8,
+                                        }}>
+                                            <Text style={{
+                                                marginBottom: 2,
+                                                marginTop: 0,
+                                                alignSelf: 'flex-end',
+                                                fontSize: 13,
+                                                color: '#fff',
+                                            }} numberOfLines={1}>
+                                                {durationLabel}
+                                            </Text>
+                                            <AudioWaveform
+                                                peaks={{ l: this.state.recordingPeaks || [], r: [] }}
+                                                progress={progress}
+                                                width={sliderWidth}
+                                                height={28}
+                                                barCount={60}
+                                                channel="l"
+                                                playedColor="orange"
+                                                unplayedColor="rgba(255,255,255,0.35)"
+                                            />
+                                            <AudioProgressSlider
+                                                progress={progress}
+                                                width={sliderWidth}
+                                                height={4}
+                                                knobWidth={6}
+                                                knobHeight={20}
+                                                color={"#ffffff"}
+                                                unfilledColor="rgba(255,255,255,0.3)"
+                                                knobColor={"#ffffff"}
+                                                onSeekStart={() => {
+                                                    if (this.state.previewRecording) {
+                                                        try { audioRecorderPlayer.pausePlayer(); } catch (_e) {}
+                                                    }
+                                                }}
+                                                onSeek={(pct) => {
+                                                    if (dur > 0) {
+                                                        const ms = (pct / 100) * dur;
+                                                        try {
+                                                            audioRecorderPlayer.seekToPlayer(ms);
+                                                            if (this.state.previewRecording) {
+                                                                audioRecorderPlayer.resumePlayer();
+                                                            }
+                                                        } catch (_e) {}
+                                                    }
+                                                }}
+                                            />
+                                        </View>
+                                        {/* Play/pause button — same shape
+                                            and palette as the bubble's
+                                            playButton in
+                                            ContactsListBox.renderMessageAudio
+                                            (TouchableHighlight wrapper at
+                                            48×48 with 24 radius hosting
+                                            an IconButton with the blue
+                                            `playAudioButton` style). */}
+                                        <TouchableHighlight
+                                            onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
+                                            underlayColor="transparent"
+                                            style={[
+                                                {
+                                                    height: 48,
+                                                    width: 48,
+                                                    justifyContent: 'center',
+                                                    borderRadius: 24,
+                                                    alignSelf: 'flex-end',
+                                                    marginLeft: 0,
+                                                },
+                                            ]}>
+                                            <IconButton
+                                                size={28}
+                                                onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
+                                                style={{
+                                                    backgroundColor: 'rgba(69, 114, 166, 1)',
+                                                    marginLeft: 0,
+                                                    marginRight: 0,
+                                                }}
+                                                iconColor="white"
+                                                icon={isPlaying ? 'pause' : 'play'}
+                                            />
+                                        </TouchableHighlight>
+                                    </View>
+                                );
+                            })()}
                         </View>
 
                     : null
@@ -2536,6 +3126,7 @@ class ReadyBox extends Component {
                       :
 					<ContactsListBox
 						allContacts={this.props.allContacts}
+						contacts={this.props.addressBookContacts}
 						targetUri={this.state.targetUri}
 						fontScale = {this.props.fontScale}
 						orientation={this.props.orientation}
@@ -2544,6 +3135,7 @@ class ReadyBox extends Component {
 						isTablet={this.props.isTablet}
 						chat={this.state.chat && !this.props.inviteContacts}
 						isLandscape={this.props.isLandscape}
+						contactSource={this.state.contactSource}
 						account={this.props.account}
 						password={this.props.password}
 						callHistoryUrl={this.props.callHistoryUrl}
@@ -2588,6 +3180,7 @@ class ReadyBox extends Component {
 						downloadFile = {this.props.downloadFile}
 						uploadFile = {this.props.uploadFile}
 						decryptFunc = {this.props.decryptFunc}
+						openLogAttachment = {this.props.openLogAttachment}
 						messagesCategoryFilter = {this.state.messagesCategoryFilter}
 						isTexting = {this.props.isTexting}
 						forwardMessagesFunc = {this.props.forwardMessagesFunc}
@@ -2607,13 +3200,19 @@ class ReadyBox extends Component {
 						recordAudio = {this.recordAudio}
 						dark = {this.props.dark}
 						messagesMetadata = {this.props.messagesMetadata}
+						chatScrollTrigger = {this.props.chatScrollTrigger}
+						localOwnerCoordsByMid = {this.props.localOwnerCoordsByMid}
+						activeRemoteSharesByUri = {this.props.activeRemoteSharesByUri}
 						contactStartShare = {this.props.contactStartShare}
 						contactStopShare = {this.props.contactStopShare}
 						acceptMeetingRequest = {this.props.acceptMeetingRequest}
+						promptMeetingRequest = {this.props.promptMeetingRequest}
 						isMeetingRequestAcceptable = {this.props.isMeetingRequestAcceptable}
 						pauseLocationShare = {this.props.pauseLocationShare}
 						resumeLocationShare = {this.props.resumeLocationShare}
 						getLocationShareState = {this.props.getLocationShareState}
+						canSend = {this.props.canSend}
+						meetMeAt = {this.props.meetMeAt}
 						setFullScreen = {this.props.setFullScreen}
 						fullScreen = {this.props.fullScreen}
 						transferProgress = {this.props.transferProgress}
@@ -2806,8 +3405,106 @@ ReadyBox.propTypes = {
 	hasAutoAnswerContacts: PropTypes.bool,
 	appState: PropTypes.string,
 	remoteConferenceRoom: PropTypes.string,
-	remoteConferenceDomain: PropTypes.string
+	remoteConferenceDomain: PropTypes.string,
+	addressBookContacts: PropTypes.array,
 };
+
+// Local stylesheet for the Sylk / AddressBook source pills that sit on
+// the right-hand side of the contacts-list Sort/Order navigation row.
+// Kept here next to the JSX it styles instead of in the global Ready
+// Box stylesheet so the pill visuals are easy to find and tweak.
+const readyBoxPillStyles = StyleSheet.create({
+    pillGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginLeft: 6,
+    },
+    pill: {
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 14,
+        borderWidth: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    pillRight: {
+        marginLeft: 4,
+    },
+    pillSylkActive: {
+        backgroundColor: '#2980b9',
+        borderColor: '#2980b9',
+    },
+    pillAbActive: {
+        backgroundColor: '#27ae60',
+        borderColor: '#27ae60',
+    },
+    pillInactive: {
+        backgroundColor: 'transparent',
+        borderColor: '#cfd8dc',
+    },
+    pillLabel: {
+        fontSize: 11,
+        fontWeight: '600',
+        marginLeft: 3,
+    },
+    pillLabelActive: {
+        color: '#ffffff',
+    },
+    pillLabelSylkInactive: {
+        color: '#2980b9',
+    },
+    pillLabelAbInactive: {
+        color: '#27ae60',
+    },
+});
+
+// Layout for the dialpad icon + inline DTMFPad attached to the
+// AddressBook search row. Kept separate from the pill stylesheet so
+// the two surfaces evolve independently.
+const readyBoxDialpadStyles = StyleSheet.create({
+    searchRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    searchInputWrap: {
+        flex: 1,
+    },
+    iconButton: {
+        marginLeft: 4,
+        marginRight: 0,
+        // The IconButton ships a built-in margin we don't want here;
+        // padding zero keeps the icon flush with the search bar's
+        // right edge and matches the height the bar settled on.
+        margin: 0,
+    },
+    iconButtonActive: {
+        backgroundColor: '#27ae60',
+    },
+    dialpadWrap: {
+        marginTop: 6,
+        paddingVertical: 4,
+        // A faint divider/background separates the dialpad from the
+        // contact list immediately below it, so the keypad doesn't
+        // feel like it's floating over rows.
+        backgroundColor: 'rgba(0,0,0,0.03)',
+        borderRadius: 12,
+    },
+    dialpadActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        paddingRight: 12,
+        paddingTop: 4,
+    },
+    dialpadBackspace: {
+        // White-tinted backspace control sitting on a translucent
+        // dark backdrop so it reads against the soft panel below.
+        backgroundColor: 'rgba(0,0,0,0.45)',
+        borderRadius: 18,
+        margin: 0,
+    },
+});
 
 
 export default ReadyBox;

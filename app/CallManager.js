@@ -513,22 +513,145 @@ export default class CallManager extends events.EventEmitter {
         }
 
         let callUUID = data.callUUID.toLowerCase();
-        //utils.timestampedLog('Callkeep: got dtmf for call', callUUID);
+        utils.timestampedLog('[DTMF/CallManager] _rnDTMF callUUID=' + callUUID
+            + ' digits=' + data.digits
+            + ' has=' + this._calls.has(callUUID));
         if (this._calls.has(callUUID)) {
             let call = this._calls.get(callUUID);
-            utils.timestampedLog('sending webrtc dtmf', data.digits)
-            // TODO restore DTMF after E2EE work — sylkrtc 1.6.5 patch wires audioSender.dtmf
-            // call.sendDtmf(data.digits);
+            utils.timestampedLog('[DTMF/CallManager] forwarding OS-keypad digits to sylkrtc.sendDtmf');
+            call.sendDtmf(data.digits);
         }
     }
 
-    sendDTMF(callUUID, digits) {
+    /**
+     * Send DTMF for an active call. `mode` selects how the digits hit
+     * the wire:
+     *   'rfc4733' — out-of-band telephone-event RTP via libwebrtc's
+     *               DtmfSender. The default; works for SIP-aware
+     *               peers (e.g. SIP-Simple SDK).
+     *   'inband'  — actual DTMF audio tones mixed into the captured
+     *               PCMU stream by the native DtmfInbandMixer. Mic is
+     *               briefly muted for the tone. Best for Asterisk +
+     *               PSTN, where libwebrtc 124's RFC 4733 emission
+     *               isn't reliably decoded.
+     * Mode comes from device preferences (PreferencesModal → DTMF).
+     */
+    /**
+     * Send DTMF for an active call. `mode` selects how the digits hit
+     * the wire:
+     *   'rfc4733' — out-of-band telephone-event RTP via libwebrtc's
+     *               DtmfSender. Default. Works for SIP-aware peers
+     *               (e.g. SIP-Simple SDK).
+     *   'info'    — SIP INFO inside the call dialog. Server-side
+     *               (sylkserver) forwards a session-dtmf-info
+     *               websocket request to Janus's SIP plugin
+     *               dtmf_info command. Best for Asterisk + PSTN.
+     *   'inband'  — DTMF audio tones mixed into PCMU stream. Not
+     *               available on libwebrtc M124 — falls back to
+     *               rfc4733 per digit. (M132+ build pending.)
+     * Mode comes from device preferences (PreferencesModal → DTMF).
+     */
+    sendDTMF(callUUID, digits, mode) {
+        const _mode = mode || 'rfc4733';
+        utils.timestampedLog('[DTMF/CallManager] sendDTMF called callUUID=' + callUUID
+            + ' digits=' + digits
+            + ' mode=' + _mode
+            + ' has=' + this._calls.has(callUUID));
         let call = this._calls.get(callUUID);
-        if (call) {
-            //utils.timestampedLog('Callkeep: send DTMF: ', digits);
-            // TODO restore DTMF after E2EE work
-            // call.sendDtmf(digits);
+        if (!call) {
+            utils.timestampedLog('[DTMF/CallManager] no call in this._calls for ' + callUUID);
+            return;
         }
+
+        if (_mode === 'info') {
+            // SIP INFO path — dispatched by sylkrtc, forwarded by
+            // sylkserver to Janus's SIP plugin which emits an in-
+            // dialog SIP INFO with `application/dtmf-relay`. No RTP
+            // touched; works against Asterisk + PSTN reliably.
+            // Server-side handler (session-dtmf-info) is required —
+            // see Call.sendDtmfInfo's javadoc for the spec.
+            //
+            // If sendDtmfInfo returns false (call not in media-
+            // flowing state, sylkrtc method missing in older
+            // versions, etc.), fall back to RFC 4733 per digit so
+            // the user's tap doesn't silently disappear.
+            if (typeof call.sendDtmfInfo !== 'function') {
+                utils.timestampedLog('[DTMF/CallManager] sendDtmfInfo not on Call — '
+                    + 'sylkrtc missing the patch? Falling back to rfc4733.');
+                const ok = call.sendDtmf(digits);
+                utils.timestampedLog('[DTMF/CallManager] sylkrtc.sendDtmf (fallback) returned ' + ok);
+                return;
+            }
+            const TONE_MS = 200;
+            for (let i = 0; i < digits.length; i++) {
+                const ch = digits.charAt(i);
+                const ok = call.sendDtmfInfo(ch, TONE_MS);
+                utils.timestampedLog('[DTMF/CallManager] info ' + ch + ' -> ' + ok);
+                if (!ok) {
+                    utils.timestampedLog('[DTMF/CallManager] info returned false for '
+                        + ch + ' — falling back to rfc4733');
+                    const r = call.sendDtmf(ch);
+                    utils.timestampedLog('[DTMF/CallManager] rfc4733 fallback ' + ch + ' -> ' + r);
+                }
+            }
+            return;
+        }
+
+        if (_mode === 'inband') {
+            // Inband path. The bridge method writes DTMF audio
+            // samples into the live mic buffer for `duration` ms.
+            // No RFC 4733 packets are emitted; Asterisk picks up
+            // the tones via its inband detector when configured
+            // with dtmfmode=auto / inband.
+            const { NativeModules } = require('react-native');
+            const mod = NativeModules && NativeModules.WebRTCModule;
+            if (!mod || typeof mod.playInbandDtmf !== 'function') {
+                utils.timestampedLog('[DTMF/CallManager] inband bridge MISSING — '
+                    + 'falling back to rfc4733. Rebuild react-native-webrtc.');
+                const ok = call.sendDtmf(digits);
+                utils.timestampedLog('[DTMF/CallManager] sylkrtc.sendDtmf (fallback) returned ' + ok);
+                return;
+            }
+            // 200 ms tone, matching the RFC 4733 default we settled on.
+            // Length / spacing aren't user-tunable yet; if the field
+            // wants to add a "fast / standard / slow" preset we'd
+            // route it through here.
+            const TONE_MS = 200;
+            // Inband is currently a no-op on libwebrtc M124 (the
+            // AudioRecordDataCallback hook landed in M132+). We
+            // detect that on the FIRST digit's resolution: if the
+            // native side resolves `false`, we synchronously fall
+            // back to RFC 4733 for ALL the queued digits, including
+            // the one that failed. Subsequent presses in this same
+            // call will keep coming through here as 'inband' until
+            // the user changes the Preferences setting; the
+            // fallback fires per-press, which is fine.
+            const tryDigit = (ch) => {
+                mod.playInbandDtmf(ch, TONE_MS).then((ok) => {
+                    utils.timestampedLog('[DTMF/CallManager] inband ' + ch + ' -> ' + ok);
+                    if (!ok) {
+                        utils.timestampedLog('[DTMF/CallManager] inband returned false — '
+                            + 'falling back to RFC 4733 for digit ' + ch);
+                        const r = call.sendDtmf(ch);
+                        utils.timestampedLog('[DTMF/CallManager] rfc4733 fallback ' + ch + ' -> ' + r);
+                    }
+                }).catch((e) => {
+                    utils.timestampedLog('[DTMF/CallManager] inband error for ' + ch
+                        + ': ' + (e && e.message) + ' — falling back to RFC 4733');
+                    const r = call.sendDtmf(ch);
+                    utils.timestampedLog('[DTMF/CallManager] rfc4733 fallback ' + ch + ' -> ' + r);
+                });
+            };
+            for (let i = 0; i < digits.length; i++) {
+                tryDigit(digits.charAt(i));
+            }
+            return;
+        }
+
+        // rfc4733 (default)
+        utils.timestampedLog('[DTMF/CallManager] forwarding in-app digits to sylkrtc.sendDtmf');
+        const ok = call.sendDtmf(digits);
+        utils.timestampedLog('[DTMF/CallManager] sylkrtc.sendDtmf returned ' + ok);
     }
 
     _rnProviderReset() {

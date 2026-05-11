@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { View, TouchableOpacity, Text, Image } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import utils from '../utils';
 
 const ChatBubble = memo(
@@ -138,13 +139,68 @@ const ChatBubble = memo(
       ...focusedBorder,
     };
 
-    // custom view used for layout (won't block interactions)
+    // Encryption signal for the lock badge (file-transfer bubbles only).
+    // Sources, in priority order:
+    //   1. metadata.encrypted === true — set by uploadFile after a
+    //      successful OpenPGP.encryptFile (sender) and by decryptInChunks
+    //      after a successful decrypt (receiver). Persisted via
+    //      JSON.stringify in updateFileTransferSql so it survives reload.
+    //   2. metadata.url / metadata.filename ending in `.asc` — fallback
+    //      for older rows and for received bubbles between arrival and
+    //      decrypt completion.
+    const isFileTransfer = currentMessage.contentType === 'application/sylk-file-transfer';
+    const _meta = currentMessage.metadata || {};
+    const wasEncrypted = !!(
+      _meta.encrypted === true
+      || (typeof _meta.url === 'string' && _meta.url.endsWith('.asc'))
+      || (typeof _meta.filename === 'string' && _meta.filename.endsWith('.asc'))
+    );
+    const lockColor = wasEncrypted ? '#2ecc71' : 'rgba(0,0,0,0.35)';
+    // Lock pinned to the corner SYMMETRIC with the timestamp:
+    //   - Outgoing (timestamp at bottom-right) → bottom-LEFT corner
+    //   - Incoming (timestamp at bottom-left)  → bottom-RIGHT corner
+    // Anchored inside customView. Note: GiftedChat renders customView
+    // INSIDE the message-body area (above the bottomContainer that
+    // hosts the timestamp), so `bottom: 0` lands at the TOP of the
+    // timestamp row, not the bottom of the bubble. Use a negative
+    // bottom value to push the icon down into the timestamp row so its
+    // baseline lines up with the time text. ~17px down covers
+    // marginBottom 5 + ~12px for the lineHeight-ish vertical center of
+    // an 11pt time text.
+    const lockOnLeft = position === 'right';
+
+    // custom view used for layout (won't block interactions). Doubles as
+    // the anchor for the file-transfer encryption badge, which is
+    // absolute-positioned in the corner opposite the timestamp.
     const customView = () => (
       <View
         pointerEvents="none"
         onLayout={e => handleBubbleLayout && handleBubbleLayout(currentMessage._id, e)}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-      />
+      >
+        {isFileTransfer ? (
+          <View
+            pointerEvents="none"
+            accessibilityLabel={wasEncrypted ? 'Encrypted file' : 'Unencrypted file'}
+            style={{
+              position: 'absolute',
+              // Negative bottom pushes the icon down past the message-body
+              // area into the timestamp row so it sits on the same
+              // baseline as the time text (which has marginBottom: 5 +
+              // ~12px line height of an 11pt font).
+              bottom: -17,
+              ...(lockOnLeft ? { left: 10 } : { right: 10 }),
+            }}
+          >
+            <Icon
+              name={wasEncrypted ? 'lock' : 'lock-off'}
+              size={11}
+              color={lockColor}
+              style={{ opacity: 0.9 }}
+            />
+          </View>
+        ) : null}
+      </View>
     );
 
 	const gcProps = {
@@ -365,6 +421,9 @@ const ChatBubble = memo(
       );
     }
 
+    // The encryption lock badge is rendered inside the bubble's own
+    // timestamp bar (see renderTime in ContactsListBox.js) so it sits
+    // beside the time text and can't escape the rounded bubble corners.
     return (
       <View style={{ flex: 1, alignSelf: 'stretch' }}>
         {replyPreview}
@@ -439,6 +498,29 @@ const ChatBubble = memo(
 		//console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
 		locTrace(false, 'fullSize changed');
 		return false;
+	  }
+
+	  // ==== Lazy live-location render ====
+	  // The parent (ContactsListBox.renderMessageText) returns a
+	  // lightweight placeholder for live-location bubbles whose ids
+	  // aren't in state.visibleMessageIds AND aren't in the sticky
+	  // renderedMessageIds set. When a bubble first scrolls into
+	  // view, visibleMessageIds gets updated by
+	  // onViewableItemsChanged — but if THIS comparator doesn't
+	  // detect a relevant change it short-circuits to `return true`
+	  // and the placeholder stays mounted forever. Force a
+	  // re-render whenever the bubble's id flips in/out of
+	  // visibleMessageIds so the placeholder → real LocationBubble
+	  // swap can land.
+	  if (p.contentType === 'application/sylk-live-location') {
+		const prevVisible = !!(prev.visibleMessageIds
+			&& prev.visibleMessageIds.includes(id));
+		const nextVisible = !!(next.visibleMessageIds
+			&& next.visibleMessageIds.includes(id));
+		if (prevVisible !== nextVisible) {
+			locTrace(false, 'live-location visibility flipped');
+			return false;
+		}
 	  }
 
 	  // ==== Transfer progress ====

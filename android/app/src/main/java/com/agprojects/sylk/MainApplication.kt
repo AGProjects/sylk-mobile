@@ -36,6 +36,7 @@ class MainApplication : Application(), ReactApplication {
               add(AndroidSettingsPackage())
               add(AudioRoutePackage())
               add(UnreadPackage())
+              add(SylkCallRecorderPackage())
 
             }
 

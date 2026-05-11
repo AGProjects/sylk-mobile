@@ -1,0 +1,3 @@
+Fixed leaking TELECOM connections that lead to crash
+Stop audio players and recorder when new call starts
+Improve UI for folding devices on second screen

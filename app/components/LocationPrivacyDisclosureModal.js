@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking } from 'react-native';
+import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
@@ -67,24 +67,16 @@ class LocationPrivacyDisclosureModal extends Component {
     }
 
     render() {
-        return (
-            <Modal
-                style={containerStyles.container}
-                visible={this.state.show}
-                transparent
-                animationType="fade"
-                onRequestClose={this.onCancel}
-            >
-                {/* No outer TouchableWithoutFeedback for tap-to-dismiss
-                    — the previous nested-TouchableWithoutFeedback layout
-                    swallowed every vertical-drag gesture before the
-                    inner ScrollView could see it, so the user couldn't
-                    scroll the disclosure body at all. The user can
-                    still close the modal explicitly via the buttons or
-                    the device back button (onRequestClose handles
-                    Android back). For a Prominent Disclosure that's
-                    actually preferable: implicit dismissal-by-tap-
-                    outside isn't a reliable consent signal anyway. */}
+        // `inline` mode: render as an absolute-fill View overlay
+        // instead of an OS Modal. Required when this disclosure is
+        // opened from inside another Modal (e.g. PreferencesModal) —
+        // iOS only presents one Modal at a time per presentation
+        // context, so a sibling Modal would silently fail to appear.
+        // Same pattern as CallRecordingDisclosureModal.
+        if (this.props.inline && !this.state.show) return null;
+        // The body. In Modal mode it's a child of <Modal>; in inline
+        // mode it's a child of an absolute-fill <View>.
+        const body = (
                 <View style={containerStyles.overlay}>
                     <KeyboardAvoidingView
                         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -278,6 +270,34 @@ class LocationPrivacyDisclosureModal extends Component {
                             </Surface>
                     </KeyboardAvoidingView>
                 </View>
+        );
+
+        if (this.props.inline) {
+            // Top-level absolute fill on top of whatever parent View
+            // we're rendered inside. zIndex/elevation guarantee we sit
+            // above the Preferences Surface on both iOS and Android.
+            return (
+                <View
+                    style={[
+                        StyleSheet.absoluteFillObject,
+                        { zIndex: 1000, elevation: 1000 },
+                    ]}
+                    pointerEvents="box-none"
+                >
+                    {body}
+                </View>
+            );
+        }
+
+        return (
+            <Modal
+                style={containerStyles.container}
+                visible={this.state.show}
+                transparent
+                animationType="fade"
+                onRequestClose={this.onCancel}
+            >
+                {body}
             </Modal>
         );
     }
@@ -291,6 +311,10 @@ LocationPrivacyDisclosureModal.propTypes = {
     // becomes "Opt out" and routes to onOptOut instead of onContinue.
     showOptOut  : PropTypes.bool,
     onOptOut    : PropTypes.func,
+    // Inline mode: render as a plain absolute-fill View overlay
+    // instead of a Modal. Use when opened from inside another Modal
+    // (iOS won't present nested Modals).
+    inline      : PropTypes.bool,
 };
 
 export default LocationPrivacyDisclosureModal;

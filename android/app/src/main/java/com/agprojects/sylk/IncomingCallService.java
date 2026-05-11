@@ -250,24 +250,33 @@ public class IncomingCallService extends Service {
 	private void createCallNotificationChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 			NotificationManager nm = getSystemService(NotificationManager.class);
-	
-			NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID);
-			if (existing != null) {
-				nm.deleteNotificationChannel(CHANNEL_ID);
+
+			// Idempotent: create-if-missing only. The previous version
+			// deleted-and-recreated so it could pick up changed channel
+			// settings each launch, but Android 16+ throws
+			// SecurityException("Not allowed to delete channel ... with a
+			// foreground service") when the channel is still bound to a
+			// previous call's IncomingCallService instance that hasn't
+			// fully torn down — which is exactly what's happening here.
+			// To change channel settings in a future release, bump
+			// CHANNEL_ID itself (standard Android pattern for forcing a
+			// fresh channel on upgrade).
+			if (nm.getNotificationChannel(CHANNEL_ID) != null) {
+				return;
 			}
-	
+
 			NotificationChannel channel = new NotificationChannel(
 					CHANNEL_ID,
 					"Incoming Calls",
 					NotificationManager.IMPORTANCE_HIGH
 			);
-	
+
 			channel.setDescription("Incoming Sylk call notifications");
 			channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
 			channel.setBypassDnd(true);
 			channel.enableVibration(true);
 			channel.setSound(null, null);
-	
+
 			nm.createNotificationChannel(channel);
 		}
 	}

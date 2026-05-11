@@ -117,6 +117,11 @@ RCT_EXPORT_MODULE(AudioRouteModule);
   if ([portType isEqualToString:AVAudioSessionPortBuiltInReceiver]) return @"BUILTIN_EARPIECE";
   if ([portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return @"BUILTIN_SPEAKER";
   if ([portType isEqualToString:AVAudioSessionPortHeadsetMic]) return @"WIRED_HEADSET";
+  // Output-only headphones (e.g. USB-C → 3.5mm jack adapter with no inline mic).
+  // Without this case the port type comes back as "UNKNOWN (Headphones)" and the
+  // device never makes it into the outputs list, so the user sees a generic
+  // 'phone' fallback icon and the OS's actual route never matches the UI.
+  if ([portType isEqualToString:AVAudioSessionPortHeadphones]) return @"WIRED_HEADSET";
   if ([portType isEqualToString:AVAudioSessionPortBluetoothHFP]) return @"BLUETOOTH_SCO";
   if ([portType isEqualToString:AVAudioSessionPortBluetoothA2DP]) return @"BLUETOOTH_A2DP";
   if ([portType isEqualToString:AVAudioSessionPortUSBAudio]) return @"USB_DEVICE";
@@ -230,6 +235,50 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
     NSDictionary *selected = nil;
 
+    // If the user just selected WIRED_HEADSET via switchAudioRouteInternal but
+    // iOS hasn't completed the route reconfiguration yet (currentRoute still
+    // shows BuiltInSpeaker right after the override was cleared, or briefly
+    // BuiltInReceiver while the system rebalances), emit the intended device
+    // instead of the stale snapshot. Without this, the UI flashes back to
+    // BUILTIN_SPEAKER or BUILTIN_EARPIECE for a fraction of a second after
+    // every speaker→headset switch. The route-change observer will fire a
+    // second event once iOS finishes settling, which keeps things consistent.
+    //
+    // Guarded by an availability check on the headphones port: if no
+    // Headphones/HeadsetMic port exists anywhere in the session, the user
+    // has unplugged the device — clear the override and fall through to the
+    // normal logic so we don't keep reporting WIRED_HEADSET after unplug.
+    if (_currentRoute && [_currentRoute isEqualToString:@"WIRED_HEADSET"]) {
+        AVAudioSessionPortDescription *wiredPort = nil;
+        for (AVAudioSessionPortDescription *p in route.outputs) {
+            if ([p.portType isEqualToString:AVAudioSessionPortHeadphones] ||
+                [p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+                wiredPort = p;
+                break;
+            }
+        }
+        if (!wiredPort) {
+            for (AVAudioSessionPortDescription *p in session.availableInputs) {
+                if ([p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+                    wiredPort = p;
+                    break;
+                }
+            }
+        }
+        if (wiredPort) {
+            NSLog(@"[SYLK_APP] [Audio] _currentRoute=WIRED_HEADSET, using matched port");
+            return [self deviceDictForPort:wiredPort typeForIOS:NO];
+        }
+        // No port to source from yet — likely iOS is still settling after a
+        // speaker→headset switch. Emit a synthetic WIRED_HEADSET so the UI
+        // doesn't flash back to the previous device. The handleRouteChange
+        // observer will clear _currentRoute once iOS confirms the headphones
+        // are actually gone (OldDeviceUnavailable), and any subsequent event
+        // will land on the real route.
+        NSLog(@"[SYLK_APP] [Audio] _currentRoute=WIRED_HEADSET, port not yet visible — emitting synthetic");
+        return @{@"id": @"", @"name": @"Wired headset", @"type": @"WIRED_HEADSET"};
+    }
+
     if (route.outputs.count > 0) {
         NSLog(@"[SYLK_APP] [Audio] currentRoute: outputs exist, picking first output");
         AVAudioSessionPortDescription *firstOutput = route.outputs.firstObject;
@@ -303,18 +352,146 @@ RCT_EXPORT_MODULE(AudioRouteModule);
   // Called when AVAudioSession route changes (headset plug/unplug, BT connect/disconnect, speaker toggle)
   AVAudioSessionRouteChangeReason reason = [note.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
 
+  // Speaker drift defense. RNCallKeep's configureAudioSession runs on
+  // CallKit's provider:didActivateAudioSession: and resets the audio
+  // category to PlayAndRecord+AllowBluetooth+AllowBluetoothA2DP / mode=Default,
+  // which causes iOS to re-evaluate the route and revert our Speaker
+  // override to whatever connected device has highest priority (USB headset,
+  // BT HFP, etc.). Symptom: "select Speaker → audio briefly on speaker →
+  // iOS routes back to headset on its own ~300 ms later".
+  //
+  // If the user's intended route is BUILTIN_SPEAKER (we set _currentRoute
+  // when handling the speaker request) and iOS just rerouted away from the
+  // built-in speaker, re-pin the speaker. Reasons we re-apply on:
+  //   - CategoryChange       (RNCallKeep.configureAudioSession ran)
+  //   - Override             (some other code cleared our override)
+  //   - RouteConfigurationChange / NewDeviceAvailable
+  if ([_currentRoute isEqualToString:@"BUILTIN_SPEAKER"]) {
+    AVAudioSession *s = [AVAudioSession sharedInstance];
+    BOOL onSpeaker = NO;
+    for (AVAudioSessionPortDescription *p in s.currentRoute.outputs) {
+      if ([p.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) {
+        onSpeaker = YES;
+        break;
+      }
+    }
+    if (!onSpeaker) {
+      NSLog(@"[SYLK_APP] [Audio] speaker drift detected (reason=%lu) — re-pinning speaker",
+            (unsigned long)reason);
+      NSError *e = nil;
+      [s setCategory:AVAudioSessionCategoryPlayAndRecord
+         withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
+               error:&e];
+      [s setMode:AVAudioSessionModeVoiceChat error:&e];
+      for (AVAudioSessionPortDescription *p in s.availableInputs) {
+        if ([p.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+          [s setPreferredInput:p error:&e];
+          break;
+        }
+      }
+      [s overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&e];
+      // Don't return — fall through and emit the event so JS sees the
+      // (re-corrected) state.
+    }
+  }
+
+  // Auto-switch to a freshly-plugged headset. iOS auto-routes by default,
+  // but our Speaker pin (drops AllowBluetooth, preferredInput=BuiltInMic,
+  // overrideOutputAudioPort=Speaker) blocks that auto-route — so plugging
+  // in a headset during a speaker call would otherwise stay on speaker. The
+  // standard expectation is "plug a headset → audio moves to the headset",
+  // so on NewDeviceAvailable, if a wired/USB/BT headset just appeared, we
+  // route to it explicitly. This also takes care of the non-speaker-pin
+  // cases — a single switchAudioRouteInternal call cleans up state and
+  // emits the event so JS UI updates.
+  if (reason == AVAudioSessionRouteChangeReasonNewDeviceAvailable) {
+      AVAudioSession *s = [AVAudioSession sharedInstance];
+      // Look for a freshly available headset, in priority order:
+      //   1. BT HFP (preferred when both BT and wired are present — that's
+      //      the iOS default too)
+      //   2. Wired headset with mic (HeadsetMic)
+      //   3. Output-only headphones (Headphones, USB-C dongles, etc.)
+      AVAudioSessionPortDescription *targetInput = nil;
+      NSString *targetType = nil;
+      for (AVAudioSessionPortDescription *p in s.availableInputs) {
+          if ([p.portType isEqualToString:AVAudioSessionPortBluetoothHFP]) {
+              targetInput = p;
+              targetType = @"BLUETOOTH_SCO";
+              break;
+          }
+      }
+      if (!targetInput) {
+          for (AVAudioSessionPortDescription *p in s.availableInputs) {
+              if ([p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+                  targetInput = p;
+                  targetType = @"WIRED_HEADSET";
+                  break;
+              }
+          }
+      }
+      if (!targetType) {
+          // Output-only headphones — no input port to set, but the route
+          // change notification will already have moved the output. Just
+          // record the intent so the JS UI updates.
+          for (AVAudioSessionPortDescription *p in s.currentRoute.outputs) {
+              if ([p.portType isEqualToString:AVAudioSessionPortHeadphones]) {
+                  targetType = @"WIRED_HEADSET";
+                  break;
+              }
+          }
+      }
+      if (targetType) {
+          NSLog(@"[SYLK_APP] [Audio] NewDeviceAvailable: auto-routing to %@", targetType);
+          NSDictionary *deviceMap = @{
+              @"id": (targetInput && targetInput.UID) ? targetInput.UID : @"",
+              @"name": (targetInput && targetInput.portName) ? targetInput.portName : @"",
+              @"type": targetType,
+          };
+          // switchAudioRouteInternal handles category/mode/preferred-input
+          // cleanup and emits the event; for BT it restores AllowBluetooth,
+          // for wired it clears the speaker override and the BuiltInMic pin.
+          [self switchAudioRouteInternal:deviceMap];
+          // Done — handler returns after the standard listener emit at
+          // function tail.
+      }
+  }
+
   // Clear cached BT device if it has been physically disconnected
   if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
       BOOL btStillAvailable = NO;
-      for (AVAudioSessionPortDescription *p in [AVAudioSession sharedInstance].availableInputs) {
+      BOOL wiredStillAvailable = NO;
+      AVAudioSession *s = [AVAudioSession sharedInstance];
+      for (AVAudioSessionPortDescription *p in s.availableInputs) {
           if ([p.portType isEqualToString:AVAudioSessionPortBluetoothHFP]) {
               btStillAvailable = YES;
-              break;
+          }
+          if ([p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+              wiredStillAvailable = YES;
+          }
+      }
+      // Also check current outputs for output-only headphones (USB-C dongle):
+      // those never appear in availableInputs, only in currentRoute.outputs
+      // while plugged in.
+      if (!wiredStillAvailable) {
+          for (AVAudioSessionPortDescription *p in s.currentRoute.outputs) {
+              if ([p.portType isEqualToString:AVAudioSessionPortHeadphones] ||
+                  [p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+                  wiredStillAvailable = YES;
+                  break;
+              }
           }
       }
       if (!btStillAvailable) {
           NSLog(@"[SYLK_APP] [Audio] BT device disconnected, clearing cache");
           _lastKnownBtDevice = nil;
+      }
+      // If the wired headset just got unplugged and we still had it cached as
+      // the current route (set by switchAudioRouteInternal), clear that hint
+      // so getCurrentRouteInfoDictionary stops emitting synthetic WIRED_HEADSET
+      // events and falls through to whatever iOS rerouted to (earpiece/speaker).
+      if (!wiredStillAvailable && [_currentRoute isEqualToString:@"WIRED_HEADSET"]) {
+          NSLog(@"[SYLK_APP] [Audio] wired headset unplugged, clearing _currentRoute hint");
+          _currentRoute = nil;
       }
   }
 
@@ -752,14 +929,46 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
       NSLog(@"[SYLK_APP] [Audio] trying match by type: %@", type);
       // If type requests speaker explicitly
       if ([type isEqualToString:@"BUILTIN_SPEAKER"] || [type isEqualToString:@"SPEAKER_PHONE"]) {
-        // Restore AllowBluetooth and VoiceChat mode in case earpiece routing
-        // changed them, so BT and voice processing work correctly on speaker.
+        // Speaker pinning. iOS doesn't actually obey
+        // overrideOutputAudioPort:Speaker reliably when AllowBluetooth is set
+        // and an external input device (USB headset, BT HFP) is connected —
+        // it briefly honours the override, then within a few hundred ms
+        // re-evaluates the route, sees the external input takes priority,
+        // and silently routes back to that device. Symptom in the logs:
+        // selected=BUILTIN_SPEAKER → selected=WIRED_HEADSET on the next
+        // RouteChange notification.
+        //
+        // The fix is the same trick used for earpiece pinning further down:
+        // strip AllowBluetooth from the category and force the preferred
+        // input to the built-in mic, which keeps iOS on the internal audio
+        // path. Then overrideOutputAudioPort:Speaker actually sticks.
+        // VoiceChat mode is preserved (echo-cancellation etc.).
         NSError *catErr = nil;
-        [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                 withOptions:(AVAudioSessionCategoryOptionAllowBluetooth |
-                              AVAudioSessionCategoryOptionDefaultToSpeaker)
-                       error:&catErr];
+        BOOL catOk = [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                              withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
+                                    error:&catErr];
+        if (!catOk) {
+          NSLog(@"[SYLK_APP] [Audio] setCategory(speaker, no AllowBluetooth) failed: %@", catErr);
+        }
         { NSError *modeErr = nil; [session setMode:AVAudioSessionModeVoiceChat error:&modeErr]; }
+
+        // Pin the input to the built-in mic so iOS uses the internal audio
+        // path (no headset / USB-mic preference fighting the speaker override).
+        AVAudioSessionPortDescription *builtInMic = nil;
+        for (AVAudioSessionPortDescription *p in session.availableInputs) {
+          if ([p.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+            builtInMic = p;
+            break;
+          }
+        }
+        if (builtInMic) {
+          NSError *prefErr = nil;
+          if (![session setPreferredInput:builtInMic error:&prefErr]) {
+            NSLog(@"[SYLK_APP] [Audio] setPreferredInput(BuiltInMic for speaker) failed: %@", prefErr);
+          } else {
+            NSLog(@"[SYLK_APP] [Audio] setPreferredInput: BuiltInMic (speaker pin)");
+          }
+        }
 
         NSError *err = nil;
         BOOL ok = [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&err];
@@ -767,19 +976,51 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
           NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort(Speaker) failed: %@", err);
         } else {
           _currentRoute = @"BUILTIN_SPEAKER";
-          NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort: Speaker OK");
+          NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort: Speaker OK (AllowBluetooth dropped, built-in mic pinned)");
           [self sendReactNativeEvent];
+
+          // react-native-webrtc / CallKit can re-activate the audio session
+          // ~200–400 ms after we set this up (peer connection negotiating,
+          // CallKit's didActivateAudioSession), and that re-activation can
+          // restore AllowBluetooth and clear the preferred-input pin. Schedule
+          // a single deferred re-application to outlast that — same idea as
+          // the earpiece deferred re-apply below, just for speaker. One-shot:
+          // bails if _currentRoute has moved off BUILTIN_SPEAKER by then
+          // (user picked something else in the meantime).
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
+                         dispatch_get_main_queue(), ^{
+            if (![self->_currentRoute isEqualToString:@"BUILTIN_SPEAKER"]) return;
+            NSLog(@"[SYLK_APP] [Audio] speaker deferred re-apply (CallKit/WebRTC restoration guard)");
+            AVAudioSession *s = [AVAudioSession sharedInstance];
+            NSError *e = nil;
+            [s setCategory:AVAudioSessionCategoryPlayAndRecord
+               withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
+                     error:&e];
+            [s setMode:AVAudioSessionModeVoiceChat error:&e];
+            for (AVAudioSessionPortDescription *p in s.availableInputs) {
+              if ([p.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                [s setPreferredInput:p error:&e];
+                break;
+              }
+            }
+            [s overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&e];
+          });
+
           return ok;
         }
       }
 
       // Wired headset/headphones: prefer input by port type first
       // We search availableInputs and current route outputs for matching port types
-      // When routing away from earpiece to any external device:
+      // When routing away from earpiece OR speaker to any external device:
       // 1. Restore VoiceChat mode (we switched to Default for earpiece routing)
       // 2. Clear the built-in mic preference so iOS uses the external device's mic
+      // 3. Clear any speaker override (overrideOutputAudioPort:Speaker is sticky —
+      //    until we explicitly remove it, audio stays on the built-in speaker even
+      //    when we set a preferred input or the user has headphones plugged in).
       { NSError *modeErr = nil; [session setMode:AVAudioSessionModeVoiceChat error:&modeErr]; }
       { NSError *clearErr = nil; [session setPreferredInput:nil error:&clearErr]; }
+      { NSError *ovErr = nil;    [session overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&ovErr]; }
 
       // Restore AllowBluetooth if we're routing to a BT device — it may have been
       // removed when earpiece was selected to prevent BT from taking over.
@@ -829,6 +1070,49 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
             [self sendReactNativeEvent];
             return YES;
           }
+        }
+
+        // Wired-headset fallback: output-only headphones (USB-C → 3.5mm jack
+        // adapter, lightning headphones, etc.) report port type `Headphones`,
+        // not `HeadsetMic`, and never appear in availableInputs. iOS auto-
+        // routes audio to them whenever they're plugged in, so when the user
+        // taps the WIRED_HEADSET button the route is already correct — we just
+        // need to acknowledge the match so the UI can update.
+        //
+        // We accept the switch if Headphones are present in *any* of:
+        //   - currentRoute.outputs (will be true once iOS finishes rerouting
+        //     after the speaker override was cleared above)
+        //   - availableInputs (covers wired headsets with an inline mic that
+        //     also appear here under HeadsetMic — already handled above — but
+        //     guards against future iOS shifts)
+        // If iOS hasn't rerouted yet, we still return YES because the override
+        // clear above guarantees it will, and the AVAudioSessionRouteChange
+        // observer will fire sendReactNativeEvent to sync the UI.
+        if ([type isEqualToString:@"WIRED_HEADSET"]) {
+          BOOL headphonesPresent = NO;
+          for (AVAudioSessionPortDescription *p in session.currentRoute.outputs) {
+            if ([p.portType isEqualToString:AVAudioSessionPortHeadphones] ||
+                [p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+              headphonesPresent = YES;
+              break;
+            }
+          }
+          if (!headphonesPresent) {
+            for (AVAudioSessionPortDescription *p in session.availableInputs) {
+              if ([p.portType isEqualToString:AVAudioSessionPortHeadsetMic]) {
+                headphonesPresent = YES;
+                break;
+              }
+            }
+          }
+          // If we're here we already cleared the speaker override; assume the
+          // wired output exists (the JS side only offers WIRED_HEADSET as a
+          // selectable option when the device is enumerated as available).
+          _currentRoute = @"WIRED_HEADSET";
+          NSLog(@"[SYLK_APP] [Audio] WIRED_HEADSET selected (headphonesPresent=%@) — speaker override cleared, trusting iOS to route",
+                headphonesPresent ? @"YES" : @"NO");
+          [self sendReactNativeEvent];
+          return YES;
         }
       } // end if targetPortType
     } // end if type

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import UserIcon from './UserIcon';
 import { Button, Surface, Switch, Checkbox } from 'react-native-paper';
+import PlatformToggle from './PlatformToggle';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
 // ShareLocationModal / ActiveLocationSharesModal so every dialog has
@@ -416,62 +417,42 @@ class DeleteHistoryModal extends Component {
                 <View style={styles.checkBoxRow}>
 
                     {!this.state.deleteContact && this.props.selectedContact && (
-                        <View style={styles.checkBoxRow}>
-                            {Platform.OS === 'ios' ? (
-                                <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
-                            ) : (
-                                <Checkbox
-                                    status={this.state.incoming ? 'checked' : 'unchecked'}
-                                    onPress={this.toggleIncoming}
-                                />
-                            )}
-                            <Text> Incoming</Text>
-                        </View>
+                        <PlatformToggle
+                            value={this.state.incoming}
+                            onValueChange={this.toggleIncoming}
+                            label="Incoming"
+                            style={styles.checkBoxRow}
+                        />
                     )}
 
                     {!this.state.deleteContact && this.props.selectedContact && (
-                        <View style={styles.checkBoxRow}>
-                            {Platform.OS === 'ios' ? (
-                                <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
-                            ) : (
-                                <Checkbox
-                                    status={this.state.outgoing ? 'checked' : 'unchecked'}
-                                    onPress={this.toggleOutgoing}
-                                />
-                            )}
-                            <Text> Outgoing</Text>
-                        </View>
+                        <PlatformToggle
+                            value={this.state.outgoing}
+                            onValueChange={this.toggleOutgoing}
+                            label="Outgoing"
+                            style={styles.checkBoxRow}
+                        />
                     )}
 
                 </View>
                 {this.renderPeriodDropdown()}
 
                 {!this.props.myself && this.props.uri && this.props.filteredMessageIds.length === 0 && false && (
-                    <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                            <Switch value={this.state.deleteContact} onValueChange={this.toggleDeleteContact} />
-                        ) : (
-                            <Checkbox
-                                status={this.state.deleteContact ? 'checked' : 'unchecked'}
-                                onPress={this.toggleDeleteContact}
-                            />
-                        )}
-                        <Text> Delete contact</Text>
-                    </View>
+                    <PlatformToggle
+                        value={this.state.deleteContact}
+                        onValueChange={this.toggleDeleteContact}
+                        label="Delete contact"
+                        style={styles.checkBoxRow}
+                    />
                 )}
 
                 {simulate && (
-                    <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                            <Switch value={this.state.simulate} onValueChange={this.toggleSimulate} />
-                        ) : (
-                            <Checkbox
-                                status={this.state.simulate ? 'checked' : 'unchecked'}
-                                onPress={this.toggleSimulate}
-                            />
-                        )}
-                        <Text> Simulate</Text>
-                    </View>
+                    <PlatformToggle
+                        value={this.state.simulate}
+                        onValueChange={this.toggleSimulate}
+                        label="Simulate"
+                        style={styles.checkBoxRow}
+                    />
                 )}
 
                 <View style={styles.buttonRow}>
@@ -500,17 +481,12 @@ class DeleteHistoryModal extends Component {
                 </View>
 
                 {canDeleteRemote && (
-                    <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                            <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
-                        ) : (
-                            <Checkbox
-                                status={this.state.remoteDelete ? 'checked' : 'unchecked'}
-                                onPress={this.toggleRemoteDelete}
-                            />
-                        )}
-                        <Text> Also delete remotely</Text>
-                    </View>
+                    <PlatformToggle
+                        value={this.state.remoteDelete}
+                        onValueChange={this.toggleRemoteDelete}
+                        label="Also delete remotely"
+                        style={styles.checkBoxRow}
+                    />
                 )}
             </>
         );

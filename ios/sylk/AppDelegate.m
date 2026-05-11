@@ -748,19 +748,29 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     NSString *callerName = fromUri; // default fallback
 
     // --- only handle incoming_session or incoming_conference_request ---
+    // NOTE: iOS REQUIRES every VoIP push to result in a CallKit reportNewIncomingCall
+    // before completion() is called, even if we want to reject the call. Skipping this
+    // triggers PKPushRegistry _terminateAppIfThereAreUnhandledVoIPPushes (SIGABRT).
     if (!([event isEqualToString:@"incoming_session"] || [event isEqualToString:@"incoming_conference_request"])) {
+        NSLog(@"[SYLK_APP] [App] Unsupported VoIP event '%@' — reporting+ending call to satisfy PushKit", event);
         [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
-        if (completion) completion();
+        [self reportAndImmediatelyEndCallForPayload:payload
+                                           calluuid:calluuid
+                                            fromUri:fromUri
+                                         completion:completion];
         return;
     }
 
     NSLog(@"[SYLK_APP] [App] Raw Payload: %@", userInfo);
 
     BOOL allow = [self shouldDisplayMessageFromPayload:userInfo];
-    
+
     if (!allow) {
-        NSLog(@"[SYLK_APP] [App] Notification suppressed");
-        if (completion) completion();
+        NSLog(@"[SYLK_APP] [App] Notification suppressed — reporting+ending call to satisfy PushKit");
+        [self reportAndImmediatelyEndCallForPayload:payload
+                                           calluuid:calluuid
+                                            fromUri:fromUri
+                                         completion:completion];
         return;
     }
 
@@ -853,6 +863,50 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     }
 }
 
+// PushKit policy enforcement: every VoIP push must result in a CallKit
+// reportNewIncomingCall before completion() fires, otherwise iOS aborts the app
+// via -[PKPushRegistry _terminateAppIfThereAreUnhandledVoIPPushes].
+//
+// When we want to silently drop an incoming VoIP push (DND, blocked contact,
+// muted contact, anonymous caller, account inactive, unsupported event, etc.)
+// we still have to report a call to CallKit and then immediately end it. This
+// satisfies the assertion without producing a visible/audible ring.
+- (void)reportAndImmediatelyEndCallForPayload:(PKPushPayload *)payload
+                                     calluuid:(NSString *)calluuid
+                                      fromUri:(NSString *)fromUri
+                                   completion:(void (^)(void))completion
+{
+    NSString *uuid = (calluuid.length > 0) ? calluuid : [[NSUUID UUID] UUIDString];
+    NSString *handle = (fromUri.length > 0) ? fromUri : @"Unknown";
+
+    NSLog(@"[SYLK_APP] [App] Reporting+ending suppressed VoIP call uuid=%@ handle=%@", uuid, handle);
+
+    @try {
+        [RNCallKeep reportNewIncomingCall:uuid
+                                   handle:handle
+                               handleType:@"generic"
+                                 hasVideo:NO
+                      localizedCallerName:handle
+                          supportsHolding:NO
+                             supportsDTMF:NO
+                         supportsGrouping:NO
+                       supportsUngrouping:NO
+                              fromPushKit:YES
+                                  payload:payload.dictionaryPayload
+                    withCompletionHandler:^{
+            // End immediately. CXCallEndedReason 6 = .declinedElsewhere — least
+            // intrusive: produces a missed-call entry but no ring or recents-as-missed.
+            [RNCallKeep endCallWithUUID:uuid reason:6];
+            if (completion) completion();
+        }];
+    } @catch (NSException *ex) {
+        NSLog(@"[SYLK_APP] [App] Exception in reportAndImmediatelyEnd: %@ - %@", ex.name, ex.reason);
+        // Still call completion so we don't dangle, but at this point PushKit
+        // will likely terminate us — this catch is just to surface the error.
+        if (completion) completion();
+    }
+}
+
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)data
 {
 
@@ -912,6 +966,20 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 			NSLog(@"[SYLK_APP] [App] Message error: missing messageId");
 			return NO;
 		}
+
+        // Self-to-self suppression. Multi-device replication echoes
+        // our own outgoing messages back to all our devices with
+        // from_uri == to_uri == accountId. The cross-device call-
+        // recording sync (saveCallRecording's selfMsg replication)
+        // is the most visible offender — every recorded call would
+        // trigger a banner here. Suppress at the native layer so
+        // the OS never even queues the notification UI.
+        if (fromUri.length > 0 && toUri.length > 0
+                && [fromUri isEqualToString:toUri]) {
+            NSLog(@"[SYLK_APP] [App] Skipping notification: self-to-self message from %s",
+                  [fromUri UTF8String]);
+            return NO;
+        }
 
         UIApplicationState state = [UIApplication sharedApplication].applicationState;
         if (state == UIApplicationStateActive) {

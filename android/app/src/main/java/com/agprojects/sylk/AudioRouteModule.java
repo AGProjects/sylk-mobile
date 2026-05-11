@@ -64,6 +64,16 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothHeadset;
 
+// Telecom plumbing — used by setActiveDevice(callUuid, ...) so that we update
+// the Telecom framework's audio-route view *and* AudioManager from a single
+// native entry point. Without this, AudioManager.setCommunicationDevice() can
+// land successfully and then be silently re-overridden by Telecom because its
+// route hasn't moved (the case we used to patch with RNCallKeep.setAudioRoute
+// from JS, which raced against AudioRouteModule.setActiveDevice).
+import android.telecom.CallAudioState;
+import android.telecom.Connection;
+import android.telecom.DisconnectCause;
+
 import java.util.List;
 import java.util.Set;
 import java.util.HashSet;
@@ -95,6 +105,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     private Object communicationDeviceListener; // holds the listener only on supported API
     private boolean listenerStarted = false;
+    // Last device info we logged for the OnCommunicationDeviceChangedListener,
+    // used to suppress the duplicate-burst that Android's audio policy fires
+    // after each route flip (the same callback can come in 4–8 times back-to-
+    // back with identical content). Format: "<id> <name> <type>" — a string so
+    // we don't have to track three primitive fields.
+    private String lastLoggedCommDevice = null;
     // When the user requests BT routing before SCO is established, store the target
     // device here and apply it as soon as SCO audio connects.
     private Map<String, String> pendingBtDevice = null;
@@ -142,8 +158,128 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             startCommunicationDeviceListener();
+            startAudioModeListener();
         } else {
             Log.d(TAG, "[Audio] Communication device listener not supported on this Android version");
+        }
+    }
+
+    // ---- Passive audio-mode observer ------------------------------------------
+    // Tracks every AudioManager mode transition (including those initiated by
+    // Telecom, rn-webrtc, or other apps) so we can identify "who set
+    // IN_COMMUNICATION and when". Strictly observational — does NOT call
+    // setMode. Logs each change with timestamp, thread, and a short stack
+    // snippet. The stack will only identify the SETTER when the listener is
+    // invoked synchronously on the setter's thread (often the case for
+    // in-process setMode calls); for cross-process setters (Telecom, system)
+    // the stack will be the binder/dispatch frames and the thread name is
+    // usually the only clue.
+
+    private Object modeChangedListenerRef; // typed Object to avoid API-level import issues
+    private static volatile int lastObservedMode = AudioManager.MODE_INVALID;
+    private static volatile long lastObservedModeAt = 0L;
+    private static volatile String lastObservedModeCaller = null;
+
+    /**
+     * Snapshot of the AudioManager mode at the moment the FCM push for an
+     * incoming call arrived (i.e. BEFORE Telecom flipped to RINGTONE and
+     * then IN_COMMUNICATION). Used by {@link #stop} as the restore target
+     * — origAudioMode captured later in start() is already polluted to
+     * IN_COMMUNICATION on this device. Sentinel -1 means "no snapshot".
+     */
+    private static volatile int preCallMode = -1;
+
+    /**
+     * Capture the current AudioManager mode into {@link #preCallMode}. Call
+     * from any native code path that observes the very first signal of a
+     * new call (typically MyFirebaseMessagingService.onMessageReceived on
+     * an incoming-call event). Idempotent: if a snapshot is already
+     * present, the new call is logged but the existing value is kept (so
+     * back-to-back pushes don't overwrite a clean NORMAL with a stale
+     * IN_COMMUNICATION from a still-in-flight call).
+     */
+    public static void capturePreCallMode(Context ctx, String source) {
+        try {
+            if (ctx == null) return;
+            android.media.AudioManager am = (android.media.AudioManager)
+                    ctx.getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+            int mode = am.getMode();
+            if (preCallMode != -1) {
+                Log.d(TAG, "SYLK_APP audio mode capturePreCallMode skipped, already have "
+                        + getAudioModeDescription(preCallMode)
+                        + " (new value would be " + getAudioModeDescription(mode)
+                        + ", source=" + source + ")");
+                return;
+            }
+            preCallMode = mode;
+            Log.d(TAG, "SYLK_APP audio mode capturePreCallMode captured "
+                    + getAudioModeDescription(mode) + " (source=" + source + ")");
+        } catch (Exception e) {
+            Log.e(TAG, "SYLK_APP audio mode capturePreCallMode failed (source=" + source + ")", e);
+        }
+    }
+
+    @android.annotation.TargetApi(Build.VERSION_CODES.S)
+    private void startAudioModeListener() {
+        if (audioManager == null) return;
+        try {
+            AudioManager.OnModeChangedListener listener = (newMode) -> {
+                long now = System.currentTimeMillis();
+                String desc = getAudioModeDescription(newMode);
+                String prev = getAudioModeDescription(lastObservedMode);
+                String thread = Thread.currentThread().getName();
+                String stack = briefStack();
+                lastObservedMode = newMode;
+                lastObservedModeAt = now;
+                lastObservedModeCaller = thread + " | " + stack;
+                Log.d(TAG, "SYLK_APP audio mode observed " + prev + " -> " + desc
+                        + " at=" + now
+                        + " thread=" + thread
+                        + " stack=" + stack);
+            };
+            audioManager.addOnModeChangedListener(
+                    java.util.concurrent.Executors.newSingleThreadExecutor(),
+                    listener);
+            modeChangedListenerRef = listener;
+            // Seed with the current value so the first transition has a
+            // meaningful "from".
+            lastObservedMode = audioManager.getMode();
+            lastObservedModeAt = System.currentTimeMillis();
+            Log.d(TAG, "SYLK_APP audio mode listener started; current="
+                    + getAudioModeDescription(lastObservedMode));
+        } catch (Exception e) {
+            Log.e(TAG, "[Audio] failed to register OnModeChangedListener", e);
+        }
+    }
+
+    /**
+     * Capture a brief, log-friendly stack snippet (skipping the first few
+     * VM/listener frames). Useful for in-process callers; mostly noise for
+     * cross-process setters but the binder frames at least confirm where
+     * the call came from.
+     */
+    private static String briefStack() {
+        try {
+            StackTraceElement[] st = Thread.currentThread().getStackTrace();
+            StringBuilder sb = new StringBuilder();
+            int kept = 0;
+            for (int i = 0; i < st.length && kept < 6; i++) {
+                String cls = st[i].getClassName();
+                // Skip the boilerplate frames at the top of every stack.
+                if (cls.startsWith("java.lang.Thread")
+                        || cls.startsWith("com.agprojects.sylk.AudioRouteModule$")
+                        || cls.contains("OnModeChangedListener")) {
+                    continue;
+                }
+                if (sb.length() > 0) sb.append(" <- ");
+                sb.append(cls).append("#").append(st[i].getMethodName())
+                        .append(":").append(st[i].getLineNumber());
+                kept++;
+            }
+            return sb.length() == 0 ? "<empty>" : sb.toString();
+        } catch (Throwable t) {
+            return "<stack-unavailable>";
         }
     }
 
@@ -446,9 +582,16 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
                 String typeName = getDeviceTypeName(deviceInfo.getType());
                 int deviceId = deviceInfo.getId();
-            
-                Log.d(TAG, "[Audio] Communication device changed to " + deviceId + " " + deviceName + " " + typeName);
-            
+
+                // Dedupe: Android fires this callback in rapid bursts (4-8x
+                // identical) for a single route change. Log the first one and
+                // skip every duplicate until the device actually changes.
+                String key = deviceId + " " + deviceName + " " + typeName;
+                if (!key.equals(lastLoggedCommDevice)) {
+                    Log.d(TAG, "[Audio] Communication device changed to " + key);
+                    lastLoggedCommDevice = key;
+                }
+
                 sendReactNativeEvent();
             }
         };
@@ -641,6 +784,101 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 			promise.reject("ERROR", e);
 		}
 	}
+
+	/**
+	 * JS-friendly mode formatter. Returns the current AudioManager mode in
+	 * "NAME(int)" form, e.g. "IN_COMMUNICATION(3)".
+	 */
+	@ReactMethod
+	public void getAudioModeName(Promise promise) {
+		try {
+			promise.resolve(getAudioModeDescription(audioManager.getMode()));
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
+
+	/**
+	 * Tear down the Telecom Connection for a specific callId — used to plug
+	 * the leak where in-app hangups don't go through any of the existing
+	 * removal paths (SylkTelecom.endCall, SylkIncomingConnection.on*). JS
+	 * should call this from its hangup/terminated path with the callId so
+	 * that SylkTelecom.CONNECTIONS doesn't accumulate stale entries.
+	 *
+	 * Idempotent: SylkTelecom.endCall is a no-op when the callId isn't in
+	 * the map. DisconnectCause.LOCAL is used because this represents the
+	 * user-initiated hangup case (the only one not already covered).
+	 */
+	@ReactMethod
+	public void cleanupTelecomConnection(String callId, Promise promise) {
+		try {
+			if (callId == null || callId.isEmpty()) {
+				promise.resolve(false);
+				return;
+			}
+			int sizeBefore = SylkTelecom.CONNECTIONS.size();
+			boolean present = SylkTelecom.CONNECTIONS.containsKey(callId);
+			Log.d(TAG, "SYLK_APP cleanupTelecomConnection callId=" + callId
+					+ " sizeBefore=" + sizeBefore
+					+ " present=" + present);
+			SylkTelecom.endCall(callId, DisconnectCause.LOCAL);
+			int sizeAfter = SylkTelecom.CONNECTIONS.size();
+			Log.d(TAG, "SYLK_APP cleanupTelecomConnection callId=" + callId
+					+ " sizeAfter=" + sizeAfter);
+			promise.resolve(present);
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
+
+	/**
+	 * Live snapshot of the SylkTelecom Connection map for JS inspection.
+	 * Resolves to { size: int, keys: [callId, ...] }. Useful for confirming
+	 * that hangup paths cleaned up the Connection (size should drop to 0
+	 * shortly after a call ends).
+	 */
+	@ReactMethod
+	public void getTelecomConnections(Promise promise) {
+		try {
+			com.facebook.react.bridge.WritableMap out = Arguments.createMap();
+			out.putInt("size", SylkTelecom.CONNECTIONS.size());
+			com.facebook.react.bridge.WritableArray keys = Arguments.createArray();
+			for (String k : SylkTelecom.CONNECTIONS.keySet()) {
+				keys.pushString(k);
+			}
+			out.putArray("keys", keys);
+			promise.resolve(out);
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
+
+	/**
+	 * Inspect the most recent mode transition seen by our passive
+	 * OnModeChangedListener. Resolves to a map:
+	 *   { mode: int, modeName: "NAME(int)", at: ms-since-epoch, caller: "thread | stack" }
+	 * or null if no transition has been observed yet (or pre-API 31).
+	 */
+	@ReactMethod
+	public void getLastModeChange(Promise promise) {
+		try {
+			if (lastObservedMode == AudioManager.MODE_INVALID
+					|| lastObservedModeAt == 0L) {
+				promise.resolve(null);
+				return;
+			}
+			com.facebook.react.bridge.WritableMap out =
+					Arguments.createMap();
+			out.putInt("mode", lastObservedMode);
+			out.putString("modeName", getAudioModeDescription(lastObservedMode));
+			out.putDouble("at", (double) lastObservedModeAt);
+			out.putString("caller", lastObservedModeCaller == null
+					? "" : lastObservedModeCaller);
+			promise.resolve(out);
+		} catch (Exception e) {
+			promise.reject("ERROR", e);
+		}
+	}
 	
 	@ReactMethod
 	public void setAudioMode(int mode, Promise promise) {
@@ -766,15 +1004,24 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         }
     }
 
-    private String getAudioModeDescription(int mode) {
+    /**
+     * Centralised "mode int → human name" helper. Public-static so other
+     * native modules (e.g. MyFirebaseMessagingService) can format the mode
+     * the same way our internal logs do, and so the value is available to
+     * JS via {@link #getAudioModeName}. Returned as "NAME(int)" so logs
+     * always carry both representations.
+     */
+    public static String getAudioModeDescription(int mode) {
+        String name;
         switch (mode) {
-            case AudioManager.MODE_NORMAL: return "NORMAL";
-            case AudioManager.MODE_RINGTONE: return "RINGTONE";
-            case AudioManager.MODE_IN_CALL: return "IN_CALL";
-            case AudioManager.MODE_IN_COMMUNICATION: return "IN_COMMUNICATION";
-            case AudioManager.MODE_CALL_SCREENING: return "CALL_SCREENING";
-            default: return "UNKNOWN(" + mode + ")";
+            case AudioManager.MODE_NORMAL: name = "NORMAL"; break;
+            case AudioManager.MODE_RINGTONE: name = "RINGTONE"; break;
+            case AudioManager.MODE_IN_CALL: name = "IN_CALL"; break;
+            case AudioManager.MODE_IN_COMMUNICATION: name = "IN_COMMUNICATION"; break;
+            case AudioManager.MODE_CALL_SCREENING: name = "CALL_SCREENING"; break;
+            default: name = "UNKNOWN"; break;
         }
+        return name + "(" + mode + ")";
     }
 
     private String getDeviceTypeName(int type) {
@@ -843,14 +1090,48 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     @ReactMethod
     public void stop(Promise promise) {
-        if (!started) return;    
+        if (!started) return;
         started = false;
 
         Log.d(TAG, "[Audio] AudioRouteModule stop");
 
+        // Connection-leak observability. Log the live SylkTelecom Connection
+        // count at stop entry (the "before") and again ~500ms later (the
+        // "after"). If the count stays > 0 after the call has ended,
+        // Telecom is still holding the Connection — that explains why
+        // setMode below may be silently overridden back to IN_COMMUNICATION.
+        try {
+            int beforeSize = SylkTelecom.CONNECTIONS.size();
+            Log.d(TAG, "SYLK_APP audio mode SylkTelecom.CONNECTIONS before stop: size="
+                    + beforeSize + " keys=" + SylkTelecom.CONNECTIONS.keySet());
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                int afterSize = SylkTelecom.CONNECTIONS.size();
+                int currentMode = audioManager.getMode();
+                Log.d(TAG, "SYLK_APP audio mode SylkTelecom.CONNECTIONS 500ms after stop: size="
+                        + afterSize + " keys=" + SylkTelecom.CONNECTIONS.keySet()
+                        + " modeNow=" + getAudioModeDescription(currentMode));
+            }, 500);
+        } catch (Throwable t) {
+            Log.w(TAG, "[Audio] CONNECTIONS size logging failed", t);
+        }
+
         pendingBtDevice = null;
-        audioManager.setMode(origAudioMode);
-        Log.d(TAG, "[Audio] Audio mode restored to original " + getAudioModeDescription(origAudioMode));
+        // Prefer the pre-call snapshot taken at FCM push receipt — that's
+        // the user's true mode before Telecom polluted it. Fall back to
+        // origAudioMode if no snapshot was taken (e.g. outgoing call).
+        int restoreTarget;
+        String restoreSource;
+        if (preCallMode != -1) {
+            restoreTarget = preCallMode;
+            restoreSource = "preCallMode";
+            preCallMode = -1; // consume the snapshot
+        } else {
+            restoreTarget = origAudioMode;
+            restoreSource = "origAudioMode";
+        }
+        audioManager.setMode(restoreTarget);
+        Log.d(TAG, "[Audio] Audio mode restored to " + getAudioModeDescription(restoreTarget)
+                + " (source=" + restoreSource + ")");
 
         try {
             if (scoManager != null) {
@@ -883,33 +1164,118 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     @ReactMethod
     public void setActiveDevice(ReadableMap deviceMap, Promise promise) {
+        // Backwards-compat overload: no call uuid → AudioManager-only path.
+        // The new callers pass a uuid via setActiveDeviceForCall so that we
+        // can also update Telecom's audio route (see comment on imports).
+        setActiveDeviceForCall(null, deviceMap, promise);
+    }
+
+    /**
+     * Single native entry point that updates Telecom's audio route AND the
+     * AudioManager communication device for the given call. Replaces the
+     * previous JS-side pair of RNCallKeep.setAudioRoute() + setActiveDevice()
+     * which raced against each other on Motorola/Razr (Telecom would land
+     * after AudioManager and undo the route).
+     *
+     * Order matters: Telecom first (so the framework's route lock matches
+     * what we're about to put on AudioManager), then setCommunicationDevice
+     * for the concrete device. Both are synchronous from Telecom's
+     * perspective by the time this method returns.
+     *
+     * callUuid may be null/empty to skip the Telecom step (e.g. routing
+     * outside of a call, or for WIRED_HEADSET where there is no Telecom
+     * route name at all).
+     */
+    @ReactMethod
+    public void setActiveDeviceForCall(String callUuid, ReadableMap deviceMap, Promise promise) {
         try {
             if (deviceMap == null) {
                 promise.reject("ERROR", "No device provided");
                 return;
             }
-    
-            // Convert ReadableMap to Map<String, String> for internal handling
+
             Map<String, String> device = new HashMap<>();
             ReadableMapKeySetIterator iterator = deviceMap.keySetIterator();
             while (iterator.hasNextKey()) {
                 String key = iterator.nextKey();
                 device.put(key, deviceMap.getString(key));
             }
-    
-            Log.d(TAG, "[Audio] setActiveDevice " + device);
-    
+
+            String type = device.get("type");
+            Log.d(TAG, "[Audio] setActiveDeviceForCall callUuid=" + callUuid + " device=" + device);
+
+            // 1. Tell Telecom which route the call is on. Skipping this leaves
+            //    Telecom on its previous route and the framework will overwrite
+            //    AudioManager again within a tick. No-op if uuid is missing or
+            //    no Connection is registered for it (e.g. WIRED_HEADSET path).
+            if (callUuid != null && !callUuid.isEmpty()) {
+                applyTelecomAudioRoute(callUuid, type);
+            }
+
+            // 2. Land the concrete device on AudioManager.
             boolean switched = switchAudioRoute(device);
-    
+
             if (switched) {
                 promise.resolve(true);
             } else {
-                promise.reject("ERROR", "Requested audio device not available: " + device.get("type"));
+                promise.reject("ERROR", "Requested audio device not available: " + type);
             }
-    
+
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] setActiveDevice ERROR", e);
+            Log.e(TAG, "[Audio] setActiveDeviceForCall ERROR", e);
             promise.reject("ERROR", e);
+        }
+    }
+
+    /**
+     * Look up the {@link Connection} registered with Telecom for this call
+     * (RNCallKeep's VoiceConnectionService for outgoing calls; SylkTelecom's
+     * own ConnectionService for FCM-driven incoming calls) and call
+     * {@link Connection#setAudioRoute(int)} with the matching CallAudioState
+     * route mask. Errors and missing-connection cases are logged and swallowed
+     * — the AudioManager step still runs after this returns.
+     */
+    private void applyTelecomAudioRoute(String callUuid, String type) {
+        if (type == null) return;
+        int route;
+        if (type.equals("BUILTIN_SPEAKER")) {
+            route = CallAudioState.ROUTE_SPEAKER;
+        } else if (type.equals("BUILTIN_EARPIECE")) {
+            route = CallAudioState.ROUTE_EARPIECE;
+        } else if (type.equals("BLUETOOTH_SCO") || type.equals("BLUETOOTH_A2DP")) {
+            route = CallAudioState.ROUTE_BLUETOOTH;
+        } else if (type.equals("WIRED_HEADSET") || type.equals("USB_HEADSET")) {
+            route = CallAudioState.ROUTE_WIRED_HEADSET;
+        } else {
+            Log.d(TAG, "[Audio] applyTelecomAudioRoute: no Telecom route mapping for type=" + type);
+            return;
+        }
+
+        Connection conn = null;
+        // Prefer RNCallKeep's VoiceConnectionService (covers outgoing calls and
+        // most incoming calls handled through the JS app).
+        try {
+            conn = io.wazo.callkeep.VoiceConnectionService.getConnection(callUuid);
+        } catch (Throwable t) {
+            // Class may not be on the classpath in some build variants; fine.
+            Log.d(TAG, "[Audio] applyTelecomAudioRoute: VoiceConnectionService lookup threw: " + t);
+        }
+        // Fall back to SylkTelecom's own self-managed connection (used for
+        // FCM-presented incoming calls before JS has a chance to take over).
+        if (conn == null) {
+            conn = SylkTelecom.CONNECTIONS.get(callUuid);
+        }
+
+        if (conn == null) {
+            Log.d(TAG, "[Audio] applyTelecomAudioRoute: no Connection registered for uuid=" + callUuid);
+            return;
+        }
+
+        try {
+            conn.setAudioRoute(route);
+            Log.d(TAG, "[Audio] applyTelecomAudioRoute uuid=" + callUuid + " type=" + type + " route=0x" + Integer.toHexString(route));
+        } catch (Exception e) {
+            Log.w(TAG, "[Audio] applyTelecomAudioRoute failed", e);
         }
     }
 

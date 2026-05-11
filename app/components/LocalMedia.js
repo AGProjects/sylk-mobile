@@ -8,6 +8,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import CallOverlay from './CallOverlay';
 import styles from '../assets/styles/LocalMediaStyles';
+import * as utils from '../utils';
 
 
 class LocalMedia extends Component {
@@ -57,12 +58,119 @@ class LocalMedia extends Component {
 			isLandscape: this.props.isLandscape,
 			cameraFacing: initialFacing,
 			videoMuted: initialVideoMuted,
-			videoPickerVisible: false
+			videoPickerVisible: false,
+			audioDevicePickerVisible: false,
+			// 9-second auto-start countdown for outgoing video calls,
+			// matching the AudioCallBox behaviour.
+			autoStartCountdown: 0
         };
+
+        this._autoStartTimer = null;
+        this._autoStartTickInterval = null;
     }
 
     componentDidMount() {
         this.props.mediaPlaying();
+        if (this.props.awaitingUserCallStart && this.props.confirmStartCall) {
+            this._startAutoStartTimer();
+        }
+    }
+
+    componentDidUpdate(prevProps, prevState) {
+        const enteredAwaiting = !prevProps.awaitingUserCallStart && this.props.awaitingUserCallStart;
+        const leftAwaiting = prevProps.awaitingUserCallStart && !this.props.awaitingUserCallStart;
+        if (enteredAwaiting && this.props.confirmStartCall) {
+            this._startAutoStartTimer();
+        }
+        if (leftAwaiting) {
+            this._cancelAutoStartTimer();
+        }
+
+        // Pause the auto-start countdown while the user is interacting
+        // with a picker (camera-change panel or audio device list). The
+        // timer resumes from the remaining seconds the moment the picker
+        // closes — without this, picking a camera would burn through 2-3
+        // seconds of the countdown and the call could auto-fire before
+        // the user finishes their selection.
+        if (this.props.awaitingUserCallStart) {
+            const wasOpen = prevState.videoPickerVisible || prevState.audioDevicePickerVisible;
+            const isOpen = this.state.videoPickerVisible || this.state.audioDevicePickerVisible;
+            if (!wasOpen && isOpen) {
+                this._pauseAutoStartTimer();
+            } else if (wasOpen && !isOpen) {
+                this._resumeAutoStartTimer();
+            }
+        }
+    }
+
+    componentWillUnmount() {
+        this._cancelAutoStartTimer();
+    }
+
+    /** Auto-start countdown for outgoing video calls. Default 9 s,
+     *  override via `seconds` so we can resume from a paused state.
+     *  Slightly longer than the audio timer since the user is more
+     *  likely to want to fiddle with camera / mute first. */
+    _startAutoStartTimer(seconds = 9) {
+        this._cancelAutoStartTimer();
+        const startSeconds = Math.max(1, seconds);
+        this.setState({ autoStartCountdown: startSeconds, autoStartPaused: false });
+        this._autoStartTickInterval = setInterval(() => {
+            this.setState((s) => ({
+                autoStartCountdown: Math.max(0, (s.autoStartCountdown || 0) - 1)
+            }));
+        }, 1000);
+        this._autoStartTimer = setTimeout(() => {
+            this._cancelAutoStartTimer();
+            if (this.props.confirmStartCall && this.props.awaitingUserCallStart) {
+                this.props.confirmStartCall();
+            }
+        }, startSeconds * 1000);
+    }
+
+    _cancelAutoStartTimer() {
+        if (this._autoStartTimer) {
+            clearTimeout(this._autoStartTimer);
+            this._autoStartTimer = null;
+        }
+        if (this._autoStartTickInterval) {
+            clearInterval(this._autoStartTickInterval);
+            this._autoStartTickInterval = null;
+        }
+        if (this.state && this.state.autoStartCountdown !== 0) {
+            this.setState({ autoStartCountdown: 0 });
+        }
+    }
+
+    /** Stop the timer but keep `autoStartCountdown` in state so the
+     *  resume can pick up from where we left off. Called when the user
+     *  opens a picker (camera / audio device). Sets `autoStartPaused`
+     *  so the progress bar can recolour to signal "frozen". */
+    _pauseAutoStartTimer() {
+        if (this._autoStartTimer) {
+            clearTimeout(this._autoStartTimer);
+            this._autoStartTimer = null;
+        }
+        if (this._autoStartTickInterval) {
+            clearInterval(this._autoStartTickInterval);
+            this._autoStartTickInterval = null;
+        }
+        // autoStartCountdown left in state so the bar / label freeze at
+        // the current value while the picker is open.
+        this.setState({ autoStartPaused: true });
+    }
+
+    /** Resume from the paused countdown value. No-op if 0 (already
+     *  fired) or the user has navigated away from awaiting. */
+    _resumeAutoStartTimer() {
+        if (!this.props.awaitingUserCallStart) return;
+        const remaining = (this.state && this.state.autoStartCountdown) || 0;
+        if (remaining <= 0) {
+            // Picker stayed open past the deadline — fire the call now.
+            if (this.props.confirmStartCall) this.props.confirmStartCall();
+            return;
+        }
+        this._startAutoStartTimer(remaining);
     }
 
 
@@ -245,7 +353,11 @@ class LocalMedia extends Component {
                             style={[buttonClass]}
                             icon={mainIcon}
                             onPress={() => this.setState({
-                                videoPickerVisible: !this.state.videoPickerVisible
+                                videoPickerVisible: !this.state.videoPickerVisible,
+                                // Mutual exclusion: opening one picker
+                                // collapses the other so they can't both
+                                // float over the preview at once.
+                                audioDevicePickerVisible: false,
                             })}
                         />
                     </TouchableHighlight>
@@ -284,7 +396,78 @@ class LocalMedia extends Component {
     }
 
     hangupCall() {
+        // Cancel the auto-start countdown so it doesn't race the
+        // hangup and fire confirmStartCall on a doomed call.
+        this._cancelAutoStartTimer();
         this.props.hangupCall('user_hangup_local_media');
+    }
+
+    /**
+     * WhatsApp-style floating audio-device picker. Renders the currently
+     * selected output as a single button; tapping it reveals the other
+     * available devices stacked above. Hidden when there's only one device
+     * to choose from (so plain phones without a headset don't show a
+     * pointless picker).
+     */
+    renderAudioDevicePicker(buttonSize, buttonStyle) {
+        const devices = this.state.availableAudioDevices || [];
+        if (devices.length <= 1) {
+            return null;
+        }
+        const selected = this.state.selectedAudioDevice;
+        const selectedIcon = utils.availableAudioDevicesIconsMap[selected] || 'phone-in-talk';
+        const otherDevices = devices.filter(d => d !== selected);
+
+        return (
+            // No marginLeft — pickers should sit flush against the video
+            // picker, matching the VideoBox in-call bar where the camera
+            // and audio device buttons cluster together with the hangup
+            // button on its own to the right (marginLeft: 30 lives on
+            // the hangup wrapper).
+            <View style={{position: 'relative'}}>
+                {this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+                    <View style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        left: 0,
+                        right: 0,
+                        alignItems: 'center',
+                        marginBottom: 4,
+                        zIndex: 100,
+                        elevation: 10,
+                    }}>
+                        {otherDevices.map(device => (
+                            <TouchableHighlight key={device} style={[styles.roundshape, {marginBottom: 21}]}>
+                                <IconButton
+                                    size={buttonSize}
+                                    style={buttonStyle}
+                                    icon={utils.availableAudioDevicesIconsMap[device] || 'phone-in-talk'}
+                                    onPress={() => {
+                                        if (this.props.selectAudioDevice) {
+                                            this.props.selectAudioDevice(device);
+                                        }
+                                        this.setState({audioDevicePickerVisible: false});
+                                    }}
+                                />
+                            </TouchableHighlight>
+                        ))}
+                    </View>
+                )}
+                <TouchableHighlight style={styles.roundshape}>
+                    <IconButton
+                        size={buttonSize}
+                        style={buttonStyle}
+                        icon={selectedIcon}
+                        onPress={() => this.setState({
+                            audioDevicePickerVisible: !this.state.audioDevicePickerVisible,
+                            // Mutual exclusion: opening this picker
+                            // collapses the camera picker.
+                            videoPickerVisible: false,
+                        })}
+                    />
+                </TouchableHighlight>
+            </View>
+        );
     }
 
     render() {
@@ -369,26 +552,172 @@ class LocalMedia extends Component {
                         </TouchableWithoutFeedback>
                     )}
 
-                    <View style={[
-                            buttonContainerClass,
-                            { bottom: buttonContainerClass.bottom + bottomInset, flexDirection: 'row', zIndex: 2000, elevation: 30 },
-                          ]}>
+                    {/* Same backdrop for the audio-device picker. */}
+                    {this.state.audioDevicePickerVisible && (
+                        <TouchableWithoutFeedback
+                            onPress={() => this.setState({audioDevicePickerVisible: false})}
+                        >
+                            <View style={StyleSheet.absoluteFillObject} />
+                        </TouchableWithoutFeedback>
+                    )}
 
-                        {this.state.mediaType == 'video'
-                            ? this.renderVideoPicker(buttonSize, previewButtonClass)
-                            : null}
+                    {this.props.awaitingUserCallStart && this.props.confirmStartCall ? (
+                        // Outgoing-video pre-call layout: camera picker +
+                        // speaker (audio device) picker on a centered row at
+                        // the top, with the contained "Start video call"
+                        // button below. Same anchor as the regular bar
+                        // (buttonContainerClass), but vertical instead of a
+                        // single horizontal row, and shifted up 50 px so the
+                        // floating picker popups don't get clipped by the
+                        // screen edge.
+                        //
+                        // A small X icon in the top-right corner aborts the
+                        // call before it goes out — same effect as the red
+                        // hangup IconButton in the non-awaiting layout, but
+                        // visually unobtrusive so it doesn't compete with
+                        // the primary Start action.
+                        <Fragment>
+                            {/* X close icon — hidden per user request.
+                                The bottom-bar hangup IconButton already
+                                provides the cancel action. Wrapped in
+                                `false &&` so it can be re-enabled later
+                                with a one-line change. */}
+                            {false && (
+                                <View style={{
+                                    position: 'absolute',
+                                    top: 56 + 20,
+                                    left: 8,
+                                    zIndex: 2100,
+                                    elevation: 31,
+                                }}>
+                                    <TouchableHighlight style={[styles.roundshape, {borderRadius: 24}]}>
+                                        <IconButton
+                                            size={28}
+                                            style={{backgroundColor: 'rgba(0,0,0,0.45)', margin: 0}}
+                                            iconColor="#ffffff"
+                                            color="#ffffff"
+                                            icon="close"
+                                            onPress={this.hangupCall}
+                                        />
+                                    </TouchableHighlight>
+                                </View>
+                            )}
 
-                        <View style={{marginLeft: 30}}>
-                            <TouchableHighlight style={styles.roundshape}>
-                                <IconButton
-                                    size={buttonSize}
-                                    style={styles.hangupbutton}
-                                    icon="phone-hangup"
-                                    onPress={this.hangupCall}
-                                />
-                            </TouchableHighlight>
+                            {/* Start video call + sliding reverse-progress
+                                bar — absolutely positioned ABOVE the device
+                                picker bar. Auto-fires in 9 s if the user
+                                doesn't tap X / hangup. The button label
+                                shows the remaining seconds. Same layout as
+                                AudioCallBox.
+
+                                Folded (cover-display) override: bottom:310
+                                puts the button above the screen on the
+                                Razr cover display. Drop it to ~110 so it
+                                sits just above the camera/audio-device
+                                picker bar at the bottom of the cover
+                                display, leaving room for the picker row
+                                + safe-area below. */}
+                            <View style={{
+                                position: 'absolute',
+                                bottom: this.props.isFolded ? 130 : 310,
+                                left: 0,
+                                right: 0,
+                                alignItems: 'center',
+                                zIndex: 2000,
+                                elevation: 30,
+                            }}>
+                                <View>
+                                    <Button
+                                        mode="contained"
+                                        onPress={() => {
+                                            this._cancelAutoStartTimer();
+                                            if (this.props.confirmStartCall) {
+                                                this.props.confirmStartCall();
+                                            }
+                                        }}
+                                    >
+                                        {this.state.autoStartCountdown > 0
+                                            ? `Start video call (${this.state.autoStartCountdown})`
+                                            : 'Start video call'}
+                                    </Button>
+                                    <View style={{
+                                        flexDirection: 'row',
+                                        marginTop: 10,
+                                        height: 6,
+                                        alignSelf: 'stretch',
+                                        justifyContent: 'space-between',
+                                    }}>
+                                        {[...Array(9)].map((_, i) => (
+                                            <View
+                                                key={'autostart-cell-' + i}
+                                                style={{
+                                                    flex: 1,
+                                                    marginHorizontal: 1,
+                                                    borderRadius: 2,
+                                                    // Paused → white filled cells (frozen).
+                                                    // Running → green filled cells (active
+                                                    // countdown). Empty → dim translucent.
+                                                    backgroundColor: i < (this.state.autoStartCountdown || 0)
+                                                        ? (this.state.autoStartPaused
+                                                            ? 'rgba(255,255,255,0.85)'
+                                                            : 'rgba(0,200,90,0.9)')
+                                                        : 'rgba(255,255,255,0.20)',
+                                                }}
+                                            />
+                                        ))}
+                                    </View>
+                                </View>
+                            </View>
+
+                            {/* Camera + audio device pickers and hangup
+                                IconButton on the standard bottom bar,
+                                same height as during the active call so
+                                the controls don't visually jump after
+                                tapping Start. */}
+                            <View style={[
+                                    buttonContainerClass,
+                                    { bottom: buttonContainerClass.bottom + bottomInset, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                                  ]}>
+                                {this.state.mediaType == 'video'
+                                    ? this.renderVideoPicker(buttonSize, previewButtonClass)
+                                    : null}
+                                {this.renderAudioDevicePicker(buttonSize, previewButtonClass)}
+                                <View style={{marginLeft: 30}}>
+                                    <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            size={buttonSize}
+                                            style={styles.hangupbutton}
+                                            icon="phone-hangup"
+                                            onPress={this.hangupCall}
+                                        />
+                                    </TouchableHighlight>
+                                </View>
+                            </View>
+                        </Fragment>
+                    ) : (
+                        // Normal pre-call / in-progress bar: pickers + the
+                        // red hangup IconButton, all on a single horizontal
+                        // row.
+                        <View style={[
+                                buttonContainerClass,
+                                { bottom: buttonContainerClass.bottom + bottomInset, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                              ]}>
+                            {this.state.mediaType == 'video'
+                                ? this.renderVideoPicker(buttonSize, previewButtonClass)
+                                : null}
+                            {this.renderAudioDevicePicker(buttonSize, previewButtonClass)}
+                            <View style={{marginLeft: 30}}>
+                                <TouchableHighlight style={styles.roundshape}>
+                                    <IconButton
+                                        size={buttonSize}
+                                        style={styles.hangupbutton}
+                                        icon="phone-hangup"
+                                        onPress={this.hangupCall}
+                                    />
+                                </TouchableHighlight>
+                            </View>
                         </View>
-                    </View>
+                    )}
                 </Fragment>
                 }
 
@@ -424,11 +753,16 @@ LocalMedia.propTypes = {
     terminatedReason    : PropTypes.string,
     isLandscape         : PropTypes.bool,
     isTablet            : PropTypes.bool,
+    isFolded            : PropTypes.bool,
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
     selectAudioDevice   : PropTypes.func,
     useInCallManger     : PropTypes.bool,
-	insets              : PropTypes.object
+	insets              : PropTypes.object,
+    // Outgoing-video-call gate: when true, the SIP call has NOT been
+    // placed yet and the user must tap the green Call button to commit.
+    awaitingUserCallStart : PropTypes.bool,
+    confirmStartCall      : PropTypes.func,
 };
 
 

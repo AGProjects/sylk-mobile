@@ -14,9 +14,6 @@ import android.widget.TextView;
 
 import java.io.File;
 
-import android.view.View;
-import android.widget.LinearLayout;
-
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -122,37 +119,33 @@ public class IncomingCallActivity extends AppCompatActivity {
         TextView callerText = findViewById(R.id.callerNameText);
         callerText.setText(displayName);
 
-		// Buttons
-		// Inside onCreate after initializing mediaType
-		LinearLayout audioContainer = findViewById(R.id.audioButtonContainer);
-		LinearLayout videoContainer = findViewById(R.id.videoButtonContainer);
-		
-		Button acceptButton = findViewById(R.id.acceptButton);
-		Button rejectButtonAudio = findViewById(R.id.rejectButtonAudio);
-		
-		Button acceptAudioButton = findViewById(R.id.acceptAudioButton);
-		Button acceptVideoButton = findViewById(R.id.acceptVideoButton);
-		Button rejectButtonVideo = findViewById(R.id.rejectButtonVideo);
-		
 		TextView callingLabel = findViewById(R.id.callingLabelText);
 		callingLabel.setText("is calling");
 
-		// Show correct container
-		if ("video".equals(mediaType)) {
-			videoContainer.setVisibility(View.VISIBLE);
-			audioContainer.setVisibility(View.GONE);
-
-			acceptAudioButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));		
-			acceptVideoButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_VIDEO"));
-			rejectButtonVideo.setOnClickListener(v -> sendRejectIntent());
-		
+		// Show the full SIP URI under the "is calling" line. Hide it if the
+		// displayed name is already the URI (no contact match) so we don't
+		// duplicate the same string.
+		TextView callerUri = findViewById(R.id.callerUriText);
+		if (from_uri != null && !from_uri.equals(displayName)) {
+			callerUri.setText(from_uri);
+			callerUri.setVisibility(android.view.View.VISIBLE);
 		} else {
-			audioContainer.setVisibility(View.VISIBLE);
-			videoContainer.setVisibility(View.GONE);
-		
-			acceptButton.setOnClickListener(v -> sendAcceptIntent("ACTION_ACCEPT_AUDIO"));
-			rejectButtonAudio.setOnClickListener(v -> sendRejectIntent());
+			callerUri.setVisibility(android.view.View.GONE);
 		}
+
+		// Single Accept / Decline pair. Accept honours the call's media-type:
+		// a video call accepts as video, anything else as audio. The in-app
+		// UI handles the rest after the SIP session is connected.
+		Button acceptButton = findViewById(R.id.acceptButton);
+		Button declineButton = findViewById(R.id.declineButton);
+
+		final String acceptAction = "video".equalsIgnoreCase(mediaType)
+				? "ACTION_ACCEPT_VIDEO"
+				: "ACTION_ACCEPT_AUDIO";
+
+		acceptButton.setOnClickListener(v -> sendAcceptIntent(acceptAction));
+		declineButton.setOnClickListener(v -> sendRejectIntent());
+
         Log.d(LOG_TAG, "[CallUI] IncomingCallActivity alert panel displayed");
 
 	}

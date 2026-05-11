@@ -232,6 +232,17 @@ class CallOverlay extends React.Component {
                     }, 150);
                 }
                 break;
+            case 'dtmf':
+                // Toggle the AudioCallBox-owned DTMF modal. Unlike the
+                // chat / location items above, this one stays inside
+                // the call view — there's nothing to navigate away
+                // from. The parent owns the modal state, so we just
+                // poke its showDtmf handler and let it manage the
+                // visibility.
+                if (typeof this.props.showDtmfFunc === 'function') {
+                    this.props.showDtmfFunc();
+                }
+                break;
             default:
                 break;
         }
@@ -444,16 +455,14 @@ class CallOverlay extends React.Component {
 						</Text>
 					</View>
 
-					{/* Hide the navbar speedometer for audio calls — the
-					    AudioCallBox now renders its own larger
-					    speedometer in the call body, so the small dials
-					    in the header are redundant for audio. Video
-					    P2P calls keep the header speedometer because
-					    that's the primary readout when not in
-					    fullscreen — shown in both portrait and
-					    landscape. Conferences explicitly DO NOT use
-					    this header (ConferenceBox uses its own
-					    fullscreen-only i-icon overlay). */}
+					{/* Navbar speedometer for video calls — temporarily hidden
+					    per request. Re-enable by uncommenting the JSX below.
+					    The fullscreen-only NetworkSpeedometer in VideoBox is
+					    unaffected (that's the small "i" → expand HUD).
+					    Audio calls already render their own larger
+					    speedometer in the AudioCallBox body, and conferences
+					    use their own fullscreen-only overlay. */}
+					{/*
 					{this.state.call
 						&& this.state.callState === 'established'
 						&& this.state.media !== 'audio'
@@ -476,6 +485,7 @@ class CallOverlay extends React.Component {
 							/>
 						</View>
 					) : null}
+					*/}
 
                 <Menu
                     visible={this.state.menuVisible}
@@ -540,6 +550,25 @@ class CallOverlay extends React.Component {
 							);
 						})}
 					</Menu>
+
+					{/* Dialpad — only relevant for audio calls. Opens
+						the DTMF modal (the same one the in-call action-
+						bar dialpad button used to be the only way to
+						reach). Adding it to the kebab makes the dial-
+						pad reachable on every audio call regardless of
+						whether the destination URI parses as a phone
+						number or carries the 'tel' tag, and keeps the
+						bottom action bar uncluttered. Hidden when
+						media === 'video' since video calls already
+						have their own action set above the divider. */}
+					{this.state.media !== 'video'
+						&& typeof this.props.showDtmfFunc === 'function' && (
+						<Menu.Item
+							onPress={() => this.handleMenu('dtmf')}
+							icon="dialpad"
+							title="Dialpad..."
+						/>
+					)}
 
 					{/* Chat + Share / Request location group — mirrors
 						the chat-header kebab and the green chat button
@@ -641,7 +670,11 @@ CallOverlay.propTypes = {
     aspectRatio: PropTypes.string,
     toggleAspectRatio: PropTypes.func,
     shareLocationFromCall: PropTypes.func,
-    requestLocationFromCall: PropTypes.func
+    requestLocationFromCall: PropTypes.func,
+    // Optional: opens the DTMF dialpad modal owned by AudioCallBox.
+    // When omitted (e.g. on video calls or while the modal is being
+    // wired up by another caller), the menu item is hidden.
+    showDtmfFunc: PropTypes.func,
 };
 
 export default CallOverlay;

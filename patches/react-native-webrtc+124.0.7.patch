@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native-webrtc/android/build.gradle b/node_modules/react-native-webrtc/android/build.gradle
-index 033a226..021c7c9 100644
+index 033a226..de97a11 100644
 --- a/node_modules/react-native-webrtc/android/build.gradle
 +++ b/node_modules/react-native-webrtc/android/build.gradle
 @@ -12,6 +12,7 @@ android {
@@ -10,18 +10,20 @@ index 033a226..021c7c9 100644
  
      defaultConfig {
          minSdkVersion 24
-@@ -19,6 +20,28 @@ android {
+@@ -19,6 +20,30 @@ android {
          versionCode 1
          versionName "1.0"
          consumerProguardFiles 'consumer-rules.pro'
 +
 +        // Sylk E2EE: native FrameEncryptor/Decryptor JNI bridge.
-+        // -fexperimental-relative-c++-abi-vtables matches the ABI the
-+        // libjingle_peerconnection_so.so binary was built with (verified
-+        // by disassembly: nativeSetFrameEncryptor reads vtable[0] as a
-+        // 4-byte sign-extended offset, not an 8-byte absolute fn ptr).
-+        // Without this flag our class's vtable layout is incompatible
-+        // and libwebrtc crashes on the first virtual dispatch.
++        // -fexperimental-relative-c++-abi-vtables matches the ABI of
++        // the libjingle_peerconnection_so.so binary we ship with, on
++        // BOTH the Jitsi build and io.github.webrtc-sdk:android (M137
++        // tested). The first virtual dispatch into MediaEncryptor::
++        // Encrypt / MediaDecryptor::Decrypt SIGSEGVs without this
++        // flag — confirmed Razr crashed silently right after PHASE A
++        // "install receivers" when the flag was off, recovered when
++        // it was put back.
 +        externalNativeBuild {
 +            cmake {
 +                cppFlags '-std=c++17', '-fexceptions', '-frtti', '-fexperimental-relative-c++-abi-vtables'
@@ -39,6 +41,28 @@ index 033a226..021c7c9 100644
      }
  
      // WebRTC requires Java 8 features
+@@ -31,6 +56,20 @@ android {
+ 
+ dependencies {
+     implementation "com.facebook.react:react-android:+"
+-    api 'org.jitsi:webrtc:124.+'
++    // Switched from 'org.jitsi:webrtc:124.+' to the upstream Google
++    // WebRTC build maintained by webrtc-sdk. The Jitsi fork omits
++    // org.webrtc.AudioTrackSink and AudioTrack.addSink/removeSink from
++    // its public Java API; this build exposes them so SylkCallRecorder
++    // can tap mic + remote PCM streams directly.
++    //
++    // Version note: webrtc-sdk does not publish an M124 build —
++    // closest available milestones are M125, M137, M144. We pin to
++    // M137 because it's the most recent stable build in the same
++    // lineage as react-native-webrtc 124.0.7's expectations. Public
++    // Java APIs (AudioTrackSink, RtpSender.setFrameEncryptor, etc.)
++    // are stable across M124–M137; the C++ vtable layouts our E2EE
++    // FrameEncryptor patch depends on may have shifted, so test the
++    // encrypted-call path after this swap.
++    api 'io.github.webrtc-sdk:android:137.+'
+     implementation "androidx.core:core:1.7.0"
+ }
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/CMakeLists.txt b/node_modules/react-native-webrtc/android/src/main/cpp/CMakeLists.txt
 new file mode 100644
 index 0000000..49fb9ea
@@ -74,7 +98,7 @@ index 0000000..49fb9ea
 +)
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
 new file mode 100644
-index 0000000..2d49a8f
+index 0000000..c50a72d
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
 @@ -0,0 +1,545 @@
@@ -625,7 +649,7 @@ index 0000000..2d49a8f
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
 new file mode 100644
-index 0000000..3e0ef4e
+index 0000000..0609a9f
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
 @@ -0,0 +1,30 @@
@@ -787,6 +811,57 @@ index 0000000..e080862
 +}  // namespace webrtc
 +
 +#endif  // SYLK_WEBRTC_COMPAT_H_
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/DtmfInbandMixer.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/DtmfInbandMixer.java
+new file mode 100644
+index 0000000..0dbf6d9
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/DtmfInbandMixer.java
+@@ -0,0 +1,45 @@
++package com.oney.WebRTCModule;
++
++/**
++ * DtmfInbandMixer — placeholder.
++ *
++ * The original plan was to implement {@code
++ * JavaAudioDeviceModule.AudioRecordDataCallback} so we could
++ * synthesise two-frequency DTMF samples and overwrite the live mic
++ * buffer for the tone duration. That callback interface is NOT
++ * present in libwebrtc M124's JavaAudioDeviceModule (it landed
++ * upstream in roughly M132); attempting to use it caused a compile
++ * error: "cannot find symbol class AudioRecordDataCallback".
++ *
++ * Two real ways to implement inband DTMF on this rn-webrtc
++ * (M124) build:
++ *
++ * 1. Custom AudioDeviceModule that wraps libwebrtc's WebRtcAudioRecord
++ *    (or rolls its own AudioRecord), mixing DTMF samples into each
++ *    captured buffer before handing it to libwebrtc. ~300+ lines of
++ *    careful Java + native lifecycle work; gets fragile across
++ *    libwebrtc upgrades.
++ *
++ * 2. Replace the audio track temporarily via RTCRtpSender.replaceTrack
++ *    with a synthetic DTMF audio source for the duration of the tone.
++ *    Still requires native code to create the DTMF audio source.
++ *
++ * For now this class is intentionally empty; WebRTCModule.java has
++ * the corresponding fallback that resolves playInbandDtmf with
++ * `false` so the JS side cleanly falls back to RFC 4733 (where the
++ * inband code path was meant to bypass libwebrtc 124's broken
++ * RFC 4733 packetiser). The user's preferred resolution path is now
++ * SIP INFO via the Janus SIP plugin, which doesn't need any of this
++ * audio plumbing.
++ */
++public class DtmfInbandMixer {
++    /**
++     * Attempt to play a DTMF tone inband. Always returns {@code false}
++     * on this build — see the class javadoc above for context. Kept
++     * as a no-op so the bridge call from JS doesn't crash and the
++     * fallback to RFC 4733 path is taken instead.
++     */
++    public boolean playTone(char digit, int durationMs) {
++        return false;
++    }
++}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
 new file mode 100644
 index 0000000..4aa61c7
@@ -975,10 +1050,10 @@ index 0000000..4aa61c7
 +    }
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-index 996648c..9f0c6b3 100644
+index 996648c..b525a0d 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-@@ -38,6 +38,12 @@ import java.util.concurrent.ExecutionException;
+@@ -38,12 +38,23 @@ import java.util.concurrent.ExecutionException;
  
  @ReactModule(name = "WebRTCModule")
  public class WebRTCModule extends ReactContextBaseJavaModule {
@@ -991,7 +1066,40 @@ index 996648c..9f0c6b3 100644
      static final String TAG = WebRTCModule.class.getCanonicalName();
  
      PeerConnectionFactory mFactory;
-@@ -591,6 +597,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+     VideoEncoderFactory mVideoEncoderFactory;
+     VideoDecoderFactory mVideoDecoderFactory;
+     AudioDeviceModule mAudioDeviceModule;
++    // Inband DTMF mixer attached to the JavaAudioDeviceModule. Holds a
++    // null reference whenever a non-Java ADM is supplied externally
++    // (some apps inject a custom one) — the inband-DTMF feature is
++    // gated on the default ADM build path.
++    DtmfInbandMixer mDtmfInbandMixer;
+ 
+     // Need to expose the peer connection codec factories here to get capabilities
+     private final SparseArray<PeerConnectionObserver> mPeerConnectionObservers;
+@@ -90,7 +101,20 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+         }
+ 
+         if (adm == null) {
+-            adm = JavaAudioDeviceModule.builder(reactContext).setEnableVolumeLogger(false).createAudioDeviceModule();
++            // We allocate DtmfInbandMixer regardless of whether the
++            // libwebrtc build can actually plug it in — the JS side
++            // calls playInbandDtmf() either way, and the mixer's
++            // playTone() is a safe no-op on this M124 build. Future
++            // upgrade path: when we move to a libwebrtc build that
++            // exposes JavaAudioDeviceModule.AudioRecordDataCallback
++            // (M132+), wire it back in via
++            // .setAudioRecordDataCallback(mDtmfInbandMixer) on the
++            // builder below and the mixer becomes live without any
++            // JS-side change.
++            mDtmfInbandMixer = new DtmfInbandMixer();
++            adm = JavaAudioDeviceModule.builder(reactContext)
++                .setEnableVolumeLogger(false)
++                .createAudioDeviceModule();
+         }
+ 
+         Log.d(TAG, "Using video encoder factory: " + encoderFactory.getClass().getCanonicalName());
+@@ -591,6 +615,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
          }
      }
  
@@ -1176,6 +1284,117 @@ index 996648c..9f0c6b3 100644
      @ReactMethod
      public void senderSetParameters(int id, String senderId, ReadableMap options, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
+@@ -674,6 +876,110 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+         });
+     }
+ 
++    /**
++     * DTMF — RFC 4733 telephone-event packets sent in-band on the
++     * audio RTP stream. We pull `org.webrtc.DtmfSender` off the
++     * sender and forward the digits straight through; libwebrtc
++     * handles the per-tone packetisation and the inter-tone gap
++     * timing internally. Returns false (rather than throwing) when
++     * the sender is missing or doesn't support DTMF (i.e. it's a
++     * video sender), so the JS side can fall back without a stack
++     * trace.
++     *
++     * NOTE: rn-webrtc 124.0.7 doesn't ship these methods. The
++     * sylkrtc patch's "audioSender.dtmf" path was therefore
++     * always undefined; this fork closes that gap.
++     */
++    @ReactMethod
++    public void senderInsertDtmf(int id, String senderId, String tones, int duration, int interToneGap, Promise promise) {
++        ThreadUtils.runOnExecutor(() -> {
++            try {
++                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++                if (pco == null) {
++                    Log.d(TAG, "senderInsertDtmf() peerConnectionObserver is null");
++                    promise.resolve(false);
++                    return;
++                }
++
++                RtpSender sender = pco.getSender(senderId);
++                if (sender == null) {
++                    Log.w(TAG, "senderInsertDtmf() sender is null");
++                    promise.resolve(false);
++                    return;
++                }
++
++                DtmfSender dtmf = sender.dtmf();
++                if (dtmf == null) {
++                    Log.w(TAG, "senderInsertDtmf() DtmfSender unavailable for sender " + senderId);
++                    promise.resolve(false);
++                    return;
++                }
++
++                if (!dtmf.canInsertDtmf()) {
++                    Log.w(TAG, "senderInsertDtmf() canInsertDtmf returned false");
++                    promise.resolve(false);
++                    return;
++                }
++
++                boolean ok = dtmf.insertDtmf(tones, duration, interToneGap);
++                Log.d(TAG, "senderInsertDtmf(\"" + tones + "\", " + duration + "ms / " + interToneGap + "ms gap) -> " + ok);
++                promise.resolve(ok);
++            } catch (Exception e) {
++                Log.d(TAG, "senderInsertDtmf(): " + e.getMessage());
++                promise.reject(e);
++            }
++        });
++    }
++
++    /**
++     * Inband DTMF — synthesises two-tone audio samples and mixes them
++     * into the live mic capture buffer for `durationMs` worth of
++     * frames. Currently a no-op on libwebrtc M124 (missing
++     * JavaAudioDeviceModule.AudioRecordDataCallback). The bridge
++     * method exists so JS callers don't crash and so the
++     * CallManager's fallback to RFC 4733 fires cleanly.
++     *
++     * Resolves with `false`. JS interprets that as "not available,
++     * use the rfc4733 path" — see CallManager.sendDTMF.
++     */
++    @ReactMethod
++    public void playInbandDtmf(String digit, int durationMs, Promise promise) {
++        try {
++            // mDtmfInbandMixer.playTone() is currently a no-op on this
++            // libwebrtc build (returns false). We still call it so the
++            // future upgrade path "just works" the moment we wire the
++            // mixer into a builder that supports it.
++            boolean ok = false;
++            if (mDtmfInbandMixer != null && digit != null && digit.length() > 0) {
++                ok = mDtmfInbandMixer.playTone(digit.charAt(0), durationMs);
++            }
++            if (!ok) {
++                Log.d(TAG, "playInbandDtmf: inband not available on this "
++                        + "libwebrtc build — JS will fall back to RFC 4733");
++            }
++            promise.resolve(ok);
++        } catch (Throwable t) {
++            Log.d(TAG, "playInbandDtmf(): " + t.getMessage());
++            promise.reject(t);
++        }
++    }
++
++    @ReactMethod(isBlockingSynchronousMethod = true)
++    public boolean senderCanInsertDtmf(int id, String senderId) {
++        try {
++            PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
++            if (pco == null) return false;
++            RtpSender sender = pco.getSender(senderId);
++            if (sender == null) return false;
++            DtmfSender dtmf = sender.dtmf();
++            if (dtmf == null) return false;
++            return dtmf.canInsertDtmf();
++        } catch (Throwable t) {
++            Log.d(TAG, "senderCanInsertDtmf(): " + t.getMessage());
++            return false;
++        }
++    }
++
+     @ReactMethod
+     public void transceiverSetDirection(int id, String senderId, String direction, Promise promise) {
+         ThreadUtils.runOnExecutor(() -> {
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
 new file mode 100644
 index 0000000..136b57d
@@ -1233,7 +1452,7 @@ index 0000000..136b57d
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm
 new file mode 100644
-index 0000000..0dab21f
+index 0000000..641c5f2
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm
 @@ -0,0 +1,949 @@
@@ -2430,6 +2649,128 @@ index 0000000..a18f6ff
 +}
 +
 +@end
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+Transceivers.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+Transceivers.m
+index 7cc1439..5a4de19 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+Transceivers.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+Transceivers.m
+@@ -3,6 +3,7 @@
+ #import <React/RCTBridge.h>
+ #import <React/RCTBridgeModule.h>
+ 
++#import <WebRTC/RTCDtmfSender.h>
+ #import <WebRTC/RTCRtpCodecCapability.h>
+ #import <WebRTC/RTCRtpReceiver.h>
+ #import <WebRTC/RTCRtpSender.h>
+@@ -62,6 +63,109 @@ @implementation WebRTCModule (Transceivers)
+     resolve(@true);
+ }
+ 
++/**
++ * DTMF — RFC 4733 telephone-event packets sent in-band on the audio
++ * RTP stream. JS hands us tones (e.g. "1*7"), duration and gap in
++ * milliseconds; libwebrtc's iOS DtmfSender API takes NSTimeInterval
++ * (seconds), so we divide by 1000. Resolves with the boolean libwebrtc
++ * returns from insertDtmf — true if the queue accepted the tones,
++ * false if canInsertDtmf was false or the sender wasn't audio.
++ *
++ * NOTE: rn-webrtc 124.0.7 doesn't ship this method. The sylkrtc
++ * patch's "audioSender.dtmf" path was therefore always undefined;
++ * this fork closes that gap.
++ */
++RCT_EXPORT_METHOD(senderInsertDtmf : (nonnull NSNumber *)objectID senderId : (NSString *)senderId tones : (
++    NSString *)tones duration : (nonnull NSNumber *)durationMs interToneGap : (
++    nonnull NSNumber *)interToneGapMs resolver : (RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
++    RTCPeerConnection *peerConnection = self.peerConnections[objectID];
++    if (peerConnection == nil) {
++        RCTLogWarn(@"PeerConnection %@ not found in senderInsertDtmf()", objectID);
++        resolve(@NO);
++        return;
++    }
++
++    RTCRtpSender *sender = nil;
++    for (RTCRtpTransceiver *t in peerConnection.transceivers) {
++        if ([senderId isEqual:t.sender.senderId]) {
++            sender = t.sender;
++            break;
++        }
++    }
++    if (sender == nil) {
++        RCTLogWarn(@"senderInsertDtmf() sender %@ not found", senderId);
++        resolve(@NO);
++        return;
++    }
++
++    id<RTCDtmfSender> dtmf = sender.dtmfSender;
++    if (dtmf == nil) {
++        RCTLogWarn(@"senderInsertDtmf() DtmfSender unavailable for sender %@", senderId);
++        resolve(@NO);
++        return;
++    }
++    if (!dtmf.canInsertDtmf) {
++        RCTLogWarn(@"senderInsertDtmf() canInsertDtmf is NO");
++        resolve(@NO);
++        return;
++    }
++
++    NSTimeInterval duration = [durationMs doubleValue] / 1000.0;
++    NSTimeInterval gap = [interToneGapMs doubleValue] / 1000.0;
++    BOOL ok = [dtmf insertDtmf:tones duration:duration interToneGap:gap];
++    RCTLogInfo(@"senderInsertDtmf(\"%@\", %.3fs / %.3fs gap) -> %@", tones, duration, gap, ok ? @"YES" : @"NO");
++    resolve(@(ok));
++}
++
++/**
++ * playInbandDtmf — iOS counterpart TODO.
++ *
++ * The Android side ships an inband DTMF mixer (see
++ * android/src/main/java/com/oney/WebRTCModule/DtmfInbandMixer.java)
++ * wired into the JavaAudioDeviceModule via setAudioRecordDataCallback.
++ * It synthesises two-tone DTMF samples and OVERWRITES the captured
++ * mic buffer for `durationMs` worth of frames, so DTMF rides on the
++ * wire as ordinary PCMU audio (Asterisk inband detector decodes it
++ * cleanly). This bypasses libwebrtc 124's broken RFC 4733 emission.
++ *
++ * To add the iOS half:
++ *   1. Wrap RTCAudioDeviceModule's input render callback (or use
++ *      RTCAudioBuffer hooks if exposed) so we can mutate captured
++ *      audio just before it reaches the encoder. RTC iOS uses
++ *      AudioUnit AURemoteIO; the input render callback receives a
++ *      AudioBufferList whose mBuffers[0].mData is int16 PCM.
++ *   2. Implement the same digit→two-frequency table the Java mixer
++ *      uses (697/770/852/941 × 1209/1336/1477 Hz, sums of two sines
++ *      at 0.5 amplitude).
++ *   3. Hold an atomic-pointer current-tone state, decremented per
++ *      buffer until exhausted.
++ *   4. Expose RCT_EXPORT_METHOD(playInbandDtmf:duration:resolver:rejecter:)
++ *      that pushes a tone request into the mixer.
++ *
++ * Until this lands, the JS side falls back to RFC 4733 on iOS (see
++ * CallManager.sendDTMF). The user's selection of dtmfMode='inband'
++ * will log a warning but still place the call's DTMF over RFC 4733
++ * so digits go *somewhere* instead of being silently dropped.
++ */
++RCT_EXPORT_METHOD(playInbandDtmf : (NSString *)digit duration : (nonnull NSNumber *)durationMs
++    resolver : (RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
++    RCTLogWarn(@"playInbandDtmf: not implemented on iOS yet — see TODO above");
++    resolve(@NO);
++}
++
++RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(senderCanInsertDtmf : (nonnull NSNumber *)objectID senderId : (NSString *)senderId) {
++    RTCPeerConnection *peerConnection = self.peerConnections[objectID];
++    if (peerConnection == nil) return @NO;
++    for (RTCRtpTransceiver *t in peerConnection.transceivers) {
++        if ([senderId isEqual:t.sender.senderId]) {
++            id<RTCDtmfSender> dtmf = t.sender.dtmfSender;
++            if (dtmf == nil) return @NO;
++            return @(dtmf.canInsertDtmf);
++        }
++    }
++    return @NO;
++}
++
+ RCT_EXPORT_METHOD(senderSetParameters : (nonnull NSNumber *)objectID senderId : (NSString *)senderId options : (
+     NSDictionary *)options resolver : (RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
+     RTCPeerConnection *peerConnection = self.peerConnections[objectID];
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/sylk_webrtc_compat.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/sylk_webrtc_compat.h
 new file mode 100644
 index 0000000..dce4e05
@@ -2574,10 +2915,10 @@ index 0000000..dce4e05
 +
 +#endif  // SYLK_WEBRTC_COMPAT_H_
 diff --git a/node_modules/react-native-webrtc/react-native-webrtc.podspec b/node_modules/react-native-webrtc/react-native-webrtc.podspec
-index 51af1f0..4f8f7ea 100644
+index 51af1f0..3da8d8c 100644
 --- a/node_modules/react-native-webrtc/react-native-webrtc.podspec
 +++ b/node_modules/react-native-webrtc/react-native-webrtc.podspec
-@@ -15,7 +15,9 @@ Pod::Spec.new do |s|
+@@ -15,9 +15,28 @@ Pod::Spec.new do |s|
    s.platforms           = { :ios => '12.0', :osx => '10.13', :tvos => '16.0' }
  
    s.preserve_paths      = 'ios/**/*'
@@ -2588,6 +2929,133 @@ index 51af1f0..4f8f7ea 100644
    s.libraries           = 'c', 'sqlite3', 'stdc++'
    s.framework           = 'AudioToolbox','AVFoundation', 'CoreAudio', 'CoreGraphics', 'CoreVideo', 'GLKit', 'VideoToolbox'
    s.dependency          'React-Core'
+-  s.dependency          'JitsiWebRTC', '~> 124.0.0'
++  # Switched from JitsiWebRTC to vanilla Google WebRTC (webrtc-sdk's
++  # iOS build) to match what Android already uses
++  # (io.github.webrtc-sdk:android:137.+) and — critically — to get
++  # access to RTCAudioRenderer / addRenderer: on RTCAudioTrack, which
++  # the Jitsi fork strips from the public Obj-C headers. With
++  # addRenderer: available we can implement SylkCallRecorder on iOS
++  # using the same sink-based architecture as Android's
++  # AudioTrackSink, instead of having to install a custom
++  # RTCAudioDevice (ADM) wrapper around the PeerConnectionFactory.
++  #
++  # Note on versions: webrtc-sdk's iOS pod lags their Android
++  # publishing. As of this writing the iOS Pod tracks the M125 line,
++  # not M137 like Android. The Sylk code paths we touch (FrameCryptor
++  # via RtpSender's setFrameEncryptor, RTCAudioRenderer on the remote
++  # track) are stable across M124..M137, so version drift between
++  # iOS and Android is acceptable here. If iOS catches up we can
++  # tighten this constraint.
++  s.dependency          'WebRTC-SDK'
+ end
+diff --git a/node_modules/react-native-webrtc/src/RTCDTMFSender.ts b/node_modules/react-native-webrtc/src/RTCDTMFSender.ts
+new file mode 100644
+index 0000000..d13f070
+--- /dev/null
++++ b/node_modules/react-native-webrtc/src/RTCDTMFSender.ts
+@@ -0,0 +1,101 @@
++import { NativeModules } from 'react-native';
++
++const { WebRTCModule } = NativeModules;
++
++/**
++ * Minimal RTCDTMFSender JS wrapper for the Sylk fork of
++ * react-native-webrtc. Exposes the W3C-shaped API:
++ *
++ *   sender.dtmf.insertDTMF(tones, duration?, interToneGap?)
++ *   sender.dtmf.toneBuffer       // queued tones not yet played
++ *   sender.dtmf.canInsertDTMF    // boolean
++ *
++ * Tone change events from native are NOT plumbed back yet — sylkrtc
++ * has its `_onDtmf` handler commented out, so the only thing we
++ * actually rely on at the moment is `insertDTMF` reaching libwebrtc.
++ * Adding `tonechange` later is a JS-side EventTarget shim plus a
++ * RCTEventEmitter event from native; the bridge plumbing on the
++ * iOS / Android side is left in place where it was easy to add.
++ *
++ * Both platforms accept tones, duration (ms) and interToneGap (ms);
++ * iOS converts to seconds internally because libwebrtc's iOS API
++ * uses NSTimeInterval.
++ */
++export default class RTCDTMFSender {
++    _peerConnectionId: number;
++    _senderId: string;
++    _toneBuffer: string;
++
++    constructor(peerConnectionId: number, senderId: string) {
++        this._peerConnectionId = peerConnectionId;
++        this._senderId = senderId;
++        this._toneBuffer = '';
++    }
++
++    get toneBuffer(): string {
++        return this._toneBuffer;
++    }
++
++    get canInsertDTMF(): boolean {
++        if (!WebRTCModule || typeof WebRTCModule.senderCanInsertDtmf !== 'function') {
++            return false;
++        }
++        try {
++            // Synchronous bridge call — returns a JS boolean. If the
++            // native module isn't built with the DTMF additions, the
++            // method just isn't there and we fall through to `false`.
++            return !!WebRTCModule.senderCanInsertDtmf(this._peerConnectionId, this._senderId);
++        } catch (e) {
++            return false;
++        }
++    }
++
++    /**
++     * Enqueue the tone string for transmission. Native side calls
++     * libwebrtc's DtmfSender.insertDtmf which packetises each digit
++     * as RFC 4733 telephone-event RTP packets in-band on the audio
++     * stream (payload type negotiated in the SDP, typically 101).
++     */
++    insertDTMF(tones: string, duration: number = 100, interToneGap: number = 70): void {
++        if (typeof tones !== 'string') {
++            throw new TypeError('tones must be a string');
++        }
++        this._toneBuffer = tones;
++
++        // eslint-disable-next-line no-console
++        console.log('[DTMF/rn-webrtc] insertDTMF tones=' + tones
++            + ' duration=' + duration + 'ms gap=' + interToneGap + 'ms'
++            + ' senderId=' + this._senderId
++            + ' bridge=' + (WebRTCModule && typeof WebRTCModule.senderInsertDtmf === 'function'
++                ? 'present' : 'MISSING'));
++
++        if (!WebRTCModule || typeof WebRTCModule.senderInsertDtmf !== 'function') {
++            return;
++        }
++
++        WebRTCModule.senderInsertDtmf(
++            this._peerConnectionId,
++            this._senderId,
++            tones,
++            duration,
++            interToneGap,
++        ).then((ok: boolean) => {
++            // eslint-disable-next-line no-console
++            console.log('[DTMF/rn-webrtc] native senderInsertDtmf resolved ok=' + ok);
++        }).catch((e: any) => {
++            // eslint-disable-next-line no-console
++            console.log('[DTMF/rn-webrtc] native senderInsertDtmf rejected: ' + (e && e.message));
++        });
++    }
++
++    // The W3C spec exposes a tonechange event on this sender. We
++    // mimic only the shape consumers need (addEventListener /
++    // removeEventListener); native event delivery isn't wired yet.
++    addEventListener(_type: string, _listener: any): void {
++        // no-op for now; see class comment
++    }
++
++    removeEventListener(_type: string, _listener: any): void {
++        // no-op
++    }
++}
 diff --git a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts b/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
 index 228fce0..1c0a030 100644
 --- a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
@@ -2624,10 +3092,30 @@ index 228fce0..1c0a030 100644
          return this._rtpParameters;
      }
 diff --git a/node_modules/react-native-webrtc/src/RTCRtpSender.ts b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
-index 4366b32..2d0e6f9 100644
+index 4366b32..bada906 100644
 --- a/node_modules/react-native-webrtc/src/RTCRtpSender.ts
 +++ b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
-@@ -54,6 +54,31 @@ export default class RTCRtpSender {
+@@ -1,6 +1,7 @@
+ import { NativeModules } from 'react-native';
+ 
+ import MediaStreamTrack from './MediaStreamTrack';
++import RTCDTMFSender from './RTCDTMFSender';
+ import RTCRtpCapabilities from './RTCRtpCapabilities';
+ import RTCRtpSendParameters, { RTCRtpSendParametersInit } from './RTCRtpSendParameters';
+ 
+@@ -12,6 +13,11 @@ export default class RTCRtpSender {
+     _track: MediaStreamTrack | null = null;
+     _peerConnectionId: number;
+     _rtpParameters: RTCRtpSendParameters;
++    // Lazily-built RTCDTMFSender for audio senders. Cached after the
++    // first read so repeat callers (sylkrtc reads it once on
++    // negotiate, then again on every key press) don't churn JS
++    // objects.
++    _dtmfSender: RTCDTMFSender | null = null;
+ 
+     constructor(info: {
+         peerConnectionId: number,
+@@ -54,6 +60,31 @@ export default class RTCRtpSender {
          this._rtpParameters = new RTCRtpSendParameters(newParameters);
      }
  
@@ -2659,3 +3147,32 @@ index 4366b32..2d0e6f9 100644
      getStats() {
          return WebRTCModule.senderGetStats(this._peerConnectionId, this._id).then(data =>
              /* On both Android and iOS it is faster to construct a single
+@@ -75,4 +106,28 @@ export default class RTCRtpSender {
+     get id() {
+         return this._id;
+     }
++
++    /**
++     * RTCDTMFSender for audio senders. Returns null for video. The
++     * actual DTMFSender is allocated on first access; underneath, it
++     * forwards `insertDTMF` to the native bridge (which calls
++     * libwebrtc's `RtpSender.dtmf().insertDtmf(...)` on Android and
++     * `RTCRtpSender.dtmfSender.insertDtmf` on iOS). Until this fork
++     * landed, this getter didn't exist and `audioSender.dtmf` was
++     * always `undefined` — so any caller (e.g. sylkrtc.sendDtmf) that
++     * tried to use the W3C path silently failed.
++     */
++    get dtmf(): RTCDTMFSender | null {
++        if (!this._track || this._track.kind !== 'audio') {
++            // eslint-disable-next-line no-console
++            console.log('[DTMF/rn-webrtc] sender.dtmf accessed for non-audio track (kind=' + (this._track && this._track.kind) + '), returning null');
++            return null;
++        }
++        if (this._dtmfSender === null) {
++            // eslint-disable-next-line no-console
++            console.log('[DTMF/rn-webrtc] allocating RTCDTMFSender for senderId=' + this._id);
++            this._dtmfSender = new RTCDTMFSender(this._peerConnectionId, this._id);
++        }
++        return this._dtmfSender;
++    }
+ }

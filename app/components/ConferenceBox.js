@@ -775,7 +775,35 @@ class ConferenceBox extends Component {
                 <View style={styles.downloadContainer}>
                     <Text style={styles.uploadProgress}>{progress}</Text>
                     <View style={styles.switch}>
-                    <Switch value={switchOn} onValueChange={(value) => this.toggleDownload(currentMessage.metadata)}/>
+                    {/* Custom oval+circle toggle — same as PlatformToggle.
+                        iOS's native Switch couldn't be styled to look
+                        consistent in OFF vs ON state, so we draw it
+                        from primitives. */}
+                    <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => this.toggleDownload(currentMessage.metadata)}
+                        style={{
+                            width: 44,
+                            height: 24,
+                            borderRadius: 12,
+                            backgroundColor: switchOn ? '#2ecc71' : '#9e9e9e',
+                            justifyContent: 'center',
+                        }}
+                    >
+                        <View style={{
+                            position: 'absolute',
+                            top: 2,
+                            left: switchOn ? 22 : 2,
+                            width: 20,
+                            height: 20,
+                            borderRadius: 10,
+                            backgroundColor: '#ffffff',
+                            shadowColor: '#000',
+                            shadowOffset: { width: 0, height: 1 },
+                            shadowOpacity: 0.2,
+                            shadowRadius: 1.5,
+                        }} />
+                    </TouchableOpacity>
                     </View>
                 </View>
                );
@@ -2123,7 +2151,7 @@ class ConferenceBox extends Component {
 
 	renderAudioDevicePicker(buttonSize, buttonClass) {
 		const devices = this.state.availableAudioDevices || [];
-		const selectedIcon = availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone';
+		const selectedIcon = availableAudioDevicesIconsMap[this.state.selectedAudioDevice] || 'phone-in-talk';
 
 		// Variant 1: cycle through devices on tap (legacy behavior)
 		if (AUDIO_DEVICE_PICKER_MODE === 'cycle') {
@@ -2162,7 +2190,7 @@ class ConferenceBox extends Component {
 					>
 						{devices.map(device => {
 							const isSelected = device === this.state.selectedAudioDevice;
-							const deviceIcon = availableAudioDevicesIconsMap[device] || 'phone';
+							const deviceIcon = availableAudioDevicesIconsMap[device] || 'phone-in-talk';
 							const deviceName = (utils.availableAudioDeviceNames && utils.availableAudioDeviceNames[device]) || device;
 							return (
 								<Menu.Item
@@ -2204,7 +2232,7 @@ class ConferenceBox extends Component {
 									<IconButton
 										size={buttonSize}
 										style={buttonClass}
-										icon={availableAudioDevicesIconsMap[device] || 'phone'}
+										icon={availableAudioDevicesIconsMap[device] || 'phone-in-talk'}
 										onPress={() => {
 											this.props.selectAudioDevice(device);
 											this.setState({audioDevicePickerVisible: false});

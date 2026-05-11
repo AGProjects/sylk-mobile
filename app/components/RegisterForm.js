@@ -191,6 +191,12 @@ class RegisterForm extends Component {
             serverSettingsUrl: props.serverSettingsUrl,
             accounts: props.accounts,
             serversAccounts: props.serversAccounts,
+            // Per-account password cache built by app.js#loadAccounts
+            // and refreshed on the same lifecycle as serversAccounts.
+            // Used by handleAccountIdChange to autofill the password
+            // field when the user types a previously-known username
+            // after clearing the form with the X icon.
+            accountPasswords: props.accountPasswords || {},
             connection: props.connection,
             wsUrl: props.wsUrl,
             wsUrlVisible: false,
@@ -229,6 +235,10 @@ class RegisterForm extends Component {
 
 		if ('serversAccounts' in nextProps) {
 			this.setState({serversAccounts: nextProps.serversAccounts});
+		}
+
+		if ('accountPasswords' in nextProps) {
+			this.setState({accountPasswords: nextProps.accountPasswords || {}});
 		}
 		
 		if ('newSylkDomain' in nextProps) {
@@ -392,9 +402,70 @@ class RegisterForm extends Component {
     handleAccountIdChange(value) {
 		const trimmed = value.trim();
 		console.log('handleAccountIdChange');
+
+		// Resolve a typed username to a candidate accountId and look up
+		// the cached password. The autofill is gated on the cached
+		// identity belonging to the SAME Sylk server the user is
+		// currently signing into:
+		//   1) user types a bare username ("alice"): build the
+		//      candidate alice@<currentDomain>.
+		//   2) user types a fully-qualified address: only honour it
+		//      when the typed domain equals the current Sylk domain;
+		//      a typed mismatch means the user is reaching for a
+		//      different server and we leave the password alone.
+		// We also only autofill when the password field is currently
+		// empty (the typical post-X-button state) so a half-typed
+		// password isn't clobbered. Lookup is case-insensitive because
+		// SIP user-parts are case-insensitive — typing "Alice" still
+		// matches a stored "alice@…".
+		const cache = this.state.accountPasswords || {};
+		let autofilledPassword = null;
+		if (trimmed.length > 0
+				&& (!this.state.password || this.state.password.length === 0)) {
+			const domain = this.state.newSylkDomain || this.props.defaultDomain;
+			let candidate = null;
+			if (trimmed.includes('@')) {
+				const atIdx = trimmed.indexOf('@');
+				const localPart = trimmed.slice(0, atIdx);
+				const typedDomain = trimmed.slice(atIdx + 1);
+				if (localPart
+						&& typedDomain
+						&& domain
+						&& typedDomain.toLowerCase() === domain.toLowerCase()) {
+					candidate = `${localPart}@${typedDomain}`;
+				}
+				// else: user typed an address pointing at a different
+				//       server. Skip autofill — they almost certainly
+				//       don't want this server's cached password
+				//       jammed in.
+			} else if (domain) {
+				candidate = `${trimmed}@${domain}`;
+			}
+			if (candidate) {
+				if (candidate in cache) {
+					autofilledPassword = cache[candidate];
+				} else {
+					// Case-insensitive fallback. SQL stored the
+					// original casing; the user might have typed it
+					// differently.
+					const candidateLc = candidate.toLowerCase();
+					const ciHit = Object.keys(cache).find(
+						(k) => k.toLowerCase() === candidateLc
+					);
+					if (ciHit) {
+						autofilledPassword = cache[ciHit];
+					}
+				}
+			}
+		}
+
 		this.setState({
 			accountId: trimmed,
-			password: trimmed === '' ? '' : this.state.password // reset password if accountId is empty
+			password: trimmed === ''
+				? ''                                  // clear in lockstep when the field is emptied
+				: (autofilledPassword !== null
+					? autofilledPassword              // hydrate from cache on a match
+					: this.state.password)            // otherwise leave whatever's there
 		});
     }
 
@@ -858,6 +929,7 @@ RegisterForm.propTypes = {
     configurations: PropTypes.object,
     accounts: PropTypes.object,
     serversAccounts: PropTypes.object,
+    accountPasswords: PropTypes.object,
     connection: PropTypes.object,
     wsUrl: PropTypes.string,
     passwordRecoveryUrl: PropTypes.string,

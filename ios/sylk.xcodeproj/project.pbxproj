@@ -26,6 +26,7 @@
 		1F4C5AC62ED6108100860BA5 /* AudioRouteModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F4C5AC52ED6108100860BA5 /* AudioRouteModule.m */; };
 		1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */; };
 		1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */; };
+		1FBF84652FAFC162003639C2 /* SylkCallRecorder.m in Sources */ = {isa = PBXBuildFile; fileRef = 1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */; };
 		1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */; };
 		1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */; };
 		1FC06CC52A793D9300F8D5A3 /* sylk-share.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -130,9 +131,8 @@
 		1F5F6A012EBB66F700D59DC8 /* SharedDataModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SharedDataModule.m; sourceTree = "<group>"; };
 		1F9B147A2EA80A04001BA597 /* APNSTokenModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = APNSTokenModule.h; path = sylk/APNSTokenModule.h; sourceTree = "<group>"; };
 		1F9B147B2EA80A04001BA597 /* APNSTokenModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = APNSTokenModule.m; path = sylk/APNSTokenModule.m; sourceTree = "<group>"; };
-		1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
-		1FC06CAD2A793D2200F8D5A3 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
-		1FC06CAF2A793D2200F8D5A3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1FBF84632FAFC162003639C2 /* SylkCallRecorder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = SylkCallRecorder.h; path = sylk/SylkCallRecorder.h; sourceTree = "<group>"; };
+		1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = SylkCallRecorder.m; path = sylk/SylkCallRecorder.m; sourceTree = "<group>"; };
 		1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "sylk-share.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		1FC06CC02A793D9300F8D5A3 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
@@ -240,6 +240,8 @@
 		13B07FAE1A68108700A75B9A /* sylk */ = {
 			isa = PBXGroup;
 			children = (
+				1FBF84632FAFC162003639C2 /* SylkCallRecorder.h */,
+				1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */,
 				1F4596142F38E17F00ED15D1 /* IdleTimerModule.h */,
 				1F4596152F38E17F00ED15D1 /* IdleTimerModule.m */,
 				1F0E77C32EBB5FC800A8F23B /* sylk-Bridging-Header.h */,
@@ -303,16 +305,6 @@
 				C1EEC850E910413BBAA6C838 /* Zocial.ttf */,
 			);
 			name = Fonts;
-			sourceTree = "<group>";
-		};
-		1FC06CA92A793D2200F8D5A3 /* Sylk Share */ = {
-			isa = PBXGroup;
-			children = (
-				1FC06CAA2A793D2200F8D5A3 /* ShareViewController.swift */,
-				1FC06CAC2A793D2200F8D5A3 /* MainInterface.storyboard */,
-				1FC06CAF2A793D2200F8D5A3 /* Info.plist */,
-			);
-			path = "Sylk Share";
 			sourceTree = "<group>";
 		};
 		1FC06CBC2A793D9300F8D5A3 /* sylk-share */ = {
@@ -379,7 +371,6 @@
 				13B07FAE1A68108700A75B9A /* sylk */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				00E356EF1AD99517003FC87E /* sylkTests */,
-				1FC06CA92A793D2200F8D5A3 /* Sylk Share */,
 				1FC06CBC2A793D9300F8D5A3 /* sylk-share */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
@@ -812,16 +803,16 @@
 				"${PODS_ROOT}/Target Support Files/Pods-sylk/Pods-sylk-frameworks.sh",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/Flipper-DoubleConversion/double-conversion.framework/double-conversion",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/Flipper-Glog/glog.framework/glog",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/JitsiWebRTC/WebRTC.framework/WebRTC",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/OpenSSL-Universal/OpenSSL.framework/OpenSSL",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/WebRTC-SDK/WebRTC.framework/WebRTC",
 				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputPaths = (
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/double-conversion.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/glog.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/WebRTC.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/OpenSSL.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/WebRTC.framework",
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -931,6 +922,7 @@
 			files = (
 				1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */,
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
+				1FBF84652FAFC162003639C2 /* SylkCallRecorder.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
 				1F4596162F38E17F00ED15D1 /* IdleTimerModule.m in Sources */,
 				1F2BEF3C2F4DC14200E88D66 /* Contact.m in Sources */,
@@ -994,14 +986,6 @@
 			path = sylk;
 			sourceTree = "<group>";
 		};
-		1FC06CAC2A793D2200F8D5A3 /* MainInterface.storyboard */ = {
-			isa = PBXVariantGroup;
-			children = (
-				1FC06CAD2A793D2200F8D5A3 /* Base */,
-			);
-			name = MainInterface.storyboard;
-			sourceTree = "<group>";
-		};
 		1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */ = {
 			isa = PBXVariantGroup;
 			children = (
@@ -1063,7 +1047,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 316;
+				CURRENT_PROJECT_VERSION = 328;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1075,7 +1059,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 5.2.5;
+				MARKETING_VERSION = 5.4.2;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1099,7 +1083,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 316;
+				CURRENT_PROJECT_VERSION = 328;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1110,7 +1094,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 5.2.5;
+				MARKETING_VERSION = 5.4.2;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

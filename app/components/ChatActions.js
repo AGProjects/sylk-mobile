@@ -30,15 +30,25 @@ class CustomActions extends React.Component {
 
     onActionsPress = () => {
         // While previewing an attached image, the left-action button
-        // is the delete (discard preview) trigger. Otherwise it starts
-        // an audio recording, like before.
+        // is the delete (discard preview) trigger.
         if (this.state.sendingImage) {
             if (this.props.deleteSharingAssets) {
                 this.props.deleteSharingAssets();
             }
             return;
         }
-        this.props.recordAudio();
+        // While a recording is in progress (or paused with a
+        // recordingFile waiting to be sent/deleted), the left button
+        // shows pause / delete. Forward the tap to recordAudio, which
+        // toggles those states (start / pause / discard).
+        if (this.props.isAudioRecording || this.props.recordingFile) {
+            this.props.recordAudio();
+            return;
+        }
+        // Idle / empty composer state — the left button renders
+        // nothing, so this branch shouldn't fire in practice. Guard
+        // anyway so a stray tap on the empty slot doesn't kick off a
+        // recording (the recording mic now lives on the right).
     }
 
     renderIcon () {
@@ -66,16 +76,21 @@ class CustomActions extends React.Component {
             return (<View></View>)
         }
 
-        let icon = "microphone";
-        let color = "green";
-
-        if (this.props.recordingFile) {
-			icon = "delete";
-			color = "red";
-        } else if (this.props.isAudioRecording) {
-            icon = "pause";
-			color = "blue";
+        // The default green microphone used to live here. It has been
+        // moved to the right side of the input bar (renderSend in
+        // ContactsListBox) so the right button can swap between mic
+        // (when the composer is empty) and send (when there's text),
+        // matching WhatsApp's input pattern. The left button now only
+        // surfaces mid-recording controls — pause while actively
+        // recording, delete to discard a paused/finished take. When
+        // neither recording state is active, the left side renders
+        // nothing.
+        if (!this.props.recordingFile && !this.props.isAudioRecording) {
+            return (<View />);
         }
+
+        let icon = this.props.recordingFile ? "delete" : "pause";
+        let color = this.props.recordingFile ? "red" : "blue";
 
         return (
             <View style={{alignItems: 'center', justifyContent: 'center'}}>

@@ -11,10 +11,10 @@ import {
     KeyboardAvoidingView,
     Platform,
     StyleSheet,
+    SafeAreaView,
 } from 'react-native';
-import { Text, Button, Surface, Checkbox } from 'react-native-paper';
+import { Text, Button, Surface, Checkbox, Chip } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { openComposer } from 'react-native-email-link';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
 // ShareLocationModal / ActiveLocationSharesModal / DeleteHistoryModal /
@@ -65,6 +65,127 @@ function _fakeUserFor(idx) {
     const group = Math.floor(idx / 2) + 1;       // 1, 1, 2, 2, 3, 3, ...
     const baseName = idx % 2 === 0 ? 'alice' : 'bob';
     return group === 1 ? baseName : `${baseName}${group}`;
+}
+
+// Sentinel tag name for the "untagged" pill (lines containing no
+// [bracketed] tag at all). Doubles as a Set key alongside real tag
+// names — keep it impossible to collide with a real tag by leading
+// with double underscores. The pill UI maps this to the label
+// "untagged".
+const UNTAGGED_KEY = '__untagged__';
+
+// Tight green pill — drawn as a plain TouchableOpacity (not a Paper
+// Chip) so we don't inherit the check-icon / avatar-circle the
+// component injects on the selected state. Active pills are filled
+// dark green; idle pills are a light green tint with dark green
+// text. The vertical margin gives the multi-row wrap layout its
+// row-gap.
+const pillStyle = (active) => ({
+    marginHorizontal: 2,
+    marginVertical: 2,
+    height: 22,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    backgroundColor: active ? '#2e7d32' : '#e8f5e9',
+    alignItems: 'center',
+    justifyContent: 'center',
+});
+const pillTextStyle = (active) => ({
+    color: active ? '#fff' : '#1b5e20',
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: active ? '600' : '400',
+});
+
+// Max height for the pill area = ~3 rows of pills + their gaps. Each
+// row is roughly 22 (height) + 4 (top+bottom margin) = 26 px. 3 rows ≈
+// 80 px. If the total tag count exceeds that, the vertical ScrollView
+// inside the pill bar takes over.
+const PILL_BAR_MAX_HEIGHT = 84;
+
+// Font scale bounds for the log viewer's − / + controls. The base
+// fontSize comes from styles.body (10 px); 0.7×–2.0× covers a small
+// 7 px down to a chunky 20 px without breaking the layout.
+const FONT_BASE = 10;
+const FONT_MIN_SCALE = 0.7;
+const FONT_MAX_SCALE = 2.0;
+const FONT_STEP = 0.15;
+
+// Match `[token]` where token is a letter-led identifier (so we don't
+// pick up timestamps like [19:40:52], device prefixes, or transfer
+// IDs). Lowercase + dashes/underscores cover the existing tag set
+// (`[messaging]`, `[support-share]`, `[pubkey-recv]`, `[upload]`,
+// `[location]`, `[ZRTP]`, ...). The `[APPLOG]` prefix is stripped
+// before scanning so it doesn't appear as a pill.
+const TAG_RE = /\[([A-Za-z][A-Za-z0-9_-]*)\]/g;
+
+// Scan the (already APPLOG-stripped) log text once. Returns the sorted
+// list of unique tags discovered, plus a function that filters lines
+// against a Set of selected tag keys (use UNTAGGED_KEY to include
+// lines with no tag). An empty selection means "no filter, show
+// everything". Multiple selected tags are combined with OR — picking
+// more tags strictly shows MORE lines (cumulative), never less.
+function _scanTagsAndBuildFilter(text) {
+    const lines = (text || '').split('\n');
+    // Per-tag line count, used both to surface the popular tags first
+    // in the pill bar and to dedupe tag membership per-line for the
+    // filter cache below.
+    const tagCounts = new Map();
+    // Per-line tag sets, parallel to `lines`, computed once so the
+    // per-render filter pass is just a Set lookup per line.
+    const perLineTags = new Array(lines.length);
+    // Whether at least one non-empty line has no [tag] at all. The
+    // "untagged" pill in LogsModal is hidden when this is false so
+    // we don't surface a filter chip with zero matches. Empty lines
+    // (trailing newlines from RNFS reads) don't count — they're not
+    // user-visible content the pill could surface.
+    let hasUntagged = false;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let m;
+        let tagsForLine = null;
+        TAG_RE.lastIndex = 0;
+        while ((m = TAG_RE.exec(line)) !== null) {
+            const tag = m[1];
+            if (!tagsForLine) tagsForLine = new Set();
+            // Only count each tag once per line so a tag that
+            // happens to appear twice in the same log line (e.g. a
+            // line that mentions both "[wss]" and the receiver as
+            // "[wss]" again) doesn't get an inflated count.
+            if (!tagsForLine.has(tag)) {
+                tagsForLine.add(tag);
+                tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+            }
+        }
+        perLineTags[i] = tagsForLine; // null when the line has no tag
+        if (!tagsForLine && line && line.trim().length > 0) {
+            hasUntagged = true;
+        }
+    }
+    // Order by descending line count so the busiest tags sit at the
+    // start of the pill row (where the user's eye lands first), with
+    // alphabetical order as the tiebreaker for stable rendering.
+    const sortedTags = Array.from(tagCounts.entries())
+        .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+        .map(([tag]) => tag);
+    const filter = (selectedSet) => {
+        if (!selectedSet || selectedSet.size === 0) return text;
+        const wantUntagged = selectedSet.has(UNTAGGED_KEY);
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+            const lineTags = perLineTags[i];
+            if (!lineTags) {
+                if (wantUntagged) out.push(lines[i]);
+                continue;
+            }
+            // OR-match: keep the line if any of its tags is selected.
+            for (const t of lineTags) {
+                if (selectedSet.has(t)) { out.push(lines[i]); break; }
+            }
+        }
+        return out.join('\n');
+    };
+    return { tags: sortedTags, filter, hasUntagged };
 }
 
 function _anonymizeEmails(text) {
@@ -118,6 +239,20 @@ class ShowLogsModal extends Component {
             textInputText: '',
             // "Anonymize data" checkbox state for the Request-support flow.
             anonymize: true,
+            // True while requestSupport is in flight (writing the temp
+            // file, exchanging keys, encrypting, uploading) so we can
+            // disable the action button and avoid queueing duplicate
+            // requests on a double-tap.
+            sendingSupport: false,
+            // Selected tag pills for the bottom filter row. Plain JS
+            // Set so toggle is O(1). UNTAGGED_KEY is a valid member.
+            // Empty set = no filter (show everything). The filter is
+            // OR — selecting more tags shows MORE lines.
+            selectedTags: new Set(),
+            // Font scale multiplier for the log text. Driven by the
+            // − / + controls in the header. Clamped to FONT_MIN /
+            // FONT_MAX in _decreaseFont / _increaseFont.
+            fontScale: 1,
             // Tail-tracking flags driven by _onScroll / _onContentSizeChange.
             //   userScrolledUp — true when the view is more than ~50 px
             //     from the bottom; gates the auto-scroll-to-end glue
@@ -131,6 +266,48 @@ class ShowLogsModal extends Component {
             userScrolledUp: false,
             isAtTop: true,
         }
+
+        // Memoization for the tag scan: scanning a 100KB+ log line by
+        // line is fine but repeating it on every live-tail tick or
+        // every selectedTags toggle would be wasteful. Cache the scan
+        // result keyed on the exact log string identity. Filter
+        // function takes the selected Set so the cache survives pill
+        // toggles without rescanning.
+        this._scanCacheKey = null;
+        this._scanCacheValue = null;
+    }
+
+    _getScan = (logsText) => {
+        if (this._scanCacheKey === logsText && this._scanCacheValue) {
+            return this._scanCacheValue;
+        }
+        const v = _scanTagsAndBuildFilter(logsText);
+        this._scanCacheKey = logsText;
+        this._scanCacheValue = v;
+        return v;
+    }
+
+    _toggleTag = (tagKey) => {
+        const next = new Set(this.state.selectedTags);
+        if (next.has(tagKey)) next.delete(tagKey); else next.add(tagKey);
+        this.setState({ selectedTags: next });
+    }
+
+    _clearTags = () => {
+        if (this.state.selectedTags.size === 0) return;
+        this.setState({ selectedTags: new Set() });
+    }
+
+    _decreaseFont = () => {
+        const next = Math.max(FONT_MIN_SCALE, +(this.state.fontScale - FONT_STEP).toFixed(2));
+        if (next === this.state.fontScale) return;
+        this.setState({ fontScale: next });
+    }
+
+    _increaseFont = () => {
+        const next = Math.min(FONT_MAX_SCALE, +(this.state.fontScale + FONT_STEP).toFixed(2));
+        if (next === this.state.fontScale) return;
+        this.setState({ fontScale: next });
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -176,6 +353,12 @@ class ShowLogsModal extends Component {
 
     _startLiveTail = () => {
         if (this._refreshTimer) return;
+        // Snapshot mode: when viewing a log file attachment opened via
+        // openLogAttachment, there's no live tail to chase — the
+        // contents come from a fixed file. Don't spin the refresh
+        // timer in that case; it would just no-op against props.refresh
+        // (which reads the on-device live log file, not the snapshot).
+        if (this.props.attachedLogContent != null) return;
         // 2s feels close enough to "live" without hammering RNFS — log
         // entries are typically separated by hundreds of ms and a 2s
         // refresh keeps the viewer feeling responsive while the user
@@ -238,65 +421,40 @@ class ShowLogsModal extends Component {
         await Clipboard.setString(this.state.logs);
     }
 
-    // Open the user's email composer pre-filled with To, Subject, and a
-    // body that contains the (optionally anonymized) log text. We use
-    // `openComposer` from react-native-email-link — the same path
-    // ShareMessageModal uses successfully — instead of react-native-share.
-    // The previous Share.open(email) call was opening the share sheet
-    // instead of the Mail composer on iOS / silently doing nothing on
-    // some Android setups; openComposer constructs a proper mailto URL
-    // (or platform-specific intent) so the system Mail app opens
-    // reliably with the fields pre-filled.
-    //
-    // No attachment — react-native-email-link 1.7.5 doesn't support
-    // them; we put the logs straight in the body. Truncated to a safe
-    // size since email-app body length limits vary by platform; we keep
-    // the most recent N chars (where the action of interest usually
-    // lives) and prepend a marker for anything older.
+    // Send the (optionally anonymized) log text to support@sylk.link as
+    // a PGP-encrypted file attachment over the regular Sylk file-transfer
+    // pipeline. The orchestration (write temp .txt, autocreate the
+    // support contact, send a plaintext "Request for support" to nudge
+    // the PGP key exchange, wait for the support public key, then upload
+    // the encrypted file) lives in app.js#requestSupportFromLogs. We
+    // call that prop here, anonymize the body first if the checkbox is
+    // ticked, and lock the button while in flight so a double-tap can't
+    // queue two parallel uploads.
     requestSupport = async () => {
+        if (this.state.sendingSupport) {
+            // Disable double-tap while in flight so we don't queue two
+            // parallel uploads.
+            return;
+        }
+        this.setState({ sendingSupport: true });
         try {
             let body = this.state.logs || '';
             if (this.state.anonymize) {
                 body = _anonymizeEmails(body);
             }
-            const MAX_BODY = 200000; // ~200 KB — well within iOS Mail's mailto limit
-            if (body.length > MAX_BODY) {
-                const dropped = body.length - MAX_BODY;
-                body = `... (truncated ${dropped} older chars, showing the most recent ${MAX_BODY}) ...\n\n` +
-                       body.slice(-MAX_BODY);
+            if (typeof this.props.requestSupportFromLogs === 'function') {
+                await this.props.requestSupportFromLogs(body, this.props.account);
+            } else {
+                console.log('[support-share] requestSupportFromLogs prop missing');
             }
-            // Subject includes the requesting account so support can
-            // route the ticket without having to read the body. Falls
-            // back to a plain "Sylk support request" when the account
-            // isn't available yet (e.g. user opened Show Logs before
-            // signing in).
-            const account = this.props.account;
-            const subject = account
-                ? `Sylk support request for ${account}`
-                : 'Sylk support request';
-            // Typing room above the logs. The naive approach (a run of
-            // \n) gets collapsed by every email client. A non-breaking
-            // space (\u00A0) survives in iOS Mail / Gmail but BlueMail
-            // (and a few other Android clients) still strip it.
-            // The only universally-preserved approach is a *visible*
-            // placeholder character on each line. We use a single
-            // period — small enough to feel like blank space, but
-            // every client honors it. The user can either type their
-            // description above the dots or just replace them.
-            const blankLines = ('.\n').repeat(3);
-            await openComposer({
-                to: 'support@sylk.link',
-                subject,
-                body:
-                    'Hi Sylk support,\n\n' +
-                    'Please describe the issue here:\n\n' +
-                    blankLines +
-                    '\n--- LOGS ---\n\n' +
-                    body,
-            });
         } catch (e) {
             const msg = e && e.message ? e.message : String(e);
-            console.log('[support-share] openComposer failed:', msg);
+            console.log('[support-share] requestSupport failed:', msg);
+        } finally {
+            this.setState({ sendingSupport: false });
+            if (typeof this.props.close === 'function') {
+                this.props.close();
+            }
         }
     }
 
@@ -315,269 +473,457 @@ class ShowLogsModal extends Component {
     }
 
     render() {
-        const containerClass = this.props.orientation === 'landscape' ? styles.scrollViewLandscape : styles.scrollViewPortrait;
-        // Hide the `[APPLOG] ` filter tag inside the in-app viewer —
-        // it's noise to a human reader, and the tag is still present in
-        // the on-disk log file (and in the email export / clipboard
-        // copy) where grep / a support engineer cares about it.
-        const displayLogs = (this.state.logs || '').replace(/\[APPLOG\] /g, '');
+        // Snapshot mode (file attachment) takes precedence over the
+        // live tail in state.logs. attachedLogContent is set when the
+        // user tapped a YYYY-MM-DD_HH-MM-SS-sylk-logs.txt attachment in
+        // chat (or the legacy YYYYMMDD-HHMMSS shape from older builds)
+        // — see app.js#openLogAttachment.
+        const sourceLogs = this.props.attachedLogContent != null
+            ? this.props.attachedLogContent
+            : (this.state.logs || '');
+        // Hide the `[APPLOG] ` filter prefix inside the in-app viewer —
+        // it's noise to a human reader, and the prefix is still present in
+        // the on-disk log file (and in the email export / clipboard copy)
+        // where grep / a support engineer cares about it. We strip BEFORE
+        // tag-scanning so [APPLOG] never shows up as a pill.
+        const displayLogs = sourceLogs.replace(/\[APPLOG\] /g, '');
+        const { tags, filter, hasUntagged } = this._getScan(displayLogs);
+        // True when the log being viewed belongs to a DIFFERENT
+        // account than the user is signed in as. We hide owner-only
+        // actions (Purge, Anonymize, Request support) in that case —
+        // they either touch the local log file (which isn't the
+        // snapshot we're viewing) or compose a new outgoing report
+        // (which is meaningless when reading someone else's log).
+        // app.js sets the subtitle ONLY when attachedLogUri !==
+        // accountId, so this flag captures exactly the cross-account
+        // viewing case.
+        const _isViewingOthersLogs = !!this.props.subtitle;
+        const filteredLogs = filter(this.state.selectedTags);
+        const hasFilter = this.state.selectedTags.size > 0;
+        // In landscape we reclaim vertical space by hiding the title
+        // line and the bottom action button rows. The close (X) button
+        // stays visible so the user always has a way out of the modal
+        // without rotating back to portrait first. The filter pill row
+        // and the log scroll view itself remain in both orientations.
+        const isLandscape = this.props.orientation === 'landscape';
 
         return (
             <Modal
-                style={containerStyles.container}
                 visible={!!this.state.show}
-                transparent
-                animationType="fade"
+                animationType="slide"
                 onRequestClose={this.props.close}
+                presentationStyle="fullScreen"
             >
-                <TouchableWithoutFeedback onPress={this.props.close}>
-                    <View style={containerStyles.overlay}>
-                        <KeyboardAvoidingView
-                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
-                        >
-                            {/* Block dismiss when taps land inside the card. */}
-                            <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
-                                    <View style={styles.container}>
-                                        <Text style={containerStyles.title}>Sylk logs</Text>
-                                        {/* Wrapper holds the ScrollView plus
-                                            the two floating jump buttons.
-                                            `position: relative` lets the
-                                            buttons absolute-position
-                                            themselves against the wrapper's
-                                            edges. The buttons sit on the
-                                            right side of the log view —
-                                            a top-anchored "Top" and a
-                                            bottom-anchored "Bottom" — so
-                                            they live in the same visual
-                                            column as their action and
-                                            don't compete with the primary
-                                            action row (Copy / Refresh /
-                                            Purge) below the log. */}
-                                        {/* Wrapper for the ScrollView + the
-                                            two floating jump buttons. The
-                                            wrapper carries the explicit
-                                            height (formerly from
-                                            containerClass = SCSS) inline
-                                            so it's clear to RN's layout
-                                            engine that the wrapper is
-                                            bounded and the absolute
-                                            children anchor against its
-                                            edges. position: relative
-                                            establishes the positioning
-                                            context. */}
-                                        <View
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                    <KeyboardAvoidingView
+                        style={{ flex: 1 }}
+                        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+                    >
+                        {/* Header: single-line "Sylk logs · user@domain"
+                            title with the close (X) on the right. The
+                            URI is the SIP identity the logs belong to
+                            (own account in live-tail mode, file_transfer
+                            sender's URI in snapshot mode). The URI is
+                            only appended when it differs from the
+                            current account — viewing one's own live
+                            tail or own self-attached snapshot renders
+                            just "Sylk logs". */}
+                        {/* In landscape the header row is dropped
+                            entirely — we don't want to spend any vertical
+                            pixels on chrome when height is the scarce
+                            axis. The close (X) is moved to a floating
+                            button overlaid on the log scroll view below,
+                            styled to match the other floating controls
+                            (go-to-top, go-to-bottom, font ±). */}
+                        {!isLandscape ? (
+                        <View style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                            borderBottomWidth: StyleSheet.hairlineWidth,
+                            borderBottomColor: '#e0e0e0',
+                        }}>
+                            {/* "Sylk logs" stays at the regular title
+                                size; the SIP URI gets ~half size and a
+                                muted colour so it reads as a secondary
+                                label without breaking out of the
+                                single-line header. Both share the same
+                                Text via nested children so iOS / Android
+                                inherit the parent's ellipsizeMode and
+                                numberOfLines correctly. */}
+                            <Text
+                                style={[containerStyles.title, { flex: 1, marginBottom: 0 }]}
+                                numberOfLines={1}
+                                ellipsizeMode="middle"
+                            >
+                                Sylk logs
+                                {this.props.subtitle ? (
+                                    <Text style={{ fontSize: 11, color: '#666', fontWeight: 'normal' }}>
+                                        {'  ·  ' + this.props.subtitle}
+                                    </Text>
+                                ) : null}
+                            </Text>
+                            <TouchableOpacity
+                                onPress={this.props.close}
+                                accessibilityLabel="Close"
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                                <Icon name="close" size={24} color="#444" />
+                            </TouchableOpacity>
+                        </View>
+                        ) : null}
+
+                        {/* Log scroll fills all remaining vertical space. */}
+                        <View style={{ flex: 1, position: 'relative' }}>
+                            <ScrollView
+                                style={{ flex: 1 }}
+                                contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 8 }}
+                                ref={(scroll) => {this.scroll = scroll;}}
+                                keyboardShouldPersistTaps="handled"
+                                onScroll={this._onScroll}
+                                onContentSizeChange={this._onContentSizeChange}
+                                scrollEventThrottle={120}
+                            >
+                                {/* `selectable` enables long-press text
+                                    selection + the system Copy menu on
+                                    both iOS and Android, so the user
+                                    can grab a specific snippet from the
+                                    log without sending the whole thing
+                                    via the Copy button. */}
+                                <Text
+                                    selectable={true}
+                                    selectionColor="rgba(46,125,50,0.35)"
+                                    style={[
+                                        styles.body,
+                                        {
+                                            fontSize: FONT_BASE * this.state.fontScale,
+                                            lineHeight: Math.round(FONT_BASE * this.state.fontScale * 1.35),
+                                        },
+                                    ]}
+                                >
+                                    {filteredLogs}
+                                </Text>
+                            </ScrollView>
+                            {/* Floating close — landscape only. The
+                                in-row header X is dropped in landscape
+                                to reclaim vertical space, so we mount a
+                                matching dark-pill overlay button at the
+                                top-LEFT of the scroll area. Top-left
+                                (rather than top-right) keeps it off the
+                                same gutter as go-to-top / go-to-bottom /
+                                font ± so the four floating controls
+                                never overlap. */}
+                            {isLandscape ? (
+                            <TouchableOpacity
+                                onPress={this.props.close}
+                                accessibilityLabel="Close"
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                style={{
+                                    position: 'absolute', left: 8, top: 8,
+                                    width: 30, height: 30, borderRadius: 15,
+                                    backgroundColor: 'rgba(0,0,0,0.55)',
+                                    alignItems: 'center', justifyContent: 'center',
+                                    elevation: 8, zIndex: 8,
+                                }}
+                            >
+                                <Icon name="close" size={18} color="#fff" />
+                            </TouchableOpacity>
+                            ) : null}
+                            {/* Floating jump-to-top */}
+                            {!this.state.isAtTop ? (
+                            <TouchableOpacity
+                                onPress={() => {
+                                    if (this.scroll) {
+                                        this.scroll.scrollTo({ y: 0, animated: true });
+                                        this.setState({ userScrolledUp: true, isAtTop: true });
+                                    }
+                                }}
+                                accessibilityLabel="Go to top"
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                style={{
+                                    position: 'absolute', right: 8, top: 8,
+                                    width: 30, height: 30, borderRadius: 15,
+                                    backgroundColor: 'rgba(0,0,0,0.55)',
+                                    alignItems: 'center', justifyContent: 'center',
+                                    elevation: 8, zIndex: 8,
+                                }}
+                            >
+                                <Icon name="arrow-up-bold" size={18} color="#fff" />
+                            </TouchableOpacity>
+                            ) : null}
+                            {this.state.userScrolledUp ? (
+                            <TouchableOpacity
+                                onPress={() => {
+                                    if (this.scroll) {
+                                        this.scroll.scrollToEnd({ animated: true });
+                                        this.setState({ userScrolledUp: false });
+                                    }
+                                }}
+                                accessibilityLabel="Go to bottom"
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                style={{
+                                    position: 'absolute', right: 8, bottom: 8,
+                                    width: 30, height: 30, borderRadius: 15,
+                                    backgroundColor: 'rgba(0,0,0,0.55)',
+                                    alignItems: 'center', justifyContent: 'center',
+                                    elevation: 8, zIndex: 8,
+                                }}
+                            >
+                                <Icon name="arrow-down-bold" size={18} color="#fff" />
+                            </TouchableOpacity>
+                            ) : null}
+                            {/* Floating font −/+ controls, right edge,
+                                vertically centered. Stacked as a
+                                column so they share the right gutter
+                                with the go-to-top (top) and
+                                go-to-bottom (bottom) controls — three
+                                clusters spaced top / middle / bottom
+                                along the same axis. The 50%-of-height
+                                top + negative translate centers the
+                                container without measuring the wrapper.
+                                Same dark pill background as the nav
+                                controls so they feel like one family. */}
+                            <View
+                                style={{
+                                    position: 'absolute',
+                                    right: 8,
+                                    top: '50%',
+                                    // Extra breathing room between + and −
+                                    // makes the two targets feel less
+                                    // crowded and easier to hit. Cluster
+                                    // height is 30 + 24 + 30 = 84, so
+                                    // shift up by 42 for true vertical
+                                    // centering between the top/bottom
+                                    // nav buttons.
+                                    transform: [{ translateY: -42 }],
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    elevation: 8,
+                                    zIndex: 8,
+                                }}
+                            >
+                                <TouchableOpacity
+                                    onPress={this._increaseFont}
+                                    accessibilityLabel="Bigger font"
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    disabled={this.state.fontScale >= FONT_MAX_SCALE}
+                                    style={{
+                                        width: 30, height: 30, borderRadius: 15,
+                                        backgroundColor: 'rgba(0,0,0,0.55)',
+                                        alignItems: 'center', justifyContent: 'center',
+                                        marginBottom: 24,
+                                        opacity: this.state.fontScale >= FONT_MAX_SCALE ? 0.4 : 1,
+                                    }}
+                                >
+                                    <Icon name="plus" size={18} color="#fff" />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    onPress={this._decreaseFont}
+                                    accessibilityLabel="Smaller font"
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    disabled={this.state.fontScale <= FONT_MIN_SCALE}
+                                    style={{
+                                        width: 30, height: 30, borderRadius: 15,
+                                        backgroundColor: 'rgba(0,0,0,0.55)',
+                                        alignItems: 'center', justifyContent: 'center',
+                                        opacity: this.state.fontScale <= FONT_MIN_SCALE ? 0.4 : 1,
+                                    }}
+                                >
+                                    <Icon name="minus" size={18} color="#fff" />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        {/* Filter pill row.
+                            Horizontal scroll so an arbitrary number of
+                            tags fits on narrow phones. The first chip is
+                            always "untagged" — selects lines without any
+                            [bracketed] tag. The "Clear" pill on the
+                            right deselects all (only rendered when at
+                            least one pill is active). Tap toggles a tag
+                            in/out of the selection set; an empty
+                            selection means no filter (all lines shown).
+                            Filtering is OR — picking more pills shows
+                            MORE lines (cumulative), per the user's ask. */}
+                        <View style={{
+                            paddingVertical: 4,
+                            borderTopWidth: StyleSheet.hairlineWidth,
+                            borderTopColor: '#e0e0e0',
+                            backgroundColor: '#fafafa',
+                        }}>
+                            {/* Pills wrap into rows; if more than ~3 rows
+                                worth of tags exist, the vertical
+                                ScrollView caps the visible area and the
+                                rest scrolls behind. The wrap container
+                                keeps the natural left-to-right tab
+                                order so the user's eye lands on the
+                                "untagged" pill first. */}
+                            <ScrollView
+                                style={{ maxHeight: PILL_BAR_MAX_HEIGHT }}
+                                showsVerticalScrollIndicator={false}
+                                keyboardShouldPersistTaps="handled"
+                            >
+                                <View style={{
+                                    flexDirection: 'row',
+                                    flexWrap: 'wrap',
+                                    paddingHorizontal: 6,
+                                    alignItems: 'center',
+                                }}>
+                                    {/* Plain TouchableOpacity pills — no
+                                        react-native-paper Chip, because
+                                        Paper's Chip in some versions
+                                        renders a check overlay or
+                                        avatar-circle on the active pill
+                                        even without `selected`. The
+                                        active state is communicated
+                                        entirely by the background +
+                                        text colour swap (light green
+                                        tint → filled dark green). */}
+                                    {/* The "untagged" pill is shown
+                                        only when the current log
+                                        actually contains at least one
+                                        non-empty line with no
+                                        [tag] — there's no point
+                                        offering a filter that would
+                                        match zero lines. hasUntagged
+                                        is computed inside
+                                        _scanTagsAndBuildFilter. */}
+                                    {hasUntagged ? (
+                                    <TouchableOpacity
+                                        key="__untagged__"
+                                        onPress={() => this._toggleTag(UNTAGGED_KEY)}
+                                        accessibilityLabel="Filter untagged lines"
+                                        style={pillStyle(this.state.selectedTags.has(UNTAGGED_KEY))}
+                                    >
+                                        <Text style={pillTextStyle(this.state.selectedTags.has(UNTAGGED_KEY))}>untagged</Text>
+                                    </TouchableOpacity>
+                                    ) : null}
+                                    {tags.map((t) => {
+                                        const active = this.state.selectedTags.has(t);
+                                        return (
+                                            <TouchableOpacity
+                                                key={t}
+                                                onPress={() => this._toggleTag(t)}
+                                                accessibilityLabel={`Filter ${t}`}
+                                                style={pillStyle(active)}
+                                            >
+                                                <Text style={pillTextStyle(active)}>{t}</Text>
+                                            </TouchableOpacity>
+                                        );
+                                    })}
+                                    {hasFilter ? (
+                                        <TouchableOpacity
+                                            key="__clear__"
+                                            onPress={this._clearTags}
+                                            accessibilityLabel="Clear filter"
                                             style={{
-                                                position: 'relative',
-                                                height: this.props.orientation === 'landscape' ? 200 : 500,
-                                                marginBottom: 10,
-                                                alignSelf: 'stretch',
+                                                marginHorizontal: 2,
+                                                marginVertical: 2,
+                                                height: 22,
+                                                paddingHorizontal: 8,
+                                                borderRadius: 11,
+                                                backgroundColor: 'transparent',
+                                                borderWidth: StyleSheet.hairlineWidth,
+                                                borderColor: '#bbb',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
                                             }}
                                         >
-                                            <ScrollView
-                                                style={{ flex: 1 }}
-                                                ref={(scroll) => {this.scroll = scroll;}}
-                                                keyboardShouldPersistTaps="handled"
-                                                onScroll={this._onScroll}
-                                                onContentSizeChange={this._onContentSizeChange}
-                                                scrollEventThrottle={120}
-                                            >
-                                                {/* Plain Text — was wrapped in a
-                                                    TouchableOpacity for
-                                                    tap-to-copy, but that's
-                                                    what blocked the floating
-                                                    Top/Bottom buttons from
-                                                    receiving touches. The
-                                                    Copy button in the action
-                                                    row at the bottom of the
-                                                    modal still handles copy
-                                                    via this.copyToClipboard. */}
-                                                <Text style={styles.body}>{displayLogs}</Text>
-                                            </ScrollView>
-                                            {/* Floating jump-to-top / jump-to-bottom
-                                                controls. Each is hidden when its
-                                                target position is already in
-                                                view — Top hides at the top,
-                                                Bottom hides at the live tail —
-                                                so the user doesn't see redundant
-                                                "go where you already are"
-                                                buttons. */}
-                                            {!this.state.isAtTop ? (
-                                            <TouchableOpacity
-                                                onPress={() => {
-                                                    console.log('[logs] go to top tapped');
-                                                    if (this.scroll) {
-                                                        this.scroll.scrollTo({ y: 0, animated: true });
-                                                        this.setState({ userScrolledUp: true, isAtTop: true });
-                                                    }
-                                                }}
-                                                accessibilityLabel="Go to top"
-                                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                                style={{
-                                                    position: 'absolute',
-                                                    right: 8,
-                                                    top: 8,
-                                                    width: 30,
-                                                    height: 30,
-                                                    borderRadius: 15,
-                                                    backgroundColor: 'rgba(0,0,0,0.55)',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    elevation: 8,
-                                                    zIndex: 8,
-                                                }}
-                                            >
-                                                <Icon name="arrow-up-bold" size={18} color="#fff" />
-                                            </TouchableOpacity>
-                                            ) : null}
-                                            {/* Bottom button is hidden when the
-                                                view is already at (or near) the
-                                                bottom — same `userScrolledUp`
-                                                flag the live-tail glue uses, so
-                                                the button only appears once the
-                                                user actually scrolls up off the
-                                                tail. Tailing the log feels
-                                                cleaner without a redundant
-                                                "go to where you already are"
-                                                affordance hovering at the
-                                                bottom-right. */}
-                                            {this.state.userScrolledUp ? (
-                                            <TouchableOpacity
-                                                onPress={() => {
-                                                    console.log('[logs] go to bottom tapped');
-                                                    if (this.scroll) {
-                                                        this.scroll.scrollToEnd({ animated: true });
-                                                        this.setState({ userScrolledUp: false });
-                                                    }
-                                                }}
-                                                accessibilityLabel="Go to bottom"
-                                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                                style={{
-                                                    position: 'absolute',
-                                                    right: 8,
-                                                    bottom: 8,
-                                                    width: 30,
-                                                    height: 30,
-                                                    borderRadius: 15,
-                                                    backgroundColor: 'rgba(0,0,0,0.55)',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    elevation: 8,
-                                                    zIndex: 8,
-                                                }}
-                                            >
-                                                <Icon name="arrow-down-bold" size={18} color="#fff" />
-                                            </TouchableOpacity>
-                                            ) : null}
-                                        </View>
+                                            <Text style={{ color: '#666', fontSize: 10, lineHeight: 12 }}>Clear</Text>
+                                        </TouchableOpacity>
+                                    ) : null}
+                                </View>
+                            </ScrollView>
+                        </View>
 
-                                        {/* Action row.
-                                            Layout matches the rest of
-                                            the dialog family
-                                            (EditContactModal,
-                                            DeleteHistoryModal, …):
-                                            Close on the LEFT (outlined,
-                                            secondary action), primary
-                                            actions filling the rest of
-                                            the row.
-                                            Refresh button removed —
-                                            _startLiveTail already
-                                            re-reads the log file every
-                                            2 s while the modal is open,
-                                            so a manual Refresh is
-                                            redundant. */}
-                                        <View style={contentStyles.buttonRow}>
-                                            <Button
-                                                mode="outlined"
-                                                style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                                onPress={this.props.close}
-                                                accessibilityLabel="Close"
-                                            >
-                                                Close
-                                            </Button>
-                                            <Button
-                                                mode="contained"
-                                                style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                                onPress={this.copyToClipboard}
-                                                accessibilityLabel="Copy"
-                                                icon="content-copy"
-                                            >
-                                                Copy
-                                            </Button>
-                                            <Button
-                                                mode="contained"
-                                                style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                                onPress={this.props.purgeLogs}
-                                                accessibilityLabel="Purge"
-                                                icon="delete"
-                                                color="red"
-                                            >
-                                                Purge
-                                            </Button>
-                                        </View>
+                        {/* Action row + support row pinned at the bottom.
+                            Hidden in landscape to reclaim vertical space
+                            for the log scroll view — the device is short
+                            on height in that orientation and the user
+                            typically rotates to portrait when they want
+                            to copy / purge / request support. */}
+                        {!isLandscape ? (
+                        <View style={{
+                            paddingHorizontal: 12,
+                            paddingVertical: 10,
+                            borderTopWidth: StyleSheet.hairlineWidth,
+                            borderTopColor: '#e0e0e0',
+                            backgroundColor: '#fff',
+                        }}>
+                            <View style={contentStyles.buttonRow}>
+                                <Button
+                                    mode="contained"
+                                    style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
+                                    onPress={this.copyToClipboard}
+                                    accessibilityLabel="Copy"
+                                    icon="content-copy"
+                                >
+                                    Copy
+                                </Button>
+                                {!_isViewingOthersLogs ? (
+                                    <Button
+                                        mode="contained"
+                                        style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
+                                        onPress={this.props.purgeLogs}
+                                        accessibilityLabel="Purge"
+                                        icon="delete"
+                                        color="red"
+                                    >
+                                        Purge
+                                    </Button>
+                                ) : null}
+                            </View>
 
-                                        {/* Horizontal divider — visually
-                                            separates the primary log
-                                            actions (Copy / Refresh / Purge)
-                                            from the secondary "talk to a
-                                            human" support area below. */}
-                                        <View style={{
-                                            height: StyleSheet.hairlineWidth,
-                                            backgroundColor: '#bdbdbd',
-                                            marginTop: 12,
-                                            marginBottom: 8,
-                                            alignSelf: 'stretch',
-                                        }} />
+                            {!_isViewingOthersLogs ? (
+                                <React.Fragment>
+                                    <View style={{
+                                        height: StyleSheet.hairlineWidth,
+                                        backgroundColor: '#bdbdbd',
+                                        marginTop: 12,
+                                        marginBottom: 8,
+                                        alignSelf: 'stretch',
+                                    }} />
 
-                                        {/* Support-share row.
-                                            Anonymize checkbox + Email
-                                            support button. */}
-                                        <View style={{
-                                            flexDirection: 'row',
-                                            alignItems: 'center',
-                                            justifyContent: 'space-between',
-                                            flexWrap: 'wrap',
-                                        }}>
-                                            <TouchableOpacity
+                                    <View style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                        flexWrap: 'wrap',
+                                    }}>
+                                        <TouchableOpacity
+                                            onPress={() => this.setState({ anonymize: !this.state.anonymize })}
+                                            style={{ flexDirection: 'row', alignItems: 'center' }}
+                                            accessibilityLabel="Anonymize data toggle"
+                                        >
+                                            <Checkbox
+                                                status={this.state.anonymize ? 'checked' : 'unchecked'}
                                                 onPress={() => this.setState({ anonymize: !this.state.anonymize })}
-                                                style={{ flexDirection: 'row', alignItems: 'center' }}
-                                                accessibilityLabel="Anonymize data toggle"
-                                            >
-                                                <Checkbox
-                                                    status={this.state.anonymize ? 'checked' : 'unchecked'}
-                                                    onPress={() => this.setState({ anonymize: !this.state.anonymize })}
-                                                />
-                                                <Text>Anonymize data</Text>
-                                            </TouchableOpacity>
-                                            {/* Compact secondary action: tight
-                                                padding via `compact`, no
-                                                `styles.button` (which forces
-                                                a wide min-width to match the
-                                                primary button row). Purple
-                                                `#6A1B9A` keeps it visually
-                                                distinct from the default
-                                                blue Copy/Refresh and the
-                                                red Purge. */}
-                                            <Button
-                                                mode="contained"
-                                                compact
-                                                buttonColor="#6A1B9A"
-                                                textColor="#ffffff"
-                                                onPress={this.requestSupport}
-                                                accessibilityLabel="Email support"
-                                                icon="email-send"
-                                                labelStyle={{ fontSize: 12 }}
-                                            >
-                                                Email support
-                                            </Button>
-                                        </View>
+                                            />
+                                            <Text>Anonymize data</Text>
+                                        </TouchableOpacity>
+                                        <Button
+                                            mode="contained"
+                                            compact
+                                            buttonColor="#6A1B9A"
+                                            textColor="#ffffff"
+                                            onPress={this.requestSupport}
+                                            accessibilityLabel="Request support"
+                                            icon={this.state.sendingSupport ? 'progress-upload' : 'shield-key'}
+                                            labelStyle={{ fontSize: 12 }}
+                                            disabled={this.state.sendingSupport}
+                                            loading={this.state.sendingSupport}
+                                        >
+                                            {this.state.sendingSupport ? 'Sending…' : 'Request support'}
+                                        </Button>
                                     </View>
-                                </Surface>
-                            </TouchableWithoutFeedback>
-                        </KeyboardAvoidingView>
-                    </View>
-                </TouchableWithoutFeedback>
+                                </React.Fragment>
+                            ) : null}
+                        </View>
+                        ) : null}
+                    </KeyboardAvoidingView>
+                </SafeAreaView>
             </Modal>
         );
     }
@@ -590,7 +936,10 @@ ShowLogsModal.propTypes = {
     refresh            : PropTypes.func.isRequired,
     orientation        : PropTypes.string,
     logs               : PropTypes.string,
-    account            : PropTypes.string,   // current user@domain — used to tag the support email subject
+    account            : PropTypes.string,   // current user@domain — sender of the support file transfer
+    requestSupportFromLogs : PropTypes.func, // app.js orchestrator: write temp file, key exchange, encrypted upload
+    attachedLogContent : PropTypes.string,   // snapshot file contents when viewing a tapped log attachment; null in live-tail mode
+    subtitle           : PropTypes.string,   // SIP URI of the log owner — only set when it differs from current account
 };
 
 export default ShowLogsModal;

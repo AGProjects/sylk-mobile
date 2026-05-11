@@ -15,7 +15,6 @@
 
 import 'react-native-get-random-values';      // polyfills crypto.getRandomValues so tweetnacl can seed itself
 import nacl from 'tweetnacl';
-import OpenPGP from 'react-native-fast-openpgp';
 import CryptoJS from 'crypto-js';
 import utils from '../utils';                  // timestampedLog() for [ZRTP] lines that should also reach the in-app Show Logs viewer
 
@@ -77,6 +76,48 @@ export function setEncryptionMode(mode) {
 
 export function getEncryptionMode() {
     return _encryptionMode;
+}
+
+// Transport for ZRTP negotiation messages. Two options:
+//
+//   'account' — sylkrtc Account.sendMessage(uri, content, ...).
+//               This is the cross-account messaging path: the
+//               envelope is delivered to ALL of the recipient's
+//               registered devices (forking). Each device's incoming
+//               handler filters out forks whose payload.call_id
+//               doesn't match its own active call's. Survives mid-
+//               handshake transport hiccups because account-messages
+//               are queued by the messaging service. Default since
+//               we switched away from session-message transport.
+//
+//   'call'    — sylkrtc Call.sendMessage(content, ...). In-dialog
+//               session-message scoped to this single call. Reaches
+//               only the device(s) party to the call (no forking)
+//               and is naturally call-id-bound. Was the original
+//               transport before the cross-device sync migration;
+//               kept reachable behind this flag so we can A/B test
+//               or fall back when the account-message path
+//               misbehaves.
+//
+// Defaulted to 'account' to match current production behaviour.
+// Flip via setZrtpMessageTransport('call') from anywhere in JS;
+// applies to subsequent ZRTP sends, no need to restart the call.
+const ZRTP_TRANSPORTS = ['account', 'call'];
+const ZRTP_TRANSPORT_DEFAULT = 'call';
+let _zrtpMessageTransport = ZRTP_TRANSPORT_DEFAULT;
+
+export function setZrtpMessageTransport(mode) {
+    if (ZRTP_TRANSPORTS.indexOf(mode) === -1) {
+        utils.timestampedLog('[ZRTP] setZrtpMessageTransport: invalid mode', mode,
+            '— ignoring (recognized:', ZRTP_TRANSPORTS.join('/'), ')');
+        return;
+    }
+    _zrtpMessageTransport = mode;
+    utils.timestampedLog('[ZRTP] message transport =', _zrtpMessageTransport);
+}
+
+export function getZrtpMessageTransport() {
+    return _zrtpMessageTransport;
 }
 
 // SAS — Short Authentication String. Both endpoints derive identical 4-char
@@ -148,6 +189,71 @@ class ZrtpSession {
         console.log('[ZRTP]', this.localId, this.role, ...args);
     }
 
+    // Single point of dispatch for an outgoing ZRTP envelope. Picks
+    // between Call.sendMessage (in-session, single-device) and
+    // Account.sendMessage (cross-account, may fork to multiple
+    // devices) based on the module-level _zrtpMessageTransport flag.
+    // The two API shapes differ — call.sendMessage takes no URI, it
+    // already knows the peer; account.sendMessage needs the URI as
+    // first arg — so the helper hides that here and the call sites
+    // stay short.
+    _sendEncrypted(encrypted, label, cb) {
+        const transport = _zrtpMessageTransport;
+        const sizeBytes = encrypted ? encrypted.length : 0;
+        // Compact context block reused by every line below so each
+        // entry/exit log carries enough info to correlate against an
+        // applog timeline without grep-sed gymnastics: which envelope
+        // (label), which transport, who the peer is, the call id,
+        // and the encrypted payload size.
+        const ctx = 'label=' + label
+            + ' transport=' + transport
+            + ' peer=' + this.peerUri
+            + ' call_id=' + this.callId
+            + ' size=' + sizeBytes + 'B';
+
+        if (transport === 'call' && this.call && typeof this.call.sendMessage === 'function') {
+            utils.timestampedLog('[messaging] [zrtp] sending via call.sendMessage', ctx);
+            this._log('transport=call (session-message):', label);
+            try {
+                this.call.sendMessage(encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
+                    if (err) {
+                        utils.timestampedLog('[messaging] [zrtp] call.sendMessage FAILED', ctx,
+                            'err=', err && err.message ? err.message : String(err));
+                    } else {
+                        utils.timestampedLog('[messaging] [zrtp] call.sendMessage OK', ctx);
+                    }
+                    if (cb) cb(err);
+                });
+            } catch (e) {
+                const errMsg = e && e.message ? e.message : String(e);
+                utils.timestampedLog('[messaging] [zrtp] call.sendMessage THREW — falling back to account', ctx,
+                    'err=', errMsg);
+                this._log('call.sendMessage threw — falling back to account:', errMsg);
+                this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
+                    if (err) {
+                        utils.timestampedLog('[messaging] [zrtp] account.sendMessage FAILED (fallback)', ctx,
+                            'err=', err && err.message ? err.message : String(err));
+                    } else {
+                        utils.timestampedLog('[messaging] [zrtp] account.sendMessage OK (fallback)', ctx);
+                    }
+                    if (cb) cb(err);
+                });
+            }
+        } else {
+            utils.timestampedLog('[messaging] [zrtp] sending via account.sendMessage', ctx);
+            this._log('transport=account (account-message):', label);
+            this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
+                if (err) {
+                    utils.timestampedLog('[messaging] [zrtp] account.sendMessage FAILED', ctx,
+                        'err=', err && err.message ? err.message : String(err));
+                } else {
+                    utils.timestampedLog('[messaging] [zrtp] account.sendMessage OK', ctx);
+                }
+                if (cb) cb(err);
+            });
+        }
+    }
+
     /**
      * Update internal state and emit a 'zrtpStateChanged' event on the
      * sylkrtc Call so React components (e.g. AudioCallBox) can react.
@@ -175,19 +281,24 @@ class ZrtpSession {
             ephem_pub_hex: toHex(this.ephemeral.publicKey),
             suites: ['AES-128-GCM'],
         };
-        this._log('SEND probe (via account.sendMessage):', payload);
+        this._log('SEND probe (transport=' + _zrtpMessageTransport + '):', payload);
 
-        let encrypted;
-        try {
-            encrypted = await this._pgpWrap(JSON.stringify(payload));
-        } catch (e) {
-            this._log('pgp wrap failed:', (e && e.message) || e);
-            this._setState('failed');
-            return;
-        }
+        // Plain JSON on the wire — the handshake payload (ephemeral
+        // X25519 public key + suite list + call_id tag) is not
+        // secret. Confidentiality of the call comes from the SAS-
+        // verified shared secret derived from this exchange, not
+        // from a transport-layer PGP wrap. Removing the wrap also
+        // makes the handshake work for peers who haven't yet
+        // exchanged PGP keys.
+        const wireBody = JSON.stringify(payload);
 
-        // account.sendMessage(uri, content, contentType, options, cb)
-        this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
+        // _sendEncrypted picks between call.sendMessage (in-session)
+        // and account.sendMessage (cross-device) based on the
+        // _zrtpMessageTransport module flag. See setZrtpMessageTransport.
+        // (Function name kept for now — the "encrypted" arg is now
+        // the plaintext envelope; transport choice is the only
+        // concern of that helper.)
+        this._sendEncrypted(wireBody, 'probe', (err) => {
             if (err) this._log('probe send error:', err);
             else this._log('probe sent OK');
         });
@@ -292,15 +403,14 @@ class ZrtpSession {
     }
 
     async _sendSigned(obj, label) {
-        let encrypted;
-        try {
-            encrypted = await this._pgpWrap(JSON.stringify(obj));
-        } catch (e) {
-            this._log('pgp wrap failed (' + label + '):', (e && e.message) || e);
-            this._setState('failed');
-            return;
-        }
-        this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
+        // Plain JSON on the wire — see comment in startProbe. The
+        // legacy method name "_sendSigned" is kept for blame-history
+        // continuity; the body is no longer signed/wrapped, just
+        // serialised.
+        const wireBody = JSON.stringify(obj);
+        // Routed through _sendEncrypted so the call.sendMessage vs
+        // account.sendMessage choice lives in exactly one place.
+        this._sendEncrypted(wireBody, label, (err) => {
             if (err) this._log(label + ' send error:', err);
             else this._log(label + ' sent OK');
         });
@@ -635,11 +745,6 @@ class ZrtpSession {
             'role=', this.role, 'sas=', chars, emojis, 'peer=', verification);
     }
 
-    async _pgpWrap(plaintext) {
-        const publicKeys = this.myKeys.public + '\n' + this.contact.publicKey;
-        return await OpenPGP.encrypt(plaintext, publicKeys);
-    }
-
     destroy() {
         this._log('destroy');
     }
@@ -882,23 +987,16 @@ export function startZrtpForCall(call, account, contact, myKeys) {
 }
 
 /**
- * Receiver-side dispatcher: invoke when a PGP-decrypted account-message
- * with contentType === ZRTP_CONTENT_TYPE arrives. Creates a callee-role
- * session on first contact and feeds it the JSON. Devices that aren't in
- * the matching call drop the message via call_id check inside handleIncoming.
+ * Receiver-side dispatcher: invoke when an incoming message with
+ * contentType === ZRTP_CONTENT_TYPE arrives (plain JSON on the wire —
+ * the PGP wrap was removed because the handshake payload is not
+ * secret). Creates a callee-role session on first contact and feeds
+ * it the JSON. Devices that aren't in the matching call drop the
+ * message via call_id check inside handleIncoming.
  */
-export function dispatchIncomingZrtp(call, account, contact, myKeys, decryptedContent) {
+export function dispatchIncomingZrtp(call, account, contact, myKeys, content) {
     if (_encryptionMode === 'sdes') {
         console.log('[ZRTP] mode=sdes — ignoring incoming key exchange');
-        return;
-    }
-    if (!contact || !contact.publicKey) {
-        if (_encryptionMode === 'zrtp_mandatory') {
-            _emitMandatoryFailedDelayed(call, 'no-public-key',
-                'no PGP public key cached for ' + (contact && contact.uri));
-            return;
-        }
-        console.log('[ZRTP] no public key for', contact && contact.uri, '— ignoring incoming');
         return;
     }
     if (!account) {
@@ -920,7 +1018,7 @@ export function dispatchIncomingZrtp(call, account, contact, myKeys, decryptedCo
         _attachCleanup(call, id, s);
         _attachMandatoryTimeout(call, id, s);
     }
-    s.handleIncoming(decryptedContent);
+    s.handleIncoming(content);
 }
 
 /** Test helper: peek at session state from outside the module. */

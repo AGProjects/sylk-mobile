@@ -36,8 +36,25 @@ const AudioProgressSlider = ({
 }) => {
     const [dragging, setDragging] = useState(false);
     const [dragPct, setDragPct] = useState(0);
+    // After a release, the parent's `progress` prop takes a beat to
+    // catch up while updateFileTransferMetadata's setState propagates
+    // back through GiftedChat. Without `pendingPct` the slider would
+    // momentarily snap to the OLD progress value (= where the user
+    // started the drag), then jump again to the new one a frame later.
+    // We park the released-to value here and keep showing it until
+    // progress arrives close enough to take over.
+    const [pendingPct, setPendingPct] = useState(null);
     // Keep the latest dragPct accessible inside PanResponder callbacks.
     const dragPctRef = useRef(0);
+    // Boundary-lock: once the finger has dragged off the LEFT edge,
+    // we synthesize a release at 0 immediately and ignore any further
+    // pan events for the rest of the gesture. Without this lock the
+    // gesture keeps tracking past the slider's bounds — and depending
+    // on how the parent FlatList competes for the touch, the actual
+    // onPanResponderRelease can fire with a stale dragPct, snapping
+    // the slider back to a non-zero value (the "drag to 0 flips back"
+    // bug). Reset on every Grant so the next gesture starts fresh.
+    const lockedRef = useRef(false);
 
     const clamp = (n) => Math.max(0, Math.min(100, n));
 
@@ -90,6 +107,8 @@ const AudioProgressSlider = ({
         onShouldBlockNativeResponder: () => true,
         onPanResponderGrant: (evt) => {
             const x = evt && evt.nativeEvent ? evt.nativeEvent.locationX : null;
+            // New gesture — clear any boundary lock from the previous one.
+            lockedRef.current = false;
             setDragging(true);
             const start = onSeekStartRef.current;
             if (start) start();
@@ -99,18 +118,52 @@ const AudioProgressSlider = ({
             }
         },
         onPanResponderMove: (evt) => {
+            // After we've synthetic-released on the left edge, ignore
+            // any further moves so a subsequent finger drift can't
+            // bump dragPct off zero.
+            if (lockedRef.current) return;
             const x = evt.nativeEvent.locationX;
             const w = widthRef.current;
-            setPct(clamp((x / Math.max(1, w)) * 100));
+            const rawPct = (x / Math.max(1, w)) * 100;
+            // Snap-to-zero zone: anywhere within ~2% of the left edge
+            // commits a seek at 0 and locks the gesture out. A bare
+            // x<=0 check wasn't enough — a fingertip is wider than a
+            // single pixel, so users were bottoming out at 2-3%
+            // because their touch never reached locationX=0. The
+            // threshold lets the slider snap cleanly to 0 the moment
+            // the finger gets close, and the lock prevents a
+            // post-edge drift or late termination from re-committing
+            // a stale dragPct.
+            if (rawPct <= 2) {
+                lockedRef.current = true;
+                setPct(0);
+                setPendingPct(0);
+                setDragging(false);
+                const cb = onSeekRef.current;
+                if (cb) cb(0);
+                return;
+            }
+            setPct(clamp(rawPct));
         },
         onPanResponderRelease: () => {
+            // If the move handler already committed a left-edge
+            // release, the actual release-up is a no-op — we don't
+            // want to overwrite our 0 with a stale dragPct.
+            if (lockedRef.current) return;
             const finalPct = dragPctRef.current;
+            // Park the released-to value before clearing `dragging` so
+            // there's no frame where displayPct falls back to the stale
+            // `progress` prop. pendingPct is cleared by the useEffect
+            // below the moment progress catches up.
+            setPendingPct(finalPct);
             setDragging(false);
             const cb = onSeekRef.current;
             if (cb) cb(finalPct);
         },
         onPanResponderTerminate: () => {
+            if (lockedRef.current) return;
             const finalPct = dragPctRef.current;
+            setPendingPct(finalPct);
             setDragging(false);
             const cb = onSeekRef.current;
             if (cb) cb(finalPct);
@@ -118,7 +171,28 @@ const AudioProgressSlider = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }), []);
 
-    const displayPct = dragging ? dragPct : clamp(progress);
+    // Drop the parked release-value once the parent's progress prop has
+    // settled near where we left off (within 1.5%). Symmetric on both
+    // sides: a backward drag (50 → 0) and a forward drag (0 → 80) both
+    // clear via the same |diff|<1.5 rule once the parent state catches
+    // up. (An earlier version had a `progress > pendingPct + 2` branch
+    // to detect playback resumption ahead of the seek point — but that
+    // also fired the instant a user dragged backward, before the
+    // parent's seekAudioMessage propagated, snapping the slider back to
+    // the pre-drag value. The |diff| rule alone handles resume cleanly:
+    // playback advances by ~1% per tick, so as soon as it hits the
+    // seek point pendingPct gets cleared.)
+    useEffect(() => {
+        if (pendingPct === null) return;
+        if (Math.abs(progress - pendingPct) < 1.5) {
+            setPendingPct(null);
+        }
+    }, [progress, pendingPct]);
+
+    // Display priority: live drag → parked release-value → progress prop.
+    const displayPct = dragging
+        ? dragPct
+        : (pendingPct !== null ? pendingPct : clamp(progress));
     const fillWidth = (displayPct / 100) * width;
     const knobLeft = Math.max(0, Math.min(width - knobWidth, fillWidth - knobWidth / 2));
 

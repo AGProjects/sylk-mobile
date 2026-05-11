@@ -3,24 +3,30 @@ import PropTypes from 'prop-types';
 import { View, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
 
-// Three-stop "slider" used by ShareLocationModal (sender) and
+// Five-stop "slider" used by ShareLocationModal (sender) and
 // MeetingRequestModal (receiver) to let either party pick how big a
 // privacy radius around their starting GPS fix should be hidden from
-// the peer. Off / 500 m / 2 km — three discrete stops chosen by tap.
+// the peer. Off / 500 m / 2 km / 4 km / 8 km — discrete stops chosen
+// by tap. The wider stops accommodate longer-distance meetups (cross-
+// town drives, intercity trains) where 2 km of starting-area
+// obfuscation isn't enough to feel meaningfully private.
 //
-// The widget is a flat horizontal track with three filled / outlined
-// circles connected by a line. Selected marker grows from 14 → 18 px
-// and fills with the brand blue; the corresponding label below bolds
-// and fully opaques. No external dependency: pure View + TouchableOpacity.
+// The widget is a flat horizontal track with circles connected by a
+// line. Selected marker grows from 14 → 18 px and fills with the
+// brand blue; the corresponding label below bolds and fully opaques.
+// No external dependency: pure View + TouchableOpacity.
 //
 // Props:
-//   value     — currently selected radius in metres (0 / 500 / 2000)
+//   value     — currently selected radius in metres
+//               (0 / 500 / 2000 / 4000 / 8000)
 //   onChange  — (meters: number) => void, called when a marker is tapped
 //   title     — caption rendered above the track. Optional.
 const PRIVACY_RADIUS_STOPS = [
     {value: 0,    label: 'Off'},
     {value: 500,  label: '500 m'},
     {value: 2000, label: '2 km'},
+    {value: 4000, label: '4 km'},
+    {value: 8000, label: '8 km'},
 ];
 
 const PrivacyRadiusSlider = ({value, onChange, title}) => {

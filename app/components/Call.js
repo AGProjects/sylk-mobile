@@ -10,7 +10,7 @@ import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import utils from '../utils';
-import { startZrtpForCall } from './CallZrtp';
+import { startZrtpForCall, ZRTP_CONTENT_TYPE } from './CallZrtp';
 
 // import {
 //   ConnectionStateChangedEvent,
@@ -54,6 +54,10 @@ class Call extends Component {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
             this.props.call.on('incomingMessage', this.incomingMessage);
+            utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (mount)',
+                'call_id=', this.props.call._callId || this.props.call.callId || this.props.call.id,
+                'peer=', this.props.call.remoteIdentity && this.props.call.remoteIdentity.uri,
+                'inlineMessaging=', !!this.props.call.enableInlineMessaging);
             remoteUri = this.props.call.remoteIdentity.uri;
             callState = this.props.call.state;
             remoteDisplayName = this.props.callContact?.name || this.props.call?.remoteIdentity?.displayName || this.props.call?.remoteIdentity.uri;
@@ -111,7 +115,7 @@ class Call extends Component {
         this.lookupContact();
 
         if (this.state.direction === 'outgoing' && this.state.callUUID && this.state.callState !== 'established') {
-            utils.timestampedLog('Call: start call', this.state.callUUID, 'when ready to', this.state.targetUri);
+            utils.timestampedLog('[call] start', this.state.callUUID, 'when ready to', this.state.targetUri);
             this.startCallWhenReady(this.state.callUUID);
         }
 
@@ -136,6 +140,19 @@ class Call extends Component {
 
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
+        // Surface ZRTP envelopes that arrive on the call's session-
+        // message channel separately so the receive side is visible
+        // in applog alongside the [messaging] [zrtp] send lines.
+        // Note: by default sylkrtc has call.enableInlineMessaging =
+        // false and forwards in-dialog messages up to
+        // account.on('incomingMessage') instead, so this handler may
+        // never fire unless the call is opted into inline mode.
+        if (message && message.contentType === ZRTP_CONTENT_TYPE) {
+            utils.timestampedLog('[messaging] [zrtp] received via call.incomingMessage',
+                'msg_id=', message.id,
+                'peer=', message.sender && message.sender.uri,
+                'size=', (message.content ? message.content.length : 0) + 'B');
+        }
     }
 
 	componentDidUpdate(prevProps, prevState) {
@@ -173,6 +190,10 @@ class Call extends Component {
         if (this.state.call === null && nextProps.call !== null) {
             nextProps.call.on('stateChanged', this.callStateChanged);
             nextProps.call.on('incomingMessage', this.incomingMessage);
+            utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (cwrp)',
+                'call_id=', nextProps.call._callId || nextProps.call.callId || nextProps.call.id,
+                'peer=', nextProps.call.remoteIdentity && nextProps.call.remoteIdentity.uri,
+                'inlineMessaging=', !!nextProps.call.enableInlineMessaging);
 
             this.setState({
                            remoteUri: nextProps.call.remoteIdentity.uri,
@@ -237,30 +258,30 @@ class Call extends Component {
         if (this.state.call && this.state.call.state === 'incoming' && media) {
             let options = {pcConfig: {iceServers: this.state.iceServers}};
             options.localStream = media;
-            utils.timestampedLog('Answering call...');
+            utils.timestampedLog('Answering [call]...');
 
             if (!this.answering) {
                 this.answering = true;
                 const connectionState = this.state.connection.state ? this.state.connection.state : null;
-                utils.timestampedLog('Call: answering call', this.state.call.id, 'in connection state', connectionState);
+                utils.timestampedLog('answering [call]', this.state.call.id, 'in connection state', connectionState);
                 try {
                     this.state.call.answer(options);
-                    utils.timestampedLog('Call: answered');
+                    utils.timestampedLog('[call] answered');
                 } catch (error) {
-                    utils.timestampedLog('Call: failed to answer', error);
+                    utils.timestampedLog('failed to answer [call]', error);
                     this.hangupCall('answer_failed')
                 }
             } else {
-                utils.timestampedLog('Call: answering call in progress...');
+                utils.timestampedLog('answering [call] in progress...');
             }
         } else {
             if (!this.state.call) {
-                utils.timestampedLog('Call: no Sylkrtc call present');
+                utils.timestampedLog('no Sylkrtc [call] present');
                 //this.hangupCall('answer_failed');
             }
 
             if (!media) {
-                utils.timestampedLog('Call: waiting for local media');
+                utils.timestampedLog('[call] waiting for local [media]');
             }
         }
     }
@@ -337,7 +358,7 @@ class Call extends Component {
                 try {
                     startZrtpForCall(currentCall, this.props.account, this.props.callContact, this.props.myKeys);
                 } catch (e) {
-                    utils.timestampedLog('[ZRTP] startZrtpForCall threw:', e);
+                    utils.timestampedLog('[ZRTP] [call] startZrtpForCall threw:', e);
                 }
             }
 
@@ -392,7 +413,7 @@ class Call extends Component {
                 break;
             case 'disconnected':
                 if (oldState === 'ready' && this.state.direction === 'outgoing') {
-                    utils.timestampedLog('Call: reconnecting the call...');
+                    utils.timestampedLog('reconnecting [call]...');
                     this.waitInterval = this.defaultWaitInterval;
                 }
                 break;
@@ -412,29 +433,36 @@ class Call extends Component {
 
     canConnect() {
         if (!this.state.connection) {
-            utils.timestampedLog('Call: no connection yet');
+            utils.timestampedLog('[call] no connection yet');
             return false;
         }
 
-		if (!this.state.userStartedCall) {
-			//console.log('Wait for user confirmation to start call');
-			//return
+		// For outgoing calls we wait for the user to tap "Start" before
+		// firing SIP signaling. Same pattern for both video (LocalMedia
+		// preview with Start video call button) and audio (AudioCallBox
+		// pre-connection bar with Start audio call button). userStartedCall
+		// is flipped by confirmStartCall(). Incoming calls bypass this
+		// gate (they're committed by the time the user is on the call
+		// screen).
+		if (this.state.direction === 'outgoing' && !this.state.userStartedCall) {
+			//utils.timestampedLog('[call] waiting for user to confirm outgoing call');
+			return false;
 		}
 
         if (this.state.connection.state !== 'ready') {
-            utils.timestampedLog('Call: connection is not ready');
+            utils.timestampedLog('[call] connection is not ready');
             return false;
         }
 
         if (this.props.registrationState !== 'registered') {
-            utils.timestampedLog('Call: account not ready yet');
+            utils.timestampedLog('[call] account not ready yet');
             return false;
         }
 
         if (!this.mediaIsPlaying) {
-            utils.timestampedLog('Local media is not playing')
+            utils.timestampedLog('[call] local [media] is not playing')
             if (this.waitCounter > 0) {
-                console.log('Call: media is not yet playing');
+                console.log('[call] local [media] is not yet playing');
                 if (this.waitCounter == 10) {
                     // something went wrong
                     this.setState({terminatedReason: 'Cannot start media'});
@@ -454,7 +482,7 @@ class Call extends Component {
 
         while (this.waitCounter < this.waitInterval) {
             if (this.waitCounter === 1) {
-                utils.timestampedLog('Call: waiting for establishing call', this.waitInterval, 'seconds');
+                utils.timestampedLog('waiting for establishing [call]', this.waitInterval, 'seconds');
             }
 
             if (this.userHangup) {
@@ -600,6 +628,7 @@ class Call extends Component {
                         terminatedReason = {this.state.terminatedReason}
                         confirmStartCall = {this.confirmStartCall}
                         userStartedCall = {this.state.userStartedCall}
+                        awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall}
                         availableAudioDevices = {this.state.availableAudioDevices}
                         selectedAudioDevice = {this.state.selectedAudioDevice}
                         selectAudioDevice = {this.props.selectAudioDevice}
@@ -608,6 +637,8 @@ class Call extends Component {
                         markZrtpVerified = {this.props.markZrtpVerified}
                         shareLocationFromCall = {this.props.shareLocationFromCall}
                         requestLocationFromCall = {this.props.requestLocationFromCall}
+                        saveCallRecording = {this.props.saveCallRecording}
+                        enableAudioRecording = {this.props.enableAudioRecording}
 					/>
                 );
             } else {
@@ -695,6 +726,7 @@ class Call extends Component {
                                 connection = {this.state.connection}
                                 isLandscape = {this.state.isLandscape}
                                 isTablet = {this.props.isTablet}
+                                isFolded = {this.props.isFolded}
                                 media = 'video'
                                 showLogs = {this.props.showLogs}
                                 goBackFunc = {this.props.goBackFunc}
@@ -704,11 +736,23 @@ class Call extends Component {
 								selectAudioDevice = {this.props.selectAudioDevice}
 								useInCallManger = {this.props.useInCallManger}
 								insets = {this.state.insets}
+								awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.audioOnly && !this.state.userStartedCall}
+								confirmStartCall = {this.confirmStartCall}
 							/>
                         );
                     }
                 }
             }
+        } else if (this.props.outgoingMediaIsVideo && this.state.direction === 'outgoing') {
+            // Suppress the AudioCallBox flash that used to fire for the
+            // brief window between route → /call and getLocalMedia
+            // returning the video stream. localMedia is null at that
+            // point, but rendering AudioCallBox here looks like a
+            // wrong-call-type glitch ("audio call without video"
+            // flashes in for ~200 ms before the camera preview lands).
+            // Render nothing — the next render with localMedia set
+            // will mount LocalMedia and the camera preview takes over.
+            box = null;
         } else {
             box = (
                 <AudioCallBox
@@ -737,6 +781,9 @@ class Call extends Component {
                     inviteToConferenceFunc = {this.props.inviteToConferenceFunc}
                     finishInvite = {this.props.finishInvite}
                     terminatedReason = {this.state.terminatedReason}
+                    confirmStartCall = {this.confirmStartCall}
+                    userStartedCall = {this.state.userStartedCall}
+                    awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
@@ -745,6 +792,8 @@ class Call extends Component {
                     markZrtpVerified = {this.props.markZrtpVerified}
                     shareLocationFromCall = {this.props.shareLocationFromCall}
                     requestLocationFromCall = {this.props.requestLocationFromCall}
+                    saveCallRecording = {this.props.saveCallRecording}
+                    enableAudioRecording = {this.props.enableAudioRecording}
 				/>
             );
         }
@@ -804,7 +853,13 @@ Call.propTypes = {
     iceServers              : PropTypes.array,
 	insets                  : PropTypes.object,
 	enableFullScreen        : PropTypes.func,
-	disableFullScreen       : PropTypes.func
+	disableFullScreen       : PropTypes.func,
+	// True when the user is initiating an outgoing video call. Used by
+	// render() to skip the AudioCallBox fallback during the brief window
+	// between route→/call and getLocalMedia returning the video stream,
+	// which otherwise flashes a misleading "audio call without video"
+	// view for ~200 ms before LocalMedia takes over.
+	outgoingMediaIsVideo    : PropTypes.bool
 };
 
 

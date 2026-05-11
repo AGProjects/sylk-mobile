@@ -80,6 +80,7 @@ import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
 import PreferencesModal from './PreferencesModal';
+import WebViewURLResolver from './WebViewURLResolver';
 import DeleteAccountModal from './DeleteAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
@@ -95,14 +96,26 @@ import SylkAppbarContent from './SylkAppbarContent';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import * as Progress from 'react-native-progress';
-import * as storage from '../storage';
+// `storage` (AsyncStorage wrapper) was previously used here to
+// persist live-share state under a single global key. That state
+// has moved to the per-account `accounts.app_state` SQL column,
+// reached via the readAppStateNamespace / writeAppStateNamespace
+// props passed in from app.js. The storage import is intentionally
+// gone so we don't accidentally re-introduce a global key here.
+import {
+    readAcknowledged as readLocationDisclosure,
+    setAcknowledged as setLocationDisclosure,
+    clearAcknowledged as clearLocationDisclosure,
+} from '../locationDisclosure';
 
-// Persisted snapshot of locationTimers, keyed under this AsyncStorage
-// entry. Versioned so a future schema change can re-key without
-// confusing older builds. See _persistActiveShares /
+// In-flight share state used to live in AsyncStorage under a single
+// global key (`activeLocationShares.v1`). It now lives per-account
+// in the SQL `accounts.app_state` column, reached via the
+// readAppStateNamespace / writeAppStateNamespace props on this
+// component. The legacy AsyncStorage key is wiped at app boot
+// (app.js _wipeLegacyAppStateAsyncStorage). See _persistActiveShares /
 // _loadAndResumeActiveShares for the read-write pair that keeps
 // in-flight shares alive across app restarts (graceful or hard kill).
-const ACTIVE_SHARES_STORAGE_KEY = 'activeLocationShares.v1';
 
 import styles from '../assets/styles/NavigationBar';
 
@@ -113,9 +126,16 @@ class NavigationBar extends Component {
 
         this.refetchMessagesForDays = 30;
 
-        // Re-send the live location every 60 seconds until the expiration
-        // time chosen by the user is reached.
-        this.LOCATION_REPEAT_MS = 60 * 1000;
+        // Re-send the live location every N seconds until the expiration
+        // time chosen by the user is reached. Default 60 s, overridable
+        // per-device via the Preferences modal. Initialised here from
+        // the constructor-time props if present so resumed shares
+        // inherit the user's chosen cadence on app boot; subsequent
+        // changes flow through componentDidUpdate.
+        this.LOCATION_REPEAT_MS = (props && typeof props.locationTickIntervalMs === 'number'
+                && props.locationTickIntervalMs > 0)
+            ? props.locationTickIntervalMs
+            : 60 * 1000;
 
         // "Until I return" auto-stop thresholds. A caregiver share starts
         // by recording the user's position and arming a state machine:
@@ -140,6 +160,30 @@ class NavigationBar extends Component {
         // several shares in parallel and we can cancel them cleanly.
         this.locationTimers = {};
 
+        // Map<uri, {durationMs, periodLabel, opts, registeredAt}>
+        //   — share-start intents that were deferred because the
+        //   OS-level location permission wasn't sufficient at tap-
+        //   time. Populated from the early-return paths inside
+        //   startLocationSharing (blocked / denied / Settings-bound
+        //   dialogs) and drained by _onAppStateChange when the app
+        //   foregrounds. The intent is: once the user has tapped
+        //   "Accept" / "Meet up" / "Confirm" we treat that as
+        //   commitment — they shouldn't have to tap a second time
+        //   after granting permission in Settings. The drain re-
+        //   probes the OS permission and auto-resumes the share if
+        //   it's now sufficient.
+        //
+        // Cleared:
+        //   • on successful auto-resume (drain),
+        //   • when an explicit start via startLocationSharing succeeds
+        //     for the same uri (so a manual retry doesn't queue a
+        //     parallel automatic one),
+        //   • when stopLocationSharing is invoked for the uri (user
+        //     explicitly cancelled the pending share),
+        //   • when a meeting-accept's underlying request expires,
+        //   • on componentWillUnmount.
+        this._pendingPermissionShares = {};
+
         this.state = {
             showPublicKey: false,
             menuVisible: false,
@@ -157,6 +201,52 @@ class NavigationBar extends Component {
 			backupKey: false,
 			deleteContact: false,
 			showShareLocationModal: false,
+			// Optional user-location preview shown on the destination
+			// preview map inside ShareLocationModal — kicked off as a
+			// fire-and-forget getCurrentCoordinates() call when the
+			// modal opens (see showShareLocationModal). The picked
+			// privacy radius is rendered as a circle around this
+			// point so the user can see how big the hidden zone will
+			// be relative to the destination. Cleared on
+			// hideShareLocationModal so a stale fix doesn't leak
+			// into the next open with a different destination.
+			previewUserLocation: null,
+			// Mirror of accounts.app_state.location.disclaimerSuppressed
+			// for the currently signed-in account. When true, the
+			// share-location modal hides its data-usage disclaimer
+			// paragraph and the "Do not show this again" checkbox.
+			// Hydrated by _hydrateDisclaimerSuppression() once
+			// props.accountId is bound and re-loaded on account-switch.
+			// Persisted via _suppressShareLocationDisclaimer() the
+			// moment the user confirms a share with the box ticked,
+			// and cleared by the privacy-policy opt-out path so the
+			// legal text re-appears the moment the contract is
+			// revoked.
+			shareDisclaimerSuppressed: false,
+			// Pre-filled destination for the next share session.
+			// Populated by `meetMeAt(uri, coords)` (called from a
+			// chat-bubble's "Meet me there..." kebab on a Google
+			// Maps link). The duration picker opens with the
+			// meet-up flow auto-selected and `onShareLocationConfirmed`
+			// consumes this state to stamp `destination` onto every
+			// outgoing tick. Cleared when the modal closes (confirm
+			// or cancel) so the next casual Share location tap
+			// doesn't accidentally inherit yesterday's destination.
+			pendingShareDestination: null,
+			// Headless WebView URL resolver state. When set to
+			// a string, a hidden <WebViewURLResolver/> is mounted
+			// in render() to expand `webViewResolveUrl` to its
+			// JS-driven destination. Used as a fallback when
+			// `utils.resolveShortLocationUrl`'s plain HTTP fetch
+			// can't follow Google's Firebase Dynamic Link redirect
+			// for `maps.app.goo.gl/<id>` URLs (the destination is
+			// computed at runtime by JS that never runs in our
+			// fetch). When the WebView captures the first
+			// navigation, `webViewResolveCallback` fires with the
+			// final URL string and the slot is cleared.
+			webViewResolveUrl: null,
+			webViewResolveCallback: null,
+			webViewResolveError: null,
 			// Google Play "Prominent Disclosure" gate. Set to a {resolve}
 			// promise resolver while the LocationPrivacyDisclosureModal is
 			// up; cleared back to null when the user taps Continue or
@@ -164,15 +254,20 @@ class NavigationBar extends Component {
 			// the resolver so the share / permission flow blocks until
 			// the user has decided.
 			locationDisclosurePending: null,
-			// Mirrors AsyncStorage 'locationDisclosureAcknowledged.v2'
-			// in component state so render() can branch synchronously
-			// on the consent state. Read once at mount; updated by the
-			// share-flow's onContinue, the viewer's onOptOut, and the
-			// viewer's onContinue (when invoked from the not-yet-
-			// agreed branch). This is what keeps the "Location
-			// privacy policy..." menu item visible regardless of
-			// contact / chat state once the user has consented —
-			// they should always be able to revisit / withdraw.
+			// Mirrors the per-account AsyncStorage key
+			// 'locationDisclosureAcknowledged.v2.<accountId>' (see
+			// locationDisclosure.js) in component state so render()
+			// can branch synchronously on the consent state. Read once
+			// at mount; updated by the share-flow's onContinue, the
+			// viewer's onOptOut, and the viewer's onContinue (when
+			// invoked from the not-yet-agreed branch). Also re-read in
+			// componentDidUpdate when props.accountId changes, so
+			// switching SIP identities doesn't carry stale consent
+			// state across accounts. This is what keeps the
+			// "Location privacy policy..." menu item visible
+			// regardless of contact / chat state once the user has
+			// consented — they should always be able to revisit /
+			// withdraw.
 			locationDisclosureAcknowledged: false,
 			// Map<uri, expiresAtMs> — mirrors `this.locationTimers` in
 			// state so the menu can re-render when a share starts or stops.
@@ -256,13 +351,16 @@ class NavigationBar extends Component {
         // Read the location-disclosure acknowledgement flag from
         // AsyncStorage so the kebab can decide whether to keep the
         // "Location privacy policy..." item visible. Once consented,
-        // the item persists across all chats / contact states until
-        // the user explicitly opts out via the viewer modal. Android
+        // the item persists across all chats / contact states for
+        // THIS account until the user explicitly opts out via the
+        // viewer modal. The flag is now scoped per SIP identity (see
+        // locationDisclosure.js) so a second account on the same
+        // device doesn't inherit the first one's consent. Android
         // only — the disclosure UX is a Google Play requirement;
         // iOS uses the App Store / CoreLocation usage-string model
         // and never shows the in-app modal.
         if (Platform.OS === 'android') {
-            storage.get('locationDisclosureAcknowledged.v2')
+            readLocationDisclosure(this.props.accountId)
                 .then((acknowledged) => {
                     if (acknowledged === true) {
                         this.setState({locationDisclosureAcknowledged: true});
@@ -357,6 +455,10 @@ class NavigationBar extends Component {
             this._appStateSub.remove();
             this._appStateSub = null;
         }
+        // Drop any parked permission-retry intents — without
+        // _onAppStateChange they can never drain anyway, and a
+        // remount (hot reload) would inherit them as zombies.
+        this._pendingPermissionShares = {};
     }
 
     _onAppStateChange(state) {
@@ -366,6 +468,16 @@ class NavigationBar extends Component {
             this._stopActiveSharePulse();
             this._startActiveSharePulse();
         }
+        // Auto-resume any share whose start was deferred because the
+        // user didn't have sufficient location permission at tap-time.
+        // The user has just returned to the app — likely from Settings
+        // where they granted "Allow always" — so re-probe and try
+        // again. This makes the meeting-accept flow forgiving: tap
+        // Accept once, grant permission whenever, and the share
+        // starts on its own.
+        try {
+            this._drainPendingPermissionShares();
+        } catch (e) { /* drain is best-effort */ }
     }
 
     // Persist a compact snapshot of in-flight location shares to
@@ -383,8 +495,20 @@ class NavigationBar extends Component {
     // Fire-and-forget: AsyncStorage writes are async but we don't
     // gate any UI behaviour on completion, and the next start/stop
     // will rewrite the blob anyway.
-    _persistActiveShares() {
+    async _persistActiveShares() {
+        // Per-account persistence to accounts.app_state.location.shares.
+        // Replaces the previous single global AsyncStorage key
+        // (activeLocationShares.v1) which leaked share state across
+        // identities on multi-account devices — a second account
+        // signing in on the same device would inherit and try to
+        // resume the first account's shares. The accounts table is
+        // PK'd on the account URI so this is naturally per-account.
         try {
+            const accountId = this.props.accountId;
+            if (!accountId) return;
+            const read = this.props.readAppStateNamespace;
+            const write = this.props.writeAppStateNamespace;
+            if (typeof read !== 'function' || typeof write !== 'function') return;
             const map = {};
             const now = Date.now();
             const uris = Object.keys(this.locationTimers || {});
@@ -416,12 +540,24 @@ class NavigationBar extends Component {
                     // serialize.
                     untilReturnOrigin: entry.untilReturnOrigin || null,
                     untilReturnDeparted: !!entry.untilReturnDeparted,
+                    // Paused flag persistence — without this, a paused
+                    // share would silently un-pause across an app
+                    // backgrounding / process kill (the resume path
+                    // re-arms via startLocationSharing with paused=false
+                    // and the user would see ticks resume on their own,
+                    // contradicting what they explicitly asked for in
+                    // the bubble's contextual menu). Field-reported
+                    // bug: user paused a share, app went to background,
+                    // ticks resumed automatically on the next foreground.
+                    paused: !!entry.paused,
                 };
             }
-            storage.set(ACTIVE_SHARES_STORAGE_KEY, map).catch((e) => {
-                console.log('[location] _persistActiveShares write failed',
-                    e && e.message ? e.message : e);
-            });
+            // Read-modify-write: preserve any other location.* keys
+            // (e.g. meetingRequests) the caller doesn't own, then
+            // replace shares.
+            const location = await read(accountId, 'location');
+            location.shares = map;
+            await write(accountId, 'location', location);
         } catch (e) {
             console.log('[location] _persistActiveShares failed',
                 e && e.message ? e.message : e);
@@ -470,7 +606,20 @@ class NavigationBar extends Component {
 
         let map = null;
         try {
-            map = await storage.get(ACTIVE_SHARES_STORAGE_KEY);
+            // Per-account read from accounts.app_state.location.shares.
+            // The accounts table's PK on the account URI guarantees
+            // we only ever resume shares belonging to the currently
+            // signed-in identity — a second account on the same
+            // device won't pick up the first account's shares.
+            const accountId = this.props.accountId;
+            const read = this.props.readAppStateNamespace;
+            if (!accountId || typeof read !== 'function') {
+                console.log('[location] resume scan: skipped (accountId or readAppStateNamespace missing)');
+                return;
+            }
+            const location = await read(accountId, 'location');
+            map = (location && location.shares && typeof location.shares === 'object')
+                ? location.shares : null;
         } catch (e) {
             console.log('[location] _loadAndResumeActiveShares read failed',
                 e && e.message ? e.message : e);
@@ -530,6 +679,20 @@ class NavigationBar extends Component {
                         // resumeUntilReturnOrigin / resumeUntilReturnDeparted.
                         resumeUntilReturnOrigin: e.untilReturnOrigin || null,
                         resumeUntilReturnDeparted: !!e.untilReturnDeparted,
+                        // Re-apply the paused flag if the share was
+                        // paused at persist time. Without this, the
+                        // resumed share would start ticking again on
+                        // its own — the very behaviour the user
+                        // explicitly asked to suppress when they
+                        // tapped Pause. The pause-gate at the top of
+                        // sendLocationUpdate (around line ~1505) is
+                        // what actually swallows the would-be ticks;
+                        // we just need the flag to be set on the new
+                        // entry before the FIRST tick fires, which is
+                        // why startLocationSharing reads
+                        // `resumePaused` immediately after building
+                        // the entry rather than later.
+                        resumePaused: !!e.paused,
                     });
             } catch (err) {
                 utils.timestampedLog('[location] resume failed for', uri,
@@ -555,6 +718,42 @@ class NavigationBar extends Component {
 		    Keyboard.dismiss();
 		}
 
+		// accountId changed (sign-out → sign-in with a different SIP
+		// identity, or first registration after launch when the
+		// initial mount happened with empty props.accountId). The
+		// disclosure flag is per-account so we re-read it for the
+		// new identity instead of carrying stale state from the
+		// previous one. Android-only for the same reason as the
+		// initial componentDidMount read.
+		if (Platform.OS === 'android'
+				&& this.props.accountId !== prevProps.accountId) {
+			readLocationDisclosure(this.props.accountId)
+				.then((acknowledged) => {
+					this.setState({locationDisclosureAcknowledged: acknowledged === true});
+				})
+				.catch(() => {
+					this.setState({locationDisclosureAcknowledged: false});
+				});
+		}
+
+		// Live-pick up the user-chosen heartbeat cadence from
+		// PreferencesModal. Re-running through `setLocationRepeatMs`
+		// keeps the gating throttle (`if (nowMs - lastSentMs <
+		// this.LOCATION_REPEAT_MS)`) accurate the very next tick.
+		// Already-running setInterval timers keep their original
+		// schedule until they next fire — at which point the throttle
+		// gate enforces the new cadence — so the worst-case delay
+		// before the change takes effect is one OLD tick interval.
+		// Acceptable for a setting the user changes infrequently.
+		if (typeof this.props.locationTickIntervalMs === 'number'
+				&& this.props.locationTickIntervalMs !== prevProps.locationTickIntervalMs
+				&& this.props.locationTickIntervalMs > 0) {
+			const newMs = this.props.locationTickIntervalMs;
+			utils.timestampedLog('[location] preferences: tick interval changed',
+				prevProps.locationTickIntervalMs, '→', newMs, 'ms');
+			this.LOCATION_REPEAT_MS = newMs;
+		}
+
 		// Account just finished registering with the SIP server.
 		// This is our cue to resume any in-flight share sessions
 		// that were saved to AsyncStorage before the previous
@@ -566,6 +765,23 @@ class NavigationBar extends Component {
 				&& prevProps.registrationState !== 'registered') {
 			this._didResumeShares = true;
 			this._loadAndResumeActiveShares();
+			// Hydrate the per-account share-location disclaimer
+			// suppression flag in the same window — by definition
+			// accountId is bound now, and reading the flag here
+			// avoids a separate registration hook for what's
+			// otherwise a tiny piece of state. Idempotent so a
+			// future re-fire would be safe even though the gate
+			// above prevents it.
+			this._hydrateDisclaimerSuppression();
+		}
+
+		// Re-hydrate when accountId itself changes (account-switch on
+		// the same device, even if registrationState didn't transition
+		// through 'unregistered'). Without this, signing out as A and
+		// back in as B on the same process would keep B looking at
+		// A's suppression state.
+		if (prevProps.accountId !== this.props.accountId) {
+			this._hydrateDisclaimerSuppression();
 		}
 
 		// Self-heal drift between activeLocationShares (React state that
@@ -703,6 +919,36 @@ class NavigationBar extends Component {
                     }
                 }
                 break;
+            case 'pauseLocation':
+                // Pause the active share for the currently selected
+                // contact. Mirrors the bubble-kebab Pause action but
+                // saves the user from having to dig into the bubble.
+                // No-op if no active entry (race with stopLocationSharing
+                // / expiry tear-down) — pauseLocationSharing handles
+                // that by returning false.
+                {
+                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                    const _entry = _uri && this.locationTimers && this.locationTimers[_uri];
+                    if (_entry) {
+                        this.pauseLocationSharing(_uri, _entry.originMetadataId);
+                    }
+                }
+                break;
+            case 'resumeLocation':
+                // Resume a previously-paused share for the currently
+                // selected contact. resumeLocationSharing returns true
+                // on success. If it returns false (entry was wiped while
+                // the user was away), we fall through silently — the
+                // chat-header menu only shows Resume when an entry
+                // exists, so this should be a no-op race in practice.
+                {
+                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                    const _entry = _uri && this.locationTimers && this.locationTimers[_uri];
+                    if (_entry) {
+                        this.resumeLocationSharing(_uri, _entry.originMetadataId);
+                    }
+                }
+                break;
             case 'requestLocation':
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
@@ -730,7 +976,13 @@ class NavigationBar extends Component {
                 // `onOptOut` handler that the modal renders into a
                 // dedicated button branch.
                 {
-                    const KEY = 'locationDisclosureAcknowledged.v2';
+                    // Per-account scoping: the agreement state is
+                    // tracked per SIP identity (see locationDisclosure.js).
+                    // We capture the accountId here so the async
+                    // continue/optOut handlers below close over a
+                    // stable value even if the user signs out and
+                    // back in before they tap a button.
+                    const _accountId = this.props.accountId;
                     // Same diagnostic log as the share-flow gate —
                     // emit the current OS permission state alongside
                     // the AsyncStorage agreement state so we can read
@@ -744,10 +996,10 @@ class NavigationBar extends Component {
                             console.log('[location] disclosure viewer opened — getLocationPermissionStatus failed',
                                 e && e.message ? e.message : e);
                         });
-                    storage.get(KEY).catch(() => null).then((acknowledged) => {
+                    readLocationDisclosure(_accountId).then((acknowledged) => {
                         const showOptOut = acknowledged === true;
                         console.log('[location] disclosure viewer — agreement state =',
-                            showOptOut ? 'agreed' : 'not agreed');
+                            showOptOut ? 'agreed' : 'not agreed', 'account=', _accountId);
                         this.setState({
                             locationDisclosurePending: {
                                 showOptOut,
@@ -757,10 +1009,18 @@ class NavigationBar extends Component {
                                     // consent the same way the
                                     // share-flow does and mirror in
                                     // component state so the kebab
-                                    // updates immediately.
+                                    // updates immediately. Only emit
+                                    // the APPLOG accept line when we
+                                    // actually flipped the flag —
+                                    // hitting "Continue" on the
+                                    // already-agreed variant is a
+                                    // no-op we don't need in the
+                                    // log timeline.
                                     if (!showOptOut) {
-                                        try { await storage.set(KEY, true); }
-                                        catch (e) { /* noop */ }
+                                        await setLocationDisclosure(_accountId);
+                                        utils.timestampedLog(
+                                            '[location] user accepted privacy policy via viewer — disclosure flag set for',
+                                            _accountId);
                                     }
                                     this.setState({
                                         locationDisclosurePending: null,
@@ -771,9 +1031,22 @@ class NavigationBar extends Component {
                                     this.setState({locationDisclosurePending: null});
                                 },
                                 onOptOut: async () => {
-                                    try { await storage.remove(KEY); }
-                                    catch (e) { /* noop */ }
-                                    utils.timestampedLog('[location] user opted out — disclosure flag cleared');
+                                    await clearLocationDisclosure(_accountId);
+                                    // Clear the share-location disclaimer
+                                    // suppression too — the user just
+                                    // revoked the underlying privacy-
+                                    // policy consent, so the disclaimer
+                                    // text MUST reappear on the next
+                                    // share. (The suppression was a
+                                    // convenience flag layered on top of
+                                    // the agreed-to policy; without that
+                                    // policy in place, the legal copy
+                                    // belongs back on screen.)
+                                    try { await this._clearShareLocationDisclaimerSuppression(); }
+                                    catch (e) { /* persistence failure is non-fatal */ }
+                                    utils.timestampedLog(
+                                        '[location] user opted out of privacy policy via viewer — disclosure flag cleared for',
+                                        _accountId);
                                     this.setState({
                                         locationDisclosurePending: null,
                                         locationDisclosureAcknowledged: false,
@@ -1014,12 +1287,364 @@ class NavigationBar extends Component {
             return;
         }
 
+        // Re-hydrate the disclaimer-suppressed flag from app_state
+        // right before opening. The flag is also hydrated on
+        // registrationState transitions and accountId changes, but
+        // there's a window (e.g. first share after a cold launch
+        // before registration completes, OR a Maps-link tap that
+        // opens the modal optimistically) where the React state
+        // mirror lags the persisted value. Reading from SQL each
+        // open guarantees the disclaimer block is hidden whenever
+        // the user has previously confirmed with the box ticked.
+        // Cost: one SQL SELECT, ~2 ms — well below the picker's
+        // open-perception threshold.
+        try { await this._hydrateDisclaimerSuppression(); }
+        catch (e) { /* best-effort — fall through with stale value */ }
+
         // Step 3: open the duration picker.
         this.setState({showShareLocationModal: true});
+
+        // Fire a getCurrentCoordinates fetch in the background so the
+        // preview map inside ShareLocationModal can show the user's
+        // current position alongside the destination.
+        this._fetchPreviewLocation();
+    }
+
+    // Fire-and-forget GPS fetch to populate `state.previewUserLocation`.
+    // Called from BOTH share-modal-open paths: showShareLocationModal()
+    // (button-tap entry) AND meetMeAt() (chat-link entry which opens
+    // the modal via direct setState). Without this both-paths wiring
+    // a "Meet me there..." flow opens the modal but never gets a
+    // user pin because the GPS fetch fires only on the button-tap
+    // path.
+    _fetchPreviewLocation() {
+        // Reset the previous fix immediately so a stale one from an
+        // earlier modal-open doesn't render briefly while the new
+        // one is in flight.
+        this.setState({previewUserLocation: null});
+        try {
+            utils.timestampedLog('[location] preview: requesting current location for share modal');
+            this.getCurrentCoordinates().then((coords) => {
+                if (this._unmounted) {
+                    utils.timestampedLog('[location] preview: GPS fix landed but component unmounted — discarding');
+                    return;
+                }
+                if (!coords
+                        || typeof coords.latitude !== 'number'
+                        || typeof coords.longitude !== 'number') {
+                    utils.timestampedLog('[location] preview: GPS fix returned invalid coords',
+                        JSON.stringify(coords));
+                    return;
+                }
+                // Defensive: if the modal was already closed before the
+                // fix landed, don't write stale state.
+                if (!this.state.showShareLocationModal) {
+                    utils.timestampedLog(
+                        '[location] preview: GPS fix landed but modal already closed — discarding'
+                    );
+                    return;
+                }
+                utils.timestampedLog(
+                    '[location] preview: current location acquired —',
+                    coords.latitude.toFixed(5) + ',' + coords.longitude.toFixed(5),
+                    typeof coords.accuracy === 'number'
+                        ? `±${Math.round(coords.accuracy)}m`
+                        : ''
+                );
+                this.setState({previewUserLocation: {
+                    latitude: coords.latitude,
+                    longitude: coords.longitude,
+                }});
+            }).catch((err) => {
+                utils.timestampedLog(
+                    '[location] preview: getCurrentCoordinates failed —',
+                    err && err.message ? err.message : err,
+                    'code=', err && err.code
+                );
+            });
+        } catch (e) {
+            utils.timestampedLog(
+                '[location] preview: getCurrentCoordinates threw synchronously —',
+                e && e.message ? e.message : e
+            );
+        }
     }
 
     hideShareLocationModal() {
-        this.setState({showShareLocationModal: false});
+        // Always clear the pending destination + URL + status on
+        // close. Confirm and cancel both route here.
+        // onShareLocationConfirmed reads pendingShareDestination
+        // (and re-tries pendingShareDestinationUrl as a last-ditch
+        // synchronous resolve) BEFORE this fires, so confirmed
+        // shares still get the destination.
+        this.setState({
+            showShareLocationModal: false,
+            pendingShareDestination: null,
+            pendingShareDestinationUrl: null,
+            pendingShareDestinationStatus: null,
+            // Drop the preview pin so a stale fix doesn't render
+            // briefly the next time the modal opens with a different
+            // destination — showShareLocationModal will rearm a fresh
+            // getCurrentCoordinates fetch.
+            previewUserLocation: null,
+        });
+    }
+
+    // Bridge from ContactsListBox's "Meet me there..." kebab / inline
+    // icon on a Google-Maps-link text bubble. Stages the destination
+    // and opens the share-location duration picker. The user picks the
+    // meet-up duration; on confirm `onShareLocationConfirmed` reads
+    // pendingShareDestination and stamps it onto every emitted tick.
+    //
+    // Accepts the descriptor returned by `utils.extractLocationLink`:
+    //   {type: 'direct', coords: {latitude, longitude}}
+    //     Stage immediately and open the panel.
+    //   {type: 'short', url}
+    //     Open the panel immediately, then resolve the short URL in
+    //     the BACKGROUND. The panel doesn't have to wait on the
+    //     network round-trip. If the user confirms before resolution
+    //     completes, onShareLocationConfirmed does a final synchronous
+    //     resolve as a fallback (also reads
+    //     pendingShareDestinationUrl).
+    async meetMeAt(uri, link) {
+        if (!uri || !link) {
+            console.log('[location] meetMeAt: missing uri or link', uri, link);
+            return;
+        }
+        // Backwards compat: an older ContactsListBox build called
+        // meetMeAt(uri, coords) directly. Detect the bare-coords
+        // shape and wrap it as a direct link descriptor.
+        if (link && typeof link.latitude === 'number'
+                && typeof link.longitude === 'number') {
+            link = {type: 'direct', coords: link};
+        }
+        if (link.type === 'direct') {
+            utils.timestampedLog('[location] meetMeAt: direct destination',
+                link.coords.latitude.toFixed(5), ',', link.coords.longitude.toFixed(5),
+                'for', uri);
+            // Open panel synchronously via state — see the short-URL
+            // branch below for why we don't go through
+            // showShareLocationModal here either. The permission /
+            // disclosure gates run as a background task and only kick
+            // in when the user actually confirms the share.
+            this.setState({
+                pendingShareDestination: {
+                    latitude: link.coords.latitude,
+                    longitude: link.coords.longitude,
+                },
+                pendingShareDestinationUrl: null,
+                pendingShareDestinationStatus: 'resolved',
+                showShareLocationModal: true,
+            });
+            // Same fire-and-forget GPS fetch the button-tap entry
+            // path runs (see showShareLocationModal). Without this
+            // the "Meet me there..." flow opens the modal but the
+            // user pin never appears — meetMeAt bypasses
+            // showShareLocationModal() entirely (we open the panel
+            // optimistically rather than awaiting permission /
+            // disclosure gates).
+            this._fetchPreviewLocation();
+            // Refresh the disclaimer-suppression mirror from
+            // app_state. Fire-and-forget — the modal already
+            // rendered above; when this resolves it'll setState and
+            // the modal re-renders without the disclaimer block.
+            this._hydrateDisclaimerSuppression();
+            this._meetMeAtRunGates(uri);
+            return;
+        }
+        if (link.type === 'short') {
+            utils.timestampedLog('[location] meetMeAt: short URL — opening panel + resolving in parallel',
+                link.url, 'for', uri);
+            // Open the panel SYNCHRONOUSLY by flipping
+            // showShareLocationModal in the same setState. Going
+            // through this.showShareLocationModal() awaits async
+            // disclosure + permission gates BEFORE rendering the
+            // panel, which the user reported as a noticeable delay
+            // — the meet-me-there flow already has a clear user
+            // intent (they tapped a button on a maps link) so we
+            // can show the panel optimistically and let the gates
+            // run in the background. If a gate fails it closes the
+            // panel and surfaces an alert (see _meetMeAtRunGates).
+            this.setState({
+                pendingShareDestination: null,
+                pendingShareDestinationUrl: link.url,
+                pendingShareDestinationStatus: 'resolving',
+                showShareLocationModal: true,
+            });
+            // Fire the GPS fetch in parallel with the URL resolve so
+            // the user pin / privacy-radius circle appear as soon as
+            // both have landed. Same wiring as the direct-coords
+            // branch above — see the comment there.
+            this._fetchPreviewLocation();
+            // Same fire-and-forget rehydrate as the direct-coords
+            // path. The modal opens optimistically with stale state;
+            // this re-syncs from SQL and a re-render will hide the
+            // disclaimer block within a frame or two.
+            this._hydrateDisclaimerSuppression();
+            // Three things now happen in parallel: the panel
+            // renders (already triggered by setState), the URL
+            // resolves over the network, and the permission gates
+            // run. Each writes back via setState as it completes.
+            this._meetMeAtRunGates(uri);
+            const _kickedOffFor = link.url;
+            const _isStale = () => this.state.pendingShareDestinationUrl !== _kickedOffFor;
+            // Two-stage resolve: cheap HTTP fetch first (works for
+            // `maps.google.com/?q=lat,lng` style canonical URLs and
+            // for short URLs that redirect via HTTP). If that
+            // doesn't yield coords AND the URL is on a known
+            // JS-driven shortener (Firebase Dynamic Link), fall back
+            // to a headless WebView load to capture the JS-computed
+            // destination URL and re-parse.
+            utils.resolveShortLocationUrl(link.url)
+                .then((coords) => {
+                    if (_isStale()) return;
+                    if (coords) {
+                        utils.timestampedLog('[location] meetMeAt: short URL resolved (HTTP) →',
+                            coords.latitude.toFixed(5), ',', coords.longitude.toFixed(5));
+                        this.setState({
+                            pendingShareDestination: coords,
+                            pendingShareDestinationStatus: 'resolved',
+                        });
+                        return;
+                    }
+                    // Plain fetch failed. Try WebView for the
+                    // FDL / shortener URLs we know need JS.
+                    utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords — falling back to WebView for',
+                        link.url);
+                    return this._resolveViaWebView(link.url)
+                        .then((finalUrl) => {
+                            if (_isStale()) return;
+                            utils.timestampedLog('[location] meetMeAt: WebView captured finalUrl=',
+                                finalUrl);
+                            const fromUrl = utils.parseSharedLocationUrl(finalUrl);
+                            if (fromUrl) {
+                                this.setState({
+                                    pendingShareDestination: fromUrl,
+                                    pendingShareDestinationStatus: 'resolved',
+                                });
+                                return;
+                            }
+                            // No inline coords. Last-resort fallback:
+                            // many "share place by name" URLs carry
+                            // an address in `?q=` (e.g.
+                            // `maps.google.com/?q=Atic+Millennium,...`)
+                            // — geocode that via Nominatim. The
+                            // resolve chain doesn't fail until even
+                            // the geocode comes back empty.
+                            const _addr = utils.extractQueryAddress(finalUrl);
+                            if (_addr) {
+                                utils.timestampedLog('[location] meetMeAt: no inline coords — geocoding address',
+                                    JSON.stringify(_addr));
+                                return utils.geocodeAddress(_addr).then((coords) => {
+                                    if (_isStale()) return;
+                                    if (coords) {
+                                        utils.timestampedLog('[location] meetMeAt: geocode resolved →',
+                                            coords.latitude.toFixed(5), ',', coords.longitude.toFixed(5));
+                                        this.setState({
+                                            pendingShareDestination: coords,
+                                            pendingShareDestinationStatus: 'resolved',
+                                        });
+                                    } else {
+                                        utils.timestampedLog('[location] meetMeAt: geocode had no match for',
+                                            JSON.stringify(_addr));
+                                        this.setState({pendingShareDestinationStatus: 'failed'});
+                                    }
+                                });
+                            }
+                            utils.timestampedLog('[location] meetMeAt: WebView finalUrl had no parseable coords + no q= address —',
+                                finalUrl);
+                            this.setState({pendingShareDestinationStatus: 'failed'});
+                        });
+                })
+                .catch((err) => {
+                    if (_isStale()) return;
+                    utils.timestampedLog('[location] meetMeAt: resolve chain failed',
+                        err && err.message ? err.message : err);
+                    this.setState({pendingShareDestinationStatus: 'failed'});
+                });
+            return;
+        }
+        console.log('[location] meetMeAt: unknown link type', link);
+    }
+
+    // Headless WebView URL resolver. Returns a Promise that resolves
+    // to the FIRST destination URL the page navigates to (typically
+    // the canonical Google Maps URL with @lat,lng baked in), OR
+    // rejects on timeout / error. Used by meetMeAt as a fallback
+    // when `utils.resolveShortLocationUrl`'s plain HTTP fetch
+    // returns no coords. Only one resolution can be in flight at a
+    // time — the second concurrent caller is rejected immediately.
+    _resolveViaWebView(shortUrl) {
+        return new Promise((resolve, reject) => {
+            if (this.state.webViewResolveUrl) {
+                reject(new Error('webview resolver busy'));
+                return;
+            }
+            const callback = (finalUrl, err) => {
+                this.setState({
+                    webViewResolveUrl: null,
+                    webViewResolveCallback: null,
+                    webViewResolveError: null,
+                });
+                if (err) reject(err);
+                else resolve(finalUrl);
+            };
+            this.setState({
+                webViewResolveUrl: shortUrl,
+                webViewResolveCallback: callback,
+                webViewResolveError: null,
+            });
+        });
+    }
+
+    // Run the permission / disclosure gates as a fire-and-forget
+    // background task. If a gate fails, close the meet-me-there
+    // panel and surface the same alert showShareLocationModal would
+    // show. If they pass, no-op — the panel is already open and the
+    // user proceeds normally.
+    async _meetMeAtRunGates(uri) {
+        try {
+            const acknowledged = await this._ensureLocationDisclosureAcknowledged();
+            if (!acknowledged) {
+                utils.timestampedLog('[location] meetMeAt: disclosure declined — closing panel');
+                this.hideShareLocationModal();
+                return;
+            }
+            let hasPermission = false;
+            try {
+                hasPermission = await this.ensureLocationPermission();
+            } catch (e) {
+                hasPermission = false;
+            }
+            if (!hasPermission) {
+                utils.timestampedLog('[location] meetMeAt: OS permission missing — closing panel');
+                this.hideShareLocationModal();
+                const openSettingsFn = () => {
+                    try {
+                        if (Platform.OS === 'ios') {
+                            Linking.openURL('app-settings:');
+                        } else {
+                            try { openSettings(); }
+                            catch (e) { Linking.openSettings && Linking.openSettings(); }
+                        }
+                    } catch (e) { /* noop */ }
+                };
+                Alert.alert(
+                    'Location permission required',
+                    Platform.OS === 'ios'
+                        ? "Open Settings → Sylk → Location to allow location access."
+                        : "Open Settings to allow Sylk to access your location.",
+                    [
+                        {text: 'Cancel', style: 'cancel'},
+                        {text: 'Open Settings', onPress: openSettingsFn},
+                    ],
+                    {cancelable: true}
+                );
+            }
+        } catch (e) {
+            utils.timestampedLog('[location] meetMeAt: gate evaluation failed',
+                e && e.message ? e.message : e);
+        }
     }
 
     // Check the **precise** current location-permission state without
@@ -1182,10 +1807,23 @@ class NavigationBar extends Component {
             if (ct === 'application/sylk-contact-update') continue;
             if (ct === 'message/imdn') continue;
             if (ct.indexOf('pgp') !== -1) continue;
-            // text/* (text + html), image/*, sylk-file-transfer,
-            // and sylk-live-location all count. Past location
-            // shares evidence an active relationship just as
-            // strongly as any other exchanged message.
+            // Live-location bubbles are accepted as proof of a real
+            // relationship in BOTH directions, regardless of which side
+            // sent them. Field complaint: a contact who shared their
+            // location with the user (60 ticks of "until I return")
+            // but had never exchanged a text message would otherwise
+            // have the location share button vanish once the share
+            // ended — a chat that's clearly real reads as "no
+            // qualifying messages" because the bidi gate refuses to
+            // flip on a single direction. Treating any live-location
+            // bubble as bidi makes the gate match user expectation.
+            if (ct === 'application/sylk-live-location') {
+                hasOut = true;
+                hasIn = true;
+                return true;
+            }
+            // text/* (text + html), image/*, sylk-file-transfer all
+            // count as their actual direction.
             const dir = m.direction;
             if (dir === 'outgoing') hasOut = true;
             else if (dir === 'incoming') hasIn = true;
@@ -1211,17 +1849,15 @@ class NavigationBar extends Component {
         // v1 → v2: disclosure body materially corrected to state that
         // Sylk's server DOES retain the encrypted journal entry until
         // the share's expiry (the v1 wording incorrectly implied the
-        // server never sees the data at all). Bumping the key makes
+        // server never sees the data at all). Bumping the key made
         // any user who acknowledged v1 re-see the corrected wording.
-        const KEY = 'locationDisclosureAcknowledged.v2';
-        try {
-            const acknowledged = await storage.get(KEY);
-            if (acknowledged === true) {
-                return true;
-            }
-        } catch (e) {
-            // Read failure → fall through to show the modal. Better to
-            // double-disclose than to silently skip the requirement.
+        // The v2 key is now further scoped per SIP account in
+        // locationDisclosure.js so a second identity on the same
+        // device starts fresh.
+        const _accountId = this.props.accountId;
+        const acknowledged = await readLocationDisclosure(_accountId);
+        if (acknowledged === true) {
+            return true;
         }
         // Diagnostic: log the OS-level location permission state right
         // before showing the disclosure panel, so we can correlate
@@ -1239,8 +1875,10 @@ class NavigationBar extends Component {
             this.setState({
                 locationDisclosurePending: {
                     onContinue: async () => {
-                        try { await storage.set(KEY, true); }
-                        catch (e) { /* persistence failure is non-fatal */ }
+                        await setLocationDisclosure(_accountId);
+                        utils.timestampedLog(
+                            '[location] user accepted privacy policy via share-flow gate — disclosure flag set for',
+                            _accountId);
                         this.setState({
                             locationDisclosurePending: null,
                             locationDisclosureAcknowledged: true,
@@ -1248,6 +1886,9 @@ class NavigationBar extends Component {
                         resolve(true);
                     },
                     onCancel: () => {
+                        utils.timestampedLog(
+                            '[location] user cancelled privacy policy at share-flow gate — share aborted for',
+                            _accountId);
                         this.setState({locationDisclosurePending: null});
                         resolve(false);
                     },
@@ -1370,6 +2011,266 @@ class NavigationBar extends Component {
         }
 
         return true;
+    }
+
+    // ===== Share-location disclaimer suppression =====
+    //
+    // Reads / writes the per-account
+    // `app_state.location.disclaimerSuppressed` flag and mirrors it
+    // into React state so the share-location modal can render with
+    // the disclaimer hidden when appropriate.
+
+    // Hydrate the in-memory mirror from the persisted app_state row.
+    // Idempotent — safe to call on every registrationState transition
+    // and on every modal open. No-op when accountId or the read
+    // accessor isn't available yet.
+    _hydrateDisclaimerSuppression = async () => {
+        try {
+            const accountId = this.props.accountId;
+            const read = this.props.readAppStateNamespace;
+            if (!accountId || typeof read !== 'function') {
+                utils.timestampedLog(
+                    '[location] hydrate-disclaimer: skipped — accountId=', accountId,
+                    'read=', typeof read
+                );
+                return;
+            }
+            const location = await read(accountId, 'location');
+            const suppressed = !!(location && location.disclaimerSuppressed);
+            utils.timestampedLog(
+                '[location] hydrate-disclaimer: accountId=', accountId,
+                'location=', JSON.stringify(location),
+                '→ suppressed=', suppressed
+            );
+            if (this.state.shareDisclaimerSuppressed !== suppressed) {
+                this.setState({shareDisclaimerSuppressed: suppressed});
+            }
+        } catch (e) {
+            utils.timestampedLog('[location] _hydrateDisclaimerSuppression failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    // Persist `disclaimerSuppressed: true` for the currently signed-in
+    // account. Called from the share-location modal's onConfirm path
+    // when the user pressed Confirm with "Do not show this again"
+    // ticked. We update the in-memory mirror synchronously so the
+    // next modal open already sees the suppressed state, even if the
+    // SQL UPDATE is still in the debounce window.
+    _suppressShareLocationDisclaimer = async () => {
+        utils.timestampedLog(
+            '[location] suppress-disclaimer: invoked'
+        );
+        try {
+            const accountId = this.props.accountId;
+            const read = this.props.readAppStateNamespace;
+            const write = this.props.writeAppStateNamespace;
+            if (!accountId
+                    || typeof read !== 'function'
+                    || typeof write !== 'function') {
+                utils.timestampedLog(
+                    '[location] suppress-disclaimer: skipped — accountId=', accountId,
+                    'read=', typeof read, 'write=', typeof write
+                );
+                return;
+            }
+            const location = await read(accountId, 'location');
+            utils.timestampedLog(
+                '[location] suppress-disclaimer: read existing location=', JSON.stringify(location)
+            );
+            location.disclaimerSuppressed = true;
+            await write(accountId, 'location', location);
+            utils.timestampedLog(
+                '[location] suppress-disclaimer: write completed for', accountId,
+                'new location=', JSON.stringify(location)
+            );
+            this.setState({shareDisclaimerSuppressed: true});
+        } catch (e) {
+            utils.timestampedLog('[location] _suppressShareLocationDisclaimer failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    // Clear the persisted suppression flag. Called from the privacy-
+    // policy opt-out path so the legal text re-appears the moment the
+    // user revokes their disclosure consent — the suppression is a
+    // convenience flag that depends on the user having agreed to the
+    // policy in the first place.
+    _clearShareLocationDisclaimerSuppression = async () => {
+        try {
+            const accountId = this.props.accountId;
+            const read = this.props.readAppStateNamespace;
+            const write = this.props.writeAppStateNamespace;
+            if (!accountId
+                    || typeof read !== 'function'
+                    || typeof write !== 'function') return;
+            const location = await read(accountId, 'location');
+            if (location.disclaimerSuppressed) {
+                delete location.disclaimerSuppressed;
+                await write(accountId, 'location', location);
+            }
+            this.setState({shareDisclaimerSuppressed: false});
+        } catch (e) {
+            console.log('[location] _clearShareLocationDisclaimerSuppression failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    // Park a share-start intent that was blocked on missing OS-level
+    // location permission. The user has already tapped Accept / Meet
+    // up / Confirm once — re-prompting them after they grant the
+    // permission in Settings is a UX failure ("I just said yes, why
+    // are you asking again?"). Storing the intent here lets
+    // _drainPendingPermissionShares (called from _onAppStateChange)
+    // re-run the share automatically the next time the app
+    // foregrounds with sufficient permission.
+    //
+    // Idempotent: a second arming for the same uri replaces the
+    // first. The optimistic activeLocationShares pulse and the
+    // announcement message are NOT rolled back when arming, so
+    // visible UI keeps its "share is starting" feel while the user
+    // is in Settings — the auto-resume flips it to a real share once
+    // permission lands.
+    _armPermissionRetry(uri, durationMs, periodLabel, opts) {
+        if (!this._pendingPermissionShares) {
+            this._pendingPermissionShares = {};
+        }
+        // Deep-clone opts so a later mutation by the caller (e.g.
+        // tickExtras buildup) can't change the parked intent.
+        const safeOpts = {};
+        for (const k of Object.keys(opts || {})) {
+            safeOpts[k] = opts[k];
+        }
+        // Strip the resume marker so a future drain doesn't see this
+        // entry as an already-resumed one and skip arming on its
+        // own permission fail.
+        delete safeOpts._resumedAfterPermission;
+        this._pendingPermissionShares[uri] = {
+            uri,
+            durationMs,
+            periodLabel,
+            opts: safeOpts,
+            registeredAt: Date.now(),
+            // Honour the original meet-request expiry so we don't
+            // fire a retry for a request that has aged out while
+            // the user was in Settings. opts.expiresAt is set on
+            // meetingAccept (mirrors the requester's expiresAt) and
+            // unset for plain timed shares.
+            expiresAt: typeof (opts && opts.expiresAt) === 'number'
+                ? opts.expiresAt : null,
+        };
+        utils.timestampedLog(
+            '[location] permission-retry armed for', uri,
+            '— share will resume automatically when permission is granted'
+        );
+    }
+
+    // Explicit user-cancellation of a parked share intent. Called
+    // from the Cancel button on the permission alerts when the user
+    // chose to NOT proceed at all. Cleans up the parked entry AND
+    // calls the supplied rollback to wind back the optimistic UI
+    // (pulsing icon, announcement bubble) so the chat doesn't sit
+    // there pretending a share is starting that the user already
+    // told us to forget.
+    _cancelPendingPermissionShare(uri, rollbackFn) {
+        if (this._pendingPermissionShares
+                && this._pendingPermissionShares[uri]) {
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog(
+                '[location] permission-retry cancelled by user for', uri
+            );
+        }
+        if (typeof rollbackFn === 'function') {
+            try { rollbackFn(); }
+            catch (e) { /* rollback is best-effort */ }
+        }
+    }
+
+    // AppState foreground hook drains this. Re-probe the OS-level
+    // permission; for each parked entry, retry startLocationSharing
+    // if permission is now sufficient. The retry sets
+    // _resumedAfterPermission:true so the inner permission-deferral
+    // paths know not to re-arm a fresh entry on the (rare) case the
+    // probe was a false positive.
+    async _drainPendingPermissionShares() {
+        if (!this._pendingPermissionShares) return;
+        const uris = Object.keys(this._pendingPermissionShares);
+        if (uris.length === 0) return;
+        let probe = 'denied';
+        try {
+            probe = await this.getLocationPermissionStatus();
+        } catch (e) { /* probe failures fall through as 'denied' */ }
+        const sufficient =
+            probe === 'always'
+            || probe === 'whenInUse'
+            || probe === 'foregroundOnly';
+        utils.timestampedLog(
+            '[location] permission-retry drain — probe=', probe,
+            'sufficient=', sufficient,
+            'pending=', uris.length
+        );
+        if (!sufficient) {
+            // Leave entries in place — the user may still be on the
+            // way to Settings. Next foreground will probe again.
+            return;
+        }
+        for (const uri of uris) {
+            const pending = this._pendingPermissionShares[uri];
+            if (!pending) continue;
+            // Drop expired meet-accept retries — pointless to start
+            // a share whose request has aged out.
+            if (typeof pending.expiresAt === 'number'
+                    && pending.expiresAt <= Date.now()) {
+                utils.timestampedLog(
+                    '[location] permission-retry: dropping expired pending for', uri
+                );
+                delete this._pendingPermissionShares[uri];
+                continue;
+            }
+            // Defensive: someone may have started a share for this
+            // uri via a different path while we were waiting. Don't
+            // double-start.
+            if (this.locationTimers[uri]) {
+                delete this._pendingPermissionShares[uri];
+                continue;
+            }
+            // Remove BEFORE starting — startLocationSharing's own
+            // permission-deferral path could re-arm if something
+            // unexpected (a fresh "blocked" state) happens; clearing
+            // first means a single drain pass attempts at most one
+            // start per uri. _resumedAfterPermission tells the
+            // function to NOT call _armPermissionRetry again, which
+            // would otherwise loop.
+            const params = pending;
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog(
+                '[location] permission-retry: permission now', probe,
+                '— resuming share for', uri
+            );
+            try {
+                await this.startLocationSharing(
+                    uri,
+                    params.durationMs,
+                    params.periodLabel,
+                    {
+                        ...params.opts,
+                        _resumedAfterPermission: true,
+                        // The original call already shipped the
+                        // "I want to meet up" / "I want to meet with
+                        // you, too!" / "I am sharing the location for
+                        // X hours" announcement before bouncing on
+                        // permission. Suppress it on the resume so we
+                        // don't post the same line twice.
+                        suppressAnnouncement: true,
+                    }
+                );
+            } catch (e) {
+                utils.timestampedLog(
+                    '[location] permission-retry: resume threw',
+                    e && e.message ? e.message : e
+                );
+            }
+        }
     }
 
     getCurrentCoordinates() {
@@ -1495,7 +2396,7 @@ class NavigationBar extends Component {
         // location-update branch in app.js), so the persisted content
         // was the LATEST tick — which didn't carry the flag. On chat
         // reopen the bubble's metadata had `meeting_request === undefined`
-        // and the kebab's "Accept meeting request" option vanished.
+        // and the kebab's "Show meeting request..." option vanished.
         // Stamping on every tick keeps the persisted content
         // self-describing without further machinery. Receiver-side
         // handlers (`_noteIncomingMeetingRequest`, etc.) are already
@@ -1503,6 +2404,24 @@ class NavigationBar extends Component {
         // update tick is a no-op.
         if (extras.meetingRequest) {
             metadataContent.meeting_request = true;
+        }
+        // Privacy-deferred origin tick: the inviter chose a privacy
+        // radius and is still inside it, so the value coords above are
+        // the DESTINATION (not the inviter's actual position). Stamp
+        // this flag on the wire so the receiver-side rendering can
+        // suppress the inviter pin and show only the destination.
+        // Cleared on the first real-coord tick that flows after the
+        // user crosses the perimeter. The radius is also stamped so
+        // the inviter's bubble can render the "Move <radius>…" hint
+        // overlay along the bottom of the map without LocationBubble
+        // having to look up the timer entry.
+        if (extras.privacyDeferred) {
+            metadataContent.privacyDeferred = true;
+            const _entry = this.locationTimers && this.locationTimers[uri];
+            const r = _entry && Number(_entry.excludeOriginRadiusMeters);
+            if (r && r > 0) {
+                metadataContent.privacyDeferredRadiusMeters = r;
+            }
         }
         if (extras.inReplyTo) {
             metadataContent.in_reply_to = extras.inReplyTo;
@@ -1745,6 +2664,14 @@ class NavigationBar extends Component {
         const entry = this.locationTimers && this.locationTimers[uri];
         if (!entry) return;
         if (entry.destinationArrivalFired) return;
+        // Privacy-deferred origin tick: the value coords passed in are
+        // the destination itself (we ship them as a stand-in while the
+        // inviter is hiding their position inside the privacy radius).
+        // Don't treat this as "arrived" — there's no real position
+        // data yet. The flag clears when the inviter crosses the
+        // perimeter and a real coord update flows; arrival detection
+        // resumes from that point onward.
+        if (entry.privacyDeferred) return;
         const dest = entry.tickExtras && entry.tickExtras.destination;
         if (!dest) return;
         if (!coords
@@ -1826,6 +2753,20 @@ class NavigationBar extends Component {
             // for this session.
             const coords = this._effectiveCoordinatesForSession(uri, realCoords);
             if (!this._shouldSendUpdateTick(uri, coords)) {
+                // Privacy radius is hiding the tick from the wire —
+                // refresh the LOCAL bubble's owner pin so the user
+                // sees themselves move on their own map.
+                const _curEntry = this.locationTimers && this.locationTimers[uri];
+                if (_curEntry && _curEntry.privacyDeferred
+                        && _curEntry.privacyDeferredBubbleMid
+                        && typeof this.props.setLocalOwnerCoordsForBubble === 'function') {
+                    this.props.setLocalOwnerCoordsForBubble(
+                        uri,
+                        _curEntry.privacyDeferredBubbleMid,
+                        coords,
+                        Number(_curEntry.excludeOriginRadiusMeters) || 0
+                    );
+                }
                 return null;
             }
             return this.sendLocationMetadata(uri, coords, expiresAt, originMetadataId, extras);
@@ -2432,6 +3373,25 @@ class NavigationBar extends Component {
         if (entry.paused) return true;
         entry.paused = true;
         try { this._persistActiveShares(); } catch (e) { /* noop */ }
+        // Stop the NavBar icon's breathing animation when no shares
+        // are actively ticking. Pause means no metadata is leaving the
+        // device, and the pulse is meant to communicate "the device is
+        // sending updates" — keeping it on while nothing's flowing
+        // would be misleading. Only stop if every share is paused
+        // (multi-share users may have paused one but the other is
+        // still ticking) AND there's no active call (the pulse also
+        // signals the in-call icon).
+        try {
+            const _anyUnpaused = Object.values(this.locationTimers || {})
+                .some(e => e && !e.paused);
+            if (!_anyUnpaused && !this.props.callActive) {
+                this._stopActiveSharePulse();
+            }
+        } catch (e) { /* noop */ }
+        // Force a re-render so any UI gated on pause state (the
+        // chat-header Pause/Resume Menu.Item we added earlier) flips
+        // to its new label/icon.
+        this.forceUpdate();
         utils.timestampedLog('[location] paused share for', uri,
             'origin=', entry.originMetadataId);
         return true;
@@ -2468,6 +3428,13 @@ class NavigationBar extends Component {
             );
         } catch (e) { /* noop — next periodic tick will catch up */ }
         try { this._persistActiveShares(); } catch (e) { /* noop */ }
+        // Re-arm the NavBar pulse — ticks are flowing again so the
+        // breathing animation should communicate that. Symmetric to
+        // the stop in pauseLocationSharing.
+        try { this._startActiveSharePulse(); } catch (e) { /* noop */ }
+        // Force a re-render so the chat-header Menu.Item flips back
+        // from "Resume sharing" to "Pause sharing".
+        this.forceUpdate();
         utils.timestampedLog('[location] resumed share for', uri,
             'origin=', entry.originMetadataId);
         return true;
@@ -2480,28 +3447,82 @@ class NavigationBar extends Component {
     getLocationShareState(uri, originMetadataId) {
         const entry = this.locationTimers && this.locationTimers[uri];
         if (!entry) {
-            console.log('[location] getLocationShareState',
-                'uri=', uri,
-                'asked-origin=', originMetadataId,
-                '→ stopped (no entry)',
-                'allTimerKeys=', this.locationTimers ? Object.keys(this.locationTimers) : '(none)');
+            // Diagnostic: a kebab/render path expected an active
+            // share but didn't find one. Throttle so a tight render
+            // loop doesn't flood the log — once per uri+origin per
+            // 5 seconds is plenty for repro.
+            if (this._shouldLogShareStateProbe(uri, originMetadataId, 'stopped-no-entry')) {
+                console.log('[location] getLocationShareState',
+                    'uri=', uri,
+                    'asked-origin=', originMetadataId,
+                    '→ stopped (no entry)',
+                    'allTimerKeys=', this.locationTimers ? Object.keys(this.locationTimers) : '(none)');
+            }
             return 'stopped';
         }
         if (originMetadataId && entry.originMetadataId !== originMetadataId) {
-            console.log('[location] getLocationShareState',
-                'uri=', uri,
-                'asked-origin=', originMetadataId,
-                'entry-origin=', entry.originMetadataId,
-                '→ stopped (origin mismatch)');
+            if (this._shouldLogShareStateProbe(uri, originMetadataId, 'origin-mismatch')) {
+                console.log('[location] getLocationShareState',
+                    'uri=', uri,
+                    'asked-origin=', originMetadataId,
+                    'entry-origin=', entry.originMetadataId,
+                    '→ stopped (origin mismatch)');
+            }
             return 'stopped';
         }
-        const result = entry.paused ? 'paused' : 'active';
-        console.log('[location] getLocationShareState',
-            'uri=', uri,
-            'asked-origin=', originMetadataId,
-            'entry-origin=', entry.originMetadataId,
-            '→', result);
-        return result;
+        // active / paused are the common steady-state results — no log.
+        // Each meet bubble's render fires this probe, and the chat
+        // re-renders many times per second under normal app activity
+        // (typing, scrolling, peer ticks landing). The previous
+        // unconditional log produced ~50 lines/sec just from one
+        // active share, drowning out useful diagnostics.
+        return entry.paused ? 'paused' : 'active';
+    }
+
+    // Throttle for the diagnostic getLocationShareState log. Same
+    // (uri, originMetadataId, reason) won't log more than once per
+    // 5 s. Cheap in-memory map keyed by composite — bounded by the
+    // number of unique meet bubbles in the chat × the number of
+    // distinct failure reasons (currently 2). No cleanup needed for
+    // the lifetime of the component.
+    _shouldLogShareStateProbe(uri, originMetadataId, reason) {
+        if (!this._shareStateLogStamps) this._shareStateLogStamps = {};
+        const key = `${uri}|${originMetadataId || ''}|${reason}`;
+        const now = Date.now();
+        const last = this._shareStateLogStamps[key] || 0;
+        if (now - last < 5000) return false;
+        this._shareStateLogStamps[key] = now;
+        return true;
+    }
+
+    // Public entry point used by app.js logout(). Stops every in-flight
+    // share for THIS account and drops any deferred-permission intents.
+    // Called BEFORE the SIP connection is torn down so the meeting_end
+    // signals can still reach peers — a peer with a reciprocal "Until
+    // we meet" share will tear down its own side as a result.
+    //
+    // We pass `silent: true` so the chat doesn't gain a flurry of
+    // "Stopped sharing at HH:MM" system notes the user wouldn't see
+    // anyway (they're on the login screen). Reason 'logout' is NOT in
+    // peerRelayReasons inside stopLocationSharing, so the peer signal
+    // DOES go out — peer notification is the whole point.
+    stopAllSharesForLogout() {
+        const uris = Object.keys(this.locationTimers || {});
+        for (const uri of uris) {
+            try {
+                this.stopLocationSharing(uri, {silent: true, reason: 'logout'});
+            } catch (e) { /* best effort */ }
+        }
+        // Drop any parked permission-retry intents. _onAppStateChange's
+        // drain would otherwise try to start them again the next time
+        // the app foregrounds — under whatever account is signed in
+        // at that point, which is exactly the cross-account leak we're
+        // trying to prevent here.
+        this._pendingPermissionShares = {};
+        // Defensive: ensure the pulse animation isn't left running
+        // against an empty share map. _stopActiveSharePulse is a no-op
+        // when no animation is armed.
+        try { this._stopActiveSharePulse(); } catch (e) { /* noop */ }
     }
 
     stopLocationSharing(uri, opts = {}) {
@@ -2519,6 +3540,19 @@ class NavigationBar extends Component {
         if (!this._pendingStops) this._pendingStops = new Set();
         if (this._pendingStops.has(uri)) return;
         this._pendingStops.add(uri);
+
+        // If a permission-deferred share intent is parked for this
+        // peer, drop it. stopLocationSharing means the user wants
+        // sharing to stop — we shouldn't auto-resume a parked intent
+        // on next foreground after that.
+        if (this._pendingPermissionShares
+                && this._pendingPermissionShares[uri]) {
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog(
+                '[location] permission-retry dropped — stopLocationSharing called for', uri,
+                'reason=', reason
+            );
+        }
 
         const wasActive = !!this.locationTimers[uri]
             || this.state.activeLocationShares[uri] !== undefined;
@@ -2581,6 +3615,23 @@ class NavigationBar extends Component {
         // sees the still-live entries when the user reopens the app.
         if (reason !== 'unmount') {
             this._persistActiveShares();
+            // Force the underlying app_state SQL UPDATE through
+            // immediately, bypassing the 250 ms debounce. Without
+            // this, a user who stops a share and immediately kills
+            // the app would relaunch with the just-cleared entry
+            // still on disk — and _loadAndResumeActiveShares would
+            // bring the share back to life.  _persistActiveShares
+            // is async (read-modify-write) so we let the flush land
+            // on the next microtask. Best-effort, no await needed
+            // by the caller.
+            try {
+                if (typeof this.props.forceFlushAppState === 'function'
+                        && this.props.accountId) {
+                    Promise.resolve()
+                        .then(() => this.props.forceFlushAppState(this.props.accountId))
+                        .catch(() => { /* persistence is best-effort */ });
+                }
+            } catch (e) { /* noop */ }
         }
 
         // Android: release the foreground-service promotion, but ONLY when
@@ -3157,14 +4208,38 @@ class NavigationBar extends Component {
             // The user has previously tapped "Don't Allow" (iOS) or "Don't
             // ask again" (Android). Any request() call is a no-op — only
             // Settings can flip this back.
-            rollbackOptimistic();
+            //
+            // Arm the auto-resume FIRST so the optimistic UI (pulsing
+            // share icon, "I want to meet up with you" announcement
+            // text) can stay in place — it's a more honest UX than
+            // tearing it down and forcing a second tap. The drain
+            // inside _onAppStateChange will resume the share once the
+            // app foregrounds with sufficient permission. Don't re-arm
+            // when this run IS the resume — would loop.
+            if (!opts._resumedAfterPermission) {
+                this._armPermissionRetry(uri, durationMs, periodLabel, opts);
+            } else {
+                // Resume run found permission still blocked — give up
+                // and roll back so the user isn't stuck with phantom UI.
+                rollbackOptimistic();
+            }
             Alert.alert(
                 'Location access blocked',
                 Platform.OS === 'ios'
-                    ? "Sylk can't access your location. Open Settings → Sylk → Location and choose 'Always' to share your live location, including in the background."
-                    : "Sylk can't access your location. Open Settings to enable it.",
+                    ? "Sylk can't access your location.\n\nOpen Settings → Sylk → Location and choose 'Always'. The share will start automatically once you do."
+                    : "Sylk can't access your location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time'. The share will start automatically once you do.",
                 [
-                    {text: 'Cancel', style: 'cancel'},
+                    {
+                        text: 'Cancel',
+                        style: 'cancel',
+                        onPress: () => {
+                            // User explicitly chose to NOT proceed —
+                            // drop the parked intent and roll the
+                            // optimistic UI back so the chat doesn't
+                            // sit there pretending a share is starting.
+                            this._cancelPendingPermissionShare(uri, rollbackOptimistic);
+                        },
+                    },
                     {text: 'Open Settings', onPress: openSettingsFn},
                 ],
                 {cancelable: true}
@@ -3187,19 +4262,38 @@ class NavigationBar extends Component {
             // sharing works; the share WILL stop the moment the user
             // swipes Sylk into the background. Be explicit about the
             // consequence and offer a one-tap path to upgrade.
+            //
+            // Three buttons map to three outcomes:
+            //   • Cancel        — user changed their mind, abort.
+            //   • Start anyway  — keep "While Using", continue, share
+            //                     pauses on bg. No retry needed.
+            //   • Open Settings — user wants to upgrade to Always; we
+            //                     park the intent and auto-resume on
+            //                     foreground after they grant.
             const proceed = await new Promise((resolve) => {
                 Alert.alert(
                     "Background sharing needs 'Always'",
-                    "Sylk has 'While Using' location access. The share will pause when you move Sylk to the background.\n\nOpen Settings → Sylk → Location and pick 'Always' to keep sharing in the background.",
+                    "Sylk has 'While Using' location access. The share will pause when you move Sylk to the background.\n\nOpen Settings → Sylk → Location and pick 'Always' — the share will start automatically once you do.",
                     [
-                        {text: 'Cancel', style: 'cancel', onPress: () => resolve(false)},
+                        {text: 'Cancel', style: 'cancel', onPress: () => resolve('cancel')},
                         {text: 'Start anyway', onPress: () => resolve('start')},
-                        {text: 'Open Settings', onPress: () => { openSettingsFn(); resolve(false); }},
+                        {text: 'Open Settings', onPress: () => { openSettingsFn(); resolve('settings'); }},
                     ],
-                    {cancelable: true, onDismiss: () => resolve(false)}
+                    {cancelable: true, onDismiss: () => resolve('cancel')}
                 );
             });
-            if (!proceed) {
+            if (proceed === 'settings') {
+                // Park the intent and exit. The auto-resume drain will
+                // re-run startLocationSharing once permission upgrades
+                // to 'always' and the app foregrounds.
+                if (!opts._resumedAfterPermission) {
+                    this._armPermissionRetry(uri, durationMs, periodLabel, opts);
+                } else {
+                    rollbackOptimistic();
+                }
+                return;
+            }
+            if (proceed !== 'start') {
                 rollbackOptimistic();
                 return;
             }
@@ -3215,19 +4309,30 @@ class NavigationBar extends Component {
             // missing. Make the user aware and offer the Settings deep-link
             // (API 30+ has no runtime dialog for this — Settings is the
             // only path).
+            //
+            // Same three-way outcome as the iOS whenInUse branch above —
+            // see that block's comment for the auto-resume rationale.
             const proceed = await new Promise((resolve) => {
                 Alert.alert(
                     'Background sharing needs "Allow all the time"',
-                    'Sylk has location access only while the app is in use. Your share will pause when you switch away from Sylk.\n\nOpen Settings → Permissions → Location and pick "Allow all the time" to keep sharing in the background.',
+                    'Sylk has location access only while the app is in use. Your share will pause when you switch away from Sylk.\n\nOpen Settings → Permissions → Location and pick "Allow all the time" — the share will start automatically once you do.',
                     [
-                        {text: 'Cancel', style: 'cancel', onPress: () => resolve(false)},
+                        {text: 'Cancel', style: 'cancel', onPress: () => resolve('cancel')},
                         {text: 'Start anyway', onPress: () => resolve('start')},
-                        {text: 'Open Settings', onPress: () => { openSettingsFn(); resolve(false); }},
+                        {text: 'Open Settings', onPress: () => { openSettingsFn(); resolve('settings'); }},
                     ],
-                    {cancelable: true, onDismiss: () => resolve(false)}
+                    {cancelable: true, onDismiss: () => resolve('cancel')}
                 );
             });
-            if (!proceed) {
+            if (proceed === 'settings') {
+                if (!opts._resumedAfterPermission) {
+                    this._armPermissionRetry(uri, durationMs, periodLabel, opts);
+                } else {
+                    rollbackOptimistic();
+                }
+                return;
+            }
+            if (proceed !== 'start') {
                 rollbackOptimistic();
                 return;
             }
@@ -3278,14 +4383,34 @@ class NavigationBar extends Component {
         }
         if (!hasPermission) {
             console.log('Location permission denied; cannot share location');
-            rollbackOptimistic();
+            // Park the intent rather than tearing down the optimistic
+            // UI immediately — the user has already tapped Accept /
+            // Meet up / Confirm once and re-prompting them after
+            // they grant the permission in Settings is a UX failure.
+            // _drainPendingPermissionShares will pick this up the
+            // next time the app foregrounds with sufficient permission.
+            // Skip arming during a resume run (would loop) and roll
+            // back instead so the phantom UI doesn't persist.
+            if (!opts._resumedAfterPermission) {
+                this._armPermissionRetry(uri, durationMs, periodLabel, opts);
+            } else {
+                rollbackOptimistic();
+            }
             Alert.alert(
                 'Location permission required',
                 Platform.OS === 'ios'
-                    ? "Open Settings → Sylk → Location to allow location access. Pick 'Always' for background sharing."
-                    : 'Sylk needs location access to share your live location with your contact. Open Settings to enable it.',
+                    ? "Open Settings → Sylk → Location to allow location access. Pick 'Always' for background sharing — the share will start automatically once you do."
+                    : "Sylk needs location access to share your live location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time' — the share will start automatically once you do.",
                 [
-                    {text: 'Cancel', style: 'cancel'},
+                    {
+                        text: 'Cancel',
+                        style: 'cancel',
+                        onPress: () => {
+                            // User explicitly aborted — drop the parked
+                            // intent and unwind the optimistic UI.
+                            this._cancelPendingPermissionShare(uri, rollbackOptimistic);
+                        },
+                    },
                     {text: 'Open Settings', onPress: openSettingsFn},
                 ],
                 {cancelable: true}
@@ -3313,7 +4438,18 @@ class NavigationBar extends Component {
         // happens to race with the optimistic activeLocationShares entry
         // we set above, so we don't want to even think about touching
         // state we're mid-way through populating.
-        if (hadActiveShareForUri) {
+        //
+        // Auto-resume case: when this run was kicked by
+        // _drainPendingPermissionShares, hadActiveShareForUri is true
+        // (the optimistic activeLocationShares entry from the original
+        // call is still in place — we never rolled it back) but
+        // locationTimers[uri] is empty (no real share was ever started).
+        // Calling stopLocationSharing here would tear down the optimistic
+        // UI we explicitly preserved across the permission round-trip,
+        // including its "I want to meet up" announcement and the pulsing
+        // share icon. Require a REAL active share (locationTimers entry)
+        // before triggering replacement.
+        if (hadActiveShareForUri && this.locationTimers[uri]) {
             this.stopLocationSharing(uri, {silent: true, reason: 'replaced'});
         }
 
@@ -3456,14 +4592,152 @@ class NavigationBar extends Component {
                 // synthetic position when simulation is in play.
                 // Otherwise it reports the real GPS fix as before.
                 const effective = this._effectiveCoordinatesForSession(uri, coords);
-                // _shouldSendUpdateTick captures this fix as the
-                // session's `originPoint` when the privacy radius is
-                // enabled and returns `false` — so the receiver stays
-                // on "Locating…" until the user moves past the
-                // 1 km perimeter. When the radius is OFF this just
-                // returns true and the tick goes out as before.
+                // Privacy-radius gate. _shouldSendUpdateTick captures
+                // the originPoint baseline as a side-effect on the
+                // first valid coord, then returns false until the user
+                // has moved past the perimeter.
                 if (!this._shouldSendUpdateTick(uri, effective)) {
+                    // Meeting-request shares need to bootstrap the
+                    // handshake even while the inviter's position is
+                    // hidden. Ship a "privacy-deferred" origin tick:
+                    // value coords are the destination (the only point
+                    // we're willing to disclose) but stamped with
+                    // privacyDeferred:true so neither end renders the
+                    // inviter pin. The peer renders a map showing only
+                    // the destination + meeting_request signal +
+                    // Accept modal. The inviter's actual position
+                    // stays private until they cross the perimeter,
+                    // at which point a real coord update flows and
+                    // the bubble adds the inviter pin to both ends.
+                    const liveEntryRef0 = this.locationTimers && this.locationTimers[uri];
+                    const dest = tickExtras && tickExtras.destination;
+                    // Both sides of the meet handshake can opt into a
+                    // privacy radius — the inviter (kind=meetingRequest)
+                    // hides their starting position with the slider in
+                    // ShareLocationModal, the accepter (kind=meetingAccept)
+                    // hides theirs via the same slider in
+                    // MeetingRequestModal. Either side, when inside its
+                    // own privacy radius at share start, ships ONE
+                    // privacy-deferred tick so the peer can render the
+                    // bubble + Accept modal (inviter side) or so the
+                    // inviter knows the meeting is on (accepter side)
+                    // without disclosing the deferred party's actual
+                    // position. Real coords flow once the user crosses
+                    // their own perimeter.
+                    if ((kind === 'meetingRequest' || kind === 'meetingAccept')
+                            && dest
+                            && typeof dest.latitude === 'number'
+                            && typeof dest.longitude === 'number'
+                            && liveEntryRef0
+                            && !liveEntryRef0.privacyDeferredOriginSent) {
+                        liveEntryRef0.privacyDeferredOriginSent = true;
+                        liveEntryRef0.privacyDeferred = true;
+                        let _deferredMid = null;
+                        try {
+                            // sendLocationMetadata stamps
+                            // metadata.privacyDeferred + the radius
+                            // (read from the timer entry's
+                            // excludeOriginRadiusMeters) — no
+                            // separate system note here. The
+                            // "Move <radius> from here…" hint is
+                            // rendered as a bottom strip overlay on
+                            // the map bubble itself (LocationBubble's
+                            // privacy-deferred branch), keeping the
+                            // chat timeline clean.
+                            _deferredMid = this.sendLocationMetadata(
+                                uri,
+                                {latitude: dest.latitude, longitude: dest.longitude},
+                                expiresIso,
+                                originMetadataId,
+                                {...tickExtras, privacyDeferred: true}
+                            );
+                        } catch (e) {
+                            console.log('[location] privacy-deferred origin send failed',
+                                e && e.message ? e.message : e);
+                        }
+                        // Stamp the inviter's REAL coords as a
+                        // local-only field on the just-injected
+                        // bubble's metadata. The wire payload above
+                        // shipped the destination as `value` (so the
+                        // peer can't see where the inviter is), but
+                        // on the inviter's OWN device we want the
+                        // bubble to show their actual position +
+                        // privacy circle + distance to destination.
+                        // The localOwnerCoords field stays on the
+                        // device — never re-serialised, never sent.
+                        // Save it on the entry too so subsequent
+                        // throttled GPS fixes (still inside the
+                        // privacy radius) can refresh it.
+                        // Pick the bubble id that the local user's
+                        // privacy-deferred coords should attach to:
+                        //   • REQUESTER (kind=meetingRequest): the
+                        //     ORIGIN tick's mId — that's this
+                        //     device's outgoing meeting bubble.
+                        //     Prefer entry.originMetadataId because
+                        //     sendLocationMetadata may have just
+                        //     promoted the new mid to origin (fresh
+                        //     share) OR may have routed the tick as
+                        //     an UPDATE pointing at a previously
+                        //     promoted origin (resumed share — auto-
+                        //     resume after Metro reload sets
+                        //     originMetadataId on the entry from the
+                        //     persisted snapshot, so the deferred
+                        //     send becomes an "update" tick whose
+                        //     own mId is NOT the bubble id). Only
+                        //     fall back to _deferredMid if the entry
+                        //     somehow doesn't have an origin id yet.
+                        //   • ACCEPTER (kind=meetingAccept): the
+                        //     INVITATION's id (= tickExtras.inReplyTo).
+                        //     The accepter's reply tick gets suppressed
+                        //     from creating its own bubble (the
+                        //     in_reply_to dedup in _injectLocationBubble),
+                        //     so all rendering happens on the incoming
+                        //     request bubble whose _id IS the request
+                        //     id.
+                        const _isAccepter = (kind === 'meetingAccept');
+                        const _midForStamp = _isAccepter
+                            ? (tickExtras && tickExtras.inReplyTo)
+                            : ((liveEntryRef0 && liveEntryRef0.originMetadataId)
+                                || _deferredMid);
+                        const _radiusForStamp = Number(liveEntryRef0.excludeOriginRadiusMeters) || 0;
+                        utils.timestampedLog(
+                            '[location] privacy-deferred origin: stamping localOwnerCoords',
+                            'kind=', kind,
+                            'mid=', _midForStamp,
+                            'radius=', _radiusForStamp,
+                            'effective=', effective
+                                ? `${effective.latitude},${effective.longitude}` : 'null',
+                            'callbackType=', typeof this.props.setLocalOwnerCoordsForBubble
+                        );
+                        if (_midForStamp
+                                && typeof this.props.setLocalOwnerCoordsForBubble === 'function') {
+                            // Run twice — once immediately, once after a
+                            // tick — because handleMessageMetadata's
+                            // bubble injection runs in a microtask after
+                            // sendMessage. setState is idempotent so the
+                            // second write is cheap when the first
+                            // already succeeded.
+                            this.props.setLocalOwnerCoordsForBubble(
+                                uri, _midForStamp, effective, _radiusForStamp
+                            );
+                            setTimeout(() => {
+                                if (typeof this.props.setLocalOwnerCoordsForBubble === 'function') {
+                                    this.props.setLocalOwnerCoordsForBubble(
+                                        uri, _midForStamp, effective, _radiusForStamp
+                                    );
+                                }
+                            }, 250);
+                        }
+                        liveEntryRef0.privacyDeferredBubbleMid = _midForStamp;
+                    }
                     return;
+                }
+                // First non-deferred tick: clear the privacyDeferred
+                // marker on the entry. Subsequent ticks (and the
+                // wire) will now carry the inviter's real coords.
+                const liveEntryRef = this.locationTimers && this.locationTimers[uri];
+                if (liveEntryRef && liveEntryRef.privacyDeferred) {
+                    liveEntryRef.privacyDeferred = false;
                 }
                 // Heartbeat the very first tick too. The 60 s
                 // watchPosition / interval paths each have their own
@@ -3586,6 +4860,14 @@ class NavigationBar extends Component {
                 // doesn't lose its "I've already left" memory.
                 untilReturnOrigin: opts.resumeUntilReturnOrigin || null,
                 untilReturnDeparted: !!opts.resumeUntilReturnDeparted,
+                // Carry over the persisted paused state so a kill-
+                // restart or AsyncStorage-resume of a paused share
+                // doesn't silently start emitting ticks again. Set
+                // BEFORE the initial tick is dispatched below so the
+                // pause-gate at the top of sendLocationUpdate
+                // (around line 1505) catches and swallows it. Default
+                // false for fresh shares.
+                paused: !!opts.resumePaused,
             };
             this.locationTimers[uri] = entry;
             this._persistActiveShares();
@@ -3671,6 +4953,27 @@ class NavigationBar extends Component {
                             // we just no-op the actual emission until
                             // the user moves out of the radius.
                             if (!this._shouldSendUpdateTick(uri, coords)) {
+                                // Privacy radius is hiding the tick
+                                // from the wire — but on the SENDER's
+                                // own device we still want the
+                                // bubble to track real movement so
+                                // the user sees themselves on the
+                                // map. Stamp the latest coords as
+                                // local-only metadata. No-op when
+                                // not in a privacy-deferred meet
+                                // session (entry.privacyDeferred
+                                // false / mid missing).
+                                const _curEntry = this.locationTimers
+                                    && this.locationTimers[uri];
+                                if (_curEntry && _curEntry.privacyDeferred
+                                        && _curEntry.privacyDeferredBubbleMid
+                                        && typeof this.props.setLocalOwnerCoordsForBubble === 'function') {
+                                    this.props.setLocalOwnerCoordsForBubble(
+                                        uri,
+                                        _curEntry.privacyDeferredBubbleMid,
+                                        coords
+                                    );
+                                }
                                 return;
                             }
                             this.sendLocationMetadata(uri, coords, expiresIso, originMetadataId, tickExtras);
@@ -3844,6 +5147,14 @@ class NavigationBar extends Component {
                 // branch above for the rationale on each field.
                 untilReturnOrigin: opts.resumeUntilReturnOrigin || null,
                 untilReturnDeparted: !!opts.resumeUntilReturnDeparted,
+                // Persisted-pause restoration. Same intent as the iOS
+                // branch above: when the user paused a share and the
+                // app then went through a foreground/background cycle
+                // (or a process restart), the in-memory entry was
+                // re-armed without the paused flag and ticks resumed
+                // on their own. Reading `opts.resumePaused` here keeps
+                // the pause sticky.
+                paused: !!opts.resumePaused,
             };
             this._persistActiveShares();
         }
@@ -3906,9 +5217,52 @@ class NavigationBar extends Component {
       }
     }
 
-    onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters}) {
+    async onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters}) {
         const uri = this.props.selectedContact && this.props.selectedContact.uri;
         if (!uri) {
+            return;
+        }
+        // "Meet me there..." path: the user invoked the share flow
+        // from a chat-bubble kebab/inline on a Google-Maps-link text
+        // message, and a destination is staged on state (or being
+        // resolved in the background). If the user confirmed BEFORE
+        // background resolution completed and we still have only the
+        // shortened URL, do a last-ditch synchronous resolve here so
+        // the user doesn't lose the destination because they were
+        // quick on the trigger. Failure surfaces an Alert rather than
+        // silently shipping a meet-up with no destination.
+        let destination = this.state.pendingShareDestination;
+        const pendingUrl = this.state.pendingShareDestinationUrl;
+        if (!destination && pendingUrl) {
+            utils.timestampedLog('[location] meetMeAt: confirm beat resolve — last-chance sync resolve for',
+                pendingUrl);
+            try {
+                destination = await utils.resolveShortLocationUrl(pendingUrl);
+            } catch (e) {
+                destination = null;
+            }
+            if (!destination) {
+                utils.timestampedLog('[location] meetMeAt: last-chance resolve failed for', pendingUrl);
+                Alert.alert(
+                    'Couldn\'t read the map link',
+                    'The shared link couldn\'t be expanded into coordinates. Open it in Maps and re-share the resulting full link.',
+                    [{text: 'OK'}]
+                );
+                return;
+            }
+        }
+        if (destination
+                && typeof destination.latitude === 'number'
+                && typeof destination.longitude === 'number') {
+            const _kind = 'meetingRequest';
+            utils.timestampedLog('[location] meetMeAt: confirmed —',
+                'destination=', destination.latitude.toFixed(5), ',', destination.longitude.toFixed(5),
+                'overriding kind from', kind, '→', _kind);
+            this.startLocationSharing(uri, durationMs, periodLabel, {
+                kind: _kind,
+                excludeOriginRadiusMeters,
+                destination,
+            });
             return;
         }
         if (kind === 'once') {
@@ -4111,19 +5465,28 @@ class NavigationBar extends Component {
     // on an incoming meeting request. Starts a location share whose ticks
     // carry in_reply_to pointing at the original request, with the same
     // expiresAt the requester chose so both sides tear down in sync.
-    startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel, excludeOriginRadiusMeters, destination}) {
+    //
+    // Returns a Promise that resolves to true if a share actually started
+    // (locationTimers entry now exists for `uri`), false otherwise. The
+    // caller in app.js (_acceptMeetingRequest) uses this to roll back the
+    // optimistic acceptedMeetingRequestIds marker when the share never
+    // started — e.g. user denied / blocked the permission prompt, or
+    // declined the prominent disclosure. Without this rollback the user
+    // gets stuck: the marker keeps "Accept" disabled forever even though
+    // they may have just granted permission and now want to retry.
+    async startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel, excludeOriginRadiusMeters, destination}) {
         if (!uri || !requestId || typeof expiresAt !== 'number') {
             utils.timestampedLog('[location] startMeetingAcceptance: missing required args',
                 uri, requestId, expiresAt);
-            return;
+            return false;
         }
         const now = Date.now();
         const durationMs = Math.max(0, expiresAt - now);
         if (durationMs === 0) {
             utils.timestampedLog('[location] startMeetingAcceptance: request already expired', requestId);
-            return;
+            return false;
         }
-        this.startLocationSharing(
+        await this.startLocationSharing(
             uri,
             durationMs,
             periodLabel || 'until we meet',
@@ -4145,6 +5508,14 @@ class NavigationBar extends Component {
                 destination,
             }
         );
+        // Canonical "share started" indicator: locationTimers[uri] is
+        // populated only on the success path inside startLocationSharing
+        // (after permission probe + disclosure both clear). Any early-
+        // return path in there (denied / blocked / disclosure-declined /
+        // iOS-whenInUse-cancel / Android-foregroundOnly-cancel) leaves
+        // locationTimers untouched, so this read tells us whether to
+        // honour the "we accepted" state in app.js or roll it back.
+        return !!(this.locationTimers && this.locationTimers[uri]);
     }
 
     audioCall() {
@@ -4414,7 +5785,21 @@ class NavigationBar extends Component {
 					raw = this.props.selectedContact.uri.split('@')[0];
 			    }
 				title = prettifyName(raw);
-				subtitle = this.props.selectedContact.uri;
+				// Phone-number contacts: drop the SIP domain in the
+				// navbar subtitle so the user sees '+40xxxx' under
+				// the display name instead of '+40xxxx@sylk.link'.
+				// Mirrors the same rule applied in the contact tile
+				// and the AudioCallBox so all three surfaces present
+				// the dialed number consistently. Either signal works
+				// — utils.isPhoneNumber catches contacts that predate
+				// the 'tel' tag, the tag catches anything we routed
+				// through addHistoryEntry.
+				const _selUri = this.props.selectedContact.uri;
+				const _selTags = this.props.selectedContact.tags;
+				const _isTel =
+					utils.isPhoneNumber(_selUri) ||
+					(Array.isArray(_selTags) && _selTags.indexOf('tel') > -1);
+				subtitle = _isTel ? _selUri.split('@')[0] : _selUri;
 			}
 
 			if (this.props.selectedContact.uri.indexOf('@guest.') > -1) {
@@ -4939,14 +6324,60 @@ class NavigationBar extends Component {
                                 && (sharing || hasContactKey)
                                 && (sharing || bidir);
                             if (!shareItemsVisible) return null;
+                            // While a share is active for this contact,
+                            // expose Pause / Resume directly on the chat
+                            // header alongside Stop. Without this the
+                            // user has to dig into the bubble's kebab to
+                            // pause — easy to miss, and inconsistent
+                            // with how Stop is one-tap from here. State
+                            // comes straight off the in-memory entry
+                            // (this.locationTimers[uri].paused) so the
+                            // menu reflects what the share is ACTUALLY
+                            // doing, not what activeLocationShares
+                            // (which only tracks expiresAt) would
+                            // imply.
+                            const _liveEntry = sharing
+                                && this.locationTimers
+                                && this.locationTimers[_uri];
+                            const _isPaused = !!(_liveEntry && _liveEntry.paused);
                             return (
                                 <React.Fragment>
                                     <Divider />
-                                    <Menu.Item
-                                        onPress={() => this.handleMenu('shareLocation')}
-                                        icon={sharing ? "map-marker-off" : "map-marker"}
-                                        title={sharing ? "Stop sharing location" : "Share location..."}
-                                    />
+                                    {!sharing ? (
+                                        <Menu.Item
+                                            onPress={() => this.handleMenu('shareLocation')}
+                                            icon="map-marker"
+                                            title="Share location..."
+                                        />
+                                    ) : (
+                                        <React.Fragment>
+                                            {/* Pause / Resume sit ABOVE
+                                                Stop so the destructive
+                                                action is the last one
+                                                in the group — same
+                                                ordering convention as
+                                                "Edit / … / Delete" on
+                                                other contextual menus. */}
+                                            {_isPaused ? (
+                                                <Menu.Item
+                                                    onPress={() => this.handleMenu('resumeLocation')}
+                                                    icon="play"
+                                                    title="Resume sharing"
+                                                />
+                                            ) : (
+                                                <Menu.Item
+                                                    onPress={() => this.handleMenu('pauseLocation')}
+                                                    icon="pause"
+                                                    title="Pause sharing"
+                                                />
+                                            )}
+                                            <Menu.Item
+                                                onPress={() => this.handleMenu('shareLocation')}
+                                                icon="map-marker-off"
+                                                title="Stop sharing location"
+                                            />
+                                        </React.Fragment>
+                                    )}
                                     {/* Request location is only useful
                                         when there's no live share in
                                         flight — once we're already
@@ -4960,7 +6391,7 @@ class NavigationBar extends Component {
                                             title="Request location..."
                                         />
                                     ) : null}
-                                    <Divider />
+                                    {!(this.props.isFolded && this.props.selectedContact) ? <Divider /> : null}
                                 </React.Fragment>
                             );
                         })()}
@@ -5012,7 +6443,7 @@ class NavigationBar extends Component {
                         : null
                         }
 
-						{!isConference && !this.props.searchMessages && this.props.publicKey ?
+						{!isConference && !this.props.searchMessages && this.props.publicKey && !(this.props.isFolded && this.props.selectedContact) ?
                         <Divider />
                         : null}
 
@@ -5022,15 +6453,15 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
 
-                        {!isConference && !this.props.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous?
+                        {!isConference && !this.props.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
- 
-                        {!this.myself && !this.props.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 ?
+
+                        {!this.myself && !this.props.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
 
-                        {!isAnonymous && !isConference && !this.myself && !this.props.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.props.inCall ?
+                        {!isAnonymous && !isConference && !this.myself && !this.props.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.props.inCall && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
@@ -5056,11 +6487,11 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleCaregiver')} title={caregiverTitle}/>
                         : null}
 
-                        {!this.props.inCall && tags.indexOf('test') === -1 && !isFavorite?
+                        {!this.props.inCall && tags.indexOf('test') === -1 && !isFavorite && !(this.props.isFolded && this.props.selectedContact) ?
                         <Divider />
                         : null}
 
-                        {!this.props.inCall && !isFavorite?
+                        {!this.props.inCall && !isFavorite && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
                         
@@ -5091,7 +6522,14 @@ class NavigationBar extends Component {
                          : null }
 
                         {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                        {/* Add contact stays available while a call is
+                            active. The contact-add modal is purely
+                            local UI / address-book bookkeeping — no
+                            media or signalling overlap with the call.
+                            We still respect the folded layout guard
+                            (no-contact-selected on a folded device
+                            doesn't have room for the modal). */}
+                        {!(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
                          : null }
 
@@ -5127,9 +6565,12 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
 
-                       {!this.props.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
-                        : null}
+                       {/* Preferences modal — opens a sheet of
+                           per-account toggles (encryption mode, video
+                           codec, etc.). Pure UI; no overlap with an
+                           active call. Stays available so the user
+                           can adjust e.g. proximity sensor mid-call. */}
+                       <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
  
                       {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
@@ -5166,7 +6607,12 @@ class NavigationBar extends Component {
 					</Menu>
                      : null}
 
-                        {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                        {/* Permissions — deep-links to the OS settings
+                            screen for Sylk. Useful mid-call when the
+                            user realises camera/mic/location wasn't
+                            granted. We keep the folded-layout guard,
+                            but drop the inCall gate. */}
+                        {!(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
                          : null }
 
@@ -5176,19 +6622,35 @@ class NavigationBar extends Component {
                             string flow at the OS level and the panel
                             doesn't apply there. Lives in the general
                             (no-contact-selected) kebab because it's a
-                            device-wide setting; the modal adapts to
-                            current consent state — [Not now]/[I agree]
-                            before agreement, [Close]/[Opt out] after. */}
-                        {Platform.OS === 'android' && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                            per-account setting; the modal renders the
+                            review-and-opt-out variant ([Close]/[Opt
+                            out]) when the flag is set. The accept
+                            variant ([Not now]/[I agree]) is now
+                            reached only via the share-flow gate when
+                            the user actually tries to share, so we
+                            hide the menu item until consent is on
+                            file — there's nothing to review or
+                            withdraw before that. */}
+                        {Platform.OS === 'android' && this.state.locationDisclosureAcknowledged && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('viewLocationDisclosure')} icon="shield-account" title="Location privacy policy..."/>
                          : null }
 
-                        {!(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="email-send" title="Support needed…" />
-                        : null}
+                        {/* Help… — opens the in-app log viewer / support
+                            request modal. Available in every context
+                            (with or without a selected contact, folded
+                            or not), since the user can need help at any
+                            point — including from inside an open chat. */}
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
 
-                        {!this.props.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/> : null}
+                        {/* About Sylk — purely informational (version,
+                            build id, dev-mode toggle). No call overlap
+                            so we keep it visible. */}
+                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
+                        {/* Divider above Sign out — sets the destructive
+                            session-end action visually apart from the
+                            settings/info entries above. */}
+                        {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                        <Divider /> : null}
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
@@ -5267,6 +6729,8 @@ class NavigationBar extends Component {
  				    openDeleteAccount={this.openDeleteAccountModal}
  				    preferredVideoCodec={this.props.preferredVideoCodec}
  				    setPreferredVideoCodec={this.props.setPreferredVideoCodec}
+ 				    preferredAudioCodec={this.props.preferredAudioCodec}
+ 				    enableAudioRecording={this.props.enableAudioRecording}
  				    encryptionMode={this.props.encryptionMode}
                 />
 
@@ -5277,15 +6741,59 @@ class NavigationBar extends Component {
                     accountId={this.props.accountId}
                 />
 
+                {/* Headless WebView URL resolver — used as a
+                    fallback by meetMeAt when the plain HTTP
+                    resolveShortLocationUrl can't expand a
+                    JS-redirect URL like maps.app.goo.gl/<id>.
+                    Mounts only while a resolution is in flight (state
+                    flips webViewResolveUrl to non-null), unmounts
+                    when the callback fires. The WebViewURLResolver
+                    component renders a 0x0 off-screen wrapper so it
+                    has no visual or layout effect. */}
+                <WebViewURLResolver
+                    url={this.state.webViewResolveUrl}
+                    onResolved={(finalUrl) => {
+                        const cb = this.state.webViewResolveCallback;
+                        if (cb) cb(finalUrl, null);
+                    }}
+                    onError={(err) => {
+                        const cb = this.state.webViewResolveCallback;
+                        if (cb) cb(null, err);
+                    }}
+                    /* 15 s timeout. Most resolutions complete within
+                       1–3 s when the URL has inline coords. The
+                       address-only flow (Google geocoding the
+                       sender-supplied place name into lat/lng) needs
+                       the page to actually load + JS to run + a
+                       follow-up navigation to land — that can take
+                       5–10 s on a slow network. 15 s gives a comfy
+                       budget without leaving a stuck spinner forever
+                       if Google's JS hangs. */
+                    timeoutMs={15 * 1000}
+                />
+
                 <PreferencesModal
                     show={this.state.showPreferencesModal}
                     close={() => this.setState({ showPreferencesModal: false })}
+                    accountId={this.props.accountId}
                     preferredVideoCodec={this.props.preferredVideoCodec}
                     setPreferredVideoCodec={this.props.setPreferredVideoCodec}
+                    preferredAudioCodec={this.props.preferredAudioCodec}
+                    setPreferredAudioCodec={this.props.setPreferredAudioCodec}
+                    enableAudioRecording={this.props.enableAudioRecording}
+                    setEnableAudioRecording={this.props.setEnableAudioRecording}
                     encryptionMode={this.props.encryptionMode}
                     setEncryptionMode={this.props.setEncryptionMode}
+                    dtmfMode={this.props.dtmfMode}
+                    setDtmfMode={this.props.setDtmfMode}
                     proximity={this.props.proximity}
                     toggleProximity={this.props.toggleProximity}
+                    locationTickIntervalMs={this.props.locationTickIntervalMs}
+                    setLocationTickIntervalMs={this.props.setLocationTickIntervalMs}
+                    locationProximityMeters={this.props.locationProximityMeters}
+                    setLocationProximityMeters={this.props.setLocationProximityMeters}
+                    locationPrivacyRadiusMeters={this.props.locationPrivacyRadiusMeters}
+                    setLocationPrivacyRadiusMeters={this.props.setLocationPrivacyRadiusMeters}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -5319,13 +6827,70 @@ class NavigationBar extends Component {
                     onConfirm={this.onShareLocationConfirmed}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : null}
-                    /* Surfaces the caregiver-only "Until I return" option
-                       in the modal. We check both the localProperties
-                       mirror and the tags list so a contact with only
-                       one of them set (e.g. legacy tag-only data, or a
-                       half-applied multi-device sync) still gets the
-                       feature — same defensive read pattern toggleAutoAnswer
-                       relies on. */
+                    /* Disclaimer suppression. The flag is hydrated on
+                       registration (see _hydrateDisclaimerSuppression)
+                       and persisted by _suppressShareLocationDisclaimer
+                       when the user confirms with the checkbox ticked.
+                       It's cleared by the privacy-policy opt-out path
+                       so the legal text re-appears the moment the user
+                       revokes their disclosure consent. */
+                    disclaimerSuppressed={this.state.shareDisclaimerSuppressed}
+                    onSuppressDisclaimer={this._suppressShareLocationDisclaimer}
+                    /* When the share-flow was opened from a chat-bubble's
+                       "Meet me there..." kebab on a Google-Maps-link
+                       text, pre-select the meet-up option so the user
+                       can confirm in one tap. The destination itself
+                       lives on this.state.pendingShareDestination and
+                       is consumed by onShareLocationConfirmed.
+                       meetMode is true whenever EITHER the destination
+                       is staged OR a short URL is mid-resolve — the
+                       banner shows "Resolving destination…" until
+                       coords arrive. */
+                    presetKind={
+                        (this.state.pendingShareDestination
+                            || this.state.pendingShareDestinationUrl)
+                        ? 'meetingRequest' : null
+                    }
+                    meetMode={!!(this.state.pendingShareDestination
+                        || this.state.pendingShareDestinationUrl)}
+                    meetDestination={this.state.pendingShareDestination}
+                    meetDestinationStatus={this.state.pendingShareDestinationStatus}
+                    /* Live user location for the preview map. Fetched
+                       in showShareLocationModal as a fire-and-forget
+                       getCurrentCoordinates() and updated on the
+                       state when it lands. The modal forwards it to
+                       StaticMap so the user can see where they are
+                       relative to the destination, and (when the
+                       privacy slider is non-zero) the circle showing
+                       how far they need to move before their position
+                       starts shipping over the wire. */
+                    userLocation={this.state.previewUserLocation}
+                    /* Local user's display name — drives the
+                       initials on the red avatar pin so it shows
+                       the user's first letter rather than '?'. */
+                    myDisplayName={this.props.myDisplayName}
+                    /* Last-used privacy radius — seeds the slider's
+                       initial value when the modal opens, and the
+                       modal's onConfirm path calls
+                       onPersistPrivacyRadius with whatever the user
+                       finally picks so the same value shows up the
+                       next time the modal opens. */
+                    defaultPrivacyRadiusMeters={
+                        Number(this.props.locationPrivacyRadiusMeters) || 0
+                    }
+                    onPersistPrivacyRadius={this.props.setLocationPrivacyRadiusMeters}
+                    /* Caregiver flag drives modal defaults: caregivers
+                       open with "Until I return" pre-selected and have
+                       "Until we meet" hidden (caregivers don't meet
+                       up, they keep watch over a trip). The "Until I
+                       return" OPTION itself is no longer caregiver-
+                       gated — every contact sees it, but caregivers
+                       still get it as the default. We check both the
+                       localProperties mirror and the tags list so a
+                       contact with only one of them set (e.g. legacy
+                       tag-only data, or a half-applied multi-device
+                       sync) still gets the default — same defensive
+                       read pattern toggleAutoAnswer relies on. */
                     isCaregiver={!!(this.props.selectedContact
                         && ((this.props.selectedContact.localProperties
                                 && this.props.selectedContact.localProperties.caregiver)
@@ -5391,6 +6956,32 @@ class NavigationBar extends Component {
                     stopAll={() => {
                         Object.keys(this.state.activeLocationShares || {})
                             .forEach((uri) => this.stopLocationSharing(uri));
+                    }}
+                    /* Pause / Resume bridges. The modal calls these
+                       per-row (multi-share) or as the second primary
+                       button (single-share). Each routes through the
+                       same pauseLocationSharing / resumeLocationSharing
+                       methods the bubble kebab and chat-header menu
+                       use, so all three entry points stay in sync.
+                       getShareState returns 'active' | 'paused' |
+                       'stopped' off this.locationTimers[uri].paused so
+                       the modal can label the toggle without mirroring
+                       state. We pass originMetadataId from the entry
+                       so the multi-share guard inside pause/resume
+                       (which protects against pausing the wrong
+                       session if a stale row id is used) doesn't trip
+                       — the entry knows its own origin. */
+                    pauseShare={(uri) => {
+                        const _entry = this.locationTimers && this.locationTimers[uri];
+                        if (_entry) this.pauseLocationSharing(uri, _entry.originMetadataId);
+                    }}
+                    resumeShare={(uri) => {
+                        const _entry = this.locationTimers && this.locationTimers[uri];
+                        if (_entry) this.resumeLocationSharing(uri, _entry.originMetadataId);
+                    }}
+                    getShareState={(uri) => {
+                        const _entry = this.locationTimers && this.locationTimers[uri];
+                        return this.getLocationShareState(uri, _entry && _entry.originMetadataId);
                     }}
                 />
                 

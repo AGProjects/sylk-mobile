@@ -11,6 +11,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Button, Surface, Switch, Checkbox } from 'react-native-paper';
+import PlatformToggle from './PlatformToggle';
 import UserIcon from './UserIcon';
 import utils from '../utils';
 
@@ -336,69 +337,57 @@ class DeleteFileTransfers extends Component {
                     </Text>
 
                     <View style={styles.checkBoxRow}>
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.outgoing} onValueChange={this.toggleOutgoing} />
-                        ) : (
-                          <Checkbox status={this.state.outgoing ? 'checked' : 'unchecked'} onPress={this.toggleOutgoing} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>Outgoing</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.outgoing}
+                        onValueChange={this.toggleOutgoing}
+                        label="Outgoing"
+                        style={styles.checkBoxRow}
+                      />
 
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.incoming} onValueChange={this.toggleIncoming} />
-                        ) : (
-                          <Checkbox status={this.state.incoming ? 'checked' : 'unchecked'} onPress={this.toggleIncoming} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>Incoming</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.incoming}
+                        onValueChange={this.toggleIncoming}
+                        label="Incoming"
+                        style={styles.checkBoxRow}
+                      />
                     </View>
 
                     {this.renderPeriodDropdown()}
 
                     {photoFiles ? (
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.deletePhotos} onValueChange={this.toggleDeletePhotos} />
-                        ) : (
-                          <Checkbox status={this.state.deletePhotos ? 'checked' : 'unchecked'} onPress={this.toggleDeletePhotos} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>{photoFiles} photos ({utils.beautySize(photoSize)})</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.deletePhotos}
+                        onValueChange={this.toggleDeletePhotos}
+                        label={`${photoFiles} photos (${utils.beautySize(photoSize)})`}
+                        style={styles.checkBoxRow}
+                      />
                     ) : null}
 
                     {videoFiles ? (
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.deleteVideos} onValueChange={this.toggleDeleteVideos} />
-                        ) : (
-                          <Checkbox status={this.state.deleteVideos ? 'checked' : 'unchecked'} onPress={this.toggleDeleteVideos} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>{videoFiles} videos ({utils.beautySize(videoSize)})</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.deleteVideos}
+                        onValueChange={this.toggleDeleteVideos}
+                        label={`${videoFiles} videos (${utils.beautySize(videoSize)})`}
+                        style={styles.checkBoxRow}
+                      />
                     ) : null}
 
                     {audioFiles ? (
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.deleteAudios} onValueChange={this.toggleDeleteAudios} />
-                        ) : (
-                          <Checkbox status={this.state.deleteAudios ? 'checked' : 'unchecked'} onPress={this.toggleDeleteAudios} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>{audioFiles} audio recordings ({utils.beautySize(audioSize)})</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.deleteAudios}
+                        onValueChange={this.toggleDeleteAudios}
+                        label={`${audioFiles} audio recordings (${utils.beautySize(audioSize)})`}
+                        style={styles.checkBoxRow}
+                      />
                     ) : null}
 
                     {otherFiles ? (
-                      <View style={styles.checkBoxRow}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.deleteOthers} onValueChange={this.toggleDeleteOthers} />
-                        ) : (
-                          <Checkbox status={this.state.deleteOthers ? 'checked' : 'unchecked'} onPress={this.toggleDeleteOthers} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>{otherFiles} other type ({utils.beautySize(otherSize)})</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.deleteOthers}
+                        onValueChange={this.toggleDeleteOthers}
+                        label={`${otherFiles} other type (${utils.beautySize(otherSize)})`}
+                        style={styles.checkBoxRow}
+                      />
                     ) : null}
 
                     <View style={styles.buttonRow}>
@@ -427,14 +416,12 @@ class DeleteFileTransfers extends Component {
                       </Button>
                     </View>
                     {canDeleteRemote && !isDisabled ? (
-                      <View style={[styles.checkBoxRow, {borderTop: 0.5}]}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={this.state.remoteDelete} onValueChange={this.toggleRemoteDelete} />
-                        ) : (
-                          <Checkbox status={this.state.remoteDelete ? 'checked' : 'unchecked'} onPress={this.toggleRemoteDelete} />
-                        )}
-                        <Text style={{ marginLeft: 8 }}>Also delete remotely</Text>
-                      </View>
+                      <PlatformToggle
+                        value={this.state.remoteDelete}
+                        onValueChange={this.toggleRemoteDelete}
+                        label="Also delete remotely"
+                        style={[styles.checkBoxRow, {borderTop: 0.5}]}
+                      />
                     ) : null}
                   </ScrollView>
                 </Surface>

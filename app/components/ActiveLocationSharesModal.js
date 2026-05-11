@@ -95,6 +95,38 @@ class ActiveLocationSharesModal extends Component {
         }
     }
 
+    // Pause / Resume helpers. The parent passes a `getShareState(uri)`
+    // function that returns 'active' | 'paused' | 'stopped' (read off
+    // navBar.locationTimers[uri].paused) so we can label the toggle
+    // button correctly without mirroring pause state into our own
+    // state. The modal stays stateless apart from its 1 s tick.
+    isPaused(uri) {
+        if (typeof this.props.getShareState !== 'function') return false;
+        try {
+            return this.props.getShareState(uri) === 'paused';
+        } catch (e) { return false; }
+    }
+
+    onPauseOne(uri) {
+        if (typeof this.props.pauseShare === 'function') {
+            this.props.pauseShare(uri);
+        }
+        // Dismiss after pause/resume so the user gets immediate
+        // visual confirmation (the chat-header pin stops/starts
+        // pulsing, the bubble's pause overlay appears, etc.) instead
+        // of being blocked by the still-open modal. Stop intentionally
+        // does NOT dismiss — for multi-share users it keeps the modal
+        // open so they can stop the next one without re-navigating.
+        if (typeof this.props.close === 'function') this.props.close();
+    }
+
+    onResumeOne(uri) {
+        if (typeof this.props.resumeShare === 'function') {
+            this.props.resumeShare(uri);
+        }
+        if (typeof this.props.close === 'function') this.props.close();
+    }
+
     onCancel() {
         this.props.close();
     }
@@ -178,7 +210,9 @@ class ActiveLocationSharesModal extends Component {
                                                 style={{ maxHeight: 260, marginHorizontal: 8 }}
                                                 keyboardShouldPersistTaps="handled"
                                             >
-                                                {uris.map((uri, idx) => (
+                                                {uris.map((uri, idx) => {
+                                                    const _paused = this.isPaused(uri);
+                                                    return (
                                                     <View key={uri}>
                                                         {idx > 0 ? <Divider /> : null}
                                                         <View style={{
@@ -190,6 +224,7 @@ class ActiveLocationSharesModal extends Component {
                                                             <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                                                                 <Text numberOfLines={1} style={{ fontSize: 15 }}>
                                                                     {this.displayFor(uri)}
+                                                                    {_paused ? '  • paused' : ''}
                                                                 </Text>
                                                                 <Text
                                                                     numberOfLines={1}
@@ -198,6 +233,19 @@ class ActiveLocationSharesModal extends Component {
                                                                     {this.formatTimeLeft(shares[uri])}
                                                                 </Text>
                                                             </View>
+                                                            {/* Pause / Resume sits before Stop so the
+                                                                destructive action stays the rightmost
+                                                                button on each row — matches the
+                                                                "less destructive on the left"
+                                                                convention from other modals. */}
+                                                            <IconButton
+                                                                icon={_paused ? 'play' : 'pause'}
+                                                                size={22}
+                                                                onPress={() => _paused
+                                                                    ? this.onResumeOne(uri)
+                                                                    : this.onPauseOne(uri)}
+                                                                accessibilityLabel={`${_paused ? 'Resume' : 'Pause'} sharing location with ${this.displayFor(uri)}`}
+                                                            />
                                                             <Button
                                                                 mode="outlined"
                                                                 compact
@@ -209,20 +257,45 @@ class ActiveLocationSharesModal extends Component {
                                                             </Button>
                                                         </View>
                                                     </View>
-                                                ))}
+                                                    );
+                                                })}
                                             </ScrollView>
                                         </View>
                                     )}
 
                                     <View style={[styles.buttonRow, { marginTop: 8, marginBottom: 12 }]}>
-                                        <Button
-                                            mode="outlined"
-                                            style={styles.button}
-                                            onPress={this.onCancel}
-                                            accessibilityLabel="Close"
-                                        >
-                                            {uris.length === 1 ? 'Cancel' : 'Close'}
-                                        </Button>
+                                        {/* Cancel/Close button removed —
+                                            the modal already dismisses on
+                                            backdrop tap (TouchableWithoutFeedback
+                                            wrapping the overlay) and on
+                                            Android back (onRequestClose),
+                                            and dropping it lets the
+                                            remaining Pause/Resume + Stop
+                                            buttons grow to a comfortable
+                                            tap target without overflowing
+                                            the modal surface on narrow
+                                            phones. */}
+                                        {/* Pause / Resume primary action paired
+                                            with the existing Stop sharing
+                                            button when there's exactly one
+                                            share. Mirrors the per-row controls
+                                            in the multi-share branch above —
+                                            three-button row (Cancel | toggle |
+                                            Stop) so the user can pause without
+                                            committing to Stop. */}
+                                        {uris.length === 1 ? (
+                                            <Button
+                                                mode="outlined"
+                                                style={styles.button}
+                                                icon={this.isPaused(uris[0]) ? 'play' : 'pause'}
+                                                onPress={() => this.isPaused(uris[0])
+                                                    ? this.onResumeOne(uris[0])
+                                                    : this.onPauseOne(uris[0])}
+                                                accessibilityLabel={`${this.isPaused(uris[0]) ? 'Resume' : 'Pause'} sharing location with ${this.displayFor(uris[0])}`}
+                                            >
+                                                {this.isPaused(uris[0]) ? 'Resume' : 'Pause'}
+                                            </Button>
+                                        ) : null}
                                         {/* One-shot Stop when there's a single
                                             share — no need to tap a row's Stop
                                             first. Pair with Cancel above. */}
@@ -234,7 +307,16 @@ class ActiveLocationSharesModal extends Component {
                                                 onPress={() => this.onStopOne(uris[0])}
                                                 accessibilityLabel={`Stop sharing location with ${this.displayFor(uris[0])}`}
                                             >
-                                                Stop sharing
+                                                {/* Shortened from "Stop sharing"
+                                                    to "Stop" so the three-button
+                                                    row (Cancel | Pause/Resume |
+                                                    Stop) fits inside the modal
+                                                    surface on the narrowest
+                                                    Android phones we ship to.
+                                                    accessibilityLabel above
+                                                    keeps the screen-reader
+                                                    affordance unambiguous. */}
+                                                Stop
                                             </Button>
                                         ) : null}
                                         {uris.length > 1 ? (
@@ -267,6 +349,15 @@ ActiveLocationSharesModal.propTypes = {
     activeShares  : PropTypes.object,
     stopShare     : PropTypes.func.isRequired,
     stopAll       : PropTypes.func,
+    // Pause / Resume per share. Optional — when both are missing the
+    // toggle button still renders but onPress is a noop (the parent
+    // simply hasn't wired the bridges yet). getShareState returns
+    // 'active' | 'paused' | 'stopped' so the modal can label the
+    // toggle correctly without mirroring pause state into its own
+    // state.
+    pauseShare    : PropTypes.func,
+    resumeShare   : PropTypes.func,
+    getShareState : PropTypes.func,
     allContacts   : PropTypes.array,
     // Optional. When provided, the modal renders only the share
     // targeting this URI (if any). Lets the ReadyBox "pin" button

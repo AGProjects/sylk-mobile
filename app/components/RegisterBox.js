@@ -30,6 +30,7 @@ const RegisterBox = ({
   configurations,
   accounts,
   serversAccounts,
+  accountPasswords,
   connection,
   wsUrl,
   passwordRecoveryUrl
@@ -109,6 +110,7 @@ const RegisterBox = ({
           configurations={configurations}
           accounts={accounts}
           serversAccounts={serversAccounts}
+          accountPasswords={accountPasswords}
           connection={connection}
           wsUrl={wsUrl}
           passwordRecoveryUrl={passwordRecoveryUrl}

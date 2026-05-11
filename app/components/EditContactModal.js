@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking } from 'react-native';
-import { Text, Button, Surface, TextInput, Switch, Checkbox } from 'react-native-paper';
+import { Modal, View, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
+import { Text, Button, Surface, TextInput, Switch, Checkbox, Divider } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import UserIcon from './UserIcon';
+import PlatformToggle from './PlatformToggle';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import {Keyboard} from 'react-native';
 import CryptoJS from "crypto-js";
@@ -54,6 +55,11 @@ const EditContactModal = ({
   openDeleteAccount,
   preferredVideoCodec,
   setPreferredVideoCodec,
+  // Device-level audio codec + auto-record defaults — used to label
+  // the "Default (...)" button in each per-contact override row so
+  // the user can see at a glance what they're overriding away from.
+  preferredAudioCodec,
+  enableAudioRecording,
   encryptionMode,
 }) => {
   const [uri, setUri] = useState(propUri || '');
@@ -63,6 +69,16 @@ const EditContactModal = ({
   const [confirm, setConfirm] = useState(false);
   const [tags, setTags] = useState([]);
   const [tagsText, setTagsText] = useState('');
+  // Buffer for the "Add tag" text input. Kept separate from `tags`
+  // so partial typing doesn't churn the saved-tag list on every
+  // keystroke; only confirmation (Enter / + button tap) commits.
+  const [newTagText, setNewTagText] = useState('');
+  // Edit mode for the chip-list. Default is read-only — tapping the
+  // small pencil icon next to "Tags" flips this on, exposing the ×
+  // remove buttons on each chip and the Add-tag input row. Kept
+  // OFF by default so the modal stays calm and users don't fat-
+  // finger a tag away while just inspecting the contact.
+  const [editingTags, setEditingTags] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   // Per-contact encryption mode override.
   // null  → follow the device default (set in Preferences → Encryption)
@@ -71,6 +87,29 @@ const EditContactModal = ({
   const [contactEncryption, setContactEncryption] = useState(
     (selectedContact && selectedContact.localProperties
       && selectedContact.localProperties.encryptionMode) || null
+  );
+  // Per-contact codec / recording overrides. All three follow the same
+  // null = "use device default" convention used by contactEncryption
+  // above:
+  //   contactVideoCodec    null | 'VP9' | 'VP8' | 'H264'
+  //   contactAudioCodec    null | 'opus' | 'G722' | 'PCMU' | 'PCMA'
+  //   contactAutoRecord    null | true (always record) | false (never record)
+  // Stored on the contact's localProperties when non-null and merged
+  // back to null on save when the user picks the Default button.
+  const [contactVideoCodec, setContactVideoCodec] = useState(
+    (selectedContact && selectedContact.localProperties
+      && selectedContact.localProperties.preferredVideoCodec) || null
+  );
+  const [contactAudioCodec, setContactAudioCodec] = useState(
+    (selectedContact && selectedContact.localProperties
+      && selectedContact.localProperties.preferredAudioCodec) || null
+  );
+  const [contactAutoRecord, setContactAutoRecord] = useState(
+    (selectedContact && selectedContact.localProperties
+      && (selectedContact.localProperties.enableAudioRecording === true
+          || selectedContact.localProperties.enableAudioRecording === false))
+      ? selectedContact.localProperties.enableAudioRecording
+      : null
   );
 
   // Reset all form fields whenever modal opens or props change
@@ -85,9 +124,26 @@ const EditContactModal = ({
       initialTags = [...new Set(initialTags.map(t => t.trim().toLowerCase()))];
       setTags(initialTags);
       setTagsText(initialTags.join(', '));
+      setNewTagText('');
+      setEditingTags(false);
       setContactEncryption(
         (selectedContact && selectedContact.localProperties
           && selectedContact.localProperties.encryptionMode) || null
+      );
+      setContactVideoCodec(
+        (selectedContact && selectedContact.localProperties
+          && selectedContact.localProperties.preferredVideoCodec) || null
+      );
+      setContactAudioCodec(
+        (selectedContact && selectedContact.localProperties
+          && selectedContact.localProperties.preferredAudioCodec) || null
+      );
+      setContactAutoRecord(
+        (selectedContact && selectedContact.localProperties
+          && (selectedContact.localProperties.enableAudioRecording === true
+              || selectedContact.localProperties.enableAudioRecording === false))
+          ? selectedContact.localProperties.enableAudioRecording
+          : null
       );
     }
   }, [show, propUri, propDisplayName, propOrg, propEmail, selectedContact]);
@@ -113,13 +169,59 @@ const EditContactModal = ({
 
 	const handleTagsTextChange = (text) => {
 	  setTagsText(text);
-	
+
 	  const parsed = text
 		.split(',')
 		.map(t => t.trim().toLowerCase())
 		.filter(t => t.length > 0);
-	
+
 	  setTags(parsed);
+	};
+
+	// Drop a single tag from the list. Wired to the × on each chip.
+	// Doesn't touch the named-toggle UI (Mute / Bypass DND / Read
+	// receipts) — those read the same `tags` state, so removing
+	// 'muted' here also flips the matching Switch back off.
+	const removeTag = (tag) => {
+	  setTags(prev => prev.filter(t => t !== tag));
+	};
+
+	// Reduce arbitrary user input to a strict-ASCII tag token. Tags
+	// must be simple ASCII words (lowercase letters, digits, and the
+	// punctuation characters '-', '_', '*') with no spaces — they're
+	// stored comma-separated in SQL and compared with substring /
+	// whole-word matchers across the app, so anything else (commas,
+	// accented letters, emoji, other punctuation, internal
+	// whitespace) would either corrupt the SQL row or silently fail
+	// to match. This sanitizer:
+	//   • lowercases + trims
+	//   • collapses any whitespace run into a single dash
+	//   • drops every character that isn't [a-z 0-9 - _ *]
+	//   • collapses repeat dashes and trims leading/trailing dashes
+	//     so the final tag never starts or ends with '-'
+	const sanitizeTag = (raw) => {
+	  if (!raw) {
+		return '';
+	  }
+	  return raw
+		.trim()
+		.toLowerCase()
+		.replace(/\s+/g, '-')
+		.replace(/[^a-z0-9_*-]/g, '')
+		.replace(/-{2,}/g, '-')
+		.replace(/^-+|-+$/g, '');
+	};
+
+	// Commit whatever's in the "Add tag" buffer to the chip list,
+	// passing it through sanitizeTag first. Duplicates are
+	// suppressed; the input clears on success.
+	const addNewTagFromInput = () => {
+	  const cleaned = sanitizeTag(newTagText);
+	  if (!cleaned) {
+		return;
+	  }
+	  setTags(prev => (prev.includes(cleaned) ? prev : [...prev, cleaned]));
+	  setNewTagText('');
 	};
 
 const getTotalPrettyStorage = (entity) => {
@@ -139,10 +241,22 @@ const getTotalPrettyStorage = (entity) => {
       organization: organization.trim(),
       email: email.toLowerCase(),
       tags,
-      // Per-contact encryption-mode override. null → clear the
-      // override (revert to device default). saveContactByUser merges
-      // localProperties and treats null/undefined as "delete this key".
-      localProperties: { encryptionMode: contactEncryption || null },
+      // Per-contact override slots. null → clear that override (revert
+      // to device default). saveContactByUser merges localProperties
+      // and treats null/undefined as "delete this key", so passing
+      // null is the canonical reset.
+      localProperties: {
+        encryptionMode: contactEncryption || null,
+        preferredVideoCodec: contactVideoCodec || null,
+        preferredAudioCodec: contactAudioCodec || null,
+        // Auto-record is tri-state (null / true / false). Preserve the
+        // explicit boolean so the contact can opt OUT of recording
+        // even when the device default is ON.
+        enableAudioRecording:
+          contactAutoRecord === true || contactAutoRecord === false
+            ? contactAutoRecord
+            : null,
+      },
     };
     saveContactByUser(contact, selectedContact);
     close();
@@ -194,6 +308,18 @@ const getTotalPrettyStorage = (entity) => {
   };
 
   if (!show) return null;
+  // Match PreferencesModal's scrollable-pane treatment, but tightened
+  // for this modal: EditContactModal has more chrome ABOVE the
+  // ScrollView than Preferences does (avatar, title, subtitle URI),
+  // and a button row + storage line BELOW it. Capping the ScrollView
+  // at 55% rather than Preferences' 70% leaves room for the chrome
+  // so the Surface's bottom rounded corners stay on-screen with the
+  // Save / Cancel row visible. surfaceMaxHeight bounds the whole
+  // Surface so the borderRadius clips cleanly even on the narrow
+  // landscape orientations where 55% + chrome would still overflow.
+  const viewportH = Dimensions.get('window').height;
+  const scrollMaxHeight = Math.round(viewportH * 0.55);
+  const surfaceMaxHeight = Math.round(viewportH * 0.85);
   let title = myself ? "My account" : 'Edit Contact';
   
   if (publicKey) {
@@ -252,17 +378,39 @@ const getTotalPrettyStorage = (entity) => {
       onRequestClose={close} // Android back button
     >
 
-      {/* Dismiss modal when tapping outside */}
-      <TouchableWithoutFeedback onPress={close}>
         <View style={containerStyles.overlay}>
+          {/* Backdrop: a Pressable that absolute-fills the overlay,
+              sitting BEHIND the Surface (rendered earlier in JSX → behind
+              in z-order). Tap outside the Surface → backdrop receives
+              the touch → onPress fires → modal dismissed. Tap on the
+              Surface → Surface (rendered later, on top) gets the touch
+              first; the Pressable underneath sees nothing. No parent
+              TouchableWithoutFeedback wrapping the Surface, so no
+              responder negotiation for the inner ScrollView to lose.
+              This is the same shape PreferencesModal uses — fixes the
+              "ScrollView pan gets dropped on Android" issue and lets
+              the Surface render its borderRadius cleanly without a
+              TouchableWithoutFeedback parent reshaping the layout. */}
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={close}
+            accessibilityLabel="Close edit contact"
+          />
+          {/* KeyboardAvoidingView would default to filling the entire
+              overlay (and stretching the Surface to fit) if we let it.
+              Pinning it to maxHeight: surfaceMaxHeight + alignSelf
+              center keeps it tightly sized around the Surface so the
+              Surface's borderRadius is honoured and the rounded
+              corners stay visible inside the viewport.
+              `overflow: 'hidden'` on the Surface clips any child that
+              would otherwise paint past the rounded corners (the
+              ScrollView's content most notably). */}
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+            style={{ maxHeight: surfaceMaxHeight, alignSelf: 'center', width: '100%' }}
           >
-            {/* Prevent taps inside modal from dismissing */}
-            <TouchableWithoutFeedback onPress={() => {}}>
-
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <Surface style={[containerStyles.modalSurface, { maxHeight: surfaceMaxHeight, overflow: 'hidden' }]}>
 				{selectedContact ? (
 				  <View
 					style={{
@@ -358,10 +506,29 @@ const getTotalPrettyStorage = (entity) => {
                   <>
                     <Text style={styles.subtitle}>{uri}</Text>
 
+                    {/* Single outer ScrollView for the entire body —
+                        same shape PreferencesModal uses. All the form
+                        fields, tag toggles, tag chip list, and the
+                        per-contact override sections live inside,
+                        capped at scrollMaxHeight so the Save / Cancel
+                        row stays pinned outside the ScrollView at the
+                        bottom of the modal Surface. The various Android
+                        scroll-handling props (nestedScrollEnabled,
+                        directionalLockEnabled, removeClippedSubviews=
+                        false) mirror PreferencesModal's tuned set so
+                        gesture handoff with any nested touchables
+                        stays consistent across both modals. */}
                     <ScrollView
-                      style={containerStyles.scrollContainer}
-                      contentContainerStyle={{ flexGrow: 1 }}
+                      style={{ maxHeight: scrollMaxHeight }}
+                      contentContainerStyle={{ paddingBottom: 8 }}
                       keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled={true}
+                      showsVerticalScrollIndicator={true}
+                      overScrollMode={Platform.OS === 'android' ? 'always' : undefined}
+                      removeClippedSubviews={false}
+                      directionalLockEnabled={true}
+                      scrollEventThrottle={16}
+                      decelerationRate="normal"
                     >
                       <TextInput
                         mode="flat"
@@ -388,7 +555,6 @@ const getTotalPrettyStorage = (entity) => {
                         onChangeText={setEmail}
                         value={email}
                       />
-                    </ScrollView>
 
                     {!myself && !keyboardVisible && (
 						<View style={{ marginTop: 0 }}>
@@ -408,145 +574,447 @@ const getTotalPrettyStorage = (entity) => {
 							const rowOpacity = isDisabled ? 0.4 : 1;
 
 							return (
-							  <View key={tagKey} style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0, opacity: rowOpacity}]}>
-								{Platform.OS === 'ios' ? (
-								  <Switch
-									value={displayValue}
-									onValueChange={() => toggleTag(tagKey)}
-									disabled={isDisabled}
-								  />
-								) : (
-								  <Checkbox
-									status={displayValue ? 'checked' : 'unchecked'}
-									onPress={() => toggleTag(tagKey)}
-									disabled={isDisabled}
-								  />
-								)}
-								<Text> {isDisabled ? 'Read receipts disabled for account' : info.description}</Text>
-							  </View>
+							  <PlatformToggle
+							    key={tagKey}
+							    value={displayValue}
+							    onValueChange={() => toggleTag(tagKey)}
+							    label={isDisabled ? 'Read receipts disabled for account' : info.description}
+							    disabled={isDisabled}
+							    style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0, opacity: rowOpacity}]}
+							  />
 							);
 						  })}
-
-					<View style={{ marginTop: 5, flexDirection: 'row', flexWrap: 'wrap' }}>
-					  <Text style={{ fontSize: 12, fontWeight: '600', marginRight: 4 }}>
-						Tags:
-					  </Text>
-					  <Text style={{ fontSize: 12, color: '#555' }}>
-						{tags.length > 0 ? tags.join(', ') : 'none'}
-					  </Text>
-					</View>
 
 						</View>
                     )}
 
-                    {myself && (
-                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={rejectNonContacts} onValueChange={toggleRejectNonContacts} />
-                        ) : (
-                          <Checkbox status={rejectNonContacts ? 'checked' : 'unchecked'} onPress={toggleRejectNonContacts} />
-                        )}
-                        <Text> Allow calls only from my contacts</Text>
+                    {/* Tag list. Read-only by default — a small
+                        pencil icon next to the "Tags" label flips
+                        the section into edit mode, where each chip
+                        gains a × remove control and an "Add tag"
+                        input row appears below. Lives OUTSIDE the
+                        !keyboardVisible block (which gates the
+                        Switch/Checkbox toggles) because typing into
+                        the Add input opens the keyboard, and gating
+                        on !keyboardVisible would hide the editor
+                        the moment the user engages with it. The
+                        same `tags` state drives the toggles above,
+                        so changes stay in sync. */}
+                    {!myself && (
+                      <View style={{ marginTop: 8 }}>
+                        {/* Single wrap row: "Tags:" label, chip pills,
+                            then the pencil/check toggle at the very
+                            end. Everything participates in flexWrap
+                            so on narrow rows the chips spill to
+                            additional lines and the pencil sits
+                            after the last chip wherever that ends
+                            up. The label and pencil get a small
+                            marginBottom matching the chips so the
+                            wrapped rows align. */}
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              fontWeight: '600',
+                              marginRight: 6,
+                              marginBottom: 6,
+                            }}
+                          >
+                            Tags:
+                          </Text>
+                          {tags.length === 0 ? (
+                            <Text
+                              style={{
+                                fontSize: 12,
+                                color: '#888',
+                                marginRight: 6,
+                                marginBottom: 6,
+                              }}
+                            >
+                              No tags
+                            </Text>
+                          ) : (
+                            tags.map(t => (
+                              <View
+                                key={t}
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  backgroundColor: '#e0e0e0',
+                                  borderRadius: 12,
+                                  paddingLeft: 10,
+                                  paddingRight: editingTags ? 4 : 10,
+                                  paddingVertical: 3,
+                                  marginRight: 6,
+                                  marginBottom: 6,
+                                }}
+                              >
+                                <Text style={{ fontSize: 12, color: '#333' }}>{t}</Text>
+                                {editingTags ? (
+                                  <TouchableOpacity
+                                    onPress={() => removeTag(t)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Remove tag ${t}`}
+                                    style={{ marginLeft: 4, padding: 2 }}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                  >
+                                    <Icon name="close-circle" size={16} color="#666" />
+                                  </TouchableOpacity>
+                                ) : null}
+                              </View>
+                            ))
+                          )}
+                          <TouchableOpacity
+                            onPress={() => setEditingTags(prev => !prev)}
+                            accessibilityRole="button"
+                            accessibilityLabel={editingTags ? 'Done editing tags' : 'Edit tags'}
+                            style={{ padding: 4, marginBottom: 6 }}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                          >
+                            <Icon
+                              name={editingTags ? 'check' : 'pencil'}
+                              size={16}
+                              color={editingTags ? '#27ae60' : '#555'}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                        {editingTags ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <TextInput
+                              mode="flat"
+                              label="Add tag"
+                              value={newTagText}
+                              onChangeText={setNewTagText}
+                              onSubmitEditing={addNewTagFromInput}
+                              returnKeyType="done"
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              dense
+                              style={{ flex: 1, marginRight: 8 }}
+                            />
+                            <Button
+                              mode="contained"
+                              compact
+                              onPress={addNewTagFromInput}
+                              // Disabled when sanitization would yield
+                              // an empty string — e.g. the user typed
+                              // only spaces, emoji, or punctuation.
+                              // Gives an immediate visual cue that
+                              // the proposed tag isn't a valid ASCII
+                              // word.
+                              disabled={!sanitizeTag(newTagText)}
+                              icon="plus"
+                            >
+                              Add
+                            </Button>
+                          </View>
+                        ) : null}
                       </View>
+                    )}
+
+                    {myself && (
+                      <PlatformToggle
+                        value={rejectNonContacts}
+                        onValueChange={toggleRejectNonContacts}
+                        label="Allow calls only from my contacts"
+                        style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0}]}
+                      />
                     )}
 
                     {myself && !rejectNonContacts && (
-                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={rejectAnonymous} onValueChange={toggleRejectAnonymous} />
-                        ) : (
-                          <Checkbox status={rejectAnonymous ? 'checked' : 'unchecked'} onPress={toggleRejectAnonymous} />
-                        )}
-                        <Text> Reject anonymous callers</Text>
-                      </View>
+                      <PlatformToggle
+                        value={rejectAnonymous}
+                        onValueChange={toggleRejectAnonymous}
+                        label="Reject anonymous callers"
+                        style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0}]}
+                      />
                     )}
 
                     {myself && (
-                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 5: 0}]}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={chatSounds} onValueChange={toggleChatSounds} />
-                        ) : (
-                          <Checkbox status={chatSounds ? 'checked' : 'unchecked'} onPress={toggleChatSounds} />
-                        )}
-                        <Text> Chat sounds</Text>
-                      </View>
+                      <PlatformToggle
+                        value={chatSounds}
+                        onValueChange={toggleChatSounds}
+                        label="Chat sounds"
+                        style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0}]}
+                      />
                     )}
 
                     {myself && (
-                      <View style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios'? 0: 0}]}>
-                        {Platform.OS === 'ios' ? (
-                          <Switch value={readReceipts} onValueChange={toggleReadReceipts} />
-                        ) : (
-                          <Checkbox status={readReceipts ? 'checked' : 'unchecked'} onPress={toggleReadReceipts} />
-                        )}
-                        <Text> Read receipts</Text>
-                      </View>
+                      <PlatformToggle
+                        value={readReceipts}
+                        onValueChange={toggleReadReceipts}
+                        label="Read receipts"
+                        style={styles.checkBoxRow}
+                      />
                     )}
 
-                    {/* Video codec preference is device-wide (set in
-                        Preferences → Video Codecs). No per-contact
-                        override — every outgoing call uses the same
-                        codec on this phone. */}
-
-                    {/* Per-contact encryption mode override. The first
-                        button shows the current device default and is
-                        rendered grayed-out; tapping it clears any
-                        override. The remaining buttons are the modes
-                        that AREN'T already the device default
-                        (otherwise the default button is the same as a
-                        regular button — redundant). Mirrors the old
-                        per-contact codec UI. */}
+                    {/* Per-contact call overrides. Three sections that
+                        mirror PreferencesModal's layout:
+                          • Video Calls    — preferred video codec
+                          • Audio Calls    — preferred audio codec
+                                             + auto-record toggle
+                          • zRTP Encryption — Optional / Mandatory
+                        Each row leads with a grayed-out
+                        "Default (<device value>)" button that clears
+                        the override, then lists the alternatives the
+                        user can pick to override the device-wide
+                        Preferences value for THIS contact only. Stored
+                        overrides that match the device default are
+                        treated as "no override" — saveContactByUser
+                        prunes those keys from localProperties. */}
                     {!myself && selectedContact && (() => {
-                      const deviceDefault = encryptionMode || 'zrtp_optional';
-                      // Only zRTP modes are exposed; SRTP/DTLS is the
-                      // always-on transport-layer fallback.
+                      // ── Reused codec constants. Keep in sync with
+                      // PreferencesModal so the per-contact picker
+                      // offers exactly the same set of choices the
+                      // device-wide picker does.
+                      const VIDEO_CODECS = ['VP9', 'VP8', 'H264'];
+                      const AUDIO_CODECS = ['opus', 'G722', 'PCMU', 'PCMA'];
                       const ENC_OPTIONS = [
-                        { value: 'zrtp_optional',  label: 'zRTP optional' },
-                        { value: 'zrtp_mandatory', label: 'zRTP mandatory' },
+                          { value: 'zrtp_optional',  label: 'Optional' },
+                          { value: 'zrtp_mandatory', label: 'Mandatory' },
                       ];
-                      const defaultLabel = (
-                        ENC_OPTIONS.find(o => o.value === deviceDefault) || {}
-                      ).label || deviceDefault;
-                      const others = ENC_OPTIONS.filter(o => o.value !== deviceDefault);
-                      // Stored override that matches the device default
-                      // is functionally equivalent to no override.
-                      const usingDefault = contactEncryption == null
-                          || contactEncryption === deviceDefault;
+
+                      const deviceVideo = preferredVideoCodec || 'VP9';
+                      const deviceAudio = preferredAudioCodec || 'opus';
+                      const deviceEnc = encryptionMode || 'zrtp_optional';
+                      const deviceEncLabel = (
+                          ENC_OPTIONS.find(o => o.value === deviceEnc) || {}
+                      ).label || deviceEnc;
+
+                      const videoUsingDefault = contactVideoCodec == null
+                          || contactVideoCodec === deviceVideo;
+                      const audioUsingDefault = contactAudioCodec == null
+                          || contactAudioCodec === deviceAudio;
+                      const encUsingDefault = contactEncryption == null
+                          || contactEncryption === deviceEnc;
+                      const recordUsingDefault = contactAutoRecord !== true
+                          && contactAutoRecord !== false;
+                      const deviceRecordLabel = enableAudioRecording ? 'On' : 'Off';
+
+                      // Shared button styles — the "Default (...)"
+                      // button is rendered like the alternatives but
+                      // grayed-out and disabled when it's the active
+                      // choice, so the user can see which one is in
+                      // effect without it competing visually.
+                      //
+                      // pillContent / pillLabel collapse the default
+                      // react-native-paper Button vertical padding so
+                      // the pills sit tighter together — Paper's
+                      // default ~36px height was too tall for a row
+                      // of compact pills inside a section. The label
+                      // also drops to fontSize 12 with no extra
+                      // vertical margin so the text doesn't hike the
+                      // pill back up.
+                      const pillContentStyle = { height: 28 };
+                      const pillLabelStyle = {
+                          fontSize: 12,
+                          marginVertical: 0,
+                          marginHorizontal: 8,
+                          lineHeight: 14,
+                      };
+                      const defaultBtnStyle = (active) => ({
+                          marginRight: 6,
+                          marginBottom: 6,
+                          opacity: active ? 0.7 : 1,
+                      });
+                      const altBtnStyle = {
+                          marginRight: 6,
+                          marginBottom: 6,
+                      };
+                      const defaultLabelStyle = { ...pillLabelStyle, color: '#888' };
+
                       return (
-                        <View style={{ marginTop: 8, marginBottom: 8 }}>
-                          <Text style={{ fontSize: 12, fontWeight: '600', marginBottom: 4 }}>
-                            Encryption for this contact
-                          </Text>
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                            <Button
-                              key="default"
-                              mode={usingDefault ? 'contained' : 'outlined'}
-                              compact
-                              disabled={usingDefault}
-                              style={{ marginRight: 6, marginBottom: 4, opacity: 0.7 }}
-                              labelStyle={{ color: '#888' }}
-                              onPress={() => setContactEncryption(null)}
-                            >
-                              {`Default (${defaultLabel})`}
-                            </Button>
-                            {others.map(opt => {
-                              const selected = contactEncryption === opt.value;
-                              return (
-                                <Button
-                                  key={opt.value}
-                                  mode={selected ? 'contained' : 'outlined'}
-                                  compact
-                                  style={{ marginRight: 6, marginBottom: 4 }}
-                                  onPress={() => setContactEncryption(opt.value)}
-                                >
-                                  {opt.label}
-                                </Button>
-                              );
-                            })}
+                        <>
+                          {/* ── Video Calls ───────────────────── */}
+                          <View style={{ marginTop: 12, marginBottom: 12 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                              Video Calls
+                            </Text>
+                            <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                              Preferred video codec for calls to this contact.
+                            </Text>
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                              <Button
+                                key="vc-default"
+                                mode={videoUsingDefault ? 'contained' : 'outlined'}
+                                compact
+                                disabled={videoUsingDefault}
+                                style={defaultBtnStyle(videoUsingDefault)}
+                                contentStyle={pillContentStyle}
+                                labelStyle={defaultLabelStyle}
+                                onPress={() => setContactVideoCodec(null)}
+                              >
+                                {`Default (${deviceVideo})`}
+                              </Button>
+                              {VIDEO_CODECS.filter(c => c !== deviceVideo).map(codec => {
+                                const selected = contactVideoCodec === codec;
+                                return (
+                                  <Button
+                                    key={codec}
+                                    mode={selected ? 'contained' : 'outlined'}
+                                    compact
+                                    style={altBtnStyle}
+                                    contentStyle={pillContentStyle}
+                                    labelStyle={pillLabelStyle}
+                                    onPress={() => setContactVideoCodec(codec)}
+                                  >
+                                    {codec}
+                                  </Button>
+                                );
+                              })}
+                            </View>
                           </View>
-                        </View>
+
+                          <Divider style={{ marginTop: -4, marginBottom: 8 }} />
+
+                          {/* ── Audio Calls ───────────────────── */}
+                          <View style={{ marginBottom: 12 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                              Audio Calls
+                            </Text>
+                            <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                              Preferred audio codec for calls to this contact.
+                            </Text>
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                              <Button
+                                key="ac-default"
+                                mode={audioUsingDefault ? 'contained' : 'outlined'}
+                                compact
+                                disabled={audioUsingDefault}
+                                style={defaultBtnStyle(audioUsingDefault)}
+                                contentStyle={pillContentStyle}
+                                labelStyle={defaultLabelStyle}
+                                onPress={() => setContactAudioCodec(null)}
+                              >
+                                {`Default (${deviceAudio})`}
+                              </Button>
+                              {AUDIO_CODECS.filter(c => c !== deviceAudio).map(codec => {
+                                const selected = contactAudioCodec === codec;
+                                return (
+                                  <Button
+                                    key={codec}
+                                    mode={selected ? 'contained' : 'outlined'}
+                                    compact
+                                    style={altBtnStyle}
+                                    contentStyle={pillContentStyle}
+                                    labelStyle={pillLabelStyle}
+                                    onPress={() => setContactAudioCodec(codec)}
+                                  >
+                                    {codec}
+                                  </Button>
+                                );
+                              })}
+                            </View>
+                            {/* Auto-record override — exactly two pills,
+                                strictly the opposite of the General
+                                setting:
+                                  General ON  → contact can opt OUT
+                                                (Default(On) | Recording Off)
+                                  General OFF → contact can opt IN
+                                                (Default(Off) | Recording On)
+                                Picking the same value as the device
+                                default would just be "no override",
+                                which is what tapping Default does — no
+                                point exposing both On and Off pills on
+                                each side. The stored state stays
+                                tri-state (null / true / false) so the
+                                saved value is unambiguous regardless
+                                of which side the user is on when they
+                                save. */}
+                            <Text style={{ fontSize: 11, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                              {enableAudioRecording
+                                ? 'Skip recording for calls to this contact.'
+                                : 'Automatically record audio calls to this contact.'}
+                            </Text>
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                              <Button
+                                key="rec-default"
+                                mode={recordUsingDefault ? 'contained' : 'outlined'}
+                                compact
+                                disabled={recordUsingDefault}
+                                style={defaultBtnStyle(recordUsingDefault)}
+                                contentStyle={pillContentStyle}
+                                labelStyle={defaultLabelStyle}
+                                onPress={() => setContactAutoRecord(null)}
+                              >
+                                {`Default (${deviceRecordLabel})`}
+                              </Button>
+                              {enableAudioRecording ? (
+                                /* General ON → opt-out pill only. */
+                                <Button
+                                  key="rec-off"
+                                  mode={contactAutoRecord === false ? 'contained' : 'outlined'}
+                                  compact
+                                  style={altBtnStyle}
+                                  contentStyle={pillContentStyle}
+                                  labelStyle={pillLabelStyle}
+                                  onPress={() => setContactAutoRecord(false)}
+                                >
+                                  Recording Off
+                                </Button>
+                              ) : (
+                                /* General OFF → opt-in pill only. */
+                                <Button
+                                  key="rec-on"
+                                  mode={contactAutoRecord === true ? 'contained' : 'outlined'}
+                                  compact
+                                  style={altBtnStyle}
+                                  contentStyle={pillContentStyle}
+                                  labelStyle={pillLabelStyle}
+                                  onPress={() => setContactAutoRecord(true)}
+                                >
+                                  Recording On
+                                </Button>
+                              )}
+                            </View>
+                          </View>
+
+                          <Divider style={{ marginTop: -4, marginBottom: 8 }} />
+
+                          {/* ── zRTP Encryption ───────────────── */}
+                          <View style={{ marginBottom: 12 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                              zRTP Encryption
+                            </Text>
+                            <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                              Used for both audio and video calls to this contact.
+                            </Text>
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                              <Button
+                                key="enc-default"
+                                mode={encUsingDefault ? 'contained' : 'outlined'}
+                                compact
+                                disabled={encUsingDefault}
+                                style={defaultBtnStyle(encUsingDefault)}
+                                contentStyle={pillContentStyle}
+                                labelStyle={defaultLabelStyle}
+                                onPress={() => setContactEncryption(null)}
+                              >
+                                {`Default (${deviceEncLabel})`}
+                              </Button>
+                              {ENC_OPTIONS.filter(o => o.value !== deviceEnc).map(opt => {
+                                const selected = contactEncryption === opt.value;
+                                return (
+                                  <Button
+                                    key={opt.value}
+                                    mode={selected ? 'contained' : 'outlined'}
+                                    compact
+                                    style={altBtnStyle}
+                                    contentStyle={pillContentStyle}
+                                    labelStyle={pillLabelStyle}
+                                    onPress={() => setContactEncryption(opt.value)}
+                                  >
+                                    {opt.label}
+                                  </Button>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        </>
                       );
                     })()}
+
+                    </ScrollView>
 
                     <View style={styles.buttonRow}>
                       {/* Matches the DeleteHistoryModal / DeleteFileTransfers
@@ -626,10 +1094,8 @@ const getTotalPrettyStorage = (entity) => {
                   </>
                 )}
               </Surface>
-            </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>
-      </TouchableWithoutFeedback>
     </Modal>
   );
 };

@@ -120,7 +120,7 @@ class Conference extends React.Component {
         switch (newState) {
             case 'disconnected':
                 if (oldState === 'ready') {
-                    utils.timestampedLog('Conference: connection failed, reconnecting the call...');
+                    utils.timestampedLog('Conference: connection failed, reconnecting the [call]...');
                     this.waitInterval = this.defaultWaitInterval;
                 }
                 break;
@@ -220,7 +220,7 @@ class Conference extends React.Component {
     }
 
     async startCallWhenReady() {
-        utils.timestampedLog('Conference: start conference when ready to', this.state.room);
+        utils.timestampedLog('Conference: start conference [call] when ready to', this.state.room);
         this.waitCounter = 0;
 
         //utils.timestampedLog('Conference: waiting for connecting to the conference', this.waitInterval, 'seconds');
@@ -238,7 +238,7 @@ class Conference extends React.Component {
             }
 
             if (this.waitCounter >= this.waitInterval - 1) {
-                utils.timestampedLog('Conference: cancelling conference', this.state.callUUID);
+                utils.timestampedLog('Conference: cancelling conference [call]', this.state.callUUID);
                 this.props.hangupCall(this.state.callUUID, 'timeout');
             }
 
@@ -279,10 +279,10 @@ class Conference extends React.Component {
             initialParticipants: this.props.participantsToInvite
         };
 
-        utils.timestampedLog('Conference: Sylkrtc.js will start conference call', this.state.callUUID, 'to', this.state.room.toLowerCase());
+        utils.timestampedLog('Conference: Sylkrtc.js will start conference [call]', this.state.callUUID, 'to', this.state.room.toLowerCase());
 
         if (this.props.participantsToInvite) {
-            utils.timestampedLog('Initial participants', this.props.participantsToInvite);
+            utils.timestampedLog('[call] Initial participants', this.props.participantsToInvite);
         }
 
 		let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);

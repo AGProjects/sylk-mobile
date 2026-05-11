@@ -321,6 +321,16 @@ const StaticMap = memo((props) => {
         // these dynamically with zero source-line changes.
         mapWidth = DEFAULT_MAP_WIDTH,
         mapHeight = DEFAULT_MAP_HEIGHT,
+        // Optional radius circle — used by ShareLocationModal's
+        // destination preview to visualise the privacy radius the
+        // user has chosen on the slider, drawn around the user's
+        // current location. Center is decoupled from the owner pin
+        // so the same machinery can serve other "show me this
+        // distance ring" needs in the future. Skipped when any
+        // of the three are missing.
+        circleCenterLatitude,
+        circleCenterLongitude,
+        circleRadiusMeters,
     } = props;
     const MAP_WIDTH = mapWidth;
     const MAP_HEIGHT = mapHeight;
@@ -406,6 +416,15 @@ const StaticMap = memo((props) => {
     let center;
     if (hasScrub) {
         center = { latitude: scrubLatitude, longitude: scrubLongitude };
+    } else if (props.focusOnTarget === 'peer' && hasPeer) {
+        // Focus-cycle override — recentre on the peer's pin.
+        center = { latitude: peerLatitude, longitude: peerLongitude };
+    } else if (props.focusOnTarget === 'destination' && hasDestination) {
+        // Focus-cycle override — recentre on the meeting destination.
+        center = { latitude: destinationLatitude, longitude: destinationLongitude };
+    } else if (props.focusOnTarget === 'owner' && hasOwner) {
+        // Focus-cycle override — recentre on the owner's latest fix.
+        center = { latitude, longitude };
     } else if (centerOnOwner && hasOwner) {
         center = { latitude, longitude };
     } else if (visiblePoints.length > 1) {
@@ -657,6 +676,63 @@ const StaticMap = memo((props) => {
         );
     }
 
+    // Optional privacy-radius circle. Projects the centre into the
+    // same tile-frame pixel space the pins use, then converts the
+    // metres radius into pixels via the Web-Mercator metres-per-pixel
+    // formula at the centre latitude. We use SvgCircle so the ring
+    // scales with the map's existing zoom UI — the user sees the
+    // ring grow/shrink as they zoom in/out, matching their intuition
+    // for "what's INSIDE the privacy zone." Skipped when any input
+    // is missing or the projected radius would be sub-pixel /
+    // larger than the frame (degenerate at extreme zoom-out).
+    let privacyCircle = null;
+    if (typeof circleCenterLatitude === 'number'
+            && typeof circleCenterLongitude === 'number'
+            && typeof circleRadiusMeters === 'number'
+            && circleRadiusMeters > 0) {
+        const cProj = project(circleCenterLatitude, circleCenterLongitude);
+        // metres per pixel at this latitude / zoom (Web-Mercator).
+        // 156543.03392 is the canonical "ground resolution at the
+        // equator at zoom 0" constant.
+        const latRad = circleCenterLatitude * Math.PI / 180;
+        const metresPerPixel = (156543.03392 * Math.cos(latRad)) / Math.pow(2, zoom);
+        const radiusPx = metresPerPixel > 0
+            ? circleRadiusMeters / metresPerPixel
+            : 0;
+        // Render only when the ring would be visible — sub-pixel
+        // rings are noise, and a ring larger than the diagonal of
+        // the map just paints the whole frame purple. The 4×
+        // diagonal cap is generous enough that the user can still
+        // see the ring extending well past the visible area when
+        // they're zoomed in close, but bails out at world-view
+        // zooms where the ring is meaningless.
+        const _diag = Math.sqrt(MAP_WIDTH * MAP_WIDTH + MAP_HEIGHT * MAP_HEIGHT);
+        if (radiusPx >= 2 && radiusPx <= _diag * 4) {
+            privacyCircle = (
+                <Svg
+                    key="privacy-circle"
+                    width={MAP_WIDTH}
+                    height={MAP_HEIGHT}
+                    style={{ position: 'absolute', left: 0, top: 0 }}
+                    pointerEvents="none"
+                >
+                    {/* Soft purple fill so the ring reads as a
+                        "private zone" without obscuring the
+                        underlying tiles or the destination pin. */}
+                    <SvgCircle
+                        cx={cProj.x}
+                        cy={cProj.y}
+                        r={radiusPx}
+                        fill="rgba(142,68,173,0.12)"
+                        stroke="rgba(142,68,173,0.85)"
+                        strokeWidth={1.5}
+                        strokeDasharray="6,4"
+                    />
+                </Svg>
+            );
+        }
+    }
+
     // The mapFrame clips its children with overflow:hidden. The
     // inner translate-View shifts every absolutely-positioned child
     // (tiles, polyline, start dot, pins) by (-panX, -panY) so the
@@ -680,6 +756,10 @@ const StaticMap = memo((props) => {
                 }}
             >
                 {tiles}
+                {/* Privacy-radius circle, rendered ABOVE the tiles but
+                    BELOW everything else so pins and the trail
+                    polyline stay readable on top of the soft fill. */}
+                {privacyCircle}
                 {/* Trail rendered ABOVE the tiles but BELOW the pins so
                     the avatar/destination markers stay readable on top
                     of the polyline. */}
@@ -710,7 +790,7 @@ const StaticMap = memo((props) => {
 // Prototype bubble for a live-location message. Renders inside the normal
 // GiftedChat bubble wrapper (via renderMessageText) so the bubble background
 // and tail still come from ChatBubble.
-const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, ownerName, peerName, fullScreen = false }) => {
+const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, ownerName, peerName, fullScreen = false, onOpenFullScreen }) => {
     // Per-render map dimensions. Inline bubble keeps the cosy
     // 300x200 tile grid; the fullscreen viewer (long-press → "Full
     // screen") fills the whole window — minus the Modal padding /
@@ -747,6 +827,14 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // button or by re-engaging the slider — those actions take
     // priority for centring.
     const [focusedOnLatest, setFocusedOnLatest] = useState(false);
+
+    // Focus-cycle target. The Focus button advances through
+    // available pins on each tap: 'peer' → 'destination' → 'owner' →
+    // 'peer' → … Skips targets whose coords don't exist for this
+    // bubble (e.g. plain shares have no destination; one-shots have
+    // no peer). Centred + zoomed-in via StaticMap's `focusOnTarget`
+    // prop. null = no override (auto-fit / centroid path).
+    const [focusTarget, setFocusTarget] = useState(null);
 
     // Pan offset in pixels. {x: 0, y: 0} = no pan, view centered on
     // the auto-fit centroid (or whatever StaticMap's centering math
@@ -914,6 +1002,29 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
 
     const isIncoming = currentMessage?.direction === 'incoming';
 
+    // Privacy-deferred state, lifted to the outer LocationBubble
+    // scope so it's reachable by the zoom-button + pan-cluster JSX
+    // below (those live outside the StaticMap IIFE that originally
+    // owned these constants). Shadowed inside the IIFE doesn't
+    // matter — same conditions, same values.
+    const isPrivacyDeferred = !!(meta && meta.privacyDeferred);
+    // The bottom strip is rendered only on the inviter's OWN view of
+    // a privacy-deferred bubble (outgoing direction) and only once we
+    // have a radius value to print in the hint. Bottom-anchored map
+    // controls (zoom -, pan-down, restore) read this to lift
+    // themselves up by ~24 px so they don't overlap the strip.
+    // The strip fires whenever THIS DEVICE has a privacy radius
+    // armed for this bubble (regardless of incoming/outgoing — the
+    // accepter sees their own strip on the incoming request bubble
+    // too). We key off `meta.localOwnerRadiusMeters` because that's
+    // the local-only stamp; meta.privacyDeferredRadiusMeters is the
+    // OTHER party's radius on the wire and would mislead the strip
+    // text on incoming bubbles.
+    const _showPrivacyStrip = isPrivacyDeferred
+        && !!(meta && meta.localOwnerCoords
+            && typeof meta.localOwnerRadiusMeters === 'number'
+            && meta.localOwnerRadiusMeters > 0);
+
     // "Distance to meeting point" — each device computes against ITS
     // OWN coords so the same bubble reads as "your remaining walk"
     // on both ends. The local user's coords depend on bubble
@@ -924,11 +1035,42 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     //     peerCoords regardless of direction).
     // The line is hidden entirely when either coord is missing or
     // when no destination has been chosen for this share.
+    // Privacy-deferred ticks ship the destination AS the value coords
+    // (the wire stays clean — peer doesn't see the inviter's actual
+    // position). The inviter's OWN device, however, has the real
+    // coords stamped local-only on `meta.localOwnerCoords` (set by
+    // app.js's _setLocalOwnerCoordsForBubble). We use those for the
+    // OUTGOING side so the inviter sees themselves on the map and
+    // gets a real distance to the meeting point.
+    const _isPrivacyDeferredForDist = !!(meta && meta.privacyDeferred);
+    const _localOwnCoords = (meta
+            && meta.localOwnerCoords
+            && typeof meta.localOwnerCoords.latitude === 'number'
+            && typeof meta.localOwnerCoords.longitude === 'number')
+        ? meta.localOwnerCoords
+        : null;
     const myCoords = isIncoming
-        ? (meta.peerCoords && typeof meta.peerCoords.latitude === 'number'
-            ? meta.peerCoords : null)
-        : (meta.value && typeof meta.value.latitude === 'number'
-            ? meta.value : null);
+        ? (
+            // Incoming privacy-deferred bubble (accepter's view of
+            // the request bubble): prefer local-only owner coords
+            // (B's real coords stamped on this device only). Fall
+            // back to peerCoords for the normal incoming case.
+            (_isPrivacyDeferredForDist && _localOwnCoords)
+                ? _localOwnCoords
+                : (meta.peerCoords && typeof meta.peerCoords.latitude === 'number'
+                    ? meta.peerCoords : null)
+        )
+        : (
+            // Outgoing privacy-deferred bubble (requester's own
+            // bubble): prefer local-only owner coords (A's real
+            // coords stamped on this device only — never on the
+            // wire). Fall back to value coords for the normal
+            // (non-deferred) outgoing case.
+            (_isPrivacyDeferredForDist && _localOwnCoords)
+                ? _localOwnCoords
+                : (meta.value && typeof meta.value.latitude === 'number'
+                    ? meta.value : null)
+        );
     const dest = (meta.destination
             && typeof meta.destination.latitude === 'number'
             && typeof meta.destination.longitude === 'number')
@@ -1040,6 +1182,23 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
             && typeof meta.destination.latitude === 'number'
             && typeof meta.destination.longitude === 'number') {
         _autoZoomPoints.push(meta.destination);
+    }
+    // Privacy-deferred outgoing bubble: meta.value coords are the
+    // destination (a stand-in to keep the inviter's real position off
+    // the wire). The auto-fit framing must include the inviter's
+    // REAL coords (meta.localOwnerCoords, stamped local-only) so the
+    // map zooms out to show both the inviter's position AND the
+    // destination — without this, both `hasCoords` and
+    // `meta.destination` collapse onto the same point and the map
+    // stays at street-level zoom centred on the destination, leaving
+    // the inviter pin offscreen at their real location km away.
+    if (meta.localOwnerCoords
+            && typeof meta.localOwnerCoords.latitude === 'number'
+            && typeof meta.localOwnerCoords.longitude === 'number') {
+        _autoZoomPoints.push({
+            latitude: meta.localOwnerCoords.latitude,
+            longitude: meta.localOwnerCoords.longitude,
+        });
     }
     // Trail points are folded into the auto-fit ONLY for plain timed
     // shares — for those, "show me the whole path" is the goal. Meet
@@ -1366,12 +1525,135 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             && scrubIndex < _scrubTrail.length)
                         ? _scrubTrail[scrubIndex]
                         : null;
+                    // Privacy-deferred origin tick: the INVITER chose
+                    // a privacy radius and is still inside it, so the
+                    // value coords on this metadata are the destination
+                    // (a stand-in) rather than the inviter's actual
+                    // position.
+                    //
+                    //   • OUTGOING bubble (sender's own view) — use
+                    //     `meta.localOwnerCoords`, which is the
+                    //     inviter's REAL coords stamped locally only
+                    //     (never sent on the wire). The inviter sees
+                    //     themselves on the map and the privacy
+                    //     circle is anchored to their actual
+                    //     position.
+                    //
+                    //   • INCOMING bubble (peer's view) — suppress
+                    //     the inviter pin entirely. The peer sees
+                    //     only the destination + their own pin
+                    //     (peerCoords) once they accept and start
+                    //     sharing back.
+                    //
+                    // The inviter pin reappears for both sides the
+                    // moment a post-deferral tick with real coords
+                    // lands and the metadata loses the
+                    // privacyDeferred flag. (`isPrivacyDeferred` and
+                    // `_showPrivacyStrip` are now defined at the
+                    // outer LocationBubble scope so the zoom-button
+                    // / pan-cluster JSX outside this IIFE can read
+                    // them too.)
+                    const _hasLocalOwnerCoords = !!(meta
+                        && meta.localOwnerCoords
+                        && typeof meta.localOwnerCoords.latitude === 'number'
+                        && typeof meta.localOwnerCoords.longitude === 'number');
+                    // Effective coords for StaticMap, by bubble role:
+                    //
+                    //   • OUTGOING privacy-deferred (requester's
+                    //     own bubble): own pin (red) =
+                    //     localOwnerCoords; peer pin (blue) untouched
+                    //     (peerCoords as usual).
+                    //
+                    //   • INCOMING privacy-deferred (accepter's view
+                    //     of the request bubble): own pin (red =
+                    //     author/requester) suppressed because the
+                    //     requester's value coords are the
+                    //     destination placeholder; peer pin (blue =
+                    //     local user / accepter) = localOwnerCoords
+                    //     because the peerCoords propagation skips
+                    //     deferred ticks (the wire-stand-in coord
+                    //     would have rendered the accepter pin at
+                    //     the destination — wrong).
+                    const _effOwnerLat = (isPrivacyDeferred && !isIncoming && _hasLocalOwnerCoords)
+                        ? meta.localOwnerCoords.latitude
+                        : (isPrivacyDeferred ? undefined : latitude);
+                    const _effOwnerLng = (isPrivacyDeferred && !isIncoming && _hasLocalOwnerCoords)
+                        ? meta.localOwnerCoords.longitude
+                        : (isPrivacyDeferred ? undefined : longitude);
+                    const _effPeerLat = (isPrivacyDeferred && isIncoming && _hasLocalOwnerCoords)
+                        ? meta.localOwnerCoords.latitude
+                        : peerLatitude;
+                    const _effPeerLng = (isPrivacyDeferred && isIncoming && _hasLocalOwnerCoords)
+                        ? meta.localOwnerCoords.longitude
+                        : peerLongitude;
+                    // Format the radius (metres → "500 m" / "1.5 km")
+                    // for the bottom-strip hint. Stamped by
+                    // sendLocationMetadata from the timer entry's
+                    // excludeOriginRadiusMeters when the deferred
+                    // origin tick goes out, so we don't have to
+                    // re-derive it on the render side.
+                    let _privacyRadiusLabel = null;
+                    if (isPrivacyDeferred) {
+                        // Local stamp wins — it's the THIS-DEVICE
+                        // user's radius. Fall back to the wire's
+                        // privacyDeferredRadiusMeters only when the
+                        // local stamp is absent (rare — would mean
+                        // we have a deferred bubble without our own
+                        // privacy state armed yet).
+                        const r = (meta && Number(meta.localOwnerRadiusMeters))
+                            || (meta && Number(meta.privacyDeferredRadiusMeters));
+                        if (r && r > 0) {
+                            _privacyRadiusLabel = r >= 1000
+                                ? `${(r / 1000).toFixed(r % 1000 === 0 ? 0 : 1)} km`
+                                : `${Math.round(r)} m`;
+                        }
+                    }
+                    // The bottom strip is rendered when the outer
+                    // `_showPrivacyStrip` AND we have a label to
+                    // print (`_privacyRadiusLabel`). The outer
+                    // version already covers the privacyDeferred /
+                    // outgoing / radius-present checks; we re-AND
+                    // with `_privacyRadiusLabel` here just so a
+                    // missing radius still gracefully no-ops the
+                    // strip rendering even though the outer check
+                    // would already have flipped to false.
+                    // Privacy-radius circle for the LOCAL USER's pin
+                    // — fires on both outgoing and incoming bubbles
+                    // when a localOwnerCoords + localOwnerRadiusMeters
+                    // pair is stamped (set by app.js for the side
+                    // that's hiding their position). The circle is
+                    // anchored to the local user's real coords with
+                    // their CHOSEN radius — distinct from
+                    // meta.privacyDeferredRadiusMeters which is the
+                    // OTHER party's radius on the wire.
+                    const _localOwnRadius = (typeof meta.localOwnerRadiusMeters === 'number'
+                            && meta.localOwnerRadiusMeters > 0)
+                        ? meta.localOwnerRadiusMeters : null;
+                    const _circleLat = (isPrivacyDeferred
+                            && _hasLocalOwnerCoords
+                            && _localOwnRadius)
+                        ? meta.localOwnerCoords.latitude : undefined;
+                    const _circleLng = (isPrivacyDeferred
+                            && _hasLocalOwnerCoords
+                            && _localOwnRadius)
+                        ? meta.localOwnerCoords.longitude : undefined;
+                    const _circleR = (isPrivacyDeferred
+                            && _hasLocalOwnerCoords
+                            && _localOwnRadius)
+                        ? _localOwnRadius : undefined;
                     return (
+                        <View style={{
+                            width: MAP_WIDTH,
+                            height: MAP_HEIGHT,
+                        }}>
                         <StaticMap
-                            latitude={latitude}
-                            longitude={longitude}
-                            peerLatitude={peerLatitude}
-                            peerLongitude={peerLongitude}
+                            latitude={_effOwnerLat}
+                            longitude={_effOwnerLng}
+                            peerLatitude={_effPeerLat}
+                            peerLongitude={_effPeerLng}
+                            circleCenterLatitude={_circleLat}
+                            circleCenterLongitude={_circleLng}
+                            circleRadiusMeters={_circleR}
                             destinationLatitude={
                                 meta.destination
                                     && typeof meta.destination.latitude === 'number'
@@ -1399,9 +1681,33 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             panX={panOffset.x}
                             panY={panOffset.y}
                             centerOnOwner={focusedOnLatest}
+                            focusOnTarget={focusTarget}
                             mapWidth={MAP_WIDTH}
                             mapHeight={MAP_HEIGHT}
                         />
+                        {_showPrivacyStrip ? (
+                            <View
+                                pointerEvents="none"
+                                style={{
+                                    position: 'absolute',
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    paddingVertical: 4,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: 'rgba(0,0,0,0.55)',
+                                }}
+                            >
+                                <Text style={{
+                                    fontSize: 11,
+                                    color: '#fff',
+                                    textAlign: 'center',
+                                }} numberOfLines={1}>
+                                    📍 Move {_privacyRadiusLabel} to share your location
+                                </Text>
+                            </View>
+                        ) : null}
+                        </View>
                     );
                 })() : (
                     // No coords yet — sender fired an origin tick
@@ -1439,9 +1745,19 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                 styles.zoomBtn,
                                 styles.zoomBtnTop,
                                 !canZoomIn ? styles.zoomBtnDisabled : null,
+                                // Fullscreen size doubling — see the
+                                // pan-cluster comment below for the
+                                // _fsZoom rationale (44 → 60 px).
+                                // top:16 puts this on the same row as
+                                // the Focus button at top:16 left:16.
+                                // The fullscreen close-X is moved
+                                // BELOW these (top:90) by the modal so
+                                // the map controls form a clean top
+                                // row.
+                                fullScreen ? {width: 60, height: 60, borderRadius: 30, top: 16, right: 16} : null,
                             ]}
                         >
-                            <Icon name="plus" size={18} color="#222" />
+                            <Icon name="plus" size={fullScreen ? 32 : 18} color="#222" />
                         </TouchableOpacity>
                         <TouchableOpacity
                             onPress={() => adjustZoom(-1)}
@@ -1452,9 +1768,15 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                 styles.zoomBtn,
                                 styles.zoomBtnBottom,
                                 !canZoomOut ? styles.zoomBtnDisabled : null,
+                                fullScreen ? {width: 60, height: 60, borderRadius: 30, right: 16} : null,
+                                // Lift bottom-anchored zoom button up
+                                // when the privacy-deferred bottom
+                                // strip is rendered along the bottom
+                                // edge (~22 px tall).
+                                _showPrivacyStrip ? {bottom: (fullScreen ? 16 : 8) + 24} : null,
                             ]}
                         >
-                            <Icon name="minus" size={18} color="#222" />
+                            <Icon name="minus" size={fullScreen ? 32 : 18} color="#222" />
                         </TouchableOpacity>
                         {/* Pan compass: ↑ ← ⊙ → ↓, anchored to the
                             BOTTOM-LEFT corner so it doesn't compete
@@ -1478,24 +1800,66 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                     + 'offset (' + next.x + ',' + next.y + ')');
                                 return next;
                             });
-                            // "Current location" — recenter the map
-                            // on the latest GPS fix and put it in
-                            // the middle of the frame, WITHOUT
-                            // changing the zoom level the user has
-                            // dialled in. Sets the focusedOnLatest
-                            // flag so StaticMap centres on the
-                            // owner instead of the visible-points
-                            // centroid, clears the pan offset, and
-                            // disengages the slider (so the avatar
-                            // is at the latest tick again).
-                            // zoomOverride is intentionally
-                            // untouched — that's the "keep my zoom"
-                            // promise.
+                            // "Focus" button — cycles through the
+                            // available pins on each tap, zooming in
+                            // on the next one. Order is fixed: peer →
+                            // destination → owner → (wrap). Targets
+                            // missing coords are skipped, so e.g. a
+                            // plain share with only owner coords
+                            // simply re-centres on owner every tap.
+                            // Each tap clears pan + scrub so the
+                            // chosen pin lands centred at a useful
+                            // zoom level (StaticMap reads
+                            // `focusOnTarget` and applies a tighter
+                            // zoom than the auto-fit framing). The
+                            // legacy `focusedOnLatest` flag is left
+                            // alone for back-compat with the
+                            // auto-fit centroid path elsewhere.
                             const focusCurrent = () => {
-                                console.log('[APPLOG] [map] ' + messageKey + ' focus current — recenter on latest tick');
+                                // Build the available-target list in
+                                // priority order. The `hasOwner` /
+                                // `hasPeer` / `hasDestination` flags
+                                // computed above live inside StaticMap's
+                                // closure — out of scope here. Read
+                                // straight off `meta` (the merged
+                                // bubble metadata). Each pin's coords
+                                // are stored on a different field:
+                                //   • owner       → meta.value
+                                //   • peer        → meta.peerCoords
+                                //   • destination → meta.destination
+                                const _hasC = (c) => !!(c
+                                    && typeof c.latitude === 'number'
+                                    && typeof c.longitude === 'number');
+                                const _targets = [];
+                                if (_hasC(meta && meta.peerCoords))   _targets.push('peer');
+                                if (_hasC(meta && meta.destination))  _targets.push('destination');
+                                if (_hasC(meta && meta.value))        _targets.push('owner');
+                                if (_targets.length === 0) {
+                                    console.log('[APPLOG] [map] ' + messageKey + ' focus — no pins to focus on');
+                                    return;
+                                }
+                                // Pick the next target after the
+                                // current one (wrap to start of list).
+                                // null / unknown → first target.
+                                const _curIdx = focusTarget
+                                    ? _targets.indexOf(focusTarget)
+                                    : -1;
+                                const _nextIdx = (_curIdx + 1) % _targets.length;
+                                const _next = _targets[_nextIdx];
+                                console.log('[APPLOG] [map] ' + messageKey + ' focus cycle '
+                                    + (focusTarget || '(none)')
+                                    + ' → ' + _next
+                                    + ' (available: ' + _targets.join(',') + ')');
                                 setPanOffset({x: 0, y: 0});
                                 setScrubIndex(null);
-                                setFocusedOnLatest(true);
+                                setFocusTarget(_next);
+                                // Bump zoom in on the chosen target so
+                                // the user sees street-level detail
+                                // around the pin. Cap at MAX_ZOOM so
+                                // we don't blow past tile-server
+                                // coverage. Mirrors the manual zoom-in
+                                // button's behaviour at the top end.
+                                setZoomOverride(Math.min(17, MAX_ZOOM));
                             };
                             // "Restore" — back to the bubble's
                             // load-time view. Auto-fit zoom (whatever
@@ -1508,33 +1872,110 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                 setZoomOverride(null);
                                 setScrubIndex(null);
                                 setFocusedOnLatest(false);
+                                setFocusTarget(null);
                             };
+                            // Bottom-strip lift: when the privacy-
+                            // deferred bottom strip is rendered along
+                            // the bottom edge (~22 px tall), shift any
+                            // bottom-anchored controls UP by 24 px so
+                            // they don't sit on top of the strip.
+                            const _stripLift = _showPrivacyStrip ? 24 : 0;
+                            // Fullscreen size doubling. In the
+                            // fullscreen viewer the map fills the
+                            // window so the inline 22/30 px controls
+                            // look tiny. Double the dimensions +
+                            // borderRadius + icon sizes; the position
+                            // anchors stay at edge gutters but use
+                            // larger gutter values too so the bigger
+                            // buttons don't crowd the corners.
+                            const _fsPan = fullScreen ? {
+                                width: 44, height: 44, borderRadius: 22,
+                            } : null;
+                            const _fsZoom = fullScreen ? {
+                                width: 60, height: 60, borderRadius: 30,
+                            } : null;
+                            const _fsRestore = fullScreen ? {
+                                width: 60, height: 60, borderRadius: 30,
+                                left: 16, bottom: 16,
+                            } : null;
+                            const _panIcon = fullScreen ? 28 : 14;
+                            const _zoomIcon = fullScreen ? 32 : 18;
+                            const _restoreIcon = fullScreen ? 32 : 18;
+                            // Centre-axis offsets need to use the
+                            // doubled half-width when fullscreen
+                            // enlarges the buttons.
+                            const _panHalf = fullScreen ? 22 : 11;
                             return (
                                 <>
                                     <TouchableOpacity
                                         onPress={pan(0, -PAN_STEP)}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                         accessibilityLabel="Pan up"
-                                        style={[styles.panBtn, styles.panBtnUp, fullScreen && {left: (MAP_WIDTH / 2) - 11}]}
+                                        style={[styles.panBtn, styles.panBtnUp, _fsPan, fullScreen && {left: (MAP_WIDTH / 2) - _panHalf}]}
                                     >
-                                        <Icon name="chevron-up" size={14} color="#222" />
+                                        <Icon name="chevron-up" size={_panIcon} color="#222" />
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         onPress={pan(-PAN_STEP, 0)}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                         accessibilityLabel="Pan left"
-                                        style={[styles.panBtn, styles.panBtnLeft, fullScreen && {top: (MAP_HEIGHT / 2) - 11}]}
+                                        style={[styles.panBtn, styles.panBtnLeft, _fsPan, fullScreen && {top: (MAP_HEIGHT / 2) - _panHalf}]}
                                     >
-                                        <Icon name="chevron-left" size={14} color="#222" />
+                                        <Icon name="chevron-left" size={_panIcon} color="#222" />
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         onPress={focusCurrent}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                        accessibilityLabel="Snap to current location"
-                                        style={styles.recenterBtn}
+                                        accessibilityLabel="Cycle focus through pins"
+                                        style={[
+                                            styles.recenterBtn,
+                                            _fsZoom,
+                                            // Fullscreen: top-left rail at
+                                            // top:16, left:16 — same row as
+                                            // the zoom + button at top:16
+                                            // right:16. The close-X is
+                                            // pushed BELOW this row by the
+                                            // modal (top:90, left:30) so
+                                            // the primary map controls
+                                            // form a clean top stripe and
+                                            // X sits underneath as a
+                                            // secondary action. Inline
+                                            // (non-fullscreen) keeps the
+                                            // top:8 left:8 anchor from
+                                            // styles.recenterBtn.
+                                            fullScreen && {left: 16, top: 16},
+                                        ]}
                                     >
-                                        <Icon name="crosshairs-gps" size={18} color="#222" />
+                                        <Icon name="crosshairs-gps" size={_zoomIcon} color="#222" />
                                     </TouchableOpacity>
+                                    {/* Inline-only fullscreen toggle.
+                                        Sits BELOW the Focus button
+                                        (Focus at top:8 left:8 30×30 →
+                                        bottom edge y=38; this anchors
+                                        at top:44 leaving 6 px gap).
+                                        In fullscreen mode the user
+                                        already has the close-X
+                                        affordance, so we don't render
+                                        this twin in that context. The
+                                        kebab "Full screen" action
+                                        remains as a backup entry
+                                        point. */}
+                                    {!fullScreen && typeof onOpenFullScreen === 'function' ? (
+                                        <TouchableOpacity
+                                            onPress={() => {
+                                                try { onOpenFullScreen(); }
+                                                catch (e) {
+                                                    console.log('[map] onOpenFullScreen threw',
+                                                        e && e.message ? e.message : e);
+                                                }
+                                            }}
+                                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                            accessibilityLabel="Open map in full screen"
+                                            style={[styles.recenterBtn, {top: 44}]}
+                                        >
+                                            <Icon name="arrow-expand" size={18} color="#222" />
+                                        </TouchableOpacity>
+                                    ) : null}
                                     {/* Fourth view-control button —
                                         the "restore as loaded"
                                         affordance. Sits in the
@@ -1554,9 +1995,13 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                         onPress={restoreView}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                         accessibilityLabel="Restore initial map view"
-                                        style={styles.restoreBtn}
+                                        style={[
+                                            styles.restoreBtn,
+                                            _fsRestore,
+                                            _stripLift > 0 ? {bottom: (fullScreen ? 16 : 8) + _stripLift} : null,
+                                        ]}
                                     >
-                                        <Icon name="arrow-expand-all" size={18} color="#222" />
+                                        <Icon name="arrow-expand-all" size={_restoreIcon} color="#222" />
                                     </TouchableOpacity>
                                     {/* Pan-right is back — the
                                         middle-right slot opened up
@@ -1570,17 +2015,23 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                         onPress={pan(PAN_STEP, 0)}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                         accessibilityLabel="Pan right"
-                                        style={[styles.panBtn, styles.panBtnRight, fullScreen && {top: (MAP_HEIGHT / 2) - 11}]}
+                                        style={[styles.panBtn, styles.panBtnRight, _fsPan, fullScreen && {top: (MAP_HEIGHT / 2) - _panHalf}]}
                                     >
-                                        <Icon name="chevron-right" size={14} color="#222" />
+                                        <Icon name="chevron-right" size={_panIcon} color="#222" />
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         onPress={pan(0, PAN_STEP)}
                                         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                         accessibilityLabel="Pan down"
-                                        style={[styles.panBtn, styles.panBtnDown, fullScreen && {left: (MAP_WIDTH / 2) - 11}]}
+                                        style={[
+                                            styles.panBtn,
+                                            styles.panBtnDown,
+                                            _fsPan,
+                                            fullScreen && {left: (MAP_WIDTH / 2) - _panHalf},
+                                            _stripLift > 0 ? {bottom: (fullScreen ? 8 : 3) + _stripLift} : null,
+                                        ]}
                                     >
-                                        <Icon name="chevron-down" size={14} color="#222" />
+                                        <Icon name="chevron-down" size={_panIcon} color="#222" />
                                     </TouchableOpacity>
                                 </>
                             );
@@ -1613,19 +2064,27 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                 // ongoing stream.
                                 ? 'Current location'
                                 : (isExpired
-                                    ? 'Location (expired)'
+                                    ? (isMeetSession
+                                        ? 'Meeting session (expired)'
+                                        : 'Location (expired)')
                                     : (isStale
-                                        ? 'Last known location'
-                                        // Continuous (X-hour) share —
-                                        // this includes both plain
-                                        // timed shares and meeting
-                                        // requests. The bubble is a
-                                        // live, updating stream, so
-                                        // "Sharing location" reads as
-                                        // an active verb that
-                                        // distinguishes it from the
-                                        // one-shot snapshot above.
-                                        : (hasCoords ? 'Sharing location' : 'Sharing location (acquiring)')))}
+                                        ? (isMeetSession
+                                            ? 'Meeting session (last known)'
+                                            : 'Last known location')
+                                        // Continuous (X-hour) share or
+                                        // meet handshake. Distinct titles:
+                                        //   • meet session → "Meeting
+                                        //     session" (it's a handshake
+                                        //     anchored to a destination,
+                                        //     not just a location feed).
+                                        //   • plain timed share → "Sharing
+                                        //     location" (the active-verb
+                                        //     framing that distinguishes
+                                        //     this from the one-shot
+                                        //     snapshot above).
+                                        : (isMeetSession
+                                            ? (hasCoords ? 'Meeting session' : 'Meeting session (acquiring)')
+                                            : (hasCoords ? 'Sharing location' : 'Sharing location (acquiring)'))))}
                         </Text>
                         {hasCoords && scaleLabel ? (
                             <Text
@@ -2046,5 +2505,25 @@ const styles = StyleSheet.create({
         paddingHorizontal: 6,
     },
 });
+
+// Named export of the inner StaticMap so other components (e.g.
+// ShareLocationModal) can render a small destination preview tile
+// without re-implementing slippy-map projection / pin placement /
+// FastImage caching. Pass only the props the preview needs
+// (destinationLatitude / destinationLongitude / mapWidth / mapHeight /
+// zoom); owner / peer / trail props are all optional and the
+// existing guards (`hasOwner`, `hasPeer`, `hasTrail`) make their
+// rendering paths no-ops when absent. The destination shows as the
+// green map-marker icon defined inline below, which is the right
+// visual for "this is where we're meeting" — not a person.
+export { StaticMap };
+
+// `pickZoomToFitPoints` is also exported so the destination-preview
+// modal can seed its initial zoom from the fitted value (so when
+// the user pin lands, the map auto-zooms out to fit BOTH points
+// rather than staying at the default street-level zoom with the
+// user pin offscreen). The modal's own +/- buttons then adjust
+// FROM the fitted value.
+export { pickZoomToFitPoints };
 
 export default LocationBubble;

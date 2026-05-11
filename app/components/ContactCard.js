@@ -118,6 +118,25 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
+  // Small "tel" pill rendered in the right-side metadata column for
+  // contacts whose URI is a phone number. Sits in the same vertical
+  // slot the storage-size text uses for chat contacts so the row
+  // height stays consistent across types.
+  telPill: {
+    marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8,
+    backgroundColor: '#27ae60',
+    alignSelf: 'flex-end',
+  },
+  telPillText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+
   timestamp: {
     fontSize: 12,
     color: '#555',
@@ -293,7 +312,15 @@ class ContactCard extends Component {
 	  }
 	
 		title = prettifyName(title);
-	  let subtitle = contact.uri;
+	  // Show the bare phone number (no SIP domain) when the contact's
+	  // URI looks like a tel number, e.g. '+40xxxx@sylk.link' →
+	  // '+40xxxx'. Also keys on the 'tel' tag so contacts saved before
+	  // utils.isPhoneNumber existed (or with edge-case formats) still
+	  // strip cleanly. Email/SIP user URIs keep their full form.
+	  const isTelContact =
+	    utils.isPhoneNumber(contact.uri) ||
+	    (Array.isArray(contact.tags) && contact.tags.indexOf('tel') > -1);
+	  let subtitle = isTelContact ? contact.uri.split('@')[0] : contact.uri;
 	
 	  if (uri.indexOf('@guest.') > -1) {
 		title = 'Anonymous caller';
@@ -390,9 +417,19 @@ class ContactCard extends Component {
 	
 					)}
 				  </View>
-				  <Text style={[styles.storageText, isDark && darkStyles.textSecondary]}>
-					{contact.prettyStorage}
-				  </Text>
+				  {isTelContact ? (
+				    // Tel contacts replace the storage-size readout
+				    // with a green "tel" pill so the row is visually
+				    // identifiable as a phone-number entry without
+				    // having to read the URI.
+				    <View style={styles.telPill}>
+				      <Text style={styles.telPillText}>tel</Text>
+				    </View>
+				  ) : (
+				    <Text style={[styles.storageText, isDark && darkStyles.textSecondary]}>
+				      {contact.prettyStorage}
+				    </Text>
+				  )}
 				</View>
 				}
 			  </View>

@@ -1,0 +1,1 @@
+Fix android keepalive while location sharing is active
