@@ -37,19 +37,19 @@ public class ReactEventEmitter {
             payload.putString("event", event);
             payload.putBoolean("phoneLocked", phoneLocked);
 
-            Log.d(LOG_TAG, "[Emitter] action " + action);
-            Log.d(LOG_TAG, "[Emitter] event " + event);
+            SylkLogger.d("[bridge] [event] action " + action);
+            SylkLogger.d("[bridge] [event] event " + event);
 
 			if (rc != null && CallEventModule.isRNready()) {
-                Log.d(LOG_TAG, "[Emitter] RN ready → event emitted");
+                SylkLogger.d("[bridge] [event] RN ready → event emitted");
                 emit(rc, payload);
             } else {
 				CallEventModule.setLastEvent(payload);
-				Log.w(LOG_TAG, "[Emitter] RN not ready → event stored for pull");
+				SylkLogger.w("[bridge] [event] RN not ready → event stored for pull");
             }
 
         } catch (Exception e) {
-            Log.e(LOG_TAG, "[Emitter] Error sending RN event", e);
+            SylkLogger.e("[bridge] [event] Error sending RN event", e);
         }
     }
 

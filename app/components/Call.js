@@ -1,5 +1,7 @@
 import React, { Component } from 'react';
-import { View } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { RTCView } from 'react-native-webrtc';
+import { Button, IconButton, Text as PaperText } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import assert from 'assert';
 import debug from 'react-native-debug';
@@ -54,14 +56,44 @@ class Call extends Component {
             // If current call is available on mount we must have incoming
             this.props.call.on('stateChanged', this.callStateChanged);
             this.props.call.on('incomingMessage', this.incomingMessage);
+            // Mid-call renegotiation events emitted by react-native-sylkrtc
+            // (audio -> audio+video upgrade via Janus SIP plugin "update"):
+            //   mediaUpdated  : a renegotiation completed; payload tells
+            //                   us whether local and remote sides now
+            //                   carry video, so we can flip audioOnly
+            //                   and let render() swap AudioCallBox out
+            //                   for VideoBox.
+            //   updateRequest : peer initiated a re-INVITE that added
+            //                   media. The library has already applied
+            //                   the remote offer; we capture local
+            //                   video (if any) and call answerUpdate().
+            //   updateFailed  : something went wrong on either side of
+            //                   the renegotiation — log and keep
+            //                   running on the current media set.
+            this.props.call.on('mediaUpdated', this.onMediaUpdated);
+            this.props.call.on('updateRequest', this.onUpdateRequest);
+            this.props.call.on('updateFailed', this.onUpdateFailed);
             utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (mount)',
                 'call_id=', this.props.call._callId || this.props.call.callId || this.props.call.id,
                 'peer=', this.props.call.remoteIdentity && this.props.call.remoteIdentity.uri,
                 'inlineMessaging=', !!this.props.call.enableInlineMessaging);
-            remoteUri = this.props.call.remoteIdentity.uri;
+            // For OUTGOING calls, prefer props.targetUri (canonical
+            // `+40…@sylk.link`) over call.remoteIdentity.uri (wire
+            // form `0040…@sylk.link` after the pstnRules.replacePlus
+            // rewrite at the SIP boundary). The user dialed the
+            // canonical number; the rewrite is an implementation
+            // detail of the gateway path and should not surface in
+            // the call screen. For INCOMING calls keep using
+            // remoteIdentity.uri — that's the canonical SIP URI of
+            // the caller as the server reported it.
+            direction = this.props.call.direction;
+            if (direction === 'outgoing' && this.props.targetUri) {
+                remoteUri = this.props.targetUri;
+            } else {
+                remoteUri = this.props.call.remoteIdentity.uri;
+            }
             callState = this.props.call.state;
             remoteDisplayName = this.props.callContact?.name || this.props.call?.remoteIdentity?.displayName || this.props.call?.remoteIdentity.uri;
-            direction = this.props.call.direction;
             callUUID = this.props.call.id;
         } else {
             remoteUri = this.props.targetUri;
@@ -78,6 +110,34 @@ class Call extends Component {
         let audioOnly = false;
         if (this.props.localMedia && this.props.localMedia.getVideoTracks().length === 0) {
             audioOnly = true;
+        }
+        // If the call was upgraded from audio to audio+video mid-session
+        // (Janus SIP plugin "update" / SIP re-INVITE flow), addVideo()
+        // captures a fresh MediaStream and addTrack's it directly to the
+        // existing RTCPeerConnection — it deliberately does NOT replace
+        // props.localMedia, because that state belongs to the app and is
+        // the *initial* media we started the call with. The first check
+        // above will therefore still say "audio only" on every remount
+        // (e.g., after navigating away and back via the pulsing call
+        // icon in the navbar), and we'd render AudioCallBox over a call
+        // that actually carries video. Detect that case by asking the
+        // call object directly: getLocalStreams()[0] reflects the live
+        // PC senders (post-upgrade it has a video track), and
+        // remoteMediaDirections.video reflects the negotiated remote
+        // direction (post-upgrade it's sendrecv, not absent/inactive).
+        if (audioOnly && this.props.call) {
+            const localStreams = this.props.call.getLocalStreams && this.props.call.getLocalStreams();
+            const hasLocalVideo =
+                localStreams && localStreams[0]
+                && localStreams[0].getVideoTracks
+                && localStreams[0].getVideoTracks().length > 0;
+            const remoteDirs = this.props.call.remoteMediaDirections;
+            const hasRemoteVideo =
+                remoteDirs && remoteDirs.video
+                && remoteDirs.video.some(d => d && d !== 'inactive');
+            if (hasLocalVideo || hasRemoteVideo) {
+                audioOnly = false;
+            }
         }
 
         this.state = {
@@ -102,7 +162,31 @@ class Call extends Component {
                       callContact: this.props.callContact,
                       selectedContacts: this.props.selectedContacts,
                       callEndReason: null,
-                      userStartedCall: false,
+                      // True only for a fresh outgoing call that's
+                      // waiting on the user's explicit "Start audio
+                      // call" tap. When we re-enter /call as a
+                      // reconnect after outgoing_connection_failed,
+                      // the user already started the call; pretending
+                      // otherwise would re-render the awaiting UI
+                      // and restart the 6-second auto-start countdown.
+                      userStartedCall: this.props.reconnectingCall === true,
+                      // Mid-call audio→video upgrade prompt state.
+                      // upgradePromptMode = 'outgoing' when the user
+                      // tapped +video, 'incoming' when the peer sent
+                      // a re-INVITE that adds m=video. While the
+                      // prompt is visible NO SIP renegotiation has
+                      // started — we only call addVideo() /
+                      // answerUpdate() when the user explicitly taps
+                      // "Enable camera". Cancel stops the captured
+                      // track and leaves the call audio-only.
+                      upgradePromptMode: null,        // 'outgoing' | null (incoming auto-accepts)
+                      upgradePromptStream: null,      // MediaStream
+                      cameraInitiallyMuted: false,
+                      // Front (mirrored) vs back camera in the prompt
+                      // preview. Toggled by the flip IconButton; flips
+                      // the captured track in place via _switchCamera
+                      // so we don't have to re-acquire a stream.
+                      upgradePromptFacing: 'front',
                       availableAudioDevices: this.props.availableAudioDevices,
                       selectedAudioDevice: this.props.selectedAudioDevice,
                       iceServers: this.props.iceServers,
@@ -127,10 +211,31 @@ class Call extends Component {
     componentWillUnmount() {
         this.ended = true;
         this.answering = false;
+        this._cancelUpgradePromptTimer();
+
+        // If the user has the upgrade prompt open and navigates away
+        // from /call, stop the captured camera track so the indicator
+        // light doesn't stay on. We don't try to answer a pending
+        // remote re-INVITE here — the call object outlives this
+        // component and the next /call mount will pick up the
+        // updateRequest event again if it arrives.
+        if (this.state.upgradePromptStream) {
+            try {
+                this.state.upgradePromptStream.getTracks().forEach(t => t.stop());
+            } catch (e) { /* ignore */ }
+        }
 
         if (this.state.call) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
             this.state.call.removeListener('incomingMessage', this.incomingMessage);
+            // Symmetric to the listeners attached in the constructor
+            // and in componentWillReceiveProps. Forgetting these would
+            // leak references to the unmounted component and re-fire
+            // setState() on a dead component during the next
+            // renegotiation (which would log a React warning).
+            this.state.call.removeListener('mediaUpdated', this.onMediaUpdated);
+            this.state.call.removeListener('updateRequest', this.onUpdateRequest);
+            this.state.call.removeListener('updateFailed', this.onUpdateFailed);
         }
 
         if (this.state.connection) {
@@ -190,14 +295,28 @@ class Call extends Component {
         if (this.state.call === null && nextProps.call !== null) {
             nextProps.call.on('stateChanged', this.callStateChanged);
             nextProps.call.on('incomingMessage', this.incomingMessage);
+            // Mid-call upgrade listeners — see the constructor for what
+            // each event does. We attach them here too so they cover
+            // the outgoing-call case where props.call is null on mount
+            // and only arrives later via componentWillReceiveProps.
+            nextProps.call.on('mediaUpdated', this.onMediaUpdated);
+            nextProps.call.on('updateRequest', this.onUpdateRequest);
+            nextProps.call.on('updateFailed', this.onUpdateFailed);
             utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (cwrp)',
                 'call_id=', nextProps.call._callId || nextProps.call.callId || nextProps.call.id,
                 'peer=', nextProps.call.remoteIdentity && nextProps.call.remoteIdentity.uri,
                 'inlineMessaging=', !!nextProps.call.enableInlineMessaging);
 
+            // Same canonical-URI preference as the constructor: for
+            // outgoing calls show props.targetUri (canonical `+40…`),
+            // not call.remoteIdentity.uri (wire-rewritten `0040…`).
+            const _direction = nextProps.call.direction;
+            const _remoteUri = (_direction === 'outgoing' && nextProps.targetUri)
+                ? nextProps.targetUri
+                : nextProps.call.remoteIdentity.uri;
             this.setState({
-                           remoteUri: nextProps.call.remoteIdentity.uri,
-                           direction: nextProps.call.direction,
+                           remoteUri: _remoteUri,
+                           direction: _direction,
                            callUUID: nextProps.call.id,
                            remoteDisplayName: nextProps.call.remoteIdentity.displayName
                            });
@@ -212,7 +331,20 @@ class Call extends Component {
         }
 
         if (nextProps.reconnectingCall !== this.state.reconnectingCall) {
-            this.setState({reconnectingCall: nextProps.reconnectingCall});
+            // When the parent flips reconnectingCall to true after a
+            // failed outgoing call, the user has ALREADY confirmed
+            // the original placement — the retry is automatic and
+            // must skip both the awaiting-confirm UI and the 4-second
+            // auto-start countdown in AudioCallBox. The constructor
+            // covers the fresh-mount case via the same prop; this
+            // covers the in-place transition where Call.js stays
+            // mounted across the retry and userStartedCall would
+            // otherwise stay at its pre-failure value.
+            const _patch = { reconnectingCall: nextProps.reconnectingCall };
+            if (nextProps.reconnectingCall === true && !this.state.userStartedCall) {
+                _patch.userStartedCall = true;
+            }
+            this.setState(_patch);
         }
 
         if (nextProps.targetUri !== this.state.targetUri && this.state.direction === 'outgoing') {
@@ -555,7 +687,29 @@ class Call extends Component {
                        localStream: this.state.localMedia
                        };
 
-        let call = this.state.account.call(this.state.targetUri, options);
+        // PSTN dialing rule applied at the SIP-call boundary, NOT in
+        // app.js's callKeepStartCall. Keeping the rewrite here means
+        // state.targetUri stays in its canonical `+40…` form for
+        // history / contact lookup / chat routing; only the wire URI
+        // handed to account.call() carries the `0040…` form the
+        // gateway expects.
+        //
+        // Skipped for conferences (room names never start with '+').
+        let dialUri = this.state.targetUri;
+        const rules = this.props.pstnRules;
+        if (rules && typeof rules.replacePlus === 'string') {
+            const atIdx = dialUri.indexOf('@');
+            const localPart = atIdx > -1 ? dialUri.substring(0, atIdx) : dialUri;
+            const domainPart = atIdx > -1 ? dialUri.substring(atIdx) : '';
+            if (localPart.startsWith('+')) {
+                const rewritten = rules.replacePlus + localPart.substring(1);
+                utils.timestampedLog('[pstn] replacePlus rule applied:',
+                                     localPart, '→', rewritten);
+                dialUri = rewritten + domainPart;
+            }
+        }
+
+        let call = this.state.account.call(dialUri, options);
         this.setState({call: call});
     }
 
@@ -581,6 +735,192 @@ class Call extends Component {
         }
 
         this.props.hangupCall(callUUID, reason);
+    }
+
+    // ---- Mid-call upgrade (audio -> audio+video) ------------------------
+    //
+    // Tapping +video goes straight to the video call layout — same
+    // visual transition the user sees after tapping the green-video
+    // button on IncomingCallModal (no separate confirm panel, no
+    // preview screen, no countdown). The flow:
+    //   1. startVideo() captures the camera via getUserMedia.
+    //   2. call.addVideo({ localStream }) fires immediately — the
+    //      library does addTrack + createOffer + sends session-update.
+    //   3. Server forwards to Janus; Janus issues SIP re-INVITE.
+    //   4. Remote answers; the library applies the answer and emits
+    //      'mediaUpdated'.
+    //   5. onMediaUpdated flips state.audioOnly to false; render()
+    //      then picks VideoBox, which reads local video from
+    //      call.getLocalStreams()[0].
+    //
+    // For peer-initiated upgrades (remote re-INVITE adds m=video),
+    // onUpdateRequest captures the camera and answers immediately,
+    // mirroring the same "tap = commit" semantics.
+    //
+    // We deliberately do NOT touch this.state.localMedia. That state
+    // is owned by the top-level app component (initial audio-only
+    // capture); the new video track is wired to the peer connection's
+    // senders only, and VideoBox prefers call.getLocalStreams()[0]
+    // over props.localMedia anyway.
+    startVideo() {
+        // Tap +video on AudioCallBox: capture the camera, show the
+        // "Enable your camera?" prompt over the audio call screen.
+        // CRITICAL: do NOT call addVideo() yet. The renegotiation
+        // (SIP re-INVITE) only fires when the user taps "Enable
+        // camera" — see onEnableCamera below. Tapping "Cancel" stops
+        // the captured track and the call stays purely audio (no
+        // session-update goes out, peer never knows anything
+        // happened).
+        const call = this.state.call;
+        if (!call) return;
+        if (typeof call.addVideo !== 'function') {
+            utils.timestampedLog('[upgrade] startVideo: call.addVideo is not available');
+            return;
+        }
+        if (this.state.upgradePromptMode) return;     // prompt already up
+        utils.timestampedLog('[upgrade] startVideo: acquiring camera for prompt');
+        navigator.mediaDevices.getUserMedia({ audio: false, video: true })
+            .then((localStream) => {
+                this.setState({
+                    upgradePromptMode: 'outgoing',
+                    upgradePromptStream: localStream,
+                });
+            })
+            .catch((error) => {
+                utils.timestampedLog('[upgrade] startVideo: getUserMedia failed:', error && error.message);
+            });
+    }
+
+    onMediaUpdated(payload) {
+        utils.timestampedLog('[upgrade] mediaUpdated:', JSON.stringify(payload));
+        this._cancelUpgradePromptTimer();
+        const nowAudioOnly = !payload || (!payload.hasLocalVideo && !payload.hasRemoteVideo);
+        if (this.state.audioOnly !== nowAudioOnly) {
+            this.setState({ audioOnly: nowAudioOnly });
+        }
+    }
+
+    _startUpgradePromptTimer() {
+        this._cancelUpgradePromptTimer();
+        this._upgradePromptTimer = setTimeout(() => {
+            this._upgradePromptTimer = null;
+            if (this.state.upgradePromptMode) {
+                utils.timestampedLog('[upgrade] prompt timeout — auto-cancelling',
+                    'mode=', this.state.upgradePromptMode);
+                this.onCancelUpgrade();
+            }
+        }, 25000);
+    }
+
+    _cancelUpgradePromptTimer() {
+        if (this._upgradePromptTimer) {
+            clearTimeout(this._upgradePromptTimer);
+            this._upgradePromptTimer = null;
+        }
+    }
+
+    onUpdateRequest(payload) {
+        utils.timestampedLog('[upgrade] updateRequest from peer');
+        const call = this.state.call;
+        if (!call || typeof call.answerUpdate !== 'function') return;
+        const remoteHasVideo =
+            payload && payload.remoteMediaDirections && payload.remoteMediaDirections.video
+            && payload.remoteMediaDirections.video.some(d => d && d !== 'inactive');
+        if (!remoteHasVideo) {
+            try { call.answerUpdate({}); } catch (e) {
+                utils.timestampedLog('[upgrade] answerUpdate threw:', e && e.message);
+            }
+            return;
+        }
+        navigator.mediaDevices.getUserMedia({ audio: false, video: true })
+            .then((localStream) => {
+                try {
+                    localStream.getVideoTracks().forEach(t => { t.enabled = false; });
+                } catch (e) { /* ignore */ }
+                try { if (call) call._sylkCameraPromptHandled = false; } catch (e) {}
+                this.setState({ cameraInitiallyMuted: true });
+                try {
+                    call.answerUpdate({ localStream });
+                } catch (err) {
+                    utils.timestampedLog('[upgrade] auto-answerUpdate threw:', err && err.message);
+                    try { localStream.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+                    this.setState({ cameraInitiallyMuted: false });
+                }
+            })
+            .catch((error) => {
+                utils.timestampedLog('[upgrade] updateRequest getUserMedia failed:', error && error.message);
+                // No camera at all — finish the renegotiation recvonly.
+                try { call.answerUpdate({}); } catch (e) { /* ignore */ }
+            });
+    }
+
+    onEnableCamera() {
+        this._cancelUpgradePromptTimer();
+        const call = this.state.call;
+        const stream = this.state.upgradePromptStream;
+        const mode = this.state.upgradePromptMode;
+        if (!call || !stream || !mode) {
+            this.setState({ upgradePromptMode: null, upgradePromptStream: null });
+            return;
+        }
+        this.setState({ upgradePromptMode: null, upgradePromptStream: null });
+        try {
+            if (mode === 'outgoing') {
+                call.addVideo({ localStream: stream });
+                this._startUpgradePromptTimer();
+            } else {
+                call.answerUpdate({ localStream: stream });
+            }
+        } catch (err) {
+            utils.timestampedLog('[upgrade] enableCamera threw:', err && err.message);
+            try { stream.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+        }
+    }
+
+    flipUpgradeCamera() {
+        // Toggle front/back on the captured-but-not-yet-published
+        // video track. Uses react-native-webrtc's _switchCamera()
+        // which flips in place — no need to stop the track and
+        // re-acquire a new stream (which would briefly black out the
+        // preview).
+        const stream = this.state.upgradePromptStream;
+        if (!stream) return;
+        try {
+            const tracks = stream.getVideoTracks();
+            if (tracks && tracks.length > 0 && typeof tracks[0]._switchCamera === 'function') {
+                tracks[0]._switchCamera();
+                this.setState({
+                    upgradePromptFacing: this.state.upgradePromptFacing === 'front' ? 'back' : 'front',
+                });
+            }
+        } catch (e) {
+            utils.timestampedLog('[upgrade] flipCamera failed:', e && e.message);
+        }
+    }
+
+    onCancelUpgrade() {
+        this._cancelUpgradePromptTimer();
+        const call = this.state.call;
+        const stream = this.state.upgradePromptStream;
+        const mode = this.state.upgradePromptMode;
+        if (stream) {
+            try { stream.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+        }
+        if (mode === 'incoming' && call && typeof call.answerUpdate === 'function') {
+            try { call.answerUpdate({}); } catch (e) {
+                utils.timestampedLog('[upgrade] cancel answerUpdate threw:', e && e.message);
+            }
+        }
+        this.setState({ upgradePromptMode: null, upgradePromptStream: null });
+    }
+
+    onUpdateFailed(error) {
+        // The renegotiation failed: glare with the peer, transport
+        // error inside Janus, or a local createOffer/createAnswer
+        // exception. The call itself is unaffected (audio keeps
+        // flowing on the existing PC), so we just log; the user can
+        // retry the upgrade.
+        utils.timestampedLog('[upgrade] updateFailed:', error && (error.message || error));
     }
 
     render() {
@@ -628,7 +968,20 @@ class Call extends Component {
                         terminatedReason = {this.state.terminatedReason}
                         confirmStartCall = {this.confirmStartCall}
                         userStartedCall = {this.state.userStartedCall}
-                        awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall}
+                        // The "Start audio call" pre-call layout +
+                        // 6-second auto-start countdown should only
+                        // appear for a *fresh* user-initiated outgoing
+                        // call. On a reconnect — after
+                        // outgoing_connection_failed, the app remounts
+                        // /call via callKeepStartCall — the user is
+                        // not "awaiting" anything; they're trying to
+                        // recover an in-progress call. Adding the
+                        // !reconnectingCall guard keeps the awaiting
+                        // UI off in that case (and the countdown
+                        // doesn't restart). The user can still see the
+                        // regular reconnecting bar on the normal
+                        // in-call layout.
+                        awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall}
                         availableAudioDevices = {this.state.availableAudioDevices}
                         selectedAudioDevice = {this.state.selectedAudioDevice}
                         selectAudioDevice = {this.props.selectAudioDevice}
@@ -639,6 +992,7 @@ class Call extends Component {
                         requestLocationFromCall = {this.props.requestLocationFromCall}
                         saveCallRecording = {this.props.saveCallRecording}
                         enableAudioRecording = {this.props.enableAudioRecording}
+                        startVideo = {this.startVideo}
 					/>
                 );
             } else {
@@ -697,6 +1051,7 @@ class Call extends Component {
                             finishInvite = {this.props.finishInvite}
                             terminatedReason = {this.state.terminatedReason}
                             videoMuted = {this.props.videoMuted}
+                            cameraInitiallyMuted = {this.state.cameraInitiallyMuted}
 							availableAudioDevices = {this.state.availableAudioDevices}
 							selectedAudioDevice = {this.state.selectedAudioDevice}
 							selectAudioDevice = {this.props.selectAudioDevice}
@@ -736,7 +1091,12 @@ class Call extends Component {
 								selectAudioDevice = {this.props.selectAudioDevice}
 								useInCallManger = {this.props.useInCallManger}
 								insets = {this.state.insets}
-								awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.audioOnly && !this.state.userStartedCall}
+								// !reconnectingCall: auto-retries after a
+								// failed outgoing call must skip the
+								// awaiting-confirm UI and the 4-second
+								// auto-start countdown — the user
+								// already confirmed once.
+								awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.audioOnly && !this.state.userStartedCall && !this.state.reconnectingCall}
 								confirmStartCall = {this.confirmStartCall}
 							/>
                         );
@@ -783,7 +1143,9 @@ class Call extends Component {
                     terminatedReason = {this.state.terminatedReason}
                     confirmStartCall = {this.confirmStartCall}
                     userStartedCall = {this.state.userStartedCall}
-                    awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall}
+                    // !reconnectingCall: see the matching note on
+                    // the VideoBox awaitingUserCallStart prop above.
+                    awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
@@ -797,12 +1159,124 @@ class Call extends Component {
 				/>
             );
         }
+        // Mid-call audio→video upgrade prompt overlay. Visually
+        // matches the "Enable your camera?" bottom panel inside
+        // VideoBox (line ~1820), but rendered here over AudioCallBox
+        // BEFORE any SIP renegotiation has started. The user's tap on
+        // "Enable camera" is what triggers addVideo() / answerUpdate();
+        // tapping "Cancel" stops the captured track and leaves the
+        // call audio-only (no session-update sent for outgoing, or a
+        // recvonly answer for incoming so the peer's re-INVITE
+        // completes — but our UI stays on AudioCallBox).
+        if (this.state.upgradePromptMode) {
+            const peerLabel = this.state.remoteDisplayName || this.state.remoteUri || 'The other party';
+            const detail = this.state.upgradePromptMode === 'incoming'
+                ? `${peerLabel} wants to add video. Start your camera to share back, or cancel to keep the call audio-only.`
+                : `Add video to this call with ${peerLabel}. Tap Enable camera to share, or Cancel to stay audio-only.`;
+            const bottomInset = (this.state.insets && this.state.insets.bottom) || 0;
+            const topInset = (this.state.insets && this.state.insets.top) || 0;
+            const previewUrl = this.state.upgradePromptStream
+                ? this.state.upgradePromptStream.toURL()
+                : null;
+            const mirror = this.state.upgradePromptFacing === 'front';
+            return (
+                <View style={{ flex: 1, backgroundColor: 'black' }}>
+                    {/* Underlying call view stays mounted so audio is
+                        uninterrupted — the prompt overlay floats above
+                        it. */}
+                    {box}
+                    {/* Backdrop dims the call screen behind the
+                        prompt. Tapping it does NOTHING; the user must
+                        pick Enable camera or Cancel explicitly. */}
+                    <View style={{
+                        ...StyleSheet.absoluteFillObject,
+                        backgroundColor: 'rgba(0,0,0,0.85)',
+                        zIndex: 2900,
+                    }} pointerEvents="none" />
+                    {/* Self-view preview taking the upper portion of
+                        the screen. RTCView is keyed on the stream URL
+                        so the surface tears down cleanly when the
+                        prompt closes. mirror flips the front-camera
+                        view so the user sees themselves the way they
+                        do in a normal mirror. */}
+                    {previewUrl ? (
+                        <View style={{
+                            position: 'absolute',
+                            top: topInset + 24,
+                            left: 24,
+                            right: 24,
+                            bottom: bottomInset + 220,
+                            backgroundColor: 'black',
+                            borderRadius: 12,
+                            overflow: 'hidden',
+                            zIndex: 3000,
+                        }}>
+                            <RTCView
+                                key={'upgrade-preview-' + previewUrl}
+                                streamURL={previewUrl}
+                                objectFit="cover"
+                                mirror={mirror}
+                                style={StyleSheet.absoluteFillObject}
+                            />
+                            {/* Flip-camera button overlaid on the
+                                preview. Tapping it calls
+                                track._switchCamera() — flips the same
+                                track in place rather than re-acquiring
+                                a stream. */}
+                            <View style={{
+                                position: 'absolute',
+                                top: 12,
+                                right: 12,
+                            }}>
+                                <IconButton
+                                    icon="camera-flip"
+                                    size={28}
+                                    onPress={this.flipUpgradeCamera}
+                                    style={{backgroundColor: 'rgba(255,255,255,0.85)'}}
+                                />
+                            </View>
+                        </View>
+                    ) : null}
+                    {/* Action panel pinned to the bottom — keeps the
+                        existing "Enable your camera?" panel shape from
+                        VideoBox so the gesture and look are consistent
+                        between the two surfaces. */}
+                    <View style={{
+                        position: 'absolute',
+                        bottom: bottomInset + 12,
+                        left: 12,
+                        right: 12,
+                        backgroundColor: 'white',
+                        borderRadius: 12,
+                        paddingTop: 14,
+                        paddingBottom: 6,
+                        paddingHorizontal: 16,
+                        elevation: 8,
+                        zIndex: 3000,
+                    }} pointerEvents="auto">
+                        <PaperText style={{fontSize: 18, fontWeight: 'bold', marginBottom: 8}}>
+                            Enable your camera?
+                        </PaperText>
+                        <PaperText style={{marginBottom: 12}}>
+                            {detail}
+                        </PaperText>
+                        <View style={{flexDirection: 'row', justifyContent: 'flex-end'}}>
+                            <Button onPress={this.onCancelUpgrade}>Cancel</Button>
+                            <Button mode="contained" onPress={this.onEnableCamera} style={{marginLeft: 8}}>
+                                Enable camera
+                            </Button>
+                        </View>
+                    </View>
+                </View>
+            );
+        }
         return box;
     }
 }
 
 Call.propTypes = {
     targetUri               : PropTypes.string,
+    pstnRules               : PropTypes.object,
     account                 : PropTypes.object,
     hangupCall              : PropTypes.func,
     connection              : PropTypes.object,

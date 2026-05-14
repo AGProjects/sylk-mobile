@@ -30,6 +30,19 @@ const ChatBubble = memo(
     renderMessageAudio,
     renderMessageText,
     focusedMessageId,
+    // ID of the message the user is currently composing a reply to
+    // (set when the floating ReactionBar is open, OR when the user
+    // long-pressed → Reply and the composer is in reply mode). We
+    // reuse the existing focusedBorder visual — an orange outline —
+    // so the user always sees which bubble their next emoji/text
+    // will attach to.
+    replyTargetId,
+    // True when the parent is in reply-targeting mode AND this
+    // bubble is NOT the target. Dims the bubble (opacity 0.35)
+    // so the highlighted target visually pops without us needing
+    // to measure positions or render an overlay. Falsy on the
+    // target itself and when no reply-target is active.
+    isDimmedByReplyTarget,
     sortOrder,
 	imageGroups,
 	groupOfImage,
@@ -40,6 +53,13 @@ const ChatBubble = memo(
     // Guard
     if (!currentMessage) return null;
 
+    // Orange outline is now only for the search/jump focus (the
+    // existing "scroll to this message" feature). The reaction-bar
+    // reply-target uses the dim highlight instead — every other
+    // bubble dims while the target stays bright — so we don't
+    // double-mark it with a border. This also fixes a lingering
+    // orange border when the bar was dismissed before the bubble
+    // re-rendered fresh.
     const isFocused = focusedMessageId === currentMessage._id;
     const focusedBorder = isFocused ? { borderWidth: 2, borderColor: 'orange'} : {};
         
@@ -49,6 +69,59 @@ const ChatBubble = memo(
 
     // === Styling / colors ===
     const bubbleRadius = 16;
+    // gifted-chat's default bubble wrapper uses `borderRadius: 15`.
+    // Our wrapperStyle (leftWrapper / rightWrapper above) overrides
+    // borderTopLeftRadius / borderTopRightRadius to bubbleRadius (16),
+    // but the BOTTOM corners stay at gifted-chat's default 15 because
+    // the override doesn't touch them. The dim has to use BOTH values
+    // to avoid 1px slivers of the bubble's actual corner peeking past
+    // the dim — bottom corners using 16 (a slightly larger curve)
+    // would cut MORE area than the bubble does, exposing 1px of
+    // bubble-colour bleed at each bottom corner.
+    const bubbleRadiusBottom = 15;
+    // gifted-chat squares off the connecting corner (radius 3 instead
+    // of the default 15) when adjacent messages are from the same
+    // sender on the same day — that's the visual "grouping" between
+    // consecutive messages on the same side. The dim overlay needs
+    // to mirror that radius on the same corner so it doesn't extend
+    // past the bubble's actual rounded silhouette.
+    const groupedCornerRadius = 3;
+    const _sameDay = (a, b) => {
+        if (!a || !b || !a.createdAt || !b.createdAt) return false;
+        const da = new Date(a.createdAt);
+        const db = new Date(b.createdAt);
+        return da.getFullYear() === db.getFullYear()
+            && da.getMonth() === db.getMonth()
+            && da.getDate() === db.getDate();
+    };
+    const _sameSide = (a, b) => {
+        if (!a || !b) return false;
+        // Prefer the user._id comparison (matches gifted-chat's
+        // isSameUser exactly) so we behave identically in group /
+        // conference chats where several incoming messages share a
+        // `direction='incoming'` but come from different senders.
+        // A direction-only check would treat those as a single
+        // group, squaring the connecting corner in the dim while
+        // gifted-chat keeps the bubble's corner rounded.
+        // Direction is the fallback for messages where user is
+        // either absent or has a falsy user object on both sides
+        // (gifted-chat's check rejects falsy user, so falling back
+        // to direction here only kicks in when neither side has a
+        // user record — in which case direction is the most we have).
+        if (a.user && b.user) {
+            return a.user._id === b.user._id;
+        }
+        if (a.direction && b.direction) {
+            return a.direction === b.direction;
+        }
+        return false;
+    };
+    const groupedWithPrev = !!(previousMessage
+        && _sameSide(currentMessage, previousMessage)
+        && _sameDay(currentMessage, previousMessage));
+    const groupedWithNext = !!(nextMessage
+        && _sameSide(currentMessage, nextMessage)
+        && _sameDay(currentMessage, nextMessage));
     let leftColor = 'green';
     let rightColor = '#fff';
 
@@ -121,6 +194,39 @@ const ChatBubble = memo(
               {originalText}
             </Text>
           )}
+          {/* Reply-target dim overlay for the preview. The preview
+              banner sits ABOVE the gifted-chat Bubble (outside
+              customView's reach), so it needs its own dim layer.
+              Matches the bubble dim's alpha and top-corner radii
+              (via previewWrapperStyle). The bottom is squared off
+              because the preview is glued to the bubble below —
+              the bubble's own dim continues the dark surface
+              seamlessly from there.
+              left: -3 covers the green border stripe
+              (borderLeftWidth: 3 on replyPreviewContainerIncoming /
+              Outgoing); RN's `position: absolute` children fill the
+              padding box only, leaving the border uncovered. right
+              and bottom get a small negative overflow too so any
+              sub-pixel rounding or thin padding bleed doesn't show
+              an undimmed sliver between the preview and the
+              bubble's own dim layer. */}
+          {isDimmedByReplyTarget ? (
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: -3,
+                right: -3,
+                bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.8)',
+                borderTopLeftRadius: bubbleRadius,
+                borderTopRightRadius: bubbleRadius,
+                zIndex: 9999,
+                elevation: 9999,
+              }}
+            />
+          ) : null}
         </View>
       </TouchableOpacity>
     ) : null;
@@ -171,7 +277,26 @@ const ChatBubble = memo(
 
     // custom view used for layout (won't block interactions). Doubles as
     // the anchor for the file-transfer encryption badge, which is
-    // absolute-positioned in the corner opposite the timestamp.
+    // absolute-positioned in the corner opposite the timestamp. Also
+    // hosts the reply-target dim overlay — putting it here (inside
+    // the gifted-chat Bubble's wrapper, which is content-sized) means
+    // the dim covers exactly the bubble's bounds, not the row-wide
+    // outer wrapper. Without this, the dim would extend laterally
+    // out to the screen edge on whichever side the bubble doesn't
+    // reach — visible as a dark "bar" beside every non-target bubble.
+    //
+    // The dim is the LAST child so its native render order sits above
+    // the lock icon. The Bubble is told to put customView LAST in
+    // renderBubbleContent (via isCustomViewBottom={true} below) so
+    // customView itself sits above the image / text content too.
+    //
+    // The dim's `bottom: -28` reaches DOWN past the body area into
+    // the timestamp / ticks row — gifted-chat renders that row as a
+    // sibling of customView's parent (it's NOT inside the body), but
+    // the bubble's wrapper doesn't clip overflow, so a slight
+    // negative bottom paints the dim over the timestamp too. 28 px
+    // covers the typical 11pt time text's full line-height plus the
+    // bubble's bottom padding.
     const customView = () => (
       <View
         pointerEvents="none"
@@ -200,6 +325,32 @@ const ChatBubble = memo(
             />
           </View>
         ) : null}
+        {isDimmedByReplyTarget ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              top: 0, left: 0, right: 0, bottom: 0,
+              backgroundColor: 'rgba(0,0,0,0.8)',
+              // Match the bubble's top corners exactly. This app's
+              // wrapperStyle in ChatBubble unconditionally sets
+              // borderTopLeftRadius / borderTopRightRadius to
+              // bubbleRadius (16), which OVERRIDES gifted-chat's
+              // grouped-bubble override for top corners. So the
+              // bubble's top is always full radius (or 0 when a
+              // reply preview sits above). We mirror that — no
+              // groupedCornerRadius on the top corners — otherwise
+              // grouped consecutive messages whose bubbles keep
+              // rounded tops end up with a squared-top dim hook.
+              // The BOTTOM corners still respect gifted-chat's
+              // grouped squaring (see bottomContainerStyle below).
+              borderTopLeftRadius: hasPreview ? 0 : bubbleRadius,
+              borderTopRightRadius: hasPreview ? 0 : bubbleRadius,
+              zIndex: 9999,
+              elevation: 9999,
+            }}
+          />
+        ) : null}
       </View>
     );
 
@@ -225,6 +376,50 @@ const ChatBubble = memo(
       renderMessageAudio,
       renderMessageText,
       renderCustomView: customView,
+      // Put customView AFTER the image/text/etc. in
+      // renderBubbleContent so the dim overlay inside it sits on
+      // top of the bubble's visual content (FastImage included).
+      // Default is false — customView first, image renders on top
+      // of it — which made the dim invisible behind image bubbles.
+      isCustomViewBottom: true,
+      // Tint the timestamp / ticks container the same dark colour
+      // when the bubble is being dimmed for reply-targeting. The
+      // body is dimmed by an overlay inside customView (above);
+      // the timestamp container is a SIBLING of that body inside
+      // gifted-chat's Bubble, so a single absolute overlay can't
+      // reach both. Two matching tints stitched together cover
+      // the full bubble. `bottomContainerStyle` is the prop
+      // gifted-chat already routes onto the timestamp container.
+      //
+      // borderBottomLeft/RightRadius MUST match the bubble's
+      // bottom corner radius (gifted-chat's default wrapper uses
+      // 15) so the dark tint follows the bubble's rounded shape
+      // instead of poking out as a sharp rectangle below it.
+      bottomContainerStyle: isDimmedByReplyTarget ? {
+        left: {
+          backgroundColor: 'rgba(0,0,0,0.8)',
+          // When the next message is on the same side / same day,
+          // gifted-chat squares off the connecting bottom corner
+          // (bottom-left on incoming / left bubbles, bottom-right
+          // on outgoing / right bubbles). Mirror that so the dim
+          // doesn't extrude past the bubble silhouette.
+          //
+          // The non-connecting bottom corner uses bubbleRadiusBottom
+          // (15) — gifted-chat's default wrapper borderRadius — NOT
+          // bubbleRadius (16, which our wrapperStyle uses for TOP
+          // corners only). Otherwise the dim's bottom corner is one
+          // pixel "more curved" than the bubble's, exposing a thin
+          // sliver of the bubble's white/green corner outside the
+          // dim.
+          borderBottomLeftRadius: groupedWithNext ? groupedCornerRadius : bubbleRadiusBottom,
+          borderBottomRightRadius: bubbleRadiusBottom,
+        },
+        right: {
+          backgroundColor: 'rgba(0,0,0,0.8)',
+          borderBottomLeftRadius: bubbleRadiusBottom,
+          borderBottomRightRadius: groupedWithNext ? groupedCornerRadius : bubbleRadiusBottom,
+        },
+      } : undefined,
     };
 
     // Choose bubble variant (image / video / audio / text)
@@ -291,7 +486,12 @@ const ChatBubble = memo(
           containerStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
           containerToPreviousStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
           containerToNextStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
-          bottomContainerStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          // Only set bottomContainerStyle in preview mode — outside
+          // preview, let bubbleProps.bottomContainerStyle through so
+          // the reply-target timestamp dim works on image bubbles too.
+          // Previously this was `isPreview ? … : undefined`, which
+          // explicitly stomped bubbleProps' value with undefined.
+          {...(isPreview ? { bottomContainerStyle: { left: previewContainer, right: previewContainer } } : {})}
           textProps={{ style: { color: position === 'left' ? '#000' : '#000' } }}
           textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
         />
@@ -425,9 +625,18 @@ const ChatBubble = memo(
     // timestamp bar (see renderTime in ContactsListBox.js) so it sits
     // beside the time text and can't escape the rounded bubble corners.
     return (
-      <View style={{ flex: 1, alignSelf: 'stretch' }}>
+      <View style={{
+          flex: 1,
+          alignSelf: 'stretch',
+      }}>
         {replyPreview}
         {content}
+        {/* (Reply-target dim overlay was moved INTO `customView`
+            above, so it covers only the bubble's actual bounds
+            rather than this row-wide outer wrapper. Putting it
+            here would extend the dim laterally to the screen
+            edge on the side the bubble doesn't reach — visible
+            as a black bar.) */}
       </View>
     );
   },
@@ -450,13 +659,34 @@ const ChatBubble = memo(
 	  const id = p._id;
 
 	  // Location-bubble-only trace. Fires on every memo-compare call for
-	  // live-location rows so we can see which branch below ends the
+	  // live-location rows so we can see which branch below ens the
 	  // comparator. `return true` = SKIP re-render (bubble stays stale);
 	  // `return false` = re-render. Kept as a no-op helper so the call
 	  // sites below don't have to be touched — the diagnostic body was
 	  // removed once the location-memo behaviour was settled; reinstate
 	  // the console.log inside if you need to trace a memo regression.
 	  const locTrace = () => {};
+
+	  // ==== Reply-target / dim checks ====
+	  // MUST run before any of the SKIP-returning early checks below
+	  // (notably imageLoadingState, which on image bubbles flips
+	  // undefined→false→true as FastImage loads and previously caused
+	  // the memo to skip — eating the isDimmedByReplyTarget flip on
+	  // image bubbles so they never dimmed when the reaction bar
+	  // opened on a different message). Putting these first
+	  // guarantees the reply-target visuals update for every bubble
+	  // type before any optimization-style SKIPs run.
+	  if (
+		prev.replyTargetId === id ||
+		next.replyTargetId === id
+	  ) {
+		locTrace(false, 'reply target');
+		return false;
+	  }
+	  if ((!!prev.isDimmedByReplyTarget) !== (!!next.isDimmedByReplyTarget)) {
+		locTrace(false, 'isDimmed changed');
+		return false;
+	  }
 
 		// ==== Reply messages ====
 		const currentId = p._id;
@@ -592,6 +822,10 @@ const ChatBubble = memo(
 	  locTrace(false, 'focused');
 	  return false; // only re-render affected bubble
 	}
+
+	// (replyTargetId / isDimmedByReplyTarget checks moved to the
+	// top of this comparator — they need to win over the
+	// imageLoadingState SKIP that lives further up.)
 
 	  // ==== Content changed ====
 		const contentFields = ['text', 'image', 'video', 'audio'];

@@ -140,8 +140,20 @@ class ReadyBox extends Component {
         if (nextProps.selectedContact !== this.props.selectedContact) {
            this.resetContact()
            this.setState({'messagesCategoryFilter': null});
-           if (this.navigationRef && !this.props.selectedContact) {
-               this.navigationRef.scrollToIndex({animated: true, index: 0});
+           // Reset the Recents/main nav bar to the start when leaving the
+           // contacts-list view. Each visible FlatList now owns its own
+           // ref (navigationRefMain / Filter / Category / Sort); we
+           // target the main one because that's the bar that shows when
+           // !selectedContact. Still guard against an empty list to
+           // avoid the FlatList "item length 0 but minimum is 1"
+           // invariant when navigationItems hasn't been populated yet.
+           if (this.navigationRefMain
+               && !this.props.selectedContact
+               && this.navigationItems
+               && this.navigationItems.length > 0) {
+               try {
+                   this.navigationRefMain.scrollToIndex({animated: true, index: 0});
+               } catch (e) {}
            }
            if (this.props.selectedContact && this.props.pinned) {
                this.props.togglePinned(this.props.selectedContact.uri);
@@ -505,10 +517,22 @@ class ReadyBox extends Component {
     }
 
     get showSearchBar() {
+        // Invite-to-conference and share-to-contacts modes put the
+        // contacts list into select-mode, and the user needs the
+        // Searchbar to filter the list down to who they want to
+        // pick. URIInput already renders the right placeholder
+        // ("Select contacts to invite...") in these modes — the
+        // gate just needs to let it through. Without this, the
+        // user lands on a long unfiltered list with no way to
+        // narrow it, which is the bug the user reported.
+        if (this.props.inviteContacts || this.props.shareToContacts) {
+            return true;
+        }
+
         if (!this.state.searchMessages && !this.state.searchContacts) {
 			return false;
         }
-        
+
 		if (this.state.messagesCategoryFilter == 'image') {
 			return false;
 		}
@@ -558,12 +582,22 @@ class ReadyBox extends Component {
         if (this.props.selectedContact) {
             return false;
         }
-        
+
         if (this.state.recording || this.state.previewRecording) {
             return false;
         }
 
         if (this.props.shareToContacts) {
+            return false;
+        }
+        // In invite-participants mode the user is picking contacts
+        // to add to an EXISTING conference — they should not see
+        // the "Start a new conference" button here. The contacts
+        // list shows its own Cancel / Invite action pair (rendered
+        // in the same button bar below) instead. Hiding this
+        // button also removes the visual collision the user
+        // reported ("the same Start conference appears").
+        if (this.props.inviteContacts) {
             return false;
         }
         return true;
@@ -779,6 +813,15 @@ class ReadyBox extends Component {
             return false;
         }
 
+        // While the chat's quick-reaction bar is up (chatReactionMode
+        // toggled by ContactsListBox via setChatReactionMode in
+        // app.js), hide the call-button bar so the dimmed chat reads
+        // as a focused modal — the brightly-lit call/video/conference
+        // row would otherwise compete with the dim above the chat.
+        if (this.props.chatReactionMode) {
+            return false;
+        }
+
         if (this.props.inviteContacts) {
 			return true;
         }
@@ -851,6 +894,16 @@ class ReadyBox extends Component {
         }
         if (this.state.contactSource === source) {
             return;
+        }
+        // Every Phonebook selection invokes loadAddressBook. On the
+        // app.js side it short-circuits when permission is granted
+        // AND contacts have already been fetched; otherwise it
+        // re-prompts the user. So the first tap shows the OS prompt,
+        // and subsequent taps either no-op (granted, loaded) or
+        // re-prompt (still denied). We deliberately don't ask at app
+        // start any more — only on explicit Phonebook intent.
+        if (source === 'ab' && typeof this.props.loadAddressBook === 'function') {
+            this.props.loadAddressBook();
         }
         // Switching away from AB closes the dialpad — it's only
         // meaningful in the AddressBook number-entry mode.
@@ -981,11 +1034,16 @@ class ReadyBox extends Component {
         let uri = this.state.targetUri.toLowerCase();
 
         if (uri.indexOf('@videoconference.') > -1) {
-            let participants;
-            if (this.props.myInvitedParties && this.props.myInvitedParties.hasOwnProperty(uri)) {
-                participants = this.props.myInvitedParties[uri];
-            }
-            this.props.startConference(uri, {audio: true, video: true, participants: this.state.participants});
+            // Saved invitees are stored on the contact's
+            // `participants` array (persisted via app.js
+            // saveConference) and re-hydrated into the in-memory
+            // Quick-start path (entering the room URI in the
+            // search bar and tapping enter): join with just the
+            // local user. Saved invitees on the conference contact
+            // are NOT auto-invited here — only the Join Conference
+            // panel (handleConferenceCall) sends invites, and only
+            // after the user has seen who's on the list.
+            this.props.startConference(uri, {audio: true, video: true, participants: []});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
         }
@@ -1038,7 +1096,16 @@ class ReadyBox extends Component {
         }
 
         if (uri.indexOf('@videoconference.') > -1) {
-            this.props.startConference(uri, {audio: true, video: false});
+            // Audio/Video buttons join the room WITHOUT auto-
+            // inviting saved participants. The user wants the
+            // quick-start buttons to put just themselves in the
+            // room — explicit "invite saved people" only happens
+            // via the Join Conference panel (handleConferenceCall),
+            // where the user can SEE the invitee list before
+            // confirming. Previously myInvitedParties[room] was
+            // looked up and forwarded as initialParticipants, which
+            // silently dispatched invites the user never saw.
+            this.props.startConference(uri, {audio: true, video: false, participants: []});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: false});
         }
@@ -1067,7 +1134,13 @@ class ReadyBox extends Component {
         }
 
         if (uri.indexOf('@videoconference.') > -1) {
-            this.props.startConference(uri, {audio: true, video: true});
+            // Quick-start Video button — same rule as the Audio
+            // button: join with just the local user, no auto-
+            // invites of saved participants. The user invokes
+            // explicit invites via the Join Conference panel
+            // (handleConferenceCall) where the invitee list is
+            // visible before confirming.
+            this.props.startConference(uri, {audio: true, video: true, participants: []});
         } else {
             this.props.startCall(this.getTargetUri(uri), {audio: true, video: true});
         }
@@ -1320,8 +1393,10 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.props.selectedContact) {
-                this.navigationRef.scrollToIndex({animated: true, index: Math.floor(this.navigationItems.length / 2)});
+            if (this.navigationRefMain && !this.props.selectedContact && this.navigationItems && this.navigationItems.length > 0) {
+                try {
+                    this.navigationRefMain.scrollToIndex({animated: true, index: Math.floor(this.navigationItems.length / 2)});
+                } catch (e) {}
             }
         }, 3000);
 
@@ -1329,8 +1404,10 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.props.selectedContact) {
-                this.navigationRef.scrollToIndex({animated: true, index: this.navigationItems.length-1});
+            if (this.navigationRefMain && !this.props.selectedContact && this.navigationItems && this.navigationItems.length > 0) {
+                try {
+                    this.navigationRefMain.scrollToIndex({animated: true, index: this.navigationItems.length-1});
+                } catch (e) {}
             }
         }, 4500);
 
@@ -1338,8 +1415,10 @@ class ReadyBox extends Component {
            if (this.ended) {
                 return;
            }
-            if (this.navigationRef && !this.props.selectedContact) {
-                this.navigationRef.scrollToIndex({animated: true, index: 0});
+            if (this.navigationRefMain && !this.props.selectedContact && this.navigationItems && this.navigationItems.length > 0) {
+                try {
+                    this.navigationRefMain.scrollToIndex({animated: true, index: 0});
+                } catch (e) {}
             }
         }, 6000);
     }
@@ -1361,12 +1440,45 @@ class ReadyBox extends Component {
         // a CUMULATIVE modifier, not a content-type filter, so it
         // belongs visually with the sort toggles on the other side
         // of the splitter.
-        items.push({key: 'text',     title: 'Text',      icon: 'text',       enabled: true, selected: this.state.messagesCategoryFilter === 'text'});
-        items.push({key: 'audio',    title: 'Audio',     icon: 'microphone', enabled: true, selected: this.state.messagesCategoryFilter === 'audio'});
-        items.push({key: 'image',    title: 'Image',     icon: 'image',      enabled: true, selected: this.state.messagesCategoryFilter === 'image'});
-        items.push({key: 'video',    title: 'Video',     icon: 'video',      enabled: true, selected: this.state.messagesCategoryFilter === 'video'});
-        items.push({key: 'location', title: 'Locations', icon: 'map-marker', enabled: true, selected: this.state.messagesCategoryFilter === 'location'});
-        items.push({key: 'other',    title: 'Other',     icon: 'file',       enabled: true, selected: this.state.messagesCategoryFilter === 'other'});
+        //
+        // Each chip is only pushed when the contact actually has
+        // at least one message of that type. categoryCounts is
+        // populated by app.js#getMessages (single SQL pass +
+        // metadata classification via utils.isImage/isAudio/
+        // isVideo). If counts are missing — happens on the very
+        // first render after contact selection, before getMessages
+        // returns — fall back to ALL chips so the bar never looks
+        // empty during the brief loading window. Once counts
+        // arrive the chips for zero-count types disappear.
+        //
+        // Special case for the currently-active filter: keep its
+        // chip visible even if the (presumably stale) count says
+        // zero, so a user can always see what they're filtering by
+        // and tap it again to clear.
+        const counts = this.props.selectedContact && this.props.selectedContact.categoryCounts;
+        const showAll = !counts;
+        const active = this.state.messagesCategoryFilter;
+        const candidates = [
+            {key: 'text',     title: 'Text',      icon: 'text'},
+            {key: 'audio',    title: 'Audio',     icon: 'microphone'},
+            {key: 'image',    title: 'Image',     icon: 'image'},
+            {key: 'video',    title: 'Video',     icon: 'video'},
+            {key: 'location', title: 'Locations', icon: 'map-marker'},
+            {key: 'other',    title: 'Other',     icon: 'file'},
+        ];
+        for (const c of candidates) {
+            const has = showAll
+                || (counts && counts[c.key] > 0)
+                || c.key === active;
+            if (!has) continue;
+            items.push({
+                key: c.key,
+                title: c.title,
+                icon: c.icon,
+                enabled: true,
+                selected: active === c.key,
+            });
+        }
         return items;
     }
 
@@ -1412,7 +1524,27 @@ class ReadyBox extends Component {
         // the user reads "exclusive content type filters" on the
         // left, then the splitter, then "modifiers / sort options"
         // on the right.
-        items.push({key: 'pinned', title: 'Pinned', icon: 'pin', enabled: true, selected: !!this.props.pinned});
+        //
+        // Only renders when the contact actually has at least one
+        // pinned message — same "hide-if-empty" treatment the
+        // content-type chips on the other side of the splitter
+        // get. categoryCounts.pinned is populated by app.js#
+        // getMessages alongside the other counts. While
+        // categoryCounts is still loading (or if getMessages hasn't
+        // populated it yet) we fall back to showing the chip so the
+        // sort group doesn't briefly snap empty. And if the user
+        // already has pinned mode active, keep the chip visible
+        // regardless of the count — they need a way to tap it off.
+        const pinnedCount = this.props.selectedContact
+            && this.props.selectedContact.categoryCounts
+            && this.props.selectedContact.categoryCounts.pinned;
+        const pinnedActive = !!this.props.pinned;
+        const showPinned = pinnedCount === undefined
+            || pinnedCount > 0
+            || pinnedActive;
+        if (showPinned) {
+            items.push({key: 'pinned', title: 'Pinned', icon: 'pin', enabled: true, selected: pinnedActive});
+        }
         if (!inLocationFilter) {
             items.push({key: 'orderByTime', title: 'Sort: by time', icon: 'clock-outline', enabled: this.state.orderBy === 'timestamp', selected: false});
             if (!inTextFilter) {
@@ -1439,9 +1571,21 @@ class ReadyBox extends Component {
         // static system-loaded set with no message timestamps or
         // per-contact storage to sort by, so the buttons are
         // meaningless in that mode and just clutter the row. The pills
-        // remain visible (rendered separately on the right side of
-        // this same nav row).
+        // remain visible (rendered separately on the LEFT side of
+        // this same nav row, now that source pills moved to the left
+        // of the search bar and sort/order moved to the right).
         if (this.state.contactSource === 'ab') {
+            return [];
+        }
+
+        // Hide Sort and Order buttons if the user has fewer than 10
+        // contacts. A tiny contact list doesn't benefit from sorting
+        // controls — the whole list is visible at a glance — and the
+        // buttons just add visual noise on first-run / low-contact
+        // accounts. The Sylk / Phonebook source pills are unaffected
+        // and continue to render on the same nav row.
+        const _contactCount = (this.props.allContacts || []).length;
+        if (_contactCount < 10) {
             return [];
         }
 
@@ -1477,11 +1621,25 @@ class ReadyBox extends Component {
               ];
         }
 
+        // Quick predicate for the Tel pill — enabled only when at least
+        // one local contact carries the 'tel' tag (phone numbers
+        // imported from address book / auto-tagged by saveContactByUser
+        // when the URI's local-part starts with '+'). Computed inline
+        // rather than mirrored on app.js's state — the predicate is
+        // cheap, only the boolean reaches the pill, and the predicate
+        // re-runs every render via the existing `allContacts` flow,
+        // so a freshly-saved phone-number contact lights the pill up
+        // without any further plumbing.
+        const hasTelContacts = (this.props.allContacts || []).some(
+            c => Array.isArray(c && c.tags) && c.tags.indexOf('tel') > -1
+        );
+
         return [
               {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
               {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
               {key: 'favorite', title: 'Favorites', enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
               {key: 'autoanswer', title: 'Caregivers', enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
+              {key: 'tel', title: 'Tel', enabled: hasTelContacts, selected: this.state.contactsFilter === 'tel'},
               {key: 'missed', title: 'Missed', enabled: this.props.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
               {key: 'blocked', title: 'Blocked', enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
@@ -2237,8 +2395,28 @@ class ReadyBox extends Component {
 		// above the system overlay. Folded cover display has heavy camera
 		// cutouts that already obscure the upper portion, so the bar
 		// sitting slightly higher is acceptable.
+		// Fixed-height search/sort bar.
+		//
+		// `minHeight: 44` locks the bar to the standard iOS tap-target
+		// height (Material spec is 48; 44 reads as the comfortable
+		// shared baseline) so the row never collapses to its content
+		// height. Without this, dropping the sort-order chips (e.g.
+		// when `this.categorySortItems` is empty for a given view, or
+		// when the filter chips list yields nothing visible) would
+		// shrink the bar to the contact-source pills' intrinsic
+		// height alone, jumping the contacts list up under the
+		// search input by ~16-20 px and re-flowing the layout. Pinning
+		// minHeight here keeps the bar a fixed slab regardless of
+		// what's rendered inside it. `justifyContent: 'center'` keeps
+		// whatever IS visible vertically centered in that slab.
 		let navigationContainer = {borderWidth: 0,
 						   borderColor: 'blue',
+						   // Lock the bar height so it survives the sort/order
+						   // chips disappearing and matches the stacked
+						   // Sylk/Phonebook pills' own minHeight (46) with a
+						   // little breathing room above/below.
+						   minHeight: 52,
+						   justifyContent: 'center',
 						   paddingBottom: this.props.isFolded ? bottomInset : 0
 						   }
 	
@@ -2373,12 +2551,17 @@ class ReadyBox extends Component {
                                     contentContainerStyle={styles.navigationButtonGroup}
                                     horizontal={true}
                                     showsHorizontalScrollIndicator={false}
-                                    ref={(ref) => { this.navigationRef = ref; }}
+                                    ref={(ref) => { this.navigationRefFilter = ref; }}
                                     onScrollToIndexFailed={info => {
                                         const wait = new Promise(resolve => setTimeout(resolve, 10));
                                         wait.then(() => {
-                                            if (!this.props.selectedContact) {
-                                                this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
+                                            if (!this.props.selectedContact
+                                                && this.navigationRefFilter
+                                                && this.categoryFilterItems
+                                                && info.index < this.categoryFilterItems.length) {
+                                                try {
+                                                    this.navigationRefFilter.scrollToIndex({ index: info.index, animated: false });
+                                                } catch (e) {}
                                             }
                                         });
                                     }}
@@ -2433,36 +2616,31 @@ class ReadyBox extends Component {
                         </View>
                         :
                         <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                                <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                                    horizontal={true}
-                                    showsHorizontalScrollIndicator={false}
-                                    ref={(ref) => { this.navigationRef = ref; }}
-                                    onScrollToIndexFailed={info => {
-                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                        wait.then(() => {
-                                            if (!this.props.selectedContact) {
-                                                this.navigationRef.current?.scrollToIndex({ index: info.index, animated: false });
-                                            }
-                                        });
-                                    }}
-                                    data={this.categoryItems}
-                                    extraData={this.state}
-                                    keyExtractor={(item, index) => item.key}
-                                    renderItem={this.renderNavigationItem}
-                                />
-                            </View>
-                            {/* Sylk / AddressBook source pills, pinned to
-                                the right edge of the Sort/Order row.
-                                They drive ContactsListBox's search corpus
-                                via state.contactSource — Sylk is the
-                                synced contact list, AddressBook is the
-                                system-wide entries loaded once at app
-                                start. Hidden in share/invite modes
-                                because the toggle isn't meaningful
-                                there. */}
+                            {/* LEFT side of the Contacts-list nav row:
+                                Sylk / AddressBook source pills. They sit to
+                                the left of the search bar (which renders
+                                immediately below this row) and drive
+                                ContactsListBox's search corpus via
+                                state.contactSource — Sylk is the synced
+                                contact list, AddressBook is the system-wide
+                                entries loaded once at app start. Hidden in
+                                share/invite modes because the toggle isn't
+                                meaningful there. Positioned BEFORE the
+                                Sort/Order FlatList so the two clusters
+                                read as "source on the left, sort on the
+                                right" — mirroring the visual layout of the
+                                URIInput row beneath. */}
                             {!this.props.shareToContacts && !this.props.inviteContacts ? (
-                                <View style={readyBoxPillStyles.pillGroup}>
+                                <View style={[readyBoxPillStyles.pillGroup, readyBoxPillStyles.pillGroupLeading]}>
+                                    {/* Stacked icon-button + caption layout
+                                        mirroring the sort-order chips on the
+                                        same row: an outer TouchableOpacity
+                                        sized in column mode, a coloured
+                                        circular button containing only the
+                                        icon, and a small caption Text underneath
+                                        (OUTSIDE the coloured chip). Reads as
+                                        "tab-bar icon + label" rather than
+                                        "pill with text inside it". */}
                                     <TouchableOpacity
                                         onPress={() => this.handleContactSourceChange('sylk')}
                                         accessibilityRole="button"
@@ -2472,25 +2650,25 @@ class ReadyBox extends Component {
                                                 ? 'Searching Sylk contacts'
                                                 : 'Switch to Sylk contacts'
                                         }
-                                        style={[
-                                            readyBoxPillStyles.pill,
-                                            this.state.contactSource !== 'ab'
-                                                ? readyBoxPillStyles.pillSylkActive
-                                                : readyBoxPillStyles.pillInactive,
-                                        ]}
+                                        style={readyBoxPillStyles.pillCol}
                                     >
-                                        <MaterialCommunityIcon
-                                            name="account-circle"
-                                            size={16}
-                                            color={this.state.contactSource !== 'ab' ? '#ffffff' : '#2980b9'}
-                                        />
-                                        <Text
+                                        <View
                                             style={[
-                                                readyBoxPillStyles.pillLabel,
+                                                readyBoxPillStyles.pill,
                                                 this.state.contactSource !== 'ab'
-                                                    ? readyBoxPillStyles.pillLabelActive
-                                                    : readyBoxPillStyles.pillLabelSylkInactive,
+                                                    ? readyBoxPillStyles.pillSylkActive
+                                                    : readyBoxPillStyles.pillInactive,
                                             ]}
+                                        >
+                                            <MaterialCommunityIcon
+                                                name="account-circle"
+                                                size={20}
+                                                color={this.state.contactSource !== 'ab' ? '#ffffff' : '#2980b9'}
+                                            />
+                                        </View>
+                                        <Text
+                                            style={readyBoxPillStyles.pillCaption}
+                                            numberOfLines={1}
                                         >
                                             Sylk
                                         </Text>
@@ -2501,35 +2679,75 @@ class ReadyBox extends Component {
                                         accessibilityState={{ selected: this.state.contactSource === 'ab' }}
                                         accessibilityLabel={
                                             this.state.contactSource === 'ab'
-                                                ? 'Searching AddressBook'
-                                                : 'Switch to AddressBook'
+                                                ? 'Searching device contacts'
+                                                : 'Switch to device contacts'
                                         }
-                                        style={[
-                                            readyBoxPillStyles.pill,
-                                            readyBoxPillStyles.pillRight,
-                                            this.state.contactSource === 'ab'
-                                                ? readyBoxPillStyles.pillAbActive
-                                                : readyBoxPillStyles.pillInactive,
-                                        ]}
+                                        style={readyBoxPillStyles.pillCol}
                                     >
-                                        <MaterialCommunityIcon
-                                            name="book-account"
-                                            size={16}
-                                            color={this.state.contactSource === 'ab' ? '#ffffff' : '#27ae60'}
-                                        />
-                                        <Text
+                                        <View
                                             style={[
-                                                readyBoxPillStyles.pillLabel,
+                                                readyBoxPillStyles.pill,
                                                 this.state.contactSource === 'ab'
-                                                    ? readyBoxPillStyles.pillLabelActive
-                                                    : readyBoxPillStyles.pillLabelAbInactive,
+                                                    ? readyBoxPillStyles.pillAbActive
+                                                    : readyBoxPillStyles.pillInactive,
                                             ]}
                                         >
-                                            AddressBook
+                                            {/* iOS: card-account-phone (matches
+                                                iOS Contacts card-with-phone
+                                                look). Android: contacts (the
+                                                Material glyph used by Google
+                                                Contacts). */}
+                                            <MaterialCommunityIcon
+                                                name={Platform.OS === 'ios'
+                                                    ? 'card-account-phone'
+                                                    : 'contacts'}
+                                                size={20}
+                                                color={this.state.contactSource === 'ab' ? '#ffffff' : '#27ae60'}
+                                            />
+                                        </View>
+                                        <Text
+                                            style={readyBoxPillStyles.pillCaption}
+                                            numberOfLines={1}
+                                        >
+                                            Phonebook
                                         </Text>
                                     </TouchableOpacity>
                                 </View>
                             ) : null}
+                            {/* RIGHT side of the Contacts-list nav row:
+                                Sort / Order toggles. The wrapper takes the
+                                remaining flex space, and the FlatList's
+                                contentContainerStyle is overridden to
+                                justifyContent: 'flex-end' so the toggles
+                                hug the right edge instead of left-aligning
+                                next to the pill group. categoryItems
+                                returns [] when there are fewer than 10
+                                contacts, in which case the FlatList renders
+                                empty and the pills sit alone on the left. */}
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                                <FlatList contentContainerStyle={[styles.navigationButtonGroup, { justifyContent: 'flex-end', flexGrow: 1 }]}
+                                    horizontal={true}
+                                    showsHorizontalScrollIndicator={false}
+                                    ref={(ref) => { this.navigationRefCategory = ref; }}
+                                    onScrollToIndexFailed={info => {
+                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                        wait.then(() => {
+                                            if (!this.props.selectedContact
+                                                && this.navigationRefCategory
+                                                && this.categoryItems
+                                                && info.index < this.categoryItems.length) {
+                                                try {
+                                                    this.navigationRefCategory.scrollToIndex({ index: info.index, animated: false });
+                                                } catch (e) {}
+                                            }
+                                        });
+                                    }}
+                                    data={this.categoryItems}
+                                    extraData={this.state}
+                                    keyExtractor={(item, index) => item.key}
+                                    renderItem={this.renderNavigationItem}
+                                />
+                            </View>
                         </View>
                     : null}
 
@@ -2537,12 +2755,17 @@ class ReadyBox extends Component {
                     <View style={navigationContainer}>
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
-                            ref={(ref) => { this.navigationRef = ref; }}
+                            ref={(ref) => { this.navigationRefSort = ref; }}
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  if (!this.props.selectedContact) {
-                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  if (!this.props.selectedContact
+                                      && this.navigationRefSort
+                                      && this.sortOrderItems
+                                      && info.index < this.sortOrderItems.length) {
+                                      try {
+                                          this.navigationRefSort.scrollToIndex({ index: info.index, animated: false });
+                                      } catch (e) {}
                                   }
                                 });
                               }}
@@ -2554,75 +2777,60 @@ class ReadyBox extends Component {
                     </View>
                     : null}
 
-                        {this.showSearchBar ?
+                        {/* Invite-to-conference and share-to-contacts
+                            modes need the search bar BELOW the
+                            Cancel/Invite action pair, glued to the
+                            top of the ContactsListBox — that's where
+                            the user wants to filter the picker list
+                            with the action affordances always visible
+                            above it. The relocated copy is rendered
+                            further down, immediately before the
+                            <ContactsListBox> element. Skipping the
+                            normal-position render here avoids a
+                            duplicate bar. */}
+                        {this.showSearchBar && !(this.props.inviteContacts || this.props.shareToContacts) ?
                         <View style={URIContainerClass}>
-                            <View style={readyBoxDialpadStyles.searchRow}>
-                                <View style={readyBoxDialpadStyles.searchInputWrap}>
-                                    <URIInput
-                                        defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
-                                        onChange={this.handleSearch}
-                                        onSelect={this.handleTargetSelect}
-                                        shareToContacts={this.props.shareToContacts}
-                                        inviteContacts={this.props.inviteContacts}
-                                        searchMessages={this.state.searchMessages}
-                                        contactSource={this.state.contactSource}
-                                        // Show the backspace inside the
-                                        // search bar (left of the ×
-                                        // clear-icon) only while the
-                                        // AB dialpad is open — that's
-                                        // the only mode where digit-
-                                        // by-digit deletion matters.
-                                        showBackspace={
-                                            this.state.contactSource === 'ab'
-                                            && this.state.showAbDialpad
-                                            && !this.props.shareToContacts
-                                            && !this.props.inviteContacts
-                                            && !this.state.searchMessages
-                                        }
-                                        onBackspace={this.handleAbDialpadBackspace}
-                                        //autoFocus={this.state.searchMessages}
-                                        autoFocus={false}
-                                        dark={this.props.dark}
-                                    />
-                                </View>
-                                {/* Dialpad button — only rendered while
-                                    the AddressBook source is active and
-                                    the user isn't in share/invite/
-                                    message-search modes. Tapping it
-                                    expands an inline DTMFPad below the
-                                    search row that types digits into
-                                    the search field, so the user can
-                                    dial a number without summoning the
-                                    OS keyboard. Highlighted when the
-                                    pad is open so the toggle-state is
-                                    obvious. */}
-                                {this.state.contactSource === 'ab'
-                                  && !this.props.shareToContacts
-                                  && !this.props.inviteContacts
-                                  && !this.state.searchMessages ? (
-                                    <IconButton
-                                        icon="dialpad"
-                                        size={22}
-                                        onPress={this.toggleAbDialpad}
-                                        accessibilityLabel={
-                                            this.state.showAbDialpad
-                                                ? 'Hide dialpad'
-                                                : 'Show dialpad'
-                                        }
-                                        style={[
-                                            readyBoxDialpadStyles.iconButton,
-                                            this.state.showAbDialpad
-                                                ? readyBoxDialpadStyles.iconButtonActive
-                                                : null,
-                                        ]}
-                                        iconColor={
-                                            this.state.showAbDialpad
-                                                ? '#ffffff'
-                                                : '#27ae60'
-                                        }
-                                    />
-                                ) : null}
-                            </View>
+                            {/* URIInput stretches edge-to-edge inside
+                                URIContainerClass. The dialpad toggle
+                                that used to sit OUTSIDE the bar (in a
+                                flex-row wrapper next to it) is now an
+                                overlay INSIDE the Searchbar, rendered
+                                by URIInput via the showDialpad /
+                                onDialpadPress / isDialpadActive props.
+                                Removing the outer flex row was what
+                                let the search field reclaim that
+                                ~44 px column for typing. */}
+                            <URIInput
+                                defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
+                                onChange={this.handleSearch}
+                                onSelect={this.handleTargetSelect}
+                                shareToContacts={this.props.shareToContacts}
+                                inviteContacts={this.props.inviteContacts}
+                                searchMessages={this.state.searchMessages}
+                                contactSource={this.state.contactSource}
+                                // Dialpad toggle — rendered as an
+                                // overlay flush against the right
+                                // edge of the Searchbar. The × clear
+                                // icon sits immediately to its left.
+                                // Only relevant in AddressBook mode
+                                // while not in share/invite/message-
+                                // search workflows. The backspace
+                                // that used to live inside the search
+                                // bar moved into the dialpad's new
+                                // 4th column (DTMFPad extraColumn
+                                // prop, top-to-bottom: backspace, -, _).
+                                showDialpad={
+                                    this.state.contactSource === 'ab'
+                                    && !this.props.shareToContacts
+                                    && !this.props.inviteContacts
+                                    && !this.state.searchMessages
+                                }
+                                isDialpadActive={this.state.showAbDialpad}
+                                onDialpadPress={this.toggleAbDialpad}
+                                //autoFocus={this.state.searchMessages}
+                                autoFocus={false}
+                                dark={this.props.dark}
+                            />
                             {this.state.contactSource === 'ab'
                               && this.state.showAbDialpad
                               && !this.props.shareToContacts
@@ -2635,14 +2843,26 @@ class ReadyBox extends Component {
                                         the compact preset shrunk the
                                         keys to ~78% which felt
                                         cramped for actual number
-                                        entry. The backspace control
-                                        moved INSIDE the search bar
-                                        (URIInput's showBackspace
-                                        prop) and lives left of the ×
-                                        clear-icon, so the dialpad
-                                        itself is just keys now. */}
+                                        entry. `extraColumn` adds a
+                                        4th column (backspace, -, _,
+                                        blank) tailored to SIP
+                                        user-part entry: backspace
+                                        deletes the last character
+                                        from the search field (via
+                                        onBackspace), while - and _
+                                        are reported through onDigit
+                                        like the rest of the keypad. */}
                                     <DTMFPad
                                         onDigit={this.handleAbDialpadDigit}
+                                        extraColumn={true}
+                                        onBackspace={this.handleAbDialpadBackspace}
+                                        // 4th-column × clear key
+                                        // (row 4 of the extra
+                                        // column) — wipes the
+                                        // search field via the same
+                                        // path the search bar's own
+                                        // × overlay uses.
+                                        onClear={() => this.handleSearch('')}
                                     />
                                 </View>
                             ) : null}
@@ -2670,7 +2890,7 @@ class ReadyBox extends Component {
                             :
 
                             <View style={[buttonGroupClass, {borderWidth: 0, borderColor: 'white'}]}>
-                                  {!this.props.selectedContact && !this.props.shareToContacts?
+                                  {!this.props.selectedContact && !this.props.shareToContacts && !this.props.inviteContacts?
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
                                         <IconButton
@@ -2849,6 +3069,72 @@ class ReadyBox extends Component {
                                     </TouchableHighlight>
                                   </View>
                                   : null }
+
+                                  {/* Invite-mode action pair. Visible only
+                                      when the contacts list is acting as a
+                                      participant picker for an ongoing
+                                      conference (inviteContacts=true).
+                                      Replaces the "Start conference"
+                                      account-group button (gated off above
+                                      via showConferenceButton) — the user
+                                      already has a conference, they want
+                                      to add people to it, not start a new
+                                      one. Two distinct buttons so the
+                                      operation is symmetric and obvious:
+
+                                        • Cancel (red) — calls finishInvite
+                                          which clears inviteContacts +
+                                          selectedContacts in app.js and
+                                          drops the contacts list back to
+                                          normal mode WITHOUT sending any
+                                          invites.
+
+                                        • Invite (green) — calls goBackFunc
+                                          (= goBackToCall in app.js). That
+                                          navigates back into the
+                                          ConferenceBox, whose componentDid-
+                                          Mount-equivalent path then auto-
+                                          calls inviteParticipants(
+                                              this.state.selectedContacts)
+                                          (see ConferenceBox ~line 391).
+                                          Disabled until at least one
+                                          contact is selected so an empty
+                                          tap doesn't fall back into the
+                                          conference with nothing to do.
+                                      */}
+                                  {this.props.inviteContacts ?
+                                  <>
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={redButtonClass}
+                                            size={32}
+                                            onPress={this.props.finishInvite}
+                                            icon="close"
+                                            accessibilityLabel="Cancel inviting"
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  <View style={styles.buttonContainer}>
+                                      <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            style={this.props.selectedContacts && this.props.selectedContacts.length > 0
+                                                ? greenButtonClass
+                                                : disabledGreenButtonClass}
+                                            disabled={!this.props.selectedContacts || this.props.selectedContacts.length === 0}
+                                            size={32}
+                                            onPress={this.props.goBackFunc}
+                                            icon="account-plus"
+                                            accessibilityLabel={
+                                                this.props.selectedContacts && this.props.selectedContacts.length > 0
+                                                    ? `Invite ${this.props.selectedContacts.length} selected contact${this.props.selectedContacts.length === 1 ? '' : 's'} to the conference`
+                                                    : 'Invite — pick at least one contact first'
+                                            }
+                                        />
+                                    </TouchableHighlight>
+                                  </View>
+                                  </>
+                                  : null}
 
                                   {this.showAudioSendButton ?
                                   <View style={styles.buttonContainer}>
@@ -3116,6 +3402,90 @@ class ReadyBox extends Component {
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
 
+                   {/* "Phonebook access is off" banner. Rendered above
+                       the contacts list whenever the user has the
+                       Phonebook source pill selected but the OS has
+                       refused to surface its permission prompt (denied
+                       once on iOS, or "don't ask again" on Android).
+                       The bar explains why the list is empty and gives
+                       a one-tap path to the OS Sylk preferences page —
+                       same react-native-permissions openSettings()
+                       helper the main-menu "App Settings" item uses.
+                       Hidden in share/invite/message-search workflows
+                       where the source toggle isn't visible to the
+                       user anyway. */}
+                   {this.state.contactSource === 'ab'
+                       && this.props.abPermissionDenied
+                       && !this.props.shareToContacts
+                       && !this.props.inviteContacts
+                       && !this.state.searchMessages ? (
+                       <View style={readyBoxPermissionBannerStyles.banner}>
+                           <MaterialCommunityIcon
+                               name="account-cancel-outline"
+                               size={22}
+                               color="#b06000"
+                               style={readyBoxPermissionBannerStyles.bannerIcon}
+                           />
+                           <View style={readyBoxPermissionBannerStyles.bannerTextWrap}>
+                               <Text style={readyBoxPermissionBannerStyles.bannerTitle}>
+                                   Phonebook access is off
+                               </Text>
+                               <Text style={readyBoxPermissionBannerStyles.bannerBody}>
+                                   Open Settings to let Sylk read your contacts.
+                               </Text>
+                           </View>
+                           <Button
+                               mode="contained"
+                               compact={true}
+                               onPress={() => {
+                                   if (typeof this.props.openAppSettings === 'function') {
+                                       this.props.openAppSettings();
+                                   }
+                               }}
+                               style={readyBoxPermissionBannerStyles.bannerButton}
+                               labelStyle={readyBoxPermissionBannerStyles.bannerButtonLabel}
+                           >
+                               Open Settings
+                           </Button>
+                       </View>
+                   ) : null}
+
+                   {/* Invite / share search bar — relocated copy.
+                       In normal modes the URIInput renders near the
+                       top (just under the categories row); in
+                       invite-to-conference and share-to-contacts
+                       modes the user wants it sitting flush against
+                       the contacts list so the action pair above
+                       (Cancel / Invite or Cancel / Share) stays put
+                       while the picker scrolls. Identical props to
+                       the upper render — dialpad-overlay branches
+                       are gated off because they only apply to the
+                       AddressBook source in non-invite/share modes.
+                       Rendered OUTSIDE the QR-scanner branch so the
+                       bar still appears above the list (the scanner
+                       is a parallel sibling that replaces the list,
+                       not a wrapper around it — but invite/share
+                       modes never enter the scanner branch since
+                       showQRCodeScanner is gated on
+                       !inviteContacts / !shareToContacts upstream). */}
+                   {this.showSearchBar && (this.props.inviteContacts || this.props.shareToContacts) ?
+                   <View style={URIContainerClass}>
+                       <URIInput
+                           defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
+                           onChange={this.handleSearch}
+                           onSelect={this.handleTargetSelect}
+                           shareToContacts={this.props.shareToContacts}
+                           inviteContacts={this.props.inviteContacts}
+                           searchMessages={this.state.searchMessages}
+                           contactSource={this.state.contactSource}
+                           showDialpad={false}
+                           isDialpadActive={false}
+                           autoFocus={false}
+                           dark={this.props.dark}
+                       />
+                   </View>
+                   : null}
+
                    {this.props.showQRCodeScanner ?
                     <QRCodeScanner
                         onRead={this.QRCodeRead}
@@ -3136,6 +3506,11 @@ class ReadyBox extends Component {
 						chat={this.state.chat && !this.props.inviteContacts}
 						isLandscape={this.props.isLandscape}
 						contactSource={this.state.contactSource}
+						/* Measured Appbar.Header height from app.js
+						   (sourced from NavigationBar.onLayout) — used
+						   inside ContactsListBox as the chrome
+						   component of keyboardVerticalOffset. */
+						appBarHeight={this.props.appBarHeight}
 						account={this.props.account}
 						password={this.props.password}
 						callHistoryUrl={this.props.callHistoryUrl}
@@ -3159,6 +3534,7 @@ class ReadyBox extends Component {
 						deleteMessages = {this.props.deleteMessages}
 						expireMessage = {this.props.expireMessage}
 						deleteMessage = {this.props.deleteMessage}
+						deleteFiles = {this.props.deleteFiles}
 						getMessages = {this.props.getMessages}
 						pinMessage = {this.props.pinMessage}
 						unpinMessage = {this.props.unpinMessage}
@@ -3214,6 +3590,7 @@ class ReadyBox extends Component {
 						canSend = {this.props.canSend}
 						meetMeAt = {this.props.meetMeAt}
 						setFullScreen = {this.props.setFullScreen}
+						setChatReactionMode = {this.props.setChatReactionMode}
 						fullScreen = {this.props.fullScreen}
 						transferProgress = {this.props.transferProgress}
 						totalMessageExceeded = {this.props.totalMessageExceeded}
@@ -3253,12 +3630,17 @@ class ReadyBox extends Component {
                     >
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
-                            ref={(ref) => { this.navigationRef = ref; }}
+                            ref={(ref) => { this.navigationRefMain = ref; }}
                               onScrollToIndexFailed={info => {
                                 const wait = new Promise(resolve => setTimeout(resolve, 10));
                                 wait.then(() => {
-                                  if (!this.props.selectedContact) {
-                                      this.navigationRef.current?.scrollToIndex({ index: info.index, animated: true/false });
+                                  if (!this.props.selectedContact
+                                      && this.navigationRefMain
+                                      && this.navigationItems
+                                      && info.index < this.navigationItems.length) {
+                                      try {
+                                          this.navigationRefMain.scrollToIndex({ index: info.index, animated: false });
+                                      } catch (e) {}
                                   }
                                 });
                               }}
@@ -3331,6 +3713,10 @@ ReadyBox.propTypes = {
     reSendMessage   : PropTypes.func,
     confirmRead     : PropTypes.func,
     deleteMessage   : PropTypes.func,
+    // Bulk file deletion — wired down to ContactsListBox so the
+    // video-grid selection bar can invoke the same SQL+remote
+    // delete path the NavigationBar Delete-files modal uses.
+    deleteFiles     : PropTypes.func,
     expireMessage   : PropTypes.func,
     getMessages     : PropTypes.func,
     deleteMessages  : PropTypes.func,
@@ -3356,8 +3742,35 @@ ReadyBox.propTypes = {
     historyFilter: PropTypes.string,
     fontScale: PropTypes.number,
     inviteToConferenceFunc: PropTypes.func,
+    // Drops out of the contacts-list invite mode without going
+    // back to the conference and without sending any invites.
+    // Wired in app.js to finishInviteToConference, which clears
+    // inviteContacts + selectedContacts. Used by the Cancel
+    // button in the invite-mode action pair above.
+    finishInvite: PropTypes.func,
     toggleQRCodeScannerFunc: PropTypes.func,
     allContacts: PropTypes.array,
+    // Invoked every time the user taps the Phonebook source pill.
+    // Behaviour on the app.js side:
+    //   • If permission is already authorized AND contacts have
+    //     been fetched → no-op.
+    //   • If permission is already authorized BUT contacts haven't
+    //     been fetched → run getABContacts.
+    //   • If permission is NOT authorized → re-prompt the user.
+    // This makes each Phonebook tap re-ask for permission until the
+    // user grants it (or hits the OS-level "don't ask again" cap).
+    loadAddressBook: PropTypes.func,
+    // True when the OS contacts permission is currently denied (or
+    // in the OS-level "don't ask again" state where re-requesting
+    // is a silent no-op). Drives the inline "Phonebook access is
+    // off — Open Settings" banner rendered above the contacts list
+    // while the Phonebook source pill is selected.
+    abPermissionDenied: PropTypes.bool,
+    // Opens the OS-level Sylk app preferences page so the user can
+    // toggle contacts permission on after a denial. Wired by app.js
+    // to react-native-permissions's openSettings() helper (the same
+    // one the NavigationBar 'appSettings' menu item uses).
+    openAppSettings: PropTypes.func,
     keys            : PropTypes.object,
     keyStatus       : PropTypes.object,
     showImportPrivateKeyModal : PropTypes.bool,
@@ -3384,6 +3797,7 @@ ReadyBox.propTypes = {
     dark: PropTypes.bool,
     messagesMetadata: PropTypes.object,
     file2GiftedChat : PropTypes.func,
+    appBarHeight    : PropTypes.number,
     contactStartShare: PropTypes.func,
     contactStopShare: PropTypes.func,
 	contactIsSharing: PropTypes.bool,
@@ -3419,17 +3833,52 @@ const readyBoxPillStyles = StyleSheet.create({
         alignItems: 'center',
         marginLeft: 6,
     },
-    pill: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 14,
-        borderWidth: 1,
-        flexDirection: 'row',
+    // Variant applied when the pill group sits on the LEFT edge of
+    // the nav row (Contacts-list view, where Sylk/Phonebook moved to
+    // the left of the search bar and Sort/Order moved to the right).
+    // Drops the marginLeft that made sense when the pills were
+    // tucked next to a flex:1 wrapper on the right, and adds a small
+    // marginRight so the right-side Sort/Order cluster has a bit of
+    // breathing room.
+    pillGroupLeading: {
+        marginLeft: 0,
+        marginRight: 6,
+    },
+    // Outer TouchableOpacity wrapper for each source button. Sized
+    // and shaped like the sort-order chips so the whole row reads as
+    // one ribbon of equally-weighted toggles. The label-under-button
+    // layout is delegated to this column: icon chip on top, caption
+    // text below, both centered horizontally.
+    pillCol: {
         alignItems: 'center',
         justifyContent: 'center',
+        // Tight horizontal gutter between the two pills (and between
+        // this column and the sort chips immediately to its left) so
+        // the right-side cluster eats less of the row. The sort-icon
+        // FlatList sits in a flex:1 wrapper, so widening this column
+        // also implicitly shifts those icons leftward — exactly what
+        // we want when "Phonebook" needs more horizontal room than
+        // "Sylk".
+        marginHorizontal: 2,
+        // 60 px is the smallest width that fits "Phonebook" at the
+        // 9 pt 600-weight caption style without truncation, while
+        // keeping the icon chip vertically centered. The Sylk
+        // column gets the same width so the two read as a balanced
+        // pair (its shorter label just floats centered).
+        width: 60,
     },
-    pillRight: {
-        marginLeft: 4,
+    // The visible coloured chip — circular, just big enough to hold
+    // a 20 px icon plus a hint of padding. Background carries the
+    // active/inactive state; the caption beneath stays the same
+    // neutral white regardless of which pill is selected (matches
+    // the sort chips).
+    pill: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        borderWidth: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     pillSylkActive: {
         backgroundColor: '#2980b9',
@@ -3443,19 +3892,16 @@ const readyBoxPillStyles = StyleSheet.create({
         backgroundColor: 'transparent',
         borderColor: '#cfd8dc',
     },
-    pillLabel: {
-        fontSize: 11,
+    // Caption is plain text below the chip — same styling shape as
+    // the sort-order labels (`Time` / `Size` / `Asc` / `Desc`): tiny
+    // white text, centered, snug to the chip above.
+    pillCaption: {
+        fontSize: 9,
         fontWeight: '600',
-        marginLeft: 3,
-    },
-    pillLabelActive: {
         color: '#ffffff',
-    },
-    pillLabelSylkInactive: {
-        color: '#2980b9',
-    },
-    pillLabelAbInactive: {
-        color: '#27ae60',
+        marginTop: 2,
+        textAlign: 'center',
+        backgroundColor: 'transparent',
     },
 });
 
@@ -3503,6 +3949,55 @@ const readyBoxDialpadStyles = StyleSheet.create({
         backgroundColor: 'rgba(0,0,0,0.45)',
         borderRadius: 18,
         margin: 0,
+    },
+});
+
+// Inline banner shown above the contacts list when the user is on the
+// Phonebook source pill but the OS contacts permission was denied (or
+// is stuck in "don't ask again"). Visually a soft amber strip so it
+// reads as informational, not alarming — paired with a small filled
+// button on the right that opens the OS Sylk preferences page via
+// react-native-permissions's openSettings() helper.
+const readyBoxPermissionBannerStyles = StyleSheet.create({
+    banner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginHorizontal: 8,
+        marginTop: 6,
+        marginBottom: 4,
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        backgroundColor: '#fff4e0',
+        borderColor: '#f1c789',
+        borderWidth: 1,
+        borderRadius: 8,
+    },
+    bannerIcon: {
+        marginRight: 8,
+    },
+    bannerTextWrap: {
+        flex: 1,
+        minWidth: 0,
+    },
+    bannerTitle: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#5a3700',
+    },
+    bannerBody: {
+        fontSize: 12,
+        color: '#5a3700',
+        marginTop: 1,
+    },
+    bannerButton: {
+        marginLeft: 10,
+        backgroundColor: '#b06000',
+    },
+    bannerButtonLabel: {
+        fontSize: 12,
+        color: '#ffffff',
+        marginVertical: 4,
+        marginHorizontal: 8,
     },
 });
 

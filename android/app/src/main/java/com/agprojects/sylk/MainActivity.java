@@ -39,7 +39,7 @@ public class MainActivity extends ReactActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.d(TAG, "[Main] MainActivity onCreate intent=" + getIntent());
+        SylkLogger.d("[app] MainActivity onCreate intent=" + getIntent());
 
         // Handle the launch intent (replaces SplashActivity)
         handleIntent(getIntent());
@@ -54,7 +54,7 @@ public class MainActivity extends ReactActivity {
                 true
             );
         } catch (ErrnoException e) {
-            Log.e(TAG, "[Main] Failed to set EXTERNAL_STORAGE", e);
+            SylkLogger.e("[app] Failed to set EXTERNAL_STORAGE", e);
         }
     }
 
@@ -67,21 +67,21 @@ public class MainActivity extends ReactActivity {
         String action = intent.getAction();
         Uri data = intent.getData();
 
-        //Log.d(TAG, "handleIntent action=" + action + " data=" + data);
+        //SylkLogger.d("[app] handleIntent action=" + action + " data=" + data);
 
         // This exactly mirrors what SplashActivity forwarded
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
-			Log.d(TAG, "[Main] handleViewIntent");
+			SylkLogger.d("[app] handleViewIntent");
             handleViewIntent(data);
         }
 
 		if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
 			// VERY IMPORTANT: keep intent so RN can read it
-			Log.d(TAG, "[Main] Caching share intent");
+			SylkLogger.d("[app] Caching share intent");
 			pendingShareIntent = intent;
 			if (!shareHandled) {
 				setIntent(intent);
-				Log.d(TAG, "[Main] setIntent");
+				SylkLogger.d("[app] setIntent");
 				emitShareIntent(intent);
 				shareHandled = true;
 			}
@@ -153,7 +153,7 @@ public class MainActivity extends ReactActivity {
 	
 		if (pendingShareIntent != null) {
 			if (!shareHandled) {
-				Log.d(TAG, "[Main] Re-applying pending share intent");
+				SylkLogger.d("[app] Re-applying pending share intent");
 				setIntent(pendingShareIntent);
 				shareHandled = true;
 			}
@@ -165,7 +165,7 @@ public class MainActivity extends ReactActivity {
      * Forward to React Native via Linking / event emitter
      */
     private void handleViewIntent(Uri uri) {
-        Log.d(TAG, "[Main] Deep link received: " + uri);
+        SylkLogger.d("[app] Deep link received: " + uri);
 
         // IMPORTANT:
         // Do NOT start another Activity here.
@@ -184,7 +184,7 @@ public class MainActivity extends ReactActivity {
     public void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
 
-        Log.d(TAG, "[Main] MainActivity onNewIntent intent=" + intent);
+        SylkLogger.d("[app] MainActivity onNewIntent intent=" + intent);
 
         // Required so RN Linking sees updated intent
         setIntent(intent);
@@ -236,25 +236,25 @@ public class MainActivity extends ReactActivity {
     protected void onPause() {
         super.onPause();
 		shareHandled = false;
-        //Log.w(TAG, "MainActivity lost focus");
+        //SylkLogger.w("[app] MainActivity lost focus");
     }
 
 	@Override
 	protected void onStart() {
 		super.onStart();
-		//Log.d(TAG, "MainActivity onStart");
+		//SylkLogger.d("[app] MainActivity onStart");
 	}
 	
 	@Override
 	protected void onStop() {
 		super.onStop();
-		//Log.d(TAG, "MainActivity onStop");
+		//SylkLogger.d("[app] MainActivity onStop");
 	}
 	
 	@Override
 	public void onWindowFocusChanged(boolean hasFocus) {
 		super.onWindowFocusChanged(hasFocus);
-		//Log.d(TAG, "MainActivity onWindowFocusChanged: " + hasFocus);
+		//SylkLogger.d("[app] MainActivity onWindowFocusChanged: " + hasFocus);
 	}
 	
 

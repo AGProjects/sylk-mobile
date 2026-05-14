@@ -37,6 +37,7 @@ class MainApplication : Application(), ReactApplication {
               add(AudioRoutePackage())
               add(UnreadPackage())
               add(SylkCallRecorderPackage())
+              add(NativeLoggerPackage())
 
             }
 
@@ -61,6 +62,9 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    // Initialise the native log sink before anything else so calls
+    // from boot-time SylkTelecom.register, FCM, etc. land on disk.
+    SylkLogger.init(this)
     SoLoader.init(this, false)
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
       // If you opted-in for the New Architecture, we load the native entry point for this app.

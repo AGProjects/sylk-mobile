@@ -266,12 +266,30 @@ class Conference extends React.Component {
         
         //console.log('Conference START');
 
+        // Wire-level negotiation always advertises video — this
+        // is the change that lets a user who pressed the "Audio"
+        // button later flip on their camera in the same call
+        // without renegotiating. proposedMedia.video here is the
+        // BUTTON CHOICE (audio vs video), preserved for downstream
+        // UI-mode signalling via the audioOnly prop on ConferenceBox
+        // a few lines below. The local stream's video track will
+        // start with track.enabled = false when the user pressed
+        // Audio (ConferenceBox constructor reads the same
+        // audioOnly prop to seed videoMuted), so an "Audio" start
+        // doesn't actually push frames out — it just keeps the
+        // m=video transceiver in place so unmuting later is a
+        // one-line track.enabled flip.
+        //
+        // localStream has both audio and video tracks because
+        // callKeepStartConference now always asks for camera +
+        // mic permission and forwards video: true into
+        // getLocalMedia.
         const options = {
             id: this.state.callUUID,
             pcConfig: {iceServers: this.state.iceServers},
             localStream: this.state.localMedia,
             audio: this.props.proposedMedia.audio,
-            video: this.props.proposedMedia.video,
+            video: true,
             offerOptions: {
                 offerToReceiveAudio: false,
                 offerToReceiveVideo: false
@@ -360,8 +378,19 @@ class Conference extends React.Component {
             this.props.toggleFavorite(this.state.room);
         }
 
-        if (this.props.myInvitedParties.hasOwnProperty(this.state.room)) {
-            let participants = this.state.myInvitedParties[this.state.room];
+        // `myInvitedParties` is keyed by the room's LOCAL part — see
+        // app.js ~2891. `this.state.room` here is the lowercased FULL
+        // targetUri ("name@videoconference.domain"), so previously
+        // this hasOwnProperty check ALWAYS failed and the in-session
+        // participant list silently overwrote the saved invitees.
+        //
+        // Look up by local part, but keep passing the FULL URI to
+        // the save callback (appendInvitedParties → saveConference)
+        // because saveConference resolves the contact row through
+        // lookupContact and that index is keyed by the FQDN URI.
+        const _roomKey = (this.state.room || '').split('@')[0];
+        if (this.props.myInvitedParties.hasOwnProperty(_roomKey)) {
+            let participants = this.state.myInvitedParties[_roomKey].slice();
             this.participants.forEach((p) => {
                 if (participants.indexOf(p) === -1) {
                     participants.push(p);

@@ -154,13 +154,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         instance = this;
         registerReceivers();
         reactContext.addLifecycleEventListener(this);
-        Log.d(TAG, "[Audio] AudioRouteModule init");
+        SylkLogger.d("[audio] AudioRouteModule init");
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             startCommunicationDeviceListener();
             startAudioModeListener();
         } else {
-            Log.d(TAG, "[Audio] Communication device listener not supported on this Android version");
+            SylkLogger.d("[audio] Communication device listener not supported on this Android version");
         }
     }
 
@@ -206,17 +206,25 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             if (am == null) return;
             int mode = am.getMode();
             if (preCallMode != -1) {
-                Log.d(TAG, "SYLK_APP audio mode capturePreCallMode skipped, already have "
+                // [audio] capturePreCallMode skip telemetry — disabled.
+                // Re-enable when debugging pre-call mode caching across
+                // multiple FCM-push entry points.
+                /*
+                SylkLogger.d("[audio] SYLK_APP audio mode capturePreCallMode skipped, already have "
                         + getAudioModeDescription(preCallMode)
                         + " (new value would be " + getAudioModeDescription(mode)
                         + ", source=" + source + ")");
+                */
                 return;
             }
             preCallMode = mode;
-            Log.d(TAG, "SYLK_APP audio mode capturePreCallMode captured "
+            // [audio] capturePreCallMode capture telemetry — disabled.
+            /*
+            SylkLogger.d("[audio] SYLK_APP audio mode capturePreCallMode captured "
                     + getAudioModeDescription(mode) + " (source=" + source + ")");
+            */
         } catch (Exception e) {
-            Log.e(TAG, "SYLK_APP audio mode capturePreCallMode failed (source=" + source + ")", e);
+            SylkLogger.e("[audio] SYLK_APP audio mode capturePreCallMode failed (source=" + source + ")", e);
         }
     }
 
@@ -225,18 +233,30 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         if (audioManager == null) return;
         try {
             AudioManager.OnModeChangedListener listener = (newMode) -> {
+                // KEEP the cache updates (other code reads
+                // lastObservedMode / lastObservedModeAt /
+                // lastObservedModeCaller via SYLK_APP cleanupTelecomConnection
+                // path), but skip the per-event log line + the briefStack
+                // call that built the giant verbose payload. The OS
+                // fires this many times in a row with the same mode
+                // during call setup; the diagnostic was written once
+                // to figure out who was repeatedly setting
+                // IN_COMMUNICATION and is now permanent noise.
                 long now = System.currentTimeMillis();
-                String desc = getAudioModeDescription(newMode);
-                String prev = getAudioModeDescription(lastObservedMode);
                 String thread = Thread.currentThread().getName();
-                String stack = briefStack();
                 lastObservedMode = newMode;
                 lastObservedModeAt = now;
+                lastObservedModeCaller = thread; // stack omitted to avoid briefStack() cost
+                /*
+                String desc = getAudioModeDescription(newMode);
+                String prev = getAudioModeDescription(lastObservedMode);
+                String stack = briefStack();
                 lastObservedModeCaller = thread + " | " + stack;
-                Log.d(TAG, "SYLK_APP audio mode observed " + prev + " -> " + desc
+                SylkLogger.d("[audio] SYLK_APP audio mode observed " + prev + " -> " + desc
                         + " at=" + now
                         + " thread=" + thread
                         + " stack=" + stack);
+                */
             };
             audioManager.addOnModeChangedListener(
                     java.util.concurrent.Executors.newSingleThreadExecutor(),
@@ -246,10 +266,10 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             // meaningful "from".
             lastObservedMode = audioManager.getMode();
             lastObservedModeAt = System.currentTimeMillis();
-            Log.d(TAG, "SYLK_APP audio mode listener started; current="
+            SylkLogger.d("[audio] SYLK_APP audio mode listener started; current="
                     + getAudioModeDescription(lastObservedMode));
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] failed to register OnModeChangedListener", e);
+            SylkLogger.e("[audio] failed to register OnModeChangedListener", e);
         }
     }
 
@@ -306,7 +326,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     private void startFoldObserver() {
         Activity activity = getCurrentActivity();
         if (activity == null) {
-            Log.d(TAG, "[Audio] [FoldDiag] startFoldObserver: no activity yet");
+            /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] startFoldObserver: no activity yet"); */
             return;
         }
         if (windowInfoTracker != null && foldObservedActivity == activity) {
@@ -350,23 +370,23 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             ? foldObservedActivity.getWindowManager().getDefaultDisplay()
                             : null;
 
-                    Log.d(TAG, "[Audio] [FoldDiag] layout"
+                    /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] layout"
                             + " state=" + state
                             + " orientation=" + orientation
                             + " occlusion=" + occlusion
                             + " separating=" + isSeparating
                             + " features=" + info.getDisplayFeatures().size()
-                            + " display=" + (display != null ? (display.getDisplayId() + "(" + display.getName() + ")") : "null"));
+                            + " display=" + (display != null ? (display.getDisplayId() + "(" + display.getName() + ")") : "null")); */
 
                     updateFoldStateAndMaybeEmit();
                 }
             };
 
             windowInfoTracker.addWindowLayoutInfoListener(activity, mainExecutor, foldStateCallback);
-            Log.d(TAG, "[Audio] [FoldDiag] observer started for activity=" + activity.getClass().getSimpleName());
+            /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] observer started for activity=" + activity.getClass().getSimpleName()); */
         } catch (Throwable t) {
             // Safety net: don't let a Jetpack/WindowManager issue crash the audio module.
-            Log.e(TAG, "[Audio] [FoldDiag] failed to start fold observer", t);
+            /* [FoldUI] disabled */ /* SylkLogger.e("[audio] [FoldUI] failed to start fold observer", t); */
             windowInfoTracker = null;
             foldObservedActivity = null;
         }
@@ -377,7 +397,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             try {
                 windowInfoTracker.removeWindowLayoutInfoListener(foldStateCallback);
             } catch (Throwable t) {
-                Log.w(TAG, "[Audio] [FoldDiag] error removing listener: " + t.getMessage());
+                /* [FoldUI] disabled */ /* SylkLogger.w("[audio] [FoldUI] error removing listener: " + t.getMessage()); */
             }
         }
         windowInfoTracker = null;
@@ -405,7 +425,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 sensorManager = (SensorManager) reactContext.getSystemService(Context.SENSOR_SERVICE);
             }
             if (sensorManager == null) {
-                Log.w(TAG, "[Audio] [FoldDiag] no SensorManager available");
+                /* [FoldUI] disabled */ /* SylkLogger.w("[audio] [FoldUI] no SensorManager available"); */
                 return;
             }
 
@@ -413,13 +433,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             // returns null on devices without the sensor, so no SDK_INT guard needed
             // beyond a simple try/catch on older runtime classes.
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                Log.d(TAG, "[Audio] [FoldDiag] hinge sensor not supported on this Android version");
+                /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] hinge sensor not supported on this Android version"); */
                 return;
             }
 
             hingeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE);
             if (hingeSensor == null) {
-                Log.d(TAG, "[Audio] [FoldDiag] no TYPE_HINGE_ANGLE sensor on this device");
+                /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] no TYPE_HINGE_ANGLE sensor on this device"); */
                 return;
             }
 
@@ -443,18 +463,18 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
                 @Override
                 public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                    Log.d(TAG, "[Audio] [FoldDiag] hinge accuracy=" + accuracy);
+                    /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] hinge accuracy=" + accuracy); */
                 }
             };
 
             boolean registered = sensorManager.registerListener(
                     hingeListener, hingeSensor, SensorManager.SENSOR_DELAY_NORMAL);
-            Log.d(TAG, "[Audio] [FoldDiag] hinge sensor registered=" + registered
+            /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] hinge sensor registered=" + registered
                     + " name=" + hingeSensor.getName()
                     + " vendor=" + hingeSensor.getVendor()
-                    + " maxRange=" + hingeSensor.getMaximumRange());
+                    + " maxRange=" + hingeSensor.getMaximumRange()); */
         } catch (Throwable t) {
-            Log.e(TAG, "[Audio] [FoldDiag] failed to start hinge sensor", t);
+            /* [FoldUI] disabled */ /* SylkLogger.e("[audio] [FoldUI] failed to start hinge sensor", t); */
             hingeListener = null;
             hingeSensor = null;
         }
@@ -466,7 +486,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 sensorManager.unregisterListener(hingeListener);
             }
         } catch (Throwable t) {
-            Log.w(TAG, "[Audio] [FoldDiag] error unregistering hinge listener: " + t.getMessage());
+            /* [FoldUI] disabled */ /* SylkLogger.w("[audio] [FoldUI] error unregistering hinge listener: " + t.getMessage()); */
         }
         hingeListener = null;
         hingeSensor = null;
@@ -498,9 +518,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         boolean isFolded = computeIsFolded();
         if (isFolded == lastIsFolded) return;
         lastIsFolded = isFolded;
-        Log.d(TAG, "[Audio] [FoldDiag] isFolded -> " + isFolded
+        /* [FoldUI] disabled */ /* SylkLogger.d("[audio] [FoldUI] isFolded -> " + isFolded
                 + " (hinge=" + (Float.isNaN(lastHingeAngle) ? "NA" : lastHingeAngle)
-                + " fold=" + lastFoldState + "/" + lastFoldOrientation + ")");
+                + " fold=" + lastFoldState + "/" + lastFoldOrientation + ")"); */
         sendReactNativeEvent();
     }
 
@@ -533,7 +553,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     public static void onHeadsetEvent() {
         if (instance != null) {
-            Log.d(TAG, "[Audio] Static onHeadsetEvent() invoked");
+            SylkLogger.d("[audio] Static onHeadsetEvent() invoked");
             instance.sendReactNativeEvent();
         }
     }
@@ -550,7 +570,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
 	private void acquireAudioFocus() {
 		audioFocusListener = focusChange -> {
-			Log.d(TAG, "[Audio] AudioFocus change: " + focusChange);
+			SylkLogger.d("[audio] AudioFocus change: " + focusChange);
 		};
 	
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -588,7 +608,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 // skip every duplicate until the device actually changes.
                 String key = deviceId + " " + deviceName + " " + typeName;
                 if (!key.equals(lastLoggedCommDevice)) {
-                    Log.d(TAG, "[Audio] Communication device changed to " + key);
+                    SylkLogger.d("[audio] Communication device changed to " + key);
                     lastLoggedCommDevice = key;
                 }
 
@@ -619,7 +639,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         // list on old Android (< 31) too. getAudioOutputs() uses getDevices() (API 23+)
         // so all the sendReactNativeEvent() calls inside are safe on old Android.
 
-        //Log.d(TAG, "Registering headset/Bluetooth/SCO receivers…");
+        //SylkLogger.d("[audio] Registering headset/Bluetooth/SCO receivers…");
         headsetReceiver = new BroadcastReceiver() {
             private int lastHeadsetProfileState = BluetoothProfile.STATE_DISCONNECTED;
             private int lastScoAudioState = AudioManager.SCO_AUDIO_STATE_DISCONNECTED;
@@ -647,12 +667,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         if (profileState == lastHeadsetProfileState) return;
                         lastHeadsetProfileState = profileState;
                     
-                        Log.d(TAG, "[Audio] BT profile state=" + headsetProfileStateToString(profileState));
+                        SylkLogger.d("[audio] BT profile state=" + headsetProfileStateToString(profileState));
 
                         // Notify JS so the device list updates on all Android versions.
                         // Auto-route to BT only on API 31+ (uses getAvailableCommunicationDevices).
                         if (profileState == BluetoothProfile.STATE_CONNECTED) {
-                            Log.d(TAG, "[Audio] BT headset connected");
+                            SylkLogger.d("[audio] BT headset connected");
                             sendReactNativeEvent(); // update device list on old Android
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 handler.postDelayed(() -> {
@@ -664,7 +684,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                                             btDevice.put("name", device.getProductName() != null
                                                     ? device.getProductName().toString() : "UNKNOWN");
                                             btDevice.put("type", "BLUETOOTH_SCO");
-                                            Log.d(TAG, "[Audio] Auto routing to BLUETOOTH");
+                                            // [audio] Auto routing to BLUETOOTH — disabled.
+                                            // Inside a for-loop iterating BT devices, can fire
+                                            // multiple times per profile-state change. Re-enable
+                                            // when debugging BT auto-routing on connection.
+                                            //SylkLogger.d("[audio] Auto routing to BLUETOOTH");
                                             switchAudioRoute(btDevice);
                                             break;
                                         }
@@ -693,7 +717,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
                         if (scoState == lastScoState) return;
 
-                        Log.d(TAG, "[Audio] BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
+                        SylkLogger.d("[audio] BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
 
                         int prevScoState = lastScoState;
                         lastScoState = scoState; // UPDATE THE MODULE FIELD
@@ -710,7 +734,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     }
 
                     case AudioManager.ACTION_AUDIO_BECOMING_NOISY:
-                        Log.d(TAG, "[Audio] ACTION_HEADSET_PLUG event");
+                        SylkLogger.d("[audio] ACTION_HEADSET_PLUG event");
                         sendReactNativeEvent();
                         break;
     
@@ -721,25 +745,29 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                             handler.postDelayed(() -> {
                                 List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
-                                Log.d(TAG, "[Audio] HEADSET plugged event");
+                                // [audio] HEADSET plugged event — disabled.
+                                // Inside a postDelayed inside the headset receiver; the
+                                // ensuing per-device traces (Auto route to wired/USB
+                                // headset below) carry the actionable signal.
+                                //SylkLogger.d("[audio] HEADSET plugged event");
                                 for (AudioDeviceInfo device : devices) {
                                     if (device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
                                         Map<String, String> wiredDevice = new HashMap<>();
                                         wiredDevice.put("id", String.valueOf(device.getId()));
                                         wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
                                         wiredDevice.put("type", "WIRED_HEADSET");
-                                        Log.d(TAG, "[Audio] Auto route to wired headset");
+                                        SylkLogger.d("[audio] Auto route to wired headset");
                                         switchAudioRoute(wiredDevice);
                                     } else if (device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
                                         Map<String, String> wiredDevice = new HashMap<>();
                                         wiredDevice.put("id", String.valueOf(device.getId()));
                                         wiredDevice.put("name", device.getProductName() != null ? device.getProductName().toString() : "UNKNOWN");
                                         wiredDevice.put("type", "USB_HEADSET");
-                                        Log.d(TAG, "[Audio] Auto route to USB headset");
+                                        SylkLogger.d("[audio] Auto route to USB headset");
                                         switchAudioRoute(wiredDevice);
                                     } else {
                                         String typeName = getDeviceTypeName(device.getType());
-                                        Log.d(TAG, "[Audio] Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
+                                        SylkLogger.d("[audio] Audio device: " + device.getId() + " Type: " + device.getType() + " " + typeName);
                                     }
                                 }
                             }, 50);
@@ -767,7 +795,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         IntentFilter scoFilter = new IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED);
         reactContext.registerReceiver(headsetReceiver, scoFilter);
     
-        //Log.d(TAG, "Receivers registered successfully");
+        //SylkLogger.d("[audio] Receivers registered successfully");
     }
 
     @ReactMethod
@@ -816,15 +844,23 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 				promise.resolve(false);
 				return;
 			}
-			int sizeBefore = SylkTelecom.CONNECTIONS.size();
 			boolean present = SylkTelecom.CONNECTIONS.containsKey(callId);
-			Log.d(TAG, "SYLK_APP cleanupTelecomConnection callId=" + callId
+			// [audio] cleanupTelecomConnection telemetry — disabled.
+			// Re-enable when debugging Telecom connection lifecycle
+			// (was useful to diagnose why setMode kept reverting to
+			// IN_COMMUNICATION after a call ended).
+			/*
+			int sizeBefore = SylkTelecom.CONNECTIONS.size();
+			SylkLogger.d("[audio] SYLK_APP cleanupTelecomConnection callId=" + callId
 					+ " sizeBefore=" + sizeBefore
 					+ " present=" + present);
+			*/
 			SylkTelecom.endCall(callId, DisconnectCause.LOCAL);
+			/*
 			int sizeAfter = SylkTelecom.CONNECTIONS.size();
-			Log.d(TAG, "SYLK_APP cleanupTelecomConnection callId=" + callId
+			SylkLogger.d("[audio] SYLK_APP cleanupTelecomConnection callId=" + callId
 					+ " sizeAfter=" + sizeAfter);
+			*/
 			promise.resolve(present);
 		} catch (Exception e) {
 			promise.reject("ERROR", e);
@@ -895,16 +931,16 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         if (started) return;
         started = true;
     
-        Log.d(TAG, "[Audio] AudioRouteModule start");
+        SylkLogger.d("[audio] AudioRouteModule start");
 
         try {
             // Capture original audio state
             origAudioMode = audioManager.getMode();
-            Log.d(TAG, "[Audio] Original audio mode: " + getAudioModeDescription(origAudioMode));
+            SylkLogger.d("[audio] Original audio mode: " + getAudioModeDescription(origAudioMode));
 
             // Set communication mode
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-            Log.d(TAG, "[Audio] Audio mode switched to: IN_COMMUNICATION");
+            SylkLogger.d("[audio] Audio mode switched to: IN_COMMUNICATION");
 
 			acquireAudioFocus();
 
@@ -921,7 +957,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                         for (AudioDeviceInfo device : devices) {
                             int deviceType = device.getType();
                             if (deviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                                Log.d(TAG, "[Audio] auto route to BLUETOOTH_SCO");
+                                SylkLogger.d("[audio] auto route to BLUETOOTH_SCO");
                                 Map<String, String> btDevice = new HashMap<>();
                                 btDevice.put("id", String.valueOf(device.getId()));
                                 btDevice.put("name", device.getProductName() != null
@@ -932,7 +968,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             }
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "[Audio] Error routing to BT device on headset connect", e);
+                        SylkLogger.e("[audio] Error routing to BT device on headset connect", e);
                     }
                 });
 
@@ -942,7 +978,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 scoManager.setScoConnectedListener(() -> {
                     try {
                         if (pendingBtDevice != null) {
-                            Log.d(TAG, "[Audio] SCO connected — applying pending BT route: " + pendingBtDevice);
+                            SylkLogger.d("[audio] SCO connected — applying pending BT route: " + pendingBtDevice);
                             Map<String, String> device = pendingBtDevice;
                             pendingBtDevice = null;
                             // Re-look up the device by type in case id changed
@@ -951,8 +987,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             for (AudioDeviceInfo d : devices) {
                                 if (getDeviceTypeName(d.getType()).equals(targetType)) {
                                     boolean result = audioManager.setCommunicationDevice(d);
-                                    Log.d(TAG, "[Audio] Pending BT setCommunicationDevice result=" + result
+                                    // [audio] Pending BT setCommunicationDevice result — disabled.
+                                    // Re-enable when debugging the deferred-BT-route path
+                                    // (legacy SCO-then-route on API < 31).
+                                    /*
+                                    SylkLogger.d("[audio] Pending BT setCommunicationDevice result=" + result
                                         + " device=" + d.getId() + " " + d.getProductName());
+                                    */
                                     sendReactNativeEvent();
                                     break;
                                 }
@@ -962,7 +1003,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                             sendReactNativeEvent();
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "[Audio] Error applying pending BT route on SCO connected", e);
+                        SylkLogger.e("[audio] Error applying pending BT route on SCO connected", e);
                     }
                 });
             }
@@ -985,21 +1026,21 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     try {
                         device.put(key, deviceMap.getString(key));
                     } catch (Exception e) {
-                        Log.w(TAG, "[Audio] Skipping non-string value for key: " + key, e);
+                        SylkLogger.w("[audio] Skipping non-string value for key: " + key, e);
                     }
                 }
-                Log.d(TAG, "[Audio] Starting with device: " + device.toString());
+                SylkLogger.d("[audio] Starting with device: " + device.toString());
 
                 boolean switched = switchAudioRoute(device);
                 if (!switched) {
-                    Log.w(TAG, "[Audio] Failed to switch audio route to " + device.get("type"));
+                    SylkLogger.w("[audio] Failed to switch audio route to " + device.get("type"));
                 }
             }
     
             promise.resolve(true);
     
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] Error starting audio route", e);
+            SylkLogger.e("[audio] Error starting audio route", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1093,27 +1134,33 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         if (!started) return;
         started = false;
 
-        Log.d(TAG, "[Audio] AudioRouteModule stop");
+        SylkLogger.d("[audio] AudioRouteModule stop");
 
         // Connection-leak observability. Log the live SylkTelecom Connection
         // count at stop entry (the "before") and again ~500ms later (the
         // "after"). If the count stays > 0 after the call has ended,
         // Telecom is still holding the Connection — that explains why
         // setMode below may be silently overridden back to IN_COMMUNICATION.
+        // [audio] CONNECTIONS-size before/after-stop telemetry — disabled.
+        // Re-enable when debugging Telecom holding ConnectionService refs
+        // longer than expected (was useful to figure out why setMode below
+        // was being silently overridden back to IN_COMMUNICATION).
+        /*
         try {
             int beforeSize = SylkTelecom.CONNECTIONS.size();
-            Log.d(TAG, "SYLK_APP audio mode SylkTelecom.CONNECTIONS before stop: size="
+            SylkLogger.d("[audio] SYLK_APP audio mode SylkTelecom.CONNECTIONS before stop: size="
                     + beforeSize + " keys=" + SylkTelecom.CONNECTIONS.keySet());
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 int afterSize = SylkTelecom.CONNECTIONS.size();
                 int currentMode = audioManager.getMode();
-                Log.d(TAG, "SYLK_APP audio mode SylkTelecom.CONNECTIONS 500ms after stop: size="
+                SylkLogger.d("[audio] SYLK_APP audio mode SylkTelecom.CONNECTIONS 500ms after stop: size="
                         + afterSize + " keys=" + SylkTelecom.CONNECTIONS.keySet()
                         + " modeNow=" + getAudioModeDescription(currentMode));
             }, 500);
         } catch (Throwable t) {
-            Log.w(TAG, "[Audio] CONNECTIONS size logging failed", t);
+            SylkLogger.w("[audio] CONNECTIONS size logging failed", t);
         }
+        */
 
         pendingBtDevice = null;
         // Prefer the pre-call snapshot taken at FCM push receipt — that's
@@ -1130,7 +1177,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             restoreSource = "origAudioMode";
         }
         audioManager.setMode(restoreTarget);
-        Log.d(TAG, "[Audio] Audio mode restored to " + getAudioModeDescription(restoreTarget)
+        SylkLogger.d("[audio] Audio mode restored to " + getAudioModeDescription(restoreTarget)
                 + " (source=" + restoreSource + ")");
 
         try {
@@ -1138,11 +1185,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 scoManager.stopScoIfActive();
                 scoManager.release();  // unregister receiver and close proxy
                 scoManager = null;
-                //Log.d(TAG, "Bluetooth SCO stopped and manager released");
+                //SylkLogger.d("[audio] Bluetooth SCO stopped and manager released");
             }
             promise.resolve(true);
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] Error stopping Bluetooth SCO", e);
+            SylkLogger.e("[audio] Error stopping Bluetooth SCO", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1156,8 +1203,8 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         boolean scoBool = audioManager.isBluetoothScoOn();
         int scoState = lastScoState; // or you can read EXTRA_SCO_AUDIO_STATE
     
-        //Log.d(TAG, "BT HEADSET profile state=" + headsetProfileStateToString(profileState));
-        //Log.d(TAG, "BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + scoBool + ")");
+        //SylkLogger.d("[audio] BT HEADSET profile state=" + headsetProfileStateToString(profileState));
+        //SylkLogger.d("[audio] BT SCO state=" + scoStateToString(scoState) + " (isBluetoothScoOn=" + scoBool + ")");
     
         return (profileState == BluetoothProfile.STATE_CONNECTED);
     }
@@ -1202,7 +1249,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             }
 
             String type = device.get("type");
-            Log.d(TAG, "[Audio] setActiveDeviceForCall callUuid=" + callUuid + " device=" + device);
+            SylkLogger.d("[audio] setActiveDeviceForCall callUuid=" + callUuid + " device=" + device);
 
             // 1. Tell Telecom which route the call is on. Skipping this leaves
             //    Telecom on its previous route and the framework will overwrite
@@ -1222,7 +1269,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] setActiveDeviceForCall ERROR", e);
+            SylkLogger.e("[audio] setActiveDeviceForCall ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1247,7 +1294,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         } else if (type.equals("WIRED_HEADSET") || type.equals("USB_HEADSET")) {
             route = CallAudioState.ROUTE_WIRED_HEADSET;
         } else {
-            Log.d(TAG, "[Audio] applyTelecomAudioRoute: no Telecom route mapping for type=" + type);
+            SylkLogger.d("[audio] applyTelecomAudioRoute: no Telecom route mapping for type=" + type);
             return;
         }
 
@@ -1258,7 +1305,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             conn = io.wazo.callkeep.VoiceConnectionService.getConnection(callUuid);
         } catch (Throwable t) {
             // Class may not be on the classpath in some build variants; fine.
-            Log.d(TAG, "[Audio] applyTelecomAudioRoute: VoiceConnectionService lookup threw: " + t);
+            SylkLogger.d("[audio] applyTelecomAudioRoute: VoiceConnectionService lookup threw: " + t);
         }
         // Fall back to SylkTelecom's own self-managed connection (used for
         // FCM-presented incoming calls before JS has a chance to take over).
@@ -1267,15 +1314,15 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         }
 
         if (conn == null) {
-            Log.d(TAG, "[Audio] applyTelecomAudioRoute: no Connection registered for uuid=" + callUuid);
+            SylkLogger.d("[audio] applyTelecomAudioRoute: no Connection registered for uuid=" + callUuid);
             return;
         }
 
         try {
             conn.setAudioRoute(route);
-            Log.d(TAG, "[Audio] applyTelecomAudioRoute uuid=" + callUuid + " type=" + type + " route=0x" + Integer.toHexString(route));
+            SylkLogger.d("[audio] applyTelecomAudioRoute uuid=" + callUuid + " type=" + type + " route=0x" + Integer.toHexString(route));
         } catch (Exception e) {
-            Log.w(TAG, "[Audio] applyTelecomAudioRoute failed", e);
+            SylkLogger.w("[audio] applyTelecomAudioRoute failed", e);
         }
     }
 
@@ -1294,13 +1341,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
         sb.append("]");
     
-        Log.d(TAG, "[Audio] " + sb.toString());
+        SylkLogger.d("[audio]" + sb.toString());
     }
     
     private void sendReactNativeEvent() {
         try {
             if (!reactContext.hasActiveCatalystInstance()) {
-                //Log.w(TAG, "React context not active; skipping emit");
+                //SylkLogger.w("[audio] React context not active; skipping emit");
                 return;
             }
 
@@ -1353,7 +1400,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     ? "NA"
                     : String.format("%.1f", lastHingeAngle);
 
-            Log.d(TAG, "[Audio] [AudioDiag] emit"
+            // [AudioDiag] emit one-liner — disabled. Re-enable by
+            // uncommenting if you need to debug fold/route transitions
+            // again. Kept around because reproducing the foldable HAL
+            // state without it is painful.
+            /*
+            SylkLogger.d("[audio] [AudioDiag] emit"
                     + " mode=" + getAudioModeDescription(mode)
                     + " selected=" + (selectedType != null ? selectedType : "NONE")
                     + "(" + (selectedInfo.get("name") != null ? selectedInfo.get("name") : "-") + ")"
@@ -1366,6 +1418,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     + " hinge=" + hingeDesc
                     + " folded=" + lastIsFolded
                     + " display=" + displayDesc);
+            */
 
             // Always send all available output devices so the UI can show the full
             // device list regardless of which device is currently selected.
@@ -1376,25 +1429,25 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             event.putString("mode", getAudioModeDescription(mode));
             event.putBoolean("folded", lastIsFolded);
 
-            //Log.d(TAG, "--- AudioDevicesChanged payload ---");
+            //SylkLogger.d("[audio] --- AudioDevicesChanged payload ---");
             //logWritableArray("Inputs", inputs);
             //logWritableArray("Outputs", outputs);
-            //Log.d(TAG, "Current: " + currentRoute + ", SCO: " + scoState + ", Available: " + availableList);
+            //SylkLogger.d("[audio] Current: " + currentRoute + ", SCO: " + scoState + ", Available: " + availableList);
     
             // Emit event
             reactContext.runOnUiQueueThread(() -> {
                 try {
                     reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                             .emit("CommunicationsDevicesChanged", event);
-                    //Log.w(TAG, "RN event emitted");
+                    //SylkLogger.w("[audio] RN event emitted");
 
                 } catch (Exception e) {
-                    Log.e(TAG, "[Audio] Emit failed", e);
+                    SylkLogger.e("[audio] Emit failed", e);
                 }
             });
     
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] sendReactNativeEvent ERROR", e);
+            SylkLogger.e("[audio] sendReactNativeEvent ERROR", e);
         }
     }
 
@@ -1411,7 +1464,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             promise.resolve(map);
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] getCurrentRoute ERROR", e);
+            SylkLogger.e("[audio] getCurrentRoute ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1428,7 +1481,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             return true;
         }        
 
-        //Log.d(TAG, "switchAudioRoute from " + currentRoute + " -> " + targetType);
+        //SylkLogger.d("[audio] switchAudioRoute from " + currentRoute + " -> " + targetType);
         
         // No SCO active, switch immediately
         return switchAudioRouteInternal(deviceMap);
@@ -1439,13 +1492,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
         // Add this check at the top:
 		if (audioManager.getMode() != AudioManager.MODE_IN_COMMUNICATION) {
-			Log.w(TAG, "[Audio] Audio mode was reset, restoring MODE_IN_COMMUNICATION");
+			SylkLogger.w("[audio] Audio mode was reset, restoring MODE_IN_COMMUNICATION");
 			audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 		}
     
         String type = deviceMap.get("type");
         String idStr = deviceMap.get("id");
-        Log.d(TAG, "[Audio] Switch audio route to audio device: " + deviceMap);
+        SylkLogger.d("[audio] Switch audio route to audio device: " + deviceMap);
     
         try {
             List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
@@ -1490,11 +1543,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
 					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
 						// Try the modern API first.
-						Log.d(TAG, "[Audio] Switching to BUILTIN_SPEAKER via setCommunicationDevice (API 31+)");
+						SylkLogger.d("[audio] Switching to BUILTIN_SPEAKER via setCommunicationDevice (API 31+)");
 						boolean result = audioManager.setCommunicationDevice(selectedDevice);
 						AudioDeviceInfo actual = audioManager.getCommunicationDevice();
 						int actualId = actual != null ? actual.getId() : -1;
-						Log.d(TAG, "[Audio] setCommunicationDevice(BUILTIN_SPEAKER) result=" + result
+						SylkLogger.d("[audio] setCommunicationDevice(BUILTIN_SPEAKER) result=" + result
 							+ " communicationDevice=" + actualId);
 
 						// On Motorola RAZR (and similar OEMs) setCommunicationDevice returns true
@@ -1505,7 +1558,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 							currentRoute = type;
 							return true;
 						}
-						Log.w(TAG, "[Audio] setCommunicationDevice did not take effect (OEM override), "
+						SylkLogger.w("[audio] setCommunicationDevice did not take effect (OEM override), "
 							+ "falling back to MODE_NORMAL + setSpeakerphoneOn");
 					}
 					// Workaround for Motorola RAZR 60 (and similar OEMs) where the audio HAL
@@ -1517,11 +1570,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					//   3. setSpeakerphoneOn(true)
 					// We do NOT switch back to IN_COMMUNICATION while speaker is active.
 					// The earpiece path below restores IN_COMMUNICATION when speaker is deselected.
-					Log.d(TAG, "[Audio] Forcing speaker: clearCommunicationDevice + MODE_IN_CALL + setSpeakerphoneOn(true)");
+					SylkLogger.d("[audio] Forcing speaker: clearCommunicationDevice + MODE_IN_CALL + setSpeakerphoneOn(true)");
 					audioManager.clearCommunicationDevice();
 					audioManager.setMode(AudioManager.MODE_IN_CALL);
 					audioManager.setSpeakerphoneOn(true);
-					Log.d(TAG, "[Audio] isSpeakerphoneOn=" + audioManager.isSpeakerphoneOn()
+					SylkLogger.d("[audio] isSpeakerphoneOn=" + audioManager.isSpeakerphoneOn()
 						+ " mode=" + getAudioModeDescription(audioManager.getMode()));
 					currentRoute = type;
 					return true;
@@ -1529,7 +1582,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					// BT routing: do NOT call clearCommunicationDevice() here —
 					// clearing the routing context before SCO establishment prevents
 					// the system from establishing SCO on Motorola and similar devices.
-					Log.d(TAG, "[Audio] Routing to BT, disabling speakerphone");
+					SylkLogger.d("[audio] Routing to BT, disabling speakerphone");
 					audioManager.setSpeakerphoneOn(false);
 					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
 
@@ -1539,21 +1592,29 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 						// OnCommunicationDeviceChangedListener fires when routing completes.
 						pendingBtDevice = null;
 						boolean result = audioManager.setCommunicationDevice(selectedDevice);
-						Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result
+						// [audio] BT setCommunicationDevice telemetry — disabled.
+						// Three near-identical lines along the BT route paths
+						// (API 31+, legacy SCO connected, legacy SCO non-existent).
+						// Re-enable when debugging Razr/SCO race conditions.
+						/*
+						SylkLogger.d("[audio] BT setCommunicationDevice result=" + result
 							+ " device=" + selectedDevice.getId() + " " + selectedDevice.getProductName());
+						*/
 						return result;
 					}
 
 					// API < 31: legacy SCO path
 					if (scoManager != null) {
 						if (lastScoState == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-							Log.d(TAG, "[Audio] SCO already connected, routing directly to BT");
+							// [audio] SCO already connected — disabled
+							//SylkLogger.d("[audio] SCO already connected, routing directly to BT");
 							pendingBtDevice = null;
 							boolean result = audioManager.setCommunicationDevice(selectedDevice);
-							Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result);
+							//SylkLogger.d("[audio] BT setCommunicationDevice result=" + result);
 							return result;
 						} else {
-							Log.d(TAG, "[Audio] SCO not connected, starting legacy SCO and deferring BT route");
+							// [audio] SCO not connected, deferring BT route — disabled
+							//SylkLogger.d("[audio] SCO not connected, starting legacy SCO and deferring BT route");
 							audioManager.setCommunicationDevice(selectedDevice);
 							pendingBtDevice = new HashMap<>(deviceMap);
 							scoManager.startScoIfNeeded();
@@ -1561,14 +1622,17 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 						}
 					}
 					boolean result = audioManager.setCommunicationDevice(selectedDevice);
-					Log.d(TAG, "[Audio] BT setCommunicationDevice result=" + result);
+					//SylkLogger.d("[audio] BT setCommunicationDevice result=" + result);
 					return result;
 
 				} else {
 					// Earpiece, wired headset, etc.
 					// clearCommunicationDevice() releases the HAL speaker lock so that
 					// the subsequent setCommunicationDevice(earpiece/wired) takes effect.
-                    Log.d(TAG, "[Audio] setSpeakerphoneOff + clearCommunicationDevice, restoring MODE_IN_COMMUNICATION");
+                    // [audio] earpiece/wired switch trace — disabled.
+                    // Re-enable when debugging the HAL speaker-lock release that
+                    // makes setCommunicationDevice(earpiece/wired) actually take.
+                    //SylkLogger.d("[audio] setSpeakerphoneOff + clearCommunicationDevice, restoring MODE_IN_COMMUNICATION");
 					audioManager.setSpeakerphoneOn(false);
 					audioManager.clearCommunicationDevice();
 					audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
@@ -1577,19 +1641,24 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 boolean result = audioManager.setCommunicationDevice(selectedDevice);
 
                 if (result) {
-                    Log.d(TAG, "[Audio] requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type + " " + getAudioDeviceTypeFromString(type));
+                    // [audio] success-trace — disabled. The eventual
+                    // OnCommunicationDeviceChangedListener emits a deduped
+                    // "[audio] Communication device changed to ..." line that
+                    // covers the same signal without firing for failed attempts.
+                    //SylkLogger.d("[audio] requested change to " + selectedDevice.getId() + " " + selectedDevice.getProductName() + " " + type + " " + getAudioDeviceTypeFromString(type));
                 } else {
-                    Log.d(TAG, "[Audio] setCommunicationDevice failed to switch");
+                    // KEEP: actual failure to switch is genuinely actionable.
+                    SylkLogger.d("[audio] setCommunicationDevice failed to switch");
                 }
 
                 return result;
             } else {
-                Log.d(TAG, "[Audio] No matching AudioDeviceInfo found for device: " + deviceMap);
+                SylkLogger.d("[audio] No matching AudioDeviceInfo found for device: " + deviceMap);
                 return false;
             }
     
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] switchAudioRouteInternal ERROR", e);
+            SylkLogger.e("[audio] switchAudioRouteInternal ERROR", e);
             return false;
         }
     }
@@ -1599,7 +1668,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 		for (AudioDeviceInfo device : devices) {
 			if (getDeviceTypeName(device.getType()).equals(currentRoute)) {
 				audioManager.setCommunicationDevice(device);
-				Log.d(TAG, "[Audio] Re-applied route to " + currentRoute);
+				SylkLogger.d("[audio] Re-applied route to " + currentRoute);
 				return;
 			}
 		}
@@ -1623,7 +1692,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 info.put("id", deviceId);
                 info.put("type", typeName);
                 currentRoute = typeName;
-                Log.d(TAG, "[Audio] Current device: " + deviceId + " " + productName + " " + typeName);
+                SylkLogger.d("[audio] Current device: " + deviceId + " " + productName + " " + typeName);
                 return info;
             }
 
@@ -1633,12 +1702,17 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
             // a route (e.g. speaker) without updating the CommunicationDevice.
             // Log the mode and a few quick HAL flags so we can reason about what
             // the system actually thinks the route is.
-            Log.w(TAG, "[Audio] [AudioDiag] getCommunicationDevice()=null"
+            // [AudioDiag] HAL probe — disabled. Re-enable to surface
+            // the OEM HAL state when getCommunicationDevice returns
+            // null on Razr-style foldables.
+            /*
+            SylkLogger.w("[audio] [AudioDiag] getCommunicationDevice()=null"
                     + " mode=" + getAudioModeDescription(audioManager.getMode())
                     + " speakerOn=" + audioManager.isSpeakerphoneOn()
                     + " scoOn=" + audioManager.isBluetoothScoOn()
                     + " wiredHeadsetOn=" + audioManager.isWiredHeadsetOn()
                     + " currentRouteCached=" + (currentRoute != null ? currentRoute : "null"));
+            */
         }
 
         // No device routed
@@ -1647,24 +1721,24 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     @ReactMethod
     public void getAudioInputs(Promise promise) {
-        //Log.e(TAG, "getAudioInputs");
+        //SylkLogger.e("[audio] getAudioInputs");
         try {
             WritableArray inputs = getAudioInputs();
             promise.resolve(inputs);
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] getAudioInputs ERROR", e);
+            SylkLogger.e("[audio] getAudioInputs ERROR", e);
             promise.reject("ERROR", e);
         }
     }
 
     @ReactMethod
     public void getAudioOutputs(Promise promise) {
-        //Log.e(TAG, "getAudioOutputs");
+        //SylkLogger.e("[audio] getAudioOutputs");
         try {
             WritableArray outputs = getAudioOutputs();
             promise.resolve(outputs);
         } catch (Exception e) {
-            Log.e(TAG, "[Audio] getAudioInputs ERROR", e);
+            SylkLogger.e("[audio] getAudioInputs ERROR", e);
             promise.reject("ERROR", e);
         }
     }
@@ -1682,7 +1756,7 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                     ? device.getProductName().toString()
                     : "UNKNOWN";
     
-            //Log.d(TAG, "Input Device: " + device.getType() + ", Name: " + productName + ", ID: " + device.getId());
+            //SylkLogger.d("[audio] Input Device: " + device.getType() + ", Name: " + productName + ", ID: " + device.getId());
 
             switch (device.getType()) {
                 case AudioDeviceInfo.TYPE_BUILTIN_MIC: typeName = "BUILTIN_MIC"; break;
@@ -1700,7 +1774,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             inputsArray.pushMap(inputDevice);
     
-            Log.d(TAG, "[Audio] Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
+            // [audio] per-device enumeration line — disabled. Re-enable
+            // when debugging which Input Devices the HAL is reporting.
+            //SylkLogger.d("[audio] Input Device: " + typeName + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return inputsArray;
@@ -1747,7 +1823,9 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
             outputsArray.pushMap(outputDevice);
     
-            Log.d(TAG, "[Audio] Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
+            // [audio] per-device enumeration line — disabled. Re-enable
+            // when debugging which Output Devices the HAL is reporting.
+            //SylkLogger.d("[audio] Output Device: " + getDeviceTypeName(type) + ", Name: " + productName + ", ID: " + device.getId());
         }
     
         return outputsArray;

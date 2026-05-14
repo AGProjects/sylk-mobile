@@ -82,6 +82,7 @@ import EditContactModal from './EditContactModal';
 import PreferencesModal from './PreferencesModal';
 import WebViewURLResolver from './WebViewURLResolver';
 import DeleteAccountModal from './DeleteAccountModal';
+import SwitchAccountModal from './SwitchAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import DeleteHistoryModal from './DeleteHistoryModal';
@@ -128,13 +129,14 @@ class NavigationBar extends Component {
 
         // Re-send the live location every N seconds until the expiration
         // time chosen by the user is reached. Default 60 s, overridable
-        // per-device via the Preferences modal. Initialised here from
-        // the constructor-time props if present so resumed shares
-        // inherit the user's chosen cadence on app boot; subsequent
-        // changes flow through componentDidUpdate.
-        this.LOCATION_REPEAT_MS = (props && typeof props.locationTickIntervalMs === 'number'
-                && props.locationTickIntervalMs > 0)
-            ? props.locationTickIntervalMs
+        // per-account via the Preferences modal. Stored in
+        // accounts.settings as seconds; multiplied ×1000 here for
+        // setInterval. Initialised from the constructor-time props if
+        // present so resumed shares inherit the user's chosen cadence
+        // on app boot; subsequent changes flow through componentDidUpdate.
+        this.LOCATION_REPEAT_MS = (props && typeof props.locationTickIntervalSec === 'number'
+                && props.locationTickIntervalSec > 0)
+            ? props.locationTickIntervalSec * 1000
             : 60 * 1000;
 
         // "Until I return" auto-stop thresholds. A caregiver share starts
@@ -191,10 +193,23 @@ class NavigationBar extends Component {
             showDeleteFileTransfers: false,
             showEditContactModal: false,
             showPreferencesModal: false,
+            // Live measurement of the Appbar.Header height (set by
+            // its onLayout below). Plumbed down to ReadyBox →
+            // ContactsListBox → KeyboardAvoidingView's
+            // keyboardVerticalOffset so the offset always matches the
+            // actual chrome above the chat instead of guessing 60dp.
+            // null until the first layout pass; consumers fall back
+            // to 60 in the meantime.
+            appBarMeasuredHeight: null,
             // Opened from the EditContactModal "Delete account" link when
             // myself=true. Confirms & then calls props.deleteAccount() to
             // wipe this account from the device and sign out.
             showDeleteAccountModal: false,
+            // Confirmation dialog opened from the menu "Sign out" item.
+            // When more than one stored account is available it also
+            // offers to switch to one of them; otherwise it just acts
+            // as a logout confirmation. See SwitchAccountModal.
+            showSwitchAccountModal: false,
 			showGenerateKeysModal: false,
 			showExportPrivateKeyModal: false,
             privateKeyPassword: null,
@@ -745,12 +760,13 @@ class NavigationBar extends Component {
 		// gate enforces the new cadence — so the worst-case delay
 		// before the change takes effect is one OLD tick interval.
 		// Acceptable for a setting the user changes infrequently.
-		if (typeof this.props.locationTickIntervalMs === 'number'
-				&& this.props.locationTickIntervalMs !== prevProps.locationTickIntervalMs
-				&& this.props.locationTickIntervalMs > 0) {
-			const newMs = this.props.locationTickIntervalMs;
+		if (typeof this.props.locationTickIntervalSec === 'number'
+				&& this.props.locationTickIntervalSec !== prevProps.locationTickIntervalSec
+				&& this.props.locationTickIntervalSec > 0) {
+			const newMs = this.props.locationTickIntervalSec * 1000;
 			utils.timestampedLog('[location] preferences: tick interval changed',
-				prevProps.locationTickIntervalMs, '→', newMs, 'ms');
+				prevProps.locationTickIntervalSec, '→',
+				this.props.locationTickIntervalSec, 'sec (', newMs, 'ms)');
 			this.LOCATION_REPEAT_MS = newMs;
 		}
 
@@ -1107,7 +1123,13 @@ class NavigationBar extends Component {
                 this.props.toggleRejectAnonymous();
                 break;
             case 'logOut':
-                this.props.logout();
+                // Was: immediately call props.logout(). The destructive
+                // session-end action now goes through a confirmation
+                // dialog that, when other accounts are stored locally,
+                // also offers to switch directly to one of them. The
+                // dialog calls back into props.logout() / props.switchAccount
+                // depending on what the user picks.
+                this.setState({ showSwitchAccountModal: true });
                 break;
             case 'logs':
                 this.props.showLogs();
@@ -5645,10 +5667,24 @@ class NavigationBar extends Component {
     }
 
     render() {
-        const bellIcon = this.props.dnd ? 'bell-off' : 'bell';
+        // DND-themed glyphs in outline style:
+        //   • DND off → bell-outline. Reads as "ready to notify"
+        //     and matches the weight of the surrounding nav icons.
+        //   • DND on  → bell-off-outline. Bell glyph with the
+        //     standard diagonal slash, outline style — universal
+        //     "notifications muted" cue.
+        // (Earlier attempt used 'do-not-disturb', but that name
+        // isn't in MaterialCommunityIcons — it rendered as the
+        // question-mark fallback glyph.)
+        const bellIcon = this.props.dnd ? 'bell-off-outline' : 'bell-outline';
 
         let subtitleStyle = this.props.isTablet ? styles.tabletSubtitle: styles.subtitle;
         let titleStyle = this.props.isTablet ? styles.tabletTitle: styles.title;
+        // Note: title / subtitle font sizes are intentionally NOT scaled
+        // with the bar height. styles.tabletTitle (24) and
+        // styles.tabletSubtitle (16) already account for tablet
+        // readability; multiplying them again by navIconScale produced
+        // visibly oversized text.
 
         // Diagnostic: log once at startup, then only when the chosen font
         // sizes actually change (fold/unfold transitions). Avoids flooding
@@ -5747,7 +5783,14 @@ class NavigationBar extends Component {
         let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
 
         let title = displayName || 'Myself';
-        let searchIcon = (this.props.searchMessages || this.props.searchContacts) ? "close" : "magnify";
+        // Two distinct icons for the two search modes — the contacts
+        // list uses an account+magnifier glyph (search through PEOPLE),
+        // and the in-chat search uses a text+magnifier glyph (search
+        // MESSAGES). Both flip to the universal close icon while the
+        // search bar is open. Previously a single 'magnify' icon was
+        // used for both, which read as ambiguous in the navbar.
+        let searchContactsIcon = this.props.searchContacts ? 'close' : 'account-search';
+        let searchMessagesIcon = this.props.searchMessages ? 'close' : 'text-search';
 
 		function capitalizeFirstLetter(str) {
 		  if (!str) return ""; // Handle empty string
@@ -5772,7 +5815,24 @@ class NavigationBar extends Component {
 
         if (this.props.selectedContact) {
 			if (isConference) {
-				title = prettifyName(this.props.selectedContact.uri.split('@')[0]);
+				// Conference rooms with a saved display name (set in
+				// EditConferenceModal → app.js saveConference →
+				// contacts.name column) should appear in the navbar
+				// title too — the contact list and the navbar should
+				// agree on what to call the room, otherwise a user
+				// who renamed "ag" to "Daily Sync" sees "ag" in the
+				// header bar after tapping it from the contacts list.
+				// Mirrors the same prefer-name-else-local-part rule
+				// used in the non-conference branch below and now
+				// in ContactCard's conference branch.
+				let _rawConf;
+				if (this.props.selectedContact.name
+						&& this.props.selectedContact.name !== this.props.selectedContact.uri) {
+					_rawConf = this.props.selectedContact.name;
+				} else {
+					_rawConf = this.props.selectedContact.uri.split('@')[0];
+				}
+				title = prettifyName(_rawConf);
 				subtitle = 'Conference room';
 			} else {
 				// Match ContactCard's two-step: pick the name (or username
@@ -5818,7 +5878,54 @@ class NavigationBar extends Component {
             }
         }
 
-		const as = 40; //avatar size		
+		// NavBar height + icon sizing.
+		//
+		// Height (`_navBarHeight`) is parameterizable so we can pick a
+		// comfortable size on tablets (where 60dp looks cramped).
+		// Resolution order:
+		//   1) explicit `navBarHeight` prop (caller decides — e.g. a
+		//      future "navbar size" preference)
+		//   2) folded (Razr cover display): always 60 — vertical space
+		//      is at a premium and the existing layout is tuned for it
+		//   3) tablet: 90 (roughly 1.5× phone, enough to give icons
+		//      and labels room to breathe)
+		//   4) phone: 60 (legacy default)
+		//
+		// IconButton size on tablet is pinned to 32 so the NavBar
+		// matches the call-buttons bar in ContactsListBox / ReadyBox
+		// (those IconButtons render at size={32}). The 32px target is
+		// intentionally independent of the bar height — eyeball
+		// matching the on-screen control bar reads better than a pure
+		// height-ratio scale, which would have given us ~27dp icons on
+		// tablet.
+		//
+		// The other glyph sizes (logo, avatar, spinner, status icon,
+		// title/subtitle) scale linearly with bar height. On phone the
+		// scale is 1.0, so all literals match the legacy values
+		// exactly. On tablet (90/60 = 1.5) the rest of the bar grows
+		// in proportion to the new bar height.
+		const _navBarHeight = (typeof this.props.navBarHeight === 'number' && this.props.navBarHeight > 0)
+		    ? this.props.navBarHeight
+		    : (this.props.isFolded ? 60 : (this.props.isTablet ? 90 : 60));
+		const navIconScale = _navBarHeight / 60;
+		// Pin tablet IconButtons to 32 so they match the call-buttons
+		// bar (size={32}) rendered by ReadyBox. Folded/phone keep the
+		// historical 18dp.
+		const _isTabletBar = this.props.isTablet && !this.props.isFolded;
+		const navIconBtnSize  = _isTabletBar ? 32 : 18;
+		// Keep spinner / status-icon / logo / avatar proportional to
+		// the IconButton size so the whole bar reads as one family.
+		const navIconRatio    = navIconBtnSize / 18;
+		const navSpinnerSize  = Math.round(26 * navIconRatio);
+		const navStatusIconSize = Math.round(20 * navIconRatio);
+		const navLogoSize     = Math.round(35 * navIconScale);
+		const as = Math.round(40 * navIconScale); //avatar size
+		// Kebab (overflow) menu icon — visually heavier than the
+		// other navbar glyphs because three vertical dots have
+		// less ink than a typical icon at the same size and tend
+		// to look small / hard to hit. Bumped ~40% above the
+		// regular IconButton size: 26dp on phone, 44dp on tablet.
+		const navMenuIconSize = Math.round(navIconBtnSize * 1.4);
 
 		let { width, height } = Dimensions.get('window');
 
@@ -5862,14 +5969,14 @@ class NavigationBar extends Component {
         //      children sit flush with the header edges.
         // See /sessions/clever-brave-knuth/NAVBAR_CHECKPOINT_2026-04-21.md
         let navBarContainer = {
-                              height: 60,
+                              height: _navBarHeight,
                               };
 
 		let appBarContainer = {
 		                 backgroundColor: 'black',
                          marginLeft: 0,
                          marginTop: 0,
-						 height: 60,
+						 height: _navBarHeight,
 						 // Override Paper's inner Appbar built-in
 						 // paddingHorizontal: 4 so children align flush
 						 // with the header edges.
@@ -5972,20 +6079,28 @@ class NavigationBar extends Component {
             <Appbar.Header style={appBarContainer}
                  statusBarHeight={0}
                dark
-                 /* Diagnostic (disabled — re-enable to debug NavBar layout):
                  onLayout={(e) => {
-                     const { x, y, width: w, height: h } = e.nativeEvent.layout;
-                     console.log('[FoldUI] NavBar Appbar onLayout x=', Math.round(x),
-                                 'y=', Math.round(y),
-                                 'w=', Math.round(w),
-                                 'h=', Math.round(h));
+                     // Measure the actual Appbar.Header height so the
+                     // chat panel's KeyboardAvoidingView can compute a
+                     // correct keyboardVerticalOffset (= topInset +
+                     // measured Appbar height) instead of using the
+                     // hardcoded 60dp fallback in ContactsListBox.
+                     // Reported up to app.js (which owns ReadyBox →
+                     // ContactsListBox in the tree) via the
+                     // onAppBarHeightChange callback.
+                     const h = Math.round(e.nativeEvent.layout.height);
+                     if (h && h !== this.state.appBarMeasuredHeight) {
+                         this.setState({ appBarMeasuredHeight: h });
+                         if (typeof this.props.onAppBarHeightChange === 'function') {
+                             this.props.onAppBarHeightChange(h);
+                         }
+                     }
                  }}
-                 */
                  >
   
                 {showBackButton ?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
-                : <Image source={blinkLogo} style={styles.logo}/>}
+                : <Image source={blinkLogo} style={[styles.logo, { width: navLogoSize, height: navLogoSize }]}/>}
 
 				{this.props.selectedContact ?
 					<View style={styles.avatarContent}>
@@ -6044,7 +6159,7 @@ class NavigationBar extends Component {
                 { false && !this.props.rejectNonContacts && ! this.props.selectedContact?
                 <IconButton
                     style={styles.whiteButton}
-                    size={18}
+                    size={navIconBtnSize}
                     disabled={false}
                     onPress={this.props.toggleRejectAnonymous}
                     icon={rejectIcon}
@@ -6064,40 +6179,109 @@ class NavigationBar extends Component {
                     On Android `size` accepts a number; on iOS only
                     'small' | 'large', so we Platform.select to keep
                     the on-screen footprint equal across both. */}
-                {this.props.firstSyncPending ?
-                    <View
-                        key={'syncing-' + _navRemountKey}
-                        // marginRight: 10 mirrors the bell's marginLeft: 10
-                        // so the spinner→search gap matches the search→bell
-                        // gap exactly.
-                        style={{width: 40, height: 40, marginRight: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent'}}
-                    >
-                        {/* Use Paper's ActivityIndicator (not RN's) so iOS
-                            renders the same circular Material spinner as
-                            Android instead of UIKit's eight-spoke
-                            asterisk. Paper accepts a numeric size on
-                            both platforms, so we can use one value.
-                            Diameter is bumped above the adjacent 18px
-                            icon glyphs because a hollow circular spinner
-                            reads visually smaller than a solid glyph at
-                            the same pixel size. The parent View (40x40,
-                            alignItems/justifyContent center) handles
-                            centering. */}
-                        <PaperActivityIndicator
-                            size={26}
-                            color="#2196F3"
-                            animating={true}
-                        />
-                    </View>
-                : null}
+               {/* Combined DND bell + journal-sync indicator. One slot
+                   in the navbar instead of two: the bell renders its
+                   normal glyph (bell or bell-off) and, while the first
+                   journal sync is in flight, a circular ActivityIndicator
+                   rings the outer edge of the bell. No separate spinner
+                   icon anymore — when sync finishes the ring fades and
+                   the bell remains in place. Tap still toggles DND
+                   regardless of sync state.
+                   Visibility = (bell-visible) OR firstSyncPending. The
+                   bell's normal hide cases (a contact is selected /
+                   search active / call active / location-share active)
+                   are preserved for THE BELL ITSELF, but the sync ring
+                   is informational and should appear whenever a sync
+                   is happening, even when the bell would otherwise be
+                   hidden. So in those hidden-bell states we still drop
+                   the slot — if needed later we can render a tiny
+                   "sync-only" pill in another corner. */}
+               {(() => {
+                   const _activeShares = Object.keys(this.state.activeLocationShares || {}).length;
+                   const _bellVisible = !this.props.selectedContact
+                       && !this.props.searchContacts
+                       && !this.props.callActive
+                       && _activeShares === 0;
+                   if (!_bellVisible) return null;
+                   // Spinner diameter has to clear Paper's IconButton
+                   // circular footprint, which is roughly
+                   // navIconBtnSize + 16 (icon size + 8dp padding on
+                   // each side). At only 1.4× the icon size the
+                   // spinner landed INSIDE the bell's circle. +20
+                   // puts it clearly outside the IconButton ripple
+                   // bounds while still keeping the overall slot
+                   // tight enough to fit next to the search / kebab
+                   // icons.
+                   const _ringSize = navIconBtnSize + 20;
+                   // Outer container has to be a few px larger than
+                   // the spinner so the indicator's stroke doesn't
+                   // get clipped by the slot edges.
+                   const _box = _ringSize + 4;
+                   return (
+                       <View
+                           key={'bell-' + _navRemountKey}
+                           style={{
+                               width: _box,
+                               height: _box,
+                               marginRight: 10,
+                               alignItems: 'center',
+                               justifyContent: 'center',
+                           }}
+                       >
+                           {this.props.firstSyncPending ? (
+                               // Wrapper View takes the absolute layer
+                               // and centers the indicator inside it.
+                               // PaperActivityIndicator doesn't honour
+                               // bare absolute positioning with all
+                               // edges set to 0 — its size prop wins
+                               // and the result lands at the parent's
+                               // top-left. A flex-centred wrapper that
+                               // fills the parent puts the spinner
+                               // precisely on top of the bell glyph.
+                               // pointerEvents="none" so taps fall
+                               // through to the IconButton — the user
+                               // can still toggle DND mid-sync.
+                               <View
+                                   key={'bell-sync-' + _navRemountKey}
+                                   pointerEvents="none"
+                                   style={{
+                                       position: 'absolute',
+                                       left: 0,
+                                       right: 0,
+                                       top: 0,
+                                       bottom: 0,
+                                       alignItems: 'center',
+                                       justifyContent: 'center',
+                                   }}
+                               >
+                                   <PaperActivityIndicator
+                                       size={_ringSize}
+                                       color="#2196F3"
+                                       animating={true}
+                                   />
+                               </View>
+                           ) : null}
+                           <IconButton
+                               style={bellStyle}
+                               size={navIconBtnSize}
+                               disabled={false}
+                               onPress={this.props.toggleDnd}
+                               icon={bellIcon}
+                           />
+                       </View>
+                   );
+               })()}
 
                 {/* Search icon (search messages within the open chat, OR
-                    search contacts on the list view). Hidden while a call
-                    is active so the navbar stays uncluttered for the
-                    pulsing "Back to call" indicator — the user is in a
-                    transient mid-call mode and search is a low-priority
-                    affordance there. Same pattern as the existing
-                    cover-display hide for the search-messages variant. */}
+                    search contacts on the list view). Positioned so it
+                    sits immediately to the LEFT of the kebab menu, with
+                    the DND bell on its own left in the contacts-list
+                    view. Hidden while a call is active so the navbar
+                    stays uncluttered for the pulsing "Back to call"
+                    indicator — the user is in a transient mid-call mode
+                    and search is a low-priority affordance there. Same
+                    pattern as the existing cover-display hide for the
+                    search-messages variant. */}
                 {this.props.inCall ? null :
                  this.props.selectedContact ?
                     // Hide the "search messages" icon on the cover display —
@@ -6106,19 +6290,19 @@ class NavigationBar extends Component {
                     <IconButton
                         key={'search-msg-' + _navRemountKey}
                         style={[styles.whiteButton ]}
-                        size={18}
+                        size={navIconBtnSize}
                         disabled={false}
                         onPress={this.props.toggleSearchMessages}
-                        icon={searchIcon}
+                        icon={searchMessagesIcon}
                     />)
                 :
 				<IconButton
                     key={'search-contacts-' + _navRemountKey}
                     style={styles.whiteButton}
-                    size={18}
+                    size={navIconBtnSize}
                     disabled={false}
                     onPress={this.props.toggleSearchContacts}
-                    icon={searchIcon}
+                    icon={searchContactsIcon}
                 />
 
                 }
@@ -6126,47 +6310,16 @@ class NavigationBar extends Component {
                { (!this.props.selectedContact && !this.props.searchContacts && false) ?
                 <IconButton
                     style={styles.whiteButton}
-                    size={18}
+                    size={navIconBtnSize}
                     disabled={false}
                     onPress={this.conferenceCall}
                     icon="account-group"
                 />
                 : null}
 
-               {/* Hide the DND bell while the pulsing active-location
-                   indicator is showing in this same NavBar slot area.
-                   In the no-selected-contact view both icons sit next to
-                   each other and the pulse needs to be the dominant
-                   signal — an equally-sized static bell right beside it
-                   dilutes the urgency of "you are broadcasting live
-                   location". The pulse's visibility logic mirrors the
-                   IIFE below: shown whenever there's at least one active
-                   share AND we're not already in the chat for that
-                   single share (when there's no selectedContact, the
-                   "same chat" case is impossible, so count>0 suffices
-                   for this branch). */}
-               {/* Hide the DND bell during an active call too — same
-                   reasoning as the location-share branch above: the
-                   pulsing back-to-call icon needs to be the dominant
-                   signal in this slot. A static bell right next to it
-                   would dilute the "tap me to return" urgency and
-                   add navbar clutter while audio is flowing. */}
-               { (!this.props.selectedContact && !this.props.searchContacts
-                  && !this.props.callActive
-                  && Object.keys(this.state.activeLocationShares || {}).length === 0) ?
-                <IconButton
-                    key={'bell-' + _navRemountKey}
-                    style={[bellStyle, {marginLeft: 10}]}
-                    size={18}
-                    disabled={false}
-                    onPress={this.props.toggleDnd}
-                    icon={bellIcon}
-                />
-                : null}
-
  
                 {statusColor == 'greenXXX' ?
-                    <Icon name={statusIcon} size={20} color={statusColor} />
+                    <Icon name={statusIcon} size={navStatusIconSize} color={statusColor} />
                 : null }
 
                 {/* Active-location-share indicator. Rendered on every
@@ -6202,7 +6355,7 @@ class NavigationBar extends Component {
                     <Animated.View style={{ opacity: this._activeSharePulse }}>
                         <IconButton
                             key={'back-to-call-' + _navRemountKey}
-                            size={18}
+                            size={navIconBtnSize}
                             iconColor="white"
                             containerColor="rgba(40, 167, 69, 0.95)"
                             icon="phone-in-talk"
@@ -6240,7 +6393,7 @@ class NavigationBar extends Component {
                         <Animated.View style={{ opacity: this._activeSharePulse }}>
                             <IconButton
                                 key={'active-location-' + _navRemountKey}
-                                size={18}
+                                size={navIconBtnSize}
                                 iconColor="white"
                                 containerColor="rgba(220, 53, 69, 0.95)"
                                 icon="map-marker-radius"
@@ -6271,6 +6424,7 @@ class NavigationBar extends Component {
                                 ref={this.menuRef}
                                 color="white"
                                 icon="menu"
+                                size={navMenuIconSize}
                                 style={this.props.isFolded ? {marginLeft: 12} : null}
                                 onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
                             />
@@ -6508,6 +6662,7 @@ class NavigationBar extends Component {
                                 ref={this.menuRef}
                                 color="white"
                                 icon="menu"
+                                size={navMenuIconSize}
                                 style={this.props.isFolded ? {marginLeft: 12} : null}
                                 onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
                             />
@@ -6676,6 +6831,7 @@ class NavigationBar extends Component {
                     show={this.state.showDeleteHistoryModal}
                     close={this.closeDeleteHistoryModal}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : null}
+                    defaultDomain={this.props.defaultDomain}
                     hasMessages={this.hasMessages}
                     deleteMessages={this.props.deleteMessages}
                     filteredMessageIds={this.props.filteredMessageIds}
@@ -6707,6 +6863,7 @@ class NavigationBar extends Component {
                     show={showEditModal}
                     close={this.hideEditContactModal}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : this.props.accountId}
+                    defaultDomain={this.props.defaultDomain}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName}
                     selectedContact={this.props.selectedContact}
                     organization={this.props.organization}
@@ -6720,8 +6877,7 @@ class NavigationBar extends Component {
  				    toggleRejectNonContacts={this.props.toggleRejectNonContacts}
 					rejectAnonymous={this.props.rejectAnonymous}
  				    toggleRejectAnonymous={this.props.toggleRejectAnonymous}
-					chatSounds={this.props.chatSounds}
- 				    toggleChatSounds={this.props.toggleChatSounds}
+					/* chatSounds / toggleChatSounds moved to PreferencesModal. */
 					readReceipts={this.props.readReceipts}
  				    toggleReadReceipts={this.props.toggleReadReceipts}
  				    storageUsage={this.props.storageUsage}
@@ -6739,6 +6895,22 @@ class NavigationBar extends Component {
                     close={this.closeDeleteAccountModal}
                     onConfirm={this.confirmDeleteAccount}
                     accountId={this.props.accountId}
+                />
+
+                {/* Sign-out confirmation. When more than one local
+                    account/password pair is stored, the modal also
+                    surfaces a per-account "Switch" action which is
+                    functionally equivalent to signing out and signing
+                    back in via LoginForm with the other identity —
+                    props.switchAccount on app.js wires that exact
+                    behaviour. */}
+                <SwitchAccountModal
+                    show={this.state.showSwitchAccountModal}
+                    close={() => this.setState({ showSwitchAccountModal: false })}
+                    onLogout={this.props.logout}
+                    onSwitch={this.props.switchAccount}
+                    accountId={this.props.accountId}
+                    accountPasswords={this.props.accountPasswords}
                 />
 
                 {/* Headless WebView URL resolver — used as a
@@ -6782,14 +6954,16 @@ class NavigationBar extends Component {
                     setPreferredAudioCodec={this.props.setPreferredAudioCodec}
                     enableAudioRecording={this.props.enableAudioRecording}
                     setEnableAudioRecording={this.props.setEnableAudioRecording}
+                    chatSounds={this.props.chatSounds}
+                    toggleChatSounds={this.props.toggleChatSounds}
                     encryptionMode={this.props.encryptionMode}
                     setEncryptionMode={this.props.setEncryptionMode}
                     dtmfMode={this.props.dtmfMode}
                     setDtmfMode={this.props.setDtmfMode}
                     proximity={this.props.proximity}
                     toggleProximity={this.props.toggleProximity}
-                    locationTickIntervalMs={this.props.locationTickIntervalMs}
-                    setLocationTickIntervalMs={this.props.setLocationTickIntervalMs}
+                    locationTickIntervalSec={this.props.locationTickIntervalSec}
+                    setLocationTickIntervalSec={this.props.setLocationTickIntervalSec}
                     locationProximityMeters={this.props.locationProximityMeters}
                     setLocationProximityMeters={this.props.setLocationProximityMeters}
                     locationPrivacyRadiusMeters={this.props.locationPrivacyRadiusMeters}
@@ -6802,8 +6976,23 @@ class NavigationBar extends Component {
                     close={this.closeEditConferenceModal}
                     room={this.props.selectedContact ? this.props.selectedContact.uri.split('@')[0]: ''}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName}
-                    participants={this.props.selectedContact ? this.props.selectedContact.participants : []}
+                    // Modal reads this as `invitedParties` (its prop
+                    // name) — rename here so the existing list of
+                    // saved invitees pre-populates the chip row when
+                    // re-opening Configure conference on an existing
+                    // room. Without this rename the modal only got
+                    // `selectedContact.participants` as a fallback,
+                    // which works for already-saved rooms but not for
+                    // freshly created ones where the caller wants to
+                    // hand over an in-memory list.
+                    invitedParties={this.props.selectedContact ? this.props.selectedContact.participants : []}
                     selectedContact={this.props.selectedContact}
+                    // allContacts feeds the new pill-picker inside the
+                    // modal — the user now selects Sylk contacts from
+                    // a multi-select list rather than typing addresses
+                    // free-form, so the modal needs the full contact
+                    // roster to filter and display.
+                    allContacts={this.props.allContacts}
                     toggleFavorite={this.props.toggleFavorite}
                     saveConference={this.saveConference}
                     defaultDomain={this.props.defaultDomain}
@@ -7011,6 +7200,14 @@ class NavigationBar extends Component {
 NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
     logout             : PropTypes.func.isRequired,
+    // (accountId, password) => void. Logs the current account out
+    // and signs back in as the supplied one. Used by SwitchAccountModal
+    // to pivot to another locally-stored account without going through
+    // the LoginForm round-trip.
+    switchAccount      : PropTypes.func,
+    // Per-account password lookup populated by app.js#loadAccounts.
+    // Drives the "Switch to…" options inside SwitchAccountModal.
+    accountPasswords   : PropTypes.object,
     preview            : PropTypes.func.isRequired,
     toggleSpeakerPhone : PropTypes.func.isRequired,
     toggleProximity    : PropTypes.func.isRequired,
@@ -7028,6 +7225,14 @@ NavigationBar.propTypes = {
     connection         : PropTypes.object,
     orientation        : PropTypes.string,
     isTablet           : PropTypes.bool,
+    // Optional override for the NavBar height. When unset, defaults are:
+    //   • folded cover display → 60
+    //   • tablet               → 90
+    //   • phone                → 60
+    // IconButton sizes scale automatically with the chosen height
+    // (tablet pins IconButtons to 32 to match the ContactsList call
+    // bar; phone keeps the historical 18dp).
+    navBarHeight       : PropTypes.number,
     selectedContact    : PropTypes.object,
     allContacts        : PropTypes.array,
     goBackFunc         : PropTypes.func,

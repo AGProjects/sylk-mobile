@@ -24,7 +24,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
-        Log.d(TAG, "[Bridge] setActiveChat: $chatId")
+        SylkLogger.d("[bridge] setActiveChat: $chatId")
         prefs.edit().putString("currentChat", chatId).apply()
     }
 
@@ -36,7 +36,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveCall(target: String?) {
-        Log.d(TAG, "[Bridge] setActiveCall: $target")
+        SylkLogger.d("[bridge] setActiveCall: $target")
         prefs.edit().putString("currentCall", target).apply()
     }
 
@@ -58,7 +58,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
     // ---------------------------------------------------------------
     @ReactMethod
     fun setAppActive(active: Boolean) {
-        Log.d(TAG, "[Bridge] setAppActive: $active")
+        SylkLogger.d("[bridge] setAppActive: $active")
         prefs.edit().putBoolean("appActive", active).apply()
     }
 }

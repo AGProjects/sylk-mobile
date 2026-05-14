@@ -23,6 +23,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 // Dialog/Portal wrapper (which also had a stealthy Platform reference
 // that was never imported — a crash waiting to happen on first open).
 import containerStyles from '../assets/styles/ContainerStyles';
+import utils from '../utils';
 // Reuse the shared ContentStyles.button so the logs modal action
 // row matches EditContactModal / DeleteHistoryModal / the rest of
 // the dialog family — rounded corners, the same vertical breathing
@@ -129,7 +130,8 @@ function _scanTagsAndBuildFilter(text) {
     const lines = (text || '').split('\n');
     // Per-tag line count, used both to surface the popular tags first
     // in the pill bar and to dedupe tag membership per-line for the
-    // filter cache below.
+    // filter cache below. Also rendered inside each pill so the user
+    // can see at a glance which tags carry the bulk of the log.
     const tagCounts = new Map();
     // Per-line tag sets, parallel to `lines`, computed once so the
     // per-render filter pass is just a Set lookup per line.
@@ -140,6 +142,14 @@ function _scanTagsAndBuildFilter(text) {
     // (trailing newlines from RNFS reads) don't count — they're not
     // user-visible content the pill could surface.
     let hasUntagged = false;
+    // Count of non-empty lines without any [tag]. Surfaced inside the
+    // "untagged" pill so it follows the same "(N)" convention as the
+    // tag pills.
+    let untaggedCount = 0;
+    // Total non-empty line count, used in the header summary alongside
+    // the byte size. `lines.length` would over-count by 1 because
+    // trailing '\r\n' from RNFS produces a final empty entry.
+    let nonEmptyLineCount = 0;
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         let m;
@@ -158,16 +168,23 @@ function _scanTagsAndBuildFilter(text) {
             }
         }
         perLineTags[i] = tagsForLine; // null when the line has no tag
-        if (!tagsForLine && line && line.trim().length > 0) {
-            hasUntagged = true;
+        if (line && line.trim().length > 0) {
+            nonEmptyLineCount += 1;
+            if (!tagsForLine) {
+                hasUntagged = true;
+                untaggedCount += 1;
+            }
         }
     }
     // Order by descending line count so the busiest tags sit at the
     // start of the pill row (where the user's eye lands first), with
     // alphabetical order as the tiebreaker for stable rendering.
+    // Returned as {name, count} objects so the renderer can show
+    // both inside the pill body without a second Map lookup per
+    // render.
     const sortedTags = Array.from(tagCounts.entries())
         .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
-        .map(([tag]) => tag);
+        .map(([tag, count]) => ({ name: tag, count }));
     const filter = (selectedSet) => {
         if (!selectedSet || selectedSet.size === 0) return text;
         const wantUntagged = selectedSet.has(UNTAGGED_KEY);
@@ -185,7 +202,13 @@ function _scanTagsAndBuildFilter(text) {
         }
         return out.join('\n');
     };
-    return { tags: sortedTags, filter, hasUntagged };
+    return {
+        tags: sortedTags,           // [{name, count}, ...] desc by count
+        filter,
+        hasUntagged,
+        untaggedCount,
+        nonEmptyLineCount,
+    };
 }
 
 function _anonymizeEmails(text) {
@@ -487,7 +510,20 @@ class ShowLogsModal extends Component {
         // where grep / a support engineer cares about it. We strip BEFORE
         // tag-scanning so [APPLOG] never shows up as a pill.
         const displayLogs = sourceLogs.replace(/\[APPLOG\] /g, '');
-        const { tags, filter, hasUntagged } = this._getScan(displayLogs);
+        const {
+            tags,
+            filter,
+            hasUntagged,
+            untaggedCount,
+            nonEmptyLineCount,
+        } = this._getScan(displayLogs);
+        // Bytes ≈ char count for ASCII-heavy log content. Close enough
+        // for the user-facing "13 KB" indicator; the on-disk file may
+        // be a few bytes larger from the [APPLOG] prefix we strip
+        // above and from CR/LF encoding.
+        const sizeLabel = utils.formatBytes(displayLogs.length || 0);
+        const linesLabel = nonEmptyLineCount.toLocaleString() + ' line'
+            + (nonEmptyLineCount === 1 ? '' : 's');
         // True when the log being viewed belongs to a DIFFERENT
         // account than the user is signed in as. We hide owner-only
         // actions (Purge, Anonymize, Request support) in that case —
@@ -740,19 +776,71 @@ class ShowLogsModal extends Component {
                             Horizontal scroll so an arbitrary number of
                             tags fits on narrow phones. The first chip is
                             always "untagged" — selects lines without any
-                            [bracketed] tag. The "Clear" pill on the
-                            right deselects all (only rendered when at
-                            least one pill is active). Tap toggles a tag
-                            in/out of the selection set; an empty
-                            selection means no filter (all lines shown).
-                            Filtering is OR — picking more pills shows
-                            MORE lines (cumulative), per the user's ask. */}
+                            [bracketed] tag. Tap toggles a tag in/out of
+                            the selection set; an empty selection means
+                            no filter (all lines shown). Filtering is
+                            OR — picking more pills shows MORE lines
+                            (cumulative), per the user's ask.
+
+                            The header row above the pills carries the
+                            logfile size + line count on the left and a
+                            right-aligned "Clear" button (rendered only
+                            when at least one pill is active — otherwise
+                            it would do nothing on tap). Each pill
+                            shows its line count in parentheses so the
+                            busiest tags are obvious at a glance. */}
                         <View style={{
                             paddingVertical: 4,
                             borderTopWidth: StyleSheet.hairlineWidth,
                             borderTopColor: '#e0e0e0',
                             backgroundColor: '#fafafa',
                         }}>
+                            {/* Header: size + line count (left) and
+                                Clear (right, only when filter active). */}
+                            <View style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                paddingHorizontal: 8,
+                                paddingTop: 2,
+                                paddingBottom: 4,
+                            }}>
+                                <Text style={{
+                                    color: '#666',
+                                    fontSize: 10,
+                                    lineHeight: 12,
+                                }}>
+                                    {sizeLabel} · {linesLabel}
+                                </Text>
+                                {hasFilter ? (
+                                    <TouchableOpacity
+                                        key="__clear__"
+                                        onPress={this._clearTags}
+                                        accessibilityLabel="Clear filter"
+                                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                        style={{
+                                            height: 22,
+                                            paddingHorizontal: 10,
+                                            borderRadius: 11,
+                                            backgroundColor: 'transparent',
+                                            borderWidth: StyleSheet.hairlineWidth,
+                                            borderColor: '#bbb',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                        }}
+                                    >
+                                        <Text style={{
+                                            color: '#666',
+                                            fontSize: 10,
+                                            lineHeight: 12,
+                                            fontWeight: '600',
+                                        }}>
+                                            Clear
+                                        </Text>
+                                    </TouchableOpacity>
+                                ) : null}
+                            </View>
+
                             {/* Pills wrap into rows; if more than ~3 rows
                                 worth of tags exist, the vertical
                                 ScrollView caps the visible area and the
@@ -794,46 +882,29 @@ class ShowLogsModal extends Component {
                                     <TouchableOpacity
                                         key="__untagged__"
                                         onPress={() => this._toggleTag(UNTAGGED_KEY)}
-                                        accessibilityLabel="Filter untagged lines"
+                                        accessibilityLabel={`Filter untagged lines (${untaggedCount})`}
                                         style={pillStyle(this.state.selectedTags.has(UNTAGGED_KEY))}
                                     >
-                                        <Text style={pillTextStyle(this.state.selectedTags.has(UNTAGGED_KEY))}>untagged</Text>
+                                        <Text style={pillTextStyle(this.state.selectedTags.has(UNTAGGED_KEY))}>
+                                            untagged ({untaggedCount})
+                                        </Text>
                                     </TouchableOpacity>
                                     ) : null}
                                     {tags.map((t) => {
-                                        const active = this.state.selectedTags.has(t);
+                                        const active = this.state.selectedTags.has(t.name);
                                         return (
                                             <TouchableOpacity
-                                                key={t}
-                                                onPress={() => this._toggleTag(t)}
-                                                accessibilityLabel={`Filter ${t}`}
+                                                key={t.name}
+                                                onPress={() => this._toggleTag(t.name)}
+                                                accessibilityLabel={`Filter ${t.name} (${t.count})`}
                                                 style={pillStyle(active)}
                                             >
-                                                <Text style={pillTextStyle(active)}>{t}</Text>
+                                                <Text style={pillTextStyle(active)}>
+                                                    {t.name} ({t.count})
+                                                </Text>
                                             </TouchableOpacity>
                                         );
                                     })}
-                                    {hasFilter ? (
-                                        <TouchableOpacity
-                                            key="__clear__"
-                                            onPress={this._clearTags}
-                                            accessibilityLabel="Clear filter"
-                                            style={{
-                                                marginHorizontal: 2,
-                                                marginVertical: 2,
-                                                height: 22,
-                                                paddingHorizontal: 8,
-                                                borderRadius: 11,
-                                                backgroundColor: 'transparent',
-                                                borderWidth: StyleSheet.hairlineWidth,
-                                                borderColor: '#bbb',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                            }}
-                                        >
-                                            <Text style={{ color: '#666', fontSize: 10, lineHeight: 12 }}>Clear</Text>
-                                        </TouchableOpacity>
-                                    ) : null}
                                 </View>
                             </ScrollView>
                         </View>

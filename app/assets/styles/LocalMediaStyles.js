@@ -46,7 +46,15 @@ const styles = StyleSheet.create({
 
   tabletButtonContainer: {
     position: 'absolute',
-    bottom: 100,
+    // Was bottom: 100. LocalMedia.js adds the device's bottomInset
+    // (home indicator / nav bar) on top of this value at render time
+    // (see lines ~700 / ~724 in LocalMedia.js), so the effective lift
+    // was ~100 + bottomInset and the user saw "like 200 px" of
+    // empty space below the buttons. Match the phone-variant lift
+    // (30dp) so tablet and phone read the same — the safe-area
+    // inset on tablet is plenty to clear the home indicator on its
+    // own without a fixed bump on top.
+    bottom: 30,
     width: '90%',
     zIndex: 99,
     justifyContent: 'center',

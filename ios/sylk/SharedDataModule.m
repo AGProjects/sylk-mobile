@@ -8,6 +8,7 @@
 
 #import <React/RCTEventEmitter.h>
 #import <React/RCTBridgeModule.h>
+#import "SylkLogger.h"
 
 @interface SharedDataModule : RCTEventEmitter <RCTBridgeModule>
 @end
@@ -40,10 +41,10 @@ RCT_EXPORT_METHOD(setActiveChat:(NSString *)jid)
 {
     if (jid != nil && [jid length] > 0) {
         activeChatJID = [jid copy];
-        NSLog(@"[SYLK_APP] [SharedData] Active chat set to %@", activeChatJID);
+        [SylkLogger log:@"[shared-data] Active chat set to %@", activeChatJID];
     } else {
         activeChatJID = nil;
-        NSLog(@"[SYLK_APP] [SharedData] Active chat cleared");
+        [SylkLogger log:@"[shared-data] Active chat cleared"];
     }
 }
 

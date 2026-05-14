@@ -34,6 +34,7 @@ const EditContactModal = ({
   close,
   saveContactByUser,
   uri: propUri,
+  defaultDomain,
   displayName: propDisplayName,
   email: propEmail,
   organization: propOrg,
@@ -46,8 +47,7 @@ const EditContactModal = ({
   toggleRejectNonContacts,
   rejectAnonymous,
   toggleRejectAnonymous,
-  chatSounds,
-  toggleChatSounds,
+  // chatSounds / toggleChatSounds — moved to PreferencesModal.
   readReceipts,
   toggleReadReceipts,
   storageUsage,
@@ -62,7 +62,23 @@ const EditContactModal = ({
   enableAudioRecording,
   encryptionMode,
 }) => {
-  const [uri, setUri] = useState(propUri || '');
+  // Strip the account's default @domain off an E.164 phone-number URI
+  // for editing — users dialing or pasting a number expect to see
+  // "+40721253846", not "+40721253846@sylk.link". Only the @-suffix
+  // matching defaultDomain is hidden; non-default domains stay so
+  // the user can still edit them. saveContactByUser's sanitizeContact
+  // re-appends the domain on save when the URI comes in bare.
+  const _displayUriFromProp = (raw) => {
+    if (!raw) return '';
+    if (!defaultDomain) return raw;
+    if (!raw.startsWith('+')) return raw;
+    const suffix = '@' + defaultDomain;
+    if (raw.toLowerCase().endsWith(suffix.toLowerCase())) {
+      return raw.substring(0, raw.length - suffix.length);
+    }
+    return raw;
+  };
+  const [uri, setUri] = useState(_displayUriFromProp(propUri));
   const [displayName, setDisplayName] = useState(propDisplayName || '');
   const [organization, setOrganization] = useState(propOrg || '');
   const [email, setEmail] = useState(propEmail || '');
@@ -115,7 +131,7 @@ const EditContactModal = ({
   // Reset all form fields whenever modal opens or props change
   useEffect(() => {
     if (show) {
-      setUri(propUri || '');
+      setUri(_displayUriFromProp(propUri));
       setDisplayName(propDisplayName || '');
       setOrganization(propOrg || '');
       setEmail(propEmail || '');
@@ -152,15 +168,27 @@ const EditContactModal = ({
 	  setTagsText(tags.join(', '));
 	}, [tags]);
 
+	const [keyboardHeight, setKeyboardHeight] = useState(0);
+
 	useEffect(() => {
-	  const showSub = Keyboard.addListener('keyboardDidShow', () => {
+	  // Track keyboard height in addition to visibility so the
+	  // surfaceMaxHeight cap below can shrink the modal to fit
+	  // the remaining vertical room. Without this, KeyboardAvoiding-
+	  // View's `padding` behaviour shifts the Surface up by the
+	  // keyboard height, but the Surface itself is still 85% of
+	  // viewport — so the top edge slides off-screen above the
+	  // status bar.
+	  const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+		const h = (e && e.endCoordinates && e.endCoordinates.height) || 0;
+		setKeyboardHeight(h);
 		setKeyboardVisible(true);
 	  });
-	
+
 	  const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+		setKeyboardHeight(0);
 		setKeyboardVisible(false);
 	  });
-	
+
 	  return () => {
 		showSub.remove();
 		hideSub.remove();
@@ -319,6 +347,18 @@ const getTotalPrettyStorage = (entity) => {
   // landscape orientations where 55% + chrome would still overflow.
   const viewportH = Dimensions.get('window').height;
   const scrollMaxHeight = Math.round(viewportH * 0.55);
+  // Default cap is 85% of viewport — leaves a slim margin at the
+  // top and bottom of the screen so the modal reads as a panel.
+  // When the keyboard is up, the !keyboardVisible JSX blocks
+  // collapse most of the modal's content (per-tag toggles,
+  // encryption / recording / location toggles, etc.), so the
+  // Surface naturally shrinks to whatever's left — title + the
+  // text fields the user is editing + the Save/Cancel row. The
+  // overlay's justifyContent='flex-end' + paddingBottom anchors
+  // that small Surface just above the keyboard. No further cap
+  // needed — earlier attempts at recomputing surfaceMaxHeight /
+  // scrollMaxHeight against (viewport - keyboardHeight) made the
+  // modal float oddly mid-screen with lots of empty space above.
   const surfaceMaxHeight = Math.round(viewportH * 0.85);
   let title = myself ? "My account" : 'Edit Contact';
   
@@ -378,7 +418,36 @@ const getTotalPrettyStorage = (entity) => {
       onRequestClose={close} // Android back button
     >
 
-        <View style={containerStyles.overlay}>
+        <View
+          style={[
+            containerStyles.overlay,
+            // When the keyboard is visible, anchor the modal to the
+            // BOTTOM of the visible area instead of the vertical
+            // centre. Without this override the centered modal +
+            // KeyboardAvoidingView combination pushed the panel's
+            // top edge off the top of the screen.
+            //
+            // paddingBottom is platform-dependent:
+            //   • iOS: Modal doesn't auto-resize when the keyboard
+            //     opens — the keyboard floats over the modal's
+            //     content. We need paddingBottom = keyboardHeight +
+            //     small gap so the surface sits above the keyboard.
+            //   • Android: AndroidManifest's windowSoftInputMode=
+            //     adjustResize already shrinks the modal's view to
+            //     the area above the keyboard, so the same
+            //     paddingBottom would double-count and push the
+            //     surface up by 2× the keyboard height (the "now
+            //     it went even higher" bug). A flat 20dp gap is
+            //     enough on Android — the OS already handled the
+            //     keyboard size.
+            keyboardVisible && keyboardHeight > 0 ? {
+              justifyContent: 'flex-end',
+              paddingBottom: Platform.OS === 'ios'
+                ? keyboardHeight + 20
+                : 20,
+            } : null,
+          ]}
+        >
           {/* Backdrop: a Pressable that absolute-fills the overlay,
               sitting BEHIND the Surface (rendered earlier in JSX → behind
               in z-order). Tap outside the Surface → backdrop receives
@@ -406,7 +475,20 @@ const getTotalPrettyStorage = (entity) => {
               would otherwise paint past the rounded corners (the
               ScrollView's content most notably). */}
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            // When the keyboard is visible we already anchor the
+            // panel via the overlay's justifyContent='flex-end' +
+            // paddingBottom=keyboardHeight+20 (above). Letting KAV
+            // ALSO add its `padding`/`height` behaviour on top of
+            // that double-shifted the Surface and pushed its top
+            // edge off the screen. behavior={null} makes KAV a
+            // no-op layer in that state — the overlay positioning
+            // does all the work. When the keyboard is hidden, KAV
+            // reverts to its normal behaviour so any future
+            // focus-while-already-open transitions still avoid
+            // the keyboard naturally.
+            behavior={keyboardVisible
+                ? null
+                : (Platform.OS === 'ios' ? 'padding' : 'height')}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
             style={{ maxHeight: surfaceMaxHeight, alignSelf: 'center', width: '100%' }}
           >
@@ -415,8 +497,8 @@ const getTotalPrettyStorage = (entity) => {
 				  <View
 					style={{
 					  position: 'absolute',
-					  top: 16,
-					  left: 16,
+					  top: 6,
+					  left: 6,
 					  zIndex: 10,
 					}}
 				  >
@@ -504,7 +586,16 @@ const getTotalPrettyStorage = (entity) => {
                   </>
                 ) : (
                   <>
-                    <Text style={styles.subtitle}>{uri}</Text>
+                    {/* SIP URI subtitle removed. The same URI lives in
+                        the Address / Telephone number TextInput below
+                        (which the user can read and edit), so a
+                        separate read-only subtitle line was redundant
+                        chrome — and confusing once we started stripping
+                        the @defaultDomain off phone-number rows for
+                        display (the subtitle showed the full
+                        "+40…@sylk.link" while the editable field
+                        showed just "+40…"). Removing it leaves the
+                        editable field as the single source of truth. */}
 
                     {/* Single outer ScrollView for the entire body —
                         same shape PreferencesModal uses. All the form
@@ -529,7 +620,109 @@ const getTotalPrettyStorage = (entity) => {
                       directionalLockEnabled={true}
                       scrollEventThrottle={16}
                       decelerationRate="normal"
+                      // Subtree-wide autofill kill switch.
+                      //
+                      // The per-field `autoComplete="off" +
+                      // importantForAutofill="no" + textContentType="none"`
+                      // trio we put on each TextInput SHOULD be enough,
+                      // but Paper's <TextInput> wraps the native
+                      // EditText behind an Animated layer and on some
+                      // Android builds the importantForAutofill prop
+                      // doesn't propagate all the way to the inner
+                      // EditText — the Autofill Framework then sees a
+                      // default-marked field and surfaces the saved-
+                      // password sheet anyway.
+                      //
+                      // `noExcludeDescendants` on this ScrollView is
+                      // the parent-level authoritative override:
+                      // Android's Autofill Framework checks the view
+                      // tree from the focused field UP to the root and
+                      // honours the FIRST explicit "no" it finds. By
+                      // pinning the opt-out on the ScrollView (which
+                      // contains every TextInput in the edit form),
+                      // we guarantee the framework hits a "no" before
+                      // it can decide any descendant looks fillable —
+                      // no matter what Paper does with the inner
+                      // EditText props.
+                      //
+                      // iOS ignores this attribute; the per-field
+                      // `textContentType="none"` keeps the QuickType
+                      // strip clean there.
+                      importantForAutofill="noExcludeDescendants"
                     >
+                      {/* Address (URI) — editable for any contact except
+                          the user's own account row. Contacts are keyed
+                          by their internal `id` (UUID) in SQL — the URI
+                          is just another column on the row — so changing
+                          it here is safe: saveContactByUser preserves
+                          selectedContact.id and saveSylkContact's
+                          INSERT→UNIQUE→UPDATE path rewrites the uri
+                          column in place. Locked for `myself` so the
+                          user can't accidentally rename their own
+                          account URI (which is the account identifier
+                          used for SIP registration, not a free-form
+                          label). The "@domain optional" hint mirrors
+                          AddContactModal so users know they can paste
+                          either a bare phone number / username or a
+                          fully-qualified SIP URI. */}
+                      {!myself && (
+                        <TextInput
+                          mode="flat"
+                          // Switch the field label based on the URI's
+                          // shape so the user sees the most accurate
+                          // verb for what they're entering. The check
+                          // is purely cosmetic — saveContactByUser /
+                          // sanitizeContact still classify and route
+                          // the URI by their own rules — but it tells
+                          // a user typing "+40…" that this is a
+                          // phone-number row, and a user typing
+                          // "alice@…" that it's a SIP address.
+                          // Drives off both: (a) the current text in
+                          // the input (covers a freshly-typed +CC
+                          // before the contact tag is updated), and
+                          // (b) the selectedContact.tags 'tel' flag
+                          // (covers an existing telephone contact
+                          // even if the user transiently clears the
+                          // field).
+                          label={
+                            (uri.trim().startsWith('+')
+                              || (selectedContact
+                                  && Array.isArray(selectedContact.tags)
+                                  && selectedContact.tags.indexOf('tel') > -1))
+                              ? 'Telephone number'
+                              : 'SIP Address'
+                          }
+                          onChangeText={(value) =>
+                            setUri(value.replace(/\s|\(|\)/g, '').toLowerCase())
+                          }
+                          value={uri}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          // Same autofill opt-out trio as the Email
+                          // field below — Android's autofill service
+                          // was tagging this field as a username/
+                          // password row (autoCapitalize none +
+                          // email-style keyboard next to a Display
+                          // name input → "looks like a login form")
+                          // and surfacing "Use saved password?". See
+                          // the Email field's comment for the role of
+                          // each prop.
+                          autoComplete="off"
+                          importantForAutofill="no"
+                          textContentType="none"
+                          // Phone-number rows get the numeric keypad
+                          // (with + accessible on most layouts); SIP
+                          // rows keep the email-style keyboard.
+                          keyboardType={
+                            (uri.trim().startsWith('+')
+                              || (selectedContact
+                                  && Array.isArray(selectedContact.tags)
+                                  && selectedContact.tags.indexOf('tel') > -1))
+                              ? 'phone-pad'
+                              : 'email-address'
+                          }
+                        />
+                      )}
                       <TextInput
                         mode="flat"
                         label="Display name"
@@ -552,11 +745,67 @@ const getTotalPrettyStorage = (entity) => {
                         keyboardType="email-address"
                         autoCapitalize="none"
                         autoCorrect={false}
+                        // Android's autofill service was reading this
+                        // field as a login form ("email-address"
+                        // keyboard + autoCapitalize none next to a
+                        // text input it could plausibly tag as a
+                        // username/password row) and surfacing a
+                        // "Use saved password?" sheet when the user
+                        // focused it. Three coordinated hints kill
+                        // that without disabling our own onChangeText
+                        // handling:
+                        //   • autoComplete="off"        — RN's
+                        //     cross-platform autofill opt-out; on
+                        //     Android maps to the AUTOFILL_TYPE_NONE
+                        //     hint, on iOS maps to a no-op (iOS
+                        //     follows textContentType below).
+                        //   • importantForAutofill="no" — Android-
+                        //     specific belt-and-braces. Some Pixel /
+                        //     OEM builds still poke at fields that
+                        //     just say autoComplete=off; the
+                        //     importantForAutofill flag is the
+                        //     authoritative kill switch for the
+                        //     Autofill Framework.
+                        //   • textContentType="none"   — iOS-specific
+                        //     opt-out of the QuickType strip that
+                        //     surfaces saved passwords / Keychain
+                        //     entries on email-style keyboards.
+                        autoComplete="off"
+                        importantForAutofill="no"
+                        textContentType="none"
                         onChangeText={setEmail}
                         value={email}
                       />
 
-                    {!myself && !keyboardVisible && (
+                    {/* Visual breathing room between the last text-
+                        input row (Email) and the toggle / chip block
+                        below. Without this the first checkbox row
+                        sits flush against the Paper TextInput's
+                        bottom border, which reads as cramped. */}
+                    <View style={{ height: 16 }} />
+
+                    {/* ── Non-text-input region ─────────────────────
+                        Everything below — toggle switches, tag chips
+                        + add-tag editor, the myself-only Allow/Reject/
+                        Chat-sounds/Read-receipts row, the per-contact
+                        Video / Audio / zRTP pickers, the storage line
+                        and delete-account link — is collapsed into
+                        ONE wrapper that hides whenever the soft
+                        keyboard is up. Editing Display name / Address
+                        / Organization / Email above triggers the IME,
+                        and on Android the usable height left between
+                        the focused TextInput and the Save row is only
+                        a few hundred pixels — keeping these controls
+                        on-screen pushed Save off the bottom and made
+                        the chip list / codec pills scroll-fight the
+                        TextInput for focus. The original code gated
+                        only a few of these sections individually,
+                        which left the codec pills and the tag chips
+                        visible mid-edit. Single wrapper keeps the
+                        collapse atomic. */}
+                    {!keyboardVisible && (
+                      <>
+                    {!myself && (
 						<View style={{ marginTop: 0 }}>
 						  {Object.entries(editableTags).map(([tagKey, info]) => {
 							if (!isTagVisible(tagKey)) return null;  // ← hide if needed
@@ -587,20 +836,24 @@ const getTotalPrettyStorage = (entity) => {
 
 						</View>
                     )}
-
-                    {/* Tag list. Read-only by default — a small
-                        pencil icon next to the "Tags" label flips
-                        the section into edit mode, where each chip
-                        gains a × remove control and an "Add tag"
-                        input row appears below. Lives OUTSIDE the
-                        !keyboardVisible block (which gates the
-                        Switch/Checkbox toggles) because typing into
-                        the Add input opens the keyboard, and gating
-                        on !keyboardVisible would hide the editor
-                        the moment the user engages with it. The
-                        same `tags` state drives the toggles above,
-                        so changes stay in sync. */}
-                    {!myself && (
+                      </>
+                    )}
+                    {/* end first half of !keyboardVisible. The tag
+                        chip section below uses a SOFTER gate:
+                          • hide when the keyboard is visible AND
+                            the user is NOT in tag-edit mode — i.e.
+                            they're typing in one of the main text
+                            fields (name, email, phone…) and want
+                            the screen freed for that input.
+                          • keep visible when the keyboard is up AND
+                            editingTags is true — i.e. the keyboard
+                            popped open because the user focused the
+                            Add-tag input itself, so this section is
+                            exactly what they're interacting with.
+                          • always visible when the keyboard isn't
+                            up (idle / read-only mode).
+                        Equivalent to: !keyboardVisible || editingTags. */}
+                    {!myself && (!keyboardVisible || editingTags) && (
                       <View style={{ marginTop: 8 }}>
                         {/* Single wrap row: "Tags:" label, chip pills,
                             then the pencil/check toggle at the very
@@ -622,7 +875,20 @@ const getTotalPrettyStorage = (entity) => {
                           >
                             Tags:
                           </Text>
-                          {tags.length === 0 ? (
+                          {/* Hide tags that are driven by the
+                              per-tag Switch/Checkbox above
+                              (editableTags keys: bypassdnd, muted,
+                              noread). Those have their own
+                              dedicated toggle and would just
+                              duplicate the same state if also shown
+                              as removable chips down here. The
+                              user pointed this out for bypassdnd
+                              specifically; same logic applies to
+                              every key in editableTags. */}
+                          {(() => {
+                            const _hidden = new Set(Object.keys(editableTags || {}));
+                            const _visibleTags = tags.filter(t => !_hidden.has(t));
+                            return _visibleTags.length === 0 ? (
                             <Text
                               style={{
                                 fontSize: 12,
@@ -634,7 +900,7 @@ const getTotalPrettyStorage = (entity) => {
                               No tags
                             </Text>
                           ) : (
-                            tags.map(t => (
+                            _visibleTags.map(t => (
                               <View
                                 key={t}
                                 style={{
@@ -663,7 +929,8 @@ const getTotalPrettyStorage = (entity) => {
                                 ) : null}
                               </View>
                             ))
-                          )}
+                          );
+                          })()}
                           <TouchableOpacity
                             onPress={() => setEditingTags(prev => !prev)}
                             accessibilityRole="button"
@@ -712,6 +979,14 @@ const getTotalPrettyStorage = (entity) => {
                       </View>
                     )}
 
+                    {/* Re-open the !keyboardVisible wrapper for the
+                        remaining toggles (encryption, audio
+                        recording, location privacy, account-mode
+                        settings, etc.). Everything from here through
+                        the existing "end !keyboardVisible group"
+                        comment collapses while the keyboard is up. */}
+                    {!keyboardVisible && (
+                      <>
                     {myself && (
                       <PlatformToggle
                         value={rejectNonContacts}
@@ -730,14 +1005,12 @@ const getTotalPrettyStorage = (entity) => {
                       />
                     )}
 
-                    {myself && (
-                      <PlatformToggle
-                        value={chatSounds}
-                        onValueChange={toggleChatSounds}
-                        label="Chat sounds"
-                        style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0}]}
-                      />
-                    )}
+                    {/* Chat sounds toggle moved to PreferencesModal
+                        (Chat section). It's a per-device speaker
+                        preference, not a call-acceptance / privacy
+                        rule, so it belongs alongside the other
+                        Preferences settings rather than under My
+                        Account. */}
 
                     {myself && (
                       <PlatformToggle
@@ -1013,6 +1286,9 @@ const getTotalPrettyStorage = (entity) => {
                         </>
                       );
                     })()}
+                      </>
+                    )}
+                    {/* end !keyboardVisible group */}
 
                     </ScrollView>
 
@@ -1034,7 +1310,13 @@ const getTotalPrettyStorage = (entity) => {
                       <Button
                         mode="contained"
                         style={styles.button}
-                        disabled={!validEmail()}
+                        /* Block save if the URI was cleared. URI is the
+                           SIP/phone address — the row is meaningless
+                           without it, and saveContactByUser ->
+                           sanitizeContact would reject an empty uri
+                           with a noisy toast. Disabling the button
+                           gives an earlier, clearer affordance. */
+                        disabled={!validEmail() || !uri.trim()}
                         onPress={handleSave}
                         icon="content-save"
                       >
@@ -1117,8 +1399,6 @@ EditContactModal.propTypes = {
   toggleRejectNonContacts: PropTypes.func,
   rejectAnonymous: PropTypes.bool,
   toggleRejectAnonymous: PropTypes.func,
-  chatSounds: PropTypes.bool,
-  toggleChatSounds: PropTypes.func,
   readReceipts: PropTypes.bool,
   toggleReadReceipts: PropTypes.func,
   storageUsage: PropTypes.array,

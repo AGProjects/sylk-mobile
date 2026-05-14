@@ -206,7 +206,7 @@ public class SylkCallRecorder {
             mEncoder.start();
             mMuxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG);
         } catch (Throwable t) {
-            Log.e(TAG, "Encoder/muxer setup failed: " + t.getMessage());
+            SylkLogger.e("[call] [recorder] Encoder/muxer setup failed: " + t.getMessage());
             try { if (mEncoder != null) { mEncoder.release(); } } catch (Throwable ignore) {}
             try { if (mMuxer != null) { mMuxer.release(); } } catch (Throwable ignore) {}
             mEncoder = null;
@@ -232,14 +232,14 @@ public class SylkCallRecorder {
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 OUTPUT_SAMPLE_RATE, channelCfg, encoding, bufBytes);
             if (mMicRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                Log.w(TAG, "AudioRecord did not initialize; mic side will be silent");
+                SylkLogger.w("[call] [recorder] AudioRecord did not initialize; mic side will be silent");
                 try { mMicRecord.release(); } catch (Throwable t) {}
                 mMicRecord = null;
             } else {
                 mMicRecord.startRecording();
             }
         } catch (Throwable t) {
-            Log.w(TAG, "AudioRecord setup failed: " + t.getMessage()
+            SylkLogger.w("[call] [recorder] AudioRecord setup failed: " + t.getMessage()
                     + " — mic side will be silent");
             mMicRecord = null;
         }
@@ -256,7 +256,7 @@ public class SylkCallRecorder {
         mWriterThread.setPriority(Thread.NORM_PRIORITY + 1);
         mWriterThread.start();
 
-        Log.i(TAG, "Recording started: " + outputPath
+        SylkLogger.i("[call] [recorder] Recording started: " + outputPath
                 + " mic=" + (mMicRecord != null)
                 + " remote=true");
         return true;
@@ -276,7 +276,7 @@ public class SylkCallRecorder {
             try {
                 got = rec.read(buf, 0, buf.length);
             } catch (Throwable t) {
-                Log.w(TAG, "AudioRecord.read threw: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] AudioRecord.read threw: " + t.getMessage());
                 break;
             }
             if (got <= 0) {
@@ -289,7 +289,7 @@ public class SylkCallRecorder {
             System.arraycopy(buf, 0, chunk, 0, got);
             if (!mMicQ.offer(chunk)) {
                 if ((mDropCounter++ & 0x3F) == 0) {
-                    Log.w(TAG, "MicQ full, dropping chunk");
+                    SylkLogger.w("[call] [recorder] MicQ full, dropping chunk");
                 }
             }
         }
@@ -304,14 +304,14 @@ public class SylkCallRecorder {
      */
     public synchronized String stop() {
         if (!mRunning.compareAndSet(true, false)) {
-            Log.w(TAG, "stop(): not running, returning last path " + mPath);
+            SylkLogger.w("[call] [recorder] stop(): not running, returning last path " + mPath);
             return mPath;
         }
 
         try {
             if (mRemoteTrack != null && mRemoteSink != null) {
                 try { mRemoteTrack.removeSink(mRemoteSink); } catch (Throwable t) {
-                    Log.w(TAG, "removeSink remote failed: " + t.getMessage());
+                    SylkLogger.w("[call] [recorder] removeSink remote failed: " + t.getMessage());
                 }
             }
         } finally {
@@ -324,10 +324,10 @@ public class SylkCallRecorder {
         // mRunning and will exit on the next iteration.
         if (mMicRecord != null) {
             try { mMicRecord.stop(); } catch (Throwable t) {
-                Log.w(TAG, "AudioRecord.stop failed: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] AudioRecord.stop failed: " + t.getMessage());
             }
             try { mMicRecord.release(); } catch (Throwable t) {
-                Log.w(TAG, "AudioRecord.release failed: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] AudioRecord.release failed: " + t.getMessage());
             }
             mMicRecord = null;
         }
@@ -353,7 +353,7 @@ public class SylkCallRecorder {
 
         // Flush remaining encoder output and finalize the OGG file.
         try { drainEncoder(true); } catch (Throwable t) {
-            Log.w(TAG, "Encoder final drain failed: " + t.getMessage());
+            SylkLogger.w("[call] [recorder] Encoder final drain failed: " + t.getMessage());
         }
         if (mEncoder != null) {
             try { mEncoder.stop(); } catch (Throwable t) { /* ignore */ }
@@ -366,7 +366,7 @@ public class SylkCallRecorder {
                     mMuxer.stop();
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "Muxer stop failed: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] Muxer stop failed: " + t.getMessage());
             }
             try { mMuxer.release(); } catch (Throwable t) { /* ignore */ }
             mMuxer = null;
@@ -394,7 +394,7 @@ public class SylkCallRecorder {
         mPeaksLocal  = null;
         mPeaksRemote = null;
 
-        Log.i(TAG, "Recording stopped: " + mPath);
+        SylkLogger.i("[call] [recorder] Recording stopped: " + mPath);
         return mPath;
     }
 
@@ -585,7 +585,7 @@ public class SylkCallRecorder {
                 feedEncoder(scratch.array(), n * 2 * OUTPUT_CHANNELS);
                 drainEncoder(false);
             } catch (Throwable t) {
-                Log.e(TAG, "Encode failed: " + t.getMessage());
+                SylkLogger.e("[call] [recorder] Encode failed: " + t.getMessage());
                 mRunning.set(false);
                 break;
             }
@@ -646,7 +646,7 @@ public class SylkCallRecorder {
                         MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "EOS queue failed: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] EOS queue failed: " + t.getMessage());
             }
         }
         while (true) {
@@ -654,7 +654,7 @@ public class SylkCallRecorder {
             try {
                 idx = mEncoder.dequeueOutputBuffer(mEncoderInfo, 10_000);
             } catch (Throwable t) {
-                Log.w(TAG, "dequeueOutputBuffer threw: " + t.getMessage());
+                SylkLogger.w("[call] [recorder] dequeueOutputBuffer threw: " + t.getMessage());
                 break;
             }
             if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
@@ -663,7 +663,7 @@ public class SylkCallRecorder {
             }
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 if (mMuxerStarted) {
-                    Log.w(TAG, "Format changed twice — ignoring later one");
+                    SylkLogger.w("[call] [recorder] Format changed twice — ignoring later one");
                     continue;
                 }
                 MediaFormat newFmt = mEncoder.getOutputFormat();
@@ -672,7 +672,7 @@ public class SylkCallRecorder {
                     mMuxer.start();
                     mMuxerStarted = true;
                 } catch (Throwable t) {
-                    Log.e(TAG, "Muxer start failed: " + t.getMessage());
+                    SylkLogger.e("[call] [recorder] Muxer start failed: " + t.getMessage());
                     mRunning.set(false);
                     break;
                 }
@@ -692,7 +692,7 @@ public class SylkCallRecorder {
                 try {
                     mMuxer.writeSampleData(mTrackIndex, out, mEncoderInfo);
                 } catch (Throwable t) {
-                    Log.w(TAG, "writeSampleData failed: " + t.getMessage());
+                    SylkLogger.w("[call] [recorder] writeSampleData failed: " + t.getMessage());
                 }
             }
             try { mEncoder.releaseOutputBuffer(idx, false); } catch (Throwable ignore) {}
@@ -745,7 +745,7 @@ public class SylkCallRecorder {
             if (chunk == null || chunk.length == 0) return;
             if (!mRemoteQ.offer(chunk)) {
                 if ((mDropCounter++ & 0x3F) == 0) {
-                    Log.w(TAG, "RemoteQ full, dropping chunk");
+                    SylkLogger.w("[call] [recorder] RemoteQ full, dropping chunk");
                 }
             }
         }
@@ -826,7 +826,7 @@ public class SylkCallRecorder {
                                      int channels,
                                      int frames) {
         if (bitsPerSample != 16) {
-            Log.w(TAG, "Unsupported bitsPerSample=" + bitsPerSample);
+            SylkLogger.w("[call] [recorder] Unsupported bitsPerSample=" + bitsPerSample);
             return null;
         }
         if (channels < 1) return null;

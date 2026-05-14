@@ -22,7 +22,16 @@ const AddContactModal = ({
   defaultDomain,
   displayName: propDisplayName,
   uri: propUri,
-  organization: propOrg
+  organization: propOrg,
+  // Optional AB provenance. When the modal is invoked off an
+  // address-book row (search-source toggle = 'ab' → tap "Add"), the
+  // caller forwards the AB entry's stable handle so saveContactByUser
+  // can tag the new Sylk contact 'ab' and stash the record id on
+  // contact.properties.ab_id. The id is opaque here — we just pass it
+  // through. When invoked from the plain "+" menu, both props are
+  // undefined and the saved contact looks like any other manual add.
+  recordID: propRecordID,
+  tags: propTags,
 }) => {
   const [uri, setUri] = useState(propUri || '');
   const [displayName, setDisplayName] = useState(propDisplayName || '');
@@ -38,10 +47,15 @@ const AddContactModal = ({
     const contact = {uri: uri,
                      displayName: displayName,
                      organization: organization,
-                     email: ''
+                     email: '',
+                     // Pass through AB provenance untouched.
+                     // saveContactByUser branches on these to tag the
+                     // saved Sylk contact + persist the link.
+                     recordID: propRecordID,
+                     tags: propTags,
                      }
     console.log('Add contact', contact);
-  
+
     saveContactByUser(contact);
     close();
   };
@@ -151,6 +165,12 @@ AddContactModal.propTypes = {
   displayName: PropTypes.string,
   uri: PropTypes.string,
   organization: PropTypes.string,
+  // AB provenance — both optional. recordID is the OS contact id (or
+  // the AB row id we minted client-side in getABContacts); tags is the
+  // initial tag list (typically ['ab']) the caller wants on the saved
+  // Sylk contact. saveContactByUser merges these in.
+  recordID: PropTypes.string,
+  tags: PropTypes.arrayOf(PropTypes.string),
 };
 
 export default AddContactModal;

@@ -1,6 +1,7 @@
 #import <React/RCTEventEmitter.h>
 #import <React/RCTBridgeModule.h>
 #import "AppDelegate.h"
+#import "SylkLogger.h"
 
 @interface APNSTokenModule : RCTEventEmitter <RCTBridgeModule>
 - (void)sendTokenToJS:(NSString *)token;
@@ -27,7 +28,7 @@ RCT_EXPORT_METHOD(emitCachedAPNSToken)
 {
   dispatch_async(dispatch_get_main_queue(), ^{
     AppDelegate *app = (AppDelegate *)[UIApplication sharedApplication].delegate;
-    NSLog(@"[SYLK_APP] [APNS] emitCachedAPNSToken called, cached token = %@", app.cachedAPNSToken ?: @"<nil>");
+    [SylkLogger log:@"[push] emitCachedAPNSToken called, cached token = %@", app.cachedAPNSToken ?: @"<nil>"];
 
     if (app.cachedAPNSToken) {
         [self sendEventWithName:@"apnsToken" body:app.cachedAPNSToken];

@@ -108,8 +108,8 @@ export const VIDEO_PROFILE = {
 //           thermal-throttling. Reintroduce when hw-encode is universal.
 //
 // At boot we set 'VP9' as a sensible default. Once the account is loaded
-// from SQL, we read the per-account preference from AsyncStorage (key
-// 'accountLocalProperties.<accountId>') and override.
+// from SQL, we read the per-account preference from accounts.settings
+// (state.accountSetting.rtp.preferredVideoCodec) and override.
 const PREFERRED_VIDEO_CODEC = 'VP9';
 
 // ---------- preferred audio codec ------------------------------------------
@@ -129,95 +129,244 @@ const PREFERRED_VIDEO_CODEC = 'VP9';
 //   PCMA  — 8 kHz A-law (G.711A). Same as PCMU but the European variant.
 const PREFERRED_AUDIO_CODEC = 'opus';
 
-// ---------- device preferences (AsyncStorage) -------------------------------
-// PER-DEVICE settings — NOT synced to any other device, NOT tied to a
-// SIP account, NOT in SQL. Lives in AsyncStorage as a single JSON blob
-// under the key 'devicePreferences'.
+// ---------- per-account settings (SQL: accounts.settings) -------------------
+// PER-ACCOUNT settings — stored in the SQL `accounts` table under the
+// `settings` column as a single JSON blob, keyed by account URI. Loaded
+// on login by _applyAccountSettings(accountId), mirrored in
+// state.accountSetting, and written via setAccountSetting(key, value).
 //
-// Currently holds:
-//   { preferredVideoCodec?: 'VP9' | 'VP8' | 'H264' }
+// Schema-wise this replaces the previous TWO stores:
+//   * AsyncStorage 'devicePreferences' (per-device knobs: codec, dtmf,
+//     encryption mode, audio-recording toggle, location knobs)
+//   * AsyncStorage 'accountLocalProperties.<accountId>' (reserved for
+//     per-account local-only properties — was effectively empty)
 //
-// Codec preference is here (rather than in accountLocalProperties)
-// because the right codec depends on the *hardware* in this phone —
-// what hw encoder/decoder is available — not on the user identity.
-// Two devices logged into the same SIP account legitimately want
-// different codec choices.
+// Both are now collapsed into accounts.settings. Nothing is migrated
+// from AsyncStorage: after upgrade the column is NULL for every
+// existing row and parses to {} so ACCOUNT_SETTINGS_DEFAULTS takes
+// effect again.
 //
-// Add more keys here as the Preferences modal grows: ringtone choice,
-// jitter-buffer size, screen-share quality, debug toggles, etc.
+// The helpers below are pure data — they don't touch SQL on their own.
+// Persistence is the App class's job (see _applyAccountSettings /
+// setAccountSetting / _persistAccountSettings) since the DB handle and
+// the active accountId both live there.
 
-const _devicePreferencesKey = 'devicePreferences';
+// Sectioned defaults. Each section groups settings that belong to a
+// single subsystem so the dump and the Preferences modal read the
+// same way:
+//   rtp      — WebRTC offer/answer choices (codecs, ZRTP mode, DTMF
+//              transport, in-call recording toggle)
+//   device   — hardware-behaviour switches (proximity sensor, etc.)
+//   location — live-location feature knobs
+//
+// Setters use dotted paths: setAccountSetting('rtp.dtmfMode', 'info').
+// Future sections (e.g. network, debug) plug in here
+// without touching the dispatch logic.
+const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
+    // ---- Real-time media (audio + video + recording + DTMF + zRTP) ----
+    rtp: Object.freeze({
+        // Codec preferences depend on this device's hardware encoder /
+        // decoder availability. Two devices logged into the same SIP
+        // account legitimately want different choices.
+        preferredVideoCodec: PREFERRED_VIDEO_CODEC,   // 'VP9'
+        preferredAudioCodec: PREFERRED_AUDIO_CODEC,   // 'opus'
+        // Conference video codec — the user's preferred codec for
+        // outgoing conferences. USER WINS: this preference always
+        // takes effect when set. The server's per-domain
+        // sylk-config.json may publish a value (mirrored in
+        // state.conferenceVideoCodec — same key name at the top
+        // level of state, different namespace) as a *recommended*
+        // fallback used only when the user hasn't expressed a
+        // preference. See _applyConferenceVideoCodec.
+        // 'VP8' is the safe default — Janus has supported it across
+        // every release.
+        conferenceVideoCodec: 'VP8',
+        // ZRTP key-agreement mode for outgoing calls.
+        encryptionMode: 'zrtp_optional',
+        // DTMF transmission. 'info' = SIP INFO (Janus-side), 'rfc4733'
+        // = out-of-band telephone-event RTP. 'inband' is no longer
+        // offered.
+        dtmfMode: 'info',
+        // Whether the in-call record control is shown on audio calls.
+        enableAudioRecording: false,
+    }),
+    // ---- Device hardware behaviour --------------------------------------
+    device: Object.freeze({
+        // Proximity sensor: when true, holding the phone to the ear
+        // during an audio call routes audio to the earpiece and
+        // blanks the screen. ON by default — matches native phone
+        // behaviour.
+        proximityEnabled: true,
+        // Developer-mode toggle. Surfaces verbose logging, dev-only
+        // panels, etc. Migrated out of AsyncStorage 'devMode'.
+        devMode: false,
+        // Whether to play a sound on chat events. Lives here (device)
+        // rather than privacy because it's a per-device speaker
+        // behaviour, not a privacy / call-acceptance rule. Migrated
+        // out of accounts.chat_sounds.
+        chatSounds: true,
+        // Last picked camera / mic devices, kept as compact descriptor
+        // objects { deviceId, label } so getLocalMedia can match by
+        // either id (preferred) or label (fallback when ids rotate).
+        // Migrated out of AsyncStorage 'devices' which used the same
+        // shape under .camera / .mic.
+        cameraDevice: null,
+        micDevice: null,
+    }),
+    // ---- Privacy / call-acceptance & messaging behaviour ---------------
+    // Moved out of the dedicated SQL columns
+    //   accounts.dnd
+    //   accounts.reject_anonymous
+    //   accounts.reject_non_contacts
+    //   accounts.read_receipts
+    // into this JSON section. The native push handlers (iOS
+    // AppDelegate.m and Android MyFirebaseMessagingService.java) parse
+    // the accounts.settings blob to read dnd / rejectAnonymous /
+    // rejectNonContacts on push arrival — no more per-column SQL
+    // schema coupling between JS and native. The old columns remain
+    // in the schema as dead weight (safer rollback) but are no
+    // longer written; a future migration can drop them.
+    //
+    // (chat_sounds moved to device.chatSounds — it's a per-device
+    // speaker behaviour, not a privacy / call-acceptance rule.)
+    //
+    // readReceipts default ON — accounts before the read-receipts
+    //   feature got `null` in the old column, which loadAccount used
+    //   to coerce to true; preserve that semantic here.
+    privacy: Object.freeze({
+        dnd: false,
+        rejectAnonymous: false,
+        rejectNonContacts: false,
+        readReceipts: true,
+    }),
+    // (NOTE: the server-journal sync cursor is NOT in this map. It's
+    // runtime state — accounts.last_sync_id and
+    // accounts.last_sync_timestamp are its source of truth. It only
+    // appears in the LOAD/SAVE dump as a virtual `[journal]` section
+    // so you can see the cursor alongside the settings — see
+    // formatAccountSettings + the call site that injects it.)
+    // ---- Per-account app behaviour --------------------------------------
+    account: Object.freeze({
+        // Global auto-answer toggle. When true, every incoming call is
+        // auto-accepted. Per-contact overrides live on the contact
+        // row (localProperties.autoanswer) and are unaffected. Migrated
+        // out of AsyncStorage 'autoAnswerMode'.
+        autoAnswerMode: false,
+    }),
+    // ---- Live-location feature knobs ------------------------------------
+    location: Object.freeze({
+        // Heartbeat cadence (seconds). NavigationBar multiplies ×1000
+        // before handing to setInterval.
+        tickIntervalSec: 60,
+        // Meet-up auto-end threshold — both participants within this
+        // radius for the dwell window get a "you've met"
+        // notification and the share auto-ends.
+        proximityMeters: 20,
+        // Last-used privacy radius for meeting-handshake shares,
+        // 0 = "Off" (no privacy radius).
+        privacyRadiusMeters: 0,
+    }),
+    // ---- Legal-disclaimer acknowledgement flags -------------------------
+    // Migrated out of AsyncStorage keys
+    //   locationDisclosureAcknowledged.v2.<accountId>
+    //   callRecordingDisclosureAcknowledged.v1.<accountId>
+    // The old per-account-keyed AsyncStorage flags are no longer read
+    // (no carry-over by design — first launch after upgrade re-prompts).
+    // The disclosure modules (locationDisclosure.js,
+    // callRecordingDisclosure.js) now route reads/writes here through
+    // accountSettingsAccess.js so existing call sites (AudioCallBox,
+    // PreferencesModal, NavigationBar, app.js) keep working unchanged.
+    disclaimers: Object.freeze({
+        // Google Play "before-the-fact in-app location disclosure"
+        // policy acknowledgement. Required by Play policy before any
+        // GPS read.
+        locationPolicy: false,
+        // "Call recording can have legal consequences" acknowledgement.
+        // Gates the Auto-record toggle in Preferences and the in-call
+        // record button in AudioCallBox.
+        callRecording: false,
+        // Whether we've already prompted the user once for the
+        // Android Do-Not-Disturb permission (one-shot). Migrated out
+        // of AsyncStorage 'askedDndPermission'.
+        askedDndPermission: false,
+    }),
+});
 
-async function loadDevicePreferences() {
+function parseAccountSettingsBlob(raw) {
+    if (!raw) return {};
     try {
-        const raw = await AsyncStorage.getItem(_devicePreferencesKey);
-        return raw ? JSON.parse(raw) : {};
+        const v = JSON.parse(raw);
+        return (v && typeof v === 'object') ? v : {};
     } catch (e) {
-        console.log('loadDevicePreferences failed:', e);
+        console.log('parseAccountSettingsBlob failed:', e);
         return {};
     }
 }
 
-async function saveDevicePreferences(props) {
-    try {
-        await AsyncStorage.setItem(
-            _devicePreferencesKey,
-            JSON.stringify(props || {})
-        );
-    } catch (e) {
-        console.log('saveDevicePreferences failed:', e);
+// Layer ACCOUNT_SETTINGS_DEFAULTS underneath whatever was loaded from
+// disk, section by section. Unknown sections in the stored blob are
+// preserved (so a downgrade from a future build that knows about a
+// section we don't won't silently drop user choices).
+function applyAccountSettingDefaults(props) {
+    const stored = props || {};
+    const out = {};
+    for (const section of Object.keys(ACCOUNT_SETTINGS_DEFAULTS)) {
+        out[section] = {
+            ...ACCOUNT_SETTINGS_DEFAULTS[section],
+            ...(stored[section] || {}),
+        };
     }
+    // Carry over any sections the running build doesn't know about so
+    // downgrading from a future schema doesn't silently lose data.
+    for (const section of Object.keys(stored)) {
+        if (!(section in out)) out[section] = stored[section];
+    }
+    return out;
 }
 
-async function setDevicePreference(key, value) {
-    const props = await loadDevicePreferences();
-    if (value === null || value === undefined) {
-        delete props[key];
-    } else {
-        props[key] = value;
+// Pretty-print the sectioned account-settings dict for the console /
+// log viewer. One section per group, key=value aligned, no JSON
+// braces or quotes — the goal is "I can scan this on the device log
+// and see every preference at a glance".
+//
+// `extras` is an optional second object whose top-level keys are
+// merged in as additional sections after the settings ones, so
+// callers can append "virtual" sections (e.g. `journal` runtime
+// state) that aren't actually part of accounts.settings.
+function formatAccountSettings(props, extras) {
+    const obj = props || {};
+    const merged = { ...obj, ...(extras || {}) };
+    const sections = Object.keys(merged);
+    if (sections.length === 0) return '\n  (empty)';
+    const lines = [];
+    for (const section of sections) {
+        const sec = (merged[section] && typeof merged[section] === 'object') ? merged[section] : {};
+        lines.push('  [' + section + ']');
+        const keys = Object.keys(sec);
+        if (keys.length === 0) {
+            lines.push('    (empty)');
+            continue;
+        }
+        const width = Math.max(...keys.map(k => k.length));
+        for (const k of keys) {
+            const v = sec[k];
+            let shown;
+            if (v === null || v === undefined) {
+                shown = '(default)';
+            } else if (typeof v === 'object') {
+                // Compact JSON for object values (e.g. cameraDevice /
+                // micDevice device descriptors). Keeps the dump line
+                // scannable without wrapping; full structure is still
+                // visible.
+                try { shown = JSON.stringify(v); }
+                catch (e) { shown = '[object]'; }
+            } else {
+                shown = String(v);
+            }
+            lines.push('    ' + k.padEnd(width) + '  ' + shown);
+        }
     }
-    await saveDevicePreferences(props);
-    return props;
-}
-
-// ---------- per-account local properties (AsyncStorage) ---------------------
-// Per-account settings (different from device preferences above — these
-// belong to a particular SIP account on this device). Stored as a JSON
-// blob keyed by account URI. Currently:
-//   {} (was preferredVideoCodec, now moved to device preferences)
-// Reserved for things that ARE account-tied: per-account auto-answer
-// defaults, per-account ringtone overrides, etc.
-
-const _accountLocalPropertiesKey = (accountId) => `accountLocalProperties.${accountId}`;
-
-async function loadAccountLocalProperties(accountId) {
-    if (!accountId) return {};
-    try {
-        const raw = await AsyncStorage.getItem(_accountLocalPropertiesKey(accountId));
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-        console.log('loadAccountLocalProperties failed for', accountId, ':', e);
-        return {};
-    }
-}
-
-async function saveAccountLocalProperties(accountId, props) {
-    if (!accountId) return;
-    try {
-        await AsyncStorage.setItem(
-            _accountLocalPropertiesKey(accountId),
-            JSON.stringify(props || {})
-        );
-    } catch (e) {
-        console.log('saveAccountLocalProperties failed for', accountId, ':', e);
-    }
-}
-
-async function setAccountLocalProperty(accountId, key, value) {
-    const props = await loadAccountLocalProperties(accountId);
-    props[key] = value;
-    await saveAccountLocalProperties(accountId, props);
-    return props;
+    return '\n' + lines.join('\n');
 }
 if (sylkrtc.utils && sylkrtc.utils.setPreferredVideoCodec) {
     sylkrtc.utils.setPreferredVideoCodec(PREFERRED_VIDEO_CODEC);
@@ -336,6 +485,7 @@ import momentFormat from 'moment-duration-format';
 import momenttz from 'moment-timezone';
 import utils from './utils';
 import storage from './storage';
+import { registerApp as registerAccountSettingsApp } from './accountSettingsAccess';
 import { readAcknowledged as readLocationDisclosure } from './locationDisclosure';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
@@ -704,15 +854,33 @@ if (!console.log.__isWrapped) {
     };
 //  }
 
-  
+
   console.log.__isWrapped = true; // mark as wrapped
 }
+
+// Native log replay (SylkLogger / NativeLoggerModule) is wired into
+// handleRegistration below — NOT here. The reason: log2file writes
+// to utils.getLogfilePath(), which depends on utils.setLogAccount()
+// having been called for the active identity. Firing it at module
+// load would land the native lines in the no-account `logs.txt`
+// instead of the per-account `logs.<account>.txt` that LogsModal
+// actually reads. Deferring until just after setLogAccount keeps
+// the [native] entries together with the rest of that account's
+// in-app log history.
+import replayPersistedNativeLogs from './nativeLogReplay';
 
 
 class Sylk extends Component {
     constructor() {
         super();
         autoBind(this)
+
+        // Make this App instance available to non-React modules
+        // (locationDisclosure / callRecordingDisclosure) that need to
+        // read or write state.accountSetting through a singleton
+        // bridge. Done before any subsystem initialisation so the
+        // first disclosure read after boot already sees the live ref.
+        registerAccountSettingsApp(this);
 
         this._loaded = false;
         let isFocus = Platform.OS === 'ios';
@@ -871,11 +1039,18 @@ class Sylk extends Component {
             publicUrl: 'https://webrtc.sipthor.net',
             defaultConferenceDomain: 'videoconference.sip2sip.info',
             pstnAccessUrl: 'https://sip2sip.info/help',
-            // Conference media — the SylkServer's Janus VP8 build
-            // historically only supports VP8 in conferences. The DNS
-            // discovery JSON can override via 'conferenceVideoCodec'
-            // ('VP8' | 'VP9' | 'H264' | 'AV1').
-            conferenceVideoCodec: 'VP8',
+            // Conference media — the server's RECOMMENDED video codec,
+            // read from the per-domain sylk-config.json's
+            // 'conferenceVideoCodec' field ('VP8' | 'VP9' | 'H264' |
+            // 'AV1'). NULL means the server didn't publish a value.
+            //
+            // The user preference at
+            // accountSetting.rtp.conferenceVideoCodec ALWAYS wins when
+            // set — this state value is consulted only as a fallback
+            // by _applyConferenceVideoCodec. The server doesn't
+            // enforce the codec on the client; it just tells the
+            // client what its Janus build was tested with.
+            conferenceVideoCodec: null,
             enrollmentUrl: 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
             iceServers: [{"urls":"stun:stun.sipthor.net:3478"}],
             serverSettingsUrl: 'https://mdns.sipthor.net/sip_settings.phtml',
@@ -886,6 +1061,7 @@ class Sylk extends Component {
 			// via downloadSylkConfiguration(). If a server publishes none,
 			// none are created.
 			testNumbers: [],
+			pstnRules: {replacePlus: '00'},
 			passwordRecoveryUrl: 'https://mdns.sipthor.net/sip_login_reminder.phtml',
 			deleteAccountUrl: 'http://delete.sylk.link',
             configurationJson: null,
@@ -900,20 +1076,23 @@ class Sylk extends Component {
             organization: '',
             account: null,
             keyStatus: {},
+            // Server-journal sync cursor — RUNTIME STATE, not a user
+            // setting. Persisted to dedicated columns
+            // accounts.last_sync_id / accounts.last_sync_timestamp.
+            // Surfaced in the [accountSetting] dump as a virtual
+            // [journal] section (read from the columns at dump time)
+            // so the cursor is visible alongside the JSON settings.
             lastSyncId: null,
             lastSyncTimestamp: null,
             accountVerified: false,
-            // Mirror of AsyncStorage 'accountLocalProperties.<accountId>',
-            // populated on login by _applyAccountLocalProperties().
-            // Currently holds: {} (preferredVideoCodec moved to
-            // devicePreferences below).
-            accountLocalProperties: {},
-            // Mirror of AsyncStorage 'devicePreferences' (per-device,
-            // not synced, not tied to account). Populated at app boot
-            // by _applyDevicePreferences(). Currently holds:
-            //   { preferredVideoCodec? }
-            // Used by the Preferences modal.
-            devicePreferences: {},
+            // Mirror of SQL accounts.settings for the active account
+            // (one JSON blob per account). Populated on login by
+            // _applyAccountSettings(accountId), updated by
+            // setAccountSetting(key, value). Defaults from
+            // ACCOUNT_SETTINGS_DEFAULTS — see that constant for the
+            // full list of keys (codec choices, encryption mode, DTMF
+            // mode, audio-recording toggle, location knobs).
+            accountSetting: applyAccountSettingDefaults({}),
             registrationState: null,
             registrationKeepalive: false,
             incomingCall: null,
@@ -973,7 +1152,6 @@ class Sylk extends Component {
             // the live log file.
             attachedLogContent: null,
             attachedLogUri: null,
-            proximityEnabled: true,
             messages: {},
             selectedContact: null,
             // Mirror of NavigationBar's activeLocationShares map
@@ -1026,11 +1204,10 @@ class Sylk extends Component {
             isTexting: false,
             filteredMessageIds: [],
             contentTypes: {},
-            dnd: false,
-            rejectAnonymous: false,
-            chatSounds: true,
-            readReceipts: true,
-            rejectNonContacts: false,
+            // dnd, rejectAnonymous, rejectNonContacts, chatSounds,
+            // readReceipts → state.accountSetting.privacy.* (migrated
+            // out of standalone state and the per-column SQL into the
+            // accounts.settings JSON blob).
             headsetIsPlugged: false,
             sortBy: 'timestamp',
             transferedFiles: {},
@@ -1039,6 +1216,15 @@ class Sylk extends Component {
             searchContacts: false,
             dark: false,
             fullScreen: false,
+            // True when ContactsListBox has an active reaction-bar
+            // target (the floating quick-reaction emoji bar is up
+            // and the chat is dimmed). While this is true we hide
+            // the top NavigationBar so the call buttons don't
+            // compete visually with the dim. Kept as a separate
+            // flag from `fullScreen` so the image/location
+            // fullscreen viewers (which use setFullScreen) don't
+            // clobber this state or get clobbered by it.
+            chatReactionMode: false,
             transferProgress: {},
             incomingMessage: {},
             totalMessageExceeded: false,
@@ -1063,14 +1249,32 @@ class Sylk extends Component {
             SylkServerDiscoveryResult: null,
             testConnection: null,
             insets: {"bottom": 0, "left": 0, "right": 0, "top": 0},
+            // Measured height of NavigationBar's Appbar.Header. Reported
+            // from NavigationBar via onAppBarHeightChange and passed
+            // down to ReadyBox → ContactsListBox as `appBarHeight` so
+            // the chat panel's KeyboardAvoidingView can use an exact
+            // chrome height (topInset + measured Appbar height) for
+            // its keyboardVerticalOffset instead of a hardcoded 60dp
+            // guess. null until the first layout pass.
+            appBarHeight: null,
             addresBookLoaded: false,
+            // True when the user has been asked for the OS contacts
+            // permission and either denied or hit the "don't ask again"
+            // state. Drives the "Phonebook access is off — open
+            // Settings" banner shown in ReadyBox when the user is on
+            // the Phonebook source pill but the OS won't surface its
+            // prompt any more. Set to false again as soon as the OS
+            // reports the permission as 'authorized' (e.g. after the
+            // user flipped it from system Settings and came back).
+            abPermissionDenied: false,
             fullscreen: false,
             storageUsage: [],
             syncPercentage: 100,
             refetchMessagesForUri: null,
-            devMode: false,
+            // devMode → state.accountSetting.device.devMode
+            // autoAnswerMode → state.accountSetting.account.autoAnswerMode
+            // (Both migrated out of standalone state into accountSetting.)
             resizeContent: false,
-            autoAnswerMode: false,
             hasAutoAnswerContacts: false,
             allContacts: [],
             accounts: {},
@@ -1202,7 +1406,9 @@ class Sylk extends Component {
         // Per-peer pending request, keyed by sender uri.
         this.pendingLocationRequests = {};
 
-        this.myParticipants = {};
+        // this.myParticipants — REMOVED. The per-room collected
+        // participant list was only ever read by a commented-out
+        // block in the /call render path; no consumer remains.
         this.outgoingJournalEntries = {};
         
         this.outgoingNotifications = {};
@@ -1271,23 +1477,21 @@ class Sylk extends Component {
 
         storage.initialize();
 
-        // Load camera/mic preferences
-        storage.get('devices').then((devices) => {
-            if (devices) {
-                this.setState({devices: devices});
-            }
-        });
+        // Camera / mic picks moved to accountSetting.device.cameraDevice /
+        // .micDevice. Drop any stale value left over in the legacy
+        // 'devices' AsyncStorage key.
+        storage.remove('devices');
 
-        storage.get('myParticipants').then((myParticipants) => {
-            if (myParticipants) {
-                this.myParticipants = myParticipants;
-                //console.log('My participants', this.myParticipants);
-            }
-        });
-        
+        // myParticipants — REMOVED. The collected per-room participant
+        // list was only ever read by a commented-out block in the
+        // /call render path; no consumer remains. The instance
+        // variable, AsyncStorage write site, and storage key are all
+        // gone. Wipe any stale value left over on the device.
+        storage.remove('myParticipants');
+
         storage.remove('last_signup');
         storage.remove('signup');
-        storage.remove('account');        
+        storage.remove('account');
 
         storage.get('outgoingJournalEntries').then((outgoingJournalEntries) => {
             if (outgoingJournalEntries) {
@@ -1295,28 +1499,17 @@ class Sylk extends Component {
             }
         });
 
-        storage.get('devMode').then((devMode) => {
-            if (devMode) {
-                console.log('Developer mode enabled');
-                this.devMode = true;
-            }
-        });
-
-        storage.get('autoAnswerMode').then((autoAnswerMode) => {
-            if (autoAnswerMode) {
-                this.setState({autoAnswerMode: true});
-            }
-        });
-
-        storage.get('proximityEnabled').then((proximityEnabled) => {
-            this.setState({proximityEnabled: proximityEnabled});
-        });
-
-        if (this.state.proximityEnabled) {
-            console.log('Proximity sensor enabled');
-        } else {
-            console.log('Proximity sensor disabled');
-        }
+        // devMode, autoAnswerMode, proximityEnabled, askedDndPermission,
+        // and firstSync all migrated out of AsyncStorage into
+        // accounts.settings (state.accountSetting), hydrated by
+        // _applyAccountSettings on login. Drop any stale standalone
+        // AsyncStorage values left over from older builds — they
+        // aren't read again.
+        storage.remove('devMode');
+        storage.remove('autoAnswerMode');
+        storage.remove('proximityEnabled');
+        AsyncStorage.removeItem('askedDndPermission');
+        AsyncStorage.removeItem('firstSync');
 
         for (let scheme of URL_SCHEMES) {
             DeepLinking.addScheme(scheme);
@@ -1324,7 +1517,7 @@ class Sylk extends Component {
 
         this.sqlTableVersions = {'messages': 16,
                                  'contacts': 12,
-                                 'accounts': 18
+                                 'accounts': 20
                                  }
                                    
         this.db = null;
@@ -1426,13 +1619,17 @@ class Sylk extends Component {
 	  startWatchingNetwork() {
 		// Avoid duplicate listeners
 		if (this.unsubscribeNetInfo) return;
-	
+
 		this.unsubscribeNetInfo = NetInfo.addEventListener((state) => {
+		  const isConnected = state.isConnected === true;
+		  const wasConnected = this._wasConnected;
+		  this._wasConnected = isConnected;
+
 		  const isWifi = state.type === "wifi";
 		  const isMobile = state.type === "cellular";
-	
+
 		  //console.log("Network changed:", state.type, "connected:", state.isConnected);
-	
+
 		  if (isWifi) {
 	         this.setState({connectivity: 'wifi'});
 
@@ -1443,7 +1640,42 @@ class Sylk extends Component {
 			this.setState({connectivity: 'mobile'});
 			this.onMobile();
 		  }
+
+		  // Connectivity just transitioned false -> true. If the server
+		  // configuration never made it down at boot (DNS timed out,
+		  // no cache), retry now that the network is clearly up. This
+		  // is what prevents test numbers from being missing forever
+		  // on a cold-boot-offline fresh install.
+		  if (isConnected && wasConnected === false) {
+			this.maybeRetryServerConfiguration('network-restored');
+		  }
 		});
+	  }
+
+	  // Retry downloadSylkConfiguration() if we never managed to load
+	  // the per-server config at startup. Guarded by an in-flight flag
+	  // and an empty-testNumbers check so it's safe to call from any
+	  // recovery hook (NetInfo, WSS reconnect, manual retry button).
+	  maybeRetryServerConfiguration(reason) {
+		const hasTestNumbers = Array.isArray(this.state.testNumbers)
+		                       && this.state.testNumbers.length > 0;
+		if (hasTestNumbers) return;
+		if (!this.state.configurationUrl) return;
+		if (!this.state.defaultDomain) return;
+		if (this._configRetryInFlight) return;
+
+		utils.timestampedLog('[config] retry triggered (reason:', reason + ')',
+		                     this.state.configurationUrl);
+		this._configRetryInFlight = true;
+		this.downloadSylkConfiguration(this.state.defaultDomain, this.state.configurationUrl)
+		    .catch((e) => {
+		        console.log('[config] retry failed:', e);
+		        utils.timestampedLog('[config] retry failed:',
+		                             e && e.message ? e.message : String(e));
+		    })
+		    .finally(() => {
+		        this._configRetryInFlight = false;
+		    });
 	  }
 	  
 	 stopWatchingNetwork() {
@@ -1559,8 +1791,10 @@ class Sylk extends Component {
 	  const hasAccess = await AndroidSettings.hasDndAccess();
 
 	  if (!hasAccess) {
-		const asked = await AsyncStorage.getItem("askedDndPermission");
-		if (asked === "true") {
+		const asked = !!(this.state.accountSetting
+		    && this.state.accountSetting.disclaimers
+		    && this.state.accountSetting.disclaimers.askedDndPermission);
+		if (asked) {
 		  //console.log('Already asked the user to allow bypass DND')
 		  return; // user already went to the Modes access screen
 		}
@@ -1576,7 +1810,7 @@ class Sylk extends Component {
 	  } else {
 	   console.log('Already allow bypass DND')
 	  }
-	  await AsyncStorage.setItem("askedDndPermission", "true");	
+	  await this.setAccountSetting('disclaimers.askedDndPermission', true);
 
 	}
 
@@ -1628,30 +1862,23 @@ class Sylk extends Component {
 		if (Platform.OS !== 'ios') {
 			return;
 		}
-		
-		if (!this.state.autoAnswerMode) {
-	        storage.set('autoAnswerMode', 1);
-	        console.log('Enable auto-answer mode');
-			//this._notificationCenter.postSystemNotification("For unattended monitoring, enable Guided Access in Settings");
-		} else {
-			storage.remove('autoAnswerMode');
-	        console.log('Disable auto-answer mode');
-		}
 
-		IdleTimerModule.setIdleTimerDisabled(!this.state.autoAnswerMode);
-        this.setState({autoAnswerMode: !this.state.autoAnswerMode});   
+		const current = !!(this.state.accountSetting
+		    && this.state.accountSetting.account
+		    && this.state.accountSetting.account.autoAnswerMode);
+		const next = !current;
+		console.log(next ? 'Enable auto-answer mode' : 'Disable auto-answer mode');
+		IdleTimerModule.setIdleTimerDisabled(next);
+		this.setAccountSetting('account.autoAnswerMode', next);
 	}
-	
-	toggleDevMode() {
-        if (!this.state.devMode) {
-	        storage.set('devMode', 1);
-			console.log('Developer mode enabled');
-	    } else {
-			storage.remove('devMode');
-			console.log('Developer mode disabled');
-	    }
 
-		this.setState({devMode: !this.state.devMode});
+	toggleDevMode() {
+		const current = !!(this.state.accountSetting
+		    && this.state.accountSetting.device
+		    && this.state.accountSetting.device.devMode);
+		const next = !current;
+		console.log('Developer mode', next ? 'enabled' : 'disabled');
+		this.setAccountSetting('device.devMode', next);
 	}
 
 	toggleResizeContent() {
@@ -1697,38 +1924,40 @@ class Sylk extends Component {
 	
 		const fallbackUrl = `https://mdns.sipthor.net/dnslookup.php?name=_sylkserver.${domain}&type=TXT`;
 		const primaryUrl = `https://dns.google/resolve?name=_sylkserver.${domain}&type=TXT`;
-	
+
+		// 6s per-request timeout (was 3s). Cold-boot DNS-over-HTTPS on
+		// mobile can take longer than 3s while the radio + TLS stack
+		// warms up — the 3s ceiling was tripping even when the network
+		// was otherwise fine.
 		const fetchDns = async (url) => {
-			const res = await this.fetchWithTimeout(url, {}, 3000);
+			const res = await this.fetchWithTimeout(url, {}, 6000);
 			return await res.json();
 		};
-	
+
+		// Race primary and fallback in parallel instead of trying them
+		// serially. Whichever responds first wins; Promise.any rejects
+		// only if BOTH endpoints fail. This halves the worst-case wait
+		// when one provider is slow/down.
 		let data;
-		let triedFallback = false;
-	
+
 		try {
-			console.log('Checking primary URL', primaryUrl);
+			console.log('Racing DNS queries:', primaryUrl, '+', fallbackUrl);
 			utils.timestampedLog('[config] DNS query primary', primaryUrl);
-			data = await fetchDns(primaryUrl);
+			utils.timestampedLog('[config] DNS query fallback', fallbackUrl);
+			data = await Promise.any([fetchDns(primaryUrl), fetchDns(fallbackUrl)]);
 		} catch (err) {
-			console.log('Primary fetch timed out, trying fallback...');
-			utils.timestampedLog('[config] DNS primary failed, trying fallback', fallbackUrl);
-			triedFallback = true;
-			try {
-				data = await fetchDns(fallbackUrl);
-			} catch (fallbackErr) {
-				console.log('Fallback fetch also failed', fallbackErr);
-				utils.timestampedLog('[config] DNS fallback failed, falling back to cache for', domain);
+			const errors = err && err.errors ? err.errors : [err];
+			console.log('Both DNS endpoints failed:', errors);
+			utils.timestampedLog('[config] DNS primary+fallback both failed, falling back to cache for', domain);
 
-				this.setState({
-					SylkServerDiscovery: false,
-					SylkServerStatus: 'No DNS TXT record',
-					SylkServerDiscoveryResult: 'noDNSrecord'
-				});
+			this.setState({
+				SylkServerDiscovery: false,
+				SylkServerStatus: 'No DNS TXT record',
+				SylkServerDiscoveryResult: 'noDNSrecord'
+			});
 
-			    await this.initWithCachedDomain(domain);
-				return;
-			}
+			await this.initWithCachedDomain(domain);
+			return;
 		}
 
 		const answers = data.Answer?.map(a => a.data.replace(/^"|"$/g, '')) || [];
@@ -1977,7 +2206,7 @@ class Sylk extends Component {
              .catch(e => {
                 utils.timestampedLog("[app] display over other apps was declined");
                 setTimeout(() => {
-                    this.openAppSettings("Advanced / Allow display over other apps must be allowed");
+                    this.openAppSettings("Advanced / Allow display over other apps must be allowed to receive incoming calls");
                 }, 2000);
              // permission was declined
              });
@@ -2181,20 +2410,10 @@ class Sylk extends Component {
         });
     }
 
-	async checkFirstSync() {
-		try {
-			const firstSync = await AsyncStorage.getItem("firstSync");
-			if (firstSync === "1") {
-				this.setState({ firstSync: true });
-				console.log('Is still first time sync', firstSync);
-			} else {
-				this.setState({ firstSync: false });
-				//console.log('Is not first time sync', firstSync);
-			}
-		} catch (error) {
-			console.error("Error reading firstSync", error);
-		}
-	}
+    // checkFirstSync — REMOVED. Read from the AsyncStorage key
+    // 'firstSync' which nothing ever wrote, set state.firstSync which
+    // nothing ever read, and was itself never called from anywhere.
+    // The boot path now just wipes the key (see componentDidMount).
 
     async getDownloadTasks() {
         //console.log('-- getDownloadTasks');
@@ -2288,62 +2507,42 @@ class Sylk extends Component {
         this.saveLastSyncId(null);
     }
 
+    // All five privacy toggles now route through
+    // accountSetting.privacy.* (one SQL UPDATE per toggle into the
+    // settings JSON blob via setAccountSetting). The native push
+    // handlers parse the same JSON, so dropping the dedicated SQL
+    // columns kept JS and native consistent without any cross-thread
+    // signalling.
+
     async toggleDnd () {
-        console.log('Toggle DND to', !this.state.dnd);
-
-        if (!this.state.dnd) {
-            this._notificationCenter.postSystemNotification('Do not disturb with new calls');
-        } else {
-            this._notificationCenter.postSystemNotification('I am available for new calls');
-        }
-        
-        const dnd = (!this.state.dnd) ? '1': '0';
-		let params = [dnd, this.state.account.id];
-
-		this.setState({dnd: !this.state.dnd})
-
-		await this.ExecuteQuery("update accounts set dnd = ? where account = ?", params).then((result) => {
-			console.log('SQL update dnd for account:', dnd);
-		}).catch((error) => {
-			console.log('SQL update dnd error:', error);
-		});
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.dnd);
+        const next = !current;
+        console.log('Toggle DND to', next);
+        this._notificationCenter.postSystemNotification(
+            next ? 'Do not disturb with new calls' : 'I am available for new calls');
+        await this.setAccountSetting('privacy.dnd', next);
     }
 
     async toggleRejectAnonymous () {
-        //console.log('Toggle reject anonymous to', !this.state.rejectAnonymous);
-        if (this.state.rejectAnonymous) {
-            this._notificationCenter.postSystemNotification('Allow anonymous callers');
-        } else {
-            this._notificationCenter.postSystemNotification('Reject anonymous callers');
-        }
-
-        this.setState({rejectAnonymous: !this.state.rejectAnonymous})
-        
-        const rejectAnonymous = (!this.state.rejectAnonymous) ? '1': '0';
-		let params = [rejectAnonymous, this.state.account.id];
-		await this.ExecuteQuery("update accounts set reject_anonymous = ? where account = ?", params).then((result) => {
-			console.log('SQL update reject anonymous for account OK');
-		}).catch((error) => {
-			console.log('SQL update reject anonymous error:', error);
-		});
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.rejectAnonymous);
+        const next = !current;
+        this._notificationCenter.postSystemNotification(
+            next ? 'Reject anonymous callers' : 'Allow anonymous callers');
+        await this.setAccountSetting('privacy.rejectAnonymous', next);
     }
 
     async toggleChatSounds () {
-        if (!this.state.chatSounds) {
-            this._notificationCenter.postSystemNotification('Play chat sounds');
-        } else {
-            this._notificationCenter.postSystemNotification('No chat sounds');
-        }
-
-        this.setState({chatSounds: !this.state.chatSounds})
-
-        const chatSounds = (!this.state.chatSounds) ? '1': '0';
-		let params = [chatSounds, this.state.account.id];
-		await this.ExecuteQuery("update accounts set chat_sounds = ? where account = ?", params).then((result) => {
-			console.log('SQL update chatSounds for account OK', chatSounds);
-		}).catch((error) => {
-			console.log('SQL update chatSounds error:', error);
-		});
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.device
+            && this.state.accountSetting.device.chatSounds);
+        const next = !current;
+        this._notificationCenter.postSystemNotification(
+            next ? 'Play chat sounds' : 'No chat sounds');
+        await this.setAccountSetting('device.chatSounds', next);
     }
 
     async toggleReadReceipts () {
@@ -2351,40 +2550,23 @@ class Sylk extends Component {
         // for incoming messages. When OFF, the local "received" state still
         // gets advanced (so the UI knows the message has been read on this
         // device) but the network notification to the sender is suppressed.
-        if (this.state.readReceipts) {
-            this._notificationCenter.postSystemNotification('Read receipts off');
-        } else {
-            this._notificationCenter.postSystemNotification('Read receipts on');
-        }
-
-        this.setState({readReceipts: !this.state.readReceipts});
-
-        const readReceipts = (!this.state.readReceipts) ? '1' : '0';
-        let params = [readReceipts, this.state.account.id];
-        await this.ExecuteQuery("update accounts set read_receipts = ? where account = ?", params).then((result) => {
-            console.log('SQL update readReceipts for account OK', readReceipts);
-        }).catch((error) => {
-            console.log('SQL update readReceipts error:', error);
-        });
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.readReceipts);
+        const next = !current;
+        this._notificationCenter.postSystemNotification(
+            next ? 'Read receipts on' : 'Read receipts off');
+        await this.setAccountSetting('privacy.readReceipts', next);
     }
 
     async toggleRejectNonContacts () {
-        //console.log('Toggle reject anonymous to', !this.state.rejectAnonymous);
-        if (this.state.rejectNonContacts) {
-            this._notificationCenter.postSystemNotification('Allow all callers');
-        } else {
-            this._notificationCenter.postSystemNotification('Reject callers not in my contact list');
-        }
-
-        this.setState({rejectNonContacts: !this.state.rejectNonContacts})
-        
-        const rejectNonContacts = (!this.state.rejectNonContacts) ? '1': '0';
-		let params = [rejectNonContacts, this.state.account.id];
-		await this.ExecuteQuery("update accounts set reject_non_contacts = ? where account = ?", params).then((result) => {
-			console.log('SQL update reject non contacts for account OK');
-		}).catch((error) => {
-			console.log('SQL update reject non contacts error:', error);
-		});
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.rejectNonContacts);
+        const next = !current;
+        this._notificationCenter.postSystemNotification(
+            next ? 'Reject callers not in my contact list' : 'Allow all callers');
+        await this.setAccountSetting('privacy.rejectNonContacts', next);
     }
 
     async toggleSearchMessages () {
@@ -2449,21 +2631,45 @@ class Sylk extends Component {
         }
       }
 
-	async loadAddressBook() {		
+	async loadAddressBook() {
+		  // Permission-driven gate. We deferred address-book loading
+		  // from app start to "user tapped Phonebook" so the OS
+		  // contacts permission prompt only appears on explicit user
+		  // intent. We do NOT short-circuit purely on
+		  // `addresBookLoaded`, because that flag is also flipped to
+		  // true on permission DENIAL — and we want every subsequent
+		  // Phonebook tap to re-prompt until the user grants.
+		  //
+		  // Skip work in only one case: permission is already
+		  // authorized AND we've already fetched the contacts. Then
+		  // there's nothing to ask and nothing new to load.
 		  const permission = await new Promise((resolve, reject) => {
 			Contacts.checkPermission((err, permission) => {
 			  if (err) return reject(err);
 			  resolve(permission);
 			});
 		  });
-		
+
 		  //console.log('AB Contacts permission:', permission);
-		
+
 		  if (permission === 'authorized') {
-			await this.getABContacts();
+			if (!this.state.addresBookLoaded) {
+			  await this.getABContacts();
+			}
+			// User came back from a previous denial via Settings —
+			// clear the banner flag.
+			if (this.state.abPermissionDenied) {
+			  this.setState({ abPermissionDenied: false });
+			}
 			return;
 		  }
-		
+
+		  // Not authorized → re-request. Each Phonebook tap that
+		  // happens before the user grants will trigger this path
+		  // and re-show the OS prompt — until the OS itself starts
+		  // suppressing the prompt ("don't ask again" on Android,
+		  // or the one-shot iOS permission dialog), at which point
+		  // the banner-with-Open-Settings affordance takes over.
 		  if (Platform.OS === 'android') {
 			await this.requestContactsPermission(); // make this return a Promise too
 		  } else {
@@ -2473,6 +2679,25 @@ class Sylk extends Component {
 				resolve(permission);
 			  });
 			});
+		  }
+
+		  // After the request flow returns, re-check the OS permission
+		  // state and snapshot the result into state.abPermissionDenied.
+		  // ReadyBox watches that flag to render the "Phonebook access
+		  // is off — open Settings" banner above the contacts list.
+		  const finalPermission = await new Promise((resolve, reject) => {
+			Contacts.checkPermission((err, p) => err ? reject(err) : resolve(p));
+		  });
+		  if (finalPermission === 'authorized') {
+			this.setState({ abPermissionDenied: false });
+			// Android's requestContactsPermission already calls
+			// getABContacts on grant; iOS's requestPermission does
+			// not, so cover that case here.
+			if (!this.state.addresBookLoaded) {
+			  await this.getABContacts();
+			}
+		  } else {
+			this.setState({ abPermissionDenied: true });
 		  }
 		}
 		
@@ -2554,8 +2779,14 @@ class Sylk extends Component {
 
         console.log('loading Sylk contacts...');
 
-        await this.loadAddressBook();
-        
+        // NOTE: address-book loading deliberately omitted here. It used
+        // to run on every startup (await this.loadAddressBook()), which
+        // triggered the OS "allow contacts access" prompt before the
+        // user had any context for what it was for. The prompt now
+        // fires lazily — only the first time the user explicitly taps
+        // the Phonebook pill in the contacts list, via
+        // ReadyBox.handleContactSourceChange('ab') → props.loadAddressBook.
+
         let blockedUris = [];
         let favoriteUris = [];
         let missedCalls = [];
@@ -2742,6 +2973,19 @@ class Sylk extends Component {
 
             this.refreshNavigationItems();
 
+            // One-shot migration for the bare-phone-number-URI bug.
+            // Earlier builds saved AB-imported phone-number contacts
+            // without an @domain (sanitizeContact had a
+            // `!isPhoneNumber(uri)` exception), so the call path's
+            // "<phone>@<domain>" URI never matched and minted a
+            // duplicate row on every call. The save path is fixed
+            // going forward; this sweep upgrades any pre-existing
+            // bare rows in SQL to the canonical @domain form and
+            // logs every change.
+            setTimeout(() => {
+                this.migrateBarePhoneUris();
+            }, 200);
+
             setTimeout(() => {
                 this.fetchSharedItemsAndroidAtStart();
 				this.fetchSharedItemsiOS();
@@ -2757,6 +3001,132 @@ class Sylk extends Component {
             }, 500);
         });
 
+    }
+
+    // Walk every contact row in SQL for the active account and bring
+    // its URI to the canonical shape:
+    //   • missing @domain          →   append "@<defaultDomain>"
+    //   • starts with "00<digits>" →   rewrite as "+<digits>"
+    // Both transformations target the same root cause: drift between
+    // how a phone-number contact is stored locally and how the call
+    // path / server history reference it. After this pass every
+    // row's URI matches the wire form lookupContacts will hand us
+    // post-call, so addHistoryEntry stops creating duplicate rows.
+    //
+    // Idempotent: once every row already has '@' and never starts
+    // with '00', the SELECT pre-filter returns nothing and the
+    // migration is a no-op on subsequent starts.
+    //
+    // Why a SQL sweep rather than just patching state: rows can be in
+    // SQL but absent from in-memory allContacts (skipped during load
+    // due to the dedupe pass, or arrived after componentDidUpdate
+    // already ran). Going through SQL guarantees we don't miss any.
+    //
+    // Conflict handling: if the canonical target URI already maps to
+    // a DIFFERENT contact_id in the table, we don't blindly
+    // overwrite — that would leave two rows pointing at the same
+    // URI under two different ids. Instead we log both ids so the
+    // user can resolve manually (kebab → Delete contact on whichever
+    // duplicate they don't want to keep). The const→let fix made
+    // that path actually work for both ids.
+    async migrateBarePhoneUris() {
+        if (!this.state.accountId) {
+            return;
+        }
+        const defaultDomain = this.state.defaultDomain
+            || (this.state.accountId.includes('@')
+                ? this.state.accountId.split('@')[1]
+                : null);
+        if (!defaultDomain) {
+            console.log('migrateBarePhoneUris: no defaultDomain yet, skipping this pass');
+            return;
+        }
+
+        // Compute the canonical URI for a stored URI. Returns null
+        // when no rewrite is needed (already canonical).
+        const canonicalize = (oldUri) => {
+            if (!oldUri) return null;
+            const atIdx = oldUri.indexOf('@');
+            let localPart = atIdx > -1 ? oldUri.substring(0, atIdx) : oldUri;
+            let domainPart = atIdx > -1 ? oldUri.substring(atIdx) : null;
+            const wasBare = domainPart == null;
+
+            let changed = false;
+            // 00 → + for phone numbers.
+            if (utils.isPhoneNumber(localPart) && localPart.startsWith('00')) {
+                localPart = '+' + localPart.substring(2);
+                changed = true;
+            }
+            // Bare → @defaultDomain.
+            if (wasBare) {
+                domainPart = '@' + defaultDomain;
+                changed = true;
+            }
+            if (!changed) return null;
+            return localPart + (domainPart || '');
+        };
+
+        try {
+            // Pre-filter: rows that might need a rewrite. Catches both
+            // "no @" rows and "starts with 00" rows in one pass; the
+            // canonicalize helper above is the authoritative decision.
+            const results = await this.ExecuteQuery(
+                "SELECT contact_id, uri FROM contacts WHERE account = ? AND uri != '' "
+                + "AND (uri NOT LIKE '%@%' OR uri LIKE '00%')",
+                [this.state.accountId]
+            );
+            const rows = results.rows;
+            if (!rows || rows.length === 0) {
+                console.log('migrateBarePhoneUris: no candidate rows found');
+                return;
+            }
+            console.log('migrateBarePhoneUris: found', rows.length, 'candidate row(s)');
+            for (let i = 0; i < rows.length; i++) {
+                const item = rows.item(i);
+                const oldUri = item.uri;
+                const id = item.contact_id;
+                const newUri = canonicalize(oldUri);
+                if (!newUri || newUri === oldUri) {
+                    // The "LIKE '00%'" pre-filter can catch local
+                    // parts that just happen to start with two zeros
+                    // but aren't phone numbers (e.g. a SIP username
+                    // "0042user@…"). canonicalize returns null for
+                    // those — skip without logging noise.
+                    continue;
+                }
+                console.log('migrateBarePhoneUris: candidate id=', id, 'oldUri=', oldUri, '→', newUri);
+                // Detect existing collision before we UPDATE.
+                const collisionRes = await this.ExecuteQuery(
+                    'SELECT contact_id FROM contacts WHERE account = ? AND uri = ? AND contact_id != ?',
+                    [this.state.accountId, newUri, id]
+                );
+                if (collisionRes.rows && collisionRes.rows.length > 0) {
+                    const otherId = collisionRes.rows.item(0).contact_id;
+                    console.log('migrateBarePhoneUris: SKIP — another row already exists at',
+                        newUri, 'with id', otherId,
+                        '— resolve manually (kebab → Delete contact on whichever duplicate)');
+                    continue;
+                }
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET uri = ? WHERE account = ? AND contact_id = ?',
+                    [newUri, this.state.accountId, id]
+                ).then((res) => {
+                    console.log('migrateBarePhoneUris: UPDATEd', id, 'rowsAffected=', res.rowsAffected);
+                    // Reflect the change in the in-memory list so
+                    // the user doesn't have to restart the app to
+                    // see the contact at its new URI.
+                    this.setState(prevState => ({
+                        allContacts: (prevState.allContacts || []).map(c =>
+                            c && c.id === id ? { ...c, uri: newUri } : c
+                        )
+                    }));
+                }).catch((err) => {
+                    console.log('migrateBarePhoneUris: UPDATE error for', id, err && err.message);
+                });
+            }
+        } catch (e) {
+            console.log('migrateBarePhoneUris: SELECT error', e && e.message);
+        }
     }
 
 
@@ -2798,6 +3168,20 @@ class Sylk extends Component {
 
 	     if (this.state.keys != prevState.keys) {
 		      //console.log('keys have changed', this.state.keys);
+		      // One-shot recovery: encrypted file transfers downloaded
+		      // by the broken build sit on disk as PGP ASCII armor
+		      // (text envelopes starting "-----BEGIN PGP MESSAGE-----")
+		      // with the plaintext filename — never decrypted because
+		      // their local_url didn't end in .asc. Now that PGP keys
+		      // are available, walk Documents/<account>/ and rename +
+		      // decrypt every PGP-armored file in place. Guarded inside
+		      // migrateBrokenEncryptedFiles via _brokenFilesMigrationRan
+		      // so it runs at most once per session even if `keys`
+		      // bounces (e.g. unlock screen rehydration). See the
+		      // method comment for the full repair flow.
+		      if (this.state.keys && this.state.keys.private && this.state.accountId) {
+		          this.migrateBrokenEncryptedFiles();
+		      }
 		 }
 
 	     if (this.state.accountVerified != prevState.accountVerified) {
@@ -2833,13 +3217,13 @@ class Sylk extends Component {
 
 	     if (this.state.hasAutoAnswerContacts != prevState.hasAutoAnswerContacts) {
 			 console.log(' --- hasAutoAnswerContacts did change', this.state.hasAutoAnswerContacts);
-			 if (!this.state.hasAutoAnswerContacts && this.state.autoAnswerMode) {
+			 if (!this.state.hasAutoAnswerContacts && this.state.accountSetting.account.autoAnswerMode) {
 				 this.toggleAutoAnswerMode();
 			 }
 	     }
 
 	     if (this.state.lastSyncId != prevState.lastSyncId) {
-			 utils.timestampedLog('[journal] lastSyncId did change', this.state.lastSyncId);
+		     utils.timestampedLog('[journal] lastSyncId did change', this.state.lastSyncId);
 	     }
 
 	     if (this.state.resizeContent != prevState.resizeContent) {
@@ -2959,7 +3343,7 @@ class Sylk extends Component {
 			 }
 		 }
 
-		if (this.state.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			if (this.state.proximityNear) {
 				if (this.useInCallManger) {
 					this.speakerphoneOff();
@@ -2986,13 +3370,13 @@ class Sylk extends Component {
 		 // rather than waiting for the next Dimensions.change event (which
 		 // may not fire on a fold/unfold that doesn't change window size).
 		 if (prevState.isFolded !== this.state.isFolded) {
-			 utils.timestampedLog('[FoldUI] isFolded transition',
+			 /* [FoldUI] disabled */ /* utils.timestampedLog('[FoldUI] isFolded transition',
 				 prevState.isFolded, '->', this.state.isFolded,
 				 '— re-running _detectOrientation. Pre-state isTablet=',
 				 this.state.isTablet, 'orientation=', this.state.orientation,
 				 'fontScale=', this.state.fontScale,
 				 'window=', Math.round(Dimensions.get('window').width), 'x',
-				 Math.round(Dimensions.get('window').height));
+				 Math.round(Dimensions.get('window').height)); */
 
 			 // Dismiss the keyboard on any fold-state change. Keeping
 			 // the IME open across a posture change is a layout
@@ -3014,10 +3398,10 @@ class Sylk extends Component {
 			 if (prevState.isFolded !== null) {
 				 try {
 					 Keyboard.dismiss();
-					 utils.timestampedLog('[FoldUI] keyboard dismissed on fold transition');
+					 /* [FoldUI] disabled */ /* utils.timestampedLog('[FoldUI] keyboard dismissed on fold transition'); */
 				 } catch (e) {
-					 console.log('[FoldUI] Keyboard.dismiss failed',
-						 e && e.message ? e.message : e);
+					 /* [FoldUI] disabled */ /* console.log('[FoldUI] Keyboard.dismiss failed',
+						 e && e.message ? e.message : e); */
 				 }
 			 }
 
@@ -3049,15 +3433,15 @@ class Sylk extends Component {
 					 if (typeof newScale === 'number'
 							 && newScale > 0
 							 && newScale !== this.state.fontScale) {
-						 utils.timestampedLog('[FoldUI] fontScale refresh',
+						 /* [FoldUI] disabled */ /* utils.timestampedLog('[FoldUI] fontScale refresh',
 							 this.state.fontScale, '->', newScale,
-							 'after isFolded=', this.state.isFolded);
+							 'after isFolded=', this.state.isFolded); */
 						 this.setState({fontScale: newScale});
 					 }
 				 })
 				 .catch((e) => {
-					 console.log('[FoldUI] fontScale refresh failed',
-						 e && e.message ? e.message : e);
+					 /* [FoldUI] disabled */ /* console.log('[FoldUI] fontScale refresh failed',
+						 e && e.message ? e.message : e); */
 				 });
 		 }
 
@@ -3208,7 +3592,38 @@ class Sylk extends Component {
     async afterFirstSync() {
 		await this.waitForContactsLoaded();
 
-		this.createTestNumbers();
+		// If DNS discovery failed at startup and no cached configuration
+		// was available (fresh install offline at boot), state.testNumbers
+		// will still be the initial []. By now we know the network is up
+		// — WSS connection + journal sync both succeeded — so retry the
+		// configuration download via the (DNS-independent) configurationUrl
+		// in state. downloadSylkConfiguration() will call initConfiguration()
+		// which populates testNumbers in state, then schedules
+		// createTestNumbers() itself via its own setTimeout once setState
+		// has settled. We skip the direct createTestNumbers() call in that
+		// branch to avoid running it against still-empty state.
+		let downloadedConfig = false;
+		if ((!this.state.testNumbers || this.state.testNumbers.length === 0)
+		    && this.state.configurationUrl
+		    && this.state.defaultDomain) {
+			utils.timestampedLog('[config] testNumbers empty after first sync, retrying download from',
+			                     this.state.configurationUrl);
+			try {
+				const json = await this.downloadSylkConfiguration(
+					this.state.defaultDomain,
+					this.state.configurationUrl
+				);
+				downloadedConfig = !!json;
+			} catch (e) {
+				console.log('[config] retry after first sync failed:', e);
+				utils.timestampedLog('[config] retry after first sync failed:',
+				                     e && e.message ? e.message : String(e));
+			}
+		}
+
+		if (!downloadedConfig) {
+			this.createTestNumbers();
+		}
 
 		let msg = {
 		    _id: this.deviceId,
@@ -3405,19 +3820,34 @@ class Sylk extends Component {
 			password TEXT,
 			email TEXT,
 			active TEXT NULL default '0',
-			verified TEXT NULL default '0',
+			-- (verified column removed — auto-login is gated on
+			-- active == 1 alone. v20 migration drops it on existing
+			-- DBs where SQLite supports DROP COLUMN; on older SQLite
+			-- it stays as a harmless dead column.)
+			-- dnd / reject_anonymous / reject_non_contacts / chat_sounds /
+			-- read_receipts — DEAD COLUMNS. Their values are now in the
+			-- accounts.settings JSON blob under {privacy.*, device.chatSounds}.
+			-- Kept in the schema so a rollback to an older build still
+			-- finds the columns it expects; no writes happen here anymore.
 			dnd TEXT,
 			reject_anonymous TEXT,
 			reject_non_contacts TEXT,
 			chat_sounds TEXT,
 			read_receipts TEXT,
+			-- last_sync_id / last_sync_timestamp — RUNTIME STATE,
+			-- written every time we ingest a new server-journal page
+			-- (see saveLastSyncId). Read on login by loadAccount and
+			-- mirrored in state.lastSyncId / state.lastSyncTimestamp.
+			-- Surfaced in the [accountSetting] dump under a virtual
+			-- [journal] section for visibility.
 			private_key TEXT,
 			public_key TEXT,
 			last_sync_id TEXT,
 			last_sync_timestamp TEXT NOT NULL default '',
 			server TEXT,
 			last_active_timestamp TEXT NOT NULL default '',
-			app_state TEXT
+			app_state TEXT,
+			settings TEXT
 		  )
 		`;
 
@@ -3610,6 +4040,31 @@ class Sylk extends Component {
 												16: [{query: 'alter table accounts add column verified TEXT  NOT NULL default "0"', params: []}],
 												17: [{query: 'alter table accounts add column read_receipts TEXT', params: []}],
 												18: [{query: 'alter table accounts add column app_state TEXT', params: []}],
+												// v19: per-account settings JSON blob.
+												//   Holds keys formerly stored as the AsyncStorage
+												//   blob 'devicePreferences' (preferredVideoCodec,
+												//   preferredAudioCodec, encryptionMode, dtmfMode,
+												//   enableAudioRecording, locationTickIntervalSec,
+												//   locationProximityMeters, locationPrivacyRadiusMeters)
+												//   plus the (currently empty) per-account
+												//   accountLocalProperties slot. Mirrored in
+												//   state.accountSetting and read/written via
+												//   _applyAccountSettings / setAccountSetting.
+												//   No data carry-over: after upgrade the column
+												//   is NULL for every existing row and parses to
+												//   {} so the in-code defaults take effect again.
+												19: [{query: 'alter table accounts add column settings TEXT', params: []}],
+												// v20: drop the long-deprecated `verified` column
+												// (auto-login is gated on `active == 1` alone now;
+												// `verified` hasn't been read or written for many
+												// releases). DROP COLUMN requires SQLite 3.35+
+												// (Android 12+ / iOS 15+); older devices throw
+												// "near \"DROP\": syntax error" which the migration
+												// catch silently logs — the column then stays as
+												// dead weight, harmless. The CREATE TABLE no
+												// longer mentions verified, so fresh installs on
+												// any SQLite version skip the column entirely.
+												20: [{query: 'alter table accounts drop column verified', params: []}],
                                                }
                                    };
 
@@ -3707,6 +4162,15 @@ class Sylk extends Component {
             // `location`; future namespaces (preferences, drafts, …)
             // can be added without a further ALTER TABLE.
             this.ensureColumn('accounts', 'app_state', 'TEXT');
+            // Per-account JSON blob holding user-controllable settings
+            // grouped into top-level sections (rtp, device, location,
+            // privacy, disclaimers, account). The settings live here
+            // instead of in dedicated columns so adding a new
+            // preference doesn't require a new SQL migration; native
+            // push handlers parse the blob to read privacy flags
+            // (dnd / rejectAnonymous / rejectNonContacts). See
+            // ACCOUNT_SETTINGS_DEFAULTS for the full schema.
+            this.ensureColumn('accounts', 'settings', 'TEXT');
 
         }).catch((error) => {
             console.log('upgradeSQLTables error:', error);
@@ -4783,7 +5247,7 @@ class Sylk extends Component {
 	}
 
 	handleProximity = ({ proximity }) => {
-        if (!this.state.proximityEnabled) {
+        if (!this.state.accountSetting.device.proximityEnabled) {
             return;
         }
 
@@ -4929,17 +5393,37 @@ class Sylk extends Component {
 				this.setState({defaultConferenceDomain: configuration.defaultConferenceDomain});
 			}
 
-            if (configuration.pstnAccessUrl) {
-				this.setState({pstnAccessUrl: configuration.pstnAccessUrl});
+			// PSTN settings — the server publishes these under a single
+			// 'pstn' object, e.g.
+			//   "pstn": {
+			//       "webUrl": "https://sip2sip.info/help",
+			//       "rules":  {"replacePlus": "00"}
+			//   }
+			// pstn.webUrl  -> state.pstnAccessUrl  (null if absent)
+			// pstn.rules   -> state.pstnRules      (kept at default if absent)
+			const pstn = (configuration.pstn && typeof configuration.pstn === 'object')
+			             ? configuration.pstn
+			             : null;
+
+			const pstnAccessUrl = (pstn && typeof pstn.webUrl === 'string' && pstn.webUrl)
+			                      ? pstn.webUrl
+			                      : null;
+			this.setState({ pstnAccessUrl });
+
+			if (pstn && pstn.rules && typeof pstn.rules === 'object') {
+				this.setState({ pstnRules: pstn.rules });
+				console.log('[pstnRules] from server config =', pstn.rules);
 			}
 
-			// Conference codec — server tells us which video codec the
-			// conferencing backend (Janus) supports. Falls back to the
-			// hard-coded default ('VP8') if the JSON doesn't carry one.
+			// Conference codec — server's RECOMMENDED video codec for
+			// its Janus backend. The user preference at
+			// accountSetting.rtp.conferenceVideoCodec wins;
+			// this value is consulted by _applyConferenceVideoCodec
+			// only when the user hasn't expressed a preference.
 			if (configuration.conferenceVideoCodec
 			    && typeof configuration.conferenceVideoCodec === 'string') {
 				this.setState({ conferenceVideoCodec: configuration.conferenceVideoCodec });
-				console.log('[conferenceVideoCodec] from server config =', configuration.conferenceVideoCodec);
+				console.log('[conferenceVideoCodec] server recommendation =', configuration.conferenceVideoCodec);
 			}
 
 			return true;
@@ -5565,9 +6049,13 @@ class Sylk extends Component {
 				(now - this._iosLastHeadphonesAt) > 4000;
 			if (earpieceWithNoHeadphones || speakerStaleHeadphones) {
 				if (this._iosHeadphonesSticky) {
+					// [AudioDiag] disabled — re-enable for iOS headphone
+					// sticky transition tracing.
+					/*
 					console.log('[AudioDiag][JS] iOS headphones sticky cleared',
 						'selType=' + selType,
 						'reason=' + (earpieceWithNoHeadphones ? 'earpiece' : 'speaker-stale'));
+					*/
 				}
 				this._iosHeadphonesSticky = false;
 				this._iosLastHeadphonesAt = 0;
@@ -5575,7 +6063,9 @@ class Sylk extends Component {
 			// Plug detected — set sticky and timestamp.
 			if (headphonesPresentNow) {
 				if (!this._iosHeadphonesSticky) {
-					console.log('[AudioDiag][JS] iOS headphones sticky set');
+					// [AudioDiag] disabled — re-enable for iOS headphone
+					// sticky transition tracing.
+					// console.log('[AudioDiag][JS] iOS headphones sticky set');
 				}
 				this._iosHeadphonesSticky = true;
 				this._iosLastHeadphonesAt = now;
@@ -5642,6 +6132,10 @@ class Sylk extends Component {
 						const selNameDiag = (selectedDevice && selectedDevice.name) ? selectedDevice.name : '-';
 						const outTypesDiag = audioOutputs.map(d => d.type).join(',') || 'EMPTY';
 						const inTypesDiag  = audioInputs.map(d => d.type).join(',')  || 'EMPTY';
+						// [AudioDiag] per-event one-liner — disabled. Re-enable
+						// to grep logcat / Metro for the full route/fold state
+						// stream while debugging foldable audio behaviour.
+						/*
 						console.log('[AudioDiag][JS] evt',
 							'mode=' + (mode || 'n/a'),
 							'selected=' + selTypeDiag + '(' + selNameDiag + ')',
@@ -5649,6 +6143,7 @@ class Sylk extends Component {
 							'inputs=[' + inTypesDiag + ']',
 							'folded=' + isFoldedEvt,
 							'activeCall=' + (this.activeCall ? this.activeCall.id : 'none'));
+						*/
 					}
 
 					this.setState({
@@ -5659,8 +6154,8 @@ class Sylk extends Component {
 					// (hide Earpiece, auto-flip UI selection to Speaker). Only
 					// setState when the value actually changes, to avoid extra renders.
 					if (isFoldedEvt !== this.state.isFolded) {
-						utils.timestampedLog('[FoldUI] native fold event', this.state.isFolded,
-							'->', isFoldedEvt, '— scheduling setState');
+						/* [FoldUI] disabled */ /* utils.timestampedLog('[FoldUI] native fold event', this.state.isFolded,
+							'->', isFoldedEvt, '— scheduling setState'); */
 						this.setState({ isFolded: isFoldedEvt });
 					}
 
@@ -6575,7 +7070,7 @@ class Sylk extends Component {
 
             this.respawnConnection(nextAppState);
             if (Platform.OS === 'ios') {
-				IdleTimerModule.setIdleTimerDisabled(this.state.autoAnswerMode);
+				IdleTimerModule.setIdleTimerDisabled(this.state.accountSetting.account.autoAnswerMode);
             }
 
             //this.fetchSharedItemsAndroidAtStart('app_active');
@@ -6747,10 +7242,17 @@ class Sylk extends Component {
 		// a server-side lookup as soon as the chat view opens — this
 		// gives E2EE the best chance of being available by the time the
 		// user starts typing, instead of waiting for the first send.
+		// `speculative: true` tells savePublicKey not to autocreate a
+		// Sylk row off the back of this lookup: selectContact fires
+		// just from tapping/browsing a result (including AB-only
+		// entries that aren't yet contacts), and silently INSERTing
+		// every such peer was producing un-deletable ghost rows. When
+		// the user actually messages/calls the contact, the message /
+		// call paths create the row themselves with the right intent.
 		if (contact && contact.uri
 				&& contact.uri !== this.state.accountId
 				&& !contact.publicKey) {
-			this.lookupPublicKey(contact);
+			this.lookupPublicKey(contact, {speculative: true});
 		}
 
 		// Drain any queued "Until we meet" request for this chat now that
@@ -6854,6 +7356,46 @@ class Sylk extends Component {
     showRegisterFailure(reason=null) {
         const connection = this.getConnection();
 
+        // The switch flow is done — successfully or not. Release the
+        // guard that was suppressing loadAccounts' /login route-change
+        // and the watchdog clear-timer that backed it up. We do NOT
+        // auto-route to /login on switch failure: a bad cached
+        // password is best surfaced via a snackbar notification
+        // while the user remains on /ready. They can then explicitly
+        // pick Sign out from the menu, which goes through the normal
+        // (non-switch) logout path that DOES route to /login, where
+        // the LoginForm autofills the username and lets them re-type
+        // a corrected password.
+        const wasSwitchAttempt = !!this._switchInProgress;
+        if (this._switchInProgress) {
+            console.log('[switch] clearing _switchInProgress on register failure');
+            this._switchInProgress = false;
+        }
+        if (this._switchInProgressTimer) {
+            clearTimeout(this._switchInProgressTimer);
+            this._switchInProgressTimer = null;
+        }
+
+        // The standard `status` banner inside the register screen is
+        // not visible when the failure occurs on /ready (which is
+        // where switchAccount keeps the user). Surface the reason
+        // through the bottom snackbar so the user knows the switch
+        // didn't take. Only do this for switch attempts — a normal
+        // login-form failure already has the inline banner.
+        if (wasSwitchAttempt && this._notificationCenter) {
+            const detail = (typeof reason === 'string' && reason.length > 0)
+                ? reason
+                : 'Sign in failed';
+            try {
+                this._notificationCenter.postSystemNotification(
+                    'Account switch failed',
+                    { body: detail }
+                );
+            } catch (e) {
+                console.log('[switch] postSystemNotification threw', e);
+            }
+        }
+
 		if (typeof reason === 'string' && reason.includes('Wrong')) {
             // Auth failure: clear this.signIn so a subsequent connection
             // 'ready' event (e.g. websocket reconnect while the user is still
@@ -6950,6 +7492,18 @@ class Sylk extends Component {
             }
 
         } else if (newState === 'registered') {
+
+            // Switch completed successfully — drop the guard that was
+            // keeping loadAccounts from routing to /login while the
+            // new account's SQL row was still flagged active=0.
+            if (this._switchInProgress) {
+                console.log('[switch] clearing _switchInProgress on registered');
+                this._switchInProgress = false;
+            }
+            if (this._switchInProgressTimer) {
+                clearTimeout(this._switchInProgressTimer);
+                this._switchInProgressTimer = null;
+            }
 
 			// Pass the timestamp of the last synced message as a fallback
 			// `since`. If the server has pruned the lastSyncId we still
@@ -7201,115 +7755,193 @@ class Sylk extends Component {
 	}
 
     /**
-     * Apply per-account local-properties on login.
-     * Currently a no-op (preferredVideoCodec moved to device prefs).
-     * Reserved for future per-account settings.
+     * Load the per-account settings JSON blob from SQL
+     * (accounts.settings WHERE account = ?), apply defaults, push to
+     * state.accountSetting, and re-apply the runtime side effects
+     * (preferred codecs in sylkrtc, encryption mode in CallZrtp).
+     *
+     * Called on login from loadAccounts(). The column is NULL for
+     * fresh rows / freshly-upgraded rows, which parses to {} and
+     * resolves to ACCOUNT_SETTINGS_DEFAULTS — no carry-over from the
+     * removed AsyncStorage stores by design.
      */
-    async _applyAccountLocalProperties(accountId) {
-        const props = await loadAccountLocalProperties(accountId);
-        this.setState({ accountLocalProperties: props });
-        console.log('[accountLocalProperties]', accountId, '->', props);
-    }
-
-    /**
-     * Load device preferences from AsyncStorage and apply them to the
-     * rest of the app. Called once at app boot. Currently:
-     *   - preferredVideoCodec -> sylkrtc.utils.setPreferredVideoCodec()
-     */
-    async _applyDevicePreferences() {
-        const props = await loadDevicePreferences();
-        // One-time migration: if the user previously had a codec stored
-        // under the per-account key (from before this refactor) and
-        // device prefs are still empty, copy the value over so they
-        // don't lose their setting on first launch after upgrade.
-        if (!props.preferredVideoCodec
-            && this.state.accountLocalProperties
-            && this.state.accountLocalProperties.preferredVideoCodec) {
-            props.preferredVideoCodec =
-                this.state.accountLocalProperties.preferredVideoCodec;
-            await saveDevicePreferences(props);
-            console.log('[devicePreferences] migrated codec from accountLocalProperties:',
-                        props.preferredVideoCodec);
+    async _applyAccountSettings(accountId) {
+        if (!accountId) return;
+        let raw = null;
+        let lastSyncId = null;
+        let lastSyncTimestamp = null;
+        try {
+            const result = await this.ExecuteQuery(
+                'SELECT settings, last_sync_id, last_sync_timestamp FROM accounts WHERE account = ?',
+                [accountId]
+            );
+            if (result.rows && result.rows.length > 0) {
+                const row = result.rows.item(0);
+                raw = row.settings;
+                lastSyncId = row.last_sync_id || null;
+                lastSyncTimestamp = row.last_sync_timestamp || null;
+            }
+        } catch (e) {
+            console.log('_applyAccountSettings load failed for', accountId, ':', e);
         }
-        const codec = props.preferredVideoCodec || PREFERRED_VIDEO_CODEC;
+        const stored = parseAccountSettingsBlob(raw);
+        const props = applyAccountSettingDefaults(stored);
+        this.setState({ accountSetting: props });
+
+        const rtp = props.rtp || {};
+        const codec = rtp.preferredVideoCodec || PREFERRED_VIDEO_CODEC;
         if (sylkrtc.utils && sylkrtc.utils.setPreferredVideoCodec) {
             sylkrtc.utils.setPreferredVideoCodec(codec);
         }
-        const audioCodec = props.preferredAudioCodec || PREFERRED_AUDIO_CODEC;
+        const audioCodec = rtp.preferredAudioCodec || PREFERRED_AUDIO_CODEC;
         if (sylkrtc.utils && sylkrtc.utils.setPreferredAudioCodec) {
             sylkrtc.utils.setPreferredAudioCodec(audioCodec);
         }
-        // encryptionMode is one of 'zrtp_optional' | 'zrtp_mandatory'.
-        // Default 'zrtp_optional' so existing users keep best-effort
-        // end-to-end encryption when this preference is introduced.
-        //
-        // Migrations from earlier builds:
-        //   zrtpEnabled === false (boolean key) → 'zrtp_optional'
-        //         (we used to store 'sdes' here, but the user-facing
-        //         picker no longer offers a no-zRTP choice — SRTP/DTLS
-        //         is always there at the transport layer regardless,
-        //         and zRTP-optional already falls back to it on
-        //         negotiation failure)
-        //   encryptionMode === 'sdes' (legacy enum value) → 'zrtp_optional'
-        //         (same reason — the explicit SDES choice was removed)
-        let mode = props.encryptionMode;
-        if (mode === 'sdes' || !mode) {
-            mode = 'zrtp_optional';
-            if (props.encryptionMode !== mode) {
-                props.encryptionMode = mode;
-                if ('zrtpEnabled' in props) {
-                    delete props.zrtpEnabled;
-                }
-                await saveDevicePreferences(props);
-            }
-        }
-        setEncryptionMode(mode);
-        this.setState({ devicePreferences: props });
-        console.log('[devicePreferences]', props,
-                    '| codec=', codec,
-                    '| audioCodec=', audioCodec,
-                    '| encryptionMode=', mode);
+        setEncryptionMode(rtp.encryptionMode || 'zrtp_optional');
+
+        // Dump the full settings dict at startup so the on-device log
+        // captures exactly what was loaded from accounts.settings.
+        // Printed as a key/value table (one preference per line) for
+        // readability on the device console. The [journal] virtual
+        // section is appended from the dedicated columns
+        // (last_sync_id / last_sync_timestamp) — runtime state, not a
+        // user setting, but shown here for visibility.
+
+        /* utils.timestampedLog('[account] LOAD', accountId,
+            formatAccountSettings(props,
+                this._buildJournalDumpSection(lastSyncId, lastSyncTimestamp))); */
+    }
+
+    // Build a `{ journal: { lastSyncId, lastSyncTimestamp } }` extra-
+    // section object for formatAccountSettings. Pulls from the args
+    // when given (load path) or from state.* when called from save
+    // path. Returns null when both fields are absent so the dump
+    // stays compact.
+    _buildJournalDumpSection(idArg, timestampArg) {
+        const id = (idArg !== undefined)
+            ? idArg
+            : this.state.lastSyncId;
+        const ts = (timestampArg !== undefined)
+            ? timestampArg
+            : (this.state.lastSyncTimestamp instanceof Date
+                ? this.state.lastSyncTimestamp.toISOString()
+                : this.state.lastSyncTimestamp);
+        if (!id && !ts) return null;
+        return {
+            journal: {
+                lastSyncId: id || null,
+                lastSyncTimestamp: ts || null,
+            },
+        };
     }
 
     /**
-     * Public setter — called from the Preferences modal. Persists the
-     * change to AsyncStorage and re-applies it immediately (no relogin
-     * required). Currently used for preferredVideoCodec; future device
-     * prefs will route through here too.
+     * Persist the entire accountSetting blob back to SQL for the
+     * active account. Caller is responsible for state.setState — this
+     * is just the disk side of the round-trip.
      */
-    async setDevicePreference(key, value) {
-        const props = await setDevicePreference(key, value);
-        this.setState({ devicePreferences: props });
-        if (key === 'preferredVideoCodec'
+    async _persistAccountSettings(props) {
+        if (!this.state.accountId) return;
+        // Dump the full settings dict being written so the metro.log
+        // shows the exact disk state after every save. Mirrors the
+        // [accountSetting] LOAD line emitted by _applyAccountSettings,
+        // so a startup + a save are easy to diff line-for-line. The
+        // [journal] virtual section is read from state.lastSync* —
+        // it's runtime state and isn't part of the settings blob
+        // being persisted, just shown for visibility.
+        utils.timestampedLog('[account] SAVE', this.state.accountId,
+            formatAccountSettings(props, this._buildJournalDumpSection()));
+        try {
+            await this.ExecuteQuery(
+                'UPDATE accounts SET settings = ? WHERE account = ?',
+                [JSON.stringify(props || {}), this.state.accountId]
+            );
+        } catch (e) {
+            console.log('_persistAccountSettings failed for',
+                        this.state.accountId, ':', e);
+        }
+    }
+
+    /**
+     * Public setter — called from the Preferences modal. Updates one
+     * key inside state.accountSetting at the given dotted path
+     * ('section.key', e.g. 'rtp.preferredVideoCodec'), persists the
+     * whole blob to SQL, and re-applies the relevant runtime side
+     * effect (no relogin required).
+     *
+     * Pass null/undefined to clear a key (it falls back to its
+     * ACCOUNT_SETTINGS_DEFAULTS value the next time it's read).
+     */
+    async setAccountSetting(path, value) {
+        if (!this.state.accountId) return;
+        if (typeof path !== 'string' || path.indexOf('.') === -1) {
+            console.log('setAccountSetting: expected "section.key" path, got', path);
+            return;
+        }
+        const dot = path.indexOf('.');
+        const section = path.substring(0, dot);
+        const key = path.substring(dot + 1);
+        if (!section || !key) {
+            console.log('setAccountSetting: invalid path', path);
+            return;
+        }
+        const current = this.state.accountSetting || {};
+        const nextSection = { ...(current[section] || {}) };
+        if (value === null || value === undefined) {
+            delete nextSection[key];
+        } else {
+            nextSection[key] = value;
+        }
+        const next = { ...current, [section]: nextSection };
+        this.setState({ accountSetting: next });
+        await this._persistAccountSettings(next);
+
+        if (path === 'rtp.preferredVideoCodec'
             && sylkrtc.utils
             && sylkrtc.utils.setPreferredVideoCodec) {
             sylkrtc.utils.setPreferredVideoCodec(
                 value || PREFERRED_VIDEO_CODEC);
         }
-        if (key === 'preferredAudioCodec'
+        if (path === 'rtp.preferredAudioCodec'
             && sylkrtc.utils
             && sylkrtc.utils.setPreferredAudioCodec) {
             sylkrtc.utils.setPreferredAudioCodec(
                 value || PREFERRED_AUDIO_CODEC);
         }
-        if (key === 'encryptionMode') {
-            setEncryptionMode(value);
+        if (path === 'rtp.encryptionMode') {
+            setEncryptionMode(value || 'zrtp_optional');
         }
-        return props;
+        return next;
     }
 
     /**
-     * Switch sylkrtc's preferredVideoCodec to whatever the server told
-     * us the conference backend supports (state.conferenceVideoCodec,
-     * default 'VP8'). Call right before starting/joining a conference,
-     * regardless of the user's account-level codec preference.
+     * Switch sylkrtc's preferredVideoCodec for the duration of a
+     * conference. The 1-1 preferredVideoCodec is never touched by
+     * this path — neither here nor by the server.
+     *
+     * Resolution order — USER WINS:
+     *   1. state.accountSetting.rtp.conferenceVideoCodec — the user's
+     *      per-account preference (default 'VP8'). Always wins when
+     *      set.
+     *   2. state.conferenceVideoCodec — value the server published in
+     *      sylk-config.json. Used only as a recommended fallback when
+     *      the user hasn't expressed a preference. (Same key name as
+     *      the user pref, but different namespace — top-level state
+     *      vs. accountSetting.rtp.)
+     *   3. Hard-coded 'VP8' fallback.
+     * Call right before starting/joining a conference.
      */
     _applyConferenceVideoCodec() {
-        const codec = this.state.conferenceVideoCodec || 'VP8';
+        const userPref = this.state.accountSetting
+            && this.state.accountSetting.rtp
+            && this.state.accountSetting.rtp.conferenceVideoCodec;
+        const serverRecommend = this.state.conferenceVideoCodec;
+        const codec = userPref || serverRecommend || 'VP8';
         if (sylkrtc.utils && sylkrtc.utils.setPreferredVideoCodec) {
             sylkrtc.utils.setPreferredVideoCodec(codec);
         }
-        console.log('[preferredVideoCodec] -> conference =', codec);
+        console.log('[conferenceVideoCodec] applied =', codec,
+            '(source=' + (userPref ? 'user' : (serverRecommend ? 'server' : 'default')) + ')');
     }
 
     /**
@@ -7390,61 +8022,45 @@ class Sylk extends Component {
     }
 
     /**
-     * Restore the encryption mode to the user's device-level
+     * Restore the encryption mode to the user's account-level
      * preference. Call when ending a call where a per-contact
      * encryption override was applied, so subsequent calls use the
-     * device default again.
+     * account default again.
      */
     _restoreEncryptionMode() {
-        const mode = (this.state.devicePreferences
-            && this.state.devicePreferences.encryptionMode) || 'zrtp_optional';
+        const mode = (this.state.accountSetting
+            && this.state.accountSetting.rtp
+            && this.state.accountSetting.rtp.encryptionMode) || 'zrtp_optional';
         setEncryptionMode(mode);
-        console.log('[encryptionMode] -> device =', mode);
+        console.log('[encryptionMode] -> account =', mode);
     }
 
     /**
-     * Restore sylkrtc's preferredVideoCodec to the user's DEVICE-level
+     * Restore sylkrtc's preferredVideoCodec to the user's ACCOUNT-level
      * preference (or the global PREFERRED_VIDEO_CODEC fallback). Call
      * when leaving a conference or ending a call where a per-contact
      * codec override was applied, so subsequent calls use the right
      * default again.
      *
-     * Renamed from "_restoreAccountVideoCodec" — codec preference moved
-     * from per-account storage to per-device storage. Function name is
-     * kept for backwards compatibility with existing call sites.
+     * Function name is kept for backwards compatibility with existing
+     * call sites; the underlying storage is now accounts.settings.
      */
     _restoreAccountVideoCodec() {
-        const props = this.state.devicePreferences || {};
-        const codec = props.preferredVideoCodec || PREFERRED_VIDEO_CODEC;
+        const rtp = (this.state.accountSetting && this.state.accountSetting.rtp) || {};
+        const codec = rtp.preferredVideoCodec || PREFERRED_VIDEO_CODEC;
         if (sylkrtc.utils && sylkrtc.utils.setPreferredVideoCodec) {
             sylkrtc.utils.setPreferredVideoCodec(codec);
         }
-        console.log('[preferredVideoCodec] -> device =', codec);
+        console.log('[preferredVideoCodec] -> account =', codec);
         // Restore audio codec too. Conferences don't currently mutate
         // the audio codec preference (the conference backend negotiates
         // opus regardless), but we keep symmetry with the video path so
         // any future audio override gets reset on the same call site.
-        const audioCodec = props.preferredAudioCodec || PREFERRED_AUDIO_CODEC;
+        const audioCodec = rtp.preferredAudioCodec || PREFERRED_AUDIO_CODEC;
         if (sylkrtc.utils && sylkrtc.utils.setPreferredAudioCodec) {
             sylkrtc.utils.setPreferredAudioCodec(audioCodec);
         }
-        console.log('[preferredAudioCodec] -> device =', audioCodec);
-    }
-
-    /**
-     * Public setter — called from menus / settings screens. Persists
-     * the change and re-applies it immediately (no need to relog).
-     */
-    async setAccountLocalProperty(key, value) {
-        if (!this.state.accountId) return;
-        const props = await setAccountLocalProperty(this.state.accountId, key, value);
-        this.setState({ accountLocalProperties: props });
-        if (key === 'preferredVideoCodec'
-            && sylkrtc.utils
-            && sylkrtc.utils.setPreferredVideoCodec) {
-            sylkrtc.utils.setPreferredVideoCodec(value);
-        }
-        return props;
+        console.log('[preferredAudioCodec] -> account =', audioCodec);
     }
 
     async loadAccounts(init=false) {
@@ -7511,15 +8127,17 @@ class Sylk extends Component {
 						this.setState({accountVerified: true, accountId: item.account});
 						account = item.account;
 						password = item.password;
-						// Apply per-account local-properties (preferred video
-						// codec, etc.) so they're in effect by the time the
-						// first call is placed. Account-level first (so
-						// the legacy codec key is loaded into state),
-						// then device-level (which migrates the legacy
-						// codec to the new per-device key on first run
-						// and applies it to sylkrtc).
-						this._applyAccountLocalProperties(item.account);
-						this._applyDevicePreferences();
+						// Apply per-account settings (preferred codecs,
+						// encryption mode, DTMF mode, location knobs,
+						// audio-recording toggle) from accounts.settings
+						// so they're in effect by the time the first
+						// call is placed. Defaults from
+						// ACCOUNT_SETTINGS_DEFAULTS are applied for any
+						// missing keys (everything, on first launch
+						// after the SQL migration — there is no
+						// carry-over from the previous AsyncStorage
+						// stores).
+						this._applyAccountSettings(item.account);
 						this.changeRoute('/ready', 'start_up');
 						setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
 					}
@@ -7544,7 +8162,22 @@ class Sylk extends Component {
 			if (!init_active_account) {
 			    // go to login screen
 			    console.log('No active account, yet');
-				this.changeRoute('/login', 'start_up');
+				// During a switchAccount() flow, loadAccounts runs
+				// mid-flight from saveSqlAccount(state.accountId, 0)
+				// inside logout() — at that point no SQL row is yet
+				// flagged active=1 for the new identity, so this branch
+				// would otherwise route the user to /login and undo the
+				// skipRoute we already took inside logout(). The
+				// _switchInProgress instance flag is set synchronously
+				// at the very top of switchAccount() and cleared once
+				// the new registration resolves (registered or
+				// register-failure), so it correctly straddles this
+				// async SQL callback.
+				if (this._switchInProgress) {
+					console.log('[loadAccounts] suppressing /login route change — switch in progress');
+				} else {
+					this.changeRoute('/login', 'start_up');
+				}
 			} else {
 			    if (!this.signOut) {
 					this.loadSylkContacts('loadAccounts');
@@ -7650,23 +8283,18 @@ class Sylk extends Component {
 					}
 				}
 
-				this.setState({rejectAnonymous: data.reject_anonymous == "1",
-				               dnd: data.dnd == "1",
+				// dnd / reject_anonymous / reject_non_contacts /
+				// chat_sounds / read_receipts are no longer loaded from
+				// dedicated columns — they live in accounts.settings
+				// now (state.accountSetting.privacy.* /
+				// state.accountSetting.device.chatSounds) and are
+				// hydrated by _applyAccountSettings on login.
+				this.setState({
 				               keys: keys,
 				               lastSyncId: data.last_sync_id,
 				               lastSyncTimestamp: lastSyncTimestamp,
-				               chatSounds: data.chat_sounds == "1",
-				               // Default ON for read receipts: existing accounts
-				               // pre-migration return null here, and we want
-				               // them to keep behaving as they did (sending
-				               // 'displayed' IMDN) unless the user explicitly
-				               // turns the setting off.
-				               readReceipts: data.read_receipts == null
-				                   ? true
-				                   : data.read_receipts != "0",
 				               keyStatus: {...keyStatus},
-				               rejectNonContacts: data.reject_non_contacts == "1"}
-				               );
+				               });
 
 				setTimeout(() => {this.checkPendingActions()}, 10);
 
@@ -7794,7 +8422,7 @@ class Sylk extends Component {
             displayName = from;
         }
 
-        if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
             console.log('Do not disturb is enabled');
             this._notificationCenter.postSystemNotification('Missed call from ' + from);
             return;
@@ -7947,7 +8575,7 @@ class Sylk extends Component {
     }
 
 	setProximityChosenDevice() {
-		if (this.state.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded) {
+		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded) {
 			if (this.state.proximityNear) {
 				console.log('proximity set BUILTIN_EARPIECE')
 				if (this.useInCallManger) {
@@ -8264,6 +8892,24 @@ class Sylk extends Component {
 
             case 'terminated':
                 let uri = call.remoteIdentity.uri.toLowerCase();
+                // Canonicalize PSTN URI 00→+ for downstream
+                // saveSystemMessage / addHistoryEntry. The wire form
+                // (call.remoteIdentity.uri) carries the rewritten
+                // `0040…` because that's what the SIP gateway
+                // received; the rest of the app stores history /
+                // contacts / chats under the canonical `+40…` form.
+                // Without this, the "Call cancelled" system message
+                // gets saved under `0040…@sylk.link` and never shows
+                // up in the chat the user opened (which is keyed on
+                // `+40…@sylk.link`).
+                {
+                    const _atIdx = uri.indexOf('@');
+                    const _localPart = _atIdx > -1 ? uri.substring(0, _atIdx) : uri;
+                    const _domainPart = _atIdx > -1 ? uri.substring(_atIdx) : '';
+                    if (utils.isPhoneNumber(_localPart) && _localPart.startsWith('00')) {
+                        uri = '+' + _localPart.substring(2) + _domainPart;
+                    }
+                }
                 let startTime;
                 if (callUUID in this.state.callsState) {
                     callsState = this.state.callsState;
@@ -8380,6 +9026,42 @@ class Sylk extends Component {
 
 				this.addHistoryEntry(uri, callUUID, direction);
 
+                // Persist the unique roster of this conference run into
+                // the room contact, merged with whatever was saved from
+                // previous runs. The flow:
+                //
+                //   • ConferenceBox.onParticipantJoined() and
+                //     inviteParticipants() called this.saveParticipant
+                //     (callUUID, room, uri) for every URI it saw,
+                //     populating this._historyConferenceParticipants
+                //     [callUUID] (deduped, with our own URI and any
+                //     @guest. peers already filtered upstream).
+                //   • appendInvitedParties(room, uris) unions that list
+                //     into contact.participants for the room contact
+                //     (lookupContact create-if-missing) and writes the
+                //     SQL row via saveConference, AND refreshes the
+                //     in-memory myInvitedParties map keyed on the room
+                //     local-part.
+                //   • That same myInvitedParties bucket is what the
+                //     Conference / startConference paths consult to
+                //     pre-populate the next outgoing conference's
+                //     initialParticipants — so the very next time the
+                //     user opens this room the invitee list already
+                //     reflects whoever was actually in the previous
+                //     session, with no manual "Save conference" tap
+                //     required.
+                //
+                // Drop the per-call entry afterwards so callUUIDs
+                // don't accumulate forever in _historyConferenceParticipants
+                // across the lifetime of the app.
+                if (this.isConference(call)) {
+                    const _runRoster = this._historyConferenceParticipants.get(callUUID) || [];
+                    if (_runRoster.length > 0) {
+                        this.appendInvitedParties(uri, _runRoster);
+                    }
+                    this._historyConferenceParticipants.delete(callUUID);
+                }
+
                 utils.timestampedLog('[call]', callUUID, direction, 'terminated reason', data.reason, '->', reason);
                 
                 //this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
@@ -8429,7 +9111,16 @@ class Sylk extends Component {
                     this.setState({terminatedReason: reason});
                 }
 
-                this.updateHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID, diff);
+                // call.mediaTypes is stamped on the SylkRTC call at
+                // creation (see ~app.js 11475) and survives the
+                // terminated event, so we can read the actual media
+                // composition this run used regardless of who hung
+                // up or why. Forwarding it lets updateHistoryEntry
+                // stash contact.lastCallMediaType, which ContactCard
+                // then turns into the "Audio" / "Video" subtitle on
+                // the conference room tile.
+                const _terminatedMediaType = (call.mediaTypes && call.mediaTypes.video) ? 'video' : 'audio';
+                this.updateHistoryEntry(call.remoteIdentity.uri.toLowerCase(), callUUID, diff, _terminatedMediaType);
                 //this.addCallsTag(call.remoteIdentity.uri.toLowerCase());
 
                 this.callKeeper.endCall(callUUID, CALLKEEP_REASON);
@@ -8475,7 +9166,23 @@ class Sylk extends Component {
     }
 
     finishInviteToConference() {
+        // Drop out of invite-picker state regardless of how we got
+        // here (Cancel button vs. Invite button via goBackFunc).
         this.setState({inviteContacts: false, selectedContacts: []});
+
+        // Cancel should return the user to the conference they
+        // came from — the underlying conference call is still
+        // running, the user just decided not to add anyone right
+        // now. Previously this left them stranded on the main
+        // contacts list with the conference ongoing in the
+        // background, requiring them to manually tap Back to call
+        // to re-enter the conference UI. goBackToCall() routes to
+        // /conference (or /call for a non-conference, defensively)
+        // when there's an active call, and is a no-op otherwise —
+        // so the Invite-then-goBackFunc path that ALSO ends up
+        // here via the conference-side handlers doesn't double-
+        // navigate.
+        this.goBackToCall();
     }
 
     goBackToCall() {
@@ -8604,6 +9311,161 @@ class Sylk extends Component {
         this.handleRegistration(account.id, account.password, 'handleEnrollment');
     }
 
+    /**
+     * Logout then sign back in as another locally-stored account.
+     *
+     * This is the back-end of the "Switch to…" action in
+     * SwitchAccountModal. The user has already picked an alternate
+     * account/password pair from the local accounts table, so we can
+     * skip the LoginForm round-trip entirely: tear down the current
+     * session, then hand the new credentials to handleSignIn (same-
+     * server case) or to lookupSylkServer (cross-server case).
+     *
+     * Two distinct paths depending on where the target account lives:
+     *
+     *  - Same Sylk server: the existing websocket is reusable. We
+     *    call this.logout({skipRoute:true}) — which unregisters,
+     *    removes the account from sylkrtc, flushes app_state/SQL —
+     *    but deliberately preserves this.state.connection. Then
+     *    handleSignIn(accountId, password) re-registers the new
+     *    identity over the same socket.
+     *
+     *  - Different Sylk server: the websocket is bound to a specific
+     *    server, so it MUST be torn down. We still go through
+     *    this.logout({skipRoute:true}) for the per-account teardown,
+     *    then arm signIn=true + new accountId/password in state and
+     *    delegate to lookupSylkServer(targetDomain, false, true).
+     *    That helper:
+     *      • closes the previous connection (closeConnection branch),
+     *      • downloads / loads the cached configuration for the new
+     *        domain (initConfiguration sets new wsUrl + sylkDomain),
+     *      • componentDidUpdate's cdu-wsUrl effect connects to the
+     *        new server,
+     *      • connectionStateChanged('ready') sees signIn=true and
+     *        fires processRegistration with the just-stashed
+     *        accountId/password.
+     *
+     * In both paths we deliberately skip the changeRoute('/login')
+     * step inside logout so the user stays on /ready and never sees
+     * a LoginForm flash by.
+     *
+     * setTimeout(50ms) lets the setState() calls inside logout()
+     * (resetState, accountId clear, account=null) flush before any
+     * downstream code re-reads them.
+     */
+    async switchAccount(accountId, password) {
+        if (!accountId || !password) {
+            console.log('[switch] aborting — missing accountId or password');
+            return;
+        }
+
+        // Set BEFORE logout(). logout() invokes saveSqlAccount(state.accountId, 0)
+        // which asynchronously fires loadAccounts() — and that callback would
+        // otherwise route us to /login the moment it sees no active SQL row,
+        // overriding the skipRoute we already enforced in logout(). The flag
+        // is consulted inside loadAccounts and is cleared when the new
+        // registration resolves (registered → success, showRegisterFailure
+        // → auth/server failure) or by the watchdog below.
+        this._switchInProgress = true;
+
+        // Belt-and-braces: if neither showRegisterFailure nor the
+        // 'registered' branch fires (e.g. new server unreachable,
+        // websocket never reaches 'ready'), release the flag after
+        // a generous timeout so a future legitimate /login route
+        // change isn't perpetually suppressed. We intentionally do
+        // NOT roll back to the previous account here — the user
+        // explicitly asked for the new identity, so a failed switch
+        // leaves them logged out on /ready and they can act on the
+        // failure banner from there.
+        if (this._switchInProgressTimer) clearTimeout(this._switchInProgressTimer);
+        this._switchInProgressTimer = setTimeout(() => {
+            if (this._switchInProgress) {
+                console.log('[switch] watchdog: clearing _switchInProgress (timeout)');
+                this._switchInProgress = false;
+            }
+            this._switchInProgressTimer = null;
+        }, 20000);
+
+        const oldDomain = this.state.sylkDomain;
+        // Resolve the target Sylk server. Source of truth is the
+        // server column on the local accounts table, surfaced as
+        // state.accounts[accountId]. Fall back to the @-suffix of
+        // the account URI only when that lookup fails — most setups
+        // have identity-domain == sylk-server, but the two can differ
+        // (e.g. a vanity SIP domain hosted on a shared Sylk server).
+        const accountsMap = this.state.accounts || {};
+        let targetDomain = accountsMap[accountId];
+        if (!targetDomain && typeof accountId === 'string' && accountId.includes('@')) {
+            targetDomain = accountId.split('@')[1];
+        }
+
+        const sameServer = !!targetDomain && targetDomain === oldDomain;
+
+        console.log('[switch] switchAccount accountId=', accountId,
+            'passwordLen=', (password ? password.length : 0),
+            'oldDomain=', oldDomain,
+            'targetDomain=', targetDomain,
+            'sameServer=', sameServer);
+
+        // Per-account teardown runs identically in both paths. The
+        // connection is preserved inside logout() — for the cross-
+        // server path it's lookupSylkServer that closes and replaces
+        // it, not logout.
+        this.logout({ skipRoute: true });
+
+        if (sameServer || !targetDomain) {
+            // Same-server (or unknown target domain) — preserve the
+            // websocket and just re-register over it. handleSignIn
+            // flips signOut back to false, sets accountId/password,
+            // and routes through handleRegistration → path C
+            // (connection ready + not registered) → processRegistration.
+            setTimeout(() => {
+                console.log('[switch] same-server path: handleSignIn for', accountId);
+                this.handleSignIn(accountId, password);
+            }, 50);
+            return;
+        }
+
+        // Cross-server path. Stage the new credentials, then ask
+        // lookupSylkServer to close the current connection and
+        // discover/connect to the target server. The 'ready' event
+        // on the new connection completes the sign-in by way of the
+        // (accountVerified || signIn) guard inside
+        // connectionStateChanged.
+        setTimeout(() => {
+            console.log('[switch] cross-server path: rearming signIn, targetDomain=', targetDomain);
+
+            // Arm the same instance flags handleSignIn would set, so
+            // connectionStateChanged('ready') takes the
+            // processRegistration branch on the new socket.
+            this.signOut = false;
+            this.signIn = true;
+
+            // Re-point the per-account log file at the new identity
+            // before any registration log lines fire.
+            utils.setLogAccount(accountId);
+
+            // setState must land BEFORE the new connection reaches
+            // 'ready' so processRegistration reads the new account.
+            // setState is async/batched but our subsequent call to
+            // lookupSylkServer does its own awaitable HTTP work, so
+            // there's plenty of time for these to flush first.
+            this.setState({
+                accountId: accountId,
+                password: password,
+                accountVerified: false,
+                registrationState: null,
+                registrationKeepalive: false,
+            });
+
+            // closeConnection branch inside lookupSylkServer detects
+            // domain change and closes the prior websocket; the new
+            // wsUrl set by initConfiguration triggers cdu-wsUrl which
+            // brings up the new connection.
+            this.lookupSylkServer(targetDomain, false, true);
+        }, 50);
+    }
+
     async handleSignIn(accountId, password) {
         console.log('[signin] handleSignIn called with accountId=', accountId);
         const c = this.state.connection;
@@ -8637,6 +9499,17 @@ class Sylk extends Component {
         // append. Idempotent — reuses the previous value when the
         // user re-registers the same identity.
         utils.setLogAccount(accountId);
+
+        // Drain anything SylkLogger persisted while the JS process
+        // wasn't running (most usefully: PushKit / VoIP / FCM lines
+        // emitted before this React tree mounted). Each line goes
+        // through utils.timestampedLog → log2file → the per-account
+        // log file we just selected, so the user sees them in the
+        // LogsModal viewer tagged [native]. drainStart returns "" on
+        // subsequent calls within the same process so this is safe
+        // to fire on every re-registration.
+        replayPersistedNativeLogs().catch(() => {});
+
         this.setState({accountId: accountId, password: password});
 
         // Per-account state load. Replaces the AsyncStorage hydrate
@@ -8932,16 +9805,21 @@ class Sylk extends Component {
     }
 
     setDevice(device) {
-        const oldDevices = Object.assign({}, this.state.devices);
+        // Compact descriptor — only the fields getLocalMedia uses to
+        // match the device on next launch. Storing the full
+        // MediaDeviceInfo would bloat the settings JSON with fields
+        // (groupId, kind) we never read back.
+        const descriptor = device ? {
+            deviceId: device.deviceId,
+            label: device.label,
+        } : null;
 
-        if (device.kind === 'videoinput') {
-            oldDevices['camera'] = device;
-        } else if (device.kind === 'audioinput') {
-            oldDevices['mic'] = device;
+        if (device && device.kind === 'videoinput') {
+            this.setAccountSetting('device.cameraDevice', descriptor);
+        } else if (device && device.kind === 'audioinput') {
+            this.setAccountSetting('device.micDevice', descriptor);
         }
 
-        this.setState({devices: oldDevices});
-        storage.set('devices', oldDevices);
         sylkrtc.utils.closeMediaStream(this.state.localMedia);
         this.getLocalMedia();
     }
@@ -8991,17 +9869,26 @@ class Sylk extends Component {
         navigator.mediaDevices.enumerateDevices()
         .then((devices) => {
             utils.timestampedLog('[media] getLocalMedia enumerateDevices ok, count=', devices.length);
+            const cameraPref = this.state.accountSetting
+                && this.state.accountSetting.device
+                && this.state.accountSetting.device.cameraDevice;
+            const micPref = this.state.accountSetting
+                && this.state.accountSetting.device
+                && this.state.accountSetting.device.micDevice;
             devices.forEach((device) => {
                 //console.log(device);
-                if ('video' in constraints && 'camera' in this.state.devices) {
-                    if (constraints.video && constraints.video !== false && (device.deviceId === this.state.devices.camera.deviceId || device.label === this.state.devices.camera.label)) {
+                if ('video' in constraints && cameraPref) {
+                    if (constraints.video && constraints.video !== false
+                        && (device.deviceId === cameraPref.deviceId
+                            || device.label === cameraPref.label)) {
                         constraints.video.deviceId = {
                             exact: device.deviceId
                         };
                     }
                 }
-                if ('mic' in this.state.devices) {
-                    if (device.deviceId === this.state.devices.mic.deviceId || device.label === this.state.devices.mic.Label) {
+                if (micPref) {
+                    if (device.deviceId === micPref.deviceId
+                        || device.label === micPref.label) {
                         // constraints.audio = {
                         //     deviceId: {
                         //         exact: device.deviceId
@@ -9114,6 +10001,16 @@ class Sylk extends Component {
             });
         }
 
+        // Preserve the user's button-press intent on outgoingMedia
+        // — proposedMedia in Conference.js reads this to compute
+        // the audioOnly prop that ConferenceBox uses to pick the
+        // initial viewMode AND the initial videoMuted state. The
+        // wire-level offer always includes video (below), but
+        // ConferenceBox starts the camera muted (track.enabled =
+        // false) when options.video was false, so an "Audio" start
+        // doesn't actually transmit video — it just keeps the
+        // ability to flip the track back on later via the camera
+        // picker without any renegotiation.
         this.outgoingMedia = options;
 
         this.setState({targetUri: targetUri,
@@ -9138,15 +10035,29 @@ class Sylk extends Component {
             return;
         }
 
-        if (options.video) {
-            const cameraAllowed = await this.requestCameraPermission();
-            if (!cameraAllowed) {
-                options.video = false;
-            }
-        }
+        // Always ask for camera permission for a conference,
+        // regardless of which start button the user pressed. The
+        // local stream always carries a video track now so the
+        // user can flip the audio/video view (and the wire-level
+        // suppressed/live camera) mid-call without needing to
+        // renegotiate or prompt at the wrong moment. If the user
+        // denies camera permission specifically, we still proceed
+        // — the local stream just won't have a video track for
+        // this call and switching to video later would require a
+        // permission re-request inside the conference UI (future
+        // refinement).
+        const cameraAllowed = await this.requestCameraPermission();
+
+        // The flag passed into the local-media acquisition is
+        // ALWAYS true now (unless camera was explicitly denied).
+        // ConferenceBox uses outgoingMedia / proposedMedia.video
+        // — captured above before this override — to know whether
+        // the camera should start MUTED. Wire-level setup is
+        // identical for both button choices.
+        const negotiateVideo = !!cameraAllowed;
 
         //this.respawnConnection();
-        this.startCallWhenReady(targetUri, {audio: options.audio, video: options.video, conference: true, domain: domain, callUUID: callUUID});
+        this.startCallWhenReady(targetUri, {audio: options.audio, video: negotiateVideo, conference: true, domain: domain, callUUID: callUUID});
     }
 
     openAppSettings(subject) {
@@ -9197,12 +10108,45 @@ class Sylk extends Component {
             targetUri = targetUri + '@' + this.state.defaultDomain;
         }
 
+        // NB: the pstnRules.replacePlus rewrite USED to live here (it
+        // turned `+40…` into `0040…` before stuffing the URI into
+        // state.targetUri). That was wrong — every downstream path
+        // that reads state.targetUri (addHistoryEntry, contact
+        // lookups, the call-ended system message, EditContactModal
+        // when reached from the call screen) saw the rewritten form
+        // and ended up creating a duplicate `0040…` contact when one
+        // already existed under `+40…`. The rewrite now lives at the
+        // actual SIP-call boundary in Call.js's start(), so the canon-
+        // ical `+40…` URI flows through state and every consumer
+        // looks up / creates contacts under the same canonical form.
         this.setState({targetUri: targetUri,
                        callContact: this.state.selectedContact,
                        outgoingCallUUID: callUUID,
                        reconnectingCall: false,
                        loading: null
                        });
+
+        // Create / refresh the Sylk contact for this destination
+        // RIGHT NOW, with the canonical URI — not at call-end. Two
+        // benefits:
+        //   1. If the user dialed a Phonebook (Address Book) entry
+        //      that didn't yet exist as a Sylk contact, it gets
+        //      promoted to a Sylk contact under the canonical
+        //      `+40…@sylk.link` form (with the AB display name and
+        //      photo carried over by the existing newContact branch
+        //      in addHistoryEntry). The post-call addHistoryEntry
+        //      then matches this row via _phoneNumberVariants and
+        //      updates it instead of inserting a duplicate.
+        //   2. Even if the call never connects (fast-cancel, busy,
+        //      DNS failure), the dialed contact still appears under
+        //      the Recent / Calls filter so the user can retry from
+        //      the contacts list.
+        // Skipped for conference targets — those go through their
+        // own conference-history path (callKeepStartConference at
+        // line ~9863).
+        if (!options.conference) {
+            this.addHistoryEntry(targetUri, callUUID, 'outgoing');
+        }
 
         if (options.conference) {
             this.changeRoute('/conference');
@@ -9646,8 +10590,9 @@ class Sylk extends Component {
         // resolve through CallManager's inband branch and fall back
         // to RFC 4733 anyway, but we collapse to 'info' here so
         // those users land on the new default.
-        let mode = (this.state.devicePreferences
-            && this.state.devicePreferences.dtmfMode) || 'info';
+        let mode = (this.state.accountSetting
+            && this.state.accountSetting.rtp
+            && this.state.accountSetting.rtp.dtmfMode) || 'info';
         if (mode !== 'rfc4733' && mode !== 'info') {
             mode = 'info';
         }
@@ -9659,14 +10604,12 @@ class Sylk extends Component {
     }
 
     toggleProximity() {
-        storage.set('proximityEnabled', !this.state.proximityEnabled);
-
-        if (!this.state.proximityEnabled) {
-            utils.timestampedLog('[app] Proximity sensor enabled');
-        } else {
-            utils.timestampedLog('[app] Proximity sensor disabled');
-        }
-        this.setState({proximityEnabled: !this.state.proximityEnabled});
+        const current = !!(this.state.accountSetting
+            && this.state.accountSetting.device
+            && this.state.accountSetting.device.proximityEnabled);
+        const next = !current;
+        utils.timestampedLog('[app] Proximity sensor', next ? 'enabled' : 'disabled');
+        this.setAccountSetting('device.proximityEnabled', next);
     }
 
     toggleMute(callUUID, muted) {
@@ -10182,7 +11125,7 @@ class Sylk extends Component {
 			}
         }
         
-        if (this.state.rejectNonContacts) {
+        if (this.state.accountSetting.privacy.rejectNonContacts) {
             const contact = this.lookupContact(from);
             if (!contact) {
 				utils.timestampedLog('Reject [call]', callUUID, 'from caller not in contacts list');
@@ -10191,7 +11134,7 @@ class Sylk extends Component {
            }
         }
 
-        if (this.state.rejectAnonymous) {
+        if (this.state.accountSetting.privacy.rejectAnonymous) {
 			if (from.indexOf('@guest') > -1) {
 				utils.timestampedLog('Reject [call]', callUUID, 'from anonymous caller');
 				this.callKeeper.rejectCall(callUUID);
@@ -10434,7 +11377,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
             console.log('Do not disturb is enabled');
 			if (Platform.OS === 'android') {
 				this.postAndroidMessageNotification(from, 'missed call');
@@ -10535,7 +11478,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
             console.log('Do not disturb')
             return;
         }
@@ -10806,6 +11749,25 @@ class Sylk extends Component {
     
         console.log('save [contact]', contact?.id, uri, contact?.timestamp, 'by', origin);
 
+        // Diagnostic: bumping the SELF contact (the row keyed by our
+        // own accountId) shoves it to the top of the contacts list,
+        // which is wrong for anything other than an explicit
+        // "edit my account" save. Whenever this fires for the self
+        // URI, log the full caller chain so we can find the path
+        // that's promoting it on, e.g., an outgoing call. Remove
+        // once the offending caller is fixed.
+        if (uri === this.state.accountId
+            && origin !== 'enrollment'
+            && origin !== 'editContact'
+            && origin !== 'PGP key generated') {
+            try {
+                throw new Error('self-contact save trace');
+            } catch (e) {
+                console.log('save [contact] SELF bump from origin=', origin,
+                    '— stack:\n', (e.stack || '').split('\n').slice(1, 12).join('\n'));
+            }
+        }
+
         if (!uri) {
             console.error('No uri given');
             return;
@@ -11049,9 +12011,15 @@ class Sylk extends Component {
     }
 
     async deleteSylkContact(contact) {
+		console.log('deleteSylkContact enter id=', contact && contact.id, 'uri=', contact && contact.uri,
+			'account=', this.state.accountId);
+		let rowsAffected = 0;
 		await this.ExecuteQuery('delete from contacts where account = ? and contact_id = ?', [this.state.accountId, contact.id]).then((result) => {
-			if (result.rowsAffected > 0) {
-				console.log(result.rowsAffected, 'contacts deleted');
+			rowsAffected = result.rowsAffected || 0;
+			console.log('deleteSylkContact SQL by contact_id result rowsAffected=', rowsAffected,
+				'for id=', contact.id);
+			if (rowsAffected > 0) {
+				console.log(rowsAffected, 'contacts deleted (by id)');
 				this.removeContactInState(contact);
 				if (this.state.selectedContact?.id == contact.id) {
 				   this.setState({selectedContact: null});
@@ -11061,6 +12029,50 @@ class Sylk extends Component {
 		}).catch((error) => {
 			console.log('SQL deleteSylkContact error:', error);
 		});
+
+		// URI-based fallback.
+		//
+		// The PK is (account, contact_id), but the in-memory
+		// selectedContact's id can drift away from the SQL row's id
+		// in a few legitimate situations:
+		//   • The contact was rebuilt from getABContacts (which
+		//     mints a fresh uuid.v4() per app start) so the AB-list
+		//     handle the user is acting on no longer matches the
+		//     row we persisted earlier under a different id.
+		//   • savePublicKey / message paths created a SQL row, then
+		//     a later AB rebuild handed the UI a same-uri/diff-id
+		//     object that selectedContact now points at.
+		//   • A duplicate row exists for this uri (older surrogate
+		//     that the per-id DELETE can't reach in one shot).
+		// In all of those, "delete this contact" should still mean
+		// "drop the row with this uri from my contacts table" — the
+		// row is unambiguous in practice because contact_index /
+		// lookupContact already key off uri elsewhere. So if the
+		// id-based DELETE matched nothing, retry by uri.
+		if (rowsAffected === 0 && contact && contact.uri) {
+			console.log('deleteSylkContact: contact_id matched 0 rows, retrying DELETE by uri=', contact.uri);
+			await this.ExecuteQuery('delete from contacts where account = ? and uri = ?',
+				[this.state.accountId, contact.uri]).then((result) => {
+				const byUri = result.rowsAffected || 0;
+				console.log('deleteSylkContact SQL by uri result rowsAffected=', byUri,
+					'for uri=', contact.uri);
+				if (byUri > 0) {
+					console.log(byUri, 'contacts deleted (by uri fallback)');
+					// State cleanup keyed off uri so we sweep up any
+					// in-memory rows whose ids didn't match either.
+					this.setState(prevState => ({
+						allContacts: (prevState.allContacts || []).filter(
+							c => !c || c.uri !== contact.uri
+						)
+					}));
+					if (this.state.selectedContact?.uri === contact.uri) {
+						this.setState({selectedContact: null});
+					}
+				}
+			}).catch((error) => {
+				console.log('SQL deleteSylkContact uri-fallback error:', error);
+			});
+		}
     }
 
     async exportPrivateKey(password, email) {
@@ -11298,13 +12310,13 @@ class Sylk extends Component {
     async savePublicKey(uri, key) {
         console.log('[pgp] [message] savePublicKey enter uri=', uri,
             'keyLen=', key ? key.length : 0,
-            'rejectNonContacts=', !!this.state.rejectNonContacts);
+            'rejectNonContacts=', !!this.state.accountSetting.privacy.rejectNonContacts);
         if (uri === this.state.accountId) {
             console.log('[pgp] [message] savePublicKey skip: uri matches own accountId', uri);
             return;
         }
 
-        if (this.state.rejectNonContacts) {
+        if (this.state.accountSetting.privacy.rejectNonContacts) {
             const contact = this.lookupContact(uri);
             if (!contact) {
 				console.log('[pgp] [message] savePublicKey skip: rejectNonContacts and no local contact for', uri);
@@ -11339,10 +12351,29 @@ class Sylk extends Component {
 		// is a no-op, and Alice never gets a reply with Bob's key.
 		// Autocreating here closes that hole. rejectNonContacts already
 		// short-circuited above, so an opted-out user still wins.
-		if (contacts.length === 0) {
+		//
+		// BUT — only auto-create when the key arrived as a PUSH from
+		// the peer (the Alice→Bob handshake case above). If we asked
+		// for the key first (lookupPublicKey called with
+		// speculative=true, set by selectContact when the user merely
+		// taps an AB row to browse), an auto-create here would mint an
+		// un-deletable ghost contact for someone the user never
+		// intended to add. The speculativeLookups set tracks our own
+		// outgoing requests; consume the flag whether or not we
+		// auto-create so a later, genuinely incoming key push for the
+		// same URI is still allowed to promote the contact.
+		const wasSpeculative = this.speculativeLookups
+			&& this.speculativeLookups.has(uri);
+		if (this.speculativeLookups) {
+			this.speculativeLookups.delete(uri);
+		}
+		if (contacts.length === 0 && !wasSpeculative) {
 			console.log('[pgp] [message] savePublicKey autocreating contact for unknown sender', uri);
 			this.lookupContact(uri, true, true);
 			contacts = this.lookupContacts(uri);
+		} else if (contacts.length === 0 && wasSpeculative) {
+			console.log('[pgp] [message] savePublicKey skip autocreate (speculative lookup) for', uri);
+			return;
 		}
 		console.log('[pgp] [message] savePublicKey resolved', contacts.length, 'contact(s) for', uri);
 		for (const contact of contacts) {
@@ -13873,7 +14904,7 @@ class Sylk extends Component {
         // IMDN notifications across the board (per-contact 'noread' tag is
         // handled below, but this is the global switch). 'delivered' still
         // goes through — it confirms receipt, not that the user has read.
-        if (state === 'displayed' && this.state.readReceipts === false) {
+        if (state === 'displayed' && this.state.accountSetting.privacy.readReceipts === false) {
             if (save) {
                 let query = "UPDATE messages set received = 2 where msg_id = ? and account = ?";
                 this.ExecuteQuery(query, [id, this.state.accountId]).then(() => {
@@ -14140,6 +15171,184 @@ class Sylk extends Component {
 		fixDirectoryStructure(this.state.accountId);
 	}
 
+    // ─── One-shot recovery for files broken by the missing-.asc bug ─────
+    // Background: a previous build of downloadFile gated the `.asc`
+    // rename behind `if (force)`, so every auto-download wrote the
+    // PGP-armored ciphertext to disk under the plaintext filename and
+    // saveDownloadTask's `if (local_url.endsWith('.asc'))` decrypt step
+    // never fired. Result: encrypted file attachments (images, audio,
+    // video, plain files) sit on disk as armored text and fail to
+    // render / play.
+    //
+    // This method walks every transfer directory under the current
+    // account, peeks the first 32 bytes of each non-.asc file, and if
+    // those bytes are the PGP armor signature it:
+    //   1) renames the file from `X` to `X.asc`,
+    //   2) updates the message's metadata in SQL so local_url +
+    //      filename match the new name,
+    //   3) calls decryptFile, which produces the decrypted twin at
+    //      `X` (decryptFile's file_path_decrypted = local_url minus
+    //      the last 4 chars).
+    //
+    // Files that are NOT PGP-armored (real images / decoded bytes from
+    // a working older build) are left alone. Files we can't classify
+    // (read error, missing message row, etc.) are skipped — better to
+    // leave a stranded file than corrupt a working one. The whole pass
+    // is idempotent: a successful run renames + decrypts, the second
+    // pass sees the file already ends with .asc and skips it.
+    //
+    // Gated on `_brokenFilesMigrationRan` so it fires at most once per
+    // app session, and only after PGP keys are available (decryptFile
+    // would no-op otherwise).
+    async migrateBrokenEncryptedFiles() {
+        if (this._brokenFilesMigrationRan) return;
+        if (!this.state.keys || !this.state.keys.private) return;
+        if (!this.state.accountId) return;
+        this._brokenFilesMigrationRan = true;
+
+        const accountDir = RNFS.DocumentDirectoryPath + "/" + this.state.accountId;
+        try {
+            if (!(await RNFS.exists(accountDir))) {
+                console.log('[migration] no account dir, nothing to scan', accountDir);
+                return;
+            }
+        } catch (e) {
+            console.log('[migration] account-dir check failed:', e && e.message);
+            return;
+        }
+
+        console.log('[migration] scanning for broken encrypted files under', accountDir);
+        let scanned = 0;
+        let renamed = 0;
+        let decrypted = 0;
+        let errors = 0;
+
+        let peers;
+        try { peers = await RNFS.readDir(accountDir); }
+        catch (e) { console.log('[migration] readDir failed at root:', e && e.message); return; }
+
+        for (const peerEntry of peers) {
+            if (!peerEntry.isDirectory()) continue;
+            let transfers;
+            try { transfers = await RNFS.readDir(peerEntry.path); }
+            catch (e) { continue; }
+
+            for (const transferEntry of transfers) {
+                if (!transferEntry.isDirectory()) continue;
+                let files;
+                try { files = await RNFS.readDir(transferEntry.path); }
+                catch (e) { continue; }
+
+                for (const fileEntry of files) {
+                    if (!fileEntry.isFile()) continue;
+                    if (fileEntry.name.endsWith('.asc')) continue;
+                    if (fileEntry.name.endsWith('.tmp')) continue;
+                    if (fileEntry.name.endsWith('.bin')) continue;
+                    scanned++;
+
+                    // Magic-byte probe: PGP armor always begins with the
+                    // 30-byte ASCII string "-----BEGIN PGP MESSAGE-----".
+                    let isPgpArmor = false;
+                    try {
+                        const b64 = await RNFS.read(fileEntry.path, 32, 0, 'base64');
+                        const raw = (typeof atob === 'function') ? atob(b64) : '';
+                        isPgpArmor = raw.startsWith('-----BEGIN PGP');
+                    } catch (e) {
+                        errors++;
+                        continue;
+                    }
+                    if (!isPgpArmor) continue;
+
+                    // Found a broken file. msg_id == directory name
+                    // (downloadFile uses `dir_path = Documents/<acct>/
+                    // <peer>/<transfer_id>/`, and saveOutgoing /
+                    // saveDownloadTask use msg_id === transfer_id).
+                    const msgId = transferEntry.name;
+                    let metadata = null;
+                    try {
+                        const result = await this.ExecuteQuery(
+                            "SELECT metadata FROM messages WHERE msg_id = ? AND account = ?",
+                            [msgId, this.state.accountId]
+                        );
+                        if (result.rows.length === 0) {
+                            // Orphan file (no matching message row).
+                            // Leave it on disk — we don't know enough
+                            // to safely rename/decrypt it.
+                            continue;
+                        }
+                        metadata = JSON.parse(result.rows.item(0).metadata);
+                    } catch (e) {
+                        console.log('[migration] SQL/parse failed for', msgId, e && e.message);
+                        errors++;
+                        continue;
+                    }
+
+                    if (!metadata || !metadata.transfer_id) {
+                        // Not a file-transfer row (might be a system
+                        // bubble that happens to share an id). Skip.
+                        continue;
+                    }
+
+                    // Rename file → add .asc suffix.
+                    const ascPath = fileEntry.path + '.asc';
+                    try {
+                        // Defensive: if a sibling already exists at
+                        // ascPath (e.g. a previous partial migration),
+                        // delete it before the rename so moveFile
+                        // doesn't error.
+                        if (await RNFS.exists(ascPath)) {
+                            try { await RNFS.unlink(ascPath); } catch (_) {}
+                        }
+                        await RNFS.moveFile(fileEntry.path, ascPath);
+                    } catch (e) {
+                        console.log('[migration] rename failed for', fileEntry.path, e && e.message);
+                        errors++;
+                        continue;
+                    }
+                    renamed++;
+
+                    // Patch metadata + commit. decryptFile reads
+                    // local_url and filename off the file_transfer
+                    // object — both have to reflect the new .asc name
+                    // for the decrypt step to find the bytes and the
+                    // bubble to render correctly afterwards.
+                    metadata.local_url = ascPath;
+                    if (!metadata.filename || !metadata.filename.endsWith('.asc')) {
+                        metadata.filename = (metadata.filename || fileEntry.name) + '.asc';
+                    }
+                    try {
+                        await this.ExecuteQuery(
+                            "UPDATE messages SET metadata = ? WHERE msg_id = ? AND account = ?",
+                            [JSON.stringify(metadata), msgId, this.state.accountId]
+                        );
+                    } catch (e) {
+                        console.log('[migration] SQL update failed for', msgId, e && e.message);
+                        errors++;
+                        continue;
+                    }
+
+                    // Trigger in-place decrypt. No await — decryptFile
+                    // is multi-step async and we'd serialize the entire
+                    // migration on each big file. Fire-and-forget is
+                    // fine; the decrypt pipeline updates SQL + bubble
+                    // on its own.
+                    try {
+                        this.decryptFile(metadata);
+                        decrypted++;
+                    } catch (e) {
+                        console.log('[migration] decryptFile threw for', msgId, e && e.message);
+                        errors++;
+                    }
+                }
+            }
+        }
+
+        console.log('[migration] done. scanned=' + scanned
+            + ' renamed=' + renamed
+            + ' decryptKicked=' + decrypted
+            + ' errors=' + errors);
+    }
+
     async downloadFile(file_transfer, force=false, cancel=false) {
         const res = await RNFS.getFSInfo();
         let id = file_transfer.transfer_id;
@@ -14242,50 +15451,95 @@ class Sylk extends Component {
             file_transfer.failed = false;
             file_transfer.error = null;
 
-            if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
-                file_transfer.filename = file_transfer.filename + ('.asc');
-            }
-
             this.updateFileTransferSql(file_transfer, encrypted, true);
         }
 
-        await RNFS.mkdir(dir_path);
+        // Ensure the on-disk filename carries the .asc suffix whenever
+        // the remote URL is PGP-armored. saveDownloadTask gates the
+        // decrypt step on `local_url.endsWith('.asc')`, so without the
+        // suffix the ciphertext lands on disk under the plaintext
+        // filename and is never decrypted — iOS then tries to render
+        // the PGP-armored bytes as an image and you get every photo as
+        // a white rectangle with an "Error decoding image data <NSData
+        // 92033 bytes>" log line.
+        //
+        // This rename USED to live inside the `if (force)` block above,
+        // which made the bug visible only on the normal auto-download
+        // path: a manual force-retry worked (the rename ran), but every
+        // auto-download skipped it. Hoisted out so every download path
+        // (auto + force) gets the suffix.
+        if (file_transfer.url.endsWith('.asc') && !file_transfer.filename.endsWith('.asc')) {
+            file_transfer.filename = file_transfer.filename + ('.asc');
+        }
 
-        //console.log('Made directory', dir_path);
+        console.log('[dl-diag] step=before-mkdir id=' + id + ' dir=' + dir_path);
+        try {
+            await RNFS.mkdir(dir_path);
+        } catch (e) {
+            console.log('[dl-diag] mkdir-fail id=' + id + ' err=' + (e && e.message));
+            return;
+        }
+        console.log('[dl-diag] step=after-mkdir id=' + id);
 
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
-
-        // add a timer to cancel the download
-        //console.log('To local storage:', tmp_file_path);
+        console.log('[dl-diag] step=paths id=' + id + ' file=' + file_path + ' tmp=' + tmp_file_path);
 
         file_transfer.paused = false;
 
         try {
             await RNFS.unlink(file_path);
+            console.log('[dl-diag] step=unlinked-old id=' + id);
         } catch (err) {
+            // benign — file didn't exist
         };
 
-        // console.log('Adding file transfer request id', id, file_transfer.url);
-        //this.updateFileTransferBubble(file_transfer, 'Downloading, press to cancel');
+        console.log('[dl-diag] step=before-RNBD.download id=' + id + ' url=' + (file_transfer.url || '').slice(0, 120));
         let filesize;
-        this.downloadRequests[id] = RNBackgroundDownloader.download({
-            id: id,
-            url: file_transfer.url,
-            destination: tmp_file_path,
-        }).begin((tinfo) => {
-             if (tinfo && tinfo.expectedBytes) {
-                 console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
-             }
-        }).progress((pdata) => {
-            if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
-				const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
-				const progress = Math.ceil(percent);
-				if (file_transfer.transfer_id in this.downloadRequests) {
-					this.updateTransferProgress(file_transfer.transfer_id, progress, 'download');
-				}
+        let _beginFired = false;
+        let _firstProgressLogged = false;
+        // Watchdog: if .begin() doesn't fire within 15s, something
+        // is wrong upstream of the downloader (worker not running,
+        // permissions, etc.). Log loudly so we can tell apart "the
+        // network is slow" from "the download never started".
+        const _beginWatchdog = setTimeout(() => {
+            if (!_beginFired) {
+                console.log('[dl-diag] WATCHDOG-15s id=' + id
+                    + ' begin-never-fired url=' + (file_transfer.url || '').slice(0, 120));
             }
-        }).done(() => {
+        }, 15000);
+
+        try {
+            this.downloadRequests[id] = RNBackgroundDownloader.download({
+                id: id,
+                url: file_transfer.url,
+                destination: tmp_file_path,
+            }).begin((tinfo) => {
+                _beginFired = true;
+                clearTimeout(_beginWatchdog);
+                console.log('[dl-diag] begin id=' + id
+                    + ' expectedBytes=' + (tinfo && tinfo.expectedBytes)
+                    + ' headers=' + (tinfo && tinfo.headers ? Object.keys(tinfo.headers).length + ' keys' : '0'));
+                if (tinfo && tinfo.expectedBytes) {
+                    console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
+                }
+            }).progress((pdata) => {
+                if (!_firstProgressLogged) {
+                    _firstProgressLogged = true;
+                    console.log('[dl-diag] first-progress id=' + id
+                        + ' bytesDownloaded=' + (pdata && pdata.bytesDownloaded)
+                        + ' bytesTotal=' + (pdata && pdata.bytesTotal));
+                }
+                if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
+					const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
+					const progress = Math.ceil(percent);
+					if (file_transfer.transfer_id in this.downloadRequests) {
+						this.updateTransferProgress(file_transfer.transfer_id, progress, 'download');
+					}
+                }
+            }).done(() => {
+                clearTimeout(_beginWatchdog);
+                console.log('[dl-diag] done id=' + id);
 			ReactNativeBlobUtil.fs.stat(tmp_file_path).then(stat => {
 			    filesize = stat.size;
 				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
@@ -14342,7 +15596,15 @@ class Sylk extends Component {
 			});
 
         }).error((error) => {
+            clearTimeout(_beginWatchdog);
             const wasCancelled = this._cancelledDownloads && this._cancelledDownloads.has(id);
+            // Log the full error shape (some Android downloaders
+            // pass {error, errorCode, ...} objects, others pass a
+            // bare string) so we can see what actually failed.
+            console.log('[dl-diag] error id=' + id
+                + ' wasCancelled=' + !!wasCancelled
+                + ' error=' + JSON.stringify(error)
+                + ' typeof=' + (typeof error));
             console.log('File', file_transfer.filename, 'download failed:', error,
                         'wasCancelled=', !!wasCancelled);
 
@@ -14378,6 +15640,14 @@ class Sylk extends Component {
                 }, 2000);
             }
         });
+            console.log('[dl-diag] step=after-RNBD.download-call id=' + id
+                + ' hasHandler=' + !!this.downloadRequests[id]);
+        } catch (e) {
+            clearTimeout(_beginWatchdog);
+            console.log('[dl-diag] DOWNLOAD-SETUP-THREW id=' + id + ' err=' + (e && e.message));
+            delete this.downloadRequests[id];
+            this.deleteTransferProgress(file_transfer.transfer_id);
+        }
     }
 
     /**
@@ -14814,8 +16084,8 @@ class Sylk extends Component {
         });
     }
 
-    lookupPublicKey(contact) {
-        console.log('lookupPublicKey', contact.uri);
+    lookupPublicKey(contact, opts={}) {
+        console.log('lookupPublicKey', contact.uri, 'speculative=', !!opts.speculative);
 
         // Skip categories that have no key on the server / shouldn't
         // ever receive ours. These checks come before the cross-domain
@@ -14834,6 +16104,37 @@ class Sylk extends Component {
 
         if (!this.state.connection) {
             return;
+        }
+
+        // Speculative-lookup flag.
+        //
+        // Tapping a row in the contact list — including an *address-book*
+        // entry that is not yet a Sylk contact — sets selectedContact
+        // and fires lookupPublicKey to warm up E2EE. The server replies
+        // with the peer's PGP key (or not), `publicKeyReceived` calls
+        // savePublicKey, and savePublicKey's "autocreate the contact
+        // for unknown sender" branch (designed for the cross-domain
+        // handshake where a peer pushes their key first) then INSERTs
+        // a brand-new Sylk row for an AB entry the user only *browsed*.
+        // The user can't get rid of it, the AB row gets duplicated by
+        // the OS-side AB rebuilt on every restart, and editing the
+        // saved row's URI later strands the call-log lookup so calls
+        // mint *another* duplicate. None of that is what the user
+        // intended.
+        //
+        // Mark every URI we proactively look up here so savePublicKey
+        // can tell "I asked for this key (don't promote to a contact)"
+        // apart from "this key was pushed at me by a peer who's about
+        // to message us (do auto-create)". The set is best-effort —
+        // an entry left over from a missed publicKey event won't
+        // persist beyond the session, and a stale flag at worst skips
+        // one auto-create that the user can re-trigger by actually
+        // chatting / calling.
+        if (!this.speculativeLookups) {
+            this.speculativeLookups = new Set();
+        }
+        if (opts.speculative) {
+            this.speculativeLookups.add(contact.uri);
         }
 
 		// Push our own PGP public key to cross-domain contacts. Done
@@ -14955,11 +16256,35 @@ class Sylk extends Component {
 
         orig_uri = uri;
 
-        let limit = this.state.messageLimit * this.state.messageZoomFactor;
+        // Page size for the SQL slice. Default (messageLimit ×
+        // zoom) gives ~100 rows on first load and ramps up as
+        // the user scrolls — a good fit for the mixed-timeline
+        // chat view, where every fetched row potentially holds
+        // an encrypted-text payload that has to be decrypted on
+        // load.
+        //
+        // For category-filtered queries, fetched rows are
+        // narrowed BOTH by limit and by the per-category SQL
+        // gate below (file-transfer for media types,
+        // sylk-message-metadata + related_action for locations,
+        // pinned=1 for pinned). Those gates exclude
+        // encrypted-text rows entirely, so the decrypt cost
+        // doesn't scale with the limit — the bigger the limit,
+        // the more matches we get, but the SQL still skips every
+        // text row up front. That makes a 10000-row cap safe to
+        // apply on filtered queries: it lets the grid populate
+        // the entire history of a contact in one round-trip
+        // without dragging tons of text decryption along the
+        // way (which is what the earlier "expand for everything"
+        // attempt accidentally did).
+        const FILTERED_LIMIT = 10000;
+        let limit = has_filter
+            ? FILTERED_LIMIT
+            : (this.state.messageLimit * this.state.messageZoomFactor);
         let uris = this.getAllContactUris(contact);
         const placeholders = uris.map(() => '?').join(', ');
 
-        utils.timestampedLog('[message] Get messages with contact', contact.id, 'from', uris.join(', '), 'with zoom factor', this.state.messageZoomFactor);
+        utils.timestampedLog('[message] Get messages with contact', contact.id, 'from', uris.join(', '), 'with zoom factor', this.state.messageZoomFactor, 'limit', limit, 'filter', has_filter ? (category || 'pinned') : 'none');
         
         query = `
 		SELECT count(*) as rows FROM messages WHERE account = ? AND 
@@ -14983,7 +16308,18 @@ class Sylk extends Component {
         if (category === 'location') {
             query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
         } else if (category && category !== 'text') {
-            query = query + " and metadata != ''";
+            // Media categories (image / video / audio / other)
+            // narrow to file-transfer rows exclusively. The old
+            // `metadata != ''` clause let through every metadata-
+            // bearing row — location ticks, peaks metadata,
+            // reactions, replies — which made the JS-side
+            // classifier scan a much larger set than needed and
+            // wasted decrypt cycles on rows that could never be
+            // media. content_type filter pushes the same exclusion
+            // down into SQL so the slice that comes back is
+            // already exclusively the universe the grid cares
+            // about.
+            query = query + " and content_type = 'application/sylk-file-transfer'";
         }
 
 		params = [
@@ -15004,6 +16340,112 @@ class Sylk extends Component {
 
 		contact.totalMessages = total;
 
+        // Per-category counts for the media-filter chip bar in
+        // ReadyBox. The chip row used to render all six buttons
+        // (text/audio/image/video/location/other) unconditionally;
+        // with categoryCounts present, ReadyBox.categoryFilterItems
+        // only renders a chip when the matching count > 0 so a
+        // contact you've only ever traded text with doesn't show
+        // a dead "Locations" button.
+        //
+        // SQL strategy: a single CASE-WHEN gives us total /
+        // location / files-with-metadata counts (cheap — scans the
+        // already-filtered contact rows once). For the per-MIME
+        // split (image vs audio vs video vs other) we then load
+        // just the `metadata` column for the file-transfer rows and
+        // classify each in JS via utils.isImage / isAudio /
+        // isVideo. Typical contact has at most a few-thousand file
+        // transfers, so the scan stays in single-digit ms.
+        //
+        // Only computed when no category filter is active (the
+        // categoryCounts represent the unfiltered universe; running
+        // this for the filtered-view getMessages calls would waste
+        // work and overwrite the unfiltered numbers with filtered
+        // ones).
+        if (!has_filter) {
+            try {
+                const countsQuery = `
+                    SELECT
+                        SUM(CASE WHEN content_type='application/sylk-message-metadata' AND related_action='location' THEN 1 ELSE 0 END) as cnt_location,
+                        SUM(CASE WHEN content_type='application/sylk-file-transfer' THEN 1 ELSE 0 END) as cnt_files,
+                        SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) as cnt_pinned
+                    FROM messages WHERE account = ? AND
+                    ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
+                `;
+                const cParams = [
+                    this.state.accountId,
+                    this.state.accountId,
+                    ...uris,
+                    ...uris,
+                    this.state.accountId,
+                ];
+                const cRes = await this.ExecuteQuery(countsQuery, cParams);
+                const cntLocation = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_location) || 0;
+                const cntFiles    = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_files)    || 0;
+                const cntPinned   = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_pinned)   || 0;
+                // Text = whatever's left after subtracting locations
+                // and file-transfer rows. Clamp at 0 so a transient
+                // mismatch never produces a negative chip label.
+                const cntText = Math.max(0, total - cntLocation - cntFiles);
+
+                const categoryCounts = {
+                    text:     cntText,
+                    image:    0,
+                    audio:    0,
+                    video:    0,
+                    location: cntLocation,
+                    other:    0,
+                    // Pinned is a CUMULATIVE modifier rather than a
+                    // content-type filter (see ReadyBox#categorySort-
+                    // Items comment for the design). Carrying its
+                    // count alongside the others lets the right-side
+                    // "Pinned" chip use the same "hide-if-empty"
+                    // logic as the left-side chips.
+                    pinned:   cntPinned,
+                };
+
+                if (cntFiles > 0) {
+                    // Pull just the metadata strings so we don't drag
+                    // file bodies into memory. utils.isImage / isAudio
+                    // / isVideo strip a trailing .asc themselves so we
+                    // don't have to special-case PGP-armored names.
+                    // Narrowed to content_type='application/sylk-file-
+                    // transfer' so we don't bucket location ticks /
+                    // peaks metadata / reactions into the media
+                    // chip counts.
+                    const fileQuery = `
+                        SELECT metadata FROM messages WHERE account = ? AND
+                        ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
+                        AND content_type = 'application/sylk-file-transfer'
+                    `;
+                    const fRes = await this.ExecuteQuery(fileQuery, cParams);
+                    for (let i = 0; i < fRes.rows.length; i++) {
+                        let meta;
+                        try { meta = JSON.parse(fRes.rows.item(i).metadata); }
+                        catch (_) { categoryCounts.other++; continue; }
+                        if (!meta || !meta.filename) {
+                            // Metadata blobs without a filename are
+                            // typically non-file-transfer payloads
+                            // (e.g. live-location trail rows). Don't
+                            // bucket them as "other" — they're not
+                            // media in the filter-chip sense.
+                            continue;
+                        }
+                        const fname = meta.filename;
+                        const ftype = meta.filetype || null;
+                        if (utils.isImage(fname, ftype))      categoryCounts.image++;
+                        else if (utils.isAudio(fname, ftype)) categoryCounts.audio++;
+                        else if (utils.isVideo(fname, ftype)) categoryCounts.video++;
+                        else                                  categoryCounts.other++;
+                    }
+                }
+
+                contact.categoryCounts = categoryCounts;
+            } catch (e) {
+                console.log('[categoryCounts] SQL/parse error:', e && e.message);
+            }
+        }
+
         query = `SELECT rowid, * FROM messages WHERE account = ? AND
         ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))`;
 
@@ -15016,7 +16458,18 @@ class Sylk extends Component {
         if (category === 'location') {
             query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
         } else if (category && category !== 'text') {
-            query = query + " and metadata != ''";
+            // Media categories (image / video / audio / other)
+            // narrow to file-transfer rows exclusively. The old
+            // `metadata != ''` clause let through every metadata-
+            // bearing row — location ticks, peaks metadata,
+            // reactions, replies — which made the JS-side
+            // classifier scan a much larger set than needed and
+            // wasted decrypt cycles on rows that could never be
+            // media. content_type filter pushes the same exclusion
+            // down into SQL so the slice that comes back is
+            // already exclusively the universe the grid cares
+            // about.
+            query = query + " and content_type = 'application/sylk-file-transfer'";
         }
 
         query = query + ' order by unix_timestamp desc limit ?, ?';
@@ -16407,33 +17860,20 @@ class Sylk extends Component {
 
 			console.log('[message] loaded', (messages[orig_uri] || []).length, 'messages exchanged with', uri);
 
-			// Encryption-status hint. Whenever we have a PGP public key
-			// for this contact, drop a memory-only system note at the
-			// end of the bubble list (newest position) so the user sees
-			// an explicit "messages are end to end encrypted" affordance
-			// every time the chat is opened — both for empty chats and
-			// for chats with existing history. The note is NOT persisted
-			// to SQL; it's regenerated by getMessages() on every reload,
-			// so a contact losing their public key (or it being rotated
-			// without re-fetch) cleanly removes the note next time.
+			// Encryption-status hint disabled. Previously, whenever a PGP
+			// public key existed for this contact, a memory-only system
+			// note "Messages are end to end encrypted" was injected at
+			// the end of the bubble list on every chat open. Removed
+			// per user request — the lock icon on each file-transfer
+			// bubble already conveys encryption state, and the system
+			// note was visually noisy on otherwise empty / short chats.
+			// The PGP availability is still logged for diagnostics.
 			try {
-				const _haveKey = !!(contact && contact.publicKey);
-				if (_haveKey) {
-					if (!Array.isArray(messages[orig_uri])) {
-						messages[orig_uri] = [];
-					}
-					const sysId = '_sys_e2ee_' + orig_uri;
-					messages[orig_uri].push({
-						_id: sysId,
-						key: sysId,
-						createdAt: new Date(),
-						text: 'Messages are end to end encrypted',
-						system: true,
-					});
+				if (contact && contact.publicKey) {
 					utils.timestampedLog('[message] PGP encryption available for', uri);
 				}
 			} catch (e) {
-				console.log('[message] system-note injection failed',
+				console.log('[message] PGP availability log failed',
 					e && e.message ? e.message : e);
 			}
 
@@ -16722,53 +18162,108 @@ class Sylk extends Component {
 			uris = this.getAllContactUris(filter.selectedContact);
         }
 
-        console.log('Delete messages for', uris, 'remote', remote);
-       
+        // Verbose entry log so we can tell from a field trace WHICH
+        // branch of this function actually ran. Without dumping the
+        // filter, every delete attempt looks identical ("Delete
+        // messages for [...] remote true") in the log even though
+        // deleteContact / simulate / incoming / outgoing /
+        // selectedContact.id / selectedContact.uri all change the
+        // downstream behavior dramatically. The user's
+        // can-delete-everything-except-this-one report needs us to
+        // see the exact filter shape that made removeContact get
+        // skipped.
+        console.log('Delete messages for', uris, 'remote', remote,
+            'filter.deleteContact=', !!filter.deleteContact,
+            'filter.simulate=', !!filter.simulate,
+            'filter.incoming=', !!filter.incoming,
+            'filter.outgoing=', !!filter.outgoing,
+            'deleteAll=', deleteAll,
+            'selectedContact.id=', filter.selectedContact && filter.selectedContact.id,
+            'selectedContact.uri=', filter.selectedContact && filter.selectedContact.uri);
+
         if (filter.wipe) {
+			console.log('deleteMessages: filter.wipe set → calling wipe_device and returning');
 			this.wipe_device();
 			return;
         }
-       
+
         if (filter.incoming && filter.outgoing && !filter.period && !filter.simulate) {
 			deleteAll = true;
         }
 
-		for (const uri of uris) {
-			let orig_uri = uri;
-	
-			if (uri.indexOf('@') === -1 && utils.isPhoneNumber(uri)) {
-				uri = uri + '@' + this.state.defaultDomain;
-			}
-			
-			if (deleteAll) {
-				console.log('[message] delete all messages exchanged with', uri);
-				if (uri.indexOf('@guest.') === -1 && uri.indexOf('@videoconference.') === -1 && remote) {
-					this.addJournal(orig_uri, 'removeConversation');
-				}
-	
-				let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
-				RNFS.unlink(dir).then((success) => {
-					console.log('Removed folder', dir);
-				}).catch((err) => {
-					///console.log('Error deleting folder', dir, err.message);
-				});
+		console.log('deleteMessages: entering for-loop with uris.length=', uris && uris.length, 'deleteAll=', deleteAll);
 
-				let contact_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri;
-				RNFS.unlink(contact_path).then((success) => {
-					console.log('Removed folder', contact_path);
-				}).catch((err) => {
-					///console.log('Error deleting folder', dir, err.message);
-				});
-	
-				if (orig_uri in messages) {
-					delete messages[orig_uri];
-					this.setState({messages: {...messages}});
+		try {
+			// `let` (not `const`) — the body reassigns the loop
+			// variable a few lines down when the URI is a bare phone
+			// number, appending the account's default SIP domain. With
+			// `const` that reassignment throws "uri is read-only"
+			// under Hermes' strict-mode-by-default, the for-loop
+			// aborts, the surrounding async function returns to its
+			// caller via the rejected promise, and the throw gets
+			// swallowed by React's event-handler boundary. The
+			// user-visible symptom is "Delete contact does nothing
+			// for any contact whose URI is a bare phone number" —
+			// the only delete path that ever hits the reassignment
+			// branch. Every other contact (URIs already containing
+			// '@') skipped the reassignment so delete worked. This
+			// const→let is the actual fix; the try/catch below is
+			// kept as a belt-and-braces guard so any future surprise
+			// in this loop won't silently disable the delete chain
+			// again.
+			for (let uri of (uris || [])) {
+				let orig_uri = uri;
+
+				console.log('deleteMessages: loop iter uri=', uri);
+
+				if (uri && uri.indexOf('@') === -1 && utils.isPhoneNumber(uri)) {
+					uri = uri + '@' + this.state.defaultDomain;
+					console.log('deleteMessages: appended @domain → uri=', uri);
+				}
+
+				if (deleteAll) {
+					console.log('[message] delete all messages exchanged with', uri);
+					if (uri.indexOf('@guest.') === -1 && uri.indexOf('@videoconference.') === -1 && remote) {
+						this.addJournal(orig_uri, 'removeConversation');
+					}
+
+					let dir = RNFS.DocumentDirectoryPath + '/conference/' + uri + '/files';
+					RNFS.unlink(dir).then((success) => {
+						console.log('Removed folder', dir);
+					}).catch((err) => {
+						///console.log('Error deleting folder', dir, err.message);
+					});
+
+					let contact_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + uri;
+					RNFS.unlink(contact_path).then((success) => {
+						console.log('Removed folder', contact_path);
+					}).catch((err) => {
+						///console.log('Error deleting folder', dir, err.message);
+					});
+
+					if (orig_uri in messages) {
+						delete messages[orig_uri];
+						this.setState({messages: {...messages}});
+					}
 				}
 			}
+		} catch (e) {
+			console.log('deleteMessages: for-loop threw:', e && e.message, e && e.stack);
 		}
-		
+
+		console.log('deleteMessages: for-loop done, about to check filter.deleteContact');
+
 		if (filter.deleteContact) {
-			this.removeContact(filter.selectedContact);
+			console.log('deleteMessages: filter.deleteContact=true → calling removeContact for',
+				filter.selectedContact && filter.selectedContact.id,
+				filter.selectedContact && filter.selectedContact.uri);
+			try {
+				this.removeContact(filter.selectedContact);
+			} catch (e) {
+				console.log('deleteMessages: removeContact threw:', e && e.message, e && e.stack);
+			}
+		} else {
+			console.log('deleteMessages: filter.deleteContact is FALSY → skipping removeContact');
 		}
 
 		let params = [
@@ -17035,13 +18530,14 @@ class Sylk extends Component {
 
 		// Remove the saved account
 		
-		const storage_keys = ['autoAnswerMode', 
-		                      'devMode',
-		                      'account',
-		                      'proximityEnabled',
-		                      'devices',
+		// autoAnswerMode, devMode, proximityEnabled, askedDndPermission,
+		// firstSync, and myParticipants are no longer here — the first
+		// five live in accounts.settings now (wiped alongside the SQL
+		// row), and myParticipants was removed entirely as dead code.
+		// 'devices' is no longer here — camera/mic picks moved into
+		// accounts.settings.device.{cameraDevice,micDevice}.
+		const storage_keys = ['account',
 		                      'outgoingJournalEntries',
-		                      'myParticipants',
 		                      'accountId'
 		                      ];
 
@@ -17128,14 +18624,14 @@ class Sylk extends Component {
     playMessageSound(direction='incoming') {
         //console.log('--- playMessageSound', direction);
 
-        if (!this.state.chatSounds) {
+        if (!this.state.accountSetting.device.chatSounds) {
 			console.log('---- playMessageSound disabled');
             return;
         }
 
         let must_play_sound = true;
 
-        if (this.state.dnd) {
+        if (this.state.accountSetting.privacy.dnd) {
             return;
         }
 
@@ -17307,7 +18803,21 @@ class Sylk extends Component {
     }
 
     async removeContact(contact) {
-        console.log('removeContact', contact.id);
+        if (!contact) {
+            console.log('removeContact: called with falsy contact, nothing to do');
+            return;
+        }
+        console.log('removeContact id=', contact.id, 'uri=', contact.uri,
+            'tags=', contact.tags && contact.tags.join('|'));
+        // Verify the id we're about to delete actually exists in our
+        // in-memory contact list — if not, the SQL DELETE will match
+        // 0 rows and the user will see "nothing happened". Log a
+        // diff so the discrepancy is obvious in the trace.
+        const inMemory = (this.state.allContacts || []).find(c => c && c.id === contact.id);
+        const sameUri = (this.state.allContacts || []).filter(c => c && c.uri === contact.uri);
+        console.log('removeContact: in-memory match by id?', !!inMemory,
+            'rows with same uri:', sameUri.length,
+            'their ids:', sameUri.map(c => c.id).join(', '));
 
 		let uris = this.getAllContactUris(contact);
 		let updated = false;
@@ -21366,8 +22876,9 @@ class Sylk extends Component {
 		// on every call so a change applies on the next tick without
 		// any session teardown.
 		const _prefProximity = this.state
-			&& this.state.devicePreferences
-			&& this.state.devicePreferences.locationProximityMeters;
+			&& this.state.accountSetting
+			&& this.state.accountSetting.location
+			&& this.state.accountSetting.location.proximityMeters;
 		const THRESHOLD_M = (typeof _prefProximity === 'number' && _prefProximity > 0)
 			? _prefProximity
 			: 20;
@@ -21934,12 +23445,80 @@ class Sylk extends Component {
                     || md.meetingArrival === true
                     || md.action === 'location'
                     || md.action === 'location_request'
+                    // One-tap emoji reaction sent through the quick-
+                    // reaction bar (ContactsListBox.quickReact). The
+                    // emoji is shipped as a normal text/plain reply,
+                    // but we don't want it overwriting the contact's
+                    // last-message preview — the user's previously-
+                    // typed text should remain visible. The flag is
+                    // sender-only (text/plain bodies don't carry
+                    // metadata over the wire) but is persisted in
+                    // local SQL so the preview stays stable across
+                    // app restarts.
+                    || md.isReaction === true
                 )) {
                 return null;
             }
             if (message.contentType === 'application/sylk-live-location'
                 || message.contentType === 'application/sylk-message-metadata') {
                 return null;
+            }
+
+            // Receiver-side fallback for one-tap reactions. The
+            // wire format strips the sender's md.isReaction flag
+            // (text/plain bodies don't ship metadata), so on the
+            // receive side we INFER: a pure-emoji body whose
+            // message has a reply-to entry in messagesMetadata is
+            // a reaction. Same UX outcome — the contacts-list
+            // preview keeps showing the previously-typed text.
+            //
+            // Timing: the reply metadata-message is sent BEFORE
+            // the emoji message (see onSendMessage in
+            // ContactsListBox), so in the common case
+            // messagesMetadata[msgId] already contains the
+            // 'reply' entry by the time this gate runs on the
+            // incoming text. A network reorder would let one
+            // frame slip through with the emoji as the preview;
+            // the next refresh (the per-uri getMessages pass at
+            // line ~16531) corrects it because the metadata is
+            // by then committed.
+            if (message._id) {
+                const body = (message.text != null ? message.text : message.content) || '';
+                // Reactions are short — cap at 24 chars to avoid
+                // running the regex on full message bodies.
+                if (body && body.length <= 24) {
+                    let isPureEmoji = false;
+                    try {
+                        // Extended_Pictographic + ZWJ + variation
+                        // selectors + whitespace. Built via
+                        // `new RegExp` rather than a literal because
+                        // Metro/Babel's parser rejects `\p{...}`
+                        // unicode property escapes at build time
+                        // (classEscape error), even though Hermes
+                        // supports them at runtime with the 'u'
+                        // flag. The RegExp constructor defers
+                        // validation to runtime.
+                        const reactionRe = new RegExp(
+                            '^[\\s\\p{Extended_Pictographic}‍️]+$',
+                            'u'
+                        );
+                        isPureEmoji = reactionRe.test(body);
+                    } catch (_e) {
+                        // Older runtime fallback (Hermes builds
+                        // without unicode-property-escape support):
+                        // "non-ASCII, non-whitespace only". Coarser,
+                        // but reactions in practice are always
+                        // non-ASCII so it still catches them.
+                        isPureEmoji = /^[^\x00-\x7F\s]+$/.test(body);
+                    }
+                    if (isPureEmoji) {
+                        const mm = this.state && this.state.messagesMetadata;
+                        const arr = mm && mm[message._id];
+                        if (Array.isArray(arr) && arr.some(e => e && e.action === 'reply')) {
+                            return null;
+                        }
+                    }
+                }
             }
         }
 
@@ -24154,28 +25733,12 @@ class Sylk extends Component {
             this._historyConferenceParticipants.set(callUUID, new_participants);
         }
 
-        if (!this.myParticipants) {
-            this.myParticipants = new Object();
-        }
-
-        if (this.myParticipants.hasOwnProperty(room)) {
-            let old_uris = this.myParticipants[room];
-            if (old_uris.indexOf(uri) === -1 && uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
-                this.myParticipants[room].push(uri);
-            }
-
-        } else {
-            let new_uris = [];
-            if (uri !== this.state.account.id && (uri + '@' + this.state.defaultDomain) !== this.state.account.id) {
-                new_uris.push(uri);
-            }
-
-            if (new_uris) {
-                this.myParticipants[room] = new_uris;
-            }
-        }
-
-        storage.set('myParticipants', this.myParticipants);
+        // The per-room participant aggregation that used to live in
+        // this.myParticipants / AsyncStorage 'myParticipants' was
+        // never read by any active consumer (the render-time use was
+        // commented out), so the persistence and the in-memory map
+        // have been removed. _historyConferenceParticipants above is
+        // the live, per-call structure that's actually consulted.
     }
 
     deletePublicKey(uri) {
@@ -24269,38 +25832,160 @@ class Sylk extends Component {
 	  this.contactsIndexes = multiIndex;
 	};
 
+	// Phone-number URIs live in several equivalent shapes:
+	//   • bare vs routed:
+	//       "+40721253846"             vs "+40721253846@sylk.link"
+	//       "0040721253846"            vs "0040721253846@sylk.link"
+	//     The wire format and the server's history payload always carry
+	//     an @domain; AB-imported and manually-typed numbers may be
+	//     stored bare (older rows) or qualified (post-migration rows).
+	//   • international prefix: "+CC…" vs "00CC…" — these are the same
+	//     E.164 number (ITU-T E.164 explicitly defines `00` as the
+	//     country-default IDD for `+`). Users dial either form; the AB
+	//     contact may store either form; the server may echo either
+	//     form. Treating them as different keys produced a duplicate
+	//     Sylk row every time the call path normalized "+40…" to
+	//     "0040…" or vice-versa.
+	// This helper returns every equivalent URI shape EXCEPT the input
+	// itself, so the lookup can try them all on a miss. SIP-username
+	// URIs are left alone (the alternation is gated on isPhoneNumber)
+	// because two different SIP users on different domains must NOT
+	// be collapsed into one another.
+	_phoneNumberVariants = (uriString) => {
+	  if (!uriString) return [];
+	  const atIdx = uriString.indexOf('@');
+	  const localPart = atIdx > -1 ? uriString.substring(0, atIdx) : uriString;
+	  const originalDomain = atIdx > -1 ? uriString.substring(atIdx) : null; // includes the '@'
+	  if (!utils.isPhoneNumber(localPart)) {
+	    return [];
+	  }
+
+	  // Build the set of equivalent local-part forms by swapping the
+	  // international IDD prefix between '+' and '00'. Anything else
+	  // (a national number with no prefix, or a SIP-style numeric
+	  // username) is treated as a single form on its own.
+	  const locals = new Set();
+	  locals.add(localPart);
+	  if (localPart.startsWith('+')) {
+	    locals.add('00' + localPart.substring(1));
+	  } else if (localPart.startsWith('00')) {
+	    locals.add('+' + localPart.substring(2));
+	  }
+
+	  // Cross-product with the two routing shapes (bare and routed via
+	  // the account's default domain). Also include the originally-
+	  // attached domain when present so lookups against a non-default
+	  // domain still match correctly.
+	  const variants = new Set();
+	  const domains = new Set();
+	  domains.add(''); // bare
+	  if (this.state.defaultDomain) {
+	    domains.add('@' + this.state.defaultDomain);
+	  }
+	  if (originalDomain) {
+	    domains.add(originalDomain);
+	  }
+	  for (const lp of locals) {
+	    for (const dom of domains) {
+	      variants.add(lp + dom);
+	    }
+	  }
+	  // Drop the input itself — exact-match lookup is always tried
+	  // first; the variants list is only for the miss path.
+	  variants.delete(uriString);
+	  return Array.from(variants);
+	};
+
 	lookupContact = (uriString, create = false, save = false) => {
 	  // returns only one contact
-	  const match = this.contactIndex?.[uriString] || null;
+	  let match = this.contactIndex?.[uriString] || null;
+
+	  if (!match) {
+	    for (const alt of this._phoneNumberVariants(uriString)) {
+	      match = this.contactIndex?.[alt] || null;
+	      if (match) {
+	        console.log('lookupContact: matched', uriString, 'via phone-number variant', alt,
+	          '→ contact id=', match.id);
+	        break;
+	      }
+	    }
+	  }
 
 	  if (match) {
 		  return match;
-	  } 
+	  }
 
 	  if (create) {
-	      console.log('No contact matches', uriString);
-	      console.log('--- Existing contacts:');
-	      const allContacts = this.state.allContacts;
-		  for (const contact of allContacts) {
-		      console.log(contact.id, contact.uri);
-		  }
-	      
+	      // Previously logged "No contact matches" + a full dump of
+	      // every existing contact's (id, uri). That dump fired on
+	      // every conference participant join because the conference
+	      // room contact (foo@videoconference.…) doesn't exist as a
+	      // Sylk contact and we always create-on-miss here. With
+	      // ~10+ saved contacts and multiple conferences per session
+	      // it was producing a wall of noise in the metro tail with
+	      // no actionable info — the create path itself doesn't need
+	      // the listing, it's just contact data the user already has.
+	      // Kept disabled rather than deleted so we can flip it back
+	      // for one-off debugging.
+	      // console.log('No contact matches', uriString);
+	      // console.log('--- Existing contacts:');
+	      // const allContacts = this.state.allContacts;
+	      // for (const contact of allContacts) {
+	      //     console.log(contact.id, contact.uri);
+	      // }
+
 	      const newContact = this.newContact(uriString);
-	
+
 		  if (save) {
+			  // Register the just-minted contact in the lookup indexes
+			  // synchronously, BEFORE the async saveSylkContact, so a
+			  // back-to-back lookupContact for the same URI (e.g.
+			  // createChatContact immediately followed by savePublicKey's
+			  // autocreate) doesn't mint a second row. saveSylkContact
+			  // INSERTs into SQL, setStates allContacts, and only on the
+			  // next componentDidUpdate does buildContactIndex run —
+			  // without this synchronous write, the second caller sees
+			  // an empty contactIndex and autocreates a duplicate
+			  // (observed for cross-domain peers where chat-open and
+			  // key-push race). Only do it when save=true — speculative
+			  // create-without-save callers must not pollute the index.
+			  if (!this.contactIndex) this.contactIndex = {};
+			  if (!this.contactsIndexes) this.contactsIndexes = {};
+			  this.contactIndex[uriString] = newContact;
+			  if (!this.contactsIndexes[uriString]) {
+			      this.contactsIndexes[uriString] = [];
+			  }
+			  this.contactsIndexes[uriString].push(newContact);
+
 			  this.saveSylkContact(uriString, newContact, 'lookup');
 	      }
-	      
+
 	      return newContact;
-	  }	  
-	  
+	  }
+
 	  return null;
 
 	};
 
 	lookupContacts = (uriString) => {
 	  // returns array of matches
-	  return this.contactsIndexes?.[uriString] || [];
+	  const exact = this.contactsIndexes?.[uriString] || [];
+	  if (exact.length > 0) {
+	    return exact;
+	  }
+	  // Same phone-number domain fallback as lookupContact — keeps the
+	  // call/history path (addHistoryEntry, updateHistoryEntry,
+	  // savePublicKey) from minting duplicate rows when the wire form
+	  // (with @domain) doesn't index-match the stored bare phone number.
+	  for (const alt of this._phoneNumberVariants(uriString)) {
+	    const altHit = this.contactsIndexes?.[alt] || [];
+	    if (altHit.length > 0) {
+	      console.log('lookupContacts: matched', uriString, 'via phone-number variant', alt,
+	        '→', altHit.length, 'contact(s)');
+	      return altHit;
+	    }
+	  }
+	  return [];
 	};
 
     newContact(uri, name=null, data={}) {
@@ -24544,8 +26229,14 @@ class Sylk extends Component {
 		let uri = contactObject.uri;
 		let action = originalContact ? 'editContact' : 'addContact';
 		let contact;
-				 		
-        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
+
+        // Always append @defaultDomain when the URI is bare — phone
+        // numbers included. Keeps the stored URI in the same shape the
+        // call wire / server history uses so addHistoryEntry's
+        // lookupContacts hits the existing row instead of minting a
+        // duplicate. See sanitizeContact for the matching rule on the
+        // newContact path.
+        if (uri.indexOf('@') === -1) {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
@@ -24562,6 +26253,40 @@ class Sylk extends Component {
         contact.email = contactObject.email;
         contact.timestamp = new Date();
         contact.tags = contactObject.tags || [];
+
+        // Auto-tag `tel` for E.164 phone-number contacts. Anything
+        // whose local part starts with '+' is a canonical phone
+        // number (sanitizeContact normalizes "00…" to "+…" at save
+        // time, so we only need to check '+'). The `tel` tag is the
+        // hook other code paths use to branch on "this is a
+        // telephone number, not a SIP user" — disabling chat-only
+        // affordances, routing to the phone icon, etc. addHistoryEntry
+        // applies the same tag when it auto-creates a contact for a
+        // first call to an unknown number; mirroring the logic here
+        // means manually-added phone-number contacts get the same
+        // treatment without the user having to remember to tag them.
+        if (uri.startsWith('+') && contact.tags.indexOf('tel') === -1) {
+            contact.tags = [...contact.tags, 'tel'];
+        }
+
+        // Address-book provenance link. When AddContactModal is invoked
+        // from an AB entry it forwards `recordID` (or the AB row's `id`
+        // we minted in getABContacts) so the saved Sylk contact remembers
+        // which OS contact it came from. We persist this on
+        // contact.properties.ab_id (carried through saveSylkContact's
+        // JSON.stringify(contact.properties)) and add an 'ab' tag so the
+        // contact list / filters can branch on "this was imported from
+        // the system address book". This is the hook a future
+        // sync-from-OS pass needs: walk allContacts, pull ab_id, fetch
+        // fresh data from react-native-contacts, and re-apply name /
+        // photo / etc. without ever clobbering the user's edited URI.
+        const abId = contactObject.recordID || contactObject.ab_id;
+        if (abId && !originalContact) {
+            contact.properties = { ...(contact.properties || {}), ab_id: abId };
+            if (contact.tags.indexOf('ab') === -1) {
+                contact.tags = [...contact.tags, 'ab'];
+            }
+        }
 
         // Merge any localProperties the editor wants to update without
         // wiping unrelated keys (zrtp SAS, autoanswer, etc.). Per-contact
@@ -24640,7 +26365,38 @@ class Sylk extends Component {
 
         let isNumber = utils.isPhoneNumber(username);
 
-        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
+        // E.164 normalization for phone numbers: ITU-T E.164 defines
+        // `+` as the international prefix and `00` as the country-
+        // default IDD that maps to it, i.e. "0040721253846" and
+        // "+40721253846" are the same number. Choose `+` as the
+        // canonical stored form so new rows don't pile up under both
+        // prefixes for the same person. The lookup helper's
+        // `_phoneNumberVariants` still handles the reverse direction
+        // for any existing "00…" rows the migration sweep couldn't
+        // safely rewrite.
+        if (isNumber && username.startsWith('00')) {
+            const canonicalLocal = '+' + username.substring(2);
+            const afterAt = uri.indexOf('@');
+            uri = afterAt > -1
+                ? canonicalLocal + uri.substring(afterAt)
+                : canonicalLocal;
+            username = canonicalLocal;
+        }
+
+        // Always qualify with the account's default SIP domain when
+        // the URI is bare — phone numbers included. The call wire
+        // format and the server history payload always carry an
+        // @domain (e.g. "+40721253846@sylk.link"), so storing the
+        // contact in the same shape means lookupContacts hits on
+        // the exact URI without needing any phone-number variant
+        // fallback. The old `!isPhoneNumber(uri)` exception kept
+        // phone-number contacts as "+40…" bare, which then drifted
+        // away from the routed form the call/history path used —
+        // every call ended up minting a fresh duplicate row keyed
+        // by the @-qualified URI. We still recognise phone numbers
+        // for naming / display logic via `isNumber` above; only the
+        // stored URI gets normalized.
+        if (uri.indexOf('@') === -1) {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
@@ -24923,22 +26679,49 @@ class Sylk extends Component {
         //console.log('Save invited parties', uris, 'for room', room);
         let myInvitedParties = this.state.myInvitedParties;
 
-        let current_uris = myInvitedParties.hasOwnProperty(room) ? myInvitedParties[room] : [];
-        uris.forEach((uri) => {
-            let idx = current_uris.indexOf(uri);
-            if (idx === -1) {
-                if (uri.indexOf('@') === -1) {
-                    uri =  uri + '@' + this.state.defaultDomain;
-                }
+        // myInvitedParties is keyed by the room's LOCAL part (see
+        // the load path in loadSylkContacts ~ line 2891:
+        //     myInvitedParties[contact.uri.split('@')[0]] = ...
+        // ), but callers pass `room` in FQDN form so that the
+        // downstream this.saveConference(room, ...) can resolve the
+        // contact row via lookupContact (keyed by FQDN). Derive the
+        // local-part lookup key here.
+        const _roomKey = (typeof room === 'string' && room.indexOf('@') > -1)
+            ? room.split('@')[0]
+            : room;
 
-                if (uri !== this.state.account.id) {
-                    current_uris.push(uri);
-                    //console.log('Added', uri, 'to room', room);
-                }
+        // Start from the existing saved invitees (copy so we don't
+        // mutate the in-memory state object directly) and union the
+        // newly-supplied URIs in. Each URI is normalised to FQDN
+        // form (account default domain) and the user's own account
+        // ID is filtered out — those rules mirror the same checks
+        // saveConference applies, so the persisted contact.participants
+        // ends up the union of "already saved" + "added during this
+        // session". The previous version of this function built
+        // current_uris and then threw it away by calling
+        // saveConference(room, uris) with the raw input — so additions
+        // collected via the in-room invite UI overwrote the saved
+        // list instead of extending it.
+        let current_uris = myInvitedParties.hasOwnProperty(_roomKey)
+            ? myInvitedParties[_roomKey].slice()
+            : [];
+        uris.forEach((uri) => {
+            if (!uri) {
+                return;
+            }
+            if (uri.indexOf('@') === -1) {
+                uri = uri + '@' + this.state.defaultDomain;
+            }
+            if (uri === this.state.account.id) {
+                return;
+            }
+            if (current_uris.indexOf(uri) === -1) {
+                current_uris.push(uri);
+                //console.log('Added', uri, 'to room', room);
             }
         });
 
-        this.saveConference(room, uris);
+        this.saveConference(room, current_uris);
     }
 
     forwardMessages(messages, uri) {
@@ -25706,6 +27489,17 @@ class Sylk extends Component {
 		this.setState({fullScreen: state});
     }
 
+    // Called by ContactsListBox whenever its reactionTarget flips
+    // (the floating quick-reaction emoji bar opens / closes). We
+    // hide the top NavigationBar (call buttons + menu) while the
+    // bar is active so the dimmed chat reads as a focused-modal
+    // surface instead of competing with a brightly-lit nav above.
+    setChatReactionMode = (active) => {
+        if (this.state.chatReactionMode !== !!active) {
+            this.setState({ chatReactionMode: !!active });
+        }
+    }
+
     endShareContent() {
         console.log('--endShareContent');
         let newSelectedContact = this.state.sourceContact;
@@ -25740,7 +27534,16 @@ class Sylk extends Component {
         let contact = this.lookupContact(uri, true);
 
         contact.timestamp = new Date();
-        contact.name = displayName;
+        // Only overwrite the saved name when a real value was passed.
+        // Callers that bring an updated displayName (e.g. the
+        // ConferenceModal Save flow) want it persisted; callers that
+        // are only updating the participant roster (the auto-save at
+        // conference-end via appendInvitedParties, which passes
+        // displayName=null) must NOT wipe the user's existing room
+        // nickname.
+        if (displayName != null) {
+            contact.name = displayName;
+        }
 
         let new_participants = [];
         participants.forEach((uri) => {
@@ -25755,6 +27558,34 @@ class Sylk extends Component {
 
         contact.participants = new_participants;
         this.saveSylkContact(uri, contact, 'saveConference');
+
+        // Refresh the in-memory `myInvitedParties` map alongside the
+        // SQL write. Without this, ReadyBox.handleAudioCall /
+        // handleVideoCall / handleTargetSelect would keep reading the
+        // STALE invitee list (the one this map was seeded with at
+        // app load), and a freshly saved room would silently invite
+        // the previous people the very next time the user starts it.
+        // Observed live: edit the room from {costindinu,mi} →
+        // {tijmen,fluke33}, save (SQL update succeeds), then start the
+        // call ~8min later → callKeepStartConference receives
+        // {costindinu,mi} instead. Bucket key is the room's LOCAL
+        // part to match how loadSylkContacts populates this map
+        // (app.js ~2891: myInvitedParties[contact.uri.split('@')[0]]).
+        // Use the functional setState form so concurrent edits to
+        // other rooms during the same render cycle don't clobber
+        // each other.
+        const _roomKey = (typeof room === 'string' && room.indexOf('@') > -1)
+            ? room.split('@')[0]
+            : room;
+        this.setState((prev) => {
+            const prevMap = prev.myInvitedParties || {};
+            return {
+                myInvitedParties: {
+                    ...prevMap,
+                    [_roomKey]: new_participants.slice(),
+                },
+            };
+        });
     }
 
     addHistoryEntry(uri, callUUID, direction='outgoing', participants=[]) {
@@ -25771,12 +27602,12 @@ class Sylk extends Component {
 			uri = "anonymous@anonymous.invalid";
 		}
 
-        if (this.state.rejectAnonymous && uri.indexOf('anonymous@') > -1) {
+        if (this.state.accountSetting.privacy.rejectAnonymous && uri.indexOf('anonymous@') > -1) {
 			console.log('skip history entry from anonymous address', uri);                
 			return;
 		}
 
-        if (this.state.rejectNonContacts && direction == 'incoming') {
+        if (this.state.accountSetting.privacy.rejectNonContacts && direction == 'incoming') {
             if (contacts.length == 0) {
 				console.log('skip history entry from unknown address', uri);                
 				return;
@@ -25862,7 +27693,7 @@ class Sylk extends Component {
         }
     }
 
-    updateHistoryEntry(uri, callUUID, duration) {
+    updateHistoryEntry(uri, callUUID, duration, mediaType = null) {
         if (uri.indexOf('@') === -1) {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
@@ -25870,10 +27701,21 @@ class Sylk extends Component {
 		let contacts = this.lookupContacts(uri);
 		for (const contact of contacts) {
 			if (contact.lastCallId === callUUID) {
-				console.log('updateHistoryEntry', uri, callUUID, duration);
+				console.log('updateHistoryEntry', uri, callUUID, duration, mediaType);
 				contact.timestamp = new Date();
 				contact.lastCallDuration = duration;
 				contact.lastCallId = callUUID;
+				// Record the media type used on this run so the
+				// contact tile (ContactCard) can render an informed
+				// subtitle next time — "Audio" or "Video" on
+				// conference rooms, instead of the type-agnostic
+				// "Conference" fallback. Only overwrite when the
+				// caller supplied a value, so older code paths that
+				// don't pass mediaType don't wipe a previously
+				// recorded one.
+				if (mediaType != null) {
+					contact.lastCallMediaType = mediaType;
+				}
 				if (contact.tags.indexOf('calls') === -1) {
 					contact.tags.push('calls');
 				}
@@ -26214,14 +28056,14 @@ return (
 
 			let contact = this.lookupContact(uri);
 
-			if (this.state.rejectNonContacts && item.direction == 'incoming') {
+			if (this.state.accountSetting.privacy.rejectNonContacts && item.direction == 'incoming') {
 				if (!contact && !item.duration) {
 					//console.log('Skip server history entry from unknown address', uri);                
 					return;
 				}
 			}
 
-			if (this.state.rejectAnonymous && item.direction == 'incoming') {
+			if (this.state.accountSetting.privacy.rejectAnonymous && item.direction == 'incoming') {
 				if (uri.indexOf('@guest') > -1) {
 					return;
 				}
@@ -26417,6 +28259,17 @@ return (
                     account = {this.state.account}
                     sylkDomain = {this.state.sylkDomain}
                     accountId = {this.state.accountId}
+                    /* Receives the measured Appbar.Header height.
+                       Forwarded to ReadyBox (and through to
+                       ContactsListBox) as `appBarHeight` so the chat
+                       panel's KeyboardAvoidingView can derive an
+                       exact keyboardVerticalOffset instead of using
+                       a hardcoded 60dp guess. */
+                    onAppBarHeightChange = {(h) => {
+                        if (h && h !== this.state.appBarHeight) {
+                            this.setState({ appBarHeight: h });
+                        }
+                    }}
                     /* Per-account state read/write. NavigationBar
                        uses these for live-share persistence (replacing
                        the previous global AsyncStorage key). The
@@ -26448,13 +28301,23 @@ return (
                        as the slider's initial value, and persists
                        changes back via setLocationPrivacyRadiusMeters. */
                     locationPrivacyRadiusMeters = {
-                        Number(this.state.devicePreferences.locationPrivacyRadiusMeters) || 0
+                        Number(this.state.accountSetting.location.privacyRadiusMeters) || 0
                     }
                     setLocationPrivacyRadiusMeters = {(m) =>
-                        this.setDevicePreference('locationPrivacyRadiusMeters', m)
+                        this.setAccountSetting('location.privacyRadiusMeters', m)
                     }
                     email = {this.state.email}
                     logout = {this.logout}
+                    /* Same per-account password cache that RegisterForm
+                       autofills from. NavigationBar passes it to the
+                       sign-out confirmation dialog so it can offer to
+                       switch directly to any other locally-known
+                       identity. */
+                    accountPasswords = {this.state.accountPasswords}
+                    /* Backs the "Switch to…" action in the sign-out
+                       dialog. Logs out and signs back in as the picked
+                       account in one step. */
+                    switchAccount = {this.switchAccount}
                     contactsLoaded = {this.state.contactsLoaded}
                     inCall = {(this.state.incomingCall || this.state.currentCall) ? true: false}
                     /* callActive is the stricter "audio is actually
@@ -26470,7 +28333,7 @@ return (
                     callActive = {this.state.currentCall && this.state.currentCall.state === 'established'}
                     toggleSpeakerPhone = {this.toggleSpeakerPhone}
                     toggleProximity = {this.toggleProximity}
-                    proximity = {this.state.proximityEnabled}
+                    proximity = {!!this.state.accountSetting.device.proximityEnabled}
                     preview = {this.startPreview}
                     showLogs = {this.showLogs}
                     goBackFunc = {this.goBackToHome}
@@ -26541,31 +28404,31 @@ return (
                     canSend = {this.canSend}
                     sharingAction = {this.sharingAction}
                     toggleDnd = {this.toggleDnd}
-                    dnd = {this.state.dnd}
+                    dnd = {this.state.accountSetting.privacy.dnd}
                     toggleRejectAnonymous = {this.toggleRejectAnonymous}
-                    rejectAnonymous = {this.state.rejectAnonymous}
+                    rejectAnonymous = {this.state.accountSetting.privacy.rejectAnonymous}
                     toggleChatSounds = {this.toggleChatSounds}
-                    chatSounds = {this.state.chatSounds}
+                    chatSounds = {this.state.accountSetting.device.chatSounds}
                     toggleReadReceipts = {this.toggleReadReceipts}
-                    readReceipts = {this.state.readReceipts}
+                    readReceipts = {this.state.accountSetting.privacy.readReceipts}
                     toggleRejectNonContacts = {this.toggleRejectNonContacts}
-                    rejectNonContacts = {this.state.rejectNonContacts}
-                    preferredVideoCodec = {this.state.devicePreferences.preferredVideoCodec || PREFERRED_VIDEO_CODEC}
-                    setPreferredVideoCodec = {(codec) => this.setDevicePreference('preferredVideoCodec', codec)}
-                    preferredAudioCodec = {this.state.devicePreferences.preferredAudioCodec || PREFERRED_AUDIO_CODEC}
-                    setPreferredAudioCodec = {(codec) => this.setDevicePreference('preferredAudioCodec', codec)}
-                    enableAudioRecording = {!!this.state.devicePreferences.enableAudioRecording}
-                    setEnableAudioRecording = {(v) => this.setDevicePreference('enableAudioRecording', !!v)}
-                    encryptionMode = {this.state.devicePreferences.encryptionMode || 'zrtp_optional'}
-                    setEncryptionMode = {(mode) => this.setDevicePreference('encryptionMode', mode)}
-                    dtmfMode = {this.state.devicePreferences.dtmfMode || 'info'}
-                    setDtmfMode = {(mode) => this.setDevicePreference('dtmfMode', mode)}
-                    locationTickIntervalMs = {this.state.devicePreferences.locationTickIntervalMs || 60000}
-                    setLocationTickIntervalMs = {(ms) => this.setDevicePreference('locationTickIntervalMs', ms)}
-                    locationProximityMeters = {this.state.devicePreferences.locationProximityMeters || 20}
-                    setLocationProximityMeters = {(m) => this.setDevicePreference('locationProximityMeters', m)}
-                    locationPrivacyRadiusMeters = {Number(this.state.devicePreferences.locationPrivacyRadiusMeters) || 0}
-                    setLocationPrivacyRadiusMeters = {(m) => this.setDevicePreference('locationPrivacyRadiusMeters', m)}
+                    rejectNonContacts = {this.state.accountSetting.privacy.rejectNonContacts}
+                    preferredVideoCodec = {this.state.accountSetting.rtp.preferredVideoCodec || PREFERRED_VIDEO_CODEC}
+                    setPreferredVideoCodec = {(codec) => this.setAccountSetting('rtp.preferredVideoCodec', codec)}
+                    preferredAudioCodec = {this.state.accountSetting.rtp.preferredAudioCodec || PREFERRED_AUDIO_CODEC}
+                    setPreferredAudioCodec = {(codec) => this.setAccountSetting('rtp.preferredAudioCodec', codec)}
+                    enableAudioRecording = {!!this.state.accountSetting.rtp.enableAudioRecording}
+                    setEnableAudioRecording = {(v) => this.setAccountSetting('rtp.enableAudioRecording', !!v)}
+                    encryptionMode = {this.state.accountSetting.rtp.encryptionMode || 'zrtp_optional'}
+                    setEncryptionMode = {(mode) => this.setAccountSetting('rtp.encryptionMode', mode)}
+                    dtmfMode = {this.state.accountSetting.rtp.dtmfMode || 'info'}
+                    setDtmfMode = {(mode) => this.setAccountSetting('rtp.dtmfMode', mode)}
+                    locationTickIntervalSec = {this.state.accountSetting.location.tickIntervalSec || 60}
+                    setLocationTickIntervalSec = {(sec) => this.setAccountSetting('location.tickIntervalSec', sec)}
+                    locationProximityMeters = {this.state.accountSetting.location.proximityMeters || 20}
+                    setLocationProximityMeters = {(m) => this.setAccountSetting('location.proximityMeters', m)}
+                    locationPrivacyRadiusMeters = {Number(this.state.accountSetting.location.privacyRadiusMeters) || 0}
+                    setLocationPrivacyRadiusMeters = {(m) => this.setAccountSetting('location.privacyRadiusMeters', m)}
                     buildId = {this.buildId}
                     getTransferedFiles = {this.getTransferedFiles}
                     transferedFiles = {this.state.transferedFiles}
@@ -26583,9 +28446,9 @@ return (
 					storageUsage = {this.state.storageUsage}
 					syncPercentage = {this.state.syncPercentage}
 					toggleDevMode = {this.toggleDevMode}
-					devMode = {this.state.devMode}
+					devMode = {!!this.state.accountSetting.device.devMode}
 					toggleAutoAnswerMode = {this.toggleAutoAnswerMode}
- 					autoAnswerMode = {this.state.autoAnswerMode}
+ 					autoAnswerMode = {!!this.state.accountSetting.account.autoAnswerMode}
  					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
  					deleteAccountUrl = {this.state.deleteAccountUrl}
                     // Destructive: wipes the active account's messages /
@@ -26649,6 +28512,21 @@ return (
                     password = {this.state.password}
                     callHistoryUrl = {this.state.callHistoryUrl}
                     fontScale = {this.state.fontScale}
+                    /* Measured Appbar.Header height, plumbed through
+                       to ContactsListBox so its KeyboardAvoidingView
+                       uses an exact chrome height for
+                       keyboardVerticalOffset instead of a hardcoded
+                       60dp. Null until the first NavigationBar
+                       onLayout pass; ContactsListBox falls back to
+                       60 in the meantime. */
+                    appBarHeight = {this.state.appBarHeight}
+                    // Hide ReadyBox's call-button bar while the chat's
+                    // reaction bar is up — the call buttons would
+                    // otherwise sit ABOVE the dimmed chat as a brightly
+                    // lit row competing with the focused-modal feel of
+                    // the dim. showButtonsBar in ReadyBox short-circuits
+                    // to false when this is true.
+                    chatReactionMode = {this.state.chatReactionMode}
                     inCall = {(this.state.incomingCall || this.state.currentCall) ? true: false}
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
@@ -26688,12 +28566,32 @@ return (
                     }}
                     orientation = {this.state.orientation}
                     allContacts = {this.state.allContacts}
-                    /* The system address-book entries loaded once at
-                       app start by getABContacts(). Forwarded here so
-                       ContactsListBox can switch its search corpus
-                       between Sylk contacts (allContacts) and these
-                       AB entries via the in-bar Sylk/AB toggle. */
+                    /* The system address-book entries loaded lazily —
+                       populated by getABContacts() the FIRST time the
+                       user taps the Phonebook pill in the contacts
+                       list (see loadAddressBook prop below). Forwarded
+                       here so ContactsListBox can switch its search
+                       corpus between Sylk contacts (allContacts) and
+                       these AB entries via the in-bar Sylk/AB toggle. */
                     addressBookContacts = {this.state.contacts}
+                    /* Invoked from ReadyBox when the user explicitly
+                       chooses the Phonebook source. Triggers the OS
+                       contacts permission prompt (if not yet granted),
+                       loads the address book into state.contacts on
+                       grant, or flips state.abPermissionDenied on
+                       denial. */
+                    loadAddressBook = {this.loadAddressBook}
+                    /* True when the OS contacts permission is denied
+                       (or in the "don't ask again" state). ReadyBox
+                       renders a banner above the contacts list with an
+                       "Open Settings" button when the user is on the
+                       Phonebook pill and this is true. */
+                    abPermissionDenied = {this.state.abPermissionDenied}
+                    /* Opens the OS-level Sylk app preferences page so
+                       the user can flip contacts permission on after a
+                       denial. Same react-native-permissions helper the
+                       NavigationBar 'appSettings' menu item uses. */
+                    openAppSettings = {openSettings}
                     isTablet = {this.state.isTablet}
                     isFolded = {this.state.isFolded}
                     isLandscape = {this.state.orientation === 'landscape'}
@@ -26733,6 +28631,7 @@ return (
                     expireMessage = {this.expireMessage}
                     reSendMessage = {this.reSendMessage}
                     deleteMessage = {this.deleteMessage}
+                    deleteFiles = {this.deleteFiles}
                     getMessages = {this.getMessages}
                     pinMessage = {this.pinMessage}
                     unpinMessage = {this.unpinMessage}
@@ -26741,6 +28640,23 @@ return (
                     shareToContacts = {this.state.shareToContacts}
                     selectedContacts = {this.state.selectedContacts}
                     updateSelection = {this.updateSelection}
+                    // Finish-invite handler. Used by:
+                    //  • ReadyBox's contacts-list invite mode
+                    //    (Cancel button) to drop out of invite
+                    //    mode AND return the user to the
+                    //    conference. The conference call is still
+                    //    running underneath — Cancel just means
+                    //    "never mind, don't add anyone right now",
+                    //    not "leave the conference".
+                    //  • ConferenceBox.inviteParticipants() at the
+                    //    end of an Invite (green-button) flow, to
+                    //    reset selectedContacts / inviteContacts
+                    //    state after the auto-invite on mount.
+                    //    That path is already at /conference so
+                    //    the goBackToCall inside finishInvite is
+                    //    a no-op (changeRoute short-circuits when
+                    //    currentRoute === route).
+                    finishInvite = {this.finishInviteToConference}
                     togglePinned = {this.togglePinned}
                     pinned = {this.state.pinned}
                     loadEarlierMessages = {this.loadEarlierMessages}
@@ -26821,6 +28737,7 @@ return (
 					meetMeAt = {this.meetMeAt}
 					fullScreen = {this.state.fullScreen}
 					setFullScreen = {this.setFullScreen}
+					setChatReactionMode = {this.setChatReactionMode}
 					transferProgress = {this.state.transferProgress}
 					totalMessageExceeded = {this.state.totalMessageExceeded}
 					createChatContact = {this.createChatContact}
@@ -26833,7 +28750,7 @@ return (
 					toggleResizeContent = {this.toggleResizeContent}
 					resizeContent = {this.state.resizeContent}
 					sharedContent = {this.state.sharedContent}
-					autoAnswerMode = {this.state.autoAnswerMode}
+					autoAnswerMode = {!!this.state.accountSetting.account.autoAnswerMode}
  					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
  					appState = {this.state.appState}
  					remoteConferenceRoom = {this.state.remoteConferenceRoom}
@@ -26887,10 +28804,10 @@ return (
                        onPersistPrivacyRadius on Accept with whatever
                        the user finally picks. */
                     defaultPrivacyRadiusMeters={
-                        Number(this.state.devicePreferences.locationPrivacyRadiusMeters) || 0
+                        Number(this.state.accountSetting.location.privacyRadiusMeters) || 0
                     }
                     onPersistPrivacyRadius={(m) =>
-                        this.setDevicePreference('locationPrivacyRadiusMeters', m)
+                        this.setAccountSetting('location.privacyRadiusMeters', m)
                     }
                     onAccept={(opts) => this._acceptMeetingRequest({
                         excludeOriginRadiusMeters: opts && opts.excludeOriginRadiusMeters,
@@ -26918,7 +28835,10 @@ return (
                     localMedia = {this.state.localMedia}
                     hangupCall = {this.hangupCall}
                     setDevice = {this.setDevice}
-                    selectedavailableAudioDevices = {this.state.devices}
+                    selectedavailableAudioDevices = {{
+                        camera: this.state.accountSetting.device.cameraDevice,
+                        mic:    this.state.accountSetting.device.micDevice,
+                    }}
                 />
             </Fragment>
         );
@@ -26983,6 +28903,15 @@ return (
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
+                /* PSTN dialing rules from the per-domain
+                   sylk-config.json. Currently only `replacePlus`
+                   is honoured: when the dialed local-part starts
+                   with '+', the rewrite happens at Call.start()
+                   right before account.call() fires — so it
+                   reaches the wire as e.g. `0040…` without
+                   polluting state.targetUri (which stays at the
+                   canonical `+40…` for history / contact lookup). */
+                pstnRules = {this.state.pstnRules}
                 callContact = {this.state.callContact}
                 call = {call}
                 callState = {callState}
@@ -27041,7 +28970,7 @@ return (
 				shareLocationFromCall = {this.shareLocationFromCall}
 				requestLocationFromCall = {this.requestLocationFromCall}
 				saveCallRecording = {this.saveCallRecording}
-				enableAudioRecording = {!!this.state.devicePreferences.enableAudioRecording}
+				enableAudioRecording = {!!this.state.accountSetting.rtp.enableAudioRecording}
             />
         )
     }
@@ -27064,24 +28993,8 @@ return (
             callState = this.state.callsState[call.id];
         }
 
-        /*
-        if (this.myParticipants) {
-            let room = this.state.targetUri.split('@')[0];
-            if (this.myParticipants.hasOwnProperty(room)) {
-                let uris = this.myParticipants[room];
-                if (uris) {
-                    uris.forEach((uri) => {
-                        if (uri.search(this.state.defaultDomain) > -1) {
-                            let user = uri.split('@')[0];
-                            _previousParticipants.add(user);
-                        } else {
-                            _previousParticipants.add(uri);
-                        }
-                    });
-                }
-            }
-        }
-        */
+        // myParticipants seed of _previousParticipants removed — see
+        // saveParticipant() for why the storage is gone.
 
         if (this.state.myInvitedParties) {
             if (this.state.myInvitedParties.hasOwnProperty(this.state.targetUri)) {
@@ -27360,8 +29273,22 @@ return (
         this._snapshotLogoutState('after resetState (pre-flush)');
     }
 
-    logout() {
-        console.log('[logout] ======== logout() called ========');
+    /**
+     * @param {Object} [options]
+     * @param {boolean} [options.skipRoute=false]
+     *   When true, do NOT navigate to /login as part of teardown.
+     *   Used by switchAccount: it tears the current account down
+     *   in-place (unregister, removeAccount, app_state/SQL flush)
+     *   but keeps the user on /ready so handleSignIn for the next
+     *   account can register over the existing connection without
+     *   the user ever seeing the LoginForm flash by. Note that
+     *   resetState() still flips this.signOut = true; the subsequent
+     *   handleSignIn flips it back to false before any registration
+     *   work happens.
+     */
+    logout(options = {}) {
+        const skipRoute = !!(options && options.skipRoute);
+        console.log('[logout] ======== logout() called (skipRoute=', skipRoute, ') ========');
         this._snapshotLogoutState('logout() entry');
 
         // Capture accountId BEFORE resetState clears it, because the call
@@ -27411,7 +29338,16 @@ return (
         // logout itself still lands in the correct per-account file.
         utils.setLogAccount(null);
 
-        this.changeRoute('/login', 'user logout');
+        if (!skipRoute) {
+            this.changeRoute('/login', 'user logout');
+        } else {
+            // Account switch — stay on /ready. The post-registration
+            // route guard at the 'registered' handler is `currentRoute
+            // === '/login' && !signOut`, so leaving currentRoute at
+            // '/ready' makes that branch a no-op and the user never
+            // sees LoginForm flash by.
+            console.log('[logout] route change to /login SUPPRESSED (account switch)');
+        }
 
         console.log('[logout] branch selection: !this.signOut=', !this.signOut,
             'registrationState=', this.state.registrationState,
@@ -27422,7 +29358,7 @@ return (
             // resetState() above always sets this.signOut=true. Kept and
             // logged so we can see that during repro.
             console.log('[logout] branch A: remove push token + re-register to unregister');
-            this.state.account.setDeviceToken('None', Platform.OS, this.deviceId, this.state.dnd, bundleId);
+            this.state.account.setDeviceToken('None', Platform.OS, this.deviceId, this.state.accountSetting.privacy.dnd, bundleId);
             console.log('[logout] branch A: calling account.register()');
             this.state.account.register();
             return;

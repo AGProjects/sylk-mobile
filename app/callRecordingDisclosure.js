@@ -1,64 +1,50 @@
 // app/callRecordingDisclosure.js
 //
 // Per-account persistence for the "call recording can have legal
-// consequences" disclaimer acknowledgement. Mirrors locationDisclosure.js
-// so the same per-SIP-identity scoping applies — a second account
-// signing in on the same physical device must accept the disclaimer
-// for itself rather than silently inheriting the first user's choice.
+// consequences" disclaimer acknowledgement.
 //
-// Key shape:
+// Storage moved from per-account-keyed AsyncStorage
 //   callRecordingDisclosureAcknowledged.v1.<accountId>
-// Value: boolean true once the user opts in. Absent / false means
-// either "never asked" or "explicitly opted out" — the toggle gate
-// in PreferencesModal will re-show the modal next time the user
-// flips Automatic call recording back on, and (separately) the
-// viewer link in Preferences re-opens it in opt-out mode.
+// into the SQL `accounts.settings` JSON blob, under the path
+//   disclaimers.callRecording  (boolean)
+// alongside the rest of the user's per-account settings. Call sites
+// (PreferencesModal mount + auto-record gate, AudioCallBox in-call
+// record button) keep their existing readAcknowledged /
+// setAcknowledged / clearAcknowledged signatures unchanged — the
+// disclosure module now routes through accountSettingsAccess.js
+// rather than the AsyncStorage `storage` wrapper.
 //
-// Read sites: PreferencesModal mount + the auto-record gate.
-// Write sites: PreferencesModal toggle (set on opt-in / clear on
-// opt-out via the viewer button).
+// The accountId argument is ignored — accounts.settings is already
+// scoped per-account at the SQL row level — but kept on the API for
+// backwards compatibility with the call sites.
+//
+// No carry-over from the old AsyncStorage flag: by design, the user
+// is re-prompted once after upgrade if they try to enable call
+// recording again.
 
-import storage from './storage';
+import {
+    getAccountSetting,
+    setAccountSetting,
+} from './accountSettingsAccess';
 
-const STORAGE_KEY_PREFIX = 'callRecordingDisclosureAcknowledged.v1';
-
-function _key(accountId) {
-    if (accountId && typeof accountId === 'string' && accountId.length > 0) {
-        return `${STORAGE_KEY_PREFIX}.${accountId}`;
-    }
-    return null;
-}
+const SETTING_PATH = 'disclaimers.callRecording';
 
 /**
- * Read the per-account flag. Returns false when no accountId is in
- * scope yet (callers must treat that as "not yet acknowledged" so the
- * disclaimer is shown rather than silently allowing recording).
+ * Read the per-account flag. Returns false when no account is loaded
+ * yet (the bridge returns undefined → coerced to false). Callers
+ * treat that as "not yet acknowledged" so the disclaimer is shown
+ * rather than silently allowing recording.
  */
-export async function readAcknowledged(accountId) {
-    const k = _key(accountId);
-    if (!k) return false;
-    try {
-        const v = await storage.get(k);
-        return v === true;
-    } catch (e) {
-        // Read failure → treat as not-yet-acknowledged. Better to
-        // re-prompt than to silently skip the disclosure.
-        return false;
-    }
+export async function readAcknowledged(/* accountId */) {
+    return getAccountSetting(SETTING_PATH) === true;
 }
 
-export async function setAcknowledged(accountId) {
-    const k = _key(accountId);
-    if (!k) return;
-    try { await storage.set(k, true); }
-    catch (e) { /* persistence failure is non-fatal — modal will be re-shown next time */ }
+export async function setAcknowledged(/* accountId */) {
+    await setAccountSetting(SETTING_PATH, true);
 }
 
-export async function clearAcknowledged(accountId) {
-    const k = _key(accountId);
-    if (!k) return;
-    try { await storage.remove(k); }
-    catch (e) { /* noop */ }
+export async function clearAcknowledged(/* accountId */) {
+    await setAccountSetting(SETTING_PATH, false);
 }
 
 export default {

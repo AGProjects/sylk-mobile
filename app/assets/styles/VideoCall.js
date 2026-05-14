@@ -60,7 +60,16 @@ const styles = StyleSheet.create({
   tabletLandscapebuttonsContainer: {
     flexDirection: 'row',
     marginBottom: 0,
-    bottom: 60,
+    // Was bottom: 60 → 20 → 0. In tablet landscape the viewport is
+    // short and any non-zero lift read as a visibly empty band
+    // beneath the buttons. Match the phone-landscape variant
+    // (landscapebuttonsContainer also uses bottom: 0) so the bar
+    // sits flush with the bottom of the video on every form factor
+    // in landscape. If the iPad home indicator ever ends up
+    // overlapping the buttons on a specific model, prefer pushing
+    // the home indicator with safe-area insets at the parent level
+    // rather than reintroducing a fixed lift here.
+    bottom: 0,
     justifyContent: 'center',
   },
 

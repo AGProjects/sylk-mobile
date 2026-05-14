@@ -104,7 +104,7 @@ class URIInput extends React.Component {
         if (showSourceHint) {
             placeholder =
                 this.state.contactSource === 'ab'
-                    ? 'Search address book'
+                    ? 'Search Phonebook'
                     : 'Search Sylk contacts';
         }
 
@@ -117,6 +117,14 @@ class URIInput extends React.Component {
                   placeholderColor: '#aaaaaa',
               }
             : {};
+
+        // Paper's built-in × clear sits at the right edge of the
+        // bar, which is where we want the dialpad toggle to live
+        // instead. Suppress it by returning null for the icon and
+        // disabling the clear-button render path — we draw our own
+        // × further down at right:48 (immediately to the LEFT of
+        // the dialpad icon).
+        const _suppressedClearIcon = () => null;
 
         return (
             <View style={uriInputStyles.searchbarRow}>
@@ -132,8 +140,8 @@ class URIInput extends React.Component {
                     onPress={this.onInputClick}
                     autoCapitalize="none"
                     autoCorrect={false}
-                    clearIcon="close"
-                    showClearIcon={true}
+                    clearIcon={_suppressedClearIcon}
+                    showClearIcon={false}
                     autoFocus={this.props.autoFocus}
                     style={[
                         uriInputStyles.searchbar,
@@ -148,22 +156,52 @@ class URIInput extends React.Component {
                     iconColor={darkColors.iconColor}
                     placeholderTextColor={darkColors.placeholderColor}
                 />
-                {/* Backspace control overlaid INSIDE the search bar,
-                    immediately to the left of the × clear icon. Only
-                    shown when the consumer wires it up (today: the
-                    AddressBook dialpad). Absolute-positioned so it
-                    sits over the Searchbar's existing layout without
-                    needing to switch the mode (mode="bar" would
-                    repaint the bar's background and lose the flat
-                    look). */}
-                {this.props.showBackspace ? (
+                {/* Custom × clear icon, overlaid INSIDE the search
+                    bar at right:48 — i.e. immediately to the LEFT of
+                    the dialpad toggle (which sits flush to the right
+                    edge at right:4). Replaces Paper's built-in clear
+                    button (suppressed via `clearIcon={() => null}`
+                    above) so the right edge is reserved for the
+                    dialpad and the × can sit beside it instead of
+                    fighting for the same slot. Only rendered when
+                    the field is non-empty — matches Paper's
+                    auto-hide-when-empty behaviour. */}
+                {this.state.defaultValue && this.state.defaultValue.length > 0 ? (
                     <IconButton
-                        icon="backspace-outline"
+                        icon="close"
                         size={22}
-                        disabled={!this.state.defaultValue || !this.state.defaultValue.length}
-                        onPress={this.props.onBackspace}
-                        accessibilityLabel="Delete last digit"
-                        style={uriInputStyles.backspaceOverlay}
+                        onPress={() => this.props.onChange('')}
+                        accessibilityLabel="Clear search"
+                        style={uriInputStyles.clearOverlay}
+                        iconColor={darkColors.iconColor}
+                    />
+                ) : null}
+                {/* Dialpad toggle overlaid INSIDE the search bar,
+                    flush against the right edge (right:4). The × clear
+                    icon above sits to its LEFT at right:48. Highlighted
+                    (filled green background) when the pad is open so
+                    the toggle-state is obvious at a glance. */}
+                {this.props.showDialpad ? (
+                    <IconButton
+                        icon="dialpad"
+                        size={22}
+                        onPress={this.props.onDialpadPress}
+                        accessibilityLabel={
+                            this.props.isDialpadActive
+                                ? 'Hide dialpad'
+                                : 'Show dialpad'
+                        }
+                        style={[
+                            uriInputStyles.dialpadOverlay,
+                            this.props.isDialpadActive
+                                ? uriInputStyles.dialpadOverlayActive
+                                : null,
+                        ]}
+                        iconColor={
+                            this.props.isDialpadActive
+                                ? '#ffffff'
+                                : '#27ae60'
+                        }
                     />
                 ) : null}
             </View>
@@ -192,21 +230,37 @@ const uriInputStyles = StyleSheet.create({
         paddingVertical: 0,
         fontSize: 15,
     },
-    backspaceOverlay: {
-        // Absolute-positioned just inside the right edge of the
-        // Searchbar, sitting LEFT of the × clear icon. The clear
-        // icon's IconButton renders at ~44 px wide flush to the
-        // right edge, so right: 40 puts our backspace neatly next
-        // to it. Vertically centered against the 56 px bar. No
-        // background — the icon renders cleanly against the
-        // Searchbar surface so it reads as part of the bar's
-        // controls (like the × clear), not as a stamped-on pill.
+    // Custom × clear overlay. Sits at right:48, which puts its
+    // right edge just to the LEFT of the dialpad toggle (at right:4
+    // + ~40 px IconButton width = right:44 inner edge). Vertically
+    // centered against the 56 px bar. No background — reads as a
+    // bar control like Paper's original × did before we suppressed
+    // it (so we could own the right edge for the dialpad).
+    clearOverlay: {
         position: 'absolute',
-        right: 40,
+        right: 48,
         top: (SEARCHBAR_HEIGHT - 36) / 2,
         margin: 0,
         zIndex: 5,
         elevation: 5,
+    },
+    // Dialpad toggle overlay — pinned flush to the right edge of
+    // the Searchbar (right:4 leaves a tiny inset so the icon
+    // doesn't kiss the rounded corner). The custom × clear overlay
+    // above sits at right:48, immediately to the left. Active
+    // state fills the IconButton with the AB-green so the toggle's
+    // open/closed state reads at a glance.
+    dialpadOverlay: {
+        position: 'absolute',
+        right: 4,
+        top: (SEARCHBAR_HEIGHT - 36) / 2,
+        margin: 0,
+        zIndex: 5,
+        elevation: 5,
+    },
+    dialpadOverlayActive: {
+        backgroundColor: '#27ae60',
+        borderRadius: 18,
     },
 });
 
@@ -219,8 +273,9 @@ URIInput.propTypes = {
     inviteContacts: PropTypes.bool,
     searchMessages: PropTypes.bool,
     contactSource: PropTypes.oneOf(['sylk', 'ab']),
-    showBackspace: PropTypes.bool,
-    onBackspace: PropTypes.func,
+    showDialpad: PropTypes.bool,
+    isDialpadActive: PropTypes.bool,
+    onDialpadPress: PropTypes.func,
     dark: PropTypes.bool, // <-- dark mode as prop
 };
 

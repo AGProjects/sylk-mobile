@@ -2914,8 +2914,46 @@ index 0000000..dce4e05
 +}  // namespace webrtc
 +
 +#endif  // SYLK_WEBRTC_COMPAT_H_
+diff --git a/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js b/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js
+index 621367c..15e88b8 100644
+--- a/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js
++++ b/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js
+@@ -405,7 +405,11 @@ class RTCPeerConnection extends _index.EventTarget {
+     existingTransceiver._direction = existingTransceiver.direction === 'sendrecv' ? 'recvonly' : 'inactive';
+   }
+   async getStats(selector) {
+-    log.debug(`${this._pcId} getStats`);
++    // Local patch — per-second getStats log line silenced. See
++    // the matching patch in lib/module/RTCPeerConnection.js for
++    // the full rationale. Re-enable by uncommenting if you need
++    // it for debugging.
++    // log.debug(`${this._pcId} getStats`);
+     if (!selector) {
+       const data = await WebRTCModule.peerConnectionGetStats(this._pcId);
+ 
+diff --git a/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js b/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js
+index 5d6d1c8..3b06176 100644
+--- a/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js
++++ b/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js
+@@ -396,7 +396,15 @@ export default class RTCPeerConnection extends EventTarget {
+     existingTransceiver._direction = existingTransceiver.direction === 'sendrecv' ? 'recvonly' : 'inactive';
+   }
+   async getStats(selector) {
+-    log.debug(`${this._pcId} getStats`);
++    // Local patch: per-second getStats log line silenced. The
++    // ConferenceBox sampler polls getStats once per second per
++    // peer connection (one local + N subscriber PCs), which made
++    // this log spam ~5 lines/sec into the Metro console with
++    // no useful information beyond "yes, getStats was called".
++    // Re-enable by uncommenting the line below if you need it
++    // for debugging. Reapply this patch after npm install or
++    // capture it via patch-package.
++    // log.debug(`${this._pcId} getStats`);
+     if (!selector) {
+       const data = await WebRTCModule.peerConnectionGetStats(this._pcId);
+ 
 diff --git a/node_modules/react-native-webrtc/react-native-webrtc.podspec b/node_modules/react-native-webrtc/react-native-webrtc.podspec
-index 51af1f0..3da8d8c 100644
+index 51af1f0..0b4c02c 100644
 --- a/node_modules/react-native-webrtc/react-native-webrtc.podspec
 +++ b/node_modules/react-native-webrtc/react-native-webrtc.podspec
 @@ -15,9 +15,28 @@ Pod::Spec.new do |s|

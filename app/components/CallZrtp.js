@@ -56,8 +56,8 @@ export function setVideoMaxBitrateKbps(kbps) {
 //                       key-agreed within ZRTP_MANDATORY_TIMEOUT_MS,
 //                       the call is terminated.
 //
-// Wired from app.js's _applyDevicePreferences at boot and from
-// setDevicePreference() when the user changes the radio.
+// Wired from app.js's _applyAccountSettings on login and from
+// setAccountSetting() when the user changes the radio.
 const ENCRYPTION_MODES = ['sdes', 'zrtp_optional', 'zrtp_mandatory'];
 const ENCRYPTION_MODE_DEFAULT = 'zrtp_optional';
 const ZRTP_MANDATORY_TIMEOUT_MS = 6000;

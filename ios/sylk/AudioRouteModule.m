@@ -20,6 +20,7 @@
 #import "AudioRouteModule.h"
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTLog.h>
+#import "SylkLogger.h"
 
 @implementation AudioRouteModule {
   BOOL _hasListeners;
@@ -36,12 +37,12 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 #pragma mark - RCTEventEmitter overrides
 
 - (NSArray<NSString *> *)supportedEvents {
-  //NSLog(@"[SYLK_APP] [Audio] supportedEvents");
+  //[SylkLogger log:@"[audio] supportedEvents"];
   return @[@"CommunicationsDevicesChanged"];
 }
 
 + (BOOL)requiresMainQueueSetup {
-  NSLog(@"[SYLK_APP] [Audio] requiresMainQueueSetup");
+  [SylkLogger log:@"[audio] requiresMainQueueSetup"];
   // We access AVAudioSession and register notifications — run on main queue for safety.
   return YES;
 }
@@ -49,7 +50,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 - (instancetype)init {
     self = [super init];
     if (self) {
-        NSLog(@"[SYLK_APP] [Audio] init: configuring AVAudioSession for VoIP");
+        [SylkLogger log:@"[audio] init: configuring AVAudioSession for VoIP"];
 
         NSError *err = nil;
         AVAudioSession *session = [AVAudioSession sharedInstance];
@@ -59,16 +60,16 @@ RCT_EXPORT_MODULE(AudioRouteModule);
                                     withOptions:(AVAudioSessionCategoryOptionAllowBluetooth)
                                           error:&err];
         if (!categorySet) {
-            NSLog(@"[SYLK_APP] [Audio] Failed to set category: %@", err);
+            [SylkLogger log:@"[audio] Failed to set category: %@", err];
         } else {
-            NSLog(@"[SYLK_APP] [Audio] setCategory: PlayAndRecord OK");
+            [SylkLogger log:@"[audio] setCategory: PlayAndRecord OK"];
         }
 
         BOOL modeSet = [session setMode:AVAudioSessionModeVoiceChat error:&err];
         if (!modeSet) {
-            NSLog(@"[SYLK_APP] [Audio] Failed to set mode: %@", err);
+            [SylkLogger log:@"[audio] Failed to set mode: %@", err];
         } else {
-            NSLog(@"[SYLK_APP] [Audio] setMode: VoiceChat OK");
+            [SylkLogger log:@"[audio] setMode: VoiceChat OK"];
         }
 
     }
@@ -76,7 +77,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 }
 
 - (void)startObserving {
-  NSLog(@"[SYLK_APP] [Audio] startObserving");
+  [SylkLogger log:@"[audio] startObserving"];
   _hasListeners = YES;
   // subscribe to route-change notifications
   [[NSNotificationCenter defaultCenter] addObserver:self
@@ -90,13 +91,13 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 }
 
 - (void)stopObserving {
-  NSLog(@"[SYLK_APP] [Audio] stopObserving");
+  [SylkLogger log:@"[audio] stopObserving"];
   _hasListeners = NO;
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)dealloc {
-  NSLog(@"[SYLK_APP] [Audio] dealloc");
+  [SylkLogger log:@"[audio] dealloc"];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -107,13 +108,13 @@ RCT_EXPORT_MODULE(AudioRouteModule);
   NSString *type = [self typeStringForPortType:port.portType];
   NSString *name = port.portName ?: @"UNKNOWN";
   NSString *uid = port.UID ?: @"";
-  //NSLog(@"[SYLK_APP] [Audio] deviceDictForPort name=%@ type=%@ uid=%@", name, type, uid);
+  //[SylkLogger log:@"[audio] deviceDictForPort name=%@ type=%@ uid=%@", name, type, uid];
   return @{@"id": uid, @"name": name, @"type": type};
 }
 
 - (NSString *)typeStringForPortType:(NSString *)portType {
   // Map AVAudioSession port type constants
-  //NSLog(@"[SYLK_APP] [Audio] typeStringForPortType: %@", portType);
+  //[SylkLogger log:@"[audio] typeStringForPortType: %@", portType];
   if ([portType isEqualToString:AVAudioSessionPortBuiltInReceiver]) return @"BUILTIN_EARPIECE";
   if ([portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return @"BUILTIN_SPEAKER";
   if ([portType isEqualToString:AVAudioSessionPortHeadsetMic]) return @"WIRED_HEADSET";
@@ -134,14 +135,14 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 }
 
 - (NSArray *)getAudioInputsArray {
-  //NSLog(@"[SYLK_APP] [Audio] getAudioInputsArray");
+  //[SylkLogger log:@"[audio] getAudioInputsArray"];
   NSMutableArray *arr = [NSMutableArray array];
   AVAudioSession *session = [AVAudioSession sharedInstance];
   NSArray<AVAudioSessionPortDescription *> *inputs = session.availableInputs;
   for (AVAudioSessionPortDescription *p in inputs) {
     [arr addObject:[self deviceDictForPort:p typeForIOS:YES]];
   }
-  //NSLog(@"[SYLK_APP] [Audio] inputs=%@", arr);
+  //[SylkLogger log:@"[audio] inputs=%@", arr];
   return arr;
 }
 
@@ -182,7 +183,9 @@ RCT_EXPORT_MODULE(AudioRouteModule);
     // switch back to BT from the menu.
     if (!byType[@"BLUETOOTH_SCO"] && _lastKnownBtDevice) {
         byType[@"BLUETOOTH_SCO"] = _lastKnownBtDevice;
-        NSLog(@"[SYLK_APP] [Audio] using cached BT device: %@", _lastKnownBtDevice);
+        // [audio] cached BT device trace — disabled. Fires on every getter
+    // call, no actionable info.
+    //[SylkLogger log:@"[audio] using cached BT device: %@", _lastKnownBtDevice];
     }
 
     // Step 2: pick up anything active in currentRoute that we haven't seen yet
@@ -221,7 +224,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
         if (byType[type]) [arr addObject:byType[type]];
     }
 
-    //NSLog(@"[SYLK_APP] [Audio] outputs=%@", arr);
+    //[SylkLogger log:@"[audio] outputs=%@", arr];
     return arr;
 }
 
@@ -266,7 +269,8 @@ RCT_EXPORT_MODULE(AudioRouteModule);
             }
         }
         if (wiredPort) {
-            NSLog(@"[SYLK_APP] [Audio] _currentRoute=WIRED_HEADSET, using matched port");
+            // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] _currentRoute=WIRED_HEADSET, using matched port"];
             return [self deviceDictForPort:wiredPort typeForIOS:NO];
         }
         // No port to source from yet — likely iOS is still settling after a
@@ -275,15 +279,18 @@ RCT_EXPORT_MODULE(AudioRouteModule);
         // observer will clear _currentRoute once iOS confirms the headphones
         // are actually gone (OldDeviceUnavailable), and any subsequent event
         // will land on the real route.
-        NSLog(@"[SYLK_APP] [Audio] _currentRoute=WIRED_HEADSET, port not yet visible — emitting synthetic");
+        // [audio] route-info trace — disabled.
+        //[SylkLogger log:@"[audio] _currentRoute=WIRED_HEADSET, port not yet visible — emitting synthetic"];
         return @{@"id": @"", @"name": @"Wired headset", @"type": @"WIRED_HEADSET"};
     }
 
     if (route.outputs.count > 0) {
-        NSLog(@"[SYLK_APP] [Audio] currentRoute: outputs exist, picking first output");
+        // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] currentRoute: outputs exist, picking first output"];
         AVAudioSessionPortDescription *firstOutput = route.outputs.firstObject;
         selected = [self deviceDictForPort:firstOutput typeForIOS:NO];
-        NSLog(@"[SYLK_APP] [Audio] initial selected device from output: %@", selected);
+        // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] initial selected device from output: %@", selected];
 
         // Try to find same device in inputs by UID
         BOOL usedInputType = NO;
@@ -293,12 +300,12 @@ RCT_EXPORT_MODULE(AudioRouteModule);
                 mutableSelected[@"type"] = input[@"type"];
                 selected = [mutableSelected copy];
                 usedInputType = YES;
-                //NSLog(@"[SYLK_APP] [Audio] matched selected device in inputs, using input type: %@", selected[@"type"]);
+                //[SylkLogger log:@"[audio] matched selected device in inputs, using input type: %@", selected[@"type"]];
                 break;
             }
         }
         if (!usedInputType) {
-            //NSLog(@"[SYLK_APP] [Audio] selected device not found in inputs, keeping output type: %@", selected[@"type"]);
+            //[SylkLogger log:@"[audio] selected device not found in inputs, keeping output type: %@", selected[@"type"]];
         }
 
         // If selected device not in inputs, add it as input-only
@@ -314,9 +321,9 @@ RCT_EXPORT_MODULE(AudioRouteModule);
                                               @"name": selected[@"name"],
                                               @"type": selected[@"type"]};
             [inputs addObject:inputOnlyDevice];
-            //NSLog(@"[SYLK_APP] [Audio] added selected device to inputs: %@", inputOnlyDevice);
+            //[SylkLogger log:@"[audio] added selected device to inputs: %@", inputOnlyDevice];
         } else {
-            //NSLog(@"[SYLK_APP] [Audio] selected device already exists in inputs");
+            //[SylkLogger log:@"[audio] selected device already exists in inputs"];
         }
 
         // Note: we no longer add selected back to outputs here — getAudioOutputsArray
@@ -324,21 +331,25 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
         if (selected[@"type"]) {
             _currentRoute = selected[@"type"];
-            NSLog(@"[SYLK_APP] [Audio] _currentRoute updated to: %@", _currentRoute);
+            // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] _currentRoute updated to: %@", _currentRoute];
         }
 
         return selected;
     } else {
-        NSLog(@"[SYLK_APP] [Audio] no outputs in current route");
+        // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] no outputs in current route"];
     }
 
     // Fallback: no outputs, return virtual current route if known
     if (_currentRoute) {
         NSDictionary *fallback = @{@"id": @"", @"name": @"", @"type": _currentRoute};
-        NSLog(@"[SYLK_APP] [Audio] returning fallback currentRoute: %@", _currentRoute);
+        // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] returning fallback currentRoute: %@", _currentRoute];
         return fallback;
     } else {
-        NSLog(@"[SYLK_APP] [Audio] no current route known, returning empty dictionary");
+        // [audio] route-info trace — disabled.
+    //[SylkLogger log:@"[audio] no current route known, returning empty dictionary"];
     }
 
     return @{};
@@ -376,8 +387,8 @@ RCT_EXPORT_MODULE(AudioRouteModule);
       }
     }
     if (!onSpeaker) {
-      NSLog(@"[SYLK_APP] [Audio] speaker drift detected (reason=%lu) — re-pinning speaker",
-            (unsigned long)reason);
+      [SylkLogger log:@"[audio] speaker drift detected (reason=%lu) — re-pinning speaker",
+            (unsigned long)reason];
       NSError *e = nil;
       [s setCategory:AVAudioSessionCategoryPlayAndRecord
          withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
@@ -441,7 +452,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
           }
       }
       if (targetType) {
-          NSLog(@"[SYLK_APP] [Audio] NewDeviceAvailable: auto-routing to %@", targetType);
+          [SylkLogger log:@"[audio] NewDeviceAvailable: auto-routing to %@", targetType];
           NSDictionary *deviceMap = @{
               @"id": (targetInput && targetInput.UID) ? targetInput.UID : @"",
               @"name": (targetInput && targetInput.portName) ? targetInput.portName : @"",
@@ -482,7 +493,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
           }
       }
       if (!btStillAvailable) {
-          NSLog(@"[SYLK_APP] [Audio] BT device disconnected, clearing cache");
+          [SylkLogger log:@"[audio] BT device disconnected, clearing cache"];
           _lastKnownBtDevice = nil;
       }
       // If the wired headset just got unplugged and we still had it cached as
@@ -490,7 +501,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
       // so getCurrentRouteInfoDictionary stops emitting synthetic WIRED_HEADSET
       // events and falls through to whatever iOS rerouted to (earpiece/speaker).
       if (!wiredStillAvailable && [_currentRoute isEqualToString:@"WIRED_HEADSET"]) {
-          NSLog(@"[SYLK_APP] [Audio] wired headset unplugged, clearing _currentRoute hint");
+          [SylkLogger log:@"[audio] wired headset unplugged, clearing _currentRoute hint"];
           _currentRoute = nil;
       }
   }
@@ -502,7 +513,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
 - (void)handleInterruption:(NSNotification *)note {
   // handle interruptions (eg. phone call) — emit event so RN side can refresh state
-  NSLog(@"[SYLK_APP] [Audio] handleInterruption: %@", note.userInfo);
+  [SylkLogger log:@"[audio] handleInterruption: %@", note.userInfo];
   if (_hasListeners) {
     [self sendReactNativeEvent];
   }
@@ -528,21 +539,21 @@ RCT_EXPORT_MODULE(AudioRouteModule);
   for (NSString *type in priority) {
     for (NSDictionary *dev in all) {
       if ([dev[@"type"] isEqualToString:type]) {
-        NSLog(@"[SYLK_APP] [Audio] FORCE selecting start device %@", dev);
+        [SylkLogger log:@"[audio] FORCE selecting start device %@", dev];
         [self switchAudioRouteInternal:dev];
         return;
       }
     }
   }
 
-  NSLog(@"[SYLK_APP] [Audio] No eligible device to force-select");
+  [SylkLogger log:@"[audio] No eligible device to force-select"];
 }
 
 #pragma mark - Sending RN event
 
 - (void)sendReactNativeEvent {
   @try {
-    //NSLog(@"[SYLK_APP] [Audio] sendReactNativeEvent (pre-check bridge)");
+    //[SylkLogger log:@"[audio] sendReactNativeEvent (pre-check bridge)"];
     // Safe bridge check: older/newer RN may or may not have isValid
     BOOL bridgeReady = NO;
     if (self.bridge) {
@@ -554,7 +565,9 @@ RCT_EXPORT_MODULE(AudioRouteModule);
       }
     }
     if (!bridgeReady) {
-      NSLog(@"[SYLK_APP] [Audio] bridge not ready; skipping emit");
+      // [audio] bridge-not-ready trace — disabled. Fires repeatedly
+    // during boot until the bridge spins up; no actionable info.
+    //[SylkLogger log:@"[audio] bridge not ready; skipping emit"];
       return;
     }
 
@@ -585,7 +598,7 @@ RCT_EXPORT_MODULE(AudioRouteModule);
       @"mode": [self audioModeString]
     };
 
-    //NSLog(@"[SYLK_APP] [Audio] emitting CommunicationsDevicesChanged payload=%@", payload);
+    //[SylkLogger log:@"[audio] emitting CommunicationsDevicesChanged payload=%@", payload];
 
     [self sendEventWithName:@"CommunicationsDevicesChanged" body:payload];
   } @catch (NSException *ex) {
@@ -605,7 +618,8 @@ RCT_EXPORT_MODULE(AudioRouteModule);
 
 RCT_EXPORT_METHOD(getEvent)
 {
-  NSLog(@"[SYLK_APP] [Audio] getEvent called");
+  // [audio] getter entry trace — disabled.
+  //[SylkLogger log:@"[audio] getEvent called"];
   dispatch_async(dispatch_get_main_queue(), ^{
     [self sendReactNativeEvent];
   });
@@ -614,13 +628,14 @@ RCT_EXPORT_METHOD(getEvent)
 RCT_EXPORT_METHOD(getAudioInputs:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  NSLog(@"[SYLK_APP] [Audio] getAudioInputs called");
+  // [audio] getter entry trace — disabled.
+  //[SylkLogger log:@"[audio] getAudioInputs called"];
   dispatch_async(dispatch_get_main_queue(), ^{
     @try {
       NSArray *arr = [self getAudioInputsArray];
       resolve(arr);
     } @catch (NSException *ex) {
-      NSLog(@"[SYLK_APP] [Audio] getAudioInputs EX: %@", ex);
+      [SylkLogger log:@"[audio] getAudioInputs EX: %@", ex];
       reject(@"ERROR", ex.reason, nil);
     }
   });
@@ -629,13 +644,14 @@ RCT_EXPORT_METHOD(getAudioInputs:(RCTPromiseResolveBlock)resolve
 RCT_EXPORT_METHOD(getAudioOutputs:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  NSLog(@"[SYLK_APP] [Audio] getAudioOutputs called");
+  // [audio] getter entry trace — disabled.
+  //[SylkLogger log:@"[audio] getAudioOutputs called"];
   dispatch_async(dispatch_get_main_queue(), ^{
     @try {
       NSArray *arr = [self getAudioOutputsArray];
       resolve(arr);
     } @catch (NSException *ex) {
-      NSLog(@"[SYLK_APP] [Audio] getAudioOutputs EX: %@", ex);
+      [SylkLogger log:@"[audio] getAudioOutputs EX: %@", ex];
       reject(@"ERROR", ex.reason, nil);
     }
   });
@@ -644,13 +660,14 @@ RCT_EXPORT_METHOD(getAudioOutputs:(RCTPromiseResolveBlock)resolve
 RCT_EXPORT_METHOD(getCurrentRoute:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  NSLog(@"[SYLK_APP] [Audio] getCurrentRoute called");
+  // [audio] getter entry trace — disabled.
+  //[SylkLogger log:@"[audio] getCurrentRoute called"];
   dispatch_async(dispatch_get_main_queue(), ^{
     @try {
       NSDictionary *info = [self getCurrentRouteInfoDictionary];
       resolve(info);
     } @catch (NSException *ex) {
-      //NSLog(@"[SYLK_APP] [Audio] getCurrentRoute EX: %@", ex);
+      //[SylkLogger log:@"[audio] getCurrentRoute EX: %@", ex];
       reject(@"ERROR", ex.reason, nil);
     }
   });
@@ -667,10 +684,10 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  NSLog(@"[SYLK_APP] [Audio] start called deviceMap=%@", deviceMap);
+  [SylkLogger log:@"[audio] start called deviceMap=%@", deviceMap];
   dispatch_async(dispatch_get_main_queue(), ^{
     if (self->_started) {
-      NSLog(@"[SYLK_APP] [Audio] start: already started");
+      [SylkLogger log:@"[audio] start: already started"];
       resolve(@(YES));
       return;
     }
@@ -682,14 +699,14 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
     self->_origOptions = session.categoryOptions;
     self->_origMode = session.mode;
 
-    NSLog(@"[SYLK_APP] [Audio] Saved original category=%@ options=%lu mode=%@", self->_origCategory, (unsigned long)self->_origOptions, self->_origMode);
+    [SylkLogger log:@"[audio] Saved original category=%@ options=%lu mode=%@", self->_origCategory, (unsigned long)self->_origOptions, self->_origMode];
 
     BOOL activated = [session setActive:YES error:&err];
     if (!activated) {
-      NSLog(@"[SYLK_APP] [Audio] Failed to activate session: %@", err);
+      [SylkLogger log:@"[audio] Failed to activate session: %@", err];
       // not a hard failure: continue but notify
     } else {
-      NSLog(@"[SYLK_APP] [Audio] setActive: YES OK");
+      [SylkLogger log:@"[audio] setActive: YES OK"];
     }
 
     self->_started = YES;
@@ -698,9 +715,9 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
     if (deviceMap && deviceMap.count > 0) {
       BOOL switched = [self switchAudioRouteInternal:deviceMap];
       if (!switched) {
-        NSLog(@"[SYLK_APP] [Audio] start: requested audio device not available: %@", deviceMap[@"type"]);
+        [SylkLogger log:@"[audio] start: requested audio device not available: %@", deviceMap[@"type"]];
       } else {
-        NSLog(@"[SYLK_APP] [Audio] start: switched to %@", deviceMap[@"type"]);
+        [SylkLogger log:@"[audio] start: switched to %@", deviceMap[@"type"]];
       }
     }
 
@@ -716,10 +733,10 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  NSLog(@"[SYLK_APP] [Audio] stop called");
+  [SylkLogger log:@"[audio] stop called"];
   dispatch_async(dispatch_get_main_queue(), ^{
     if (!self->_started) {
-      NSLog(@"[SYLK_APP] [Audio] stop: not started");
+      [SylkLogger log:@"[audio] stop: not started"];
       resolve(@(YES));
       return;
     }
@@ -731,9 +748,9 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
     if (self->_origCategory && self->_origCategory.length > 0) {
       BOOL ok = [session setCategory:self->_origCategory withOptions:self->_origOptions error:&err];
       if (!ok) {
-        NSLog(@"[SYLK_APP] [Audio] Failed to restore category: %@", err);
+        [SylkLogger log:@"[audio] Failed to restore category: %@", err];
       } else {
-        NSLog(@"[SYLK_APP] [Audio] category restored: %@", self->_origCategory);
+        [SylkLogger log:@"[audio] category restored: %@", self->_origCategory];
       }
     }
 
@@ -742,9 +759,9 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
       NSError *modeErr = nil;
       BOOL modeOk = [session setMode:self->_origMode error:&modeErr];
       if (!modeOk) {
-        NSLog(@"[SYLK_APP] [Audio] Failed to restore mode: %@", modeErr);
+        [SylkLogger log:@"[audio] Failed to restore mode: %@", modeErr];
       } else {
-        NSLog(@"[SYLK_APP] [Audio] mode restored: %@", self->_origMode);
+        [SylkLogger log:@"[audio] mode restored: %@", self->_origMode];
       }
     }
 
@@ -753,9 +770,9 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                                 error:&err];
       
       if (!deact) {
-      NSLog(@"[SYLK_APP] [Audio] Failed to deactivate session: %@", err);
+      [SylkLogger log:@"[audio] Failed to deactivate session: %@", err];
     } else {
-      NSLog(@"[SYLK_APP] [Audio] session deactivated");
+      [SylkLogger log:@"[audio] session deactivated"];
     }
 
     self->_started = NO;
@@ -778,10 +795,10 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-    NSLog(@"[SYLK_APP] [Audio] setActiveDevice called: %@", deviceMap);
+    [SylkLogger log:@"[audio] setActiveDevice called: %@", deviceMap];
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!deviceMap || deviceMap.count == 0) {
-            NSLog(@"[SYLK_APP] [Audio] setActiveDevice: no device provided");
+            [SylkLogger log:@"[audio] setActiveDevice: no device provided"];
             reject(@"ERROR", @"No device provided", nil);
             return;
         }
@@ -807,9 +824,9 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
                                        withOptions:0
                                              error:&err];
             if (!categoryOk) {
-                NSLog(@"[SYLK_APP] [Audio] setCategory (no BT) failed: %@", err);
+                [SylkLogger log:@"[audio] setCategory (no BT) failed: %@", err];
             } else {
-                NSLog(@"[SYLK_APP] [Audio] setCategory: removed AllowBluetooth for earpiece routing");
+                [SylkLogger log:@"[audio] setCategory: removed AllowBluetooth for earpiece routing"];
             }
 
             // Switch from VoiceChat to Default mode. In VoiceChat mode, iOS
@@ -818,9 +835,9 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
             // combination actually land on the built-in receiver (earpiece).
             NSError *modeErr = nil;
             if (![session setMode:AVAudioSessionModeDefault error:&modeErr]) {
-                NSLog(@"[SYLK_APP] [Audio] setMode Default failed: %@", modeErr);
+                [SylkLogger log:@"[audio] setMode Default failed: %@", modeErr];
             } else {
-                NSLog(@"[SYLK_APP] [Audio] setMode: Default (for earpiece)");
+                [SylkLogger log:@"[audio] setMode: Default (for earpiece)"];
             }
 
             // Explicitly set preferred input to the built-in mic.
@@ -837,21 +854,21 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
             }
             if (builtInMic) {
                 if (![session setPreferredInput:builtInMic error:&err]) {
-                    NSLog(@"[SYLK_APP] [Audio] setPreferredInput to built-in mic failed: %@", err);
+                    [SylkLogger log:@"[audio] setPreferredInput to built-in mic failed: %@", err];
                 } else {
-                    NSLog(@"[SYLK_APP] [Audio] setPreferredInput to built-in mic OK");
+                    [SylkLogger log:@"[audio] setPreferredInput to built-in mic OK"];
                 }
             } else {
                 // Fallback: clear preference and hope iOS picks earpiece
                 [session setPreferredInput:nil error:&err];
-                NSLog(@"[SYLK_APP] [Audio] built-in mic not found, cleared preferred input");
+                [SylkLogger log:@"[audio] built-in mic not found, cleared preferred input"];
             }
 
             // Remove speaker override so the default earpiece route takes effect
             if (![session overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&err]) {
-                NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort to earpiece failed: %@", err);
+                [SylkLogger log:@"[audio] overrideOutputAudioPort to earpiece failed: %@", err];
             } else {
-                NSLog(@"[SYLK_APP] [Audio] forced output to earpiece");
+                [SylkLogger log:@"[audio] forced output to earpiece"];
                 _currentRoute = @"BUILTIN_EARPIECE";
                 switched = YES;
             }
@@ -864,7 +881,7 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
                            dispatch_get_main_queue(), ^{
                 if (![self->_currentRoute isEqualToString:@"BUILTIN_EARPIECE"]) return;
-                NSLog(@"[SYLK_APP] [Audio] earpiece deferred re-apply (WebRTC BT restoration guard)");
+                [SylkLogger log:@"[audio] earpiece deferred re-apply (WebRTC BT restoration guard)"];
                 AVAudioSession *s = [AVAudioSession sharedInstance];
                 NSError *e = nil;
                 [s setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:0 error:&e];
@@ -886,7 +903,7 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
             [self sendReactNativeEvent];
             resolve(@(YES));
         } else {
-            NSLog(@"[SYLK_APP] [Audio] setActiveDevice: switch failed for %@", type);
+            [SylkLogger log:@"[audio] setActiveDevice: switch failed for %@", type];
             reject(@"ERROR", @"Requested audio device not available", nil);
         }
     });
@@ -896,7 +913,8 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
 #pragma mark - Internal routing
 
 - (BOOL)switchAudioRouteInternal:(NSDictionary *)deviceMap {
-  NSLog(@"[SYLK_APP] [Audio] switchAudioRouteInternal: %@", deviceMap);
+  // [audio] switchAudioRouteInternal entry trace — disabled.
+  //[SylkLogger log:@"[audio] switchAudioRouteInternal: %@", deviceMap];
   @try {
     NSString *type = deviceMap[@"type"];
     NSString *uid = deviceMap[@"id"];
@@ -906,17 +924,18 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
 
     // Try to match available inputs first (preferred input)
     if (uid && uid.length > 0) {
-      NSLog(@"[SYLK_APP] [Audio] trying match by UID: %@", uid);
+      [SylkLogger log:@"[audio] trying match by UID: %@", uid];
       for (AVAudioSessionPortDescription *p in session.availableInputs) {
         if ([p.UID isEqualToString:uid]) {
           NSError *err = nil;
           BOOL ok = [session setPreferredInput:p error:&err];
           if (!ok) {
-            NSLog(@"[SYLK_APP] [Audio] setPreferredInput failed: %@", err);
+            [SylkLogger log:@"[audio] setPreferredInput failed: %@", err];
           } else {
             // update current route info
             _currentRoute = [self typeStringForPortType:p.portType];
-            NSLog(@"[SYLK_APP] [Audio] setPreferredInput OK currentRoute=%@", _currentRoute);
+            // [audio] setPreferredInput success trace — disabled.
+    //[SylkLogger log:@"[audio] setPreferredInput OK currentRoute=%@", _currentRoute];
             [self sendReactNativeEvent];
             return ok;
           }
@@ -926,7 +945,7 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
 
     // Try matching by type string
     if (type && type.length > 0) {
-      NSLog(@"[SYLK_APP] [Audio] trying match by type: %@", type);
+      [SylkLogger log:@"[audio] trying match by type: %@", type];
       // If type requests speaker explicitly
       if ([type isEqualToString:@"BUILTIN_SPEAKER"] || [type isEqualToString:@"SPEAKER_PHONE"]) {
         // Speaker pinning. iOS doesn't actually obey
@@ -948,7 +967,7 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
                               withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
                                     error:&catErr];
         if (!catOk) {
-          NSLog(@"[SYLK_APP] [Audio] setCategory(speaker, no AllowBluetooth) failed: %@", catErr);
+          [SylkLogger log:@"[audio] setCategory(speaker, no AllowBluetooth) failed: %@", catErr];
         }
         { NSError *modeErr = nil; [session setMode:AVAudioSessionModeVoiceChat error:&modeErr]; }
 
@@ -964,19 +983,19 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
         if (builtInMic) {
           NSError *prefErr = nil;
           if (![session setPreferredInput:builtInMic error:&prefErr]) {
-            NSLog(@"[SYLK_APP] [Audio] setPreferredInput(BuiltInMic for speaker) failed: %@", prefErr);
+            [SylkLogger log:@"[audio] setPreferredInput(BuiltInMic for speaker) failed: %@", prefErr];
           } else {
-            NSLog(@"[SYLK_APP] [Audio] setPreferredInput: BuiltInMic (speaker pin)");
+            [SylkLogger log:@"[audio] setPreferredInput: BuiltInMic (speaker pin)"];
           }
         }
 
         NSError *err = nil;
         BOOL ok = [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&err];
         if (!ok) {
-          NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort(Speaker) failed: %@", err);
+          [SylkLogger log:@"[audio] overrideOutputAudioPort(Speaker) failed: %@", err];
         } else {
           _currentRoute = @"BUILTIN_SPEAKER";
-          NSLog(@"[SYLK_APP] [Audio] overrideOutputAudioPort: Speaker OK (AllowBluetooth dropped, built-in mic pinned)");
+          [SylkLogger log:@"[audio] overrideOutputAudioPort: Speaker OK (AllowBluetooth dropped, built-in mic pinned)"];
           [self sendReactNativeEvent];
 
           // react-native-webrtc / CallKit can re-activate the audio session
@@ -990,7 +1009,7 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
                          dispatch_get_main_queue(), ^{
             if (![self->_currentRoute isEqualToString:@"BUILTIN_SPEAKER"]) return;
-            NSLog(@"[SYLK_APP] [Audio] speaker deferred re-apply (CallKit/WebRTC restoration guard)");
+            [SylkLogger log:@"[audio] speaker deferred re-apply (CallKit/WebRTC restoration guard)"];
             AVAudioSession *s = [AVAudioSession sharedInstance];
             NSError *e = nil;
             [s setCategory:AVAudioSessionCategoryPlayAndRecord
@@ -1030,9 +1049,9 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
                              withOptions:(AVAudioSessionCategoryOptionAllowBluetooth)
                                    error:&catErr];
           if (!ok) {
-              NSLog(@"[SYLK_APP] [Audio] setCategory (restore AllowBluetooth) failed: %@", catErr);
+              [SylkLogger log:@"[audio] setCategory (restore AllowBluetooth) failed: %@", catErr];
           } else {
-              NSLog(@"[SYLK_APP] [Audio] setCategory: restored AllowBluetooth for BT routing");
+              [SylkLogger log:@"[audio] setCategory: restored AllowBluetooth for BT routing"];
           }
       }
 
@@ -1045,17 +1064,18 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
       else if ([type isEqualToString:@"HDMI"]) targetPortType = AVAudioSessionPortHDMI;
 
       if (targetPortType) {
-        NSLog(@"[SYLK_APP] [Audio] targetPortType = %@", targetPortType);
+        [SylkLogger log:@"[audio] targetPortType = %@", targetPortType];
         // Try to set preferred input (if it's an input-capable port)
         for (AVAudioSessionPortDescription *p in session.availableInputs) {
           if ([p.portType isEqualToString:targetPortType]) {
             NSError *err = nil;
             BOOL ok = [session setPreferredInput:p error:&err];
             if (!ok) {
-              NSLog(@"[SYLK_APP] [Audio] setPreferredInput failed: %@", err);
+              [SylkLogger log:@"[audio] setPreferredInput failed: %@", err];
             } else {
               _currentRoute = [self typeStringForPortType:p.portType];
-              NSLog(@"[SYLK_APP] [Audio] setPreferredInput OK currentRoute=%@", _currentRoute);
+              // [audio] setPreferredInput success trace — disabled.
+    //[SylkLogger log:@"[audio] setPreferredInput OK currentRoute=%@", _currentRoute];
               [self sendReactNativeEvent];
               return ok;
             }
@@ -1066,7 +1086,8 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
         for (AVAudioSessionPortDescription *p in session.currentRoute.outputs) {
           if ([p.portType isEqualToString:targetPortType]) {
             _currentRoute = [self typeStringForPortType:p.portType];
-            NSLog(@"[SYLK_APP] [Audio] matched currentRoute output=%@", _currentRoute);
+            // [audio] matched-output trace — disabled.
+    //[SylkLogger log:@"[audio] matched currentRoute output=%@", _currentRoute];
             [self sendReactNativeEvent];
             return YES;
           }
@@ -1109,8 +1130,8 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
           // wired output exists (the JS side only offers WIRED_HEADSET as a
           // selectable option when the device is enumerated as available).
           _currentRoute = @"WIRED_HEADSET";
-          NSLog(@"[SYLK_APP] [Audio] WIRED_HEADSET selected (headphonesPresent=%@) — speaker override cleared, trusting iOS to route",
-                headphonesPresent ? @"YES" : @"NO");
+          [SylkLogger log:@"[audio] WIRED_HEADSET selected (headphonesPresent=%@) — speaker override cleared, trusting iOS to route",
+                headphonesPresent ? @"YES" : @"NO"];
           [self sendReactNativeEvent];
           return YES;
         }
@@ -1118,11 +1139,11 @@ RCT_EXPORT_METHOD(setActiveDevice:(NSDictionary *)deviceMap
     } // end if type
 
     // If we reached here, we couldn't route exactly: return false
-    NSLog(@"[SYLK_APP] [Audio] switchAudioRouteInternal: no match for deviceMap %@", deviceMap);
+    [SylkLogger log:@"[audio] switchAudioRouteInternal: no match for deviceMap %@", deviceMap];
     return NO;
 
   } @catch (NSException *ex) {
-    NSLog(@"[SYLK_APP] [Audio] switchAudioRouteInternal EX: %@", ex);
+    [SylkLogger log:@"[audio] switchAudioRouteInternal EX: %@", ex];
     RCTLogError(@"switchAudioRouteInternal EX: %@", ex);
     return NO;
   }

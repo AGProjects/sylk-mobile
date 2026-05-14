@@ -10,6 +10,7 @@ import {
     TouchableRipple,
     withTheme,
 } from 'react-native-paper';
+import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import dtmf from 'react-native-dtmf';
 
 const DEBUG = debug('blinkrtc:DTMF');
@@ -41,6 +42,26 @@ const KEY_LAYOUT = [
     ],
 ];
 
+// Optional 4th column, appended one item per row when the consumer
+// opts in via the `extraColumn` prop. Used by the contacts-list
+// AddressBook dialpad: the column adds quick access to backspace
+// (deletes the last character from the bound search field), a ×
+// clear action that wipes the field entirely, and the '-' and '_'
+// characters that come up in usernames / email-style SIP addresses
+// but aren't on a standard 3×4 keypad. Order matches the
+// user-visible top-to-bottom: backspace, ×, -, _.
+//   - action: 'backspace' → calls props.onBackspace, renders an icon
+//   - action: 'clear'     → calls props.onClear, renders the × icon
+//   - digit: char         → calls props.onDigit(char), renders text
+//   - placeholder: true   → renders an empty key-sized View, no press
+//     (kept around for callers that want a blank cell)
+const EXTRA_COLUMN = [
+    { action: 'backspace', icon: 'backspace-outline' },
+    { action: 'clear', icon: 'close' },
+    { digit: '-', letters: '' },
+    { digit: '_', letters: '' },
+];
+
 // Inline 3×4 keypad. Reused by:
 //   • DTMFModal — the in-call dialpad popup.
 //   • AudioCallBox awaiting screen — a preview pad rendered above the
@@ -51,14 +72,50 @@ const KEY_LAYOUT = [
 // the wire via callKeepSendDtmf.
 class DTMFPadBase extends Component {
     handleKeyPress(item) {
+        // Placeholder cells exist purely to keep the 4-row grid
+        // aligned — they have no visible content and no behaviour.
+        if (item.placeholder) {
+            return;
+        }
+
+        // 4th-column backspace action: deletes the last character
+        // from the bound search field via the consumer's
+        // onBackspace callback. Skip the DTMF-tone path entirely
+        // (there's no tone associated with this control).
+        if (item.action === 'backspace') {
+            if (this.props.onBackspace) {
+                this.props.onBackspace();
+            }
+            return;
+        }
+
+        // 4th-column clear action (× in the bottom-right corner):
+        // empties the bound search field via the consumer's onClear
+        // callback. Like backspace, this is a UI-only control with
+        // no DTMF tone.
+        if (item.action === 'clear') {
+            if (this.props.onClear) {
+                this.props.onClear();
+            }
+            return;
+        }
+
         // Number-entry mode (e.g. typing into the contacts search
         // bar): a digit-collecting consumer takes the printable
-        // character ('1', '*', '#', '+', '0' …) and we skip the DTMF
-        // tone path entirely. Useful for letting the user dial a
-        // number on a real-looking keypad without it implying that
-        // tones are being sent over a wire.
+        // character ('1', '*', '#', '+', '0', '-', '_' …) and we
+        // skip the DTMF tone path entirely. Useful for letting the
+        // user dial a number — or assemble a SIP user-part with
+        // non-tone characters — on a real-looking keypad without it
+        // implying that tones are being sent over a wire.
         if (this.props.onDigit) {
             this.props.onDigit(item.digit);
+            return;
+        }
+
+        // Non-tone keys (the 4th column's '-' / '_') have no DTMF
+        // mapping. In a call context (no onDigit) silently ignore
+        // them — `dtmf['DTMF_' + undefined]` would otherwise blow up.
+        if (!item.tone) {
             return;
         }
 
@@ -73,7 +130,7 @@ class DTMFPadBase extends Component {
         }
     }
 
-    renderKey(item) {
+    renderKey(item, keyId) {
         const theme = this.props.theme;
         const isV3 = theme && theme.isV3;
         const surfaceColor =
@@ -93,9 +150,27 @@ class DTMFPadBase extends Component {
         const sizeScale = this.props.compact ? 0.78 : 1;
         const keySize = Math.round(KEY_SIZE * sizeScale);
 
+        // Placeholder cell — same outer footprint as a real key so
+        // the column stays aligned, but nothing rendered inside and
+        // no press behaviour. Used for the row-4 slot of the extra
+        // column (which only has backspace / - / _ in rows 1-3).
+        if (item.placeholder) {
+            return (
+                <View
+                    key={keyId}
+                    style={{
+                        width: keySize,
+                        height: keySize,
+                        marginHorizontal: 6,
+                        backgroundColor: 'transparent',
+                    }}
+                />
+            );
+        }
+
         return (
             <TouchableRipple
-                key={item.tone}
+                key={keyId}
                 onPress={() => this.handleKeyPress(item)}
                 rippleColor={rippleColor}
                 borderless
@@ -111,33 +186,52 @@ class DTMFPadBase extends Component {
                 ]}
             >
                 <View style={styles.keyContent}>
-                    <Text style={[
-                        styles.digit,
-                        this.props.compact && styles.digitCompact,
-                        { color: digitColor },
-                    ]}>
-                        {item.digit}
-                    </Text>
-                    {item.letters ? (
-                        <Text style={[
-                            styles.letters,
-                            this.props.compact && styles.lettersCompact,
-                            { color: letterColor },
-                        ]}>
-                            {item.letters}
-                        </Text>
+                    {item.icon ? (
+                        // Icon-key variant — used by the 4th-column
+                        // backspace and × clear actions. The icon
+                        // sits as the SOLE child of keyContent so
+                        // its flex centering puts it dead-centre
+                        // inside the key. (Digit keys still get a
+                        // sub-letter row below the digit, which
+                        // shifts the digit up a bit; icon keys
+                        // skip that row so the icon stays centred
+                        // both horizontally and vertically.)
+                        <MaterialCommunityIcon
+                            name={item.icon}
+                            size={this.props.compact ? 20 : 24}
+                            color={digitColor}
+                        />
                     ) : (
-                        // Empty placeholder keeps every key the same
-                        // height so '1' / '*' / '#' don't render
-                        // shorter than the lettered keys and break the
-                        // grid alignment.
-                        <Text style={[
-                            styles.letters,
-                            this.props.compact && styles.lettersCompact,
-                            styles.lettersPlaceholder,
-                        ]}>
-                            {' '}
-                        </Text>
+                        <>
+                            <Text style={[
+                                styles.digit,
+                                this.props.compact && styles.digitCompact,
+                                { color: digitColor },
+                            ]}>
+                                {item.digit}
+                            </Text>
+                            {item.letters ? (
+                                <Text style={[
+                                    styles.letters,
+                                    this.props.compact && styles.lettersCompact,
+                                    { color: letterColor },
+                                ]}>
+                                    {item.letters}
+                                </Text>
+                            ) : (
+                                // Empty placeholder keeps every digit
+                                // key the same height so '1' / '*' / '#'
+                                // don't render shorter than the lettered
+                                // keys and break the grid alignment.
+                                <Text style={[
+                                    styles.letters,
+                                    this.props.compact && styles.lettersCompact,
+                                    styles.lettersPlaceholder,
+                                ]}>
+                                    {' '}
+                                </Text>
+                            )}
+                        </>
                     )}
                 </View>
             </TouchableRipple>
@@ -145,9 +239,18 @@ class DTMFPadBase extends Component {
     }
 
     render() {
+        // Build the per-row item list. When extraColumn is enabled
+        // we append the matching EXTRA_COLUMN entry to each row so
+        // the keypad renders 4 rows × 4 columns instead of the
+        // standard 3 columns. The extras are by-row-index so the
+        // top-to-bottom order is: backspace, -, _, blank.
+        const layout = this.props.extraColumn
+            ? KEY_LAYOUT.map((row, rIdx) => [...row, EXTRA_COLUMN[rIdx]])
+            : KEY_LAYOUT;
+
         return (
             <View style={[styles.grid, this.props.style]}>
-                {KEY_LAYOUT.map((row, rIdx) => (
+                {layout.map((row, rIdx) => (
                     <View
                         key={'row-' + rIdx}
                         style={[
@@ -155,7 +258,10 @@ class DTMFPadBase extends Component {
                             this.props.compact && styles.rowCompact,
                         ]}
                     >
-                        {row.map((item) => this.renderKey(item))}
+                        {row.map((item, cIdx) => this.renderKey(
+                            item,
+                            'k-' + rIdx + '-' + cIdx,
+                        ))}
                     </View>
                 ))}
             </View>
@@ -174,9 +280,24 @@ DTMFPadBase.propTypes = {
     // Dialog. Switches to white-on-translucent surfaces.
     darkOnLight: PropTypes.bool,
     // onDigit: when set, key presses report the printable character
-    // ('1', '*', '#', '+', '0' …) to the consumer and the DTMF tone
-    // path is skipped. Used for number-entry into a text input.
+    // ('1', '*', '#', '+', '0', '-', '_' …) to the consumer and the
+    // DTMF tone path is skipped. Used for number-entry into a text
+    // input.
     onDigit: PropTypes.func,
+    // extraColumn: appends a 4th column to the keypad with the
+    // backspace / - / _ helper keys. Top-to-bottom order is
+    // backspace, -, _, blank. The backspace key reports via
+    // onBackspace; the - / _ keys report via onDigit like the rest
+    // of the grid.
+    extraColumn: PropTypes.bool,
+    // onBackspace: invoked when the 4th-column backspace key is
+    // pressed. Consumer should delete the last character of its
+    // bound input. Ignored if extraColumn is false.
+    onBackspace: PropTypes.func,
+    // onClear: invoked when the 4th-column × clear key is pressed.
+    // Consumer should empty its bound input. Ignored if extraColumn
+    // is false.
+    onClear: PropTypes.func,
     style: PropTypes.any,
     theme: PropTypes.object,
 };
@@ -235,13 +356,25 @@ const styles = StyleSheet.create({
     row: {
         flexDirection: 'row',
         justifyContent: 'center',
-        marginVertical: 3,
+        // Bumped from 3 → 8 so adjacent rows breathe more; with
+        // marginHorizontal: 10 below this gives the grid a roomier,
+        // less-cramped feel that better matches a real phone keypad.
+        marginVertical: 8,
     },
     rowCompact: {
-        marginVertical: 2,
+        // Compact preset's vertical gap nudges up proportionally
+        // (was 2 → 5) so the inline pre-call preview still keeps
+        // some of the breathing room but stays denser than the
+        // full-size grid.
+        marginVertical: 5,
     },
     key: {
-        marginHorizontal: 6,
+        // Bumped from 6 → 10 so the gap between adjacent keys in a
+        // row is now 20 px instead of 12 px. The 4-column extra-
+        // column variant gets noticeably more usable touch
+        // separation, and the standard 3-column grid still fits
+        // comfortably on phone widths.
+        marginHorizontal: 10,
         // Subtle elevation so the keys feel pressable and read as
         // distinct surfaces — matches Paper's elevated-surface idiom.
         elevation: 2,

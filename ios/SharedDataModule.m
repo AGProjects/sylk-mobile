@@ -1,5 +1,6 @@
 #import <React/RCTEventEmitter.h>
 #import <React/RCTBridgeModule.h>
+#import "SylkLogger.h"
 
 @interface SharedDataModule : RCTEventEmitter <RCTBridgeModule>
 @property (nonatomic, strong) NSString *pendingData;
@@ -14,7 +15,7 @@ static NSString *activeChatJID = nil;
 
 + (BOOL)requiresMainQueueSetup
 {
-  NSLog(@"[SYLK_APP] [SharedData] requiresMainQueueSetup called");
+  [SylkLogger log:@"[shared-data] requiresMainQueueSetup called"];
   return YES;
 }
 
@@ -60,9 +61,9 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
       NSError *removeError = nil;
       [fm removeItemAtURL:fileURL error:&removeError];
       if (removeError) {
-          NSLog(@"[SYLK_APP] [SharedData] Failed to delete %@: %@", fileURL.lastPathComponent, removeError);
+          [SylkLogger log:@"[shared-data] Failed to delete %@: %@", fileURL.lastPathComponent, removeError];
       } else {
-          NSLog(@"[SYLK_APP] [SharedData] Deleted %@", fileURL.lastPathComponent);
+          [SylkLogger log:@"[shared-data] Deleted %@", fileURL.lastPathComponent];
       }
   }
   
@@ -75,10 +76,10 @@ RCT_EXPORT_METHOD(setActiveChat:(NSString * _Nullable)jid)
 
     if (jid != nil && [jid length] > 0) {
         [defaults setObject:jid forKey:@"activeChatJID"];
-        NSLog(@"[SYLK_APP] [SharedData] Active chat set to %@", jid);
+        [SylkLogger log:@"[shared-data] Active chat set to %@", jid];
     } else {
         [defaults removeObjectForKey:@"activeChatJID"];
-        NSLog(@"[SYLK_APP] [SharedData] Active chat cleared");
+        [SylkLogger log:@"[shared-data] Active chat cleared"];
     }
 
     [defaults synchronize]; // ensure it's written immediately

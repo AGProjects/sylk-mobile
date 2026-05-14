@@ -84,9 +84,28 @@ function log2file(text) {
     // Show Logs viewer, the clipboard copy, and the support-email
     // attachment all see the clean, untagged text — `[APPLOG]` is a
     // dev-tooling marker, not user-facing content.
-    console.log('[APPLOG] ' + text);
+    //
+    // ONE-LINE INVARIANT: every entry written to the on-disk log file
+    // must occupy exactly one '\n'-delimited line. LogsModal reads the
+    // file with .split('\n') and matches the [tag] pill regex per
+    // line — any embedded newline in `text` would split a single
+    // logical entry into multiple "lines", and the fragments without
+    // a leading [tag] would pile up in the "untagged" pill bucket.
+    //
+    // Sources of accidental newlines in `text`:
+    //   - JSON.stringify(obj, null, 2) — the pretty-print indent
+    //   - Error stack traces (.stack contains '\n')
+    //   - Multi-line template literals
+    //   - Native log lines that for some reason carried '\n'
+    //
+    // Replace every CR / LF / CRLF with the literal two-char escape
+    // ' \n ' so the boundary is still visible in the viewer and
+    // grep-friendly, but doesn't break the per-line parser. Trim the
+    // trailing run so we don't end up with " \n \r\n" tail noise.
+    const flat = String(text).replace(/\r\n|\r|\n/g, ' \\n ').replace(/\s+$/, '');
+    console.log('[APPLOG] ' + flat);
 
-    RNFS.appendFile(getLogfilePath(), text + '\r\n', 'utf8')
+    RNFS.appendFile(getLogfilePath(), flat + '\r\n', 'utf8')
       .catch((err) => {
         console.log(err.message);
       });
@@ -144,10 +163,23 @@ function timestampedLog() {
 
     if (typeof arg === 'object') {
       try {
-        txt = JSON.stringify(arg, null, 2);
+        // Compact JSON — NOT pretty-printed. The 2-space indent
+        // version injected '\n' inside the message body, which
+        // log2file's flatten now handles, but inflated the on-disk
+        // log size for no reader benefit (the in-app viewer is a
+        // single-line-per-entry view, indenting just gets squashed
+        // back into ' \n ' literals). Compact stays one line and
+        // stays readable.
+        txt = JSON.stringify(arg);
       } catch (e) {
         txt = '[Unserializable object]';
       }
+    } else if (arg instanceof Error) {
+      // Error objects don't survive JSON.stringify cleanly (most
+      // properties are non-enumerable). Hand-build a single-line
+      // representation; log2file will flatten any '\n' in .stack.
+      txt = (arg.name || 'Error') + ': ' + (arg.message || String(arg))
+            + (arg.stack ? ' | ' + arg.stack : '');
     } else {
       txt = String(arg);
     }

@@ -73,7 +73,7 @@ public class SylkCallRecorderModule extends ReactContextBaseJavaModule {
         } catch (IllegalStateException e) {
             promise.reject("EBUSY", e.getMessage());
         } catch (Throwable t) {
-            Log.e(TAG, "start failed", t);
+            SylkLogger.e("[call] [recorder] start failed", t);
             promise.reject("EFAIL", t.getMessage());
         }
     }
@@ -95,7 +95,7 @@ public class SylkCallRecorderModule extends ReactContextBaseJavaModule {
             }
             promise.resolve(result);
         } catch (Throwable t) {
-            Log.e(TAG, "stop failed", t);
+            SylkLogger.e("[call] [recorder] stop failed", t);
             promise.reject("EFAIL", t.getMessage());
         }
     }

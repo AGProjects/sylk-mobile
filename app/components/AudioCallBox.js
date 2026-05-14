@@ -404,12 +404,12 @@ class AudioCallBox extends Component {
     };
 
     /** Auto-start countdown for the outgoing-audio pre-call screen.
-     *  Default 6 s; takes an explicit `seconds` arg so the resume path
+     *  Default 4 s; takes an explicit `seconds` arg so the resume path
      *  can pick up from a frozen countdown value. The interval ticks
      *  once per second to update the display + sliding progress bar;
      *  the timeout fires the actual confirmStartCall when 0 is reached.
      *  Idempotent — cancels any previous timer first. */
-    _startAutoStartTimer(seconds = 6) {
+    _startAutoStartTimer(seconds = 4) {
         this._cancelAutoStartTimer();
         if (this.unmounted) return;
         const startSeconds = Math.max(1, seconds);
@@ -1499,12 +1499,33 @@ class AudioCallBox extends Component {
         if (this.props.isFolded) {
             return null;
         }
+        // Vertical offset has to clear the button bar, whose position
+        // and button size both vary by form factor / orientation.
+        // Paper's IconButton wraps the icon in a touch target ~16dp
+        // wider than the `size` prop, so on tablet (size=40) each
+        // button is closer to ~56dp tall — taller than the simple
+        // size-only estimate suggests, which is why the earlier 165dp
+        // pill offset still read as "too close".
+        //
+        //   tablet portrait:  bottom 60 + mb 40 + ~56 btn + ~44 gap ≈ 200
+        //   tablet landscape: bottom 60 + mb  0 + ~56 btn + ~34 gap ≈ 150
+        //   phone portrait:   mb 50 + ~50 btn + ~30 gap ≈ 130 (unchanged)
+        //   phone landscape:  bottom 30 + ~50 btn + ~50 gap ≈ 130 (unchanged)
+        //
+        // If a user reports the pill still kisses the buttons on a
+        // new device class, bump the matching branch — don't cap the
+        // overall maximum, since over-lifting on small phones would
+        // push the pill into the AudioSpeedometer above it.
+        let bottomOffset = 130;
+        if (this.props.isTablet) {
+            bottomOffset = this.state.isLandscape ? 150 : 200;
+        }
         return (
             <View
                 pointerEvents="box-none"
                 style={{
                     position: 'absolute',
-                    bottom: 130,
+                    bottom: bottomOffset,
                     left: 0,
                     right: 0,
                     alignItems: 'center',
@@ -2209,6 +2230,41 @@ class AudioCallBox extends Component {
                                     </TouchableHighlight>
                                 </View>
                                 : null}
+                            {/* Start video — mid-call upgrade button.
+                                Sends a Janus SIP plugin "update"
+                                request (SIP re-INVITE) with a fresh
+                                offer that adds m=video to the existing
+                                audio-only session. Visible only when
+                                the call is fully established and the
+                                running library exposes addVideo()
+                                (added by patches/react-native-sylkrtc).
+                                Hidden on PSTN calls — the gateway and
+                                the PSTN side won't take video anyway,
+                                so the button would just emit a
+                                guaranteed-to-fail re-INVITE. */}
+                            {this.props.startVideo
+                              && this.state.call
+                              && typeof this.state.call.addVideo === 'function'
+                              && this.state.call.state === 'established'
+                              && !isPhoneNumber ?
+                                <View style={slotContainerStyle}>
+                                    <TouchableHighlight style={styles.roundshape}>
+                                        <IconButton
+                                            key={'cb-btn-startvideo-' + _callRemountKey}
+                                            size={buttonSize}
+                                            style={whiteButtonClass}
+                                            // MaterialCommunityIcons "video-plus" — a
+                                            // video camera glyph with a small plus in
+                                            // the corner. Communicates "add video to
+                                            // this call" much better than a bare
+                                            // "video" icon, which on its own reads as
+                                            // "you're already in a video call".
+                                            icon="video-plus"
+                                            onPress={this.props.startVideo}
+                                        />
+                                    </TouchableHighlight>
+                                </View>
+                                : null}
                             <View style={[slotContainerStyle, {marginLeft: hangupMarginLeft}]}>
                                 <TouchableHighlight style={styles.roundshape}>
                                     <IconButton
@@ -2457,6 +2513,11 @@ AudioCallBox.propTypes = {
     mediaPlaying: PropTypes.func,
     localMedia: PropTypes.object,
     callKeepSendDtmf: PropTypes.func,
+    // Mid-call audio -> audio+video upgrade. Invoked by the "Start
+    // video" button rendered in the action bar of an established
+    // audio-only call. Owner (Call.js) handles the getUserMedia +
+    // call.addVideo() + state flip; here we just trigger it.
+    startVideo: PropTypes.func,
     toggleMute: PropTypes.func,
     toggleSpeakerPhone: PropTypes.func,
     speakerPhoneEnabled: PropTypes.bool,

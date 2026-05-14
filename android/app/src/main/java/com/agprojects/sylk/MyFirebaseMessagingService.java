@@ -46,6 +46,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Collections;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import com.agprojects.sylk.Contact;
 
 public class MyFirebaseMessagingService extends FirebaseMessagingService {
@@ -70,7 +73,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				NotificationChannel existing = manager.getNotificationChannel(channelId);
 				if (existing != null) {
 					manager.deleteNotificationChannel(channelId);
-					//Log.e(LOG_TAG, "Deleted existing notification channel: " + channelId);
+					//SylkLogger.e("[call] [fcm] Deleted existing notification channel: " + channelId);
 				}
 
 				NotificationChannel channel = new NotificationChannel(
@@ -82,7 +85,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				channel.setDescription("Notifications for rejected calls");
 
 				manager.createNotificationChannel(channel);
-				//Log.e(LOG_TAG, "Notification channel created: "+ channelId);
+				//SylkLogger.e("[call] [fcm] Notification channel created: "+ channelId);
 			}
 		}
 	}
@@ -121,7 +124,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			channel.enableVibration(false);
 			channel.enableLights(false);
 			manager.createNotificationChannel(channel);
-			Log.d(LOG_TAG, "[FCM] Badge-only channel was created");
+			SylkLogger.d("[call] [fcm] Badge-only channel was created");
 		}
 	}
 
@@ -182,7 +185,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			manager.createNotificationChannel(channel);
-			Log.d(LOG_TAG, "[FCM] Messaging channel was created");
+			SylkLogger.d("[call] [fcm] Messaging channel was created");
 		}
 	}
 	
@@ -192,7 +195,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-            Log.e(LOG_TAG, "[FCM] POST_NOTIFICATIONS permission not granted, cannot show notification");
+            SylkLogger.e("[call] [fcm] POST_NOTIFICATIONS permission not granted, cannot show notification");
             return;
         }
 
@@ -219,7 +222,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		// reach the user without a friendly name.
 		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
 		if (!dbFile.exists()) {
-			Log.e(LOG_TAG, "[FCM] Database file not found: " + dbFile.getAbsolutePath());
+			SylkLogger.e("[call] [fcm] Database file not found: " + dbFile.getAbsolutePath());
 			return null;
 		}
 	
@@ -257,16 +260,16 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				contact = new Contact(name, tagsList);
 			}
 		} catch (SQLiteDatabaseLockedException locked) {
-			Log.w(LOG_TAG, "[FCM] getContact: DB locked — skipping name lookup, using URI");
+			SylkLogger.w("[call] [fcm] getContact: DB locked — skipping name lookup, using URI");
 		} catch (SQLiteException sqlEx) {
 			String msg = sqlEx.getMessage();
 			if (msg != null && msg.contains("SQLITE_BUSY")) {
-				Log.w(LOG_TAG, "[FCM] getContact: DB busy — skipping name lookup");
+				SylkLogger.w("[call] [fcm] getContact: DB busy — skipping name lookup");
 			} else {
-				Log.e(LOG_TAG, "[FCM] getContact: SQLite error", sqlEx);
+				SylkLogger.e("[call] [fcm] getContact: SQLite error", sqlEx);
 			}
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "[FCM] Failed to get contact", e);
+			SylkLogger.e("[call] [fcm] Failed to get contact", e);
 		} finally {
 			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
 			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
@@ -279,7 +282,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	
 		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
 		if (!dbFile.exists()) {
-			Log.e(LOG_TAG, "[FCM] Database file not found: " + dbFile.getAbsolutePath());
+			SylkLogger.e("[call] [fcm] Database file not found: " + dbFile.getAbsolutePath());
 			return false;
 		}
 	
@@ -301,28 +304,57 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		Cursor cursor = null;
 		try {
 			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+			// Privacy flags (dnd / rejectAnonymous / rejectNonContacts)
+			// live inside accounts.settings as a JSON blob:
+			//   { "privacy": { "dnd": bool, "rejectAnonymous": bool,
+			//                  "rejectNonContacts": bool, ... }, ... }
+			// We pull the raw text and parse it with org.json.JSONObject.
+			//
+			// The `settings` column is guaranteed to exist by the JS
+			// boot path (upgradeSQLTables -> ensureColumn pair), so we
+			// no longer carry a fallback to the legacy per-column
+			// query. If a push arrives before JS has ever booted on a
+			// newly-installed build, the SQLiteException handlers
+			// below fail open the same way they would for any other
+			// transient SQL error.
 			cursor = db.rawQuery(
-					"SELECT active, dnd, reject_anonymous, reject_non_contacts FROM accounts WHERE account = ?",
+					"SELECT active, settings FROM accounts WHERE account = ?",
 					new String[]{account}
 			);
 			if (cursor != null && cursor.moveToFirst()) {
 				isActive = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("active")));
-				isDnd = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("dnd")));
-				rejectAnonymous = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_anonymous")));
-				rejectNonContacts = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("reject_non_contacts")));
+
+				String settingsJson = cursor.getString(cursor.getColumnIndexOrThrow("settings"));
+				if (settingsJson != null && !settingsJson.isEmpty()) {
+					try {
+						JSONObject root = new JSONObject(settingsJson);
+						JSONObject privacy = root.optJSONObject("privacy");
+						if (privacy != null) {
+							isDnd            = privacy.optBoolean("dnd",               false);
+							rejectAnonymous  = privacy.optBoolean("rejectAnonymous",   false);
+							rejectNonContacts= privacy.optBoolean("rejectNonContacts", false);
+						}
+					} catch (JSONException jsonEx) {
+						SylkLogger.w("[call] [fcm] settings JSON parse failed — failing open", jsonEx);
+					}
+				}
+				SylkLogger.d("[call] [fcm] account flags (from settings JSON): active=" + isActive
+					+ " dnd=" + isDnd
+					+ " rejectAnonymous=" + rejectAnonymous
+					+ " rejectNonContacts=" + rejectNonContacts);
 			}
 			readOk = true;
 		} catch (SQLiteDatabaseLockedException locked) {
-			Log.w(LOG_TAG, "[FCM] isAccountActive: DB locked — failing open immediately so call rings");
+			SylkLogger.w("[call] [fcm] isAccountActive: DB locked — failing open immediately so call rings");
 		} catch (SQLiteException sqlEx) {
 			String msg = sqlEx.getMessage();
 			if (msg != null && msg.contains("SQLITE_BUSY")) {
-				Log.w(LOG_TAG, "[FCM] isAccountActive: DB busy — failing open immediately so call rings");
+				SylkLogger.w("[call] [fcm] isAccountActive: DB busy — failing open immediately so call rings");
 			} else {
-				Log.e(LOG_TAG, "[FCM] isAccountActive: SQLite error", sqlEx);
+				SylkLogger.e("[call] [fcm] isAccountActive: SQLite error", sqlEx);
 			}
 		} catch (Exception e) {
-			Log.e(LOG_TAG, "[FCM] Failed to read account status", e);
+			SylkLogger.e("[call] [fcm] Failed to read account status", e);
 		} finally {
 			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
 			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
@@ -333,39 +365,39 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		// rejectAnonymous / DND in this fail-open path — those preferences
 		// can be re-evaluated by the JS handler once the DB is free.
 		if (!readOk) {
-			Log.w(LOG_TAG, "[FCM] isAccountActive: bypassing rejection checks for " + fromUri
+			SylkLogger.w("[call] [fcm] isAccountActive: bypassing rejection checks for " + fromUri
 				+ " due to DB lock — call will ring");
 			return true;
 		}
 	
 		if (rejectNonContacts && contactTags == null) {
-			Log.e(LOG_TAG, "[FCM] Only my contacts can call me");
+			SylkLogger.e("[call] [fcm] Only my contacts can call me");
 			showRejectedCallNotification(fromUri, "not in contacts list");
 			return false;
 		}
 	
 		// Anonymous caller check
 		if (fromUri.contains("anonymous") && rejectAnonymous) {
-			Log.e(LOG_TAG, "[FCM] Anonymous caller rejected");
+			SylkLogger.e("[call] [fcm] Anonymous caller rejected");
 			showRejectedCallNotification(fromUri, "anonymous caller");
 			return false;
 		}
 	
 		if (fromUri.contains("@guest.") && rejectAnonymous) {
-			Log.e(LOG_TAG, "[FCM] Anonymous caller rejected");
+			SylkLogger.e("[call] [fcm] Anonymous caller rejected");
 			showRejectedCallNotification(fromUri, "anonymous caller");
 			return false;
 		}
 	
 		// Do Not Disturb
 		if (isDnd) {
-			Log.e(LOG_TAG, "[FCM] Do not disturb me now");
+			SylkLogger.e("[call] [fcm] Do not disturb me now");
 			showRejectedCallNotification(fromUri, "Do not disturb now");
 			return false;
 		}
 	
 		if (!isActive) {
-			Log.e(LOG_TAG, "[FCM] Account is not active");
+			SylkLogger.e("[call] [fcm] Account is not active");
 			return false;
 		}
 	
@@ -451,7 +483,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
 		if (prefs.contains("appActive")) {
 			boolean jsActive = prefs.getBoolean("appActive", false);
-			Log.d(LOG_TAG, "[FCM] isAppInForeground: JS-reported appActive=" + jsActive);
+			SylkLogger.d("[call] [fcm] isAppInForeground: JS-reported appActive=" + jsActive);
 			return jsActive;
 		}
 
@@ -490,7 +522,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	private void incrementUnreadForContact(String uri) {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
 		int current = prefs.getInt("unread_chat_" + uri, 0) + 1;
-		Log.d(LOG_TAG, "[FCM] incrementUnreadForContact " + uri + " " + current);
+		SylkLogger.d("[call] [fcm] incrementUnreadForContact " + uri + " " + current);
 		prefs.edit().putInt("unread_chat_" + uri, current).apply();
 	}
 	
@@ -518,7 +550,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		if (prev == count) {
 			return;
 		}
-		Log.d(LOG_TAG, "[FCM] setUnreadForContact " + uri + " " + count + " (was " + prev + ")");
+		SylkLogger.d("[call] [fcm] setUnreadForContact " + uri + " " + count + " (was " + prev + ")");
 		prefs.edit().putInt("unread_chat_" + uri, count).apply();
 
 		// Eagerly reconcile both notification channels here — JS calls
@@ -603,7 +635,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		prefs.edit().putInt("last_badge_total", total).apply();
 		if (total <= 0) {
 			NotificationManagerCompat.from(context).cancel(GLOBAL_BADGE_NOTIFICATION_ID);
-			Log.d(LOG_TAG, "[FCM] refreshGlobalBadge: total=0, cancelled global badge");
+			SylkLogger.d("[call] [fcm] refreshGlobalBadge: total=0, cancelled global badge");
 			return;
 		}
 		ensureBadgeChannel(context);
@@ -648,12 +680,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		}
 
 		NotificationManagerCompat.from(context).notify(GLOBAL_BADGE_NOTIFICATION_ID, builder.build());
-		Log.d(LOG_TAG, "[FCM] refreshGlobalBadge: posted setNumber=" + total);
+		SylkLogger.d("[call] [fcm] refreshGlobalBadge: posted setNumber=" + total);
 	}
 
 	public static int getUnreadForContact(Context context, String uri) {
 		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
-		Log.d(LOG_TAG, "[FCM] getUnreadForContact " + uri);
+		SylkLogger.d("[call] [fcm] getUnreadForContact " + uri);
 		return prefs.getInt("unread_chat_" + uri, 0);
 	}
 
@@ -669,7 +701,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		if (prev == 0 && !hasThrottle) {
 			return;
 		}
-		Log.d(LOG_TAG, "[FCM] resetUnreadForContact " + uri + " (was " + prev + ")");
+		SylkLogger.d("[call] [fcm] resetUnreadForContact " + uri + " (was " + prev + ")");
 
 		// Reset unread counter and clear the notification throttle so the next
 		// incoming message from this sender produces a notification immediately.
@@ -721,7 +753,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
     
         Map<String, String> data = remoteMessage.getData();
         if (data == null || !data.containsKey("event")) {
-            Log.d(LOG_TAG, "[FCM] No event found in FCM payload");
+            SylkLogger.d("[call] [fcm] No event found in FCM payload");
             return;
         }
 		// inside onMessageReceived
@@ -737,7 +769,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         String event = data.get("event");
         
         if (event == null || event.trim().isEmpty()) {
-			Log.w(LOG_TAG, "[FCM] Missing event");
+			SylkLogger.w("[call] [fcm] Missing event");
 			return;
         }
 
@@ -749,7 +781,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("cancel")) {
 			callId = data.get("session-id");
 			if (callId == null || callId.trim().isEmpty()) {
-				Log.w(LOG_TAG, "[FCM] Missing callId");
+				SylkLogger.w("[call] [fcm] Missing callId");
 				return;
 			}
 			callId = callId.trim();
@@ -766,18 +798,18 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				android.media.AudioManager am = (android.media.AudioManager)
 						getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
 				if (am != null) {
-					Log.d(LOG_TAG, "[FCM] audio mode at push receipt: "
+					SylkLogger.d("[call] [fcm] audio mode at push receipt: "
 							+ AudioRouteModule.getAudioModeDescription(am.getMode())
 							+ " (event=" + event + ", callId=" + callId + ")");
 				}
-				Log.d(LOG_TAG, "[FCM] SylkTelecom.CONNECTIONS at push receipt: size="
+				SylkLogger.d("[call] [fcm] SylkTelecom.CONNECTIONS at push receipt: size="
 						+ SylkTelecom.CONNECTIONS.size()
 						+ " keys=" + SylkTelecom.CONNECTIONS.keySet());
 				AudioRouteModule.capturePreCallMode(
 						getApplicationContext(),
 						"FCM.onMessageReceived:" + event);
 			} catch (Throwable t) {
-				Log.w(LOG_TAG, "[FCM] failed to capture audio mode at push receipt", t);
+				SylkLogger.w("[call] [fcm] failed to capture audio mode at push receipt", t);
 			}
 		}
 
@@ -786,7 +818,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("message")) {
 	        fromUri = data.get("from_uri");
 			if (fromUri == null || fromUri.trim().isEmpty()) {
-				Log.w(LOG_TAG, "[FCM] Missing fromUri");
+				SylkLogger.w("[call] [fcm] Missing fromUri");
 				if (callId != null ) {
 					IncomingCallService.handledCalls.add(callId);
 				}
@@ -798,7 +830,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	        if (event.equals("incoming_session")) {
 				String activeCall = prefs.getString("currentCall", null);
 				if (activeCall != null && activeCall.equals(fromUri)) {
-					Log.d(LOG_TAG, "[FCM] Skipping notification: already in call with " + activeCall);
+					SylkLogger.d("[call] [fcm] Skipping notification: already in call with " + activeCall);
 					return;
 				}
 			}
@@ -806,7 +838,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
 				IncomingCallService.handledCalls.add(callId);
-				Log.w(LOG_TAG, "[FCM] Missing toUri");
+				SylkLogger.w("[call] [fcm] Missing toUri");
 				return;
 			}
 
@@ -823,13 +855,13 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			if (event.equals("incoming_conference_request")) {
 				String account = data.get("account");
 				if (account == null || account.trim().isEmpty()) {
-					Log.w(LOG_TAG, "[FCM] Missing account");
+					SylkLogger.w("[call] [fcm] Missing account");
 					return;
 				}
 				lookupAccount = account.trim().toLowerCase();
 			}
 
-			Log.d(LOG_TAG, "[FCM] " + event + " " + callId + " from " + fromUri + " to " + lookupAccount);
+			SylkLogger.d("[call] [fcm]" + event + " " + callId + " from " + fromUri + " to " + lookupAccount);
 
 			List<String> tags = new ArrayList<>();
             Contact contact = getContact(lookupAccount, fromUri);
@@ -839,22 +871,22 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				displayName = contact.getDisplayName();
                 tags = contact.getTags();
 			
-				Log.d(LOG_TAG, "[FCM] Display name: " + displayName);
-				Log.d(LOG_TAG, "[FCM] Tags: " + tags);
+				SylkLogger.d("[call] [fcm] Display name: " + displayName);
+				SylkLogger.d("[call] [fcm] Tags: " + tags);
 						
 			} else {
-				Log.d(LOG_TAG, "[FCM] Unknown contact");
+				SylkLogger.d("[call] [fcm] Unknown contact");
 			}
 
 			if (isBlocked(tags)) {
 				IncomingCallService.handledCalls.add(callId);
-				Log.w(LOG_TAG, "[FCM] Caller " + fromUri + " is blocked");
+				SylkLogger.w("[call] [fcm] Caller " + fromUri + " is blocked");
 				return;
 			}
 
 			if (isMuted(tags)) {
 				IncomingCallService.handledCalls.add(callId);
-				Log.d(LOG_TAG, "[FCM] Skipping notification: user " + fromUri + " is muted");
+				SylkLogger.d("[call] [fcm] Skipping notification: user " + fromUri + " is muted");
 				return;
 			}
 
@@ -868,12 +900,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			if (dnd && !canBypassDnd(tags)) {
 				IncomingCallService.handledCalls.add(callId);
-				Log.d(LOG_TAG, "[FCM] DND active, dropping message from " + fromUri);
+				SylkLogger.d("[call] [fcm] DND active, dropping message from " + fromUri);
 				return; // notification dropped
 			}
 			
 			if (dnd && canBypassDnd(tags)) {
-				Log.d(LOG_TAG, "[FCM] DND bypass for " + fromUri);
+				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri);
 			}
 
             Intent serviceIntent = new Intent(this, IncomingCallService.class);
@@ -884,23 +916,23 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             
             serviceIntent.putExtra("displayName", displayName);
             serviceIntent.putExtra("phoneLocked", phoneLocked);
-			Log.d(LOG_TAG, "[FCM] phoneLocked: " + phoneLocked);
+			SylkLogger.d("[call] [fcm] phoneLocked: " + phoneLocked);
 			
 			ContextCompat.startForegroundService(this, serviceIntent);
 
         } else if (event.equals("cancel")) {
 
 			if (!incomingCalls.contains(callId)) {
-				Log.d(LOG_TAG, "[FCM] missing corresponding incoming call " + callId);
+				SylkLogger.d("[call] [fcm] missing corresponding incoming call " + callId);
 				return;
 			}
 
 			if (IncomingCallService.handledCalls.contains(callId)) {
-				//Log.d(LOG_TAG, "cancel already handled: " + callId);
+				//SylkLogger.d("[call] [fcm] cancel already handled: " + callId);
 				return;
 			}
 
-			Log.d(LOG_TAG, "[FCM] " + event + " " + callId);
+			SylkLogger.d("[call] [fcm]" + event + " " + callId);
 			int notificationId = Math.abs(callId.hashCode());
 		
 			// Stop the IncomingCallService if running
@@ -918,7 +950,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         } else if (event.equals("message")) {
 			String messageId = data.get("message_id");
 			if (messageId == null || messageId.trim().isEmpty()) {
-				Log.w(LOG_TAG, "[FCM] Message error: missing messageId");
+				SylkLogger.w("[call] [fcm] Message error: missing messageId");
 				return;
 			}
 
@@ -926,10 +958,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             Contact contact = getContact(toUri, fromUri);
 			String displayName = fromUri;
 
-			Log.w(LOG_TAG, "[FCM] " + event + " " + messageId + " from " + fromUri + " to " + toUri);
+			SylkLogger.w("[call] [fcm]" + event + " " + messageId + " from " + fromUri + " to " + toUri);
 
 			if (fromUri.equals(toUri)) {
-				Log.d(LOG_TAG, "[FCM] Skipping notification for my own account");
+				SylkLogger.d("[call] [fcm] Skipping notification for my own account");
 				return;
 			}
 
@@ -937,25 +969,25 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				displayName = contact.getDisplayName();
                 tags = contact.getTags();
 			
-				Log.d(LOG_TAG, "[FCM] Display name: " + displayName);
-				Log.d(LOG_TAG, "[FCM] Tags: " + tags);
+				SylkLogger.d("[call] [fcm] Display name: " + displayName);
+				SylkLogger.d("[call] [fcm] Tags: " + tags);
 						
 			} else {
-				Log.d(LOG_TAG, "[FCM] Unknown contact");
+				SylkLogger.d("[call] [fcm] Unknown contact");
 			}
 
 			if (isBlocked(tags)) {
-				Log.w(LOG_TAG, "[FCM] Message from " + fromUri + " is blocked");
+				SylkLogger.w("[call] [fcm] Message from " + fromUri + " is blocked");
 				return;
 			}
 
 			if (isMuted(tags)) {
-				Log.d(LOG_TAG, "[FCM] Skipping notification: user " + fromUri + " is muted");
+				SylkLogger.d("[call] [fcm] Skipping notification: user " + fromUri + " is muted");
 				return;
 			}
 
 			if (!isAccountActive(toUri, fromUri, tags)) {
-				Log.w(LOG_TAG, "[FCM] Message from " + fromUri + " is not allowed");
+				SylkLogger.w("[call] [fcm] Message from " + fromUri + " is not allowed");
 				return;
 			}
 
@@ -963,12 +995,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			boolean dnd = isDndEnabled(this);
 
 			if (dnd && !canBypassDnd(tags)) {
-				Log.d(LOG_TAG, "[FCM] DND active, dropping message from " + fromUri);
+				SylkLogger.d("[call] [fcm] DND active, dropping message from " + fromUri);
 				return; // notification dropped
 			}
 			    
 			if (dnd && canBypassDnd(tags)) {
-				Log.d(LOG_TAG, "[FCM] DND bypass for " + fromUri);
+				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri);
 			}
 
 			// inside onMessageReceived or wherever you handle the message
@@ -976,21 +1008,21 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			
 			if (activeChat != null && activeChat.equals(fromUri)) {
 				// User is already in this chat, skip showing notification/bubble
-				Log.d(LOG_TAG, "[FCM] Skipping notification: user is in chat " + activeChat);
+				SylkLogger.d("[call] [fcm] Skipping notification: user is in chat " + activeChat);
 				return;
 			}
 			
 			if (activeChat != null) {
-			    Log.d(LOG_TAG, "[FCM] Active chat " + activeChat);
+			    SylkLogger.d("[call] [fcm] Active chat " + activeChat);
 			} else {
-			    Log.d(LOG_TAG, "[FCM] No active chat");
+			    SylkLogger.d("[call] [fcm] No active chat");
 			}
 
 			// Skip increment if app is in foreground — JS side will count this
 			// message via setUnreadForContact and we would otherwise double-count.
 			boolean appInForeground = isAppInForeground();
 			if (appInForeground) {
-				Log.d(LOG_TAG, "[FCM] App in foreground, JS handles unread counter for " + fromUri);
+				SylkLogger.d("[call] [fcm] App in foreground, JS handles unread counter for " + fromUri);
 			} else {
 				// increase unread badge counter
 				incrementUnreadForContact(fromUri);
@@ -1006,7 +1038,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// because florig's notification got setNumber(4) (=total) on top
 			// of living233's existing setNumber(2).
 			int unreadCount = getUnreadForContact(fromUri);
-			Log.d(LOG_TAG, "[FCM] Per-contact unread for " + fromUri + ":" + unreadCount
+			SylkLogger.d("[call] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount
 					+ " (total inbox=" + getTotalUnreadCount() + ")");
 
 			// Throttle the alert for visible notifications: if we showed a
@@ -1017,7 +1049,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			boolean throttled = shouldThrottleNotification(fromUri);
 			if (throttled) {
 				long elapsed = System.currentTimeMillis() - getLastNotificationTime(fromUri);
-				Log.d(LOG_TAG, "[FCM] Throttling notification alert for " + fromUri
+				SylkLogger.d("[call] [fcm] Throttling notification alert for " + fromUri
 						+ " (last alerted " + elapsed + "ms ago, window "
 						+ THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
 			}
@@ -1157,17 +1189,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			if (throttled) {
-				Log.d(LOG_TAG, "[FCM] Silent notification update for " + fromUri
+				SylkLogger.d("[call] [fcm] Silent notification update for " + fromUri
 						+ " (count=" + unreadCount + ")");
 			} else {
 				setLastNotificationTime(fromUri, System.currentTimeMillis());
-				Log.d(LOG_TAG, "[FCM] Notification alerted for " + fromUri
+				SylkLogger.d("[call] [fcm] Notification alerted for " + fromUri
 						+ " (count=" + unreadCount + "), next throttle window "
 						+ THROTTLE_NOTIFICATION_MS + "ms");
 			}
 
         } else {
-            Log.d(LOG_TAG, "[FCM] Unhandled event: " + event);
+            SylkLogger.d("[call] [fcm] Unhandled event: " + event);
         }
     }
 }

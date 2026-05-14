@@ -18,6 +18,7 @@ import CallOverlay from './CallOverlay';
 import NetworkSpeedometer from './NetworkSpeedometer';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
+import InCallManager from 'react-native-incall-manager';
 
 //import TrafficStats from './BarChart';
 import utils from '../utils';
@@ -52,6 +53,15 @@ class VideoBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
+        // Per-mount key used by the remote RTCView. Stable within a
+        // single mount (so re-renders don't churn the native view)
+        // but unique per instance — every fresh constructor call
+        // gets a new key, which is what we want when this VideoBox
+        // remounts after a navigation cycle. See the comment on the
+        // RTCView usage below for the M124 surface-binding bug this
+        // works around.
+        this._remoteRtcMountKey = 'rtc-remote-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 
         this.state = {
             remoteUri: this.props.remoteUri,
@@ -144,8 +154,10 @@ class VideoBox extends Component {
             // / _onEnableCamera; once set we never show the prompt
             // again for this call.
             videoEnableDialogVisible: this.props.call
-                && this.props.call.direction === 'incoming'
-                && !!this.props.videoMuted
+                && (
+                    (this.props.call.direction === 'incoming' && !!this.props.videoMuted)
+                    || !!this.props.cameraInitiallyMuted
+                )
                 && !this.props.call._sylkCameraPromptHandled
         };
 
@@ -533,6 +545,15 @@ class VideoBox extends Component {
     }
 
     componentDidMount() {
+        // Keep the screen awake for the entire lifetime of the
+        // video call UI. Without this, the OS idle timer dims and
+        // locks the screen after ~30s of no touch — fine for an
+        // audio call, but it kills the camera output and freezes
+        // the peer's view in a video call. Works on both platforms
+        // (iOS isIdleTimerDisabled, Android FLAG_KEEP_SCREEN_ON)
+        // independent of InCallManager.start() status.
+        try { InCallManager.setKeepScreenOn(true); } catch (e) { /* best effort */ }
+
         if (this.state.call) {
             this.state.call.on('stateChanged', this.callStateChanged);
             this.state.call.on('zrtpStateChanged', this.zrtpStateChanged);
@@ -576,6 +597,11 @@ class VideoBox extends Component {
     }
 
     componentWillUnmount() {
+        // Release the keep-screen-on we asserted at mount so the
+        // OS idle timer resumes once the video UI is torn down.
+        // Counterpart to setKeepScreenOn(true) in componentDidMount.
+        try { InCallManager.setKeepScreenOn(false); } catch (e) { /* best effort */ }
+
         this.unmounted = true;
         this._stopVideoStatsProbe();
         if (this.state.call != null) {
@@ -615,7 +641,7 @@ class VideoBox extends Component {
                     '[video-track] [call] mute',
                     'id=', track.id,
                     'enabled=', track.enabled,
-                    'callUUID=', this.state.callUUID
+                    'callUUID=', (this.props.call && this.props.call.id)
                 );
             };
             this._videoTrackOnUnmute = () => {
@@ -623,14 +649,14 @@ class VideoBox extends Component {
                     '[video-track] [call] unmute',
                     'id=', track.id,
                     'enabled=', track.enabled,
-                    'callUUID=', this.state.callUUID
+                    'callUUID=', (this.props.call && this.props.call.id)
                 );
             };
             this._videoTrackOnEnded = () => {
                 utils.timestampedLog(
                     '[video-track] [call] ended',
                     'id=', track.id,
-                    'callUUID=', this.state.callUUID
+                    'callUUID=', (this.props.call && this.props.call.id)
                 );
             };
 
@@ -655,7 +681,7 @@ class VideoBox extends Component {
                 'id=', track.id,
                 'enabled=', track.enabled,
                 'muted=', track.muted,
-                'callUUID=', this.state.callUUID
+                'callUUID=', (this.props.call && this.props.call.id)
             );
         } catch (e) {
             console.log('[video-track] attach failed:', e && e.message);
@@ -1939,6 +1965,19 @@ class VideoBox extends Component {
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer]}>
 					  <RTCView
+					    // Force a fresh native view on every VideoBox
+					    // mount by keying on `_remoteRtcMountKey` (set
+					    // once per instance in the constructor).
+					    // Without this, RTCView on Android M124 can
+					    // hold onto a stale surface from a previous
+					    // mount even when the streamURL hasn't
+					    // changed — symptom: audio→video upgrade
+					    // renders correctly on first display, then
+					    // shows a black remote frame after navigating
+					    // away from /call and back. Because the key
+					    // changes per mount (not per render), it does
+					    // NOT thrash within a single mount.
+						key={this._remoteRtcMountKey}
 						objectFit={this.state.aspectRatio}
 						style={styles.video}
 						streamURL={this.remoteStreamUrl}
@@ -2117,6 +2156,7 @@ VideoBox.propTypes = {
     finishInvite            : PropTypes.func,
     terminatedReason        : PropTypes.string,
     videoMuted              : PropTypes.bool,
+    cameraInitiallyMuted    : PropTypes.bool,
 	useInCallManger         : PropTypes.bool,
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,

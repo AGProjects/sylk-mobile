@@ -73,7 +73,7 @@ public final class SylkTelecom {
             TelecomManager tm = (TelecomManager) context.getApplicationContext()
                     .getSystemService(Context.TELECOM_SERVICE);
             if (tm == null) {
-                Log.w(LOG_TAG, "[SylkTelecom] No TelecomManager; cannot register PhoneAccount");
+                SylkLogger.w("[call] [telecom] No TelecomManager; cannot register PhoneAccount");
                 return;
             }
             PhoneAccountHandle handle = phoneAccountHandle(context);
@@ -91,13 +91,13 @@ public final class SylkTelecom {
             // false here you'll need the user to flip the switch in
             // Settings → Apps → Default apps → Calling accounts.
             PhoneAccount readback = tm.getPhoneAccount(handle);
-            Log.d(LOG_TAG, "[SylkTelecom] PhoneAccount registered"
+            SylkLogger.d("[call] [telecom] PhoneAccount registered"
                     + ", readback=" + (readback != null)
                     + ", enabled=" + (readback != null && readback.isEnabled()));
         } catch (SecurityException se) {
-            Log.e(LOG_TAG, "[SylkTelecom] PhoneAccount register denied (missing MANAGE_OWN_CALLS?)", se);
+            SylkLogger.e("[call] [telecom] PhoneAccount register denied (missing MANAGE_OWN_CALLS?)", se);
         } catch (Exception e) {
-            Log.e(LOG_TAG, "[SylkTelecom] PhoneAccount register failed", e);
+            SylkLogger.e("[call] [telecom] PhoneAccount register failed", e);
         }
     }
 
@@ -126,7 +126,7 @@ public final class SylkTelecom {
             TelecomManager tm = (TelecomManager) context.getApplicationContext()
                     .getSystemService(Context.TELECOM_SERVICE);
             if (tm == null) {
-                Log.w(LOG_TAG, "[SylkTelecom] No TelecomManager; cannot present call");
+                SylkLogger.w("[call] [telecom] No TelecomManager; cannot present call");
                 return;
             }
 
@@ -160,14 +160,14 @@ public final class SylkTelecom {
             extras.putInt(TelecomManager.EXTRA_INCOMING_VIDEO_STATE, videoState);
 
             tm.addNewIncomingCall(handle, extras);
-            Log.d(LOG_TAG, "[SylkTelecom] addNewIncomingCall " + callId
+            SylkLogger.d("[call] [telecom] addNewIncomingCall " + callId
                     + " from=" + fromUri
                     + " address=" + address
                     + " displayName=" + cleanDisplayName);
         } catch (SecurityException se) {
-            Log.e(LOG_TAG, "[SylkTelecom] addNewIncomingCall denied", se);
+            SylkLogger.e("[call] [telecom] addNewIncomingCall denied", se);
         } catch (Exception e) {
-            Log.e(LOG_TAG, "[SylkTelecom] addNewIncomingCall failed", e);
+            SylkLogger.e("[call] [telecom] addNewIncomingCall failed", e);
         }
     }
 
@@ -178,9 +178,9 @@ public final class SylkTelecom {
         if (c == null) return;
         try {
             c.setActive();
-            Log.d(LOG_TAG, "[SylkTelecom] setActive " + callId);
+            SylkLogger.d("[call] [telecom] setActive " + callId);
         } catch (Exception e) {
-            Log.w(LOG_TAG, "[SylkTelecom] setActive failed for " + callId, e);
+            SylkLogger.w("[call] [telecom] setActive failed for " + callId, e);
         }
     }
 
@@ -197,9 +197,9 @@ public final class SylkTelecom {
         try {
             c.setDisconnected(new DisconnectCause(disconnectCause));
             c.destroy();
-            Log.d(LOG_TAG, "[SylkTelecom] endCall " + callId + " cause=" + disconnectCause);
+            SylkLogger.d("[call] [telecom] endCall " + callId + " cause=" + disconnectCause);
         } catch (Exception e) {
-            Log.w(LOG_TAG, "[SylkTelecom] endCall failed for " + callId, e);
+            SylkLogger.w("[call] [telecom] endCall failed for " + callId, e);
         }
     }
 

@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -47,6 +47,11 @@ import AudioWaveform from './AudioWaveform';
 // never trigger the system emoji panel (which doesn't compose well
 // with adjustResize on Android and used to cover the input bar).
 import EmojiPicker from './EmojiPicker';
+// Quick-reaction bar: floats over the chat when the user single-taps
+// a bubble. Tapping a pill routes through the existing reply pipeline
+// (replyMessage + onSendMessage), so a reaction is just a reply whose
+// body is the emoji — no new wire format.
+import ReactionBar from './ReactionBar';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -204,6 +209,26 @@ class ContactsListBox extends Component {
             searchMessages: this.props.searchMessages,
             searchString: this.props.searchString,
             replyingTo: null,
+            // Quick-reaction bar state. When non-null, the floating
+            // ReactionBar is mounted and its emoji taps route to
+            // quickReact(reactionTarget, emoji) which seeds replyingTo
+            // and immediately fires onSendMessage with the emoji.
+            // All other bubbles dim to opacity 0.35 (see
+            // ChatBubble.isDimmedByReplyTarget) so the target pops.
+            //   shape: <currentMessage> | null
+            reactionTarget: null,
+            // Emoji set shown in the quick-reaction bar. Ordered most-
+            // common-first; the bar is a horizontal ScrollView so the
+            // tail of the list scrolls off-screen and is reachable by
+            // a swipe — the "+" button on the right still opens the
+            // full EmojiPicker for anything not in this set. Could
+            // later become an LRU persisted to prefs; static for v1.
+            recentReactions: [
+                '❤️','👍','😂','😮','😢','🙏',
+                '🔥','👏','😍','😎','🤔','😴',
+                '🥳','🤯','💯','✅','❌','🙌',
+                '🤝','👀','😅','🤣','💪','🎉',
+            ],
             // Whether the in-app EmojiPicker is currently displayed.
             // Driven by the smiley button in renderComposer.
             emojiPickerVisible: false,
@@ -236,6 +261,22 @@ class ContactsListBox extends Component {
 		    videoMetaCache: {},
 		    totalMessageExceeded: false,
 		    videoPaused: true,
+		    // Media-grid bulk-delete state. Each grid (image,
+		    // video) tracks its own selection so switching the
+		    // filter chip doesn't carry checkmarks across, but the
+		    // confirmation modal is shared — pendingDeleteIds /
+		    // pendingDeleteKind capture the snapshot the modal
+		    // operates on, populated when the action-bar Delete is
+		    // tapped, cleared on Cancel or after a confirmed
+		    // delete. remoteDeleteMedia mirrors the "also delete
+		    // remotely" toggle the existing Delete-files modal
+		    // has.
+		    imageGridSelected: [],
+		    videoGridSelected: [],
+		    showDeleteMediaModal: false,
+		    pendingDeleteIds: [],
+		    pendingDeleteKind: 'video', // 'image' | 'video'
+		    remoteDeleteMedia: false,
 			focusedMessages: null,  // array of currently rendered messages in focus mode
 			prevMessages: [],        // older messages before the focused message
 			nextMessages: [],        // newer messages after the focused message
@@ -372,6 +413,29 @@ class ContactsListBox extends Component {
 	  };
   
     backPressed() {
+        // Intercept the Android hardware back button when one of our
+        // in-app overlays is up — the user expects "back" to close the
+        // overlay, not navigate out of the chat. Returning true tells
+        // BackHandler we've handled the event; returning falsy lets
+        // the default navigation behaviour proceed.
+        //
+        // Order matters: EmojiPicker checked first because it can
+        // sit on top of the reaction bar (the "+" overflow path opens
+        // the picker AFTER closing the bar). If a future flow ever
+        // has both open simultaneously, closing the picker first is
+        // the right user model.
+        if (this.state.emojiPickerVisible) {
+            this.closeEmojiPicker();
+            // Also clear any pending reaction target so a stale "+"
+            // open doesn't route the next emoji selection to a
+            // target the user has visually dismissed.
+            this._pendingReactionTarget = null;
+            return true;
+        }
+        if (this.state.reactionTarget) {
+            this.dismissReactionBar();
+            return true;
+        }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -457,7 +521,7 @@ class ContactsListBox extends Component {
 				renderMessages: newMessages,
 				scrollToBottom: true,
 			  });
-		
+
 			  this.props.confirmRead(uri, "initial_load");
 			  return;
 			}
@@ -978,6 +1042,19 @@ class ContactsListBox extends Component {
     };
 
     handleEmojiSelected = (emoji) => {
+        // ReactionBar "+" path: the picker was opened by
+        // openReactionPicker() with a stashed target. Send the chosen
+        // emoji as a reply to that target and close the picker — a
+        // reaction is one-shot, unlike composer-append which stays
+        // open for multi-pick.
+        if (this._pendingReactionTarget) {
+            const target = this._pendingReactionTarget;
+            this._pendingReactionTarget = null;
+            this.setState({ emojiPickerVisible: false });
+            this.quickReact(target, emoji);
+            return;
+        }
+
         // Append to the current composer text. Picker stays open
         // (we don't call closeEmojiPicker here) so the user can pick
         // several emoji in a row without re-opening.
@@ -1026,6 +1103,22 @@ class ContactsListBox extends Component {
 		  renderMessageAudio={this.renderMessageAudio}
 		  renderMessageText={this.renderMessageText}
 		  focusedMessageId={this.state.focusedMessageId}
+		  replyTargetId={(this.state.reactionTarget && this.state.reactionTarget._id)
+		      || (this.state.replyingTo && this.state.replyingTo._id)
+		      || null}
+		  // When the reaction bar is open (or composer is in reply
+		  // mode), dim every bubble EXCEPT the target. Computed
+		  // here so the prop is plain-boolean and easy for the
+		  // memo comparator to watch.
+		  isDimmedByReplyTarget={!!(
+		      (this.state.reactionTarget || this.state.replyingTo)
+		      && (
+		          (this.state.reactionTarget && this.state.reactionTarget._id)
+		              !== (props.currentMessage && props.currentMessage._id)
+		          && (this.state.replyingTo && this.state.replyingTo._id)
+		              !== (props.currentMessage && props.currentMessage._id)
+		      )
+		  )}
 		  imageGroups={this.state.imageGroups}
 		  groupOfImage={this.state.groupOfImage}
 		  thumbnailGridSize={this.state.thumbnailGridSize}
@@ -3193,7 +3286,13 @@ class ContactsListBox extends Component {
 	return (
 		<TouchableOpacity
 		  activeOpacity={0.8}
-		  onPress={() => this.onImagePress(currentMessage)}
+		  // Tap on the image body opens the quick-reaction bar
+		  // (same gesture as text bubbles). The dedicated
+		  // "fullscreen" IconButton in the bubble footer remains
+		  // the explicit path to view the image full size —
+		  // see the IconButton with icon="fullscreen" below,
+		  // which still routes to onImagePress directly.
+		  onPress={() => this.onMessagePress(null, currentMessage)}
 		  style={{
 			width: '100%',
 			justifyContent: 'center',
@@ -3226,7 +3325,18 @@ class ContactsListBox extends Component {
 			  justifyContent: 'center',
 			  alignItems: 'center',
 			  overflow: 'hidden',
-			  backgroundColor: '#000', // avoids white edges during rotation
+			  // Transparent so the bubble's own backgroundColor
+			  // (green for incoming, white for outgoing) shows in
+			  // the letterbox area when the image's aspect ratio
+			  // doesn't fill the bubble's content width. Previously
+			  // this was '#000' "to avoid white edges during
+			  // rotation", which produced black bars extending
+			  // left/right of every image bubble in the chat —
+			  // very noticeable on portrait images in a wider
+			  // bubble. If rotation-edge artefacts come back, we
+			  // can switch this to a rotation-aware background
+			  // (only solid during active rotation gesture).
+			  backgroundColor: 'transparent',
 			}}
 		  >
 			<FastImage
@@ -3403,6 +3513,71 @@ class ContactsListBox extends Component {
         }
 
         //console.log('onMessagePress');
+
+        // If the reaction bar is already open, a bubble tap dismisses
+        // it. Same affordance as tapping outside a popup. To react to
+        // a different message, the user dismisses (tap) and taps
+        // again — keeps the interaction model simple and predictable.
+        if (this.state.reactionTarget) {
+            this.dismissReactionBar();
+            return;
+        }
+
+        // Mirror the OS keyboard's "tap outside dismisses" behaviour
+        // for the in-app EmojiPicker. RN's `keyboardShouldPersistTaps`
+        // only handles the system IME; the picker is a regular View
+        // and stays open unless we close it ourselves. Closing on
+        // any bubble tap covers the common case; scrollBeginDrag
+        // (wired in listViewProps) covers the swipe-to-scroll case.
+        if (this.state.emojiPickerVisible) {
+            this.closeEmojiPicker();
+        }
+
+        // Quick-reaction gestures. Apply to text bubbles AND image
+        // bubbles — for images the dedicated "fullscreen" IconButton
+        // is the explicit path to open the image full size, so the
+        // bubble's body tap is free to react. Other file types
+        // (PDFs, audio, generic attachments) keep their tap-to-open
+        // behaviour so taps stay snappy on media.
+        //
+        //   • Double-tap → quickReact with the default emoji
+        //     (recentReactions[0]). The first tap stamps _lastTap*; the
+        //     second tap inside 320 ms detects double and fires.
+        //   • Single tap → open the floating ReactionBar after a 320 ms
+        //     delay (so a follow-up tap can still promote to double).
+        //
+        // The full contextual menu remains on long-press (untouched).
+        const hasImage = !!message.image;
+        const isPlainText = !(message.metadata && message.metadata.filename);
+        const isReactable = isPlainText || hasImage;
+        if (isReactable) {
+            const now = Date.now();
+            const isDouble = this._lastTapId === message._id
+                && (now - (this._lastTapAt || 0)) < 320;
+            this._lastTapAt = now;
+            this._lastTapId = message._id;
+
+            if (isDouble) {
+                this._lastTapAt = 0;
+                this._lastTapId = null;
+                const defaultEmoji = (this.state.recentReactions
+                    && this.state.recentReactions[0]) || '❤️';
+                this.quickReact(message, defaultEmoji);
+                return;
+            }
+
+            // Defer the bar so the second half of a double-tap pre-empts
+            // it. If by the time this fires the tap was promoted to a
+            // double or the user tapped a different bubble, do nothing.
+            setTimeout(() => {
+                if (this._lastTapId === message._id
+                    && this._lastTapAt
+                    && Date.now() - this._lastTapAt >= 290) {
+                    this.setState({ reactionTarget: message });
+                }
+            }, 320);
+            return;
+        }
 
         // Body taps now perform the natural action for the bubble type
         // (download / decrypt / open / play). The contextual action sheet
@@ -4296,6 +4471,70 @@ class ContactsListBox extends Component {
         if (cmAny && cmAny.audio) {
             return true;
         }
+
+        // Reply mapping landed (or changed) for this message. The
+        // componentDidUpdate handler that reacts to messagesMetadata
+        // changes stamps `replyId` onto the message in renderMessages
+        // when a reply metadata-message arrives. gifted-chat's
+        // Message.shouldComponentUpdate doesn't watch replyId, so
+        // without this hook the bubble that was just sent as a
+        // reaction (quickReact) re-renders WITHOUT the reply preview
+        // — it draws as a plain-text bubble misaligned to one side
+        // until the chat is reloaded, at which point the freshly
+        // mounted bubble sees replyId in its initial props and
+        // takes the with-preview branch. Forcing a re-render the
+        // moment replyId appears (or changes) keeps the in-flight
+        // reaction glued under its parent immediately.
+        const prevMsg = props && props.currentMessage;
+        const nextMsg = nextProps && nextProps.currentMessage;
+        if (prevMsg && nextMsg && prevMsg.replyId !== nextMsg.replyId) {
+            return true;
+        }
+
+        // Video bubbles: re-render when the thumbnail for this id
+        // newly lands in state.videoMetaCache. renderMessageVideo
+        // generates the thumbnail on first render of a downloaded
+        // video, then commits the path via setState({video-
+        // MetaCache:…}). The currentMessage object handed to
+        // gifted-chat doesn't change (the path is stashed in this
+        // component's state, not on the message), so without this
+        // hook the bubble stays on the placeholder thumb until the
+        // user navigates away from the chat and back — at which
+        // point the bubble remounts and reads videoMetaCache from
+        // scratch. Detect the prev=no-thumbnail → next=has-thumbnail
+        // transition for this specific message id and force a
+        // single re-render. videoMetaCache is forwarded as a prop
+        // on GiftedChat (see the messages={…} call site below) so
+        // both props and nextProps carry it.
+        if (nextMsg && nextMsg.video) {
+            const vid = nextMsg._id;
+            const prevCache = (props && props.videoMetaCache) || {};
+            const nextCache = (nextProps && nextProps.videoMetaCache) || {};
+            const prevThumb = prevCache[vid] && prevCache[vid].thumbnail;
+            const nextThumb = nextCache[vid] && nextCache[vid].thumbnail;
+            if (prevThumb !== nextThumb) {
+                return true;
+            }
+        }
+
+        // Reply-targeting mode flipped — every visible bubble has to
+        // re-render so its opacity (isDimmedByReplyTarget) and orange
+        // outline can update. Detected by comparing the current
+        // target id against `_previousReactionTargetId`, which
+        // componentDidUpdate refreshes after every
+        // reactionTarget / replyingTo state commit. Returning true
+        // for ALL bubbles on transition is a deliberate full pass —
+        // bounded by visible-row count (~20), and individual
+        // ChatBubble memos still skip bubbles whose dim/highlight
+        // flags didn't actually change.
+        const currentTargetId = (this.state.reactionTarget && this.state.reactionTarget._id)
+            || (this.state.replyingTo && this.state.replyingTo._id)
+            || null;
+        const previousTargetId = this._previousReactionTargetId || null;
+        if (currentTargetId !== previousTargetId) {
+            return true;
+        }
+
         return false;
     }
 
@@ -4386,6 +4625,46 @@ class ContactsListBox extends Component {
 	}
 
 	componentDidUpdate(prevProps, prevState) {
+      // Notify the parent app whenever the reaction bar opens or
+      // closes. app.js uses this to hide the top NavigationBar
+      // (call buttons + menu) while the reaction overlay is up —
+      // the dimmed chat reads better when the brightly-lit nav
+      // above isn't competing for attention. Done here (rather
+      // than inside each setState that touches reactionTarget)
+      // so every transition path — single-tap open, send-and-
+      // clear, picker open, outside-tap dismiss, hardware back,
+      // navbar back via selectedContact change — funnels through
+      // one place.
+      if (prevState.reactionTarget !== this.state.reactionTarget) {
+          if (typeof this.props.setChatReactionMode === 'function') {
+              this.props.setChatReactionMode(!!this.state.reactionTarget);
+          }
+      }
+
+      // Dismiss the reaction bar whenever the chat we're showing
+      // changes — that catches both "user pressed back on the top
+      // NavigationBar" (selectedContact → null) and "user opened a
+      // different conversation" (selectedContact → other). The
+      // hardware back button is wired separately in
+      // backPressed(); this hook is the equivalent for any
+      // navigation-style transition.
+      const prevSelectedId = prevState.selectedContact && prevState.selectedContact.uri;
+      const nextSelectedId = this.state.selectedContact && this.state.selectedContact.uri;
+      if (prevSelectedId !== nextSelectedId && this.state.reactionTarget) {
+          this.setState({ reactionTarget: null });
+      }
+
+      // Track the previously-highlighted reply target so the next
+      // shouldUpdateMessage cycle can redraw it (to drop the orange
+      // outline) even when state.reactionTarget / state.replyingTo
+      // has already become null. Refresh AFTER the render that
+      // committed the highlight, so the new value reflects what
+      // the user currently sees on screen.
+      this._previousReactionTargetId =
+          (this.state.reactionTarget && this.state.reactionTarget._id)
+          || (this.state.replyingTo && this.state.replyingTo._id)
+          || null;
+
       // External scroll trigger. App.js bumps `chatScrollTrigger`
       // when an outgoing event (e.g. user just confirmed a Meet me
       // there share) wants the chat view to scroll to the latest
@@ -4506,6 +4785,74 @@ class ContactsListBox extends Component {
 				this.stopAudioPlayer();
 			}
       }
+
+	  // Grid-mode thumbnail generation. renderMessageVideo only
+	  // generates a thumbnail when the video BUBBLE renders — that
+	  // happens in the normal chat view but NOT when we've swapped
+	  // the chat for the video grid (showVideoGrid hides showChat /
+	  // showReadonlyChat). So a download finishing while the user
+	  // is on the grid would leave the tile black forever: the
+	  // bubble never runs, videoMetaCache never gets the entry,
+	  // shouldUpdateMessage's thumbnail hook never fires.
+	  //
+	  // Fix: when renderMessages or transferProgress changes AND
+	  // we're showing the video grid, scan for video messages that
+	  // are now downloaded (msg.video populated) but lack both an
+	  // inline thumbnail AND a videoMetaCache entry. Kick off the
+	  // same createThumbnail pipeline renderMessageVideo uses; the
+	  // resulting setState populates videoMetaCache and the grid
+	  // tile picks up the preview on the next render.
+	  if (this.showVideoGrid
+	      && (prevState.renderMessages !== this.state.renderMessages
+	          || prevState.transferProgress !== this.state.transferProgress)) {
+	    try {
+	      const _cache = this.state.videoMetaCache || {};
+	      const _msgs = this.state.renderMessages || [];
+	      for (const msg of _msgs) {
+	        if (!msg || !msg.video) continue;
+	        const id = msg._id;
+	        if (msg.thumbnail) continue;
+	        if (id in _cache) continue; // already generating or done
+	        // Mark as in-flight before kicking off the async work so a
+	        // second CDU pass during the same tick doesn't double-fire.
+	        // Direct mutation matches the pattern in renderMessageVideo.
+	        this.state.videoMetaCache[id] = { loading: true };
+	        const uri = msg.video;
+	        const onOk = (path, w, h) => {
+	          this.setState(prev => ({
+	            videoMetaCache: {
+	              ...prev.videoMetaCache,
+	              [id]: { thumbnail: path, width: w || 512, height: h || 512 },
+	            },
+	          }));
+	          if (typeof this.props.updateFileTransferMetadata === 'function') {
+	            this.props.updateFileTransferMetadata(msg.metadata, 'thumbnail', path);
+	          }
+	        };
+	        const onErr = (err) => {
+	          // Drop the in-flight marker so a later retry has a
+	          // chance. Don't log noisily — videos with unusual
+	          // codecs can fail thumbnail extraction without it
+	          // being a real bug.
+	          this.setState(prev => {
+	            const { [id]: _, ...rest } = prev.videoMetaCache;
+	            return { videoMetaCache: rest };
+	          });
+	        };
+	        if (Platform.OS === 'android') {
+	          createThumbnailSafe({ url: uri, timeMs: 1000 })
+	            .then(path => onOk(path, 512, 512))
+	            .catch(onErr);
+	        } else {
+	          createThumbnail({ url: uri, timeStamp: 1000 })
+	            .then(({ path, width, height }) => onOk(path, width, height))
+	            .catch(onErr);
+	        }
+	      }
+	    } catch (e) {
+	      console.log('grid-thumb scan failed:', e && e.message);
+	    }
+	  }
 
 	  if (prevState.transferProgress !== this.state.transferProgress) {
 		//console.log('transferProgress changed', this.state.transferProgress);
@@ -4676,12 +5023,26 @@ class ContactsListBox extends Component {
 					newRotation !== undefined ||
 					newReplyId !== undefined
 				) {
+					// Bump `metadata` to a fresh reference when stamping
+					// replyId so gifted-chat's Message.shouldComponentUpdate
+					// (which watches `next.metadata != current.metadata`)
+					// fires unconditionally. Our shouldUpdateMessage hook
+					// already detects replyId changes, but this belt-and-
+					// suspenders trigger guarantees the bubble repaints into
+					// its "with reply preview" branch the instant the
+					// metadata lands — without it, a freshly-sent reaction
+					// emoji bubble can hold its plain-bubble layout until
+					// the chat is reopened, even though replyId is stamped.
+					const replyMetaBump = newReplyId !== undefined
+						? { ...(msg.metadata || {}), _replyStamp: newReplyId }
+						: msg.metadata;
 
 					return {
 						...msg,
 						text: newLabel || msg.text,
 						rotation: newRotation !== undefined ? newRotation : msg.value,
-						replyId: newReplyId !== undefined ? newReplyId : msg.value
+						replyId: newReplyId !== undefined ? newReplyId : msg.value,
+						metadata: replyMetaBump,
 					};
 				}
 
@@ -4874,6 +5235,67 @@ class ContactsListBox extends Component {
 		// Wait one tick so the input is mounted before focusing
 		setTimeout(() => this.textInputRef?.focus() , 100);
 	  });
+	};
+
+	// One-tap reaction: send `emoji` as a reply to `target`. Mirrors what
+	// the user does manually after long-press → Reply → typing the emoji
+	// → Send. We:
+	//   1. Set replyingTo so onSendMessage emits the reply-metadata.
+	//   2. After the setState commits, hand a GiftedChat-shape message
+	//      ({_id, text, createdAt}) to onSendMessage. That existing path
+	//      handles encryption, the metadata send, and the actual message
+	//      send, and then resets replyingTo: null itself (see line ~2430).
+	// Also closes the floating ReactionBar.
+	quickReact = (target, emoji) => {
+	  if (!target || !emoji) return;
+	  if (!this.state.selectedContact || !this.state.selectedContact.uri) return;
+	  this.setState({ replyingTo: target, reactionTarget: null }, () => {
+		const id = uuid.v4();
+		this.onSendMessage([{
+		  _id: id,
+		  key: id,
+		  text: emoji,
+		  createdAt: new Date(),
+		  // Empty user object so gifted-chat's MessageContainer can
+		  // compute position correctly. Its line is
+		  //   position: item.user._id === user._id ? 'right' : 'left'
+		  // and the chat-level `user` prop defaults to {} (we don't
+		  // pass it). Without item.user set here, accessing
+		  // item.user._id throws and the bubble ends up left-aligned
+		  // (treated as incoming) even though the reaction is
+		  // outgoing — so the parent preview shows on the right but
+		  // the emoji bubble is misaligned on the left. Mirroring
+		  // gifted-chat's own _onSend wrapping behaviour here puts
+		  // the reaction on the same alignment path as normal
+		  // outgoing replies.
+		  user: {},
+		  // Sender-side flag picked up by buildLastMessage in app.js so
+		  // a one-tap reaction doesn't overwrite the contacts-list
+		  // preview with the emoji — the user's previously-typed
+		  // message stays visible. The flag rides in `metadata`, which
+		  // is local-only for text/plain bodies (it isn't shipped to
+		  // the receiver) and is persisted to SQL as JSON, so it
+		  // survives an app restart and keeps doing its job when the
+		  // contacts list is rebuilt from getMessages.
+		  metadata: { isReaction: true },
+		}]);
+	  });
+	};
+
+	// Opens the existing EmojiPicker in "react" mode for the given
+	// target. handleEmojiSelected detects this mode via
+	// `_pendingReactionTarget` and routes the chosen emoji through
+	// quickReact rather than appending to the composer text.
+	openReactionPicker = (target) => {
+	  this._pendingReactionTarget = target;
+	  this.setState({ reactionTarget: null, emojiPickerVisible: true });
+	};
+
+	// Common dismiss path for the floating reaction bar — used by
+	// outside-tap on the bar's transparent backdrop and by other
+	// code paths that need to drop reaction-mode without sending.
+	dismissReactionBar = () => {
+	  this.setState({ reactionTarget: null });
 	};
 
 	renderMessageVideo = ({ currentMessage, orderBy }) => {
@@ -6140,7 +6562,22 @@ class ContactsListBox extends Component {
 
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const isMedia = currentMessage.video || currentMessage.audio;
-	  const textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
+	  let textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
+	  let textOpacity = 0.85;
+	  // Reply-target dim mode: this bubble is one of the non-target
+	  // bubbles (every bubble except the one the reaction bar is
+	  // pointed at). The bubble body + bottom-container already
+	  // paint a dark dim overlay over the bubble, but the timestamp
+	  // text colour is set here per direction and stays bright
+	  // white/black even on the dimmed surface. Drop it to a muted
+	  // light grey so it fades into the dim instead of standing out.
+	  const _dimTargetId = (this.state.reactionTarget && this.state.reactionTarget._id)
+	      || (this.state.replyingTo && this.state.replyingTo._id)
+	      || null;
+	  if (_dimTargetId && currentMessage._id !== _dimTargetId) {
+	      textColor = 'rgba(255,255,255,0.4)';
+	      textOpacity = 1;
+	  }
 	  let hasFileSize = !!currentMessage.metadata?.filesize;
 
 	  // Live-location bubbles: count the number of valid coordinate
@@ -6286,7 +6723,7 @@ class ContactsListBox extends Component {
 			  {
 				color: textColor,
 				fontSize: 11,
-				opacity: 0.85,
+				opacity: textOpacity,
 			  },
 			]}
 		  >
@@ -6516,8 +6953,19 @@ scrollToMessage(id) {
 	  }
 	}
 
-    get showImageGrid() {		
+    get showImageGrid() {
 		if (this.state.messagesCategoryFilter == 'image') {
+			return true;
+		}
+		return false;
+	}
+
+    // Mirror of showImageGrid for video. The per-contact Video
+    // filter swaps the chat list for a grid of video thumbnails;
+    // tapping a tile opens the existing full-screen video Modal
+    // via openVideoModal.
+    get showVideoGrid() {
+		if (this.state.messagesCategoryFilter == 'video') {
 			return true;
 		}
 		return false;
@@ -6526,13 +6974,17 @@ scrollToMessage(id) {
     get showChat() {
 		if (this.state.expandedImage) {
 			return false;
-		}    
-		
+		}
+
 		if (this.state.inviteContacts) {
 			return false;
-		}    
-		
+		}
+
 		if (this.state.messagesCategoryFilter == 'image') {
+			return false;
+		}
+
+		if (this.state.messagesCategoryFilter == 'video') {
 			return false;
 		}
 
@@ -6568,11 +7020,15 @@ scrollToMessage(id) {
 		if (this.state.messagesCategoryFilter == 'image') {
 			return false;
 		}
-		
+
+		if (this.state.messagesCategoryFilter == 'video') {
+			return false;
+		}
+
 		if (this.state.expandedImage) {
 			return false;
 		}
-		
+
         return true;
     }
 
@@ -6590,8 +7046,8 @@ scrollToMessage(id) {
       imageLoadingState: { ...prev.imageLoadingState, [id]: true },
     }));
   };
-  
-    handleImageLoadEnd = (id: string) => {
+
+  handleImageLoadEnd = (id: string) => {
     this.setState(prev => ({
       imageLoadingState: { ...prev.imageLoadingState, [id]: false },
     }));
@@ -6602,6 +7058,61 @@ scrollToMessage(id) {
     this.setState({rotation: newRotation});
   };
   
+  // Bulk Share for the media grids. Resolves each selected msg
+  // id to its on-disk decrypted file via metadata.local_url, makes
+  // Android-friendly copies in the cache dir (Share targets can't
+  // read arbitrary app sandbox paths on Android), and hands the
+  // resulting urls list to react-native-share. Same shape as the
+  // existing handleShare (single-message / image-group share)
+  // uses, just driven off the grid's selection set instead of an
+  // image-group leader id.
+  async shareSelectedMedia(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const urls = [];
+    // renderMessages is the unfiltered timeline; metadata.local_url
+    // is populated by sylk2GiftedChat once a transfer has been
+    // downloaded. Tiles for not-yet-downloaded files have no
+    // playable url and are silently skipped (the user can still
+    // tap them in the grid to trigger a download, then re-share).
+    const _msgs = this.state.renderMessages || [];
+    for (const msg of _msgs) {
+      if (!ids.includes(msg._id)) continue;
+      if (!msg || !msg.metadata || !msg.metadata.local_url) continue;
+      let filePath = msg.metadata.local_url;
+      if (Platform.OS === 'android') {
+        try {
+          const filename = msg.metadata.filename || `file-${Date.now()}`;
+          const destPath = `${RNFS.CachesDirectoryPath}/${filename}`;
+          await RNFS.copyFile(filePath, destPath);
+          filePath = `file://${destPath}`;
+        } catch (err) {
+          console.log('shareSelectedMedia: copy failed for', msg._id, err && err.message);
+          continue;
+        }
+      } else if (!filePath.startsWith('file://')) {
+        // iOS Share.open is happier with explicit file:// scheme;
+        // most decrypted local_url paths come back without it.
+        filePath = 'file://' + filePath;
+      }
+      urls.push(filePath);
+    }
+
+    if (urls.length === 0) {
+      console.log('shareSelectedMedia: no shareable urls (selection had no downloaded files)');
+      return;
+    }
+
+    try {
+      await Share.open({ title: 'Share', urls });
+    } catch (err) {
+      // user dismissing the share sheet shows up as a thrown
+      // error; ignore unless it's actually informative.
+      if (err && err.message && err.message !== 'User did not share') {
+        console.log('shareSelectedMedia: Share.open error', err.message);
+      }
+    }
+  }
+
   async deleteImages(selectedImages) {
 		console.log('deleteImages', selectedImages);
 		if (!this.state.selectedContact) {
@@ -6973,11 +7484,21 @@ scrollToMessage(id) {
         //                     self-correcting against whatever
         //                     adjustResize already did.
         //
-        //  * KAV path (else): legacy Android phone on API < 33 with
+        //  * KAV path (else): legacy Android phone on API < 34 with
         //                     adjustResize working as designed —
         //                     keep the original KeyboardAvoidingView
         //                     wrap with offset = 60+topInset, which
         //                     was working before.
+        //
+        //  NOTE: an earlier attempt extended the manual-overlap
+        //  branch to every Android version on the theory that the
+        //  no-op-when-adjustResize-works property made it strictly
+        //  safer. In practice, on Android 11 phones where
+        //  adjustResize was working, the keyboard event still
+        //  reported a non-zero rawOverlap (likely because of stale
+        //  Dimensions or screen-vs-window coordinate skew) and the
+        //  extra padding lifted the input bar far above the
+        //  keyboard. Sticking with the original gate.
         let useManualOverlap = false;
         let wideCanvas = false;
         if (Platform.OS === 'android') {
@@ -7105,14 +7626,29 @@ scrollToMessage(id) {
         let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
-        
+
         if (this.state.isAudioRecording || this.state.recordingFile) {
 			chatMessages = [];
 			loadEarlier = false;
         }
         
         //console.log('chatContainer', chatContainer);
-        const topInset = this.state.insets?.top || 0;
+        // safe-area-context occasionally reports topInset as 0 on
+        // Android 11 (edge-to-edge / status-bar quirk seen on at least
+        // one S62 Pro and similar Android 11 builds), which leaves the
+        // KeyboardAvoidingView's keyboardVerticalOffset short by the
+        // status-bar height — symptom: input bar peeks ~28-30px below
+        // the keyboard top. Fall back to Android's native
+        // StatusBar.currentHeight (in DP) when safe-area returns 0.
+        // iOS doesn't expose StatusBar.currentHeight; on iOS we trust
+        // safe-area unconditionally (it's reliable there).
+        let topInset = this.state.insets?.top || 0;
+        if (Platform.OS === 'android' && (!topInset || topInset === 0)) {
+            const sbh = StatusBar.currentHeight;
+            if (typeof sbh === 'number' && sbh > 0) {
+                topInset = sbh;
+            }
+        }
 		const bottomInset = this.state.insets?.bottom || 0;
 		const leftInset = this.state.insets?.left || 0;
 		const rightInset = this.state.insets?.right || 0;
@@ -7127,26 +7663,105 @@ scrollToMessage(id) {
 			timestamp: msg.metadata.timestamp,
 			rotation: msg.metadata.rotation,
 		  }));
-		  
-			
+
+		// Video-grid input. Same shape as `images` so ThumbnailGrid
+		// can be reused. `uri` here is the THUMBNAIL path (not the
+		// video itself), so each tile renders a still preview;
+		// `videoUri` carries the real video file path for the
+		// onItemPress handler to hand to openVideoModal.
+		//
+		// Two filter passes:
+		//   • Downloaded videos: msg.video populated by
+		//     sylk2GiftedChat once metadata.local_url exists AND
+		//     the filename matches utils.isVideo.
+		//   • Undownloaded fallback: file-transfer rows whose
+		//     metadata classifies as video under the SAME
+		//     precedence sylk2GiftedChat uses (image > audio >
+		//     video) — otherwise shared extensions (.ogg lives in
+		//     both audio and video tables) leak audio Call
+		//     recordings into the video grid.
+		//
+		// Thumbnail resolution mirrors renderMessageVideo: prefer
+		// currentMessage.thumbnail, fall back to videoMetaCache.
+		// Tiles without a thumbnail yet appear as black tiles with
+		// the play overlay; once the cache fills in (via the
+		// shouldUpdateMessage thumbnail hook), they pick up the
+		// real thumbnail on next render.
+		const _videoMetaCache = this.state.videoMetaCache || {};
+		const _transferProgress = this.state.transferProgress || {};
+		const videos = chatMessages
+		  .filter(m => {
+		    if (m && m.video) return true;
+		    if (!m || !m.metadata || !m.metadata.filename) return false;
+		    const fname = m.metadata.filename;
+		    const ftype = m.metadata.filetype;
+		    if (utils.isImage(fname, ftype)) return false;
+		    if (utils.isAudio(fname, ftype)) return false;
+		    return utils.isVideo(fname, ftype);
+		  })
+		  .map(msg => {
+		    const cacheEntry = _videoMetaCache[msg._id];
+		    let thumb = msg.thumbnail
+		      || (msg.thumbnail && msg.thumbnail.thumbnail)
+		      || (cacheEntry && cacheEntry.thumbnail)
+		      || null;
+		    if (thumb && Platform.OS === 'android' && thumb.indexOf('file://') === -1) {
+		      thumb = 'file://' + thumb;
+		    }
+		    // In-flight transfer state per tile. updateTransfer-
+		    // Progress in app.js writes { progress, stage } here
+		    // ('download' → 'decrypt' → cleared on success), so
+		    // we can pipe it straight into ThumbnailGrid's
+		    // overlay logic. Undefined when nothing's in flight
+		    // for this id.
+		    const tp = _transferProgress[msg._id];
+		    return {
+		      id: String(msg._id),
+		      uri: thumb,
+		      videoUri: msg.video,
+		      title: msg.text || (msg.metadata && msg.metadata.filename) || '',
+		      size: msg.metadata && msg.metadata.filesize,
+		      timestamp: msg.metadata && msg.metadata.timestamp,
+		      rotation: msg.metadata && msg.metadata.rotation,
+		      // Raw file-transfer metadata so the grid's
+		      // onItemPress can call downloadFile on
+		      // undownloaded tiles. The blob carries transfer_id,
+		      // url, sender, receiver, hash, etc.
+		      metadata: msg.metadata,
+		      downloaded: !!msg.video,
+		      progress: tp ? tp.progress : null,
+		      stage: tp ? tp.stage : null,
+		    };
+		  });
+
 		if (this.state.orderBy === 'timestamp') {
 			if (this.state.sortOrder == 'desc') {
-                images.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
+                images.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1);
+                videos.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1);
             } else {
-                images.sort((a, b) => (a.timestamp > b.timestamp) ? 1 : -1)
+                images.sort((a, b) => (a.timestamp > b.timestamp) ? 1 : -1);
+                videos.sort((a, b) => (a.timestamp > b.timestamp) ? 1 : -1);
             }
 		}
 
 		// Hardcoded approximation of the NavigationBar's rendered
 		// height. Fed into KeyboardAvoidingView's
 		// keyboardVerticalOffset on Android phones (isTablet=false),
-		// where the chat sits directly under a single full-width
-		// NavigationBar and `60 + topInset` matches the actual chrome
-		// above the wrapper. NOT used on Android tablets / foldable
-		// inner displays — there the offset doesn't match the real
-		// chrome and the KAV is dropped entirely (see the
-		// KeyboardWrapper block).
-		const navigatorBarHeight = 60;
+		// The chrome above the chat panel = topInset (system status
+		// bar, from safe-area) + Appbar.Header height (Paper).
+		// Appbar.Header's intrinsic height varies across Android ROMs
+		// — 56dp on most, but ~88dp on some Android 11 builds with
+		// extra system padding — which is what made the hardcoded
+		// `60` here under-shoot on those devices (input bar peeked
+		// ~30px below the keyboard top). NavigationBar measures the
+		// Appbar.Header with onLayout, reports the height up to app.js,
+		// which plumbs it down here as `appBarHeight`. We fall back
+		// to 60 for the first render pass before the measurement
+		// arrives.
+		const navigatorBarHeight = (typeof this.props.appBarHeight === 'number'
+		                              && this.props.appBarHeight > 0)
+		    ? this.props.appBarHeight
+		    : 60;
 		
 		const visibleMessages = chatMessages.filter(msg => {
 		      // skipped duplicate grouped images
@@ -7172,34 +7787,13 @@ scrollToMessage(id) {
 		//                (composerHeight - bottomInset + replyHeight)
 		//                handles the IME on iOS.
 		//
-		//  * Android phone (isTablet=false): KeyboardAvoidingView with
-		//                behavior='height' and the historical offset
-		//                of `navigatorBarHeight + topInset`. This is
-		//                what was working on a single-screen phone
-		//                with adjustResize — keep it as-is.
+		//  * Android phone (API < 34, !isTablet): KeyboardAvoidingView
+		//                with behavior='height' and the historical
+		//                offset of `navigatorBarHeight + topInset`.
 		//
-		//  * Android tablet / foldable inner display (isTablet=true):
-		//                plain View. The hardcoded 60+topInset offset
-		//                does NOT match the actual chrome above the
-		//                chat panel on a wider canvas (where a
-		//                contacts pane may sit alongside it and the
-		//                NavigationBar height calculation is
-		//                different), and KAV under-shrinks the
-		//                wrapper, leaving the input bar partially
-		//                covered by the IME. Drop KAV here and rely
-		//                purely on adjustResize from the manifest;
-		//                the KeyboardSpacer below catches the API 34+
-		//                edge-to-edge case where adjustResize alone
-		//                isn't enough. effectiveIsTablet is computed
-		//                in app.js#_detectOrientation from the hinge
-		//                sensor + minSide ≥ 450dp rule, so the inner
-		//                display of a Z Fold / Razr inner / Surface
-		//                Duo lands here automatically.
-		// KAV is used only on the legacy-phone branch (Android,
-		// !useManualOverlap). On manual-overlap devices the wrapper
-		// is a passthrough View and the chat container's
-		// paddingBottom carries the keyboard offset — see the JSX
-		// below.
+		//  * Android API 34+ / tablet / wide canvas: plain View, with
+		//                paddingBottom = keyboardOverlap on the chat
+		//                container (see useManualOverlap above).
 		const _isLegacyPhone = Platform.OS === 'android' && !useManualOverlap;
 		const KeyboardWrapper = _isLegacyPhone ? KeyboardAvoidingView : View;
 	
@@ -7219,6 +7813,14 @@ scrollToMessage(id) {
                 extraData={items}
                 renderItem={this.renderContactItem}
                 listKey={item => item.id}
+                /* Without this, RN's default 'never' policy makes the
+                   first tap on a contact row only dismiss the search
+                   keyboard — the touchable's onPress doesn't fire
+                   until the second tap. 'handled' lets row taps (which
+                   ARE handled by the touchable inside renderContactItem)
+                   pass through immediately while still dismissing the
+                   keyboard on taps that land in empty space. */
+                keyboardShouldPersistTaps="handled"
                 /*
                   Key must change whenever numColumns changes, otherwise
                   FlatList throws "Changing numColumns on the fly is not
@@ -7263,17 +7865,43 @@ scrollToMessage(id) {
 				  </View>
 				)}
   
+             {/* Column count for both media grids. Phone portrait
+                 reads cramped at 3 (~120dp tiles on a 360dp screen
+                 once gutters bite), so drop to 2; widen to 3
+                 whenever there's more horizontal room — tablet or
+                 phone-landscape. */}
              {this.showImageGrid ?
 				  <ThumbnailGrid
 					images={images}
 					isLandscape={this.state.isLandscape}
-					numColumns={3}
+					numColumns={(this.state.isTablet || this.state.isLandscape) ? 3 : 2}
 					showTimestamp={true}
 					showSize={true}
+					// Same selection + confirm-delete flow as the
+					// video grid below. Top-left checkbox per
+					// tile, action-bar Delete that opens the
+					// shared confirmation modal with a snapshot of
+					// the selected ids. confirmBeforeDelete keeps
+					// the optimistic in-grid remove from firing
+					// before the user confirms.
+					selectMode={true}
+					checkboxCorner="top-left"
 					enableDelete={true}
-					deleteImages={this.deleteImages}
+					confirmBeforeDelete={true}
+					enableShare={true}
+					shareImages={(ids) => this.shareSelectedMedia(ids)}
+					selectedIds={this.state.imageGridSelected}
+					onSelectionChange={(ids) => this.setState({imageGridSelected: ids})}
+					deleteImages={(ids) => {
+					    if (!ids || ids.length === 0) return;
+					    this.setState({
+					        pendingDeleteIds: ids,
+					        pendingDeleteKind: 'image',
+					        showDeleteMediaModal: true,
+					        remoteDeleteMedia: false,
+					    });
+					}}
 					onRotateImage={this.onRotateImage}
-					onSelectionChange = {this.searchThumbnailSelectionChanged}
 					onLongPress={(item) => console.log('long', item)}
 					renderThumb={({item, index, size}) => (
 					  <View style={{flex:1}}>
@@ -7281,6 +7909,91 @@ scrollToMessage(id) {
 					  </View>
 					)}
 				  />
+			  : null}
+
+             {/* Video grid view (Video filter chip active). Same
+                 component as the image grid, plus three video-
+                 specific knobs:
+                   • onItemPress: routes the tap to openVideoModal
+                     using the per-item videoUri (the real video
+                     file, not the thumbnail used for the tile).
+                   • showPlayIcon: overlays a centered play
+                     triangle on every tile so it reads as a video,
+                     not a still image.
+                   • emptyText: "No videos" instead of "No images"
+                     when the grid is empty.
+
+                 Pagination: the SQL slice for category-filtered
+                 queries is bumped to 10000 file-transfer rows
+                 (see app.js getMessages FILTERED_LIMIT), narrowed
+                 by content_type='application/sylk-file-transfer'.
+                 Even on chats with thousands of texts that's only
+                 the file transfers — the decrypt cost stays low
+                 since text rows don't reach the slice. No "Load
+                 earlier" affordance is needed; the grid sees the
+                 contact's entire media history in one fetch. */}
+             {this.showVideoGrid ?
+                 <View style={{flex: 1}}>
+                  <ThumbnailGrid
+                    images={videos}
+                    isLandscape={this.state.isLandscape}
+                    numColumns={(this.state.isTablet || this.state.isLandscape) ? 3 : 2}
+                    showTimestamp={true}
+                    showSize={true}
+                    // Top-left selection box per tile, with the
+                    // action-bar Delete button gated on any
+                    // selection. Tapping Delete opens our local
+                    // confirmation modal instead of optimistically
+                    // wiping tiles — confirmBeforeDelete tells the
+                    // grid to skip its own internal "remove
+                    // immediately" optimism.
+                    selectMode={true}
+                    checkboxCorner="top-left"
+                    enableDelete={true}
+                    confirmBeforeDelete={true}
+                    enableShare={true}
+                    shareImages={(ids) => this.shareSelectedMedia(ids)}
+                    selectedIds={this.state.videoGridSelected}
+                    onSelectionChange={(ids) => this.setState({videoGridSelected: ids})}
+                    deleteImages={(ids) => {
+                        // Snapshot the selection and pop the
+                        // shared confirmation modal. The actual
+                        // delete fires only after the user
+                        // confirms — cancelling keeps the tiles
+                        // and the per-grid selection intact.
+                        if (!ids || ids.length === 0) return;
+                        this.setState({
+                            pendingDeleteIds: ids,
+                            pendingDeleteKind: 'video',
+                            showDeleteMediaModal: true,
+                            remoteDeleteMedia: false,
+                        });
+                    }}
+                    showPlayIcon={true}
+                    emptyText="No videos"
+                    onItemPress={(item) => {
+                        if (!item) return;
+                        if (item.videoUri) {
+                            // Already downloaded → play.
+                            this.openVideoModal(item.videoUri);
+                        } else if (item.metadata && this.props.downloadFile) {
+                            // Not on disk yet → kick off download.
+                            // force=true matches the chat bubble's
+                            // manual-download button (line ~4378),
+                            // so the user gets the same behaviour:
+                            // immediate fetch, progress bar in the
+                            // bubble, and once the file lands +
+                            // thumbnail generates, the auto-refresh
+                            // hook in shouldUpdateMessage re-renders
+                            // this tile with the real preview and
+                            // play icon.
+                            console.log('VideoGrid: download tap for', item.id);
+                            this.props.downloadFile(item.metadata, true);
+                        }
+                    }}
+                    onLongPress={(item) => console.log('long video', item && item.id)}
+                  />
+                 </View>
 			  : null}
 
              {this.showChat ?
@@ -7337,6 +8050,29 @@ scrollToMessage(id) {
 						: {})}
 					>
 
+                {/* Pressable wrapper so a tap on the chat's empty
+                    area (gaps between bubbles, padding above the
+                    first bubble, anywhere the chat list isn't
+                    actively scrolling and no child Touchable
+                    captured the press) dismisses the reaction bar.
+                    Pressable's onPress fires only when no child
+                    responder claimed the tap — bubble taps are
+                    captured by their own TouchableOpacity inside
+                    gifted-chat, so those don't reach this handler.
+                    Bubble dismissal is handled inside onMessagePress
+                    itself (early-return when reactionTarget is set).
+                    flex: 1 so the Pressable fills the keyboard
+                    wrapper's space; without it, the chat would
+                    collapse to its content size. */}
+                <Pressable
+                    style={{ flex: 1 }}
+                    onPress={() => {
+                        if (this.state.reactionTarget) {
+                            this.dismissReactionBar();
+                        }
+                    }}
+                    android_ripple={null}
+                >
                 <GiftedChat
 				  listViewProps={{
 					ref: (ref) => { this.flatListRef = ref; },
@@ -7353,6 +8089,16 @@ scrollToMessage(id) {
 				    // and skips re-rendering the items, so the
 				    // waveforms stay frozen at the pre-drag position.
 				    extraData: this.state.audioBubbleScrub,
+				    // Dismiss the in-app EmojiPicker when the user
+				    // starts scrolling the chat — mirror of the OS
+				    // keyboard's behaviour. Paired with the explicit
+				    // closeEmojiPicker call at the top of
+				    // onMessagePress for bubble-tap dismissal.
+				    onScrollBeginDrag: () => {
+				        if (this.state.emojiPickerVisible) {
+				            this.closeEmojiPicker();
+				        }
+				    },
 				  }}
 				  
 				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}
@@ -7363,6 +8109,30 @@ scrollToMessage(id) {
                   onLongPress={this.onLongMessagePress}
                   onPress={this.onMessagePress}
                   renderInputToolbar={chatInputClass}
+                  // When reactionTarget is set, GiftedChat renders
+                  // the ReactionBar BELOW the message list and
+                  // ABOVE the input toolbar (chat-footer slot).
+                  // The message list shrinks by the bar's height
+                  // so the tapped target — which is often the
+                  // most recent message at the bottom — gets
+                  // pushed up into view above the bar. No
+                  // measurement / anchoring required.
+                  renderChatFooter={() => (
+                      this.state.reactionTarget
+                          ? (
+                              <ReactionBar
+                                  visible={true}
+                                  emojis={this.state.recentReactions}
+                                  onSelect={(emoji) =>
+                                      this.quickReact(this.state.reactionTarget, emoji)
+                                  }
+                                  onPickerOpen={() =>
+                                      this.openReactionPicker(this.state.reactionTarget)
+                                  }
+                              />
+                          )
+                          : null
+                  )}
                   renderMessage={(props) => {
                       // Image-attach preview: collapse gifted-chat's
                       // built-in avatar gutter (renderAvatar={null}
@@ -7411,6 +8181,12 @@ scrollToMessage(id) {
                   // bubble back into view.
                   shouldUpdateMessage={this.shouldUpdateMessage}
                   renderedMessageIds={this.state.renderedMessageIds}
+                  // Forwarded to gifted-chat's Message wrapper via
+                  // restProps so shouldUpdateMessage can detect the
+                  // "video thumbnail just landed in cache" transition
+                  // and re-render that specific bubble. See the
+                  // video-thumbnail branch in shouldUpdateMessage.
+                  videoMetaCache={this.state.videoMetaCache}
                   renderTime={this.renderTime}
                   renderDay={this.renderDay}
                   placeholder={this.state.placeholder}
@@ -7496,6 +8272,7 @@ scrollToMessage(id) {
 				  )}
                   renderFooter={() => <View style={{ height: this.state.replyingTo ? footerHeightReply: footerHeight }} />}
                 />
+                </Pressable>
 
 			   </KeyboardWrapper>
 
@@ -7513,6 +8290,16 @@ scrollToMessage(id) {
                     visible={this.state.emojiPickerVisible}
                     onSelect={this.handleEmojiSelected}
                 />
+
+                {/* No overlay dim layer here — dimming is done per-
+                    bubble via the `isDimmedByReplyTarget` prop on
+                    ChatBubble (opacity 0.35 on non-target bubbles).
+                    See renderBubble below. The quick-reaction bar
+                    that goes with the dim is now rendered INLINE
+                    via GiftedChat's renderChatFooter prop (see the
+                    main GiftedChat instance below) — it sits
+                    directly above the input toolbar and the
+                    message list shrinks to make room. */}
 
               </View>
 
@@ -7542,6 +8329,10 @@ scrollToMessage(id) {
                   // (lazy-load gate in renderMessageText). Sticky
                   // set: re-renders happen exactly once per bubble.
                   renderedMessageIds={this.state.renderedMessageIds}
+                  // Same purpose for the just-arrived-thumbnail case
+                  // on video bubbles — see the matching prop on the
+                  // main GiftedChat above.
+                  videoMetaCache={this.state.videoMetaCache}
                   onPress={this.onMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
@@ -7553,6 +8344,129 @@ scrollToMessage(id) {
               </View>
               : null
               }
+
+			{/* Media-grid bulk-delete confirmation modal — shared
+			    between the image and video grids. The triggering
+			    grid stamps state.pendingDeleteKind ('image' or
+			    'video') so the labels read naturally without
+			    needing a separate modal per type. Routes to
+			    app.js#deleteFiles, the same SQL+remote pipeline
+			    the NavigationBar "Delete files" modal uses, just
+			    with explicit ids instead of type/period filters.
+			    "Also delete remotely" stays opt-in. */}
+			{(() => {
+			  const kind = this.state.pendingDeleteKind || 'video';
+			  const ids = this.state.pendingDeleteIds || [];
+			  const count = ids.length;
+			  const singular = kind === 'image' ? 'image' : 'video';
+			  const plural   = kind === 'image' ? 'images' : 'videos';
+			  const noun = count === 1 ? singular : plural;
+			  const closeModal = () => this.setState({
+			      showDeleteMediaModal: false,
+			      pendingDeleteIds: [],
+			      remoteDeleteMedia: false,
+			  });
+			  return (
+			    <Modal
+			      visible={!!this.state.showDeleteMediaModal}
+			      transparent
+			      animationType="fade"
+			      onRequestClose={closeModal}
+			    >
+			      <TouchableWithoutFeedback onPress={closeModal}>
+			        <View style={{
+			          flex: 1,
+			          backgroundColor: 'rgba(0,0,0,0.5)',
+			          justifyContent: 'center',
+			          alignItems: 'center',
+			          paddingHorizontal: 24,
+			        }}>
+			          <TouchableWithoutFeedback onPress={() => {}}>
+			            <View style={{
+			              backgroundColor: '#fff',
+			              borderRadius: 12,
+			              padding: 20,
+			              width: '100%',
+			              maxWidth: 420,
+			            }}>
+			              <Text style={{fontSize: 18, fontWeight: '600', marginBottom: 12, textAlign: 'center'}}>
+			                Delete {count} {noun}?
+			              </Text>
+			              <Text style={{fontSize: 14, color: '#555', marginBottom: 16, textAlign: 'center'}}>
+			                The selected {plural} will be removed from this chat on this device.
+			              </Text>
+			              {this.state.selectedContact
+			                  && !(this.state.selectedContact.uri || '').includes('@videoconference') ? (
+			                <TouchableOpacity
+			                  onPress={() => this.setState({remoteDeleteMedia: !this.state.remoteDeleteMedia})}
+			                  style={{
+			                    flexDirection: 'row',
+			                    alignItems: 'center',
+			                    paddingVertical: 8,
+			                    marginBottom: 12,
+			                  }}
+			                >
+			                  <View style={{
+			                    width: 22,
+			                    height: 22,
+			                    borderRadius: 4,
+			                    borderWidth: 1.5,
+			                    borderColor: this.state.remoteDeleteMedia ? '#1976d2' : '#999',
+			                    backgroundColor: this.state.remoteDeleteMedia ? '#1976d2' : 'transparent',
+			                    marginRight: 10,
+			                    alignItems: 'center',
+			                    justifyContent: 'center',
+			                  }}>
+			                    {this.state.remoteDeleteMedia && <Text style={{color: '#fff', fontWeight: 'bold'}}>✓</Text>}
+			                  </View>
+			                  <Text style={{fontSize: 14, color: '#333'}}>Also delete remotely</Text>
+			                </TouchableOpacity>
+			              ) : null}
+			              <View style={{flexDirection: 'row', justifyContent: 'flex-end'}}>
+			                <TouchableOpacity
+			                  onPress={closeModal}
+			                  style={{paddingVertical: 10, paddingHorizontal: 16, marginRight: 8}}
+			                >
+			                  <Text style={{fontSize: 15, color: '#1976d2'}}>Cancel</Text>
+			                </TouchableOpacity>
+			                <TouchableOpacity
+			                  onPress={() => {
+			                    const uri = this.state.selectedContact && this.state.selectedContact.uri;
+			                    if (uri && ids.length > 0 && typeof this.props.deleteFiles === 'function') {
+			                        this.props.deleteFiles(uri, ids, this.state.remoteDeleteMedia, {});
+			                    }
+			                    // Clear both per-grid selections
+			                    // and the shared modal state in one
+			                    // setState — guarantees the action
+			                    // bar on the active grid hides via
+			                    // the controlled-selection path,
+			                    // regardless of which grid the
+			                    // delete came from.
+			                    this.setState({
+			                        showDeleteMediaModal: false,
+			                        pendingDeleteIds: [],
+			                        imageGridSelected: kind === 'image' ? [] : this.state.imageGridSelected,
+			                        videoGridSelected: kind === 'video' ? [] : this.state.videoGridSelected,
+			                        remoteDeleteMedia: false,
+			                    });
+			                  }}
+			                  style={{
+			                    paddingVertical: 10,
+			                    paddingHorizontal: 18,
+			                    backgroundColor: '#d32f2f',
+			                    borderRadius: 6,
+			                  }}
+			                >
+			                  <Text style={{fontSize: 15, color: '#fff', fontWeight: '600'}}>Delete</Text>
+			                </TouchableOpacity>
+			              </View>
+			            </View>
+			          </TouchableWithoutFeedback>
+			        </View>
+			      </TouchableWithoutFeedback>
+			    </Modal>
+			  );
+			})()}
 
 			<Modal
 			  visible={this.state.showVideoModal}
@@ -7868,6 +8782,7 @@ ContactsListBox.propTypes = {
     targetUri       : PropTypes.string,
     selectedContact : PropTypes.object,
     contacts        : PropTypes.array,
+    appBarHeight    : PropTypes.number,
     contactSource   : PropTypes.oneOf(['sylk', 'ab']),
     chat            : PropTypes.bool,
     orientation     : PropTypes.string,

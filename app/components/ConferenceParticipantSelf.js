@@ -1,10 +1,11 @@
 import React, { Component } from 'react';
-import { View, Platform } from   'react-native';
+import { View, Platform, Text } from   'react-native';
 import PropTypes from 'prop-types';
 //const hark              = require('hark');
 import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
 import { RTCView } from 'react-native-webrtc';
 import { Surface } from 'react-native-paper';
+import LinearGradient from 'react-native-linear-gradient';
 import { StyleSheet } from 'react-native';
 import { Tooltip } from 'react-native-elements';
 
@@ -152,12 +153,43 @@ class ConferenceParticipantSelf extends Component {
         return (
             <Surface style={[container,  { transform: [{ translateX: shiftX}, { translateY: shiftY }]}]}>
                 {muteIcon}
-                <RTCView objectFit="cover"
+                <RTCView objectFit={this.props.aspectRatio || 'cover'}
                          style={styles.video}
                          ref="videoElement"
                          poster="assets/images/transparent-1px.png"
                          streamURL={this.props.stream ? this.props.stream.toURL() : null}
                          mirror={(this.props.cameraFacing || 'front') !== 'back'}/>
+                {/* Bottom-edge "Myself" label, matching the gradient
+                    name strip rendered on remote tiles by
+                    ConferenceMatrixParticipant — so the user sees
+                    their own tile labelled consistently with the
+                    others when self appears in the matrix
+                    (visibleCount 1 / 3). Same fade gradient and
+                    typography; the static "Myself" text is enough
+                    since the user's own identity is obvious. */}
+                <LinearGradient
+                    start={{ x: 0, y: 0.55 }}
+                    end={{ x: 0, y: 1 }}
+                    colors={['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, .5)']}
+                    style={{
+                        position: 'absolute',
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        paddingLeft: 12,
+                        paddingBottom: 10,
+                        paddingTop: 24,
+                    }}
+                    pointerEvents="none"
+                >
+                    <Text
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                        style={{ color: '#ffffff', fontSize: 14, fontWeight: '600' }}
+                    >
+                        Myself
+                    </Text>
+                </LinearGradient>
             </Surface>
         );
     }

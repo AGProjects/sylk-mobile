@@ -67,7 +67,39 @@ export default function ThumbnailGrid({
   // Show the per-thumbnail size badge. False by default so the
   // chat-embedded photo group is uncluttered; the grid media screen
   // (where size IS the point of the view) opts in by passing true.
-  showSize = false
+  showSize = false,
+  // Optional: when provided, REPLACES the built-in ImageViewer tap
+  // behaviour. Called with (item, index) on every center-tap. Used
+  // by the per-contact video filter view to route taps to the
+  // app-level full-screen video Modal (openVideoModal) instead of
+  // opening the still-image viewer.
+  onItemPress,
+  // Optional: overlay a centered play triangle on every thumbnail.
+  // Signals to the user that tapping plays a video, not opens a
+  // still. Off by default so the image grid stays uncluttered.
+  showPlayIcon = false,
+  // Optional placeholder text when `images` is empty. Defaults to
+  // "No images" so existing image-grid call sites keep their
+  // wording; the video grid passes "No videos".
+  emptyText = 'No images',
+  // When true, skip the optimistic in-grid removal on the Delete
+  // action-bar button — leave the caller to drive the actual
+  // delete (e.g. open a confirmation modal first). Default false
+  // preserves the image-grid behaviour where tapping Delete
+  // immediately drops tiles and fires deleteImages.
+  confirmBeforeDelete = false,
+  // Corner the selection checkbox renders in. The image grid
+  // historically uses bottom-right (out of the way of the user's
+  // tap-to-open zone); the video grid wants top-left so the
+  // selection state reads above the play overlay in the centre.
+  checkboxCorner = 'bottom-right',  // 'top-left' | 'bottom-right'
+  // Selection action: native Share. Mirrors enableDelete /
+  // deleteImages — the action-bar Share button only renders when
+  // enableShare is true; tapping it hands the array of selected
+  // ids to shareImages, which is expected to resolve them to file
+  // paths and invoke react-native-share / a native share sheet.
+  enableShare = false,
+  shareImages
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
@@ -75,7 +107,16 @@ export default function ThumbnailGrid({
 	const SCREEN_HEIGHT = isLandscape ? windowDims.width : windowDims.height;
 
     const [internalSelected, setInternalSelected] = useState([]);
-    const selected = selectedIds.length ? selectedIds : internalSelected;
+    // Controlled when the parent wired up onSelectionChange — in
+    // that case selectedIds is the single source of truth, even
+    // when it's empty (otherwise the parent clearing selection
+    // after a confirmed delete would fall back to internalSelected
+    // and the Delete action bar would never hide). Uncontrolled
+    // when onSelectionChange isn't provided: each tap updates the
+    // internal state and the action bar lives entirely inside the
+    // grid.
+    const isControlled = typeof onSelectionChange === 'function';
+    const selected = isControlled ? selectedIds : internalSelected;
 
     const [viewerVisible, setViewerVisible] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
@@ -212,12 +253,15 @@ const toggleSelect = useCallback((item) => {
     newSelected = [...selected, item.id];
   }
 
-  if (!selectedIds.length) {
+  // Internal state is the source of truth only when uncontrolled
+  // (no onSelectionChange handler). See the matching comment on
+  // isControlled above for the rationale.
+  if (!isControlled) {
     setInternalSelected(newSelected);
   }
 
   onSelectionChange && onSelectionChange(newSelected, item);
-}, [selected, selectedIds, onSelectionChange]);
+}, [selected, isControlled, onSelectionChange]);
 
 const renderItem = useCallback(
   ({item, index}) => {
@@ -248,10 +292,103 @@ const renderItem = useCallback(
 		  </View>
 		)}
 
+		{/* Play / download / in-flight overlay used by the video
+		    filter view. Three visual states per tile:
+		      • item.stage === 'download' or 'decrypt' → spinner
+		        + percentage. Indicates a transfer is in flight
+		        for this id; reflects updateTransferProgress
+		        from app.js in real time. While in this state the
+		        tap is still routed through onItemPress (callers
+		        typically no-op or cancel — the bubble's existing
+		        flow handles cancellation).
+		      • item.downloaded === false (no in-flight transfer)
+		        → cloud-download icon. Tap kicks off the
+		        download via onItemPress.
+		      • otherwise (downloaded or back-compat) → play
+		        triangle. Tap plays in the modal.
+		    White glyph on a translucent black disc — readable
+		    against most thumbnails without dominating the tile.
+		    pointerEvents="none" so the overlay never intercepts
+		    the center-tap that follows. */}
+		{showPlayIcon && (() => {
+		  const inFlight = item.stage === 'download' || item.stage === 'decrypt';
+		  const pct = (typeof item.progress === 'number')
+		    ? Math.max(0, Math.min(100, Math.round(item.progress)))
+		    : null;
+		  return (
+		    <View
+		      pointerEvents="none"
+		      style={{
+		        position: 'absolute',
+		        left: 0,
+		        right: 0,
+		        top: 0,
+		        bottom: 0,
+		        alignItems: 'center',
+		        justifyContent: 'center',
+		      }}
+		    >
+		      <View style={{
+		        // The in-flight disc is a touch larger so the
+		        // spinner + label fit without crowding.
+		        width: inFlight ? 56 : 44,
+		        height: inFlight ? 56 : 44,
+		        borderRadius: inFlight ? 28 : 22,
+		        backgroundColor: 'rgba(0,0,0,0.55)',
+		        alignItems: 'center',
+		        justifyContent: 'center',
+		      }}>
+		        {inFlight ? (
+		          <>
+		            <ActivityIndicator size="small" color="#fff" />
+		            {pct !== null && (
+		              <Text style={{
+		                color: '#fff',
+		                fontSize: 10,
+		                marginTop: 2,
+		                fontWeight: '600',
+		              }}>
+		                {pct}%
+		              </Text>
+		            )}
+		          </>
+		        ) : (
+		          <Icon
+		            name={item.downloaded === false ? 'cloud-download' : 'play'}
+		            size={26}
+		            color="#fff"
+		          />
+		        )}
+		      </View>
+		    </View>
+		  );
+		})()}
+
         <TouchableOpacity
           style={styles.centerTouch}
           activeOpacity={0.9}
-          onPress={() => openViewer(index, item)}
+          onPress={() => {
+            // Selection mode (any tile already selected): center
+            // taps toggle selection instead of opening the
+            // viewer / playing the video. Photo apps work the
+            // same way — once you're picking items, every tap
+            // should just add/remove from the selection until
+            // you Cancel or Delete. Drops the small "tap the
+            // checkbox precisely" UX hurdle.
+            if (selectMode && selected.length > 0) {
+              toggleSelect(item);
+              return;
+            }
+            // Default tap routing — onItemPress for callers that
+            // override (video grid → full-screen video Modal),
+            // built-in openViewer otherwise (image grid → zoom
+            // viewer).
+            if (typeof onItemPress === 'function') {
+              onItemPress(item, index);
+            } else {
+              openViewer(index, item);
+            }
+          }}
           onLongPress={() => onLongPress && onLongPress(item, index)}
         />
 
@@ -263,7 +400,10 @@ const renderItem = useCallback(
         
           { selectMode ?
           <TouchableOpacity
-            style={styles.checkbox}
+            style={[
+              styles.checkbox,
+              checkboxCorner === 'top-left' ? styles.checkboxTopLeft : null,
+            ]}
           onPress={(e) => {
             e.stopPropagation(); // prevent opening viewer
             toggleSelect(item);
@@ -282,7 +422,7 @@ const renderItem = useCallback(
       </View>
     );
   },
-  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect],
+  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress],
 );
 
   if (!images || images.length === 0) {
@@ -290,7 +430,7 @@ const renderItem = useCallback(
       placeholderComponent
     ) : (
       <View style={[styles.emptyContainer, containerStyle]}>
-        <Text style={styles.emptyText}>No images</Text>
+        <Text style={styles.emptyText}>{emptyText}</Text>
       </View>
     );
   }
@@ -312,54 +452,104 @@ return (
       }
     }}
   >
-    <TouchableWithoutFeedback onPress={() => {}}>
-      <View>
-        <FlatList
-          data={visibleImages}
-          key={`grid-${numColumns}`}
-          keyExtractor={(item) => String(item.id ?? item.uri)}
-          renderItem={renderItem}
-          numColumns={numColumns}
-          showsVerticalScrollIndicator={false}
-          removeClippedSubviews={true}
-          initialNumToRender={12}
-          windowSize={9}
-          contentContainerStyle={{
-            paddingHorizontal: 0,
-            paddingVertical: 0,
-            paddingBottom: enableDelete && selected.length > 0 ? 70 : 0,
-          }}
-        />
-      </View>
-    </TouchableWithoutFeedback>
+    {/* Direct FlatList — earlier this was wrapped in a
+        TouchableWithoutFeedback with an empty onPress + an
+        unstyled inner View. The wrapper served no purpose (empty
+        handler) but on iOS could intermittently swallow scroll
+        gestures: the touch responder system speculatively held
+        the touch for the parent's potential tap, and on tiles
+        where the press start landed near the boundary the gesture
+        was dropped instead of forwarded to the FlatList. Removing
+        the wrapper restores predictable scroll behaviour. */}
+    <FlatList
+      data={visibleImages}
+      key={`grid-${numColumns}`}
+      keyExtractor={(item) => String(item.id ?? item.uri)}
+      renderItem={renderItem}
+      numColumns={numColumns}
+      showsVerticalScrollIndicator={false}
+      // removeClippedSubviews has known scroll-glitch reports on
+      // Android grids with images — it unmounts off-screen views
+      // and remounting them on re-entry can drop touch state.
+      // Off here; the windowSize cap below already keeps memory
+      // bounded.
+      removeClippedSubviews={false}
+      initialNumToRender={12}
+      windowSize={9}
+      style={{flex: 1}}
+      contentContainerStyle={{
+        paddingHorizontal: 0,
+        paddingVertical: 0,
+        paddingBottom: enableDelete && selected.length > 0 ? 70 : 0,
+      }}
+    />
 
-  {/* 👇 Sticky action bar */}
-  {enableDelete && selected.length > 0 && (
+  {/* Sticky action bar — order: Delete · Cancel · Share, per
+      user spec. Cancel sits between the two action buttons so a
+      thumb resting in the middle of the bar hits the safe
+      "deselect" affordance rather than either of the actions on
+      the edges. */}
+  {(enableDelete || enableShare) && selected.length > 0 && (
 	<View style={styles.actionBar}>
+	  {enableDelete && (
 	  <TouchableOpacity
 		style={styles.deleteButton}
-onPress={() => {
-  const toDelete = selected;
-
-  // ✅ Remove immediately from UI
-  setVisibleImages(prev =>
-    prev.filter(img => !toDelete.includes(img.id))
-  );
-
-  // ✅ Clear selection
-  if (!selectedIds.length) {
-    setInternalSelected([]);
-  }
-
-  // ✅ Notify parent (async delete)
-  deleteImages && deleteImages(toDelete);
-}}
-
+		onPress={() => {
+		  const toDelete = selected;
+		  // For callers that drive their own confirmation flow
+		  // (e.g. the image / video grids pop a Delete-files
+		  // modal first), skip the in-grid optimistic remove
+		  // and selection-clear — let them decide when (and
+		  // whether) to apply the change after the user
+		  // confirms. Default behaviour (uncontrolled grids)
+		  // is unchanged: drop the tiles, clear selection, and
+		  // notify.
+		  if (!confirmBeforeDelete) {
+		    setVisibleImages(prev =>
+		      prev.filter(img => !toDelete.includes(img.id))
+		    );
+		    if (!isControlled) {
+		      setInternalSelected([]);
+		    }
+		  }
+		  // Notify parent (async delete OR open confirmation modal).
+		  deleteImages && deleteImages(toDelete);
+		}}
 	  >
 		<Text style={styles.deleteText}>Delete ({selected.length})</Text>
 	  </TouchableOpacity>
+	  )}
+	  <TouchableOpacity
+		style={styles.cancelButton}
+		onPress={() => {
+		  // Exit selection mode without acting. Clear both local +
+		  // parent-controlled selection so the grid's tap routing
+		  // falls back to the normal "open viewer / play video"
+		  // path on subsequent taps.
+		  setInternalSelected([]);
+		  if (typeof onSelectionChange === 'function') {
+		    onSelectionChange([], null);
+		  }
+		}}
+	  >
+		<Text style={styles.cancelText}>Cancel</Text>
+	  </TouchableOpacity>
+	  {enableShare && (
+	  <TouchableOpacity
+		style={styles.shareButton}
+		onPress={() => {
+		  const toShare = selected;
+		  // Share doesn't drop tiles or clear selection — the
+		  // user typically wants to remain in selection mode
+		  // after the share sheet dismisses (e.g. so they can
+		  // then Delete the same set without re-selecting).
+		  shareImages && shareImages(toShare);
+		}}
+	  >
+		<Text style={styles.shareText}>Share ({selected.length})</Text>
+	  </TouchableOpacity>
+	  )}
 	</View>
-
   )}
   
       {/* Viewer Modal */}
@@ -526,6 +716,19 @@ checkbox: {
   zIndex: 2,
 },
 
+// Override consumed via checkboxCorner='top-left' on the video
+// grid. Cancels the bottom/right anchors from `checkbox` and
+// re-anchors at the top-left corner. Cleaner than a single
+// {...style, corner: ...} merge because RN flattens style arrays
+// and the absent properties (bottom/right) get unset by setting
+// them back to 'auto'.
+checkboxTopLeft: {
+  top: 6,
+  left: 6,
+  bottom: 'auto',
+  right: 'auto',
+},
+
 checkboxInner: {
   width: 22,
   height: 22,
@@ -580,9 +783,28 @@ actionBar: {
   backgroundColor: 'rgba(0,0,0,0.9)',
   flexDirection: 'row',
   alignItems: 'center',
-  justifyContent: 'center',
+  // Two buttons now: Cancel + Delete. Space them out evenly
+  // across the bar with even padding.
+  justifyContent: 'space-around',
+  paddingHorizontal: 16,
   borderTopWidth: 0.5,
   borderColor: '#333',
+},
+
+// Outlined-style Cancel — neutral colour so the destructive
+// Delete remains visually dominant on the right.
+cancelButton: {
+  paddingHorizontal: 20,
+  paddingVertical: 10,
+  borderRadius: 20,
+  borderWidth: 1,
+  borderColor: '#bbb',
+},
+
+cancelText: {
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: '500',
 },
 
 deleteButton: {
@@ -593,6 +815,22 @@ deleteButton: {
 },
 
 deleteText: {
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: '600',
+},
+
+// Same pill shape as Delete but in the platform's "system blue"
+// — non-destructive, signals an outbound action (matches the
+// share-sheet header tint on iOS).
+shareButton: {
+  backgroundColor: '#2196F3',
+  paddingHorizontal: 20,
+  paddingVertical: 10,
+  borderRadius: 20,
+},
+
+shareText: {
   color: '#fff',
   fontSize: 14,
   fontWeight: '600',

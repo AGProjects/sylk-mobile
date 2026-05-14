@@ -254,11 +254,39 @@ export default class CallManager extends events.EventEmitter {
             }
         }
         this.callKeep.endCall(callUUID);
-        if (Platform.OS === 'android') {
-			NativeModules.CallForegroundServiceModule.stopService();
-		}
-        
+
+        // terminateCall first so _calls reflects the post-end state
+        // before we decide whether to keep the foreground service
+        // alive. Without this ordering the stopService() decision
+        // below would see the call we just ended still counted in
+        // _calls.size and could falsely keep the service running
+        // for a single dangling row that's about to be removed.
         this.terminateCall(callUUID);
+
+        // The Android call foreground service backs the audio
+        // routing / WebRTC media session for ALL active calls in
+        // this app — it's a single shared service started once in
+        // setCurrentCallActive() with no reference counting. The
+        // previous unconditional stopService() here meant that
+        // ending ANY one call tore the service down for every
+        // other call still in flight.
+        //
+        // That hit a real scenario: when an invitee accepts a
+        // conference invite, acceptCall() schedules an endCall on
+        // the invite's callUUID 60 s later (the "don't hang-up the
+        // call now, otherwise iOS will not wake up the app"
+        // cleanup) and separately starts the actual conference
+        // call under a NEW callUUID. The 60 s cleanup-endCall hit
+        // this stopService() path, killed the foreground service,
+        // and Android's background-execution restrictions
+        // immediately suspended the still-active conference's
+        // media — the invitee was kicked from the room ~60 s in.
+        //
+        // Only stop the service once _calls is empty so the last
+        // exiting call is the one that tears it down.
+        if (Platform.OS === 'android' && this._calls.size === 0) {
+            NativeModules.CallForegroundServiceModule.stopService();
+        }
     }
 
     terminateCall(callUUID) {
@@ -390,11 +418,32 @@ export default class CallManager extends events.EventEmitter {
             setTimeout(() => {
 				this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
             }, 60000);
-            
+
             this.backToForeground();
 
+            // Invitees always join in audio mode. The invite payload
+            // may have advertised video (originator started a video
+            // conference and the push carries `media-type=video`),
+            // but the design here is that EACH PARTICIPANT picks
+            // their own mode at entry — joining a room someone else
+            // labelled "video" doesn't obligate the invitee to
+            // broadcast their camera. They land in audio view, see
+            // their thumbnail with the camera disabled, and can
+            // manually enable the camera (PIP mute toggle) and
+            // switch to video view (kebab) if and when they want
+            // to. Camera permission is still acquired upstream so
+            // the switch is a single tap with no permission round-
+            // trip mid-call.
+            //
+            // Wire-level: callKeepStartConference always negotiates
+            // video regardless (see Conference.js's joinConference
+            // options + app.js's callKeepStartConference) so the
+            // m=video transceiver is present and "enable my camera"
+            // is a track.enabled flip rather than a renegotiation.
+            const inviteeMedia = Object.assign({}, this.outgoingMedia, {audio: true, video: false});
+
             //utils.timestampedLog('Callkeep: will start conference to', conference.room);
-            this.conferenceCall(conference.room, this.outgoingMedia);
+            this.conferenceCall(conference.room, inviteeMedia);
             this._incoming_conferences.delete(callUUID);
 
         } else if (this._calls.has(callUUID)) {

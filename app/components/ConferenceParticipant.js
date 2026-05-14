@@ -145,24 +145,31 @@ class ConferenceParticipant extends React.Component {
             );
         }
 
-        let icon;
-
-        let shiftX = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
-        let shiftY = this.state.isLandscape ? 0 : 0;
-
-        if (this.props.pauseVideo && this.props.display) {
-            icon = 
-            <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}>
-            <View style={{borderWidth: 2, borderColor: 'yellow'},  { borderColor: 'white', transform: [{ translateX: shiftX}, { translateY: shiftY }]}}>
-            <UserIcon identity={this.props.participant.identity} size={50} />
-            </View>
-            </TouchableWithoutFeedback>;
-        }
+        // UserIcon rendering (round letter-tile avatar) is
+        // intentionally suppressed. The previous code rendered a
+        // 50-px circle with the participant's initial whenever
+        // pauseVideo && display were both true — that's the case
+        // for side-strip thumbnails of participants overflowing
+        // the 2x2 matrix grid. The user found those avatars
+        // distracting and prefers identifying participants via
+        // the gradient name strip on the matrix tile alone.
+        // Re-enable by uncommenting the block below if needed.
+        //
+        // let shiftX = this.state.isLandscape && Platform.OS === 'android' ? -48 : 0;
+        // let shiftY = this.state.isLandscape ? 0 : 0;
+        // let icon;
+        // if (this.props.pauseVideo && this.props.display) {
+        //     icon =
+        //     <TouchableWithoutFeedback onPress={() => this.props.selected(this.props.participant)}>
+        //     <View style={{borderWidth: 2, borderColor: 'yellow'},  { borderColor: 'white', transform: [{ translateX: shiftX}, { translateY: shiftY }]}}>
+        //     <UserIcon identity={this.props.participant.identity} size={50} />
+        //     </View>
+        //     </TouchableWithoutFeedback>;
+        // }
 
         return (
             <View style={[styles.container, this.props.display === 'false' ? {display: 'none'} : null]}>
                 {muteButton}
-                {icon}
                 {/* <OverlayTrigger placement="top" overlay={tooltip}> */}
                     <Surface style={[styles.videoContainer, this.props.pauseVideo ? {display: 'none'} : null]}>
                         <RTCView objectFit="cover" ref={this.videoElement} streamURL={this.state.stream ? this.state.stream.toURL() : null} poster="assets/images/transparent-1px.png" style={styles.video}/>

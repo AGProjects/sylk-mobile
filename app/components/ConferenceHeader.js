@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, Fragment, Component } from 'react';
-import { View } from 'react-native';
+import { View, TouchableOpacity } from 'react-native';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
@@ -70,17 +70,44 @@ class ConferenceHeader extends React.Component {
     }
 
     startTimer() {
+        // Always clear before re-arming. The previous early-return
+        // ("if (this.timer !== null) return;") meant that if the prior
+        // conference's interval was still alive — e.g. because the
+        // component instance was reused across two conferences and the
+        // first never went through this listener's 'terminated' branch
+        // — the new conference would inherit the old closure, which
+        // captured the old startTime and kept ticking from it. Result:
+        // a brand-new conference rendered "08:18" because the meter
+        // was still counting from the previous conference's start.
         if (this.timer !== null) {
-            // already armed
-            return;
+            clearInterval(this.timer);
+            this.timer = null;
         }
 
-        // TODO: consider using window.requestAnimationFrame
-        const startTime = this.state.startTime || new Date();
+        // Read startTime out of state on every tick instead of
+        // capturing it in the closure. callStateChanged fires the
+        // 'established' event on the Call object synchronously, which
+        // can land BEFORE the parent's setState(callsState[uuid] = …)
+        // has propagated into our props (and from there into
+        // state.startTime via componentWillReceiveProps). Capturing
+        // here would freeze whatever value state held at startTimer-
+        // time — typically the previous conference's startTime,
+        // hence the stale meter. Reading per-tick means the next
+        // refresh after props finally land shows the correct elapsed
+        // time, with at most one second of stutter on first tick.
         this.timer = setInterval(() => {
+            const startTime = this.state.startTime;
+            if (!startTime) {
+                return;
+            }
             const duration = moment.duration(new Date() - startTime);
-
-            if (this.duration > 3600) {
+            // Compare against the numeric duration (asSeconds), not
+            // `this.duration` — which after the first tick is a
+            // formatted string like "00:42", so "00:42" > 3600
+            // coerced through Number is NaN and the hh:mm:ss branch
+            // never fires. Long conferences silently kept the mm:ss
+            // format and wrapped past 60.
+            if (duration.asSeconds() > 3600) {
                 this.duration = duration.format('hh:mm:ss', {trim: false});
             } else {
                 this.duration = duration.format('mm:ss', {trim: false});
@@ -95,7 +122,10 @@ class ConferenceHeader extends React.Component {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
         }
 
-        clearTimeout(this.timer);
+        if (this.timer !== null) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
     }
 
     //getDerivedStateFromProps(nextProps, state) {
@@ -115,7 +145,29 @@ class ConferenceHeader extends React.Component {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
 
+            // The Call object just swapped — we're now showing a
+            // different conference. Drop the previous timer + the
+            // stale `this.duration` string so the header doesn't
+            // flash the old conference's elapsed time while the new
+            // call is settling into 'established'. The new timer
+            // gets armed by callStateChanged once the new call
+            // reports 'established' (or immediately if it already
+            // is).
+            if (this.timer !== null) {
+                clearInterval(this.timer);
+                this.timer = null;
+            }
+            this.duration = null;
+
             this.setState({call: nextProps.call});
+
+            // If the swapped-in call is already past 'established'
+            // (e.g. it raced through that state before we registered
+            // our listener), we won't get a stateChanged event to
+            // arm the timer. Arm it directly so the meter starts.
+            if (nextProps.call.state === 'established' && this._isMounted && !nextProps.terminated) {
+                this.startTimer();
+            }
         }
 
         this.setState({info: nextProps.info,
@@ -145,9 +197,16 @@ class ConferenceHeader extends React.Component {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
 
-            clearTimeout(this.timer);
+            // The previous code used clearTimeout for an interval
+            // ID. JS engines accept that crossover, but using the
+            // matching clearInterval makes the intent obvious and
+            // avoids relying on the timer-pool implementation
+            // detail.
+            if (this.timer !== null) {
+                clearInterval(this.timer);
+                this.timer = null;
+            }
             this.duration = null;
-            this.timer = null;
         }
 
         if (!this._isMounted) {
@@ -182,13 +241,41 @@ class ConferenceHeader extends React.Component {
                 this.props.toggleChatFunc();
                 break;
             case 'speakers':
-                this.props.toggleDrawer();
+                // Open the unified speaker-layout modal directly.
+                // The legacy path opened the room-config drawer
+                // whose only purpose was to host the "Select first
+                // speaker" / "Select second speaker" buttons; the
+                // new modal subsumes that flow with mode tabs +
+                // per-column pickers.
+                if (typeof this.props.toggleSpeakerSelection === 'function') {
+                    this.props.toggleSpeakerSelection();
+                } else if (typeof this.props.toggleDrawer === 'function') {
+                    this.props.toggleDrawer();
+                }
                 break;
             case 'share':
                 this.props.toggleInviteModal();
                 break;
             case 'myVideo':
                 this.props.toggleMyVideo();
+                break;
+            case 'aspectRatio':
+                // Driven by ConferenceBox.toggleAspectRatio (set
+                // up on the matching prop in render()). Mirrors
+                // VideoBox's aspect-ratio toggle: flips the tile
+                // objectFit between 'cover' and 'contain'.
+                if (typeof this.props.toggleAspectRatio === 'function') {
+                    this.props.toggleAspectRatio();
+                }
+                break;
+            case 'viewMode':
+                // Independent of wire-level media composition —
+                // ConferenceBox owns the actual toggle. See the
+                // viewMode comment in its constructor for the
+                // rationale.
+                if (typeof this.props.toggleViewMode === 'function') {
+                    this.props.toggleViewMode();
+                }
                 break;
             default:
                 break;
@@ -208,9 +295,11 @@ class ConferenceHeader extends React.Component {
         let callButtons;
 
         if (this.props.terminated) {
-            clearTimeout(this.timer);
+            if (this.timer !== null) {
+                clearInterval(this.timer);
+                this.timer = null;
+            }
             this.duration = null;
-            this.timer = null;
         }
 
         const room = this.state.remoteUri.split('@')[0];
@@ -338,6 +427,71 @@ class ConferenceHeader extends React.Component {
 				  </View>
 				) : null}
 
+				{/* Inline view-mode toggle on the navbar so the user
+				    doesn't have to dig through the kebab to switch
+				    layouts. The button renders as a tiny
+				    transition row — [current view glyph] → [arrow]
+				    → [destination view glyph] — so the tap intent
+				    reads as obviously directional. A single glyph
+				    by itself (an earlier iteration) was ambiguous:
+				    the user couldn't tell whether they were seeing
+				    the CURRENT mode or the DESTINATION.
+				       • volume-high glyph = audio view.
+				       • apps glyph (9 solid squares, 3x3) = video
+				         matrix view.
+				       • arrow-right between them shows the
+				         transition direction.
+				    In audio view:  [volume-high] → [apps]
+				    In video view:  [apps] → [volume-high]
+				    Only rendered when ConferenceBox has wired up
+				    toggleViewMode — same gate as the kebab item. */}
+				{typeof this.props.toggleViewMode === 'function' ? (
+				  (() => {
+				    const _fromIcon = this.props.audioOnly ? 'volume-high' : 'apps';
+				    const _toIcon = this.props.audioOnly ? 'apps' : 'volume-high';
+				    const _a11y = this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view';
+				    return (
+				      <TouchableOpacity
+				        onPress={() => this.props.toggleViewMode()}
+				        accessibilityRole="button"
+				        accessibilityLabel={_a11y}
+				        // Match the Appbar.Action visual footprint
+				        // so the row sits comfortably inside the
+				        // header's vertical band. hitSlop pads the
+				        // touch target so the transition glyph
+				        // pair is easy to land on without making
+				        // the visual chip wider than necessary.
+				        // Larger left margin in landscape so the
+				        // transition glyph row doesn't crowd the
+				        // inline buttons.bottom call-control icons
+				        // that only appear in landscape (mute,
+				        // hangup, etc., rendered just above this
+				        // block). Portrait keeps a tighter spacing
+				        // because navbarExtras / additional are
+				        // usually empty there.
+				        hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+				        style={{
+				          flexDirection: 'row',
+				          alignItems: 'center',
+				          justifyContent: 'center',
+				          paddingHorizontal: 6,
+				          marginLeft: this.state.isLandscape ? 16 : 0,
+				          height: 40,
+				        }}
+				      >
+				        <Icon name={_fromIcon} size={20} color="white" />
+				        <Icon
+				          name="arrow-right"
+				          size={14}
+				          color="white"
+				          style={{ marginHorizontal: 2 }}
+				        />
+				        <Icon name={_toIcon} size={20} color="white" />
+				      </TouchableOpacity>
+				    );
+				  })()
+				) : null}
+
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
@@ -357,16 +511,56 @@ class ConferenceHeader extends React.Component {
                     {this.state.participants > 1 && !this.state.audioOnly?
                     <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
-                    {!this.props.audioOnly && this.props.participants > 0?
+                    {/* Hide / Show mirror — toggles enableMyVideo,
+                        which controls both the audio-view self-PIP
+                        AND the video-view floating self-PIP (the
+                        "showMyself" tile that appears when the
+                        visible-remote count puts self off the
+                        matrix: counts 0, 2, 4+). In video view at
+                        counts 1 / 3 the self tile is already in
+                        the matrix and this toggle is a no-op for
+                        that tile — but harmless. Always shown so
+                        the user can suppress their own preview
+                        from either layout. */}
                     <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
-                    : null}
-                    
-					<Divider />
+                    {/* Aspect ratio — same toggle VideoBox's
+                        kebab offers for 1:1 calls. Flips between
+                        'cover' (fill the tile, possibly cropping)
+                        and 'contain' (fit the whole frame,
+                        letterbox bars). Only relevant in video
+                        view (audio view has no video tiles to
+                        re-fit). */}
+                    {!this.props.audioOnly && typeof this.props.toggleAspectRatio === 'function' ? (
+                    <Menu.Item onPress={() => this.handleMenu('aspectRatio')} icon="aspect-ratio" title="Toggle aspect ratio" />
+                    ) : null}
+                    {/* View-mode toggle. Independent of wire-level
+                        media composition (props.audioOnly here is
+                        the VIEW signal, not the wire capability —
+                        ConferenceBox passes audioOnlyView, see its
+                        viewMode comment). Title reflects the
+                        destination state so the user always sees
+                        the action they're about to take. Only
+                        rendered when ConferenceBox actually wired
+                        the handler, so we don't surface a no-op
+                        on surfaces that haven't adopted the
+                        toggle yet. */}
+                    {typeof this.props.toggleViewMode === 'function' ? (
+                    <Menu.Item
+                        onPress={() => this.handleMenu('viewMode')}
+                        icon={this.props.audioOnly ? 'video' : 'volume-high'}
+                        title={this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view'}
+                    />
+                    ) : null}
 
-                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
-
-    				<Divider />
-				
+                    {/* Audio device picker — sits AFTER the
+                        view-mode toggle (per request). The two
+                        items are conceptually related ("change
+                        how this call is heard / seen") so they
+                        cluster together; keeping the device
+                        picker immediately below the view toggle
+                        means a single open of the kebab covers
+                        both audio routing and video/audio
+                        layout in one glance. */}
 					<Menu
 						visible={this.state.audioMenuVisible}
 						onDismiss={() => this.setState({audioMenuVisible: false})}
@@ -381,7 +575,7 @@ class ConferenceHeader extends React.Component {
 						{this.props.availableAudioDevices.map(device => {
 							const isSelected = device === this.props.selectedAudioDevice;
 							const deviceTitle = utils.availableAudioDeviceNames[device] || device;
-				
+
 							return (
 								<Menu.Item
 									key={device}
@@ -400,7 +594,20 @@ class ConferenceHeader extends React.Component {
 								/>
 							);
 						})}
-					</Menu>			
+					</Menu>
+
+                    {/* Extra breathing room above Hangup. Mirrors the
+                        CallOverlay layout — the dropdown items are
+                        tall enough that a fast double-tap after
+                        dismissing one entry can land on the next
+                        one, and for Hangup that means an accidental
+                        conference termination, which is unrecoverable.
+                        The Divider plus a 24-px spacer push Hangup
+                        into its own visual zone at the bottom of
+                        the menu. */}
+                    <Divider />
+                    <View style={{ height: 24 }} />
+                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
                 </Menu>
 
 			  </View>
@@ -429,11 +636,23 @@ ConferenceHeader.propTypes = {
     hangUpFunc: PropTypes.func,
     toggleInviteModal: PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,
+    // Flips ConferenceBox.viewMode between 'audio' and 'video'.
+    // Wired by ConferenceBox; absent on surfaces that haven't
+    // adopted the toggle (in which case the menu item is hidden).
+    toggleViewMode: PropTypes.func,
+    // Flips ConferenceBox.aspectRatio between 'cover' and
+    // 'contain' — same shape as VideoBox's identically-named
+    // prop. Drives the objectFit of every video tile.
+    toggleAspectRatio: PropTypes.func,
     audioView: PropTypes.bool,
     chatView: PropTypes.bool,
     callState: PropTypes.object,
     toggleDrawer: PropTypes.func,
-    enableMyVideo: PropTypes.bool,    
+    // Opens the new SpeakerSelectionModal in ConferenceBox. The
+    // 'speakers' kebab item calls this in preference to
+    // toggleDrawer when wired.
+    toggleSpeakerSelection: PropTypes.func,
+    enableMyVideo: PropTypes.bool,
     toggleMyVideo: PropTypes.func,
     availableAudioDevices: PropTypes.array,
     selectedAudioDevice: PropTypes.string,

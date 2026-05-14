@@ -130,17 +130,49 @@ class DeleteHistoryModal extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
-        this.setState({
-            show: nextProps.show,
-            deleteContact: nextProps.deleteContact,
-            confirm: nextProps.confirm,
-            confirm_again: nextProps.confirm_again,
-            simulate: nextProps.simulate || false,
-            periodType: nextProps.periodType,
-        });
-        
-        if ('show' in nextProps) {
-            this.setState({ show: nextProps.show });
+        // Only sync props that ACTUALLY changed. The original code
+        // unconditionally copied `confirm` and `confirm_again` from
+        // nextProps on every parent re-render — but NavigationBar
+        // never passes those props, so each spurious re-render
+        // (presence tick, allContacts shuffle, message bump…) reset
+        // them to `undefined`, wiping the user's "Confirm" tap
+        // mid-3-tap sequence. The user would tap Delete → Confirm →
+        // and the third tap would never advance because the second
+        // tap's state had just been nuked. Net effect: the modal
+        // never fires deleteContactAction's confirm_again branch, and
+        // when it eventually DOES fire something it's the wrong
+        // handler with filter.deleteContact = false → app.js skips
+        // removeContact → contact never gets deleted. Same risk on
+        // `deleteContact`: an intermediate close-handler render could
+        // briefly flip state.deleteContact false, switching the
+        // rendered branch (and the Delete button's handler) under the
+        // user's finger.
+        //
+        // Keep confirm / confirm_again as purely local UI state, and
+        // only mirror the prop-driven fields when the prop value
+        // genuinely changes.
+        const update = {};
+        if (nextProps.show !== this.props.show) {
+            update.show = nextProps.show;
+            // Fresh modal session — reset the tap counter so the next
+            // open doesn't inherit a leftover confirm state from the
+            // previous close.
+            if (nextProps.show && !this.props.show) {
+                update.confirm = false;
+                update.confirm_again = false;
+            }
+        }
+        if (nextProps.deleteContact !== this.props.deleteContact) {
+            update.deleteContact = nextProps.deleteContact;
+        }
+        if (nextProps.simulate !== this.props.simulate) {
+            update.simulate = nextProps.simulate || false;
+        }
+        if (nextProps.periodType !== this.props.periodType) {
+            update.periodType = nextProps.periodType;
+        }
+        if (Object.keys(update).length > 0) {
+            this.setState(update);
         }
     }
 
@@ -350,14 +382,53 @@ class DeleteHistoryModal extends Component {
         );
 
         if ((!this.props.hasMessages && this.props.uri) || this.state.deleteContact) {
+            // Pretty-print the URI for the confirmation prompt:
+            // strip @<defaultDomain> off E.164 phone-number URIs so
+            // a contact stored as "+40721253846@sylk.link" shows as
+            // just "+40721253846" — same logic EditContactModal uses
+            // when displaying the Address field. Non-default domains
+            // (e.g. "alice@otherdomain.com") are left intact so the
+            // user can confirm they're deleting the right row.
+            const _rawUri = this.props.uri || '';
+            const _defaultDomain = this.props.defaultDomain;
+            let _displayUri = _rawUri;
+            if (_defaultDomain && _rawUri.startsWith('+')) {
+                const suffix = '@' + _defaultDomain;
+                if (_rawUri.toLowerCase().endsWith(suffix.toLowerCase())) {
+                    _displayUri = _rawUri.substring(0, _rawUri.length - suffix.length);
+                }
+            }
+            // Display name pulled from selectedContact when available.
+            // Falls back to nothing if the contact has no name set —
+            // in that case the URI alone is the most useful label.
+            const _displayName = this.props.selectedContact
+                && this.props.selectedContact.name
+                && this.props.selectedContact.name.trim()
+                ? this.props.selectedContact.name.trim()
+                : null;
+
             return shell(
                 <>
                     <View style={styles.titleContainer}>
                         <Text style={containerStyles.title}>Delete contact</Text>
                     </View>
 
+                    {/* Compose the prompt as "<Name>" on one line +
+                        "<uri>" on a second, smaller line below. Two
+                        lines reads more clearly than a single
+                        run-on sentence when both fields are
+                        present, and degrades cleanly to just the
+                        URI line when the contact has no name. */}
                     <Text style={styles.body}>
-                        Are you sure you want to delete {this.props.uri}?
+                        Are you sure you want to delete this contact?
+                    </Text>
+                    {_displayName ? (
+                        <Text style={[styles.body, { fontWeight: '600', marginTop: 6 }]}>
+                            {_displayName}
+                        </Text>
+                    ) : null}
+                    <Text style={[styles.body, { color: '#666', marginTop: _displayName ? 0 : 6 }]}>
+                        {_displayUri}
                     </Text>
 
                     <View style={styles.buttonRow}>
@@ -497,6 +568,10 @@ DeleteHistoryModal.propTypes = {
     show: PropTypes.bool,
     close: PropTypes.func.isRequired,
     uri: PropTypes.string,
+    // Used to prettify the URI in the confirmation prompt — strips
+    // "@<defaultDomain>" off E.164 phone-number URIs the same way
+    // EditContactModal does, so "+40…@sylk.link" prints as "+40…".
+    defaultDomain: PropTypes.string,
     deleteMessages: PropTypes.func,
     deleteContact: PropTypes.bool,
     hasMessages: PropTypes.bool,

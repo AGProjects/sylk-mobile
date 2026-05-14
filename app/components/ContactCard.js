@@ -327,8 +327,39 @@ class ContactCard extends Component {
 	  }
 	
 	  if (uri.indexOf('@videoconference.') > -1) {
-		title = 'Room ' + uri.split('@')[0];
-		subtitle = 'Video conference';
+		// Conference rooms with a saved display name (set in
+		// EditConferenceModal → app.js saveConference → contacts.name
+		// column) should show that name as the row title, not the
+		// raw URI local part. The old branch unconditionally
+		// rendered `'Room ' + localPart` and ignored the saved
+		// name entirely. Same rule the non-conference branch
+		// above already uses: prefer `contact.name` when it's
+		// set and differs from the URI; fall back to the local
+		// part otherwise (with a 'Room ' prefix so the user can
+		// still see at a glance that it's a conference, since
+		// the subtitle further confirms it).
+		if (contact.name && contact.name !== uri) {
+			title = prettifyName(contact.name);
+		} else {
+			title = 'Room ' + uri.split('@')[0];
+		}
+		// Subtitle reflects the media type of the LAST run of this
+		// room (stamped on the contact by updateHistoryEntry via
+		// the terminated branch of callStateChanged → see app.js).
+		// Falls back to the generic "Conference" when we've never
+		// recorded a run for this room yet (the room exists in the
+		// contacts list because someone saved invitees / favourited
+		// it, but it's never been dialed). The previous code
+		// hardcoded "Video conference" for every room regardless of
+		// how it was actually used, which was wrong for audio
+		// conferences and uninformative for rooms with no history.
+		if (contact.lastCallMediaType === 'audio') {
+			subtitle = 'Audio';
+		} else if (contact.lastCallMediaType === 'video') {
+			subtitle = 'Video';
+		} else {
+			subtitle = 'Conference';
+		}
 	  }
 	
 		subtitle = contact.lastMessage || subtitle;

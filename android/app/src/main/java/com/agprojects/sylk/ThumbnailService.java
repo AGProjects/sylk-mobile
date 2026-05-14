@@ -78,7 +78,7 @@ public class ThumbnailService extends IntentService {
             resultPath = "file://" + out.getAbsolutePath();
 
         } catch (Throwable t) {
-            Log.e(TAG, "[Thumbs] Extraction failed for " + uri, t);
+            SylkLogger.e("[thumbnail] Extraction failed for " + uri, t);
             errorMessage = t.getClass().getSimpleName() + ": " + t.getMessage();
         }
 

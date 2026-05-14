@@ -49,7 +49,7 @@ public class SylkCallConnectionService extends ConnectionService {
         String displayName = inner != null ? inner.getString(SylkTelecom.EXTRA_DISPLAY_NAME) : null;
         String mediaType   = inner != null ? inner.getString(SylkTelecom.EXTRA_MEDIA_TYPE) : "audio";
 
-        Log.d(LOG_TAG, "[SylkCS] onCreateIncomingConnection callId=" + callId
+        SylkLogger.d("[call] [connection-service] onCreateIncomingConnection callId=" + callId
                 + " from=" + fromUri + " media=" + mediaType);
 
         SylkIncomingConnection conn = new SylkIncomingConnection(
@@ -101,7 +101,7 @@ public class SylkCallConnectionService extends ConnectionService {
     @Override
     public void onCreateIncomingConnectionFailed(PhoneAccountHandle handle,
                                                  ConnectionRequest request) {
-        Log.w(LOG_TAG, "[SylkCS] onCreateIncomingConnectionFailed: " + request);
+        SylkLogger.w("[call] [connection-service] onCreateIncomingConnectionFailed: " + request);
     }
 
     @Override
@@ -110,7 +110,7 @@ public class SylkCallConnectionService extends ConnectionService {
         // Outgoing calls are still placed via the existing app flow; we don't
         // route them through Telecom here. Returning a failed Connection
         // (rather than null) is the safe API contract some OEMs rely on.
-        Log.w(LOG_TAG, "[SylkCS] onCreateOutgoingConnection unsupported");
+        SylkLogger.w("[call] [connection-service] onCreateOutgoingConnection unsupported");
         return Connection.createFailedConnection(
                 new DisconnectCause(DisconnectCause.ERROR));
     }
@@ -118,7 +118,7 @@ public class SylkCallConnectionService extends ConnectionService {
     @Override
     public void onCreateOutgoingConnectionFailed(PhoneAccountHandle handle,
                                                  ConnectionRequest request) {
-        Log.w(LOG_TAG, "[SylkCS] onCreateOutgoingConnectionFailed");
+        SylkLogger.w("[call] [connection-service] onCreateOutgoingConnectionFailed");
     }
 
     /**
@@ -157,7 +157,7 @@ public class SylkCallConnectionService extends ConnectionService {
 
         @Override
         public void onAnswer(int videoState) {
-            Log.d(LOG_TAG, "[SylkCS] onAnswer " + callId + " videoState=" + videoState);
+            SylkLogger.d("[call] [connection-service] onAnswer " + callId + " videoState=" + videoState);
             String action = videoState != VideoProfile.STATE_AUDIO_ONLY
                     ? "ACTION_ACCEPT_VIDEO"
                     : "ACTION_ACCEPT_AUDIO";
@@ -174,7 +174,7 @@ public class SylkCallConnectionService extends ConnectionService {
 
         @Override
         public void onReject() {
-            Log.d(LOG_TAG, "[SylkCS] onReject " + callId);
+            SylkLogger.d("[call] [connection-service] onReject " + callId);
             forwardToReceiver("ACTION_REJECT_CALL");
             try {
                 setDisconnected(new DisconnectCause(DisconnectCause.REJECTED));
@@ -185,7 +185,7 @@ public class SylkCallConnectionService extends ConnectionService {
 
         @Override
         public void onDisconnect() {
-            Log.d(LOG_TAG, "[SylkCS] onDisconnect " + callId);
+            SylkLogger.d("[call] [connection-service] onDisconnect " + callId);
             forwardToReceiver("ACTION_REJECT_CALL");
             try {
                 setDisconnected(new DisconnectCause(DisconnectCause.LOCAL));
@@ -196,7 +196,7 @@ public class SylkCallConnectionService extends ConnectionService {
 
         @Override
         public void onAbort() {
-            Log.d(LOG_TAG, "[SylkCS] onAbort " + callId);
+            SylkLogger.d("[call] [connection-service] onAbort " + callId);
             try {
                 setDisconnected(new DisconnectCause(DisconnectCause.CANCELED));
                 destroy();
@@ -210,7 +210,7 @@ public class SylkCallConnectionService extends ConnectionService {
             // BT diagnosis: route 0x02 = BLUETOOTH, 0x01 = EARPIECE, 0x04 = WIRED_HEADSET,
             // 0x08 = SPEAKER. supportedRouteMask shows what Telecom thinks is
             // available, which on a paired car kit should include BLUETOOTH.
-            Log.d(LOG_TAG, "[SylkCS] onCallAudioStateChanged " + callId
+            SylkLogger.d("[call] [connection-service] onCallAudioStateChanged " + callId
                     + " route=0x" + Integer.toHexString(state.getRoute())
                     + " supported=0x" + Integer.toHexString(state.getSupportedRouteMask())
                     + " btDevice=" + state.getActiveBluetoothDevice()
@@ -253,7 +253,7 @@ public class SylkCallConnectionService extends ConnectionService {
                 i.putExtra("source", "telecom");
                 appContext.sendBroadcast(i);
             } catch (Exception e) {
-                Log.w(LOG_TAG, "[SylkCS] forwardToReceiver failed", e);
+                SylkLogger.w("[call] [connection-service] forwardToReceiver failed", e);
             }
         }
     }

@@ -59,7 +59,7 @@ public class BluetoothScoManager {
             public void onReceive(Context context, Intent intent) {
 				if (BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(intent.getAction())) {
 					int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED);
-					Log.d(TAG, "[BTSco] BluetoothHeadset profile state=" + profileStateToString(state));
+					SylkLogger.d("[audio] [bt] BluetoothHeadset profile state=" + profileStateToString(state));
 				
 					if (state == BluetoothProfile.STATE_CONNECTED) {
 						if (eventListener != null) {
@@ -82,16 +82,16 @@ public class BluetoothScoManager {
             public void onReceive(Context context, Intent intent) {
                 if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED.equals(intent.getAction())) {
                     int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
-                    //Log.d(TAG, "SCO state=" + scoStateToString(state) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
+                    //SylkLogger.d("[audio] [bt] SCO state=" + scoStateToString(state) + " (isBluetoothScoOn=" + audioManager.isBluetoothScoOn() + ")");
                     if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
 						if (!userRequestedSco) {
-							//Log.d(TAG, "SCO disconnected but user did NOT request SCO → no retry");
+							//SylkLogger.d("[audio] [bt] SCO disconnected but user did NOT request SCO → no retry");
 							return;
 						}
 
                         if (retryCount < MAX_RETRIES) {
                             retryCount++;
-                            Log.d(TAG, "[BTSco] SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + ")");
+                            SylkLogger.d("[audio] [bt] SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + ")");
                             handler.postDelayed(BluetoothScoManager.this::startScoIfNeeded, RETRY_DELAY_MS);
                         }
                     } else if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
@@ -112,7 +112,7 @@ public class BluetoothScoManager {
                 public void onServiceConnected(int profile, BluetoothProfile proxy) {
                     if (profile == BluetoothProfile.HEADSET) {
                         bluetoothHeadset = (BluetoothHeadset) proxy;
-                        //Log.d(TAG, "BluetoothHeadset proxy connected");
+                        //SylkLogger.d("[audio] [bt] BluetoothHeadset proxy connected");
                     }
                 }
 
@@ -120,7 +120,7 @@ public class BluetoothScoManager {
                 public void onServiceDisconnected(int profile) {
                     if (profile == BluetoothProfile.HEADSET) {
                         bluetoothHeadset = null;
-                        Log.d(TAG, "[BTSco] BluetoothHeadset proxy disconnected");
+                        SylkLogger.d("[audio] [bt] BluetoothHeadset proxy disconnected");
                         stopScoIfActive();
                     }
                 }
@@ -163,13 +163,13 @@ public class BluetoothScoManager {
 		userRequestedSco = true;
 		retryCount = 0; // reset retry counter — user explicitly wants BT
         if (isHeadsetConnected() && !audioManager.isBluetoothScoOn()) {
-            Log.d(TAG, "[BTSco] Starting Bluetooth SCO...");
+            SylkLogger.d("[audio] [bt] Starting Bluetooth SCO...");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // startBluetoothSco() is deprecated on API 31+ and is a no-op on many
                 // OEM devices (including Motorola). On API 31+ the system establishes
                 // SCO automatically when setCommunicationDevice(BLUETOOTH_SCO) is called,
                 // so we only use the legacy path on older Android.
-                Log.d(TAG, "[BTSco] API 31+: SCO establishment handled by setCommunicationDevice");
+                SylkLogger.d("[audio] [bt] API 31+: SCO establishment handled by setCommunicationDevice");
             } else {
                 audioManager.startBluetoothSco();
                 audioManager.setBluetoothScoOn(true);
@@ -179,7 +179,7 @@ public class BluetoothScoManager {
 
 	public void stopScoIfActive() {
 		if (audioManager.isBluetoothScoOn()) {
-			Log.d(TAG, "[BTSco] Stopping Bluetooth SCO...");
+			SylkLogger.d("[audio] [bt] Stopping Bluetooth SCO...");
 			audioManager.clearCommunicationDevice();
 			audioManager.stopBluetoothSco();
 			audioManager.setBluetoothScoOn(false);
@@ -192,12 +192,12 @@ public class BluetoothScoManager {
         try {
             context.unregisterReceiver(headsetReceiver);
         } catch (Exception e) {
-            Log.w(TAG, "[BTSco] Headset receiver already unregistered");
+            SylkLogger.w("[audio] [bt] Headset receiver already unregistered");
         }
         try {
             context.unregisterReceiver(scoStateReceiver);
         } catch (Exception e) {
-            Log.w(TAG, "[BTSco] SCO receiver already unregistered");
+            SylkLogger.w("[audio] [bt] SCO receiver already unregistered");
         }
         if (bluetoothAdapter != null && bluetoothHeadset != null) {
             bluetoothAdapter.closeProfileProxy(BluetoothProfile.HEADSET, bluetoothHeadset);

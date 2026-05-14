@@ -1,7 +1,8 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
+index af962e0..4f3a5a0 100644
 --- a/node_modules/react-native-sylkrtc/lib/call.js
 +++ b/node_modules/react-native-sylkrtc/lib/call.js
-@@ -37,7 +37,30 @@
+@@ -37,7 +37,42 @@ class Call extends EventEmitter {
          this._setup_in_progress = false;  // set while we set the remote description and setup the peer copnnection
          this._headers = []
          this._messages = new Map();
@@ -30,10 +31,22 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
 +        // legacy behaviour can flip `enableInlineMessaging = true`
 +        // on the Call instance after construction.
 +        this.enableInlineMessaging = false;
++        // Mid-call renegotiation (Janus SIP plugin "update" / SIP
++        // re-INVITE) lifecycle flags. _upgrading is true between the
++        // moment a local or remote update starts and the moment the
++        // matching answer / failure event arrives — used to reject
++        // overlapping addVideo() calls and to gate setRemoteDescription
++        // until the PC is back in a state that accepts an answer.
++        // _pendingVideoAddition holds the senders + tracks we added
++        // optimistically before the update was confirmed, so we can
++        // roll them back if the remote rejects the offer with
++        // m=video 0 or returns an error.
++        this._upgrading = false;
++        this._pendingVideoAddition = null;
          // bind some handlers to this instance
          // this._onDtmf = this._onDtmf.bind(this);
      }
-@@ -108,20 +131,25 @@
+@@ -108,20 +143,25 @@ class Call extends EventEmitter {
      }
  
      getRemoteStreams() {
@@ -71,7 +84,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
      }
  
      getSenders() {
-@@ -155,14 +183,62 @@
+@@ -155,14 +195,62 @@ class Call extends EventEmitter {
          // Create the RTCPeerConnection
          this._initRTCPeerConnection(pcConfig);
  
@@ -120,7 +133,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
 +                        // alongside the OUTGOING / INCOMING offer dumps
 +                        // above so the full negotiation round-trip is
 +                        // greppable from a single log file.
-+                        console.log('[sylkrtc][sdp] OUTGOING answer (call=', this._id, ')\n' + sdp);
++                        // console.log('[sylkrtc][sdp] OUTGOING answer (call=', this._id, ')\n' + sdp);
 +                        // DTMF sender becomes available after the
 +                        // local description is set inside
 +                        // createLocalSdp (above). Same one-tick defer
@@ -137,9 +150,226 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
                          this._sendAnswer(sdp, options.headers);
                      })
                      .catch((reason) => {
-@@ -316,8 +392,44 @@
+@@ -224,6 +312,214 @@ class Call extends EventEmitter {
+             });
+     }
+ 
++    // ---- Mid-call upgrade (audio -> audio+video, or other media changes) ----
++    //
++    // Public surface for the Janus SIP plugin "update" request, which
++    // performs a SIP re-INVITE under the hood. The app calls
++    // addVideo({ localStream }) when the user taps "Start video" on
++    // an established audio-only call; we reuse the existing
++    // RTCPeerConnection (so audio RTP is uninterrupted across the
++    // renegotiation), addTrack the new video sender, build a fresh
++    // offer with createOffer, and ship it on the new session-update
++    // wire request. The server forwards it to Janus, Janus issues a
++    // SIP re-INVITE downstream, the peer answers, and the answer
++    // comes back as a session-event with event=update / state=accepted
++    // (see the 'update' case in _handleEvent below).
++    //
++    // For the inverse direction (peer sends a re-INVITE that adds
++    // m=video to an originally audio-only call), the server sends us
++    // a session-event with event=update / state=received and the
++    // peer's new offer SDP. We surface that to the app via the
++    // 'updateRequest' event so the UI can ask for camera permission
++    // and decide whether to capture local video; the app then calls
++    // answerUpdate({ localStream }) to complete the renegotiation.
++    addVideo(options = {}) {
++        console.log('Adding video...');
++        if (this._state !== 'established' && this._state !== 'accepted') {
++            throw new Error('Call is not active: ' + this._state);
++        }
++        if (!options.localStream) {
++            throw new Error('Missing localStream');
++        }
++        if (this._upgrading) {
++            throw new Error('A renegotiation is already in progress');
++        }
++        if (this._pc === null || this._pc.signalingState !== 'stable') {
++            throw new Error('Peer connection is not stable: ' +
++                (this._pc && this._pc.signalingState));
++        }
++        this._upgrading = true;
++
++        // Attach the new video tracks to the existing peer connection.
++        // We deliberately do NOT close & re-open _pc — that would tear
++        // down the active audio RTP stream and the user would hear a
++        // gap. addTrack on a stable PC triggers a renegotiationneeded
++        // event which we ignore; we drive the renegotiation manually
++        // via createOffer below so the timing matches what the server
++        // and Janus expect.
++        const addedTracks = [];
++        for (const track of options.localStream.getVideoTracks()) {
++            const sender = this._pc.addTrack(track, options.localStream);
++            addedTracks.push({ sender, track });
++            this._localStreams.addTrack(track);
++        }
++        if (addedTracks.length === 0) {
++            this._upgrading = false;
++            throw new Error('localStream contains no video tracks');
++        }
++        this._pendingVideoAddition = addedTracks;
++
++        utils.createLocalSdp(this._pc, 'offer', null,
++                             utils.getPreferredVideoCodec(),
++                             utils.getPreferredAudioCodec())
++            .then((sdp) => {
++                DEBUG('Local update SDP: %s', sdp);
++                // console.log('[sylkrtc][sdp] OUTGOING update offer (call=',
++                //     this._id, ')\n' + sdp);
++                this._sendUpdate(sdp);
++            })
++            .catch((reason) => {
++                DEBUG('Error creating update offer: %s', reason);
++                this._rollbackPendingVideo();
++                this._upgrading = false;
++                this.emit('updateFailed', reason);
++            });
++
++        this.emit('localStreamAdded', options.localStream);
++    }
++
++    answerUpdate(options = {}) {
++        // Called by the app after it received an 'updateRequest' event
++        // and gathered whatever local tracks (typically video) it
++        // wants to send back. Audio is already flowing through the
++        // existing audio sender so we don't re-add it; we only add
++        // any new video tracks contained in options.localStream, then
++        // createAnswer and ship it on the same session-update wire
++        // request as the outgoing-upgrade flow uses.
++        if (!this._upgrading) {
++            throw new Error('No update in progress');
++        }
++        if (this._pc === null || this._pc.signalingState !== 'have-remote-offer') {
++            throw new Error('Peer connection not in have-remote-offer: ' +
++                (this._pc && this._pc.signalingState));
++        }
++
++        const addedTracks = [];
++        if (options.localStream) {
++            for (const track of options.localStream.getVideoTracks()) {
++                const sender = this._pc.addTrack(track, options.localStream);
++                addedTracks.push({ sender, track });
++                this._localStreams.addTrack(track);
++            }
++        }
++        this._pendingVideoAddition = addedTracks;
++
++        const remoteSdp = this._pc.remoteDescription && this._pc.remoteDescription.sdp;
++        const answerCodec = utils.pickAnswerVideoCodec(remoteSdp);
++        const answerAudioCodec = utils.pickAnswerAudioCodec(remoteSdp);
++        utils.createLocalSdp(this._pc, 'answer', null, answerCodec, answerAudioCodec)
++            .then((sdp) => {
++                console.log('Local update answer SDP: %s', sdp);
++                // console.log('[sylkrtc][sdp] OUTGOING update answer (call=',
++                //     this._id, ')\n' + sdp);
++                this._sendUpdate(sdp);
++                // Our local PC is back in 'stable' as soon as
++                // setLocalDescription resolves inside createLocalSdp.
++                // The renegotiation is effectively complete from our
++                // side; the server will not echo a state=accepted for
++                // remote-initiated updates (Janus's "updated" event
++                // for the answerer side carries no JSEP), so we clear
++                // _upgrading and emit mediaUpdated right here.
++                this._upgrading = false;
++                this._pendingVideoAddition = null;
++                this.emit('mediaUpdated', {
++                    hasLocalVideo: this._localStreams.getVideoTracks().length > 0,
++                    hasRemoteVideo: this._remoteMediaDirections.video.some(
++                        d => d && d !== 'inactive'),
++                });
++            })
++            .catch((reason) => {
++                DEBUG('Error creating update answer: %s', reason);
++                this._rollbackPendingVideo();
++                this._upgrading = false;
++                this.emit('updateFailed', reason);
++            });
++    }
++
++    _handleRemoteUpdate(sdp) {
++        // The server forwarded a remote-initiated re-INVITE (Janus
++        // "updatingcall" event with JSEP offer). Apply the new
++        // remote description, then surface to the app via
++        // 'updateRequest' so the UI can decide whether to grant
++        // camera access and call answerUpdate(). We do not call
++        // getUserMedia from inside the library — camera permission
++        // prompts belong in the UI layer.
++        const remoteSdp = utils.mungeSdp(sdp);
++        DEBUG('Remote update SDP: %s', remoteSdp);
++        // console.log('[sylkrtc][sdp] INCOMING update offer (call=',
++        //     this._id, ')\n' + remoteSdp);
++        console.log('[sylkrtc][update] _handleRemoteUpdate entry (call=', this._id,
++            ') sdp_len=', remoteSdp ? remoteSdp.length : 0,
++            'has_m_video=', /\bm=video\s+[1-9]\d*\b/.test(remoteSdp));
++
++        if (this._upgrading) {
++            // Glare: we sent an update and the peer's update arrived
++            // at the same time. RFC 3261 calls for a 491; for our
++            // case we tell the app and let it retry. The server-side
++            // glare check should normally catch this first, but we
++            // defend in depth.
++            DEBUG('Glare: remote update arrived while we are upgrading');
++            console.log('[sylkrtc][update] GLARE detected (call=', this._id,
++                ') — local update already in flight, rejecting remote');
++            this.emit('updateFailed', new Error('glare'));
++            return;
++        }
++        this._upgrading = true;
++
++        this._pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: remoteSdp}))
++            .then(() => {
++                this._remoteMediaDirections = Object.assign(
++                    {audio: [], video:[]}, utils.getMediaDirections(remoteSdp)
++                );
++                console.log('[sylkrtc][update] remote offer applied OK (call=', this._id,
++                    ') emitting updateRequest, remoteMediaDirections=',
++                    JSON.stringify(this._remoteMediaDirections));
++                this.emit('updateRequest', {
++                    sdp: remoteSdp,
++                    remoteMediaDirections: this._remoteMediaDirections,
++                });
++            })
++            .catch((error) => {
++                DEBUG('Error applying remote update offer: %s', error);
++                console.log('[sylkrtc][update] remote offer setRemoteDescription FAILED',
++                    '(call=', this._id, ')', error && error.message);
++                this._upgrading = false;
++                this.emit('updateFailed', error);
++            });
++    }
++
++    _rollbackPendingVideo() {
++        // Undo the addTrack calls done optimistically before the
++        // server / peer confirmed the update. Used when the remote
++        // rejects the offer with m=video 0, when an answer never
++        // arrives, or when createOffer / setLocalDescription throws.
++        if (!this._pendingVideoAddition) return;
++        for (const { sender, track } of this._pendingVideoAddition) {
++            try {
++                this._pc.removeTrack(sender);
++            } catch (e) {
++                // sender already detached by close(); ignore
++            }
++            try {
++                track.stop();
++                this._localStreams.removeTrack(track);
++            } catch (e) {
++                // ignore
++            }
++        }
++        this._pendingVideoAddition = null;
++    }
++
+     sendMessage(message, contentType='text/plain', options={}, cb=null) {
+         const outgoingMessage = new Message({
+             account: this.remoteIdentity.uri,
+@@ -313,11 +609,47 @@ class Call extends EventEmitter {
+         // Create the RTCPeerConnection
+         this._initRTCPeerConnection(pcConfig);
+ 
 -        this._pc.addStream(options.localStream);
--        this.emit('localStreamAdded', options.localStream);
 +        // M124 / unified-plan: RTCPeerConnection.addStream was
 +        // removed; use addTrack per the W3C spec. Capture the audio
 +        // RTCRtpSender on the way in so the DTMF setTimeout below
@@ -154,7 +384,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
 +                this._audioSender = sender;
 +            }
 +        });
-+        this.emit('localStreamAdded', options.localStream);
+         this.emit('localStreamAdded', options.localStream);
          utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
              .then((sdp) => {
                  DEBUG('Local SDP: %s', sdp);
@@ -166,8 +396,8 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
 +                // it's reachable when triaging codec-negotiation or
 +                // ICE-gathering issues without needing to flip a debug
 +                // flag and rebuild.
-+                console.log('[sylkrtc][sdp] OUTGOING offer (call=', this._id,
-+                    'to=', uri, ')\n' + sdp);
++                // console.log('[sylkrtc][sdp] OUTGOING offer (call=', this._id,
++                //     'to=', uri, ')\n' + sdp);
 +                // DTMF sender becomes available after the local
 +                // description is set inside createLocalSdp (above).
 +                // Same one-tick defer that answer() uses, for the
@@ -184,30 +414,30 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
                  this._sendCall(uri, sdp);
              })
              .catch((reason) => {
-@@ -338,6 +450,11 @@
+@@ -338,6 +670,11 @@ class Call extends EventEmitter {
          );
          this._headers = Object.keys(headers).map(key => {return {name: key, value: headers[key]}});
          DEBUG('Remote SDP: %s', sdp);
 +        // Surface the offer SDP from the caller in the standard log
 +        // stream (see the OUTGOING-offer console.log above for why we
 +        // duplicate this from DEBUG).
-+        console.log('[sylkrtc][sdp] INCOMING offer (call=', id,
-+            'from=', caller && caller.uri, ')\n' + sdp);
++        // console.log('[sylkrtc][sdp] INCOMING offer (call=', id,
++        //     'from=', caller && caller.uri, ')\n' + sdp);
      }
  
      _handleEvent(message) {
-@@ -356,6 +473,10 @@
+@@ -356,6 +693,10 @@ class Call extends EventEmitter {
                      if (message.sdp !== undefined) {
                          const sdp = utils.mungeSdp(message.sdp);
                          DEBUG('Remote SDP: %s', sdp);
 +                        // Incoming answer for our outgoing call. Last
 +                        // of the four exchange points; pairs with the
 +                        // OUTGOING-offer dump in _initOutgoing above.
-+                        console.log('[sylkrtc][sdp] INCOMING answer (call=', this._id, ')\n' + sdp);
++                        // console.log('[sylkrtc][sdp] INCOMING answer (call=', this._id, ')\n' + sdp);
                          this._remoteMediaDirections = Object.assign(
                              {audio: [], video:[]}, utils.getMediaDirections(sdp)
                          );
-@@ -399,7 +520,20 @@
+@@ -399,7 +740,20 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'message':
@@ -229,7 +459,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
                  const incomingMessage = this._messages.get(message.message_id);
                  if (!incomingMessage) {
                      if (message.content_type === 'text/pgp-private-key') {
-@@ -423,7 +557,10 @@
+@@ -423,7 +777,10 @@ class Call extends EventEmitter {
                      if (message.disposition_notification &&
                          message.disposition_notification.indexOf('positive-delivery') !== -1
                      ) {
@@ -241,7 +471,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
                              message.sender.uri,
                              message.message_id,
                              message.timestamp,
-@@ -433,6 +570,17 @@
+@@ -433,6 +790,17 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'disposition-notification':
@@ -259,7 +489,83 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
                  const outgoingMessage = this._messages.get(message.message_id);
                  if (outgoingMessage) {
                      if (outgoingMessage.state === 'displayed') {
-@@ -448,26 +596,40 @@
+@@ -443,31 +811,116 @@ class Call extends EventEmitter {
+                 const {reason, code} = message;
+                 this.emit('messageStateChanged', message.message_id, message.state, {reason, code});
+                 break;
++            case 'update':
++                // Renegotiation lifecycle. The server emits this on
++                // the session-event channel for three reasons:
++                //   state=received : peer initiated a re-INVITE; sdp
++                //                    is their new offer. We hand it
++                //                    off to _handleRemoteUpdate which
++                //                    surfaces an 'updateRequest' event
++                //                    so the UI can answer with
++                //                    answerUpdate({ localStream }).
++                //   state=accepted : our outgoing addVideo() update
++                //                    was answered; sdp is the remote
++                //                    answer. We apply it and emit
++                //                    'mediaUpdated' to the app.
++                //   state=failed   : update rejected; reason carries
++                //                    a human-readable cause. Roll
++                //                    back any tracks we optimistically
++                //                    added and emit 'updateFailed'.
++                console.log('[sylkrtc][update] event received',
++                    'call=', this._id,
++                    'state=', message.state,
++                    'has_sdp=', !!message.sdp,
++                    'sdp_len=', message.sdp ? message.sdp.length : 0,
++                    'reason=', message.reason || null);
++                if (message.state === 'received') {
++                    console.log('[sylkrtc][update] remote-initiated re-INVITE arrived,',
++                        'handing to _handleRemoteUpdate (call=', this._id, ')');
++                    this._handleRemoteUpdate(message.sdp);
++                } else if (message.state === 'accepted') {
++                    const sdp = utils.mungeSdp(message.sdp);
++                    DEBUG('Remote update answer SDP: %s', sdp);
++                    console.log('[sylkrtc][update] applying remote answer (call=',
++                        this._id, '), upgrading was=', this._upgrading);
++                    // console.log('[sylkrtc][sdp] INCOMING update answer (call=',
++                    //     this._id, ')\n' + sdp);
++                    this._pc.setRemoteDescription(new RTCSessionDescription({type: 'answer', sdp: sdp}))
++                        .then(() => {
++                            this._remoteMediaDirections = Object.assign(
++                                {audio: [], video:[]}, utils.getMediaDirections(sdp)
++                            );
++                            this._upgrading = false;
++                            this._pendingVideoAddition = null;
++                            const payload = {
++                                hasLocalVideo: this._localStreams.getVideoTracks().length > 0,
++                                hasRemoteVideo: this._remoteMediaDirections.video.some(
++                                    d => d && d !== 'inactive'),
++                            };
++                            console.log('[sylkrtc][update] setRemoteDescription OK,',
++                                'emitting mediaUpdated (call=', this._id, ')',
++                                'payload=', JSON.stringify(payload),
++                                'remoteMediaDirections=', JSON.stringify(this._remoteMediaDirections));
++                            this.emit('mediaUpdated', payload);
++                        })
++                        .catch((error) => {
++                            DEBUG('Error applying update answer: %s', error);
++                            console.log('[sylkrtc][update] setRemoteDescription FAILED',
++                                '(call=', this._id, ')', error && error.message);
++                            this._rollbackPendingVideo();
++                            this._upgrading = false;
++                            this.emit('updateFailed', error);
++                        });
++                } else if (message.state === 'failed') {
++                    console.log('[sylkrtc][update] server reported failure',
++                        '(call=', this._id, ') reason=', message.reason);
++                    this._rollbackPendingVideo();
++                    this._upgrading = false;
++                    this.emit('updateFailed', new Error(message.reason || 'update rejected'));
++                } else {
++                    console.log('[sylkrtc][update] unknown state',
++                        '(call=', this._id, ') state=', message.state);
++                }
++                break;
+             default:
+                 break;
          }
      }
  
@@ -318,10 +624,44 @@ diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-
  
      _sendRequest(req, cb) {
          this._account._sendRequest(req, cb);
+@@ -539,6 +992,32 @@ class Call extends EventEmitter {
+         });
+     }
+ 
++    _sendUpdate(sdp) {
++        // Wire request for the Janus SIP plugin "update" / SIP
++        // re-INVITE. Used for both:
++        //   - the offer that addVideo() generates locally (server
++        //     decides "this session is established, treat the SDP
++        //     as an offer and feed it to Janus as an offer JSEP")
++        //   - the answer that answerUpdate() generates after a
++        //     remote re-INVITE (server decides "this session is
++        //     in remote-updating, treat the SDP as an answer JSEP").
++        // The server does not need a separate request type to
++        // distinguish — it tracks the session's update state.
++        const req = {
++            sylkrtc: 'session-update',
++            session: this.id,
++            sdp: sdp,
++        };
++        this._sendRequest(req, (error) => {
++            if (error) {
++                DEBUG('Update error: %s', error);
++                this._rollbackPendingVideo();
++                this._upgrading = false;
++                this.emit('updateFailed', error);
++            }
++        });
++    }
++
+     _closeRTCPeerConnection() {
+         DEBUG('Closing RTCPeerConnection');
+         if (this._pc !== null) {
 diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/react-native-sylkrtc/lib/conference.js
+index 33da09d..a388b38 100644
 --- a/node_modules/react-native-sylkrtc/lib/conference.js
 +++ b/node_modules/react-native-sylkrtc/lib/conference.js
-@@ -121,10 +121,15 @@
+@@ -121,10 +121,15 @@ class Participant extends EventEmitter {
          const pc = new RTCPeerConnection(pcConfig);
          this._conference._statistics.addConnection({pc: pc, peerId: this._id});
  
@@ -341,7 +681,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/
          pc.addEventListener('icecandidate', (event) => {
              if (event.candidate !== null) {
                  DEBUG('New ICE candidate %o', event.candidate);
-@@ -572,7 +577,10 @@
+@@ -572,7 +577,10 @@ class ConferenceCall extends EventEmitter {
              this._sendTrickle(event.candidate);
          });
  
@@ -354,9 +694,10 @@ diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/
          DEBUG('Offer options: %o', offerOptions);
          utils.createLocalSdp(this._pc, 'offer', offerOptions)
 diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
+index ae521ed..bcb76df 100644
 --- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js
 +++ b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
-@@ -19,8 +19,12 @@
+@@ -19,8 +19,12 @@ function createConnection(options = {}) {
  
  
  const utils = {
@@ -372,9 +713,10 @@ diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/rea
  
  
 diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
+index a64c601..cd51161 100644
 --- a/node_modules/react-native-sylkrtc/lib/utils.js
 +++ b/node_modules/react-native-sylkrtc/lib/utils.js
-@@ -54,7 +54,7 @@
+@@ -54,7 +54,7 @@ class SharedFile {
  }
  
  
@@ -383,7 +725,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
      if (type !== 'offer' && type !== 'answer') {
          return Promise.reject('type must be "offer" or "answer", but "' +type+ '" was given');
      }
-@@ -70,7 +70,7 @@
+@@ -70,7 +70,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
                  return pc.setLocalDescription(desc);
              })
              .then(() => {
@@ -392,7 +734,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
              })
              // failure
              .catch((error) => {
-@@ -81,7 +81,7 @@
+@@ -81,7 +81,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
  }
  
  
@@ -401,7 +743,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
      let parsedSdp = transform.parse(sdp);
      let h264payload = null;
      let hasProfileLevelId = false;
-@@ -132,6 +132,55 @@
+@@ -132,6 +132,55 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
          }
      }
  
@@ -457,7 +799,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
      if (preferredCodec !== null) {
          const videoMLine = parsedSdp.media.find(m => m.type === 'video');
          let payloadType = null;
-@@ -156,6 +205,37 @@
+@@ -156,6 +205,37 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
          }
      }
  
@@ -495,7 +837,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
      return transform.write(parsedSdp);
  }
  
-@@ -360,6 +440,8 @@
+@@ -360,6 +440,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -504,7 +846,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
                      }
                  }
  
-@@ -388,6 +470,8 @@
+@@ -388,6 +470,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -513,7 +855,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
                      }
                  }
  
-@@ -435,6 +519,8 @@
+@@ -435,6 +519,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -522,7 +864,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
                      }
                  }
  
-@@ -469,6 +555,8 @@
+@@ -469,6 +555,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -531,7 +873,7 @@ diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react
                      }
                  }
  
-@@ -506,4 +594,103 @@
+@@ -506,4 +594,103 @@ export function map2obj(stats) {
      return o;
  }
  

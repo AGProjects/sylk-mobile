@@ -7,6 +7,7 @@
 #import <WebRTC/RTCAudioTrack.h>
 #import <WebRTC/RTCMediaStreamTrack.h>
 #import <WebRTC/RTCAudioRenderer.h>
+#import "SylkLogger.h"
 
 // react-native-webrtc's WebRTCModule has a public trackForId:pcId:
 // helper. Forward-declare the selector via NSObject category so we
@@ -141,9 +142,9 @@ RCT_EXPORT_METHOD(start:(NSInteger)micPcId
         _outputPath = [outputPath copy];
         _lastPath   = nil;
         _lastPeaksJson = nil;
-        NSLog(@"[SYLK_APP] [CallRec] start: remote track resolved trackId=%@ pcId=%ld kind=%@ enabled=%d source=%@",
+        [SylkLogger log:@"[call] [recorder] start: remote track resolved trackId=%@ pcId=%ld kind=%@ enabled=%d source=%@",
               remoteTrackId, (long)remotePcId, _remoteTrack.kind,
-              _remoteTrack.isEnabled, _remoteTrack.source);
+              _remoteTrack.isEnabled, _remoteTrack.source];
 
         // Open output file as AAC m4a via AVAssetWriter. The writer
         // expects the destination to NOT exist (otherwise -startWriting
@@ -378,7 +379,7 @@ RCT_EXPORT_METHOD(start:(NSInteger)micPcId
         // delivers post-decode AVAudioPCMBuffers at whatever sample
         // rate WebRTC negotiated (48 kHz on Opus, 8 kHz on PCMA).
         [_remoteTrack addRenderer:self];
-        NSLog(@"[SYLK_APP] [CallRec] addRenderer called on remote track");
+        [SylkLogger log:@"[call] [recorder] addRenderer called on remote track"];
         RCTLogInfo(@"[SylkCallRecorder] recording started: %@", outputPath);
         resolve(outputPath);
     }

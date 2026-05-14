@@ -19,7 +19,23 @@ class LocalMedia extends Component {
         this.localVideo = React.createRef();
 
 		const localMedia = this.props.localMedia;
-        const mediaType = localMedia.getVideoTracks().length > 0 ? 'video' : 'audio';
+        // mediaType reflects the USER'S intent (audio button vs
+        // video button) rather than what tracks are physically on
+        // the local stream. The conference now always negotiates a
+        // video track regardless of which start button the user
+        // pressed (see callKeepStartConference in app.js — camera
+        // permission requested unconditionally so a later in-call
+        // flip is one track.enabled away). So
+        // localMedia.getVideoTracks().length > 0 is now ALWAYS
+        // true for conferences and stops being a useful signal.
+        // props.media is 'audio' / 'video' from Conference.js (see
+        // ~line 410, computed off proposedMedia.video) and carries
+        // the intent. An Audio button start should NOT show the
+        // big local-preview RTCView underneath while we wait for
+        // the conference to establish — that surface is just the
+        // user staring at their own camera which they explicitly
+        // didn't ask to share.
+        const mediaType = this.props.media === 'video' ? 'video' : 'audio';
 
         // Derive the initial camera facing from the actual track so
         // the picker label and the bar icon don't start out of phase
@@ -71,7 +87,13 @@ class LocalMedia extends Component {
 
     componentDidMount() {
         this.props.mediaPlaying();
-        if (this.props.awaitingUserCallStart && this.props.confirmStartCall) {
+        // disableAutoStart suppresses the 9-second countdown that auto-
+        // fires confirmStartCall(). Used by the mid-call upgrade flow
+        // (Call.js routes here for the +video preview): the user is
+        // already in a call and shouldn't see a count-down timer telling
+        // them the camera is about to go on the wire — they should tap
+        // Start explicitly, or back out.
+        if (this.props.awaitingUserCallStart && this.props.confirmStartCall && !this.props.disableAutoStart) {
             this._startAutoStartTimer();
         }
     }
@@ -79,7 +101,7 @@ class LocalMedia extends Component {
     componentDidUpdate(prevProps, prevState) {
         const enteredAwaiting = !prevProps.awaitingUserCallStart && this.props.awaitingUserCallStart;
         const leftAwaiting = prevProps.awaitingUserCallStart && !this.props.awaitingUserCallStart;
-        if (enteredAwaiting && this.props.confirmStartCall) {
+        if (enteredAwaiting && this.props.confirmStartCall && !this.props.disableAutoStart) {
             this._startAutoStartTimer();
         }
         if (leftAwaiting) {
@@ -164,6 +186,10 @@ class LocalMedia extends Component {
      *  fired) or the user has navigated away from awaiting. */
     _resumeAutoStartTimer() {
         if (!this.props.awaitingUserCallStart) return;
+        // Honour disableAutoStart here too — the mid-call upgrade flow
+        // never wants the timer to start, including the path where the
+        // user opened then closed a camera/audio picker.
+        if (this.props.disableAutoStart) return;
         const remaining = (this.state && this.state.autoStartCountdown) || 0;
         if (remaining <= 0) {
             // Picker stayed open past the deadline — fire the call now.
@@ -640,6 +666,16 @@ class LocalMedia extends Component {
                                             ? `Start video call (${this.state.autoStartCountdown})`
                                             : 'Start video call'}
                                     </Button>
+                                    {/* Countdown progress bar — hidden
+                                        entirely when the auto-start
+                                        timer is suppressed (the mid-call
+                                        upgrade flow). Without this
+                                        guard, the row of dim
+                                        translucent cells still draws
+                                        and can read as "a timer is
+                                        present" even though the count
+                                        is stuck at 0. */}
+                                    {!this.props.disableAutoStart ? (
                                     <View style={{
                                         flexDirection: 'row',
                                         marginTop: 10,
@@ -666,6 +702,7 @@ class LocalMedia extends Component {
                                             />
                                         ))}
                                     </View>
+                                    ) : null}
                                 </View>
                             </View>
 
@@ -722,13 +759,28 @@ class LocalMedia extends Component {
                 }
 
                 <View style={styles.container}>
-                    <RTCView objectFit="cover"
-                             style={[styles.video, videoStyle]}
-                             id="localVideo"
-                             ref={this.localVideo}
-                             streamURL={streamUrl}
-                             mirror={this.state.mirror}
-                             />
+                    {/* Local preview only renders when the user
+                        chose Video at the start (mediaType derived
+                        from props.media). For an Audio button
+                        start, the camera track IS being acquired
+                        for wire-level negotiation, but showing it
+                        as a fullscreen preview here surprises the
+                        user — they pressed Audio. Drop in a plain
+                        dark backdrop instead; the bottom bar
+                        still carries the audio-device picker +
+                        hangup, which is the only useful chrome
+                        on this transitional screen. */}
+                    {this.state.mediaType === 'video' ? (
+                        <RTCView objectFit="cover"
+                                 style={[styles.video, videoStyle]}
+                                 id="localVideo"
+                                 ref={this.localVideo}
+                                 streamURL={streamUrl}
+                                 mirror={this.state.mirror}
+                                 />
+                    ) : (
+                        <View style={[styles.video, videoStyle, {backgroundColor: '#111'}]} />
+                    )}
                 </View>
             </Fragment>
         );
@@ -750,6 +802,11 @@ LocalMedia.propTypes = {
     media               : PropTypes.string,
     showLogs            : PropTypes.func,
     goBackFunc          : PropTypes.func,
+    // Suppress the 9-second auto-start countdown. Used by the mid-call
+    // audio→video upgrade flow (Call.js routes here for the preview):
+    // the user already initiated the call, so a count-down is wrong —
+    // tap Start to opt in, or back out.
+    disableAutoStart    : PropTypes.bool,
     terminatedReason    : PropTypes.string,
     isLandscape         : PropTypes.bool,
     isTablet            : PropTypes.bool,

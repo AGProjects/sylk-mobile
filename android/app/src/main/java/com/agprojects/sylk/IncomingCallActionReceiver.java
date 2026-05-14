@@ -33,7 +33,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				Log.d(LOG_TAG, "[CallAct]   EXTRA: " + key + " = " + extras.get(key));
+				SylkLogger.d("[call] [action] EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 
@@ -56,8 +56,8 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
-            Log.d(LOG_TAG, "[CallAct] User action: " + action + " for call: " + callUUID);
-            //Log.d(LOG_TAG, "event " + event);
+            SylkLogger.d("[call] [action] User action: " + action + " for call: " + callUUID);
+            //SylkLogger.d("[call] [action] event " + event);
 
             // Keep the Telecom/BT-HFP state in sync immediately so the car
             // kit's display flips out of "ringing" the moment the user taps,
@@ -71,10 +71,10 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
             // Cancel notification immediately
             if (notificationId != -1) {
                 NotificationManagerCompat.from(context).cancel(notificationId);
-                Log.d(LOG_TAG, "[CallAct] Notification canceled immediately: " + notificationId);
+                SylkLogger.d("[call] [action] Notification canceled immediately: " + notificationId);
             }
 
-			//Log.d(LOG_TAG, "phoneLocked: " + phoneLocked);
+			//SylkLogger.d("[call] [action] phoneLocked: " + phoneLocked);
 			if (action.startsWith("ACTION_ACCEPT")) {
 				ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
             }
@@ -102,7 +102,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
                 }
             }
         } else {
-                Log.d(LOG_TAG, "[CallAct] Unknown action received: " + action);
+                SylkLogger.d("[call] [action] Unknown action received: " + action);
         }
     }
 }

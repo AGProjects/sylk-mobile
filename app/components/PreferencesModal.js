@@ -1,17 +1,20 @@
-// PreferencesModal — per-device, per-app settings.
+// PreferencesModal — per-account, per-app settings.
 //
-// NOT synced to the SylkServer, NOT tied to a SIP account, NOT in SQL.
-// Lives in AsyncStorage as a single JSON blob under 'devicePreferences'.
-// Backed by app.js: state.devicePreferences + setDevicePreference().
+// NOT synced to the SylkServer. Persisted in the SQL `accounts` table
+// under the `settings` column as a single JSON blob, keyed by account.
+// Backed by app.js: state.accountSetting + setAccountSetting(). When
+// the user switches accounts, the modal re-hydrates from the new
+// account's row.
 //
-// This is where per-device knobs go that depend on this phone's hardware
-// or the user's per-device opinion: codec choice, jitter buffer size,
-// debug toggles, etc. As the modal grows, add new <View>-wrapped
-// sections to render() rather than packing everything into one screen.
+// This is where per-account knobs live that depend on this phone's
+// hardware or the user's per-device opinion: codec choice, jitter
+// buffer size, debug toggles, etc. As the modal grows, add new
+// <View>-wrapped sections to render() rather than packing everything
+// into one screen.
 //
 // Two phones logged into the same SIP account legitimately want
-// different settings here, which is exactly why this modal exists
-// separately from My Account.
+// different settings here, which is fine — each device keeps its own
+// SQL row, so the choices don't collide.
 //
 // Sections:
 //   1. Video Calls — preferred video codec (with zRTP compatibility tag)
@@ -19,9 +22,13 @@
 //                    DTMF transmission mode, auto-record toggle, and the
 //                    proximity-sensor toggle (display-mute + speakerphone-
 //                    on-gesture; relevant only for audio calls)
-//   3. Encryption  — zRTP optional / mandatory; applies to BOTH audio
+//   3. Chat        — chat sounds toggle (notification/typing/sent
+//                    sound for chat events). Moved here from
+//                    EditContactModal's "My Account" view — per-device
+//                    preference, not a call/privacy rule.
+//   4. Encryption  — zRTP optional / mandatory; applies to BOTH audio
 //                    and video calls (SDES is always available)
-//   4. Location
+//   5. Location
 //
 // Future sections to consider: Audio quality (echo cancellation, AEC
 // mode, jitter buffer), Network (TURN over TCP, prefer IPv6), Debug
@@ -49,17 +56,18 @@ import {
 } from '../locationDisclosure';
 
 // Three-stop choices for the Location preferences. Values are kept in
-// the units the consumer code expects directly (milliseconds for the
-// tick interval, metres for the proximity threshold) so PreferencesModal
-// can hand them straight through `setDevicePreference` without any
-// conversion. Defaults match the in-code constants the field referenced
-// previously: 60 s tick cadence, 20 m meet-up proximity.
+// the units the persistent setting expects directly (seconds for the
+// tick interval, metres for the proximity threshold) so
+// PreferencesModal can hand them straight through `setAccountSetting`
+// without any conversion. The NavigationBar consumer multiplies the
+// seconds value by 1000 before handing it to setInterval. Defaults:
+// 60 s tick cadence, 20 m meet-up proximity.
 const LOCATION_TICK_INTERVAL_STOPS = [
-    {value:  30 * 1000,  label: '30 sec'},   // faster — more battery, sharper trail
-    {value:  60 * 1000,  label: '1 min'},    // standard / default
-    {value: 120 * 1000,  label: '2 min'},    // gentler on battery, coarser trail
+    {value:  30,  label: '30 sec'},   // faster — more battery, sharper trail
+    {value:  60,  label: '1 min'},    // standard / default
+    {value: 120,  label: '2 min'},    // gentler on battery, coarser trail
 ];
-const LOCATION_TICK_INTERVAL_DEFAULT = 60 * 1000;
+const LOCATION_TICK_INTERVAL_DEFAULT = 60;
 
 const LOCATION_PROXIMITY_STOPS = [
     {value: 10, label: '10 m'},   // tight — "same room"; sensitive to GPS jitter
@@ -67,6 +75,22 @@ const LOCATION_PROXIMITY_STOPS = [
     {value: 50, label: '50 m'},   // relaxed — "same block"; tolerant of poor GPS
 ];
 const LOCATION_PROXIMITY_DEFAULT = 20;
+
+// Font sizes used throughout the Preferences panel.
+//
+// Bumped from the original literals (11 / 12 / 14) because the modal
+// read as too small on every form factor — those values were tuned for
+// a cramped small-phone layout and looked undersized on modern large
+// phones and tablets alike. The three sizes preserve the original
+// visual hierarchy (caption < body < label); only their absolute
+// values grew.
+//
+// If you tweak these, also revisit pillContentStyle.height below —
+// the chip-button height has to grow with the label or the text
+// clips. Current ratio: height ≈ FS_BODY × 2.3 (rounded).
+const FS_CAPTION = 13;  // hint / subtext under section headers
+const FS_BODY    = 14;  // pill labels, inline links, body copy
+const FS_LABEL   = 16;  // section headers (Audio Calls, Video Calls, …)
 
 const VIDEO_CODECS = ['VP9', 'VP8', 'H264'];
 const VIDEO_CODECS_DEFAULT = 'VP9';
@@ -209,9 +233,17 @@ const PreferencesModal = ({
     // Whether the in-call record control is shown on audio calls.
     // OFF by default — flipping it ON surfaces the record button in
     // AudioCallBox on subsequent calls. Per-device, persisted through
-    // setDevicePreference like the codec choices above.
+    // setAccountSetting like the codec choices above.
     enableAudioRecording,
     setEnableAudioRecording,
+    // Chat sounds toggle (ON by default). Moved here from the
+    // "My Account..." (EditContactModal) view — it's a per-device
+    // speaker preference, not a call-acceptance/privacy rule, so it
+    // belongs alongside the other Preferences toggles. Persisted
+    // via setAccountSetting('device.chatSounds', !current) on the
+    // app side; from this modal's POV it's just a bool toggle.
+    chatSounds,
+    toggleChatSounds,
     // Proximity sensor — moved here from the main menu since it's a
     // per-device behaviour preference (whether to mute the screen
     // when the user holds the phone to their ear during a call), not
@@ -220,16 +252,17 @@ const PreferencesModal = ({
     toggleProximity,
     // Location settings. Both have meaningful defaults if the props
     // aren't passed (callers may roll out the new section gradually).
-    //   locationTickIntervalMs — heartbeat cadence for live shares.
-    //     Larger = better battery / less server traffic, smaller =
-    //     finer trail granularity.
+    //   locationTickIntervalSec — heartbeat cadence for live shares,
+    //     in SECONDS (NavigationBar multiplies ×1000 before passing
+    //     to setInterval). Larger = better battery / less server
+    //     traffic, smaller = finer trail granularity.
     //   locationProximityMeters — meet-up auto-end threshold. Two
     //     participants within this radius for the dwell window get a
     //     "you've met" notification and the share auto-ends. Smaller =
     //     tighter "same room" semantics, larger = tolerates GPS
     //     jitter for indoor / urban-canyon scenarios.
-    locationTickIntervalMs,
-    setLocationTickIntervalMs,
+    locationTickIntervalSec,
+    setLocationTickIntervalSec,
     locationProximityMeters,
     setLocationProximityMeters,
     // Last-used privacy radius for meeting-handshake shares. Seeded
@@ -245,8 +278,8 @@ const PreferencesModal = ({
     const currentAudioCodec = preferredAudioCodec || AUDIO_CODECS_DEFAULT;
     const currentMode = encryptionMode || 'zrtp_optional';
     const currentDtmf = dtmfMode || DTMF_DEFAULT;
-    const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalMs)
-        ? locationTickIntervalMs
+    const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalSec)
+        ? locationTickIntervalSec
         : LOCATION_TICK_INTERVAL_DEFAULT;
     const currentProximity = LOCATION_PROXIMITY_STOPS.some(s => s.value === locationProximityMeters)
         ? locationProximityMeters
@@ -262,15 +295,17 @@ const PreferencesModal = ({
     // Compact pill styles — same shape EditContactModal uses for its
     // per-contact override pills so both modals feel consistent.
     // contentStyle pulls the default Paper Button height (~36 px) down
-    // to 28 px; labelStyle drops the label fontSize from 14 → 12 and
-    // removes the vertical margin that would otherwise hike the pill
-    // back up. Apply to every Button in the section rows below.
-    const pillContentStyle = { height: 28 };
+    // to a tighter pill height; labelStyle drops the label to FS_BODY
+    // and removes the vertical margin that would otherwise hike the
+    // pill back up. Apply to every Button in the section rows below.
+    // Height was 28 (sized for fontSize 12); bumped to 32 so the
+    // FS_BODY label (14) doesn't clip vertically inside the pill.
+    const pillContentStyle = { height: 32 };
     const pillLabelStyle = {
-        fontSize: 12,
+        fontSize: FS_BODY,
         marginVertical: 0,
         marginHorizontal: 8,
-        lineHeight: 14,
+        lineHeight: 16,
     };
 
     // Call-recording disclosure modal state.
@@ -283,10 +318,11 @@ const PreferencesModal = ({
     //               "Opt out" instead of "I agree"
     // Tracked locally because none of the disclosure state needs to
     // outlive a Preferences session — the *agreement flag* itself is
-    // persisted via callRecordingDisclosure (AsyncStorage) so it
-    // survives an app restart and is shared with any future gate.
+    // persisted in accounts.settings under disclaimers.callRecording
+    // (see callRecordingDisclosure.js) so it survives an app restart
+    // and is shared with any future gate.
     const [disclosureMode, setDisclosureMode] = useState('hidden');
-    // Has-acknowledged flag, hydrated on mount from AsyncStorage.
+    // Has-acknowledged flag, hydrated on mount from accounts.settings.
     // Drives both the "do we need to show the consent gate?" branch
     // when toggling ON and the showOptOut variant of the viewer.
     const [hasAcknowledged, setHasAcknowledged] = useState(false);
@@ -516,7 +552,7 @@ const PreferencesModal = ({
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
-                                            fontSize: 14,
+                                            fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
                                             color: '#333',
@@ -524,7 +560,7 @@ const PreferencesModal = ({
                                     >
                                         Video Calls
                                     </Text>
-                                    <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
                                         Preferred video codec for outgoing calls.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -562,13 +598,13 @@ const PreferencesModal = ({
                                          the in-call record control. Off by
                                          default so the recording UI doesn't
                                          appear for users who don't need it.
-                                    All three persist to AsyncStorage under
-                                    devicePreferences and re-apply
-                                    immediately via setDevicePreference. */}
+                                    All three persist to SQL under
+                                    accounts.settings and re-apply
+                                    immediately via setAccountSetting. */}
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
-                                            fontSize: 14,
+                                            fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
                                             color: '#333',
@@ -576,7 +612,7 @@ const PreferencesModal = ({
                                     >
                                         Audio Calls
                                     </Text>
-                                    <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
                                         Preferred audio codec for outgoing calls.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -611,7 +647,7 @@ const PreferencesModal = ({
                                         build that doesn't support a given
                                         path) is visible without being
                                         actionable. */}
-                                    <Text style={{ fontSize: 11, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
                                         How dialpad digits are transmitted during a call.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -658,7 +694,7 @@ const PreferencesModal = ({
                                         the user must opt in once per
                                         SIP identity before the feature
                                         becomes active. */}
-                                    <Text style={{ fontSize: 11, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
                                         Automatic call recording.
                                     </Text>
                                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -688,7 +724,7 @@ const PreferencesModal = ({
                                         <Text
                                             style={{
                                                 marginLeft: 12,
-                                                fontSize: 12,
+                                                fontSize: FS_BODY,
                                                 color: '#1976d2',
                                                 textDecorationLine: 'underline',
                                             }}
@@ -708,7 +744,7 @@ const PreferencesModal = ({
                                         only matter for audio calls. The
                                         sensor is suspended for video
                                         calls regardless of this flag. */}
-                                    <Text style={{ fontSize: 11, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
                                         Automatic toggle speakerphone.
                                     </Text>
                                     <Button
@@ -730,6 +766,50 @@ const PreferencesModal = ({
 
                                 <Divider style={{ marginTop: -8, marginBottom: 8 }} />
 
+                                {/* ───── Chat ────────────────────────────────────
+                                    Currently just the chat-sounds
+                                    toggle (was on the My Account...
+                                    page). Other chat-only knobs (typing
+                                    indicator, default font size,
+                                    auto-link previews, etc.) can land
+                                    here later as additional rows in
+                                    the same section without affecting
+                                    surrounding layout. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Chat
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Notification sound when my message was read.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <Button
+                                            mode={chatSounds ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={chatSounds ? 'volume-high' : 'volume-off'}
+                                            onPress={() => {
+                                                if (typeof toggleChatSounds === 'function') {
+                                                    toggleChatSounds();
+                                                }
+                                            }}
+                                            style={{ alignSelf: 'flex-start' }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                        >
+                                            {chatSounds ? 'Sounds On' : 'Sounds Off'}
+                                        </Button>
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
                                 {/* ───── Encryption ──────────────────────────────
                                     Compact button-row picker, same shape
                                     as the Codecs section above. The
@@ -742,7 +822,7 @@ const PreferencesModal = ({
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
-                                            fontSize: 14,
+                                            fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
                                             color: '#333',
@@ -750,7 +830,7 @@ const PreferencesModal = ({
                                     >
                                         zRTP Encryption
                                     </Text>
-                                    <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
                                         Used for both audio and video calls.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -780,7 +860,7 @@ const PreferencesModal = ({
                                         zRTP adds on top is end-to-end
                                         encryption that the relay can't
                                         decrypt. */}
-                                    <Text style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 2 }}>
                                         SDES is always available.
                                     </Text>
                                 </View>
@@ -791,7 +871,7 @@ const PreferencesModal = ({
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
-                                            fontSize: 14,
+                                            fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
                                             color: '#333',
@@ -810,8 +890,8 @@ const PreferencesModal = ({
                                         stops={LOCATION_TICK_INTERVAL_STOPS}
                                         value={currentTickInterval}
                                         onChange={(v) => {
-                                            if (typeof setLocationTickIntervalMs === 'function') {
-                                                setLocationTickIntervalMs(v);
+                                            if (typeof setLocationTickIntervalSec === 'function') {
+                                                setLocationTickIntervalSec(v);
                                             }
                                         }}
                                     />
@@ -873,7 +953,7 @@ const PreferencesModal = ({
                                     <Text
                                         style={{
                                             marginTop: 10,
-                                            fontSize: 12,
+                                            fontSize: FS_BODY,
                                             color: '#1976d2',
                                             textDecorationLine: 'underline',
                                             alignSelf: 'flex-start',
@@ -958,6 +1038,8 @@ PreferencesModal.propTypes = {
     // already guards against a missing setter.
     enableAudioRecording: PropTypes.bool,
     setEnableAudioRecording: PropTypes.func,
+    chatSounds: PropTypes.bool,
+    toggleChatSounds: PropTypes.func,
     proximity: PropTypes.bool,
     toggleProximity: PropTypes.func,
     encryptionMode: PropTypes.oneOf(['zrtp_optional', 'zrtp_mandatory']),
@@ -969,8 +1051,8 @@ PreferencesModal.propTypes = {
     // (1 min cadence, 20 m proximity).
     locationPrivacyRadiusMeters: PropTypes.number,
     setLocationPrivacyRadiusMeters: PropTypes.func,
-    locationTickIntervalMs: PropTypes.number,
-    setLocationTickIntervalMs: PropTypes.func,
+    locationTickIntervalSec: PropTypes.number,
+    setLocationTickIntervalSec: PropTypes.func,
     locationProximityMeters: PropTypes.number,
     setLocationProximityMeters: PropTypes.func,
 };

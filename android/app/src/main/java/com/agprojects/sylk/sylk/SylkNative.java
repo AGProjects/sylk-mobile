@@ -22,6 +22,7 @@ import android.telecom.DisconnectCause;
 import android.app.Activity;
 
 import com.agprojects.sylk.SylkTelecom;
+import com.agprojects.sylk.SylkLogger;
 
 public class SylkNative extends ReactContextBaseJavaModule {
     private static ReactApplicationContext reactContext;
@@ -55,14 +56,14 @@ public class SylkNative extends ReactContextBaseJavaModule {
             activityIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             reactContext.startActivity(activityIntent);
         } catch(Exception e) {
-            Log.e(LOG_TAG, "[Native] Class not found", e);
+            SylkLogger.e("[bridge] Class not found", e);
             return;
         }
     }
 
     @ReactMethod
     public void requestUnlock(final Promise promise) {
-        Log.d(LOG_TAG, "[Native] requestUnlock");
+        SylkLogger.d("[bridge] requestUnlock");
 
         KeyguardManager keyguardManager = (KeyguardManager) reactContext.getSystemService(Context.KEYGUARD_SERVICE);
         Activity currentActivity = this.getCurrentActivity();
@@ -76,45 +77,45 @@ public class SylkNative extends ReactContextBaseJavaModule {
             keyguardManager.requestDismissKeyguard(currentActivity, new KeyguardManager.KeyguardDismissCallback() {
                 @Override
                 public void onDismissError() {
-                    Log.d(LOG_TAG, "[Native] onDismissError");
+                    SylkLogger.d("[bridge] onDismissError");
                     promise.reject("DISMISS_FAILED");
                 }
 
                 @Override
                 public void onDismissSucceeded() {
-                    Log.d(LOG_TAG, "[Native] onDismissSucceeded");
+                    SylkLogger.d("[bridge] onDismissSucceeded");
                     promise.resolve(null);
                 }
 
                 @Override
                 public void onDismissCancelled() {
-                    Log.d(LOG_TAG, "[Native] onDismissCancelled");
+                    SylkLogger.d("[bridge] onDismissCancelled");
                     promise.reject("DISMISS_CANCELLED");
                 }
             });
         } else {
-            Log.w(LOG_TAG, "[Native] requestDismissKeyguard requires API 26+. Skipping.");
+            SylkLogger.w("[bridge] requestDismissKeyguard requires API 26+. Skipping.");
             promise.reject("UNSUPPORTED_API", "requestDismissKeyguard requires API 26+");
         }
     }
 
     @ReactMethod
     public Boolean isKeyguardLocked() {
-        Log.d(LOG_TAG, "[Native] isKeyguardLocked");
+        SylkLogger.d("[bridge] isKeyguardLocked");
 
         KeyguardManager keyguardManager = (KeyguardManager) reactContext.getSystemService(Context.KEYGUARD_SERVICE);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { // API 23+
             return keyguardManager.isKeyguardLocked();
         } else {
-            Log.w(LOG_TAG, "[Native] isKeyguardLocked requires API 23+. Returning false.");
+            SylkLogger.w("[bridge] isKeyguardLocked requires API 23+. Returning false.");
             return false;
         }
     }
 
     @ReactMethod
     public static void emitDeviceEvent(String eventName, ReadableMap message) {
-        Log.d(LOG_TAG, "[Native] emitDeviceEvent: " + message);
+        SylkLogger.d("[bridge] emitDeviceEvent: " + message);
         reactContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit(eventName, Arguments.fromBundle(Arguments.toBundle(message)));
