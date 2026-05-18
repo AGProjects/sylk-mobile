@@ -524,9 +524,25 @@ export default class NetworkSpeedometer extends React.Component {
                     ]}
                     caption={
                         <Text style={styles.caption}>
-                            <Text style={{ color: COLOR_RTT  }}>{rtt.toFixed(0)}ms</Text>
-                            <Text> </Text>
-                            <Text style={{ color: COLOR_LOSS }}>{loss.toFixed(1)}%</Text>
+                            <Text style={{ color: COLOR_RTT  }}>{rtt.toFixed(0)} ms</Text>
+                            {/* Loss readout hidden ≤ 1%. The 0–1%
+                                range is noise on a healthy link;
+                                surfacing it implied an actionable
+                                problem when there wasn't one. Same
+                                rule applied across the audio and
+                                network speedometers so a user
+                                glancing at either gets a consistent
+                                read of "anything visible here means
+                                real loss". */}
+                            {loss > 1 ? (
+                                <>
+                                    <Text> </Text>
+                                    {/* Integer — see the matching
+                                        change in AudioSpeedometer.js
+                                        for rationale. */}
+                                    <Text style={{ color: COLOR_LOSS }}>{Math.round(loss)}%</Text>
+                                </>
+                            ) : null}
                         </Text>
                     }
                 />

@@ -25,7 +25,7 @@ import FastImage from 'react-native-fast-image';
 // child sized to the map frame) and stays a sibling of the
 // FastImage tiles + pin overlays so transforms applied to the map
 // frame propagate uniformly.
-import Svg, { Polyline as SvgPolyline, Circle as SvgCircle } from 'react-native-svg';
+import Svg, { Polyline as SvgPolyline, Circle as SvgCircle, Polygon as SvgPolygon } from 'react-native-svg';
 // Reused from the audio-message bubble: a thin draggable scrubber
 // with a needle. Same behaviour we need for "drag through the GPS
 // timeline" — onSeekStart/Change/Release callbacks expose the
@@ -600,6 +600,65 @@ const StaticMap = memo((props) => {
         const pointsAttr = projected
             .map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`)
             .join(' ');
+        // Small directional arrowhead at each hop point so a viewer
+        // can tell which way the trail flows even when zoomed out
+        // (a polyline alone is ambiguous — start vs end isn't obvious
+        // without comparing the "A" dot and avatar, which can be off
+        // screen on dense trails). The tip of each triangle points at
+        // the NEXT hop along the path; the last point inherits the
+        // direction of the previous segment so the avatar end-cap
+        // also reads as forward-facing. We skip the first point (its
+        // "A" start dot is rendered below and would just collide) and
+        // any segment shorter than `MIN_SEG_PX` projected pixels,
+        // since clusters of near-coincident GPS samples produce noisy
+        // arrow rotation that visually flickers as the user zooms.
+        const ARROW_TIP   = 5.5;   // pixels from hop point to triangle tip
+        const ARROW_BACK  = 3.5;   // pixels from hop point to triangle base
+        const ARROW_HALF  = 3.5;   // half-width of triangle base
+        const MIN_SEG_PX  = 4;     // skip arrows on near-zero-length segments
+        const hopArrows = [];
+        for (let i = 1; i < projected.length; i++) {
+            // Direction vector: prefer the segment LEAVING this point;
+            // fall back to the segment ENTERING it for the terminal
+            // hop. This keeps the arrow rotation visually consistent
+            // with the polyline's local tangent at every hop.
+            let dx, dy;
+            if (i < projected.length - 1) {
+                dx = projected[i + 1].x - projected[i].x;
+                dy = projected[i + 1].y - projected[i].y;
+            } else {
+                dx = projected[i].x - projected[i - 1].x;
+                dy = projected[i].y - projected[i - 1].y;
+            }
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (!(len >= MIN_SEG_PX)) continue;
+            const ux = dx / len;          // unit vector along travel
+            const uy = dy / len;
+            const px = -uy;                // perpendicular (right-hand)
+            const py = ux;
+            const cx = projected[i].x;
+            const cy = projected[i].y;
+            const tipX  = cx + ux * ARROW_TIP;
+            const tipY  = cy + uy * ARROW_TIP;
+            const baseLx = cx - ux * ARROW_BACK + px * ARROW_HALF;
+            const baseLy = cy - uy * ARROW_BACK + py * ARROW_HALF;
+            const baseRx = cx - ux * ARROW_BACK - px * ARROW_HALF;
+            const baseRy = cy - uy * ARROW_BACK - py * ARROW_HALF;
+            const ptsAttr =
+                `${tipX.toFixed(1)},${tipY.toFixed(1)} ` +
+                `${baseLx.toFixed(1)},${baseLy.toFixed(1)} ` +
+                `${baseRx.toFixed(1)},${baseRy.toFixed(1)}`;
+            hopArrows.push(
+                <SvgPolygon
+                    key={`hop-arrow-${i}`}
+                    points={ptsAttr}
+                    fill="#E74C3C"
+                    stroke="#ffffff"
+                    strokeWidth={1}
+                    strokeLinejoin="round"
+                />
+            );
+        }
         trailPolyline = (
             <Svg
                 key="trail-svg"
@@ -630,6 +689,13 @@ const StaticMap = memo((props) => {
                     strokeLinejoin="round"
                     fill="none"
                 />
+                {/* Directional arrowheads at each hop point. Rendered
+                    ABOVE the polyline so the triangle sits on top of
+                    the red stroke (otherwise the stroke would cover
+                    the body of the arrow), but BELOW the start dot
+                    so the "A" marker at the trail origin stays the
+                    visually dominant end-cap. */}
+                {hopArrows}
                 {/* Small filled circle at the trail's start so it's
                     visually distinct from the avatar at the current
                     position. Black dot inside a white halo, sized

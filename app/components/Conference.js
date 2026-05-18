@@ -56,6 +56,21 @@ class Conference extends React.Component {
 			  // componentDidMount so the "Starting conference… Cancel"
 			  // panel only appears if media takes more than 1.5s.
 			  showFallback: false,
+			  // Outgoing-video preview gate. When the user starts
+			  // a conference by tapping the VIDEO button, we
+			  // surface LocalMedia first (camera preview + 9-second
+			  // auto-start countdown — same flow AudioCallBox uses
+			  // for an outgoing 1:1 video call) instead of joining
+			  // immediately. `userStartedCall` flips true when the
+			  // user taps the green Start button on the preview OR
+			  // the countdown elapses. Until then mediaPlaying's
+			  // startCallWhenReady is suppressed so the conference
+			  // doesn't auto-join behind the preview. For audio
+			  // conferences (proposedMedia.video === false) the
+			  // flag is irrelevant — there's no preview to gate
+			  // through, mediaPlaying still calls
+			  // startCallWhenReady immediately.
+			  userStartedCall: false,
         }
               
         if (this.props.connection) {
@@ -177,8 +192,39 @@ class Conference extends React.Component {
     }
 
     mediaPlaying() {
+        // For outgoing VIDEO conferences, hold off on joining
+        // until the user confirms from the LocalMedia preview
+        // (Start button or the 9-second auto-start countdown).
+        // The render branch below mounts LocalMedia with
+        // awaitingUserCallStart={true} and the
+        // confirmStartCall handler defined below, exactly the
+        // shape AudioCallBox uses for 1:1 outgoing video.
+        // For AUDIO conferences we skip the preview entirely and
+        // proceed straight to startCallWhenReady — there is no
+        // camera to show off, and an audio-only preview screen
+        // would be a confusing extra step.
+        const isVideo = !!(this.props.proposedMedia && this.props.proposedMedia.video === true);
+        const isReconnect = !!this.state.reconnectingCall;
+        if (isVideo && !isReconnect && !this.state.userStartedCall) {
+            // Wait for confirmStartCall (user tap OR
+            // LocalMedia's auto-start countdown firing).
+            return;
+        }
         this.startCallWhenReady();
     }
+
+    /** Confirmed-start handler routed in from LocalMedia (either
+     *  the green Start button or the 9-second auto-start
+     *  countdown). Flips userStartedCall so subsequent
+     *  mediaPlaying calls / componentDidUpdate paths fall through
+     *  to startCallWhenReady, and kicks it off immediately if
+     *  we're already past the gate. */
+    confirmStartCall = () => {
+        if (this.state.userStartedCall) return;
+        this.setState({userStartedCall: true}, () => {
+            this.startCallWhenReady();
+        });
+    };
 
     canConnect() {
         if (!this.state.localMedia) {
@@ -504,6 +550,22 @@ class Conference extends React.Component {
 						selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
+						// Outgoing-video preview gating — see the
+						// userStartedCall comment in the state
+						// initialiser and the matching props block
+						// in Call.js (line ~1099) for 1:1 calls.
+						// For an outgoing VIDEO conference the user
+						// sees the camera preview + 9-second
+						// auto-start countdown; the conference does
+						// NOT join until confirmStartCall fires.
+						// Reconnect path skips the preview because
+						// the user already confirmed the original
+						// call once. Audio conferences pass
+						// `false` so LocalMedia behaves as it did
+						// before this change (no preview gating,
+						// no countdown).
+						awaitingUserCallStart={media === 'video' && !this.state.userStartedCall && !this.state.reconnectingCall}
+						confirmStartCall={this.confirmStartCall}
                     />
                 );
             }

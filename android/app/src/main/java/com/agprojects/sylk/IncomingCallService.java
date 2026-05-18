@@ -190,7 +190,17 @@ public class IncomingCallService extends Service {
 		return autoanswer != null && autoanswer.contains(from_uri);
 	}	
 
-	private void startRingtone(String from_uri) {
+	private void startRingtone(String from_uri, boolean suppressRingtone) {
+		// App DND told us to deliver the push silently. Skip audio and
+		// vibration entirely; the rest of the incoming-call UX (heads-up
+		// notification, full-screen intent, Telecom hand-off) still runs
+		// in the caller, so the user can see and answer the call —
+		// they just aren't disturbed by sound or buzz.
+		if (suppressRingtone) {
+			SylkLogger.d("[CallSvc] suppress_ringtone=true (app DND, no per-contact bypass) — not ringing");
+			return;
+		}
+
 		// Start vibration if system setting allows
 		vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
 
@@ -491,6 +501,12 @@ public class IncomingCallService extends Service {
 
         boolean phoneLocked = intent.getBooleanExtra("phoneLocked", false);
 
+        // App DND with no per-contact bypass: the FCM handler has decided
+        // this push should be delivered silently. We still want the
+        // notification UI, full-screen intent and Telecom hand-off; we
+        // only want to skip audio and vibration.
+        boolean suppressRingtone = intent.getBooleanExtra("suppress_ringtone", false);
+
 		// Determine the caller name
 		String callerName;
 		
@@ -584,7 +600,7 @@ public class IncomingCallService extends Service {
 		if ("incoming_session".equals(event) || "incoming_conference_request".equals(event)) {
 
 			createCallNotificationChannel();
-            startRingtone(from_uri);
+            startRingtone(from_uri, suppressRingtone);
 
 			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
     			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, notificationId, 20);

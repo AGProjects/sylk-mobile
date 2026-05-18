@@ -38,6 +38,11 @@ class ConferenceHeader extends React.Component {
             remoteUri: this.props.remoteUri,
             menuVisible: false,
             audioMenuVisible: false,
+            // Nested-submenu visibility for the audio-view Video...
+            // entry. Only used when this.props.audioOnly is true —
+            // in video view, Video... opens the camera picker
+            // overlay anchored to the call-bar instead.
+            videoMenuVisible: false,
             chatView: this.props.chatView,
             audioView: this.props.audioView,
             isLandscape: this.props.isLandscape,
@@ -259,6 +264,36 @@ class ConferenceHeader extends React.Component {
             case 'myVideo':
                 this.props.toggleMyVideo();
                 break;
+            case 'videoPicker':
+                // Open the camera picker overlay that ConferenceBox
+                // already renders for the call-button-bar video
+                // button (renderVideoPicker → setState
+                // videoPickerVisible). Wired via the
+                // openVideoPicker prop so the kebab and the bar's
+                // button surface the SAME panel (Front Camera /
+                // Back Camera / Stop video / Start video / Hide
+                // mirror / Show mirror / Aspect ratio). Avoids
+                // re-implementing the camera picker as a Paper
+                // Menu nested under the kebab.
+                if (typeof this.props.openVideoPicker === 'function') {
+                    this.props.openVideoPicker();
+                }
+                break;
+            case 'audioPicker':
+                // Open the audio device picker overlay that
+                // ConferenceBox already renders for the call-button-
+                // bar audio device button (renderAudioDevicePicker
+                // → setState audioDevicePickerVisible). Same
+                // pattern as videoPicker above: kebab and bar
+                // dispatch to one shared picker surface so users
+                // see the same list of devices (speaker /
+                // bluetooth / earpiece / wired) regardless of
+                // entry point. Replaces the previous nested
+                // Paper Menu submenu inside the kebab.
+                if (typeof this.props.openAudioPicker === 'function') {
+                    this.props.openAudioPicker();
+                }
+                break;
             case 'aspectRatio':
                 // Driven by ConferenceBox.toggleAspectRatio (set
                 // up on the matching prop in render()). Mirrors
@@ -447,8 +482,19 @@ class ConferenceHeader extends React.Component {
 				    toggleViewMode — same gate as the kebab item. */}
 				{typeof this.props.toggleViewMode === 'function' ? (
 				  (() => {
-				    const _fromIcon = this.props.audioOnly ? 'volume-high' : 'apps';
-				    const _toIcon = this.props.audioOnly ? 'apps' : 'volume-high';
+				    // Audio view ↔ Video view transition pair.
+				    // Video side now uses the classic `video`
+				    // camcorder glyph instead of `apps` (the 3×3
+				    // grid-of-dots). `apps` reads as "app drawer"
+				    // / "launcher" to most users and didn't
+				    // communicate "video view" — the camcorder
+				    // glyph maps directly to what the user is
+				    // toggling. Matches the icon already used by
+				    // the kebab-menu twin of this control just
+				    // below. The audio side stays `volume-high`,
+				    // unchanged.
+				    const _fromIcon = this.props.audioOnly ? 'volume-high' : 'video';
+				    const _toIcon = this.props.audioOnly ? 'video' : 'volume-high';
 				    const _a11y = this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view';
 				    return (
 				      <TouchableOpacity
@@ -496,12 +542,39 @@ class ConferenceHeader extends React.Component {
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
                     anchor={
-                    <View style={{ marginLeft: 30}}>
+                    /* marginLeft trimmed from 30 → 4. The kebab
+                       used to sit a noticeable gap to the right
+                       of the audio↔video transition button, which
+                       looked like dead space inside the header.
+                       Tighter spacing keeps the two right-side
+                       controls visually paired without crowding —
+                       Appbar.Action already adds its own internal
+                       padding so we only need a few px of nudge
+                       between them. */
+                    <View style={{ marginLeft: 4}}>
                         <Appbar.Action
                             ref={this.menuRef}
                             color="white"
                             icon="menu"
-                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                            /* Kebab toggle. Tapping closes any open
+                               device picker overlay (audio / video)
+                               BEFORE toggling the kebab itself, so a
+                               second tap on the kebab feels like a
+                               "reset to default": picker collapses,
+                               kebab opens or closes. Without this,
+                               a picker opened from a previous kebab
+                               session would stay visible behind the
+                               freshly-opened kebab and crowd the
+                               screen. closeMediaPickers is wired by
+                               ConferenceBox to clear both
+                               audioDevicePickerVisible and
+                               videoPickerVisible in one setState. */
+                            onPress={() => {
+                                if (typeof this.props.closeMediaPickers === 'function') {
+                                    this.props.closeMediaPickers();
+                                }
+                                this.setState({menuVisible: !this.state.menuVisible});
+                            }}
                         />
                         </View>
                     }
@@ -522,28 +595,23 @@ class ConferenceHeader extends React.Component {
                         that tile — but harmless. Always shown so
                         the user can suppress their own preview
                         from either layout. */}
-                    <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
-                    {/* Aspect ratio — same toggle VideoBox's
-                        kebab offers for 1:1 calls. Flips between
-                        'cover' (fill the tile, possibly cropping)
-                        and 'contain' (fit the whole frame,
-                        letterbox bars). Only relevant in video
-                        view (audio view has no video tiles to
-                        re-fit). */}
-                    {!this.props.audioOnly && typeof this.props.toggleAspectRatio === 'function' ? (
-                    <Menu.Item onPress={() => this.handleMenu('aspectRatio')} icon="aspect-ratio" title="Toggle aspect ratio" />
-                    ) : null}
-                    {/* View-mode toggle. Independent of wire-level
-                        media composition (props.audioOnly here is
-                        the VIEW signal, not the wire capability —
-                        ConferenceBox passes audioOnlyView, see its
-                        viewMode comment). Title reflects the
-                        destination state so the user always sees
-                        the action they're about to take. Only
-                        rendered when ConferenceBox actually wired
-                        the handler, so we don't surface a no-op
-                        on surfaces that haven't adopted the
-                        toggle yet. */}
+                    {/* Media-controls group: a single bounded
+                        block of view / audio / video items, fenced
+                        above and below by Dividers so it reads as
+                        one cluster inside the longer kebab list.
+                        Order:
+                          1. Switch to xxx view (audio ↔ video layout)
+                          2. Audio... (opens the audio device picker
+                             overlay anchored to the call-bar button)
+                          3. Video... (opens the camera picker overlay
+                             — front/back camera, Stop/Start video,
+                             Hide/Show mirror, Aspect ratio)
+                        Hide-mirror and Toggle-aspect-ratio used to
+                        live as standalone kebab items here; both
+                        have been folded into the Video... picker so
+                        every video-tile affordance is under one
+                        entry point. */}
+                    <Divider />
                     {typeof this.props.toggleViewMode === 'function' ? (
                     <Menu.Item
                         onPress={() => this.handleMenu('viewMode')}
@@ -552,49 +620,122 @@ class ConferenceHeader extends React.Component {
                     />
                     ) : null}
 
-                    {/* Audio device picker — sits AFTER the
-                        view-mode toggle (per request). The two
-                        items are conceptually related ("change
-                        how this call is heard / seen") so they
-                        cluster together; keeping the device
-                        picker immediately below the view toggle
-                        means a single open of the kebab covers
-                        both audio routing and video/audio
-                        layout in one glance. */}
-					<Menu
-						visible={this.state.audioMenuVisible}
-						onDismiss={() => this.setState({audioMenuVisible: false})}
-						anchor={
-							<Menu.Item
-								title="Audio device"
-								icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
-								onPress={() => this.setState({audioMenuVisible: true})}
-							/>
-						}
-					>
-						{this.props.availableAudioDevices.map(device => {
-							const isSelected = device === this.props.selectedAudioDevice;
-							const deviceTitle = utils.availableAudioDeviceNames[device] || device;
+                    {/* Audio... — in VIDEO view the call-button-bar
+                        carries an audio device button, so the kebab
+                        item just opens that bar's picker overlay
+                        (one shared visible surface).
+                        In AUDIO view there's no bar button to anchor
+                        to, so we fall back to the classic nested
+                        Paper Menu pattern — devices render as
+                        inline rows inside the kebab. */}
+                    {this.props.audioOnly ? (
+                        <Menu
+                            visible={this.state.audioMenuVisible}
+                            onDismiss={() => this.setState({audioMenuVisible: false})}
+                            anchor={
+                                <Menu.Item
+                                    title="Audio..."
+                                    icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
+                                    onPress={() => this.setState({audioMenuVisible: true})}
+                                />
+                            }
+                        >
+                            {(this.props.availableAudioDevices || []).map(device => {
+                                const isSelected = device === this.props.selectedAudioDevice;
+                                const deviceTitle = (utils.availableAudioDeviceNames && utils.availableAudioDeviceNames[device]) || device;
+                                return (
+                                    <Menu.Item
+                                        key={device}
+                                        icon={utils.availableAudioDevicesIconsMap[device] || 'volume-high'}
+                                        title={isSelected ? `✓ ${deviceTitle}` : deviceTitle}
+                                        onPress={() => {
+                                            this.props.selectAudioDevice(device);
+                                            this.setState({audioMenuVisible: false, menuVisible: false});
+                                        }}
+                                    />
+                                );
+                            })}
+                        </Menu>
+                    ) : (
+                        <Menu.Item
+                            onPress={() => this.handleMenu('audioPicker')}
+                            icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
+                            title="Audio..."
+                        />
+                    )}
 
-							return (
-								<Menu.Item
-									key={device}
-									title={
-										isSelected
-											? `✓ ${deviceTitle}`
-											: deviceTitle
-									}
-									onPress={() => {
-										this.props.selectAudioDevice(device);
-										this.setState({
-											audioMenuVisible: false,
-											menuVisible: false
-										});
-									}}
-								/>
-							);
-						})}
-					</Menu>
+                    {/* Video... — same audio-vs-video-view split as
+                        Audio... above. In video view, defer to the
+                        camera-picker overlay anchored to the call-
+                        bar video button. In audio view there is no
+                        camera-bar button to anchor to, so render a
+                        classic Paper submenu inline. The audio-view
+                        submenu carries only the controls that are
+                        actionable without a live tile in front of
+                        the user: Stop / Start video, Hide / Show
+                        mirror, Aspect ratio. Camera-front /
+                        camera-rear selection is intentionally
+                        omitted from this submenu — switching
+                        cameras while in audio view has no immediate
+                        visual feedback, and the full picker is
+                        still one tap away after switching to
+                        video view. */}
+                    {this.props.audioOnly ? (
+                        <Menu
+                            visible={this.state.videoMenuVisible}
+                            onDismiss={() => this.setState({videoMenuVisible: false})}
+                            anchor={
+                                <Menu.Item
+                                    title="Video..."
+                                    icon="video"
+                                    onPress={() => this.setState({videoMenuVisible: true})}
+                                />
+                            }
+                        >
+                            {typeof this.props.toggleVideoMute === 'function' ? (
+                                <Menu.Item
+                                    icon={this.props.videoMuted ? 'video' : 'video-off'}
+                                    title={this.props.videoMuted ? 'Start video' : 'Stop video'}
+                                    onPress={() => {
+                                        this.props.toggleVideoMute();
+                                        this.setState({videoMenuVisible: false, menuVisible: false});
+                                    }}
+                                />
+                            ) : null}
+                            {typeof this.props.toggleMyVideo === 'function' ? (
+                                <Menu.Item
+                                    icon={this.state.enableMyVideo ? 'eye-off' : 'eye'}
+                                    title={this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror'}
+                                    /* Mirror only makes sense when there's a
+                                       remote tile to see alongside — same
+                                       rule as the camera picker's row in
+                                       ConferenceBox. */
+                                    disabled={!(Array.isArray(this.props.participants) && this.props.participants.length > 0)}
+                                    onPress={() => {
+                                        this.props.toggleMyVideo();
+                                        this.setState({videoMenuVisible: false, menuVisible: false});
+                                    }}
+                                />
+                            ) : null}
+                            {typeof this.props.toggleAspectRatio === 'function' ? (
+                                <Menu.Item
+                                    icon="aspect-ratio"
+                                    title="Toggle aspect ratio"
+                                    onPress={() => {
+                                        this.props.toggleAspectRatio();
+                                        this.setState({videoMenuVisible: false, menuVisible: false});
+                                    }}
+                                />
+                            ) : null}
+                        </Menu>
+                    ) : (
+                        <Menu.Item
+                            onPress={() => this.handleMenu('videoPicker')}
+                            icon="video"
+                            title="Video..."
+                        />
+                    )}
+                    <Divider />
 
                     {/* Extra breathing room above Hangup. Mirrors the
                         CallOverlay layout — the dropdown items are
@@ -636,6 +777,32 @@ ConferenceHeader.propTypes = {
     hangUpFunc: PropTypes.func,
     toggleInviteModal: PropTypes.func,
     inviteToConferenceFunc: PropTypes.func,
+    // Opens the camera-picker overlay (renderVideoPicker on
+    // ConferenceBox) from the kebab's "Video..." item. Same
+    // panel the call-bar video button toggles, so the user sees
+    // a consistent set of camera / mute / mirror / aspect ratio
+    // controls regardless of entry point.
+    openVideoPicker: PropTypes.func,
+    // Opens the audio-device picker overlay
+    // (renderAudioDevicePicker on ConferenceBox) from the kebab's
+    // "Audio..." item. Same panel the call-bar audio device
+    // button toggles.
+    openAudioPicker: PropTypes.func,
+    // Force-closes ALL device picker overlays
+    // (audioDevicePickerVisible + videoPickerVisible) on
+    // ConferenceBox. Invoked by the kebab toggle in the
+    // Appbar.Action above so a second tap on the kebab clears
+    // any picker the user opened from the previous tap.
+    closeMediaPickers: PropTypes.func,
+    // Video-mute state and toggle, used by the audio-view Video...
+    // submenu's "Stop video / Start video" row. ConferenceBox
+    // wires these alongside enableMyVideo / toggleMyVideo.
+    videoMuted: PropTypes.bool,
+    toggleVideoMute: PropTypes.func,
+    // Current remote participants list. Used by the Video...
+    // submenu to disable the Hide/Show mirror row when no
+    // remote tile exists to view alongside.
+    participants: PropTypes.array,
     // Flips ConferenceBox.viewMode between 'audio' and 'video'.
     // Wired by ConferenceBox; absent on surfaces that haven't
     // adopted the toggle (in which case the menu item is hidden).

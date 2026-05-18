@@ -445,12 +445,14 @@
         return NO;
     }
 
-    // Do Not Disturb
-    if (isDnd) {
-        [SylkLogger log:@"[app] DND active, rejecting call from %@", fromUri];
-        [self showRejectedCallNotification:fromUri reason:@"Do not disturb now"];
-        return NO;
-    }
+    // App DND (privacy.dnd in accounts.settings JSON) used to reject
+    // the call here. It no longer does. The caller is expected to
+    // re-read the same flag via isAppDndOn: and decide whether to
+    // suppress the ringtone — app DND now means "deliver the push
+    // silently", not "drop it". (isDnd is intentionally still read
+    // above so the log line continues to show the current value for
+    // diagnostics.)
+    (void)isDnd;
 
     if (!isActive) {
         [SylkLogger log:@"[app] Account %@ is not active, rejecting call", account];
@@ -458,6 +460,65 @@
     }
 
     return YES;
+}
+
+/**
+ * Read the in-app DND flag (privacy.dnd in accounts.settings JSON)
+ * for the given account. Returns NO if the row is missing, the
+ * JSON is malformed, the DB is locked, or anything else goes wrong
+ * — same fail-open posture as isAccountActive. Mirrors exactly the
+ * read isAccountActive does so the two paths can't disagree.
+ */
+- (BOOL)isAppDndOn:(NSString *)account {
+    if (!account || account.length == 0) return NO;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dbPath = [self sylkDatabasePath];
+    if (!dbPath || ![fm fileExistsAtPath:dbPath]) return NO;
+
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    BOOL dnd = NO;
+
+    @try {
+        if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
+            [SylkLogger log:@"[app] isAppDndOn: failed to open DB (failing OFF)"];
+            return NO;
+        }
+
+        const char *sql = "SELECT settings FROM accounts WHERE account = ?";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+            [SylkLogger log:@"[app] isAppDndOn: prepare failed (failing OFF) — %s",
+                  sqlite3_errmsg(db) ?: "unknown"];
+            return NO;
+        }
+
+        sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *settingsRaw = sqlite3_column_text(stmt, 0);
+            if (settingsRaw) {
+                NSString *settingsText = [NSString stringWithUTF8String:(const char *)settingsRaw];
+                NSData *data = [settingsText dataUsingEncoding:NSUTF8StringEncoding];
+                NSError *err = nil;
+                id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
+                if (!err && [parsed isKindOfClass:[NSDictionary class]]) {
+                    NSDictionary *privacy = ((NSDictionary *)parsed)[@"privacy"];
+                    if ([privacy isKindOfClass:[NSDictionary class]]) {
+                        dnd = [privacy[@"dnd"] boolValue];
+                    }
+                }
+            }
+        }
+    } @catch (NSException *ex) {
+        [SylkLogger log:@"[app] isAppDndOn: read failed (failing OFF) — %@", ex.reason];
+        return NO;
+    } @finally {
+        if (stmt) sqlite3_finalize(stmt);
+        if (db) sqlite3_close(db);
+    }
+
+    return dnd;
 }
 
 
@@ -855,11 +916,44 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     }
 
     BOOL shouldScheduleAutoAnswer = autoAnswer && [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
-    
+
     if (autoAnswer && [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
         [SylkLogger log:@"[app] Cannot auto-answer if the app is not active"];
     }
-    
+
+    // App DND (privacy.dnd, the bell on the navbar) — soft gate:
+    // let the push through but tell the JS side to skip the ringtone.
+    // The CallKit hand-off still happens, so the call is visible and
+    // answerable; only the in-app ring (the JS-side incoming-call UI
+    // sound) is suppressed. Contacts tagged bypassdnd override and
+    // ring normally. Mirrors the Android IncomingCallService
+    // suppress_ringtone gate.
+    //
+    // NB: iOS's CallKit plays the system ringtone for VoIP pushes
+    // and that is not silenceable per-call by a third-party app
+    // (CXProviderConfiguration.ringtoneSound is provider-wide). So
+    // "silent push" on iOS means the JS-side ringer is muted and
+    // the system ringer rings only at whatever level the user has
+    // configured at the OS Focus/Silent layer.
+    BOOL appDnd = [self isAppDndOn:lookupAccount];
+    BOOL bypass = [self canBypassDnd:tags];
+    BOOL suppressRingtone = appDnd && !bypass;
+
+    if (appDnd && bypass) {
+        [SylkLogger log:@"[app] DND bypass for %@ (appDnd=YES)", fromUri];
+    }
+    if (suppressRingtone) {
+        [SylkLogger log:@"[app] App DND on, delivering silent push for %@", fromUri];
+    }
+
+    // Stash the suppress_ringtone hint under the call UUID so the JS
+    // side can pick it up when it wires up the incoming-call UI.
+    if (calluuid.length > 0) {
+        NSString *key = [NSString stringWithFormat:@"suppress_ringtone:%@",
+                         [calluuid lowercaseString]];
+        [[NSUserDefaults standardUserDefaults] setBool:suppressRingtone forKey:key];
+    }
+
     // --- pass payload to RN side ---
     [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
 

@@ -5,8 +5,12 @@
 // legacy bar-chart view.
 //
 //   - One 180° dial with TWO needles:
-//       blue  needle = round-trip time   (ms, 0–1000 scale)
+//       blue  needle = round-trip time   (ms, 0–500 scale)
 //       white needle = packet loss       (%,  0–30 scale)
+//
+//   - The white loss needle is hidden when loss < 1%. Sub-1% loss is
+//     normal jitter on a healthy link; we only render the needle once
+//     loss climbs to something the user could act on.
 //
 //   - Audio codec is rendered inside the dial, between the two needles'
 //     resting positions.
@@ -14,11 +18,23 @@
 //   - Bandwidth (up / down, smoothed over ~15s) is rendered below the
 //     dial in a single line.
 //
-//   - The dial container has a colored border that summarises overall
-//     call quality:
-//        green  if RTT < 100ms AND loss < 2%
-//        red    if loss > 5%   OR  RTT > 400ms
-//        orange otherwise
+//   - The dial has two concentric arcs, each rendered as a fixed
+//     green / orange / red scale (segments at the quality thresholds
+//     of the metric, not the metric's current value):
+//        outer arc = RTT  scale (0..500 ms, equal thirds)
+//        inner arc = loss scale (0..30 %, CODEC-DEPENDENT thresholds)
+//
+//     Loss tolerance varies wildly between codecs, so the inner arc's
+//     green/orange/red boundaries come from a per-codec profile
+//     (see LOSS_PROFILE_BY_CODEC):
+//        Opus       : 0–10 green, 10–20 orange, 20–30 red
+//        PCMA/PCMU  : 0–2  green, 2–10  orange, 10–30 red
+//        G722       : same as PCMA/PCMU
+//
+//     The scale max stays 30% for all codecs so the dial's geometry
+//     is constant — only the colored boundaries shift, which means
+//     the same needle position can read green for Opus and orange or
+//     red for G.711.
 //
 //   - Sized noticeably bigger than NetworkSpeedometer so it fills the
 //     space the old TrafficStats bar chart used to occupy.
@@ -44,7 +60,18 @@ const W  = 180;
 const H  = 110;
 const CX = W / 2;
 const CY = H - 18;
-const R  = W / 2 - 18;
+const R  = W / 2 - 18;       // outer arc radius — RTT lives here
+const R_INNER = R - 7;       // inner arc radius — loss lives here
+                             // (tight gap so the two scales read as a
+                             // pair of stacked rings rather than two
+                             // separate dials)
+
+// Needle-tip offsets. Each needle's tip ends just inside its own
+// arc's stroke so it visually "touches" the ring rather than punching
+// through. With arc strokeWidth 3, the arc occupies ±1.5px of its
+// nominal radius; a 2px inset leaves a hair of clearance.
+const RTT_TIP_OFFSET  = 2;
+const LOSS_TIP_OFFSET = 2;
 
 // Pre-reserved layout footprint of the speedometer's content area
 // (SVG dial + metrics row), independent of margins / padding which
@@ -70,14 +97,26 @@ function arcPath(startDeg, endDeg, radius = R) {
 
 // ---------- colors ----------------------------------------------------------
 
-// Needle / accent colors.
+// Needle / accent colors. Each needle has a fixed identity color
+// (blue = RTT, white = loss); the corresponding numeric readout below
+// the dial uses the SAME color so eye + label match. Quality is
+// communicated by the colored segments of each arc itself — the
+// needle simply rides across the green / orange / red zones.
 const COLOR_RTT      = '#3498db'; // blue
 const COLOR_LOSS     = '#ffffff'; // white
 const COLOR_UPLOAD   = '#3498db'; // blue
 const COLOR_DOWNLOAD = '#ffffff'; // white
 
+// Ring quality palette.
+const COLOR_GREEN    = '#2ecc71';
+const COLOR_ORANGE   = '#e67e22';
+const COLOR_RED      = '#e74c3c';
+
 // Tunable scales — change here if you want more headroom on the dial.
-const RTT_MAX_MS   = 1000;  // 1 s   full deflection
+// RTT pegs at 500ms — the red threshold sits at 350ms (rttColor()
+// below), so the worst-quality zone occupies the rightmost ~30% of
+// the dial. Anything above 500ms parks the needle at full deflection.
+const RTT_MAX_MS   = 500;   // 500ms full deflection
 const LOSS_MAX_PCT = 30;    // 30%   full deflection
 
 // ---------- format helpers --------------------------------------------------
@@ -140,29 +179,91 @@ function buildFeatureTokens(codecMeta) {
     return tokens;
 }
 
-// Ring color summarises call health.
-//   green  if RTT < 200ms AND loss < 2%
-//   red    if loss > 5%   OR  RTT > 350ms
-//   orange otherwise
-function ringColorFor(rtt, loss) {
-    if (loss > 5 || rtt > 350) return '#e74c3c';
-    if (rtt < 200 && loss < 2) return '#2ecc71';
-    return '#e67e22';
+// ---------- RTT scale (codec-independent) -----------------------------------
+//
+// The outer arc is split into three EQUAL 60° segments — green /
+// orange / red, left to right. Thresholds derive from RTT_MAX_MS / 3
+// so segments and band-checks can never drift apart:
+//   RTT  (max 500ms)  → green 0–167, orange 167–333, red 333–500
+const SEG_GREEN_END_DEG  = 60;   // 0°  →  60°  : green
+const SEG_ORANGE_END_DEG = 120;  // 60° → 120°  : orange
+                                 // 120°→ 180°  : red
+
+const RTT_GOOD_MAX  = RTT_MAX_MS / 3;
+const RTT_MID_MAX   = RTT_MAX_MS * 2 / 3;
+
+// ---------- loss scale (per-codec) ------------------------------------------
+//
+// Loss tolerance depends heavily on the audio codec in use:
+//   - Opus has aggressive FEC + PLC and tolerates double-digit loss
+//     before quality collapses (equal-thirds 0/10/20/30 scale).
+//   - G.711 (PCMA / PCMU) and G.722 have no error correction; even
+//     a few percent loss is audible (green ends at 2%, orange ends
+//     at 10%, anything past 10% is red).
+//
+// The scale max stays at 30% for all codecs so the dial geometry is
+// stable; only the colored-segment boundaries (and therefore where
+// the same needle position reads as "green" vs. "red") changes.
+const DEFAULT_LOSS_PROFILE = {
+    good: LOSS_MAX_PCT / 3,       // 10 — equal-third green
+    mid:  LOSS_MAX_PCT * 2 / 3,   // 20 — equal-third orange
+    max:  LOSS_MAX_PCT,           // 30 — full deflection
+};
+const LOSS_PROFILE_BY_CODEC = {
+    OPUS: DEFAULT_LOSS_PROFILE,
+    PCMA: { good: 2, mid: 10, max: LOSS_MAX_PCT },
+    PCMU: { good: 2, mid: 10, max: LOSS_MAX_PCT },
+    G722: { good: 2, mid: 10, max: LOSS_MAX_PCT },
+};
+
+// Normalise a codec name as it appears in stats (e.g. "audio/opus",
+// "audio/PCMU", "G722/8000") to the map key.
+function _normaliseCodecKey(codec) {
+    if (!codec) return '';
+    return codec
+        .toString()
+        .replace(/^audio\//i, '')   // strip "audio/" prefix
+        .replace(/\/.*$/, '')        // strip "/8000" / "/48000" suffix
+        .toUpperCase();
 }
 
-// Per-metric quality colors used for the readout below the dial.
-// Mirrors the same thresholds as the ring but applied to each value
-// individually so the user can see which metric is the offender.
-function rttColor(rtt) {
-    if (rtt > 350) return '#e74c3c';
-    if (rtt < 200) return '#2ecc71';
-    return '#e67e22';
+function lossProfileFor(codec) {
+    return LOSS_PROFILE_BY_CODEC[_normaliseCodecKey(codec)] || DEFAULT_LOSS_PROFILE;
 }
-function lossColor(loss) {
-    if (loss > 5) return '#e74c3c';
-    if (loss < 2) return '#2ecc71';
-    return '#e67e22';
+
+// Map a value to the 0..180° position on the dial.
+function valueToAngle(value, max) {
+    return (Math.min(Math.max(value, 0), max) / max) * 180;
 }
+
+function rttBand(rtt) {
+    if (rtt > RTT_MID_MAX)  return 2; // bad
+    if (rtt < RTT_GOOD_MAX) return 0; // good
+    return 1;                         // mid
+}
+// Loss band depends on the codec — pass the active codec so the
+// per-codec profile is honored. Falls back to DEFAULT_LOSS_PROFILE
+// for unknown codecs.
+function lossBand(loss, codec) {
+    const p = lossProfileFor(codec);
+    if (loss > p.mid)  return 2;
+    if (loss < p.good) return 0;
+    return 1;
+}
+function bandColor(band) {
+    if (band === 2) return COLOR_RED;
+    if (band === 0) return COLOR_GREEN;
+    return COLOR_ORANGE;
+}
+
+// Kept for backwards compatibility with any external import. The
+// in-component drawing no longer calls them — the arc segments are
+// rendered with fixed colors at fixed angular ranges.
+function ringColorFor(rtt, loss, codec) {
+    return bandColor(Math.max(rttBand(rtt), lossBand(loss, codec)));
+}
+function rttColor(rtt)         { return bandColor(rttBand(rtt));          }
+function lossColor(loss, codec) { return bandColor(lossBand(loss, codec)); }
 
 // True once any of the four metrics has reported a non-zero value —
 // used to decide whether to show the placeholder or the live dial,
@@ -323,14 +424,36 @@ export default class AudioSpeedometer extends React.Component {
             ? connection.currentRoundTripTime * 1000
             : 0;
 
-        const lossOf = (rtp) => {
+        // Loss is computed over a sliding 5-second window rather than
+        // the cumulative call totals so the needle reflects RECENT
+        // network conditions, not the whole-call average. A brief
+        // bad patch then recovery will visibly come and go; the
+        // cumulative metric would have averaged a 6% burst down to
+        // 1–2% across the call's lifetime and hidden it from the user.
+        //
+        // We keep a small per-stream ring of (ts, packetsReceived,
+        // packetsLost) samples spanning ~5.5 s and compare the current
+        // sample against the oldest still in the window. Until we have
+        // two samples in the window the loss is reported as 0%.
+        const lossOf = (rtp, key) => {
             if (!rtp) return 0;
             const recv = rtp.packetsReceived || 0;
             const lost = rtp.packetsLost     || 0;
-            const total = recv + lost;
-            return total > 0 ? (lost / total) * 100 : 0;
+            const ts = Date.now();
+            if (!cs.lossHistory) cs.lossHistory = {};
+            if (!cs.lossHistory[key]) cs.lossHistory[key] = [];
+            cs.lossHistory[key].push({ ts, recv, lost });
+            // Keep ~5.5 s of samples so the oldest entry is close to
+            // (but not less than) 5 s ago in steady state.
+            cs.lossHistory[key] = cs.lossHistory[key].filter(s => ts - s.ts <= 5500);
+            const oldest = cs.lossHistory[key][0];
+            if (!oldest || oldest.ts === ts) return 0;
+            const dRecv = recv - oldest.recv;
+            const dLost = lost - oldest.lost;
+            const dTotal = dRecv + dLost;
+            return dTotal > 0 ? (dLost / dTotal) * 100 : 0;
         };
-        const loss = lossOf(audioIn);
+        const loss = lossOf(audioIn, 'aLossIn');
 
         const codecOf = (rtp) =>
             (rtp && (rtp.mimeType || rtp.codec || '')).toString();
@@ -393,7 +516,6 @@ export default class AudioSpeedometer extends React.Component {
         const cleanCodec = (c) =>
             (c || '').replace(/^audio\//i, '').toUpperCase();
         const codec = cleanCodec(this.state.audioCodec || this.props.audioCodec);
-        const ringCol = ringColorFor(rtt, loss);
 
         // Negotiated codec details (channels, clockRate, fmtp flags).
         // Rendered as a small "OPUS · 48k · stereo · FEC · 510k" line
@@ -403,10 +525,24 @@ export default class AudioSpeedometer extends React.Component {
             ? featureTokens.join(' · ')
             : null;
 
+        // Per-codec loss profile (Opus tolerates 10%+ before turning
+        // red; G.711 / G.722 turn red at 10%). Used by ringColorFor()
+        // to band-color the loss side of the single quality ring.
+        const lossProfile = lossProfileFor(codec);
+
+        // Single arc — color reflects the WORSE of the two metrics.
+        // Whichever side is in the higher band (RTT or loss) wins and
+        // pulls the ring toward red.
+        const ringCol = ringColorFor(rtt, loss, codec);
+
         const rttClamped  = Math.min(Math.max(rtt,  0), RTT_MAX_MS);
-        const lossClamped = Math.min(Math.max(loss, 0), LOSS_MAX_PCT);
-        const rttTip  = polar((rttClamped  / RTT_MAX_MS)   * 180, R - 4);
-        const lossTip = polar((lossClamped / LOSS_MAX_PCT) * 180, R - 4);
+        const lossClamped = Math.min(Math.max(loss, 0), lossProfile.max);
+        // Both needles share the same outer arc — each plotted on its
+        // own scale (RTT against RTT_MAX_MS, loss against the codec's
+        // profile max). The user reads "where on the dial" + "what
+        // color is the ring" to know how bad things are.
+        const rttTip  = polar((rttClamped  / RTT_MAX_MS)     * 180, R - RTT_TIP_OFFSET);
+        const lossTip = polar((lossClamped / lossProfile.max) * 180, R - LOSS_TIP_OFFSET);
 
         // Slide-down + fade-in: pinned to a one-shot animation that
         // fires the first time metrics arrive (see componentDidUpdate).
@@ -434,11 +570,15 @@ export default class AudioSpeedometer extends React.Component {
                     collapsable={false}
                 >
                     <G>
-                        {/* Single solid arc whose color summarises overall
-                            call quality. Replaces the rectangular border
-                            we previously drew around the container. */}
+                        {/* Single 180° arc, solid color = worst of
+                            RTT and loss. ringColorFor() picks the
+                            worst band between the two (codec-aware
+                            for loss). Both needles share this one
+                            arc — the white loss needle is hidden
+                            when loss < 1%, leaving the RTT needle
+                            alone on a healthy call. */}
                         <Path
-                            d={arcPath(0, 180)}
+                            d={arcPath(0, 180, R)}
                             stroke={ringCol}
                             strokeWidth={3}
                             fill="none"
@@ -476,21 +616,48 @@ export default class AudioSpeedometer extends React.Component {
                             strokeWidth={2.6}
                             strokeLinecap="round"
                         />
-                        <Line
-                            x1={CX} y1={CY}
-                            x2={lossTip.x} y2={lossTip.y}
-                            stroke={COLOR_LOSS}
-                            strokeWidth={2.6}
-                            strokeLinecap="round"
-                        />
+                        {/* Hide the loss needle entirely when loss < 1%.
+                            Anything in 0–1% is jitter on a healthy link
+                            and a needle pinned hard left was just visual
+                            noise (same rationale as the loss readout
+                            below, which is also gated on loss > 1). */}
+                        {loss >= 1 ? (
+                            <Line
+                                x1={CX} y1={CY}
+                                x2={lossTip.x} y2={lossTip.y}
+                                stroke={COLOR_LOSS}
+                                strokeWidth={2.6}
+                                strokeLinecap="round"
+                            />
+                        ) : null}
                         <Circle cx={CX} cy={CY} r={3.6} fill="#fff" />
                     </G>
                 </Svg>
 
                 <Text style={styles.metricsRow}>
-                    <Text style={{ color: rttColor(rtt),  fontWeight: '700' }}>{rtt.toFixed(0)}ms</Text>
-                    <Text style={{ color: '#ffffff' }}>   </Text>
-                    <Text style={{ color: lossColor(loss), fontWeight: '700' }}>{loss.toFixed(1)}%</Text>
+                    {/* RTT value is colored to match its needle (blue)
+                        so eye + label match at a glance. The overall
+                        "is this good or bad?" question is answered by
+                        the ring color, not by this number. */}
+                    <Text style={{ color: COLOR_RTT, fontWeight: '700' }}>{rtt.toFixed(0)} ms</Text>
+                    {/* Loss readout is hidden when loss ≤ 1% — same
+                        rule as the loss needle above (sub-1% is just
+                        jitter on a healthy link). When shown, the
+                        percentage + the word "loss" makes it clear
+                        what the number means (without a label some
+                        users were mis-reading "%" as bandwidth). */}
+                    {loss > 1 ? (
+                        <>
+                            <Text style={{ color: '#ffffff' }}>   </Text>
+                            {/* Integer percentage. Fractional precision
+                                (".x") wasn't actionable. Math.round
+                                rather than .toFixed(0) so the rounding
+                                is true half-up; .toFixed uses banker's
+                                rounding on some JS engines which
+                                surprised users in the 2.5% case. */}
+                            <Text style={{ color: COLOR_LOSS, fontWeight: '700' }}>{Math.round(loss)}% loss</Text>
+                        </>
+                    ) : null}
                 </Text>
             </Animated.View>
         );

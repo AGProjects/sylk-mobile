@@ -304,14 +304,20 @@ class ContactCard extends Component {
 			}
 	
 	
-	  // Determine title and subtitle
-	  let title = uri.split('@')[0];
-	  
-	  if (contact.name != uri && contact.name) {
-		  title = contact.name;
+	  // Determine title and subtitle.
+	  // If the contact has a display name set, preserve it verbatim —
+	  // just trim surrounding whitespace. Do NOT title-case or otherwise
+	  // mangle it: the user (or the remote party) chose that exact
+	  // capitalization on purpose ("iPhone of John", "AG Projects",
+	  // "j_smith") and we shouldn't rewrite it. Only when we have to
+	  // fall back to the URI local part do we run prettifyName to
+	  // turn 'john.doe' / 'blue_owl' into something readable.
+	  let title;
+	  if (contact.name && contact.name != uri) {
+		  title = contact.name.trim();
+	  } else {
+		  title = prettifyName(uri.split('@')[0]);
 	  }
-	
-		title = prettifyName(title);
 	  // Show the bare phone number (no SIP domain) when the contact's
 	  // URI looks like a tel number, e.g. '+40xxxx@sylk.link' →
 	  // '+40xxxx'. Also keys on the 'tel' tag so contacts saved before
@@ -339,7 +345,10 @@ class ContactCard extends Component {
 		// still see at a glance that it's a conference, since
 		// the subtitle further confirms it).
 		if (contact.name && contact.name !== uri) {
-			title = prettifyName(contact.name);
+			// Display name set on a conference room: respect it
+			// exactly as the user typed it in EditConferenceModal,
+			// just trim stray whitespace. No title-casing.
+			title = contact.name.trim();
 		} else {
 			title = 'Room ' + uri.split('@')[0];
 		}

@@ -829,7 +829,12 @@ const getTotalPrettyStorage = (entity) => {
 							    onValueChange={() => toggleTag(tagKey)}
 							    label={isDisabled ? 'Read receipts disabled for account' : info.description}
 							    disabled={isDisabled}
-							    style={[styles.checkBoxRow, {marginBottom: Platform.OS === 'ios' ? 5 : 0, opacity: rowOpacity}]}
+							    // PlatformToggle now provides its own
+							    // vertical breathing room — the old
+							    // per-platform marginBottom existed to
+							    // patch the iOS-pill / Android-Checkbox
+							    // split that no longer exists.
+							    style={{opacity: rowOpacity}}
 							  />
 							);
 						  })}

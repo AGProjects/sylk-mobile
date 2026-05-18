@@ -42,8 +42,24 @@ import ConferenceMatrixParticipant from './ConferenceMatrixParticipant';
 import ConferenceParticipantSelf from './ConferenceParticipantSelf';
 import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
 import ConferenceAudioParticipant from './ConferenceAudioParticipant';
-import {renderBubble } from './ContactsListBox';
+
+// QoS instrumentation — see qos/qos-stats.js and qos/README.md.
+// Gated on __DEV__ so production builds skip the bridge cost entirely.
+import {
+    startQosLogging as _startQosLogging,
+    stopQosLogging  as _stopQosLogging,
+} from '../../qos/qos-stats';
+const startQosLogging = __DEV__ ? _startQosLogging : () => {};
+const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
+// Note: `ContactsListBox` does NOT export `renderBubble` as a named
+// symbol — it lives as a class method on the component. The old
+// `import { renderBubble } from './ContactsListBox'` line was
+// resolving to `undefined`, which is why GiftedChat in this file
+// fell back to its narrow default Bubble (the "squeezed file
+// upload" symptom). The local renderBubble method defined inside
+// this component now handles the wrapping; no import needed.
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
+import UpgradeVideoModal from './UpgradeVideoModal';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 import InCallManager from 'react-native-incall-manager';
 
@@ -157,6 +173,18 @@ class ConferenceBox extends Component {
         this.lastVideoActivity = new Map();
 
         this.sampleInterval = 1;
+
+        // One-shot latch — set true the first time getConnectionStats
+        // observes inbound video bytes from any remote participant
+        // while we're in audio view. When that happens we surface
+        // the UpgradeVideoModal so the user can choose to start
+        // their own camera (Accept) or stay in audio (Cancel).
+        // Either path flips the latch true; subsequent video
+        // starts / stops are the user's responsibility via the
+        // kebab. Lives on the instance (not state) because it's a
+        // one-time operational signal — its truthiness gates the
+        // detector, not any rendered output.
+        this._autoEscalatedToVideo = false;
 
         // Per-participant VU-meter audio levels (0..1). Keyed by
         // participant id for remote participants and by the literal
@@ -341,11 +369,33 @@ class ConferenceBox extends Component {
 			// so an audio call opens in audio view and a video call
 			// opens in video view (existing behaviour). After that
 			// the user toggles freely via the kebab menu — even an
-			// audio-only call can be viewed in 'video' layout
-			// (empty grid, but the layout the user prefers and the
-			// one that's ready if someone escalates to video
-			// mid-call).
-			viewMode: this.props.audioOnly ? 'audio' : 'video',
+			// All conference joins now START in 'audio' view —
+			// even outgoing calls that the user opted to bring up
+			// with video. Rationale: audio view is calmer, has
+			// no flashing camera tile grid, and avoids the
+			// "joined into a noisy mosaic" feeling for invitees.
+			// The auto-escalate guard inside getConnectionStats
+			// flips to 'video' ONCE when any remote participant
+			// is detected sending video — see this._autoEscalatedToVideo
+			// for the one-shot latch. Users who never see remote
+			// video stay in audio view and can manually switch via
+			// the kebab. Users who started a call expecting video
+			// land in audio for the first tick or two, then
+			// auto-promote as soon as their own / a peer's video
+			// frames begin to flow.
+			viewMode: 'audio',
+			// "Start your camera?" prompt shown when the first
+			// remote participant sends video (see _autoEscalatedToVideo
+			// + the inbound-video branch in getConnectionStats).
+			// Uses the existing UpgradeVideoModal so the prompt
+			// matches the one shown when a peer escalates a 1:1
+			// audio call to video — same green Accept / red Cancel
+			// IconButtons. cameraPromptRemoteUri carries the URI
+			// of the first remote that triggered the prompt so
+			// the dialog can name them ("alice@…  wants to add
+			// video to this call").
+			cameraPromptVisible: false,
+			cameraPromptRemoteUri: '',
 			// Free-drag position for the audio-view self-PIP
 			// (renders only when state.videoEnabled). null = use
 			// the default bottom-right placement; once the user
@@ -552,6 +602,14 @@ class ConferenceBox extends Component {
         // regardless of whether InCallManager.start() has run.
         try { InCallManager.setKeepScreenOn(true); } catch (e) { /* best effort */ }
 
+        // [qos] — start the QoS sampler against the conference's own
+        // PeerConnection. Mirrors the AudioCallBox integration; emits
+        // [qos] CONNECT / STATS / DISCONNECT into metro.log so
+        // qos/qos.sh and qos/qos-probe.py can pick it up.
+        if (this.props.call && this.props.call._pc) {
+            startQosLogging(this.props.call._pc);
+        }
+
         for (let p of this.state.participants) {
             p.on('stateChanged', this.onParticipantStateChanged);
             p.attach();
@@ -632,6 +690,42 @@ class ConferenceBox extends Component {
         // down. Counterpart to the setKeepScreenOn(true) in
         // componentDidMount.
         try { InCallManager.setKeepScreenOn(false); } catch (e) { /* best effort */ }
+
+        // Restore system chrome on the way out.
+        //
+        // fullScreenTimer() and toggleFullScreen() drive the device
+        // into immersive mode (StatusBar.setHidden(true) +
+        // Immersive.on() on Android) so the video matrix gets a
+        // clean canvas. The overlay timer in particular fires
+        // automatically after 15s of inactivity, so by the time a
+        // remote hangs up — or the local user hangs up via the OS
+        // call notification, a hardware key, CallKit, or any path
+        // that skips toggleFullScreen() — the conference UI is
+        // almost always sitting in immersive state. When the
+        // component unmounts, that state never gets cleared and
+        // Android keeps both the system bar and the navigation bar
+        // hidden, dropping the user back to the ready screen with
+        // no chrome until they swipe from the edge.
+        //
+        // Reset unconditionally here. StatusBar.setHidden(false) is
+        // a no-op if the bar is already showing; Immersive.off() is
+        // guarded with try/catch because the native side throws on
+        // platforms where it never armed. We also call
+        // disableFullScreen() so the parent's `fullscreen` state
+        // flag mirrors the native truth (the parent already calls
+        // it from hangupCall, but going through the prop here keeps
+        // the unmount path self-consistent for every termination
+        // route).
+        try { StatusBar.setHidden(false, 'fade'); } catch (e) { /* best effort */ }
+        if (Platform.OS === 'android') {
+            try { Immersive.off(); } catch (e) { /* best effort */ }
+            if (typeof this.props.disableFullScreen === 'function') {
+                try { this.props.disableFullScreen(); } catch (e) { /* best effort */ }
+            }
+        }
+
+        // [qos] — stop the sampler started in componentDidMount.
+        stopQosLogging();
 
         clearTimeout(this.overlayTimer);
         clearTimeout(this.participantsTimer);
@@ -897,7 +991,10 @@ class ConferenceBox extends Component {
               <TouchableOpacity onPress={this._launchCamera} onLongPress={this._launchImageLibrary}>
                 <Icon
                   style={chatRightActionsContainer}
-                  type="font-awesome"
+                  // Reverted to the original `camera` glyph — this
+                  // composer button takes a still SNAPSHOT for the
+                  // conference chat message, not a video clip. See
+                  // the matching note in ContactsListBox.js.
                   name="camera"
                   size={20}
                   color='gray'
@@ -924,13 +1021,63 @@ class ConferenceBox extends Component {
         );
     };
 
+    /** Conference chat bubble renderer.
+     *
+     *  The previous `import { renderBubble } from './ContactsListBox';`
+     *  was broken: `ContactsListBox.renderBubble` is a class method
+     *  bound to that component's state, not a named export, so the
+     *  import resolved to `undefined`. GiftedChat then fell back to
+     *  its default <Bubble> wrapper, which caps its content at a
+     *  relatively narrow maxWidth and which doesn't expand to fit
+     *  file-transfer rows. The "squeezed" file-upload bubbles the
+     *  user reported are exactly this default — once the import is
+     *  undefined, the bubble's maxWidth wins.
+     *
+     *  Local renderer: a thin wrapper around GiftedChat's Bubble
+     *  with a generous maxWidth on both sides (image / file
+     *  attachment bubbles benefit from breathing room — the
+     *  thumbnail width in renderMessageImage above already wants
+     *  to fill ~98% of the bubble). Visual style — colours, time
+     *  text — is left to GiftedChat's defaults; this isn't trying
+     *  to be the full ContactsListBox / ChatBubble experience,
+     *  just the same layout horsepower so attachments stop being
+     *  cramped. */
+    renderBubble = (props) => {
+        const w = Dimensions.get('window').width;
+        // Cap at 88% of the viewport (vs GiftedChat's default ~60-80%).
+        // Same value on both `left` (incoming) and `right` (outgoing)
+        // so file rows stretch consistently regardless of direction.
+        const max = Math.round(w * 0.88);
+        return (
+            <Bubble
+                {...props}
+                wrapperStyle={{
+                    left:  { maxWidth: max },
+                    right: { maxWidth: max },
+                }}
+            />
+        );
+    };
+
     renderMessageImage =(props) => {
+        // Concrete pixel width — `width: '98%'` collapsed to a tiny
+        // ~50px sliver in conference chat, because MessageImage's
+        // parent is GiftedChat's default Bubble whose intrinsic
+        // content width is driven by its OTHER text children
+        // (e.g. the file-name text, which is short). Percentages
+        // resolve against the smallest parent. Using a fixed pixel
+        // width pinned to ~80% of the device viewport gives the
+        // photo a predictable, large display area that matches what
+        // the 1:1 chat path renders. We also drop the height to
+        // the same value so the cover-resize keeps a square-ish
+        // aspect — matches the 1:1 chat behaviour.
+        const w = Math.round(Dimensions.get('window').width * 0.8);
         return (
           <MessageImage
             {...props}
             imageStyle={{
-              width: '98%',
-              height: Dimensions.get('window').width,
+              width: w,
+              height: w,
               resizeMode: 'cover'
             }}
           />
@@ -1122,8 +1269,22 @@ class ConferenceBox extends Component {
         msg.metadata = file_transfer;
 
         RNFS.readFile(localPath, 'base64').then(res => {
+            // Persist the now-fully-populated message (metadata
+            // including url, local_url, transfer_id, progress=0)
+            // to the conference chat history table.
+            //
+            // NOTE: do NOT GiftedChat.append the same msg into
+            // renderMessages again here. The message was already
+            // added to renderMessages above (line ~1113, right
+            // after constructing the initial msg), and msg.metadata
+            // was then mutated in place (line ~1122). React state
+            // holds the same object reference, so the updated
+            // metadata is already visible to the next render.
+            // Appending again resulted in a duplicate bubble for
+            // every uploaded file — the "double message" the user
+            // reported. Removing the second append leaves a single
+            // bubble whose progress animates 0→100 as expected.
             this.saveConferenceMessage(this.state.remoteUri, msg);
-            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg])});
 
             var oReq = new XMLHttpRequest();
             oReq.addEventListener("load", this.transferComplete);
@@ -1581,17 +1742,28 @@ class ConferenceBox extends Component {
     lookupContact(uri, displayName) {
         let photo;
         let username = uri.split('@')[0];
-        
-        if (!displayName) {        
-			displayName = username;
-		}
 
+        // Prefer the saved contact's name when one exists locally —
+        // that's what the rest of the UI (contact list, navbar) uses.
         let contact = this.props.lookupContact(uri);
-        if (contact) {
-			displayName = contact.name;
+        if (contact && contact.name) {
+            displayName = contact.name;
         }
 
-        const c = {photo: photo, displayName: toTitleCase(displayName)};
+        // If a display name was provided (by the caller or pulled from
+        // a saved contact above), preserve it exactly — just trim
+        // surrounding whitespace. Don't title-case or otherwise rewrite
+        // it; the user picked that capitalization deliberately. Only
+        // title-case the URI local-part fallback, where we're synthesizing
+        // a label from a machine identifier.
+        let finalName;
+        if (displayName) {
+            finalName = String(displayName).trim();
+        } else {
+            finalName = toTitleCase(username);
+        }
+
+        const c = {photo: photo, displayName: finalName};
         this.foundContacts.set(uri, c);
     }
 
@@ -1862,6 +2034,54 @@ class ConferenceBox extends Component {
 											this.lastVideoActivity.set(p.id, Date.now());
 										}
 										this.videoBytesReceived.set(p.id, bytesReceived);
+										// One-shot "start your camera?" prompt.
+										// The conference always JOINS in audio
+										// mode (see constructor). The first
+										// time we observe a REMOTE participant
+										// actually sending video bytes, surface
+										// the UpgradeVideoModal so the user can
+										// choose to start their own camera
+										// (Accept) or stay audio-only (Cancel).
+										// Either branch flips the latch so the
+										// prompt only fires once per session;
+										// subsequent video starts/stops are
+										// the user's responsibility via the
+										// kebab. Gated on:
+										//   • `identity !== 'myself'` — our
+										//     own outbound stream doesn't
+										//     count; we only prompt when a
+										//     PEER has video.
+										//   • `bytesReceived > 0` — guards
+										//     against the first-sight init
+										//     above where we set lastVideo-
+										//     Activity for a track that has
+										//     not delivered a byte yet.
+										//   • `!_autoEscalatedToVideo` —
+										//     latch fires exactly once per
+										//     session.
+										//   • `viewMode === 'audio'` — never
+										//     prompt if the user has already
+										//     moved to video on their own.
+										//   • `!this.state.cameraPromptVisible`
+										//     — defensive guard against a
+										//     burst of stats updates while the
+										//     prompt is already up.
+										if (!this._autoEscalatedToVideo
+												&& identity !== 'myself'
+												&& bytesReceived > 0
+												&& this.state.viewMode === 'audio'
+												&& !this.state.cameraPromptVisible) {
+											this._autoEscalatedToVideo = true;
+											console.log('[conference] prompting to start camera —',
+												'remote', identity, 'sending video');
+											// Defer the setState one tick so
+											// we don't mutate state in the
+											// middle of the stats forEach.
+											setTimeout(() => this.setState({
+												cameraPromptVisible: true,
+												cameraPromptRemoteUri: identity,
+											}), 0);
+										}
 									}
 									// console.log(`[${identity}] ${kind} inbound speed: ${speed} kbps`);
 								}
@@ -2747,6 +2967,30 @@ class ConferenceBox extends Component {
     // media composition (this.props.audioOnly) — see the viewMode
     // comment in the constructor for the rationale. Used by the
     // ConferenceHeader kebab "Switch to audio/video view" item.
+    /** Accept handler for the "Start your camera?" prompt
+     *  (UpgradeVideoModal). User said yes — flip the view to
+     *  video, which will also resume the camera track if it was
+     *  suppressed. setState clears the prompt at the same time so
+     *  the modal doesn't linger over the new view. */
+    onCameraPromptAccept = () => {
+        this.setState({cameraPromptVisible: false, cameraPromptRemoteUri: ''}, () => {
+            if (this.state.viewMode === 'audio') {
+                this.toggleViewMode();
+            }
+        });
+    };
+
+    /** Reject handler for the "Start your camera?" prompt.
+     *  User chose to stay audio-only. Just hide the modal —
+     *  the auto-escalate latch (_autoEscalatedToVideo) was
+     *  flipped true at the time we surfaced the prompt, so we
+     *  won't ask again this session. The user can still flip to
+     *  video manually any time via the kebab's "Switch to video
+     *  view" item. */
+    onCameraPromptReject = () => {
+        this.setState({cameraPromptVisible: false, cameraPromptRemoteUri: ''});
+    };
+
     toggleViewMode() {
         const nextMode = this.state.viewMode === 'audio' ? 'video' : 'audio';
 
@@ -3099,7 +3343,10 @@ class ConferenceBox extends Component {
         //     speaker grid doesn't have.
         const facing = this.state.cameraFacing || 'front';
         const muted = this.state.videoMuted;
-        const mainIcon = facing === 'front' ? 'camera-front' : 'camera-rear';
+        // Stable `video` glyph on the call-bar button — see the
+        // matching note in VideoBox.js. The picker rows below
+        // still use distinct camera-front / camera-rear icons.
+        const mainIcon = 'video';
 
         const cameraOptions = [
             {key: 'front', icon: 'camera-front', label: 'Front Camera', facing: 'front'},
@@ -3115,16 +3362,78 @@ class ConferenceBox extends Component {
 
         const items = [
             ...cameraOptions,
-            ...(muted ? [] : [{
+            ...(muted ? [{
+                // Symmetric "Start video" entry while muted.
+                // Re-uses _resumeVideo (the existing helper that
+                // flips state.videoMuted + re-enables the local
+                // track). Also clears videoMutedbyUser so a
+                // future inFocus transition doesn't auto-mute the
+                // track again. See the matching rename + add in
+                // VideoBox.js / LocalMedia.js.
+                //
+                // Side effect: if the self-PIP ("mirror") is
+                // currently hidden, force it back on as part of
+                // re-enabling video. Same UX rationale as in
+                // VideoBox.toggleVideoMute — a user who stopped
+                // video AND hid the mirror has no on-screen
+                // feedback that the camera is actually running
+                // when they tap Start video. Bringing the
+                // mirror back avoids the "did I really turn it
+                // on?" moment; users who explicitly want the
+                // mirror hidden can re-hide it after with Hide
+                // mirror.
+                key: 'unmute',
+                icon: 'video',
+                label: 'Start video',
+                onPress: () => {
+                    const next = {videoMutedbyUser: false};
+                    if (this.state.enableMyVideo === false) {
+                        next.enableMyVideo = true;
+                    }
+                    this.setState(next);
+                    this._resumeVideo();
+                }
+            }] : [{
                 key: 'mute',
                 icon: 'video-off',
-                label: 'Mute Camera',
+                // Renamed from "Mute Camera" → "Stop video" for
+                // consistency with the other call surfaces.
+                label: 'Stop video',
                 // Re-uses the existing instance method that flips
                 // videoMutedbyUser AND mutes the track — calling it
                 // without an event arg is safe (it only does
                 // preventDefault() on a truthy event).
                 onPress: () => this.muteVideo()
             }]),
+            // Hide / Show mirror — toggles the local self-PIP
+            // (state.enableMyVideo). Matches the same row
+            // VideoBox.renderVideoPicker exposes; using the
+            // "mirror" verb here aligns with the kebab-menu /
+            // ConferenceHeader twin item that already uses the
+            // same phrasing. Eye icon flips so the row visually
+            // reflects the next-action state.
+            //
+            // DISABLED when no remote participants are present:
+            // the local self-PIP is the user's own video, and
+            // hiding it / showing it is only meaningful when
+            // there's a remote tile to compare with or look at
+            // alongside. In an empty room there is no "other
+            // view" — toggling the mirror would leave a blank
+            // screen, which confuses users. Greyed out + ignore
+            // taps via `disabled`; once another participant
+            // joins, the row activates automatically on the
+            // next render.
+            (() => {
+                const hasOthers = Array.isArray(this.state.participants)
+                    && this.state.participants.length > 0;
+                return {
+                    key: 'myself',
+                    icon: this.state.enableMyVideo ? 'eye-off' : 'eye',
+                    label: this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror',
+                    disabled: !hasOthers,
+                    onPress: () => this.toggleMyVideo()
+                };
+            })(),
             // Aspect ratio toggle inside the camera picker —
             // matches the same row VideoBox.renderVideoPicker
             // offers. Flips the rendered objectFit on every
@@ -3269,7 +3578,18 @@ class ConferenceBox extends Component {
                         {items.map(item => (
                             <TouchableOpacity
                                 key={item.key}
+                                /* Respect item.disabled — required so
+                                   the Hide/Show mirror row goes inert
+                                   in an empty conference room (no
+                                   remote participants → toggling the
+                                   mirror would leave nothing on
+                                   screen, see the rationale where the
+                                   item is constructed). disabled
+                                   short-circuits both the press
+                                   handler AND the visual feedback. */
+                                disabled={!!item.disabled}
                                 onPress={() => {
+                                    if (item.disabled) return;
                                     this.setState({videoPickerVisible: false});
                                     // Defer the action a tick so the panel
                                     // closes cleanly before any state churn.
@@ -3281,7 +3601,8 @@ class ConferenceBox extends Component {
                                     height: itemRowHeight,
                                     paddingLeft: iconColumnPadLeft,
                                     paddingRight: 12,
-                                    backgroundColor: 'transparent'
+                                    backgroundColor: 'transparent',
+                                    opacity: item.disabled ? 0.35 : 1,
                                 }}
                             >
                                 <Icon name={item.icon} size={rowIconSize} color="white" />
@@ -3715,6 +4036,32 @@ class ConferenceBox extends Component {
 			const otherDevices = devices.filter(d => d !== this.state.selectedAudioDevice);
 			return (
 				<View style={styles.buttonContainer} key="audioDevice">
+					{/* Outside-tap dismiss for the floating audio
+					    picker. Mirrors the backdrop the camera picker
+					    above uses: a transparent absolute-fill
+					    TouchableWithoutFeedback covers the screen
+					    when the picker is open; tapping anywhere
+					    outside the picker rows (or the trigger
+					    button) collapses the picker. Z-index 90
+					    keeps the backdrop BELOW the picker rows
+					    (100) so taps on the rows hit the rows
+					    first. Without this the picker stayed open
+					    until the user explicitly tapped the audio
+					    trigger button again, which was non-obvious
+					    when the picker was opened from the kebab's
+					    Audio... entry. */}
+					{this.state.audioDevicePickerVisible && (
+					    <TouchableWithoutFeedback
+					        onPress={() => this.setState({audioDevicePickerVisible: false})}
+					    >
+					        <View style={{
+					            position: 'absolute',
+					            top: -9999, bottom: -9999, left: -9999, right: -9999,
+					            zIndex: 90,
+					            backgroundColor: 'transparent'
+					        }} />
+					    </TouchableWithoutFeedback>
+					)}
 					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
@@ -3974,10 +4321,14 @@ class ConferenceBox extends Component {
        // Mute-video + toggle-camera have been folded into the unified
        // camera picker below — matches VideoBox.renderVideoPicker so
        // the same affordance lives on both surfaces. Items inside the
-       // panel: Front Camera / Back Camera, Mute Camera (hidden when
-       // already muted). The main button glyph (camera-front /
-       // camera-rear) reflects the active camera; a red X overlays
-       // it while the camera is muted.
+       // panel: Front Camera / Back Camera (with camera-front /
+       // camera-rear icons), Stop video / Start video (the latter
+       // shown only when video is muted). The MAIN button glyph
+       // is a stable `video` (camcorder) icon regardless of which
+       // camera is active — switching cameras used to flip the
+       // button between camera-front and camera-rear, which was
+       // visually noisy without conveying anything actionable. A
+       // red X overlays the button while the camera is muted.
        //
        // Video picker / audio device picker / video-mode hangup
        // ALL gate on _useVideoLayout — they only appear in the
@@ -4116,23 +4467,19 @@ class ConferenceBox extends Component {
             this.state.participants.forEach((p) => {
                 _contact = this.foundContacts.get(p.identity._uri);
                 // Normalize the displayed name the same way the rest
-                // of the app does (contact list / nav bar via
-                // toTitleCase). foundContacts entries are already
-                // title-cased by lookupContact(), so prefer those
-                // when present. The previous fallback path used
-                // p.identity._displayName raw — which is whatever
-                // the SIP From header carried (often UPPER CASE or
-                // all-lowercase) — and showed unnormalized names on
-                // the tile while every other surface displayed the
-                // same person in title case. When no contact entry
-                // exists yet (e.g. a participant whose
-                // onParticipantJoined → lookupContact hasn't fired
-                // by the time we render), title-case the raw SIP
-                // display name, or fall back to the URI local part
-                // also title-cased, so the tile matches.
+                // of the app does (contact list / nav bar). If the SIP
+                // From header carried a display name, we now preserve
+                // it verbatim (just trim) instead of forcing title
+                // case — the remote party picked that capitalization
+                // on purpose ("AG Projects", "iPhone of John"). Only
+                // the URI local-part fallback gets title-cased, since
+                // that's a synthetic label derived from a machine
+                // identifier. foundContacts entries (set in
+                // lookupContact) follow the same rule and win when
+                // present.
                 const _rawDn = p.identity._displayName;
                 const _fallbackDn = _rawDn && _rawDn.length > 0
-                    ? toTitleCase(_rawDn)
+                    ? String(_rawDn).trim()
                     : toTitleCase(p.identity._uri.split('@')[0]);
                 _identity = {uri: p.identity._uri.indexOf('@guest') > -1 ? 'From the web': p.identity._uri,
                              key: p.identity._uri,
@@ -4450,6 +4797,66 @@ class ConferenceBox extends Component {
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
 						enableMyVideo={this.state.enableMyVideo}
 						toggleMyVideo={this.toggleMyVideo}
+						/* Used by the audio-view Video... submenu
+						   for the Stop / Start video row. Toggle
+						   wraps the existing muteVideo /
+						   _resumeVideo pair so a single tap can
+						   move either direction.
+						   Unmute branch also force-restores the
+						   mirror if it was previously hidden — see
+						   the matching note on the camera picker's
+						   unmute row above for the rationale. */
+						videoMuted={this.state.videoMuted}
+						toggleVideoMute={() => {
+						    if (this.state.videoMuted) {
+						        const next = {videoMutedbyUser: false};
+						        if (this.state.enableMyVideo === false) {
+						            next.enableMyVideo = true;
+						        }
+						        this.setState(next);
+						        this._resumeVideo();
+						    } else {
+						        this.muteVideo();
+						    }
+						}}
+						/* Forwarded so the Video... submenu can
+						   disable Hide/Show mirror when there is no
+						   remote tile to view alongside. */
+						participants={this.state.participants}
+						/* Opens the camera picker overlay from the
+						   kebab's "Video..." item. Same panel the
+						   call-bar video button toggles.
+						   Mutually exclusive with the audio picker:
+						   opening one closes the other so only one
+						   floating panel is on screen at a time
+						   (avoids two overlapping pickers stacked
+						   on top of each other when the user jumps
+						   between the kebab's Audio... and Video...
+						   entries). */
+						openVideoPicker={() => this.setState({
+						    videoPickerVisible: true,
+						    audioDevicePickerVisible: false,
+						})}
+						/* Opens the audio device picker overlay
+						   from the kebab's "Audio..." item. Same
+						   panel the call-bar audio button toggles
+						   (renderAudioDevicePicker's "floating" /
+						   "menu" variants both read
+						   audioDevicePickerVisible). Closes the
+						   video picker for the same one-at-a-time
+						   reason. */
+						openAudioPicker={() => this.setState({
+						    audioDevicePickerVisible: true,
+						    videoPickerVisible: false,
+						})}
+						/* Tapping the kebab again resets device
+						   pickers. Single setState clears both so
+						   the call bar returns to its idle "no
+						   picker open" state in one render. */
+						closeMediaPickers={() => this.setState({
+						    audioDevicePickerVisible: false,
+						    videoPickerVisible: false,
+						})}
 						availableAudioDevices = {this.state.availableAudioDevices}
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
@@ -4492,7 +4899,7 @@ class ConferenceBox extends Component {
 					  onSend={this.onSendMessage}
 					  renderCustomView={this.renderCustomView}
 					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
+					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
@@ -4515,7 +4922,7 @@ class ConferenceBox extends Component {
 					  onSend={this.onSendMessage}
 					  renderCustomView={this.renderCustomView}
 					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
+					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
@@ -5326,6 +5733,66 @@ class ConferenceBox extends Component {
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
 						enableMyVideo={this.state.enableMyVideo}
 						toggleMyVideo={this.toggleMyVideo}
+						/* Used by the audio-view Video... submenu
+						   for the Stop / Start video row. Toggle
+						   wraps the existing muteVideo /
+						   _resumeVideo pair so a single tap can
+						   move either direction.
+						   Unmute branch also force-restores the
+						   mirror if it was previously hidden — see
+						   the matching note on the camera picker's
+						   unmute row above for the rationale. */
+						videoMuted={this.state.videoMuted}
+						toggleVideoMute={() => {
+						    if (this.state.videoMuted) {
+						        const next = {videoMutedbyUser: false};
+						        if (this.state.enableMyVideo === false) {
+						            next.enableMyVideo = true;
+						        }
+						        this.setState(next);
+						        this._resumeVideo();
+						    } else {
+						        this.muteVideo();
+						    }
+						}}
+						/* Forwarded so the Video... submenu can
+						   disable Hide/Show mirror when there is no
+						   remote tile to view alongside. */
+						participants={this.state.participants}
+						/* Opens the camera picker overlay from the
+						   kebab's "Video..." item. Same panel the
+						   call-bar video button toggles.
+						   Mutually exclusive with the audio picker:
+						   opening one closes the other so only one
+						   floating panel is on screen at a time
+						   (avoids two overlapping pickers stacked
+						   on top of each other when the user jumps
+						   between the kebab's Audio... and Video...
+						   entries). */
+						openVideoPicker={() => this.setState({
+						    videoPickerVisible: true,
+						    audioDevicePickerVisible: false,
+						})}
+						/* Opens the audio device picker overlay
+						   from the kebab's "Audio..." item. Same
+						   panel the call-bar audio button toggles
+						   (renderAudioDevicePicker's "floating" /
+						   "menu" variants both read
+						   audioDevicePickerVisible). Closes the
+						   video picker for the same one-at-a-time
+						   reason. */
+						openAudioPicker={() => this.setState({
+						    audioDevicePickerVisible: true,
+						    videoPickerVisible: false,
+						})}
+						/* Tapping the kebab again resets device
+						   pickers. Single setState clears both so
+						   the call bar returns to its idle "no
+						   picker open" state in one render. */
+						closeMediaPickers={() => this.setState({
+						    audioDevicePickerVisible: false,
+						    videoPickerVisible: false,
+						})}
 						availableAudioDevices = {this.state.availableAudioDevices}
 						selectedAudioDevice = {this.state.selectedAudioDevice}
 						selectAudioDevice = {this.props.selectAudioDevice}
@@ -5462,7 +5929,7 @@ class ConferenceBox extends Component {
 					  onSend={this.onSendMessage}
 					  renderCustomView={this.renderCustomView}
 					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
+					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
@@ -5492,7 +5959,7 @@ class ConferenceBox extends Component {
 					  onSend={this.onSendMessage}
 					  renderCustomView={this.renderCustomView}
 					  renderSend={this.renderSend}
-					  renderBubble={renderBubble}
+					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
@@ -5662,6 +6129,35 @@ class ConferenceBox extends Component {
 				participants={speakerSelectionParticipants}
 				activeSpeakers={this.state.activeSpeakers}
 				onApply={this.applySpeakerLayout}
+			/>
+
+			{/* "Start your camera?" prompt — fires once per
+			    conference session, the moment any remote
+			    participant is detected sending video bytes
+			    while we're still in audio view (see the latch
+			    in getConnectionStats / _autoEscalatedToVideo).
+			    Reuses the existing UpgradeVideoModal so the
+			    confirmation flow looks identical to the 1:1
+			    audio→video upgrade prompt. Direction is
+			    'incoming' because from the user's perspective
+			    SOMEONE ELSE is bringing video to the call —
+			    same wording: "wants to add video to this call".
+			    Accept → toggleViewMode (which resumes the
+			    camera). Cancel → stay audio-only; latch
+			    prevents re-prompting. */}
+			<UpgradeVideoModal
+				visible={this.state.cameraPromptVisible}
+				direction="incoming"
+				remoteUri={this.state.cameraPromptRemoteUri}
+				remoteDisplayName={(() => {
+					const u = this.state.cameraPromptRemoteUri;
+					if (!u) return '';
+					const c = this.foundContacts && this.foundContacts.get(u);
+					return (c && c.displayName) ? c.displayName : (u.split('@')[0] || u);
+				})()}
+				onAccept={this.onCameraPromptAccept}
+				onReject={this.onCameraPromptReject}
+				onHide={this.onCameraPromptReject}
 			/>
 		</View>
         );

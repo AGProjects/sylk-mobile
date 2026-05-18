@@ -97,13 +97,70 @@ class CallOverlay extends React.Component {
 			   console.log('Previous call', this.state.call?.id);
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
             }
-            
+
             if (nextProps.call  !== null) {
 				nextProps.call.on('stateChanged', this.callStateChanged);
             }
 
-            this.setState({call: nextProps.call, 
-                           direction: nextProps.call ? nextProps.call.direction : null});
+            // Reset per-call diagnostic carry-overs so a brand-new call
+            // doesn't briefly render the previous call's status line.
+            //
+            // Without this, when a fresh call object arrives in props
+            // (back-to-back call, or a hangup-then-redial without
+            // unmounting CallOverlay) the render path still sees:
+            //   * this.duration   — last tick's "mm:ss" string from the
+            //                       old call's timer (only cleared on
+            //                       the old call's 'terminated' event,
+            //                       which we may have already torn the
+            //                       listener off of one line above)
+            //   * this.finalDuration — set when the previous call
+            //                       transitioned to 'terminated';
+            //                       triggers "Call ended after X" in the
+            //                       fallback branch
+            //   * this.timer      — old setInterval still ticking against
+            //                       the OLD state.startTime, which would
+            //                       paint a wildly wrong number on every
+            //                       tick until the new state.startTime
+            //                       arrives
+            //   * state.callState — last known state of the old call;
+            //                       used by the 'terminated' branch to
+            //                       render the stale "Call ended after"
+            //                       /  state.terminatedReason strings
+            //   * state.terminatedReason — propagated down from props
+            //                       on every render until the parent
+            //                       clears it; we still latch the new
+            //                       call's state below so the stale
+            //                       reason can't leak through.
+            // Clear them all in the same tick the new call lands so
+            // the render BEFORE the new call's first stateChanged
+            // event shows "Starting call..." / "Connecting..." instead
+            // of leftovers from the previous one.
+            if (this.timer) {
+                clearInterval(this.timer);
+                this.timer = null;
+            }
+            this.duration = null;
+            this.finalDuration = null;
+
+            this.setState({
+                call: nextProps.call,
+                direction: nextProps.call ? nextProps.call.direction : null,
+                // Seed callState off the freshly arrived call object so
+                // the very first render doesn't read the previous call's
+                // last state (typically 'terminated'). The new call's
+                // stateChanged listener (just attached above) will
+                // refine this as soon as the actual state event fires.
+                callState: nextProps.call.state || null,
+                // Reset the parent-supplied terminated reason; the new
+                // call hasn't accumulated one yet. The block below this
+                // if() reassigns terminatedReason from nextProps but
+                // setState merges left-to-right, so any non-null parent
+                // reason still wins — that's correct.
+                terminatedReason: null,
+                // Reset startTime to whatever the parent's callState
+                // has for this fresh call (likely null until established).
+                startTime: nextProps.callState ? nextProps.callState.startTime : null,
+            });
         }
 
         if ('showUsage' in nextProps && nextProps.showUsage !== undefined) {
@@ -310,7 +367,40 @@ class CallOverlay extends React.Component {
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
                 } else if (!this.state.call) {
-					callDetail = 'Starting call...';
+                    // No live call object. This branch is reached in
+                    // two distinct situations:
+                    //   1. Initial dial — the user pressed call, the
+                    //      sylkrtc Call hasn't been constructed yet.
+                    //      Show "Starting call..." so the user knows
+                    //      something is happening.
+                    //   2. Post-hangup — the remote (e.g. Blink) hung
+                    //      up before media established. The parent has
+                    //      already cleared props.call, but the overlay
+                    //      stays on screen for a few seconds for the
+                    //      "call ended" transition. In that window we
+                    //      DO know who the call was with (remoteUri /
+                    //      remoteDisplayName are still in state from
+                    //      when the call was alive) and we shouldn't
+                    //      revert to the generic "Starting call..."
+                    //      string — it makes the user think a NEW
+                    //      call is being placed.
+                    //
+                    //  this.finalDuration => established then ended.
+                    //  this.state.terminatedReason => SIP-side reason
+                    //      preserved across the call→null transition.
+                    if (this.finalDuration) {
+                        callDetail = 'Call ended after ' + this.finalDuration;
+                    } else if (this.state.terminatedReason) {
+                        callDetail = this.state.terminatedReason;
+                    } else if (displayName) {
+                        // Outbound dial whose Call object hasn't
+                        // materialised yet, but the parent has already
+                        // told us who we're dialling. Surface the
+                        // peer rather than the generic "Starting call".
+                        callDetail = 'Calling ' + displayName + '…';
+                    } else {
+                        callDetail = 'Starting call...';
+                    }
                 } else if (!this.state.localMedia) {
                     if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
@@ -328,11 +418,18 @@ class CallOverlay extends React.Component {
                 callDetail = callDetail + ' ' + this.props.info;
             }
 
-            let mediaLabel = 'Audio call';
-
-            if (this.state.media) {
-                mediaLabel = displayName;
-            }
+            // Title shown above the callDetail line. Always prefer the
+            // peer's display name if known — even when media is null
+            // (call just terminated, or hasn't established yet). The
+            // old behaviour reverted to the generic "Audio call" the
+            // moment the call object was cleared, which made a
+            // post-hangup ended-call overlay show "Audio call" instead
+            // of who the call was with for the 5-second termination
+            // window. displayName is computed above from state.remoteUri
+            // / state.remoteDisplayName, both of which survive the
+            // call→null transition (they're merged in via
+            // componentWillReceiveProps from nextProps.remote*).
+            let mediaLabel = displayName || 'Audio call';
             
 			const { width, height } = Dimensions.get('window');
 	

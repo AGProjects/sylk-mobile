@@ -918,6 +918,16 @@ class NavigationBar extends Component {
             case 'callMeMaybe':
                 this.props.toggleCallMeMaybeModal();
                 break;
+            case 'toggleDnd':
+                // Mirror of the bell-icon tap in the navbar header.
+                // Routes to the same toggleDnd handler in app.js that
+                // flips state.accountSetting.privacy.dnd. Closing the
+                // menu is handled by Menu.Item's default onPress
+                // wrapper just like the other items in this switch.
+                if (typeof this.props.toggleDnd === 'function') {
+                    this.props.toggleDnd();
+                }
+                break;
             case 'scanQr':
                 this.props.toggleQRCodeScannerFunc();
                 break;
@@ -2051,19 +2061,19 @@ class NavigationBar extends Component {
             const accountId = this.props.accountId;
             const read = this.props.readAppStateNamespace;
             if (!accountId || typeof read !== 'function') {
-                utils.timestampedLog(
-                    '[location] hydrate-disclaimer: skipped — accountId=', accountId,
-                    'read=', typeof read
-                );
+                //utils.timestampedLog(
+                //    '[location] hydrate-disclaimer: skipped — accountId=', accountId,
+                //    'read=', typeof read
+                //);
                 return;
             }
             const location = await read(accountId, 'location');
             const suppressed = !!(location && location.disclaimerSuppressed);
-            utils.timestampedLog(
-                '[location] hydrate-disclaimer: accountId=', accountId,
-                'location=', JSON.stringify(location),
-                '→ suppressed=', suppressed
-            );
+            //utils.timestampedLog(
+            //    '[location] hydrate-disclaimer: accountId=', accountId,
+            //    'location=', JSON.stringify(location),
+            //    '→ suppressed=', suppressed
+            //);
             if (this.state.shareDisclaimerSuppressed !== suppressed) {
                 this.setState({shareDisclaimerSuppressed: suppressed});
             }
@@ -5825,26 +5835,27 @@ class NavigationBar extends Component {
 				// Mirrors the same prefer-name-else-local-part rule
 				// used in the non-conference branch below and now
 				// in ContactCard's conference branch.
-				let _rawConf;
+				// If the room has a user-chosen display name, keep it
+				// exactly as-is (just trim whitespace) — don't title-case
+				// or otherwise rewrite it. prettifyName only fires when
+				// we fall back to the URI local part.
 				if (this.props.selectedContact.name
 						&& this.props.selectedContact.name !== this.props.selectedContact.uri) {
-					_rawConf = this.props.selectedContact.name;
+					title = this.props.selectedContact.name.trim();
 				} else {
-					_rawConf = this.props.selectedContact.uri.split('@')[0];
+					title = prettifyName(this.props.selectedContact.uri.split('@')[0]);
 				}
-				title = prettifyName(_rawConf);
 				subtitle = 'Conference room';
 			} else {
-				// Match ContactCard's two-step: pick the name (or username
-				// fallback when name == uri / missing), then run it through
-				// prettifyName so the navbar title matches the list row.
-				let raw;
+				// Match ContactCard: if a display name is set, render it
+				// verbatim (trim only — no title-casing). Only fall back
+				// to prettifyName when we derive the title from the URI
+				// local part.
 			    if (this.props.selectedContact.name && this.props.selectedContact.name != this.props.selectedContact.uri) {
-					raw = this.props.selectedContact.name;
+					title = this.props.selectedContact.name.trim();
 			    } else {
-					raw = this.props.selectedContact.uri.split('@')[0];
+					title = prettifyName(this.props.selectedContact.uri.split('@')[0]);
 			    }
-				title = prettifyName(raw);
 				// Phone-number contacts: drop the SIP domain in the
 				// navbar subtitle so the user sees '+40xxxx' under
 				// the display name instead of '+40xxxx@sylk.link'.
@@ -6648,7 +6659,26 @@ class NavigationBar extends Component {
                         {!this.props.inCall && !isFavorite && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
-                        
+
+                        {/* Help… — same entry that lives in the
+                            no-contact kebab below, mirrored here so
+                            it is also reachable from the per-contact
+                            kebab. This is the only kebab the user
+                            can open while a call is active (during
+                            a call selectedContact is set to the
+                            remote party, so the no-contact branch
+                            never renders), and previously there was
+                            no path to the in-app log viewer / support
+                            request modal mid-call. Always shown,
+                            matching the "available in every context"
+                            intent stated on the sibling item. The
+                            folded layout has its own truncation
+                            rules elsewhere in this menu; Help is
+                            small and self-contained so we leave it
+                            unconditional. */}
+                        <Divider />
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
+
                     </Menu>
                 :
                     <Menu
@@ -6670,6 +6700,22 @@ class NavigationBar extends Component {
                     >
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
+                         : null }
+
+                        {/* Quick DND toggle. Same action as the bell
+                            glyph in the navbar header — added to the
+                            kebab menu so the user can flip it without
+                            having to reach the top-right icon on
+                            larger devices. Icon mirrors the current
+                            state (bell-off-outline when DND is on,
+                            bell-outline when off) so the menu line
+                            also functions as a status indicator. */}
+                        {!this.props.inCall ?
+                        <Menu.Item
+                            onPress={() => this.handleMenu('toggleDnd')}
+                            icon={this.props.dnd ? 'bell-off-outline' : 'bell-outline'}
+                            title={this.props.dnd ? 'Turn off Do Not Disturb' : 'Turn on Do Not Disturb'}
+                        />
                          : null }
 
                         {!this.props.inCall ?
@@ -6950,6 +6996,8 @@ class NavigationBar extends Component {
                     accountId={this.props.accountId}
                     preferredVideoCodec={this.props.preferredVideoCodec}
                     setPreferredVideoCodec={this.props.setPreferredVideoCodec}
+                    videoProfile={this.props.videoProfile}
+                    setVideoProfile={this.props.setVideoProfile}
                     preferredAudioCodec={this.props.preferredAudioCodec}
                     setPreferredAudioCodec={this.props.setPreferredAudioCodec}
                     enableAudioRecording={this.props.enableAudioRecording}

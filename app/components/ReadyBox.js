@@ -3106,8 +3106,27 @@ class ReadyBox extends Component {
                                   <>
                                   <View style={styles.buttonContainer}>
                                       <TouchableHighlight style={styles.roundshape}>
+                                        {/* Cancel button — deliberately
+                                            discrete (white circle, neutral
+                                            grey glyph) rather than the red
+                                            destructive style. "Cancel" here
+                                            does NOT lose any saved data; it
+                                            just drops out of selection mode
+                                            without sending invites. The red
+                                            colouring implied a destructive
+                                            action and clashed visually with
+                                            the surrounding green/blue call
+                                            buttons. White fill + iconColor
+                                            #888 reads as "secondary action"
+                                            — the user still notices it but
+                                            it doesn't shout. Styled inline
+                                            because the ReadyBox stylesheet
+                                            doesn't expose a "whiteButton"
+                                            equivalent and this is the only
+                                            site that needs it. */}
                                         <IconButton
-                                            style={redButtonClass}
+                                            style={{ backgroundColor: '#ffffff' }}
+                                            iconColor="#888"
                                             size={32}
                                             onPress={this.props.finishInvite}
                                             icon="close"
@@ -3401,6 +3420,52 @@ class ReadyBox extends Component {
 
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
+
+                   {/* App-DND status pill. Persistent reminder that the
+                       in-app bell is on and incoming calls are being
+                       delivered silently. Tapping toggles DND off via
+                       the same toggleDnd action the navbar bell uses,
+                       so the user can clear it without scrolling up
+                       to the header. Scope: contacts-list view only,
+                       i.e. no contact currently selected — once the
+                       user opens a chat, the chat header / message
+                       column take over and the pill would otherwise
+                       hover above the conversation, which isn't its
+                       job. Also hidden in invite / share / QR /
+                       message-search flows where the contacts list
+                       is repurposed and the pill would crowd the
+                       modal-style UI. */}
+                   {this.props.appDnd
+                       && !this.props.selectedContact
+                       && !this.props.shareToContacts
+                       && !this.props.inviteContacts
+                       && !this.state.searchMessages
+                       && !this.props.showQRCodeScanner ? (
+                       <TouchableOpacity
+                           activeOpacity={0.8}
+                           onPress={() => {
+                               if (typeof this.props.toggleDnd === 'function') {
+                                   this.props.toggleDnd();
+                               }
+                           }}
+                           style={readyBoxDndPillStyles.pill}
+                       >
+                           <MaterialCommunityIcon
+                               name="bell-off-outline"
+                               size={18}
+                               color="#7a1d1d"
+                               style={readyBoxDndPillStyles.pillIcon}
+                           />
+                           <View style={readyBoxDndPillStyles.pillTextWrap}>
+                               <Text style={readyBoxDndPillStyles.pillTitle}>
+                                   Do Not Disturb is on
+                               </Text>
+                               <Text style={readyBoxDndPillStyles.pillBody}>
+                                   Incoming calls arrive silently. Tap to turn off.
+                               </Text>
+                           </View>
+                       </TouchableOpacity>
+                   ) : null}
 
                    {/* "Phonebook access is off" banner. Rendered above
                        the contacts list whenever the user has the
@@ -3771,6 +3836,12 @@ ReadyBox.propTypes = {
     // to react-native-permissions's openSettings() helper (the same
     // one the NavigationBar 'appSettings' menu item uses).
     openAppSettings: PropTypes.func,
+    // In-app DND state (state.accountSetting.privacy.dnd in app.js).
+    // When true, ReadyBox renders a persistent pill above the contacts
+    // list so the user always sees that incoming calls will arrive
+    // silently. Tapping the pill calls toggleDnd to flip DND off.
+    appDnd: PropTypes.bool,
+    toggleDnd: PropTypes.func,
     keys            : PropTypes.object,
     keyStatus       : PropTypes.object,
     showImportPrivateKeyModal : PropTypes.bool,
@@ -3958,6 +4029,47 @@ const readyBoxDialpadStyles = StyleSheet.create({
 // reads as informational, not alarming — paired with a small filled
 // button on the right that opens the OS Sylk preferences page via
 // react-native-permissions's openSettings() helper.
+// DND-on pill rendered above the contacts list whenever
+// state.accountSetting.privacy.dnd is true. Colour palette is a
+// dusty pink/red (background #fde8e8, border #f3b8b8, text #7a1d1d)
+// to make it visually distinct from the orange phonebook-permission
+// banner directly below it — the two are otherwise structurally
+// identical (row layout, leading icon, title+body text). The pill
+// itself is a TouchableOpacity so the whole strip is tappable to
+// flip DND back off without scrolling up to the navbar bell.
+const readyBoxDndPillStyles = StyleSheet.create({
+    pill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginHorizontal: 8,
+        marginTop: 6,
+        marginBottom: 4,
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        backgroundColor: '#fde8e8',
+        borderColor: '#f3b8b8',
+        borderWidth: 1,
+        borderRadius: 20,
+    },
+    pillIcon: {
+        marginRight: 8,
+    },
+    pillTextWrap: {
+        flex: 1,
+        minWidth: 0,
+    },
+    pillTitle: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#7a1d1d',
+    },
+    pillBody: {
+        fontSize: 12,
+        color: '#7a1d1d',
+        marginTop: 1,
+    },
+});
+
 const readyBoxPermissionBannerStyles = StyleSheet.create({
     banner: {
         flexDirection: 'row',

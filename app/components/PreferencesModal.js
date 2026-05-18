@@ -95,6 +95,18 @@ const FS_LABEL   = 16;  // section headers (Audio Calls, Video Calls, …)
 const VIDEO_CODECS = ['VP9', 'VP8', 'H264'];
 const VIDEO_CODECS_DEFAULT = 'VP9';
 
+// Video quality profiles — same ids and labels as VIDEO_PROFILES in
+// app.js (single source of truth for the resolution / framerate /
+// bitrate numbers; this modal only renders the picker). Hint strings
+// are intentionally short so they fit under the pill row without
+// wrapping on a 360 dp phone.
+const VIDEO_PROFILE_OPTIONS = [
+    { id: '480p',  label: '480p',  hint: '640×480 · 24 fps · 800 kbps · Standard' },
+    { id: '720p',  label: '720p',  hint: '1280×720 · 30 fps · 1.5 Mbps · Balanced' },
+    { id: '1080p', label: '1080p', hint: '1920×1080 · 30 fps · 3 Mbps · High' },
+];
+const VIDEO_PROFILE_DEFAULT = '480p';
+
 // Audio codec choices. The order matters for the UI — opus first because
 // it's the recommended default and what libwebrtc would pick on its own.
 // G722 is wideband (16 kHz) and useful for SIP peers without opus. PCMU
@@ -107,6 +119,23 @@ const VIDEO_CODECS_DEFAULT = 'VP9';
 // negotiator.
 const AUDIO_CODECS = ['opus', 'G722', 'PCMU', 'PCMA'];
 const AUDIO_CODECS_DEFAULT = 'opus';
+
+// User-facing labels for the audio codec pills. The underlying VALUES
+// (the entries in AUDIO_CODECS, used by sylkrtc's negotiator and
+// persisted via setPreferredAudioCodec) are still the SDP/RTP names
+// — PCMU / PCMA / G722 / opus — so the wire payload, the persisted
+// preference, and any external tooling that reads the codec id stay
+// unchanged. Only the button captions differ:
+//   PCMU (μ-law)  → "G711 μ"    PCMA (A-law)  → "G711 A"
+// because most users know the family as G.711 rather than the
+// PCMU / PCMA SDP codec names. opus and G722 are already the
+// recognised consumer names so we render them as-is.
+const AUDIO_CODEC_LABELS = {
+    opus: 'opus',
+    G722: 'G722',
+    PCMU: 'G711 μ',
+    PCMA: 'G711 A',
+};
 
 // Per-codec metadata shown as a small subtitle under the row of buttons,
 // so the user has some idea of what they're picking without needing to
@@ -133,32 +162,56 @@ const CODEC_META = {
     H264: { zrtp: false, hint: 'no zRTP' },
 };
 
-// One of 'sdes' | 'zrtp_optional' | 'zrtp_mandatory'. Must match the
-// constants in CallZrtp.js. Defaulted upstream by app.js so any unset
-// value here also resolves to a real mode.
-// Only zRTP modes are user-selectable. Plain SRTP/DTLS (SDES on the SIP
-// side) is what WebRTC negotiates by default at the transport layer
-// regardless — there's no point exposing it as a separate "off" choice.
-// In zRTP-optional mode it's the fallback when end-to-end negotiation
-// can't complete; in zRTP-mandatory mode the call is terminated rather
-// than fall back.
-// `label` is the short, button-suitable name for the compact picker.
-// `title` / `subtitle` are kept for any caller that still wants the
-// long descriptive form (none currently — the modal renders `label`).
+// UI-level zRTP toggle. Surfaced as a two-pill Enabled / Disabled
+// picker, defaulting to Enabled. Under the hood it still writes to
+// the same accountSetting.rtp.encryptionMode string (consumed by
+// CallZrtp.setEncryptionMode) — only the user-facing surface
+// changed:
+//
+//   Enabled  → 'zrtp_optional'
+//              CallZrtp runs the X25519 handshake on the in-dialog
+//              MESSAGE transport, advertises the X-Sylk-ZRTP
+//              capability header on the INVITE / 200 OK, and
+//              installs the AES-128-GCM FrameEncryptor when both
+//              ends agree. Falls back to plain DTLS-SRTP if the
+//              handshake doesn't complete (e.g. peer doesn't speak
+//              the scheme) — the call still happens, just without
+//              the end-to-end layer.
+//
+//   Disabled → 'sdes'
+//              No handshake, no advertised header, no end-to-end
+//              encryption. shouldAdvertiseZrtpCapability() in
+//              CallZrtp.js gates the SIP X-Sylk-ZRTP header on the
+//              mode being one of the two zRTP modes, and
+//              startZrtpForCall / dispatchIncomingZrtp early-return
+//              when the mode is 'sdes' — so both the offer and the
+//              negotiation are fully suppressed. The call's media
+//              is still encrypted between the device and the
+//              SylkServer relay via the DTLS-SRTP that WebRTC
+//              negotiates by default at the transport layer; there's
+//              just no end-to-end layer on top.
+//
+// The legacy 'zrtp_mandatory' mode is no longer offered through the
+// UI; saved values from older builds map to "Enabled" in the picker
+// (see currentMode resolution below). Internally the mode constant
+// still exists in CallZrtp.js and the mandatory-fail prompt remains
+// wired, so anyone with an old setting keeps the behaviour they had
+// until they touch the toggle.
 const ENCRYPTION_OPTIONS = [
     {
         value: 'zrtp_optional',
-        label: 'Optional',
-        title: 'zRTP — optional',
+        label: 'Enabled',
+        title: 'zRTP — enabled',
         subtitle: 'End-to-end encryption; '
                 + 'falls back to DTLS if negotiation fails',
     },
     {
-        value: 'zrtp_mandatory',
-        label: 'Mandatory',
-        title: 'zRTP — mandatory',
-        subtitle: 'End-to-end encryption; '
-                + 'calls end if negotiation fails',
+        value: 'sdes',
+        label: 'Disabled',
+        title: 'zRTP — disabled',
+        subtitle: 'No end-to-end encryption is negotiated. '
+                + 'Calls are still encrypted between the device '
+                + 'and the relay via DTLS-SRTP.',
     },
 ];
 
@@ -216,6 +269,15 @@ const PreferencesModal = ({
     accountId,
     preferredVideoCodec,
     setPreferredVideoCodec,
+    // Active video quality profile id ('480p' / '720p' / '1080p').
+    // Resolved in app.js → VIDEO_PROFILES[id] for the concrete
+    // resolution / framerate / bitrate; this modal just renders the
+    // picker. Persisted via setAccountSetting('device.videoProfile').
+    // Changing it re-applies live (the app's _applyVideoProfileId
+    // walks the active call and re-runs reapplyVideoEncoderParams)
+    // so the bump takes effect mid-call.
+    videoProfile,
+    setVideoProfile,
     // Per-device preferred audio codec. opus by default — only worth
     // changing when calls terminate on a PSTN trunk via Asterisk where
     // forcing PCMU/PCMA avoids a trunk-side transcode.
@@ -275,8 +337,20 @@ const PreferencesModal = ({
     setLocationPrivacyRadiusMeters,
 }) => {
     const currentCodec = preferredVideoCodec || VIDEO_CODECS_DEFAULT;
+    const currentVideoProfile = VIDEO_PROFILE_OPTIONS.some(o => o.id === videoProfile)
+        ? videoProfile
+        : VIDEO_PROFILE_DEFAULT;
     const currentAudioCodec = preferredAudioCodec || AUDIO_CODECS_DEFAULT;
-    const currentMode = encryptionMode || 'zrtp_optional';
+    // Resolve the saved tri-state encryptionMode into one of the two
+    // UI options. The picker only offers 'zrtp_optional' (Enabled) and
+    // 'sdes' (Disabled); a legacy 'zrtp_mandatory' value from an older
+    // build collapses into "Enabled" so the pill still highlights
+    // correctly without forcing a migration write. Any other unknown
+    // value defaults to Enabled too — same shape as app.js's runtime
+    // default.
+    const currentMode = encryptionMode === 'sdes'
+        ? 'sdes'
+        : 'zrtp_optional';
     const currentDtmf = dtmfMode || DTMF_DEFAULT;
     const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalSec)
         ? locationTickIntervalSec
@@ -543,12 +617,23 @@ const PreferencesModal = ({
                                 decelerationRate="normal"
                             >
                                 {/* ───── Video Calls ─────────────────────────────
-                                    Just the video-codec preference for now;
-                                    other video knobs (resolution profile,
-                                    framerate cap, simulcast tuning) can land
-                                    here later as additional rows in the same
-                                    section without affecting the layout of
-                                    Audio Calls below. */}
+                                    Two rows:
+                                      1. Preferred video codec — VP9 /
+                                         VP8 / H264.
+                                      2. Quality profile — 480p / 720p /
+                                         1080p. Resolution + framerate +
+                                         bitrate cap, applied on both the
+                                         camera (getUserMedia constraints)
+                                         and the libwebrtc encoder
+                                         (setParameters). Resolved in
+                                         app.js → VIDEO_PROFILES[id].
+                                    Both persist to SQL under
+                                    accounts.settings and re-apply
+                                    immediately via setAccountSetting.
+                                    Profile changes also walk the active
+                                    call and re-run the encoder caps so
+                                    a mid-call bump takes effect without
+                                    a hang-up + redial. */}
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
@@ -581,6 +666,49 @@ const PreferencesModal = ({
                                             );
                                         })}
                                     </View>
+
+                                    {/* Quality profile picker. Three
+                                        pills — same compact styling as
+                                        the codec row so the section
+                                        reads consistently. Hint line
+                                        below shows the active profile's
+                                        concrete resolution / framerate /
+                                        bitrate so the user can see what
+                                        each tier actually means without
+                                        diving into docs. */}
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                        Video profile.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                        {VIDEO_PROFILE_OPTIONS.map(opt => {
+                                            const selected = currentVideoProfile === opt.id;
+                                            return (
+                                                <Button
+                                                    key={opt.id}
+                                                    mode={selected ? 'contained' : 'outlined'}
+                                                    compact
+                                                    style={{ marginRight: 6, marginBottom: 6 }}
+                                                    contentStyle={pillContentStyle}
+                                                    labelStyle={pillLabelStyle}
+                                                    onPress={() => {
+                                                        if (typeof setVideoProfile === 'function') {
+                                                            setVideoProfile(opt.id);
+                                                        }
+                                                    }}
+                                                >
+                                                    {opt.label}
+                                                </Button>
+                                            );
+                                        })}
+                                    </View>
+                                    {(() => {
+                                        const active = VIDEO_PROFILE_OPTIONS.find(o => o.id === currentVideoProfile);
+                                        return active ? (
+                                            <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 4 }}>
+                                                {active.hint}
+                                            </Text>
+                                        ) : null;
+                                    })()}
                                 </View>
 
                                 <Divider style={{ marginTop: -8, marginBottom: 8 }} />
@@ -618,6 +746,17 @@ const PreferencesModal = ({
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                                         {AUDIO_CODECS.map(codec => {
                                             const selected = currentAudioCodec === codec;
+                                            // Display label only — `codec` is still
+                                            // the SDP name (PCMU/PCMA/G722/opus) that
+                                            // gets persisted and negotiated, but the
+                                            // pill reads the user-friendlier name
+                                            // from AUDIO_CODEC_LABELS (so PCMU shows
+                                            // as "G711 μ" etc.). Falls back to the
+                                            // raw codec id if the map is missing an
+                                            // entry, so adding a new codec to
+                                            // AUDIO_CODECS without updating the
+                                            // label map still renders something.
+                                            const label = AUDIO_CODEC_LABELS[codec] || codec;
                                             return (
                                                 <Button
                                                     key={codec}
@@ -632,7 +771,7 @@ const PreferencesModal = ({
                                                         }
                                                     }}
                                                 >
-                                                    {codec}
+                                                    {label}
                                                 </Button>
                                             );
                                         })}
@@ -812,13 +951,17 @@ const PreferencesModal = ({
 
                                 {/* ───── Encryption ──────────────────────────────
                                     Compact button-row picker, same shape
-                                    as the Codecs section above. The
-                                    section title "Encryption" already
-                                    implies zRTP (it's the only mode the
-                                    UI exposes), so the buttons just need
-                                    to communicate the policy choice —
-                                    Optional vs. Mandatory — without per-
-                                    button subtitles. */}
+                                    as the Codecs section above. Two
+                                    pills only — Enabled / Disabled —
+                                    backed by the same encryptionMode
+                                    string CallZrtp consumes (Enabled
+                                    → 'zrtp_optional', Disabled →
+                                    'sdes'). When Disabled, no X-Sylk-
+                                    ZRTP capability header is sent on
+                                    the INVITE and the handshake never
+                                    starts (the call still goes through
+                                    over DTLS-SRTP between the device
+                                    and the SylkServer relay). */}
                                 <View style={{ marginBottom: 16 }}>
                                     <Text
                                         style={{
@@ -851,17 +994,22 @@ const PreferencesModal = ({
                                             );
                                         })}
                                     </View>
-                                    {/* Reassurance note: even if zRTP key
-                                        agreement fails or is set to
-                                        Optional and falls back, SRTP/DTLS
-                                        (a.k.a. SDES on the SIP side) is
-                                        always negotiated by WebRTC at the
-                                        transport layer. The only thing
-                                        zRTP adds on top is end-to-end
-                                        encryption that the relay can't
-                                        decrypt. */}
+                                    {/* Reassurance note: no matter which
+                                        pill is chosen, the call is
+                                        always encrypted between the
+                                        device and the SylkServer relay
+                                        via WebRTC's transport-layer
+                                        DTLS-SRTP. What this toggle
+                                        controls is whether to ALSO run
+                                        the end-to-end layer on top
+                                        (zRTP key agreement + AES-128-
+                                        GCM frame encryption that the
+                                        relay can't read). Spelling it
+                                        out avoids the reading "Disabled
+                                        = plaintext on the wire", which
+                                        isn't the case. */}
                                     <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 2 }}>
-                                        SDES is always available.
+                                        Calls are always encrypted between the device and the relay (DTLS-SRTP).
                                     </Text>
                                 </View>
 
@@ -1028,6 +1176,12 @@ PreferencesModal.propTypes = {
     accountId: PropTypes.string,
     preferredVideoCodec: PropTypes.string,
     setPreferredVideoCodec: PropTypes.func.isRequired,
+    // Video quality profile — optional so older callers that haven't
+    // wired the setter still render the modal cleanly. Falls back to
+    // the default profile when missing; the picker's onPress already
+    // guards against a missing setter.
+    videoProfile: PropTypes.string,
+    setVideoProfile: PropTypes.func,
     // Audio codec preference — optional so older callers that haven't
     // wired the setter yet still render the modal cleanly. The Audio
     // sub-section's onPress already guards against a missing setter.
@@ -1042,7 +1196,10 @@ PreferencesModal.propTypes = {
     toggleChatSounds: PropTypes.func,
     proximity: PropTypes.bool,
     toggleProximity: PropTypes.func,
-    encryptionMode: PropTypes.oneOf(['zrtp_optional', 'zrtp_mandatory']),
+    // Accepts every mode CallZrtp recognises: 'sdes' (Disabled in the
+    // UI), 'zrtp_optional' (Enabled — the default), and the legacy
+    // 'zrtp_mandatory' for old saves that haven't been touched yet.
+    encryptionMode: PropTypes.oneOf(['sdes', 'zrtp_optional', 'zrtp_mandatory']),
     setEncryptionMode: PropTypes.func.isRequired,
     dtmfMode: PropTypes.oneOf(['rfc4733', 'info']),
     setDtmfMode: PropTypes.func,

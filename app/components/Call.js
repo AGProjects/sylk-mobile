@@ -12,7 +12,44 @@ import AudioCallBox from './AudioCallBox';
 import LocalMedia from './LocalMedia';
 import VideoBox from './VideoBox';
 import utils from '../utils';
-import { startZrtpForCall, ZRTP_CONTENT_TYPE } from './CallZrtp';
+import { startZrtpForCall, ZRTP_CONTENT_TYPE,
+         ZRTP_CAPABILITY_HEADER_NAME, ZRTP_CAPABILITY_HEADER_VALUE,
+         peerSupportsZrtpFromHeaders, shouldAdvertiseZrtpCapability,
+         reapplyVideoEncoderParams, getVideoEncoderTarget } from './CallZrtp';
+
+// Build getUserMedia constraints for the audio→video upgrade path
+// that match the initial-video path's profile (set once at app
+// startup via setVideoEncoderTarget in app.js). Previously the
+// upgrade calls in startVideo / onUpdateRequest issued
+// getUserMedia({ video: true }) with no resolution / framerate
+// hints, which let phone camera drivers default to their preferred
+// native capture mode — commonly 1088x1088 / 30 fps on Android
+// "square selfie" cameras or 1920x1080 / 30 fps on iOS. The result
+// was that an audio call escalated to video produced a noticeably
+// different on-wire resolution and framerate than a call that
+// started as video. Pulling the profile in via getVideoEncoderTarget
+// (defined in CallZrtp.js, where the libwebrtc-side caps live)
+// avoids a circular Call.js → app.js import and keeps the two paths
+// in lockstep.
+const _buildUpgradeVideoConstraints = () => {
+    const target = getVideoEncoderTarget() || {};
+    const w  = target.width     != null ? target.width     : 640;
+    const h  = target.height    != null ? target.height    : 480;
+    const fr = target.frameRate != null ? target.frameRate : null;
+    const video = {
+        // ideal+max pair — `max` is what actually pins phone camera
+        // drivers; `ideal` alone is routinely ignored when the driver
+        // has a preferred capture mode it wants to default to. Same
+        // shape as getLocalMedia in app.js so a profile change there
+        // propagates here automatically.
+        width:  { ideal: w, max: w },
+        height: { ideal: h, max: h },
+    };
+    if (fr != null) {
+        video.frameRate = { ideal: fr, max: fr };
+    }
+    return { audio: false, video };
+};
 
 // import {
 //   ConnectionStateChangedEvent,
@@ -53,7 +90,10 @@ class Call extends Component {
         this.mediaIsPlaying = false;
 
         if (this.props.call) {
-            // If current call is available on mount we must have incoming
+            // If current call is available on mount we must have incoming.
+            // Detect peer ZRTP capability from the caller's INVITE headers,
+            // which sylkrtc has already populated on call.headers.
+            this._detectPeerZrtpCapability(this.props.call, this.props.call.headers, 'INVITE');
             this.props.call.on('stateChanged', this.callStateChanged);
             this.props.call.on('incomingMessage', this.incomingMessage);
             // Mid-call renegotiation events emitted by react-native-sylkrtc
@@ -243,6 +283,53 @@ class Call extends Component {
         }
     }
 
+    // Parse the X-Sylk-ZRTP header out of the given headers payload and,
+    // if present + parseable, stash a non-null capability descriptor on
+    // the sylkrtc Call as call._peerSupportsZrtp. startZrtpForCall and
+    // dispatchIncomingZrtp (in CallZrtp.js) gate their behaviour on this
+    // flag — handshake only runs when both ends have signaled support.
+    //
+    // `source` is just a label for the log line: 'INVITE' for the
+    // caller-side advertisement (read at mount / cwrp), '200 OK' for the
+    // callee's response (read in callStateChanged when newState=='accepted').
+    // Once set, we don't downgrade: a present-then-absent transition
+    // should never happen on a single call.
+    _detectPeerZrtpCapability(call, headers, source) {
+        if (!call) return;
+        // Surface every X-* / capability header sylk-server passed through
+        // from the SIP signalling. Useful to confirm the
+        // 'incoming_header_prefixes' = ['X-'] register option is
+        // working end-to-end (Sylk Mobile → sylk-server → Janus →
+        // incoming INVITE). Logged before the capability-detection log
+        // so the raw input is visible even when peerSupportsZrtpFromHeaders
+        // returns null.
+        const callIdStr = (call._callId || call.callId || call.id);
+        if (headers && headers.length) {
+            try {
+                const dump = headers
+                    .map(h => (h && h.name ? (h.name + '=' + (h.value !== undefined ? h.value : '')) : String(h)))
+                    .join('; ');
+                utils.timestampedLog('[call] [zrtp] call_id=' + callIdStr,
+                    'extra SIP headers from sylk-server on ' + source + ': ' + dump);
+            } catch (e) {
+                utils.timestampedLog('[call] [zrtp] call_id=' + callIdStr,
+                    'extra SIP headers from sylk-server on ' + source + ': <unprintable: ' + e + '>');
+            }
+        } else {
+            utils.timestampedLog('[call] [zrtp] call_id=' + callIdStr,
+                'no extra SIP headers received from sylk-server on ' + source
+                + ' (Janus may have stripped them, or the account-add request did not request X-* prefixes)');
+        }
+        const cap = peerSupportsZrtpFromHeaders(headers);
+        if (cap !== null) {
+            call._peerSupportsZrtp = cap;
+            utils.timestampedLog('[call] [zrtp] call_id=' + callIdStr,
+                'peer signaled X-Sylk-ZRTP capability v=' + cap.version
+                + ' suites=' + (cap.suites.join(',') || '?')
+                + ' on ' + source);
+        }
+    }
+
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
         // Surface ZRTP envelopes that arrive on the call's session-
@@ -293,6 +380,14 @@ class Call extends Component {
                        accountId: nextProps.account ? nextProps.account.id : null});
 
         if (this.state.call === null && nextProps.call !== null) {
+            // Same detection path as in the constructor — covers the
+            // outgoing-call case where props.call shows up via cwrp.
+            // For an OUTGOING call the headers array is still empty at
+            // this moment (the 200 OK hasn't arrived yet); the
+            // detection then runs again from callStateChanged when
+            // newState='accepted', which is when sylkrtc populates the
+            // 200 OK headers on the event payload.
+            this._detectPeerZrtpCapability(nextProps.call, nextProps.call.headers, 'INVITE');
             nextProps.call.on('stateChanged', this.callStateChanged);
             nextProps.call.on('incomingMessage', this.incomingMessage);
             // Mid-call upgrade listeners — see the constructor for what
@@ -387,33 +482,55 @@ class Call extends Component {
 
     async answerCall(localMedia) {
         const media = localMedia ? localMedia : this.state.localMedia;
+        const _cid = (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)) || '?';
         if (this.state.call && this.state.call.state === 'incoming' && media) {
-            let options = {pcConfig: {iceServers: this.state.iceServers}};
+            // ICE servers: restored. Empty list broke cellular/CGNAT
+            // calls because the device's host candidate (RFC1918 LAN
+            // IP) is unreachable from Janus. STUN lets the device
+            // signal its public-mapped (server-reflexive) candidate
+            // too, so Janus can route RTP back. The ~500 ms STUN
+            // setup is acceptable cost for reliable connectivity.
+            let options = {pcConfig: {iceServers: this.state.iceServers || []}};
             options.localStream = media;
-            utils.timestampedLog('Answering [call]...');
+            // Mirror the outgoing-INVITE advertisement: when we accept
+            // an incoming call we also need to tell the caller we
+            // support the handshake, otherwise their startZrtpForCall
+            // sees no flag and refuses to probe. Gate on the local
+            // encryption mode same as for outgoing.
+            if (shouldAdvertiseZrtpCapability()) {
+                options.headers = [{name: ZRTP_CAPABILITY_HEADER_NAME, value: ZRTP_CAPABILITY_HEADER_VALUE}];
+            }
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '12 answerCall_invoked — call.answer() next');
 
             if (!this.answering) {
                 this.answering = true;
                 const connectionState = this.state.connection.state ? this.state.connection.state : null;
-                utils.timestampedLog('answering [call]', this.state.call.id, 'in connection state', connectionState);
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    '13 sylkrtc_answer_send connectionState=' + connectionState);
                 try {
                     this.state.call.answer(options);
-                    utils.timestampedLog('[call] answered');
+                    utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                        '14 sylkrtc_answer_returned — waiting for state=established');
                 } catch (error) {
-                    utils.timestampedLog('failed to answer [call]', error);
+                    utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                        'sylkrtc_answer_threw:', error);
                     this.hangupCall('answer_failed')
                 }
             } else {
-                utils.timestampedLog('answering [call] in progress...');
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    'answering already in progress, skipping');
             }
         } else {
             if (!this.state.call) {
-                utils.timestampedLog('no Sylkrtc [call] present');
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    'answerCall skipped: no Sylkrtc Call present yet');
                 //this.hangupCall('answer_failed');
             }
 
             if (!media) {
-                utils.timestampedLog('[call] waiting for local [media]');
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    'answerCall waiting for local media to arrive');
             }
         }
     }
@@ -468,6 +585,17 @@ class Call extends Component {
             return;
         }
 
+        // The 'accepted' transition carries the 200 OK headers on the
+        // event payload (sylkrtc's call.js maps them into data.headers
+        // as a [{name,value},…] array). This is the moment to detect
+        // peer Sylk-ZRTP capability on the OUTGOING-call side; the
+        // INVITE-side detection already ran at constructor / cwrp time.
+        // Both startZrtpForCall and dispatchIncomingZrtp consult the
+        // resulting call._peerSupportsZrtp flag before doing anything.
+        if (newState === 'accepted' && this.state.call) {
+            this._detectPeerZrtpCapability(this.state.call, data && data.headers, '200 OK');
+        }
+
         let remoteHasNoVideoTracks;
         let remoteIsRecvOnly;
         let remoteIsInactive;
@@ -490,7 +618,9 @@ class Call extends Component {
                 try {
                     startZrtpForCall(currentCall, this.props.account, this.props.callContact, this.props.myKeys);
                 } catch (e) {
-                    utils.timestampedLog('[ZRTP] [call] startZrtpForCall threw:', e);
+                    utils.timestampedLog('[call] [zrtp] call_id='
+                        + (currentCall && (currentCall._callId || currentCall.callId || currentCall.id)),
+                        'startZrtpForCall threw:', e);
                 }
             }
 
@@ -610,11 +740,24 @@ class Call extends Component {
     async startCallWhenReady(callUUID) {
         this.waitCounter = 0;
 
-        let diff = 0;
-
-        while (this.waitCounter < this.waitInterval) {
+        // Retry indefinitely until one of three things happens:
+        //   1. the user cancels       -> hangupCall('user_cancelled')
+        //   2. the call ends elsewhere -> this.ended is set, just return
+        //   3. canConnect() goes true  -> this.start() fires the INVITE
+        //
+        // We deliberately do NOT cap this loop with a "60 seconds and
+        // give up" timer anymore. The previous cap penalised the user
+        // for time spent waiting on the network/registration to come
+        // back — when the websocket was flapping or REGISTER kept
+        // 408ing, the loop hit 60s and the call hung up with
+        // reason: timeout, even though nothing about the call itself
+        // had failed. The post-INVITE timeout (caller waiting for the
+        // remote to answer) is still enforced separately in app.js
+        // off the 'progress' call state — so a stalled ringing call
+        // is still bounded; only the pre-INVITE wait is now patient.
+        while (true) {
             if (this.waitCounter === 1) {
-                utils.timestampedLog('waiting for establishing [call]', this.waitInterval, 'seconds');
+                utils.timestampedLog('waiting for [call] to be ready (will retry indefinitely)');
             }
 
             if (this.userHangup) {
@@ -626,44 +769,22 @@ class Call extends Component {
                 return;
             }
 
-            if (this.waitCounter >= this.waitInterval - 1) {
-                this.hangupCall('timeout');
-            }
-
             if (!this.canConnect()) {
-                //utils.timestampedLog('Call: waiting for connection', this.waitInterval - this.waitCounter, 'seconds');
                 if (this.state.call && this.state.call.id === callUUID && this.state.call.state !== 'terminated') {
                     return;
                 }
 
-                if (this.waitCounter > 0 && this.waitCounter % 10 === 0) {
-                    //utils.timestampedLog('Wait', this.waitCounter);
-                }
-
-                /*
-                if (this.waitCounter == 3) {
-					this.props.startRingback();
-                }
-
-                if (this.waitCounter == 10) {
-					this.props.stopRingback();
-                }
-
-                if (this.waitCounter == 23) {
-					this.props.startRingback();
-                }
-                */
-
                 await this._sleep(1000);
-            } else {
-                this.waitCounter = 0;
-
-                this.start();
-
-                return;
+                this.waitCounter++;
+                continue;
             }
 
-            this.waitCounter++;
+            // canConnect() returned true — fire the actual INVITE and
+            // exit the loop. waitCounter is reset so any future
+            // reconnect logic starts from zero.
+            this.waitCounter = 0;
+            this.start();
+            return;
         }
     }
 
@@ -682,10 +803,25 @@ class Call extends Component {
         }
 
         let options = {
-                       pcConfig: {iceServers: this.state.iceServers},
+                       // ICE servers restored — see answerCall comment.
+                       // Empty list broke cellular calls (host candidate
+                       // unreachable from Janus); STUN ensures the
+                       // server-reflexive candidate is signaled.
+                       pcConfig: {iceServers: this.state.iceServers || []},
                        id: this.state.callUUID,
-                       localStream: this.state.localMedia
+                       localStream: this.state.localMedia,
                        };
+        // Advertise Sylk ZRTP-over-MESSAGE capability on the outgoing
+        // INVITE — but only when the current encryption mode is one
+        // that will actually run the handshake (zrtp_optional or
+        // zrtp_mandatory). 'sdes' mode means the user opted out of
+        // E2EE; sending X-Sylk-ZRTP in that case would be a lie and
+        // cause the peer to wait for a probe that never comes. The
+        // shouldAdvertiseZrtpCapability helper in CallZrtp.js owns the
+        // decision so the rule is in one place.
+        if (shouldAdvertiseZrtpCapability()) {
+            options.headers = [{name: ZRTP_CAPABILITY_HEADER_NAME, value: ZRTP_CAPABILITY_HEADER_VALUE}];
+        }
 
         // PSTN dialing rule applied at the SIP-call boundary, NOT in
         // app.js's callKeepStartCall. Keeping the rewrite here means
@@ -717,6 +853,15 @@ class Call extends Component {
         let callUUID = this.state.call ? this.state.call.id : this.state.callUUID;
         this.waitInterval = this.defaultWaitInterval;
 
+        // Signal the startCallWhenReady loop to exit on its next tick.
+        // Used to rely on bumping waitCounter past waitInterval to
+        // break out of the while-loop; the loop is now infinite (it
+        // retries indefinitely until canConnect() succeeds), so we
+        // need an explicit "stop" flag. componentWillUnmount also
+        // sets this.ended, so a route change away from /call cleans
+        // up the loop too.
+        this.ended = true;
+
         if (this.state.call) {
             //console.log('Remove listener for call', this.state.call.id);
             this.state.call.removeListener('stateChanged', this.callStateChanged);
@@ -728,10 +873,6 @@ class Call extends Component {
             //console.log('Remove listener for connection', this.state.connection);
             this.state.connection.removeListener('stateChanged', this.connectionStateChanged);
             this.setState({connection: null});
-        }
-
-        if (this.waitCounter > 0) {
-            this.waitCounter = this.waitInterval;
         }
 
         this.props.hangupCall(callUUID, reason);
@@ -779,7 +920,7 @@ class Call extends Component {
         }
         if (this.state.upgradePromptMode) return;     // prompt already up
         utils.timestampedLog('[upgrade] startVideo: acquiring camera for prompt');
-        navigator.mediaDevices.getUserMedia({ audio: false, video: true })
+        navigator.mediaDevices.getUserMedia(_buildUpgradeVideoConstraints())
             .then((localStream) => {
                 this.setState({
                     upgradePromptMode: 'outgoing',
@@ -797,6 +938,31 @@ class Call extends Component {
         const nowAudioOnly = !payload || (!payload.hasLocalVideo && !payload.hasRemoteVideo);
         if (this.state.audioOnly !== nowAudioOnly) {
             this.setState({ audioOnly: nowAudioOnly });
+        }
+        // Audio→video upgrade just landed. The ZRTP install path
+        // already ran (one-shot) back during the initial audio
+        // handshake, with no video sender to act on, so libwebrtc's
+        // encoder for the just-added video sender is sitting at its
+        // defaults (no scaleResolutionDownBy, no maxFramerate cap,
+        // no maxBitrate cap). The result was visibly higher
+        // resolution / framerate on the upgrade path than on a call
+        // that started as video. Re-apply the encoder target now
+        // that a video sender exists.
+        //
+        // Re-apply on EVERY mediaUpdated rather than only
+        // audio→video transitions: subsequent re-INVITEs that
+        // toggle direction or replace the camera track also produce
+        // a fresh sender that needs the cap, and the underlying
+        // helper is idempotent — it walks pc.getSenders(), sets
+        // sender.setParameters() with the latest profile, and bails
+        // when there's no video sender.
+        try {
+            if (this.state.call && payload && (payload.hasLocalVideo || payload.hasRemoteVideo)) {
+                reapplyVideoEncoderParams(this.state.call);
+            }
+        } catch (e) {
+            utils.timestampedLog('[upgrade] reapplyVideoEncoderParams threw:',
+                e && e.message ? e.message : e);
         }
     }
 
@@ -832,7 +998,7 @@ class Call extends Component {
             }
             return;
         }
-        navigator.mediaDevices.getUserMedia({ audio: false, video: true })
+        navigator.mediaDevices.getUserMedia(_buildUpgradeVideoConstraints())
             .then((localStream) => {
                 try {
                     localStream.getVideoTracks().forEach(t => { t.enabled = false; });

@@ -1,8 +1,16 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
-index af962e0..4f3a5a0 100644
+index af962e0..90f2e1d 100644
 --- a/node_modules/react-native-sylkrtc/lib/call.js
 +++ b/node_modules/react-native-sylkrtc/lib/call.js
-@@ -37,7 +37,42 @@ class Call extends EventEmitter {
+@@ -2,6 +2,7 @@
+ 
+ import debug from 'react-native-debug';
+ import uuid from 'react-native-uuid';
++import transform from 'sdp-transform';
+ import utils from './utils';
+ 
+ import { EventEmitter } from 'events';
+@@ -37,7 +38,42 @@ class Call extends EventEmitter {
          this._setup_in_progress = false;  // set while we set the remote description and setup the peer copnnection
          this._headers = []
          this._messages = new Map();
@@ -46,7 +54,7 @@ index af962e0..4f3a5a0 100644
          // bind some handlers to this instance
          // this._onDtmf = this._onDtmf.bind(this);
      }
-@@ -108,20 +143,25 @@ class Call extends EventEmitter {
+@@ -108,20 +144,25 @@ class Call extends EventEmitter {
      }
  
      getRemoteStreams() {
@@ -84,20 +92,232 @@ index af962e0..4f3a5a0 100644
      }
  
      getSenders() {
-@@ -155,14 +195,62 @@ class Call extends EventEmitter {
-         // Create the RTCPeerConnection
-         this._initRTCPeerConnection(pcConfig);
+@@ -140,6 +181,121 @@ class Call extends EventEmitter {
+         }
+     }
+ 
++    /**
++     * Pre-warm the RTCPeerConnection during the ringing window so that
++     * by the time the user presses Accept, the PC is constructed, the
++     * remote SDP (offer) is parsed, transceivers are created with the
++     * audio (and optionally video) direction set to sendrecv, the local
++     * answer SDP is created, setLocalDescription has been called, and
++     * ICE candidate gathering has started — host-only with iceServers
++     * empty, but still saves the libwebrtc state-machine setup time.
++     *
++     * answer() then only does the work that requires the local media:
++     *   - replaceTrack() on the existing transceiver senders (no
++     *     renegotiation; faster than addTrack which can trigger one);
++     *   - _sendAnswer with the prewarmed localDescription.sdp.
++     *
++     * Saves ~200–500 ms of synchronous work plus whatever ICE gathering
++     * managed to finish during the ringing window. Safe to call
++     * multiple times — only the first does work. If anything fails,
++     * the PC is torn down and answer() falls back to the original
++     * from-scratch flow.
++     *
++     * @param {Object} pcConfig - { iceServers: [...] }, same shape that
++     *                            answer() expects in options.pcConfig.
++     * @returns {Promise} resolves when local description is set.
++     */
++    prewarm(pcConfig) {
++        if (this._state !== 'incoming') {
++            return Promise.reject(new Error(
++                'prewarm: call is not in the incoming state: ' + this._state));
++        }
++        if (this._prewarmed || this._prewarming) {
++            return this._prewarming || Promise.resolve();
++        }
++        try {
++            this._initRTCPeerConnection(pcConfig || {iceServers: []});
++        } catch (e) {
++            return Promise.reject(e);
++        }
++
++        // Parse the offer's m-lines so we know what kinds to addTransceiver
++        // for. We need to mirror the offer's media list so the answer's
++        // m-lines line up with the offer's. addTransceiver with no track
++        // creates a sendrecv direction by default — when answer() later
++        // calls replaceTrack(localTrack), the sender gains its track
++        // without renegotiation.
++        let offeredKinds;
++        try {
++            const parsed = transform.parse(this._incomingSdp);
++            offeredKinds = (parsed.media || [])
++                .filter(m => m.type === 'audio' || m.type === 'video')
++                .map(m => m.type);
++        } catch (e) {
++            offeredKinds = ['audio'];
++        }
++
++        this._prewarming = this._pc.setRemoteDescription(
++                new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}))
++            .then(() => {
++                // After setRemoteDescription, the PC's transceiver list
++                // already contains transceivers mirroring the offer
++                // (recvonly direction by default in modern libwebrtc when
++                // there's no local track yet). Flip them to sendrecv so
++                // replaceTrack on the sender side works without
++                // renegotiation. Some libwebrtc builds expose
++                // transceiver.direction as a settable property; others
++                // require setDirection(). Try both.
++                const transceivers = this._pc.getTransceivers ? this._pc.getTransceivers() : [];
++                for (const t of transceivers) {
++                    const trackKind = t && t.receiver && t.receiver.track && t.receiver.track.kind;
++                    if (trackKind === 'audio' || trackKind === 'video') {
++                        try {
++                            t.direction = 'sendrecv';
++                        } catch (_) {
++                            try { t.setDirection && t.setDirection('sendrecv'); } catch (__) {}
++                        }
++                    }
++                }
++                // Some offer shapes (or older libwebrtc) don't auto-create
++                // transceivers from the remote offer; explicitly create
++                // any missing ones for kinds we know are in the offer.
++                if (transceivers.length === 0) {
++                    for (const kind of offeredKinds) {
++                        try {
++                            this._pc.addTransceiver(kind, {direction: 'sendrecv'});
++                        } catch (_) {}
++                    }
++                }
++                return utils.createLocalSdp(this._pc, 'answer', undefined,
++                    utils.pickAnswerVideoCodec(this._incomingSdp),
++                    utils.pickAnswerAudioCodec(this._incomingSdp));
++            })
++            .then((sdp) => {
++                this._prewarmedLocalSdp = sdp;
++                this._prewarmed = true;
++                this._prewarming = null;
++                DEBUG('Call ' + this._id + ' prewarmed: local answer SDP ready ('
++                    + sdp.length + ' bytes), ICE gathering started');
++            })
++            .catch((err) => {
++                // Tear down the half-built PC so answer() can build a
++                // fresh one from scratch. Don't leak the broken state.
++                DEBUG('Call ' + this._id + ' prewarm failed: ' + (err && err.message || err));
++                try {
++                    if (this._pc) {
++                        this._pc.close();
++                    }
++                } catch (_) {}
++                this._pc = null;
++                this._prewarmed = false;
++                this._prewarmedLocalSdp = null;
++                this._prewarming = null;
++                throw err;
++            });
++        return this._prewarming;
++    }
++
+     answer(options = {}) {
+         if (this._state !== 'incoming') {
+             throw new Error('Call is not in the incoming state: ' + this._state);
+@@ -152,17 +308,165 @@ class Call extends EventEmitter {
+         const pcConfig = options.pcConfig || {iceServers:[]};
+         const answerOptions = options.answerOptions;
+ 
+-        // Create the RTCPeerConnection
+-        this._initRTCPeerConnection(pcConfig);
++        // Three accept paths converge here:
++        //   1) Full prewarm (PC + remoteDesc + localDesc): the fast path.
++        //      replaceTrack on the existing sendrecv transceivers, then
++        //      ship the prewarmed local SDP straight to _sendAnswer.
++        //      Skips _initRTCPeerConnection, setRemoteDescription,
++        //      createAnswer, and setLocalDescription — the four steps
++        //      that used to live on the press-Accept critical path.
++        //   2) Partial prewarm (PC + remoteDesc only): _prewarmed is
++        //      true but _prewarmedLocalSdp is null (e.g. the
++        //      addTransceiver / createAnswer call threw on this
++        //      libwebrtc build). Skip RTCPeerConnection construction
++        //      and setRemoteDescription; do addTrack + createAnswer
++        //      + setLocalDescription as usual.
++        //   3) No prewarm (cold accept): _pc is null. Original flow.
++        const fullPrewarm = (this._prewarmed === true) && !!this._prewarmedLocalSdp;
  
 -        this._pc.addStream(options.localStream);
 -        this.emit('localStreamAdded', options.localStream);
-+        // Capture the audio RTCRtpSender on the way in so we can
-+        // attach the modern RTCDTMFSender (`audioSender.dtmf`) once
-+        // setLocalDescription resolves below. Without this, callees
-+        // could never send DTMF — the answer() path used to throw
-+        // away the addTrack return value, which left _audioSender
-+        // and therefore _dtmfSender forever null on the callee side.
-+        // Mirrors what _initOutgoing already does for the caller.
+-        this._pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}))
++        if (this._pc === null) {
++            this._initRTCPeerConnection(pcConfig);
++        }
++
 +        this._audioSender = null;
++        if (fullPrewarm) {
++            // Map each local track onto the matching prewarmed sender
++            // (audio→audio, video→video) via replaceTrack. The sender
++            // exists because addTransceiver(kind, {direction:'sendrecv'})
++            // ran during prewarm. replaceTrack doesn't trigger
++            // renegotiation, so the prewarmed local SDP stays valid.
++            const senders = this._pc.getSenders ? this._pc.getSenders() : [];
++            options.localStream.getTracks().forEach((track) => {
++                let target = null;
++                for (const s of senders) {
++                    const matches =
++                        // sender.track may be null if addTransceiver
++                        // created it without a track (typical for
++                        // prewarmed sendrecv); fall back to matching
++                        // against the linked transceiver's receiver.track.kind
++                        (s.track && s.track.kind === track.kind)
++                        || (s._unusedKind === track.kind)
++                        || (s.transport === undefined && !s.track);
++                    // The transceiver-receiver kind is the cleanest
++                    // discriminator since prewarmed senders all have
++                    // null tracks initially.
++                    let transceiverKind = null;
++                    try {
++                        const tcvrs = this._pc.getTransceivers ? this._pc.getTransceivers() : [];
++                        for (const t of tcvrs) {
++                            if (t.sender === s
++                                && t.receiver && t.receiver.track) {
++                                transceiverKind = t.receiver.track.kind;
++                                break;
++                            }
++                        }
++                    } catch (_) {}
++                    if (transceiverKind === track.kind) {
++                        target = s;
++                        break;
++                    }
++                }
++                if (target && typeof target.replaceTrack === 'function') {
++                    try {
++                        target.replaceTrack(track);
++                        if (track.kind === 'audio') {
++                            this._audioSender = target;
++                        }
++                    } catch (e) {
++                        DEBUG('Call ' + this._id + ' replaceTrack failed: ' + (e && e.message || e));
++                    }
++                } else {
++                    // Fallback: addTrack. This may force renegotiation
++                    // and the prewarmed SDP will be stale — answer()
++                    // would then have to take the partial-prewarm
++                    // path below, but we're already past that branch.
++                    // Best-effort.
++                    const sender = this._pc.addTrack(track, options.localStream);
++                    if (track.kind === 'audio') {
++                        this._audioSender = sender;
++                    }
++                }
++            });
++
++            DEBUG('Call ' + this._id + ' answer: full-prewarm fast path, shipping prewarmed local SDP');
++            // DTMF wiring — same one-tick defer as the cold path so
++            // the sender's dtmf accessor has time to attach.
++            setTimeout(() => {
++                if (this._audioSender && this._audioSender.dtmf) {
++                    DEBUG("DTMF sender now available (answerer, prewarm)");
++                    this._dtmfSender = this._audioSender.dtmf;
++                    this._dtmfSender.addEventListener('tonechange', this._onDtmf);
++                }
++            }, 0);
++            this._sendAnswer(this._prewarmedLocalSdp, options.headers);
++            return;
++        }
++
++        // Partial prewarm or no prewarm — original addTrack flow.
 +        options.localStream.getTracks().forEach((track) => {
 +            const sender = this._pc.addTrack(track, options.localStream);
 +            if (track.kind === 'audio') {
@@ -105,7 +325,23 @@ index af962e0..4f3a5a0 100644
 +            }
 +        });
 +
-         this._pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}))
++        // If prewarm applied the remote description during ringing
++        // but not the local description, skip the remote-desc step
++        // and proceed with createAnswer.
++        const remoteDescAlreadyApplied = this._prewarmed === true;
++        const remoteDescPromise = remoteDescAlreadyApplied
++            ? (DEBUG('Call ' + this._id + ' answer: reusing prewarmed remote description'),
++               Promise.resolve())
++            : this._prewarming
++                ? this._prewarming.catch(() => {
++                    // Prewarm raced and failed mid-accept — fall back
++                    // to setting remote description ourselves.
++                    return this._pc.setRemoteDescription(
++                        new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}));
++                  })
++                : this._pc.setRemoteDescription(
++                    new RTCSessionDescription({type: 'offer', sdp: this._incomingSdp}));
++        remoteDescPromise
              // success
              .then(() => {
 -                utils.createLocalSdp(this._pc, 'answer', answerOptions)
@@ -150,7 +386,7 @@ index af962e0..4f3a5a0 100644
                          this._sendAnswer(sdp, options.headers);
                      })
                      .catch((reason) => {
-@@ -224,6 +312,214 @@ class Call extends EventEmitter {
+@@ -224,6 +528,214 @@ class Call extends EventEmitter {
              });
      }
  
@@ -365,7 +601,7 @@ index af962e0..4f3a5a0 100644
      sendMessage(message, contentType='text/plain', options={}, cb=null) {
          const outgoingMessage = new Message({
              account: this.remoteIdentity.uri,
-@@ -313,11 +609,47 @@ class Call extends EventEmitter {
+@@ -313,11 +825,47 @@ class Call extends EventEmitter {
          // Create the RTCPeerConnection
          this._initRTCPeerConnection(pcConfig);
  
@@ -385,7 +621,8 @@ index af962e0..4f3a5a0 100644
 +            }
 +        });
          this.emit('localStreamAdded', options.localStream);
-         utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
+-        utils.createLocalSdp(this._pc, 'offer', offerOptions, 'VP8')
++        utils.createLocalSdp(this._pc, 'offer', offerOptions, utils.getPreferredVideoCodec(), utils.getPreferredAudioCodec())
              .then((sdp) => {
                  DEBUG('Local SDP: %s', sdp);
 +                // Surface the negotiation traffic via console.log too —
@@ -414,7 +651,7 @@ index af962e0..4f3a5a0 100644
                  this._sendCall(uri, sdp);
              })
              .catch((reason) => {
-@@ -338,6 +670,11 @@ class Call extends EventEmitter {
+@@ -338,6 +886,11 @@ class Call extends EventEmitter {
          );
          this._headers = Object.keys(headers).map(key => {return {name: key, value: headers[key]}});
          DEBUG('Remote SDP: %s', sdp);
@@ -426,7 +663,7 @@ index af962e0..4f3a5a0 100644
      }
  
      _handleEvent(message) {
-@@ -356,6 +693,10 @@ class Call extends EventEmitter {
+@@ -356,6 +909,10 @@ class Call extends EventEmitter {
                      if (message.sdp !== undefined) {
                          const sdp = utils.mungeSdp(message.sdp);
                          DEBUG('Remote SDP: %s', sdp);
@@ -437,7 +674,7 @@ index af962e0..4f3a5a0 100644
                          this._remoteMediaDirections = Object.assign(
                              {audio: [], video:[]}, utils.getMediaDirections(sdp)
                          );
-@@ -399,7 +740,20 @@ class Call extends EventEmitter {
+@@ -399,7 +956,20 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'message':
@@ -459,7 +696,7 @@ index af962e0..4f3a5a0 100644
                  const incomingMessage = this._messages.get(message.message_id);
                  if (!incomingMessage) {
                      if (message.content_type === 'text/pgp-private-key') {
-@@ -423,7 +777,10 @@ class Call extends EventEmitter {
+@@ -423,7 +993,10 @@ class Call extends EventEmitter {
                      if (message.disposition_notification &&
                          message.disposition_notification.indexOf('positive-delivery') !== -1
                      ) {
@@ -471,7 +708,7 @@ index af962e0..4f3a5a0 100644
                              message.sender.uri,
                              message.message_id,
                              message.timestamp,
-@@ -433,6 +790,17 @@ class Call extends EventEmitter {
+@@ -433,6 +1006,17 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'disposition-notification':
@@ -489,7 +726,7 @@ index af962e0..4f3a5a0 100644
                  const outgoingMessage = this._messages.get(message.message_id);
                  if (outgoingMessage) {
                      if (outgoingMessage.state === 'displayed') {
-@@ -443,31 +811,116 @@ class Call extends EventEmitter {
+@@ -443,31 +1027,116 @@ class Call extends EventEmitter {
                  const {reason, code} = message;
                  this.emit('messageStateChanged', message.message_id, message.state, {reason, code});
                  break;
@@ -624,7 +861,7 @@ index af962e0..4f3a5a0 100644
  
      _sendRequest(req, cb) {
          this._account._sendRequest(req, cb);
-@@ -539,6 +992,32 @@ class Call extends EventEmitter {
+@@ -539,6 +1208,32 @@ class Call extends EventEmitter {
          });
      }
  
@@ -694,10 +931,10 @@ index 33da09d..a388b38 100644
          DEBUG('Offer options: %o', offerOptions);
          utils.createLocalSdp(this._pc, 'offer', offerOptions)
 diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
-index ae521ed..bcb76df 100644
+index ae521ed..8c37edb 100644
 --- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js
 +++ b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
-@@ -19,8 +19,12 @@ function createConnection(options = {}) {
+@@ -19,8 +19,20 @@ function createConnection(options = {}) {
  
  
  const utils = {
@@ -709,11 +946,19 @@ index ae521ed..bcb76df 100644
 +    'getPreferredVideoCodec' : _utils.getPreferredVideoCodec,
 +    'setPreferredAudioCodec' : _utils.setPreferredAudioCodec,
 +    'getPreferredAudioCodec' : _utils.getPreferredAudioCodec,
++    // mungeSdp + pickAnswer* are useful to callers that want to log /
++    // dry-run the SDP that sylkrtc actually ships on the wire (e.g.
++    // AudioCallBox._logProposedCodec re-mungeSdps the localDescription
++    // so the proposed-codec log line reflects what was sent, not the
++    // un-munged version webrtc stored on the PeerConnection).
++    'mungeSdp'               : _utils.mungeSdp,
++    'pickAnswerVideoCodec'   : _utils.pickAnswerVideoCodec,
++    'pickAnswerAudioCodec'   : _utils.pickAnswerAudioCodec,
  };
  
  
 diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
-index a64c601..cd51161 100644
+index a64c601..dbe8555 100644
 --- a/node_modules/react-native-sylkrtc/lib/utils.js
 +++ b/node_modules/react-native-sylkrtc/lib/utils.js
 @@ -54,7 +54,7 @@ class SharedFile {
@@ -799,45 +1044,80 @@ index a64c601..cd51161 100644
      if (preferredCodec !== null) {
          const videoMLine = parsedSdp.media.find(m => m.type === 'video');
          let payloadType = null;
-@@ -156,6 +205,37 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
+@@ -156,6 +205,72 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
          }
      }
  
-+    // Mirror of the video-codec reorder above, but for the audio
-+    // m-line. We move the user-preferred audio codec (e.g. "PCMU"
-+    // for PSTN-bound calls) to the front of the m=audio payload
-+    // list. Telephone-event / CN / red entries are not codec
-+    // choices in the user-facing sense and are left wherever
-+    // libwebrtc put them — we only promote a real audio codec.
++    // Audio-codec reorder. Rather than just promoting the preferred
++    // codec to the front, we apply a "family-aware" preference list
++    // that keeps closely-related codecs together as a sensible fallback
++    // chain for the answerer:
++    //
++    //   PCMA selected  → PCMA, PCMU, G722, Opus
++    //   PCMU selected  → PCMU, PCMA, G722, Opus
++    //   Opus selected  → Opus, G722, PCMA, PCMU
++    //   G722 selected  → G722, Opus, PCMA, PCMU
++    //   anything else  → just promote it to first
++    //
++    // Telephone-event / CN / RED entries are signalling/FEC, not user-
++    // facing codecs; they're left in their original relative order at
++    // the END of the payload-type list.
 +    if (preferredAudioCodec !== null) {
 +        const audioMLine = parsedSdp.media.find(m => m.type === 'audio');
-+        let aPayload = null;
-+
 +        if (audioMLine !== undefined && audioMLine.rtp) {
-+            for (let i = 0; i < audioMLine.rtp.length; ++i) {
-+                const rtp = audioMLine.rtp[i];
-+                if (rtp.codec
-+                    && rtp.codec.toLowerCase() === preferredAudioCodec.toLowerCase()) {
-+                        aPayload = rtp.payload;
-+                        break;
-+                    }
-+            }
-+            if (aPayload !== null) {
-+                const payloadTypes = String(audioMLine.payloads).split(' ').map(p => parseInt(p, 10));
-+                const payloadIndex = payloadTypes.indexOf(aPayload);
-+                if (payloadIndex !== -1) {
-+                    payloadTypes.splice(payloadIndex, 1);
-+                    payloadTypes.unshift(aPayload);
-+                    audioMLine.payloads = payloadTypes.join(' ');
++            // payload-type → codec-name (lowercase) lookup
++            const ptToCodec = {};
++            for (const r of audioMLine.rtp) {
++                if (r.payload != null && r.codec) {
++                    ptToCodec[r.payload] = r.codec.toLowerCase();
 +                }
 +            }
++
++            const prefLower = preferredAudioCodec.toLowerCase();
++            let codecOrder;
++            switch (prefLower) {
++                case 'pcma': codecOrder = ['pcma', 'pcmu', 'g722', 'opus']; break;
++                case 'pcmu': codecOrder = ['pcmu', 'pcma', 'g722', 'opus']; break;
++                case 'opus': codecOrder = ['opus', 'g722', 'pcma', 'pcmu']; break;
++                case 'g722': codecOrder = ['g722', 'opus', 'pcma', 'pcmu']; break;
++                default:     codecOrder = [prefLower]; break;
++            }
++
++            const originalPts = String(audioMLine.payloads).split(' ')
++                                    .map(p => parseInt(p, 10));
++            const newPts = [];
++            const used   = new Set();
++
++            // First pass: the preferred codecs in our preference order.
++            // (Multiple payload types for the same codec name — e.g.
++            // separate stereo/mono Opus entries — keep their relative
++            // order among themselves.)
++            for (const codecName of codecOrder) {
++                for (const pt of originalPts) {
++                    if (used.has(pt)) continue;
++                    if (ptToCodec[pt] === codecName) {
++                        newPts.push(pt);
++                        used.add(pt);
++                    }
++                }
++            }
++            // Second pass: everything else (telephone-event, CN, RED,
++            // unknown codecs) in original order.
++            for (const pt of originalPts) {
++                if (!used.has(pt)) {
++                    newPts.push(pt);
++                    used.add(pt);
++                }
++            }
++
++            audioMLine.payloads = newPts.join(' ');
 +        }
 +    }
 +
      return transform.write(parsedSdp);
  }
  
-@@ -360,6 +440,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -360,6 +475,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -846,7 +1126,7 @@ index a64c601..cd51161 100644
                      }
                  }
  
-@@ -388,6 +470,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -388,6 +505,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -855,7 +1135,7 @@ index a64c601..cd51161 100644
                      }
                  }
  
-@@ -435,6 +519,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -435,6 +554,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -864,7 +1144,7 @@ index a64c601..cd51161 100644
                      }
                  }
  
-@@ -469,6 +555,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -469,6 +590,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -873,7 +1153,7 @@ index a64c601..cd51161 100644
                      }
                  }
  
-@@ -506,4 +594,103 @@ export function map2obj(stats) {
+@@ -506,4 +629,103 @@ export function map2obj(stats) {
      return o;
  }
  

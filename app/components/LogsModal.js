@@ -116,7 +116,7 @@ const FONT_STEP = 0.15;
 // pick up timestamps like [19:40:52], device prefixes, or transfer
 // IDs). Lowercase + dashes/underscores cover the existing tag set
 // (`[messaging]`, `[support-share]`, `[pubkey-recv]`, `[upload]`,
-// `[location]`, `[ZRTP]`, ...). The `[APPLOG]` prefix is stripped
+// `[location]`, `[zrtp]`, ...). The `[APPLOG]` prefix is stripped
 // before scanning so it doesn't appear as a pill.
 const TAG_RE = /\[([A-Za-z][A-Za-z0-9_-]*)\]/g;
 

@@ -8,6 +8,17 @@ import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Te
 import { getZrtpSession } from './CallZrtp';
 import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
+// RNCamera is used ONLY for the camera-enable modal preview tile —
+// a native AVCaptureSession / CameraX-backed view that is completely
+// independent of the webrtc pipeline. This lets us show a live local
+// preview during the modal phase without having to keep the webrtc
+// sender active (which on both iOS and Android causes the
+// webrtc-managed capture to pause when the sender is gated). The
+// RNCamera component is unmounted when the user picks Enable / Audio-
+// only so its camera handle is released before we re-engage the
+// webrtc capture pipeline. webrtc still owns the camera for the
+// actual call; RNCamera only borrows it briefly for the preview.
+import { RNCamera } from 'react-native-camera';
 import {StatusBar} from 'react-native';
 import Immersive from 'react-native-immersive';
 import { StyleSheet } from 'react-native';
@@ -53,6 +64,31 @@ class VideoBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+
+        // [video-preview] trace: what does VideoBox see at mount time?
+        // The most common failure mode for "preview not appearing on
+        // accept" is the constructor running BEFORE getLocalMedia has
+        // resolved — props.localMedia is null and
+        // call.getLocalStreams() returns an empty array. Log enough to
+        // see which of those is the case in the field.
+        try {
+            const _c = props && props.call;
+            const _callLs = (_c && typeof _c.getLocalStreams === 'function')
+                              ? _c.getLocalStreams() : [];
+            const _lmTracks = (props && props.localMedia
+                              && typeof props.localMedia.getTracks === 'function')
+                                ? props.localMedia.getTracks() : [];
+            console.log('[video-preview] VideoBox constructor',
+                'call_id=' + ((_c && (_c.id || _c._callId)) || '?'),
+                'direction=' + ((_c && _c.direction) || '?'),
+                'call.localStreams.len=' + _callLs.length,
+                'props.localMedia=' + (props.localMedia ? 'set' : 'null'),
+                'props.localMedia.tracks=' + _lmTracks.length,
+                'props.videoMuted=' + !!props.videoMuted);
+        } catch (e) {
+            console.log('[video-preview] VideoBox constructor trace threw:',
+                (e && e.message) || String(e));
+        }
 
         // Per-mount key used by the remote RTCView. Stable within a
         // single mount (so re-renders don't churn the native view)
@@ -172,8 +208,16 @@ class VideoBox extends Component {
             this.props.call.statistics.on('stats', this.statistics);
         }
 
+		// localStream is null when VideoBox mounts BEFORE getLocalMedia
+		// resolves — on incoming-call accept we route-first to /call so
+		// AudioCallBox/VideoBox can begin mounting before the camera is
+		// ready. The post-mount stream flows in via
+		// componentWillReceiveProps's localMedia→localStream sync below.
+		// Without this null-guard the constructor threw on
+		// localStream.getVideoTracks() and the whole component failed to
+		// mount, leaving the preview tile blank for the rest of the call.
 		const localStream = this.state.localStream;
-		if (localStream.getVideoTracks().length > 0) {
+		if (localStream && localStream.getVideoTracks && localStream.getVideoTracks().length > 0) {
 			const track = localStream.getVideoTracks()[0];
 			// Apply the "answered while muted" track disable EXACTLY
 			// ONCE per call. Without this guard every re-mount of
@@ -286,6 +330,44 @@ class VideoBox extends Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
+        // localStream sync.
+        //
+        // The constructor seeds state.localStream from
+        // call.getLocalStreams()[0] || props.localMedia at mount time.
+        // For incoming-call accept that mount can happen BEFORE
+        // getLocalMedia returns, so the seed is null and the local-
+        // preview RTCView has no streamURL. Once props.localMedia
+        // arrives in this cWRP pass, propagate it into state.localStream
+        // too so the RTCView (which reads `this.localStreamUrl` from
+        // `state.localStream.toURL()`) actually has a stream to render.
+        // Prefer the call's own localStream if sylkrtc has already
+        // attached one — that's the canonical source once the answer
+        // SDP applies.
+        const _callLocalStream = (nextProps.call
+            && typeof nextProps.call.getLocalStreams === 'function'
+            && nextProps.call.getLocalStreams()[0]) || null;
+        const _resolvedLocalStream = _callLocalStream || nextProps.localMedia || this.state.localStream || null;
+        // [video-preview] trace: which source won? Did the localStream
+        // identity actually change this tick? Any of these going from
+        // "null" → "set" is the moment the preview tile should light up.
+        try {
+            const _src = _callLocalStream ? 'call.getLocalStreams()[0]'
+                         : (nextProps.localMedia ? 'props.localMedia'
+                         : (this.state.localStream ? 'state.localStream (kept)'
+                         : 'null'));
+            const _resolvedTracks = (_resolvedLocalStream
+                && typeof _resolvedLocalStream.getTracks === 'function')
+                  ? _resolvedLocalStream.getTracks() : [];
+            console.log('[video-preview] VideoBox cWRP localStream',
+                'call_id=' + ((nextProps.call && (nextProps.call.id || nextProps.call._callId)) || '?'),
+                'src=' + _src,
+                'resolved=' + (_resolvedLocalStream ? 'set' : 'null'),
+                'tracks=' + _resolvedTracks.length,
+                'changed=' + (_resolvedLocalStream !== this.state.localStream));
+        } catch (e) {
+            console.log('[video-preview] cWRP trace threw:', (e && e.message) || String(e));
+        }
+
         this.setState({
                        callContact: nextProps.callContact,
                        remoteUri: nextProps.remoteUri,
@@ -294,6 +376,7 @@ class VideoBox extends Component {
                        selectedContact: nextProps.selectedContact,
                        selectedContacts: nextProps.selectedContacts,
                        localMedia: nextProps.localMedia,
+                       localStream: _resolvedLocalStream,
                        terminatedReason: nextProps.terminatedReason,
 					   availableAudioDevices: nextProps.availableAudioDevices,
 					   selectedAudioDevice: nextProps.selectedAudioDevice,
@@ -301,6 +384,72 @@ class VideoBox extends Component {
 					   isLandscape: nextProps.isLandscape
                        });
 
+        // If we just transitioned from "no local stream" to "have one",
+        // wire the local-video-track health listeners onto it (mirrors
+        // the call-identity-change branch above). Without this, an
+        // initially-null mount that gains the stream via this cWRP
+        // would silently never get the listeners and the local
+        // preview tile would render frames but log "no video track"
+        // diagnostics on track events.
+        //
+        // CRITICAL: also re-run _enableTrackForPreview() when the
+        // stream lands AFTER mount. componentDidMount only calls it
+        // if state.localStream is already populated; on incoming
+        // accept the stream arrives post-mount via this cWRP, so the
+        // mount-time call early-returns and the video track stays
+        // attached to the RTCRtpSender. The remote then sees the
+        // camera while the "Enable camera?" modal is still up — the
+        // exact "remote sees me before I pressed Start camera" bug
+        // reported in the field. Calling it from here detaches the
+        // track via replaceTrack(null) the moment the stream arrives.
+        const _streamTransitionedToSet = _resolvedLocalStream && _resolvedLocalStream !== this.state.localStream;
+        if (_streamTransitionedToSet) {
+            try { this._attachLocalVideoTrackListeners(_resolvedLocalStream); }
+            catch (_) { /* listener wiring is best-effort */ }
+        }
+
+        // Preview-only-detach retry loop.
+        //
+        // _enableTrackForPreview must run AFTER the RTCRtpSender for
+        // the video track exists — which on incoming accept only
+        // happens once sylkrtc applies the SDP answer. The mount-time
+        // call from componentDidMount can fire before the sender
+        // materialises (then _videoSender() returns null and the
+        // detach is a no-op), and the cWRP-on-stream-transition call
+        // can also be too early.
+        //
+        // Retry on EVERY cWRP pass while the camera-enable prompt is
+        // up and we haven't successfully detached yet. cWRP fires on
+        // every prop update (insets, route, state.call updates from
+        // sylkrtc events, etc.) — by the time the call reaches a
+        // state where the modal could possibly be dismissed, we'll
+        // have had dozens of cWRP passes, and any of them where the
+        // sender now exists will perform the detach.
+        //
+        // Idempotence: _enableTrackForPreview itself sets
+        // this._previewTrackWasReEnabled = true on success, which we
+        // use as the loop guard so we don't keep calling replaceTrack
+        // forever.
+        if (this.state.videoEnableDialogVisible
+                && !this._previewTrackWasReEnabled
+                && _resolvedLocalStream) {
+            this._pendingPreviewStream = _resolvedLocalStream;
+            const _hadSenderBefore = !!this._previewSender;
+            try { this._enableTrackForPreview(); }
+            catch (e) {
+                console.log('[video-preview] cWRP _enableTrackForPreview threw:',
+                    (e && e.message) || String(e));
+            }
+            this._pendingPreviewStream = null;
+            const _hasSenderNow = !!this._previewSender;
+            if (this._previewTrackWasReEnabled) {
+                console.log('[video-preview] cWRP detach SUCCEEDED — preview-only mode active'
+                    + ' (sender existed=' + _hadSenderBefore + '→' + _hasSenderNow + ')');
+            } else {
+                console.log('[video-preview] cWRP detach pending — sender not ready yet, will retry on next prop update'
+                    + ' (resolvedLocalStream tracks=' + ((_resolvedLocalStream.getTracks && _resolvedLocalStream.getTracks().length) || 0) + ')');
+            }
+        }
     }
 
 	componentDidUpdate(prevProps, prevState) {
@@ -321,13 +470,89 @@ class VideoBox extends Component {
             // sender's actual track.
             const ls = this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0];
             const rs = this.props.call.getRemoteStreams && this.props.call.getRemoteStreams()[0];
+            // [video-preview] trace: did the SDP answer attach a
+            // localStream to the peer connection? Is it the SAME
+            // object we already had in state, or a fresh swap-in?
+            try {
+                const _lsTracks = (ls && typeof ls.getTracks === 'function')
+                                    ? ls.getTracks() : [];
+                console.log('[video-preview] VideoBox established',
+                    'call_id=' + ((this.props.call && (this.props.call.id || this.props.call._callId)) || '?'),
+                    'call.localStreams=' + (ls ? 'set' : 'null'),
+                    'ls.tracks=' + _lsTracks.length,
+                    'sameAsState=' + (ls === this.state.localStream),
+                    'state.localStream=' + (this.state.localStream ? 'set' : 'null'));
+            } catch (e) {
+                console.log('[video-preview] established trace threw:',
+                    (e && e.message) || String(e));
+            }
             this.setState({
                 localStream: ls || this.state.localStream,
                 remoteStream: rs || this.state.remoteStream,
             });
             this._startVideoStatsProbe();
+            this._logNegotiatedSdp();
         }
         this.forceUpdate();
+    }
+
+    /*
+     * Dump the SDP that we actually received from SylkServer/Janus, so
+     * we can diff it against what the peer (e.g. Blink/pjsip) thinks it
+     * sent. Janus's SIP plugin re-writes both directions: it terminates
+     * the SIP-side SDP, builds a fresh JSEP offer for libwebrtc on the
+     * WebRTC side, and vice versa. That re-write can silently strip
+     * codec attributes (rtcp-fb, transport-cc, extmap, rtx, fec), force
+     * a particular profile (RTP/SAVPF vs RTP/AVP), or change the codec
+     * preference order — any of which can explain "I added X on the
+     * pjsip side but the libwebrtc peer never sees X".
+     *
+     * We log:
+     *  - pc.remoteDescription.type ("offer" / "answer") and full sdp
+     *  - pc.localDescription.type and full sdp
+     *
+     * One-shot per call. Fires once when callStateChanged hits
+     * 'established' — at that point sylkrtc has applied
+     * setRemoteDescription / setLocalDescription on both sides and
+     * the peerconnection has the final negotiated SDPs.
+     */
+    _logNegotiatedSdp() {
+        if (this._sdpDumped) return;
+        this._sdpDumped = true;
+        const call = this.props.call;
+        const pc = call && call._pc;
+        if (!pc) {
+            console.log('[sdp-dump] no peer connection yet, skipping');
+            return;
+        }
+        const cid = (call && call.id) || '?';
+        const dump = (label, desc) => {
+            if (!desc || typeof desc.sdp !== 'string') {
+                console.log('[sdp-dump] cid=' + cid, label, '<none>');
+                return;
+            }
+            console.log('[sdp-dump] cid=' + cid, label, 'type=' + desc.type,
+                        'len=' + desc.sdp.length);
+            // RN's console buffers each console.log call as ONE line in
+            // metro.log. Chunk-by-line so the multi-line SDP arrives
+            // legibly instead of a single 1-2 KB blob that gets
+            // truncated mid-line by some log viewers.
+            const lines = desc.sdp.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].length === 0) continue;
+                console.log('[sdp-dump] cid=' + cid, label,
+                            '[' + (i + 1).toString().padStart(3, '0') + ']',
+                            lines[i]);
+            }
+        };
+        try {
+            const rem = pc.remoteDescription || pc.currentRemoteDescription;
+            const loc = pc.localDescription  || pc.currentLocalDescription;
+            dump('REMOTE', rem);
+            dump('LOCAL',  loc);
+        } catch (e) {
+            console.log('[sdp-dump] failed:', (e && e.message) || e);
+        }
     }
 
     // Diagnostic: periodically dump video receiver stats so we can see
@@ -338,15 +563,50 @@ class VideoBox extends Component {
     // the receive path that's been showing black on this build.
     _startVideoStatsProbe() {
         if (this._videoStatsTimer) return;
-        // Disable for production — the periodic getStats() calls can
-        // disturb the renderer. Flip back to true when diagnosing.
-        const ENABLE_VIDEO_STATS_PROBE = false;
-        if (!ENABLE_VIDEO_STATS_PROBE) return;
+        // Always on now — these are the only [video] diagnostic lines
+        // available when debugging Blink↔Sylk interop in the field.
+        // getStats() runs once every 2s for the FULL call duration; the
+        // bridge cost is negligible compared to the actual video
+        // pipeline so the "disturb the renderer" concern from the
+        // original draft no longer applies.
         const call = this.props.call;
         const pc = call && call._pc;
         if (!pc || typeof pc.getStats !== 'function') return;
 
         let ticks = 0;
+        // Hold deltas across ticks so we can show per-second rates
+        // instead of monotonically-growing counters.
+        const prev = { inB: 0, outB: 0, inF: 0, outF: 0 };
+        // Codec id → codec name + clockRate + payload type. Built once
+        // per call from the very first stats snapshot and re-checked
+        // every tick in case the codec was switched mid-call (mid-call
+        // codec switches are rare but possible via re-negotiation).
+        const codecCache = new Map();
+
+        const fmtRate = (curr, prevVal, secs) => {
+            if (!secs) return 0;
+            const d = (curr || 0) - (prevVal || 0);
+            return d < 0 ? 0 : Math.round(d / secs);
+        };
+
+        const lookupCodec = (stats, codecId) => {
+            if (!codecId) return null;
+            if (codecCache.has(codecId)) return codecCache.get(codecId);
+            let codec = null;
+            stats.forEach((r) => {
+                if (r.id === codecId && r.type === 'codec') codec = r;
+            });
+            if (codec) {
+                const desc = (codec.mimeType || '')
+                    + (codec.payloadType ? ' pt=' + codec.payloadType : '')
+                    + (codec.clockRate ? ' clk=' + codec.clockRate : '')
+                    + (codec.sdpFmtpLine ? ' fmtp=' + codec.sdpFmtpLine : '');
+                codecCache.set(codecId, desc);
+                return desc;
+            }
+            return null;
+        };
+
         const dump = async () => {
             ticks += 1;
             try {
@@ -356,30 +616,76 @@ class VideoBox extends Component {
                     if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
                     if (r.type === 'outbound-rtp' && r.kind === 'video') outbound = r;
                 });
-                const fmt = (r) => r ? {
-                    frR: r.framesReceived,
-                    frD: r.framesDecoded,
-                    keyF: r.keyFramesDecoded,
-                    drop: r.framesDropped,
-                    nack: r.nackCount,
-                    pli:  r.pliCount,
-                    fir:  r.firCount,
-                    dec:  r.decoderImplementation,
-                    enc:  r.encoderImplementation,
-                    bytes: r.bytesReceived || r.bytesSent,
-                    ssrc: r.ssrc,
-                    codec: r.codecId,
-                } : null;
-                console.log('[VideoStats]', 't=' + (ticks * 5) + 's',
-                            'inbound=', JSON.stringify(fmt(inbound)),
-                            'outbound=', JSON.stringify(fmt(outbound)));
+
+                // Inbound (remote → us) — what we're receiving from the peer.
+                if (inbound) {
+                    const codec = lookupCodec(stats, inbound.codecId) || '?';
+                    const w = inbound.frameWidth || 0;
+                    const h = inbound.frameHeight || 0;
+                    const fps = inbound.framesPerSecond
+                        || fmtRate(inbound.framesDecoded, prev.inF, 2);
+                    const kbps = Math.round(
+                        fmtRate(inbound.bytesReceived, prev.inB, 2) * 8 / 1000);
+                    console.log('[video] RX',
+                        'codec=' + codec,
+                        'size=' + (w && h ? w + 'x' + h : '?'),
+                        'fps=' + fps,
+                        'kbps=' + kbps,
+                        'frames(recv/dec/key/drop)=' + (inbound.framesReceived || 0) + '/'
+                            + (inbound.framesDecoded || 0) + '/'
+                            + (inbound.keyFramesDecoded || 0) + '/'
+                            + (inbound.framesDropped || 0),
+                        'lost=' + (inbound.packetsLost || 0),
+                        'jitter=' + (inbound.jitter || 0),
+                        'nack/pli/fir=' + (inbound.nackCount || 0) + '/'
+                            + (inbound.pliCount || 0) + '/'
+                            + (inbound.firCount || 0),
+                        'dec=' + (inbound.decoderImplementation || '?'),
+                    );
+                    prev.inB = inbound.bytesReceived || 0;
+                    prev.inF = inbound.framesDecoded || 0;
+                } else {
+                    console.log('[video] RX no inbound-rtp video stats yet'
+                        + ' (peer not sending, m=video may be inactive)');
+                }
+
+                // Outbound (us → remote) — what we're transmitting.
+                if (outbound) {
+                    const codec = lookupCodec(stats, outbound.codecId) || '?';
+                    const w = outbound.frameWidth || 0;
+                    const h = outbound.frameHeight || 0;
+                    const fps = outbound.framesPerSecond
+                        || fmtRate(outbound.framesEncoded, prev.outF, 2);
+                    const kbps = Math.round(
+                        fmtRate(outbound.bytesSent, prev.outB, 2) * 8 / 1000);
+                    console.log('[video] TX',
+                        'codec=' + codec,
+                        'size=' + (w && h ? w + 'x' + h : '?'),
+                        'fps=' + fps,
+                        'kbps=' + kbps,
+                        'frames(sent/enc/key)=' + (outbound.framesSent || 0) + '/'
+                            + (outbound.framesEncoded || 0) + '/'
+                            + (outbound.keyFramesEncoded || 0),
+                        'qualityLimitation=' + (outbound.qualityLimitationReason || 'none'),
+                        'nack/pli/fir=' + (outbound.nackCount || 0) + '/'
+                            + (outbound.pliCount || 0) + '/'
+                            + (outbound.firCount || 0),
+                        'enc=' + (outbound.encoderImplementation || '?'),
+                    );
+                    prev.outB = outbound.bytesSent || 0;
+                    prev.outF = outbound.framesEncoded || 0;
+                } else {
+                    console.log('[video] TX no outbound-rtp video stats yet'
+                        + ' (we are not sending, local m=video may be inactive)');
+                }
             } catch (e) {
-                console.log('[VideoStats] getStats failed:', (e && e.message) || e);
+                console.log('[video] stats poll failed:', (e && e.message) || e);
             }
-            if (ticks >= 6) this._stopVideoStatsProbe();
         };
-        // Fire after 5s, then every 5s thereafter (6 ticks = 30s window).
-        this._videoStatsTimer = setInterval(dump, 5000);
+        // Fire after 2s, then every 2s thereafter (no upper bound — we
+        // want to see when frames stop arriving, which is the bug under
+        // investigation).
+        this._videoStatsTimer = setInterval(dump, 2000);
     }
 
     _stopVideoStatsProbe() {
@@ -400,7 +706,9 @@ class VideoBox extends Component {
     // optional behavior — DTLS-only between us and the relay).
     zrtpMandatoryFailed(info) {
         if (this.unmounted) return;
-        utils.timestampedLog('[call] [ZRTP] VideoBox received zrtpMandatoryFailed:', info);
+        utils.timestampedLog('[call] [zrtp] call_id='
+            + (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)),
+            'VideoBox received zrtpMandatoryFailed:', info);
         this.setState({
             zrtpMandatoryFailedVisible: true,
             zrtpMandatoryFailedInfo: info,
@@ -419,7 +727,11 @@ class VideoBox extends Component {
     }
 
     _zrtpVerificationStatus() {
-        if (this.state.zrtpState !== 'key-agreed') return null;
+        // Bind to 'key-active' so the SAS modal is only meaningful when
+        // media is actually flowing through the AES-GCM decryptor — see
+        // the parallel comment in AudioCallBox.js / CallZrtp.js for why
+        // 'key-agreed' alone isn't a sufficient signal.
+        if (this.state.zrtpState !== 'key-active') return null;
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) return null;
         const stored = this.props.callContact
@@ -432,7 +744,7 @@ class VideoBox extends Component {
     }
 
     _onZrtpBadgePress() {
-        if (this.state.zrtpState === 'key-agreed') {
+        if (this.state.zrtpState === 'key-active') {
             this.setState({ zrtpDialogVisible: true });
         }
     }
@@ -451,6 +763,38 @@ class VideoBox extends Component {
     }
 
     /** Find the RTCRtpSender carrying the video track on this call's pc. */
+    /** Re-attach `track` to the video RTCRtpSender if the sender currently
+     *  has no track. Idempotent — if the sender already carries the same
+     *  track (or any video track) we leave it alone. Needed after
+     *  _onKeepAudioOnly() (the "Audio only" / Cancel choice on the
+     *  camera-enable modal): that path leaves the sender with
+     *  replaceTrack(null) in effect and clears _previewSender, so when
+     *  the user later re-enables the camera via the unmute toggle or by
+     *  picking a camera, just setting track.enabled = true is not enough
+     *  — the wire-level sender still has a null track and the remote
+     *  never gets frames. This helper closes that gap. */
+    _ensureSenderHasTrack(track) {
+        if (!track) return;
+        const pc = this.props.call && this.props.call._pc;
+        if (!pc || typeof pc.getSenders !== 'function') return;
+        let videoSender = null;
+        for (const s of pc.getSenders()) {
+            if (s.track && s.track.kind === 'video') {
+                // Sender already carries a video track — nothing to do.
+                return;
+            }
+            if (!s.track && !videoSender) videoSender = s;
+        }
+        if (!videoSender) return;
+        if (typeof videoSender.replaceTrack !== 'function') return;
+        try {
+            videoSender.replaceTrack(track);
+            console.log('[video-preview] sender re-attached to local track (was detached)');
+        } catch (e) {
+            console.log('[video-preview] sender re-attach failed:', (e && e.message) || String(e));
+        }
+    }
+
     _videoSender() {
         const pc = this.props.call && this.props.call._pc;
         if (!pc || typeof pc.getSenders !== 'function') return null;
@@ -476,29 +820,89 @@ class VideoBox extends Component {
      *  _onKeepAudioOnly.
      */
     _enableTrackForPreview() {
-        const localStream = this.state.localStream
+        // Resolution order:
+        //   1. this._pendingPreviewStream — set by cWRP when the stream
+        //      lands AFTER mount; setState hasn't committed yet so
+        //      state.localStream is still null at this call site.
+        //   2. this.state.localStream — committed state from a prior
+        //      setState (mount-time or earlier cWRP).
+        //   3. this.props.call.getLocalStreams()[0] — the call's own
+        //      stream once sylkrtc has attached it.
+        const localStream = this._pendingPreviewStream
+            || this.state.localStream
             || (this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0]);
         if (!localStream || !localStream.getVideoTracks) return;
         const tracks = localStream.getVideoTracks();
         if (tracks.length === 0) return;
         const track = tracks[0];
 
-        // Stash the track so we can re-attach it on Enable; keep a flag
-        // for the cleanup paths.
+        // Stash the track so we can re-attach it on Enable.
         this._previewVideoTrack = track;
-        this._previewTrackWasReEnabled = true;
 
         // 1. Detach from the wire — peer stops getting frames immediately.
+        //
+        // The _previewTrackWasReEnabled flag (which gates the retry
+        // loop in cWRP) is ONLY set on actual replaceTrack(null)
+        // success. The previous version set it unconditionally
+        // BEFORE the detach attempt, so when the sender was null
+        // (the typical case at first call — sender materialises only
+        // after the SDP answer applies) the flag was already true
+        // and cWRP's retry loop wouldn't try again. Result: the
+        // video track stayed attached to the sender, the remote saw
+        // the camera, and the user complained "the other party sees
+        // me before I press Start camera". Now we only declare
+        // success when the detach actually happens, and the retry
+        // loop keeps going until either it does or the modal closes.
+        // Two-tier gate:
+        //   A. Preferred: setParameters({active:false}) on each
+        //      encoding. The track STAYS attached to the sender so iOS
+        //      keeps the AVCaptureSession running — the local
+        //      preview / PIP RTCViews actually get frames. The
+        //      encoder produces nothing on the wire because every
+        //      encoding is inactive. This is the only way to get a
+        //      working local preview during the modal phase.
+        //   B. Fallback: replaceTrack(null). Used only if
+        //      setParameters isn't available or the sender has no
+        //      encodings yet (encoder not negotiated). The wire is
+        //      blocked but iOS will pause the camera — the local
+        //      preview tile / PIP will stay black until we
+        //      re-attach. That's acceptable as a fallback because
+        //      the alternative is leaking the camera to the remote.
         const sender = this._videoSender();
-        if (sender && typeof sender.replaceTrack === 'function') {
+        let usedSetParameters = false;
+        if (sender && typeof sender.getParameters === 'function'
+                   && typeof sender.setParameters === 'function') {
+            try {
+                const params = sender.getParameters();
+                if (params && Array.isArray(params.encodings) && params.encodings.length > 0) {
+                    // Remember the prior active flags so _onEnableCamera
+                    // can restore them exactly (don't blindly flip all
+                    // back to true — the user may have multiple
+                    // simulcast layers with deliberate active=false).
+                    this._previewPriorEncodings = params.encodings.map(e => ({ active: e.active !== false }));
+                    params.encodings.forEach(e => { e.active = false; });
+                    const p = sender.setParameters(params);
+                    if (p && typeof p.then === 'function') {
+                        p.catch(err => console.log('[video-preview] setParameters(active=false) rejected:', (err && err.message) || String(err)));
+                    }
+                    this._previewSender = sender;
+                    this._previewTrackWasReEnabled = true;
+                    usedSetParameters = true;
+                    console.log('[video-preview] sender encodings deactivated (track stays attached, camera keeps running)');
+                }
+            } catch (e) {
+                console.log('[video-preview] setParameters(active=false) threw:', (e && e.message) || String(e));
+            }
+        }
+        // Fallback path — only if setParameters wasn't possible.
+        if (!usedSetParameters && sender && typeof sender.replaceTrack === 'function') {
             try {
                 sender.replaceTrack(null);
                 this._previewSender = sender;
+                this._previewTrackWasReEnabled = true;
+                console.log('[video-preview] FALLBACK: sender.replaceTrack(null) — iOS will pause camera, preview will be black');
             } catch (e) {
-                // Best-effort; if replaceTrack isn't supported here we
-                // fall back to enabling the track without unhooking,
-                // which means brief leak — at least we logged it.
-                console.log('VideoBox: sender.replaceTrack(null) failed:', e && e.message);
+                console.log('[video-preview] sender.replaceTrack(null) failed:', e && e.message);
             }
         }
 
@@ -513,14 +917,39 @@ class VideoBox extends Component {
         if (this.props.call) this.props.call._sylkCameraPromptHandled = true;
         this.setState({ videoEnableDialogVisible: false });
 
-        // Re-attach the track to the wire so the remote sees video.
-        if (this._previewSender && this._previewVideoTrack
-            && typeof this._previewSender.replaceTrack === 'function') {
-            try { this._previewSender.replaceTrack(this._previewVideoTrack); }
-            catch (e) { console.log('VideoBox: re-attach replaceTrack failed:', e && e.message); }
+        const sender = this._previewSender;
+        if (sender) {
+            // Preferred path: we deactivated encodings via setParameters
+            // in _enableTrackForPreview. Reactivate them now so the
+            // encoder starts pushing frames on the wire.
+            if (this._previewPriorEncodings && typeof sender.getParameters === 'function'
+                                              && typeof sender.setParameters === 'function') {
+                try {
+                    const params = sender.getParameters();
+                    if (params && Array.isArray(params.encodings)) {
+                        params.encodings.forEach((e, i) => {
+                            const prior = this._previewPriorEncodings[i];
+                            e.active = prior ? prior.active : true;
+                        });
+                        const p = sender.setParameters(params);
+                        if (p && typeof p.then === 'function') {
+                            p.catch(err => console.log('[video-preview] setParameters(active=true) rejected:', (err && err.message) || String(err)));
+                        }
+                    }
+                } catch (e) {
+                    console.log('[video-preview] setParameters(active=true) threw:', (e && e.message) || String(e));
+                }
+            }
+            // Fallback path: we used replaceTrack(null). Re-attach the
+            // stashed track so the wire gets frames.
+            else if (this._previewVideoTrack && typeof sender.replaceTrack === 'function') {
+                try { sender.replaceTrack(this._previewVideoTrack); }
+                catch (e) { console.log('[video-preview] re-attach replaceTrack failed:', (e && e.message) || String(e)); }
+            }
         }
         this._previewSender = null;
         this._previewVideoTrack = null;
+        this._previewPriorEncodings = null;
 
         if (this.state.videoMuted && typeof this.toggleVideoMute === 'function') {
             this.toggleVideoMute();
@@ -529,14 +958,19 @@ class VideoBox extends Component {
     }
 
     _onKeepAudioOnly() {
-        // Track stays detached from the sender (replaceTrack was already
-        // called with null in _enableTrackForPreview). Disable it so the
-        // local preview goes black too, and clear our refs.
+        // Audio-only choice. Whatever gate we used in
+        // _enableTrackForPreview (setParameters or replaceTrack(null))
+        // stays in place — the encodings remain inactive / the sender
+        // stays detached, so the remote keeps seeing nothing. We
+        // additionally disable the track itself so any local sinks
+        // (PIP thumbnail) also go dark, matching the user's "audio
+        // only" intent.
         if (this._previewVideoTrack) {
             try { this._previewVideoTrack.enabled = false; } catch (e) {}
         }
         this._previewSender = null;
         this._previewVideoTrack = null;
+        this._previewPriorEncodings = null;
         this._previewTrackWasReEnabled = false;
         // Sticky: don't show the prompt again on this call even if the
         // user backgrounds and returns to the call screen.
@@ -601,6 +1035,36 @@ class VideoBox extends Component {
         // OS idle timer resumes once the video UI is torn down.
         // Counterpart to setKeepScreenOn(true) in componentDidMount.
         try { InCallManager.setKeepScreenOn(false); } catch (e) { /* best effort */ }
+
+        // Restore system chrome on the way out.
+        //
+        // toggleFullScreen() drives the device into immersive mode
+        // (StatusBar.setHidden(true) + Immersive.on() on Android) so
+        // that during a video call the user sees a clean canvas. If
+        // the remote hangs up — or the local user hangs up via the
+        // OS call notification, a hardware key, CallKit, or any path
+        // that skips toggleFullScreen() — the component unmounts
+        // while Android is still in immersive state. Result: the
+        // system bar and the navigation bar stay hidden after the
+        // call ends and the user is dropped back into the ready
+        // screen with no chrome until they swipe from the edge.
+        //
+        // Reset unconditionally here. StatusBar.setHidden(false) is
+        // a no-op if the bar is already showing; Immersive.off() is
+        // guarded with try/catch because the native side throws on
+        // platforms where it never armed. We also call
+        // disableFullScreen() so the parent's `fullscreen` state
+        // flag mirrors the native truth (the parent already calls
+        // it from hangupCall, but going through the prop here keeps
+        // the unmount path self-consistent for every termination
+        // route).
+        try { StatusBar.setHidden(false, 'fade'); } catch (e) { /* best effort */ }
+        if (Platform.OS === 'android') {
+            try { Immersive.off(); } catch (e) { /* best effort */ }
+            if (typeof this.props.disableFullScreen === 'function') {
+                try { this.props.disableFullScreen(); } catch (e) { /* best effort */ }
+            }
+        }
 
         this.unmounted = true;
         this._stopVideoStatsProbe();
@@ -709,6 +1173,12 @@ class VideoBox extends Component {
     }
 
     get showMyself() {
+		// During the camera-enable modal we render a NATIVE
+		// (RNCamera) preview tile instead of the webrtc PIP — see
+		// the renderCameraEnableModal block. Hide the PIP so the
+		// user doesn't see two corner copies of their own face
+		// fighting for attention while the modal is up.
+		if (this.state.videoEnableDialogVisible) return false;
 		return this.state.showMyself && !this.state.videoMuted && this.state.enableMyVideo;
 	}
 
@@ -775,7 +1245,34 @@ class VideoBox extends Component {
             if (this.state.videoMuted) {
                 DEBUG('Unmute camera');
                 track.enabled = true;
-                this.setState({videoMuted: false});
+                // If the user previously chose "Audio only" / Cancel on
+                // the camera-enable modal, the RTCRtpSender was left
+                // with replaceTrack(null) in effect. Setting
+                // track.enabled = true here only un-blacks the local
+                // preview — the wire-level sender still has no track,
+                // so the remote stays empty. Re-attach defensively;
+                // no-op if the sender is already wired up.
+                this._ensureSenderHasTrack(track);
+                // Pair the unmute with a forced "show mirror" if
+                // the user had previously hidden it. Rationale:
+                // a user who stopped video and also closed the
+                // mirror has no on-screen confirmation that their
+                // camera is actually running when they later tap
+                // Start video — the local preview is the most
+                // obvious feedback. Bringing the mirror back on
+                // every unmute (when it's currently hidden)
+                // avoids the "did I really turn it back on?"
+                // moment. Tapping Stop video again leaves the
+                // mirror state alone; tapping Hide mirror after
+                // unmute still hides it explicitly. We only
+                // change enableMyVideo when it's currently false,
+                // so the user's "already showing" state is
+                // preserved.
+                const update = {videoMuted: false};
+                if (this.state.enableMyVideo === false) {
+                    update.enableMyVideo = true;
+                }
+                this.setState(update);
             } else {
                 DEBUG('Mute camera');
                 track.enabled = false;
@@ -935,12 +1432,20 @@ class VideoBox extends Component {
         if (this.state.videoMuted) {
             this.toggleVideoMute();
         }
-        // No-op (apart from the unmute above) if we're already on the
-        // requested camera.
-        if (facing === this.state.cameraFacing) return;
+        // Defensive re-attach: if state.videoMuted was already false
+        // but the sender is still detached (e.g. the user pressed
+        // Audio-only on the camera-enable modal then opened the
+        // picker without ever using the mute toggle), toggleVideoMute
+        // above was a no-op and the sender still has null track.
+        // Cover that path here so picking a camera always results in
+        // wire-level video.
         const localStream = this.state.localStream;
         if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
+            this._ensureSenderHasTrack(track);
+            // No-op (apart from the unmute / re-attach above) if we're
+            // already on the requested camera.
+            if (facing === this.state.cameraFacing) return;
             track._switchCamera();
             this.setState({
                 mirror: !this.state.mirror,
@@ -956,7 +1461,18 @@ class VideoBox extends Component {
         // Main button reflects the currently active camera. Muted state is
         // shown as a big red X overlay on top of the camera icon so the user
         // knows both *which* camera is active *and* that it's muted.
-        const mainIcon = facing === 'front' ? 'camera-front' : 'camera-rear';
+        // Main camera button in the call action bar: always the
+        // same classic `video` (camcorder) glyph, regardless of
+        // whether the front or back camera is currently selected.
+        // The previous code swapped between `camera-front` /
+        // `camera-rear` which made the button shift glyphs each
+        // time the user switched cameras — visually unstable and
+        // didn't actually communicate anything useful (the user
+        // already knows which camera they're on). Per-option icons
+        // inside the picker dropdown stay distinct (camera-front /
+        // camera-rear), so the front/back distinction is still
+        // shown when it matters — at the moment of choice.
+        const mainIcon = 'video';
 
         // Pick the swap icon so its diagonal points through the corner
         // where the PIP thumbnail currently sits. Thumb in topLeft or
@@ -1001,21 +1517,37 @@ class VideoBox extends Component {
         // row already reflects the next state (e.g. "Hide Myself" vs
         // "Show Myself", "Mute Camera" hidden when muted), which is
         // enough to communicate current state.
-        const items = [
+        // When the camera is currently muted (i.e. video hasn't been
+        // started yet for this call, or the user paused it), collapse
+        // the picker down to JUST the two camera options. Tapping
+        // either implicitly starts video via selectCamera →
+        // toggleVideoMute → _ensureSenderHasTrack, so a separate
+        // "Start video" row would be redundant. The mirror toggle,
+        // swap-video and aspect-ratio rows also don't make sense when
+        // there is no active local video yet — hide them too.
+        const items = muted ? [
             ...cameraOptions,
-            // Hide the Unmute row entirely when muted — the only way to
-            // unmute from the picker is to choose one of the camera
-            // options above.
-            ...(muted ? [] : [{
+        ] : [
+            ...cameraOptions,
+            {
                 key: 'mute',
                 icon: 'video-off',
-                label: 'Mute Camera',
+                // Renamed from "Mute Camera" → "Stop video" to
+                // match the verbiage of other Sylk surfaces.
+                label: 'Stop video',
                 onPress: () => this.toggleVideoMute()
-            }]),
+            },
             {
                 key: 'myself',
                 icon: enableMyVideo ? 'eye-off' : 'eye',
-                label: enableMyVideo ? 'Hide Myself' : 'Show Myself',
+                // Renamed from "Hide Myself / Show Myself" →
+                // "Hide mirror / Show mirror" to match the
+                // wording the ConferenceHeader / CallOverlay
+                // kebab items + the ConferenceBox camera picker
+                // already use for the same action. Same toggle
+                // (toggleMyVideo), same eye-off / eye glyph swap;
+                // only the label text aligned across surfaces.
+                label: enableMyVideo ? 'Hide mirror' : 'Show mirror',
                 onPress: () => this.toggleMyVideo()
             },
             {
@@ -1147,8 +1679,12 @@ class VideoBox extends Component {
                                 alignItems: 'center'
                             }}
                         >
+                            {/* `close` is the regular-weight X
+                                glyph; the previous `close-thick`
+                                drew a heavier stroke that competed
+                                with the underlying camera icon. */}
                             <Icon
-                                name="close-thick"
+                                name="close"
                                 size={buttonSize + 14}
                                 color="#D32F2F"
                             />
@@ -1320,10 +1856,25 @@ class VideoBox extends Component {
     }
     
     get localStreamUrl() {
-		if (this.state.swapVideo) {
-			return this.state.remoteStream ? this.state.remoteStream.toURL() : null
+        // [video-preview] trace: log ONCE per change in url-vs-null so
+        // we don't spam the bridge on every re-render but still see
+        // each transition. The local RTCView reads this getter; if it
+        // returns null forever, the tile stays blank.
+        let _url;
+        if (this.state.swapVideo) {
+            _url = this.state.remoteStream ? this.state.remoteStream.toURL() : null;
+        } else {
+            _url = this.state.localStream ? this.state.localStream.toURL() : null;
         }
-		return this.state.localStream ? this.state.localStream.toURL() : null;
+        if (this._lastLoggedLocalStreamUrlState !== !!_url) {
+            this._lastLoggedLocalStreamUrlState = !!_url;
+            console.log('[video-preview] localStreamUrl ->',
+                _url ? ('set len=' + _url.length) : 'null',
+                'swapVideo=' + !!this.state.swapVideo,
+                'state.localStream=' + (this.state.localStream ? 'set' : 'null'),
+                'state.remoteStream=' + (this.state.remoteStream ? 'set' : 'null'));
+        }
+        return _url;
     }
 
     get remoteStreamUrl() {
@@ -1660,11 +2211,29 @@ class VideoBox extends Component {
         // alone on screen. Only shown once the key has been agreed —
         // the intermediate "negotiating" stage stays hidden so the user
         // doesn't see a transient yellow pill on every call setup.
+        //
+        // Gated on 'key-active' (decryptor counters confirm peer is
+        // emitting our AES-GCM ciphertext) NOT 'key-agreed' (handshake
+        // done but media flow not yet verified). See CallZrtp.js's
+        // _startMediaActivityPoller for the state-machine details.
         const renderZrtpBadge = () => {
             if (!this.state.callOverlayVisible) {
                 return null;
             }
-            if (this.state.zrtpState !== 'key-agreed') {
+            if (this.state.zrtpState !== 'key-active') {
+                return null;
+            }
+            // Suppress the pill while either the camera picker or the
+            // audio-device picker is open. The pill sits at zIndex:3000
+            // / elevation:40 and visually overlaps the floating picker
+            // panels that pop up from the call button bar; raising the
+            // pickers above the pill is fragile because the picker
+            // panels live deep inside several relatively-positioned
+            // wrappers whose stacking contexts trap zIndex locally.
+            // Hiding the pill while the user is interacting with a
+            // picker is the cleaner UX — the pill returns the moment
+            // the picker closes.
+            if (this.state.videoPickerVisible || this.state.audioDevicePickerVisible) {
                 return null;
             }
             let bg, label;
@@ -1679,7 +2248,7 @@ class VideoBox extends Component {
                 bg = 'rgba(230, 120, 0, 0.95)';
                 label = '🔒 zRTP end-to-end encrypted';
             }
-            const isTappable = this.state.zrtpState === 'key-agreed';
+            const isTappable = this.state.zrtpState === 'key-active';
             const inner = (
                 <View style={{
                     backgroundColor: bg,
@@ -1749,121 +2318,160 @@ class VideoBox extends Component {
             && this.props.callContact.localProperties
             && this.props.callContact.localProperties.zrtp;
 
+        // Pre-compute the modal preview's streamURL so we can render the
+        // RTCView OUTSIDE the <Portal> below — on iOS 26 +
+        // react-native-webrtc M124, an RTCView mounted inside a Portal
+        // never binds its native CALayer to the WebRTC video source
+        // (the tile stays black even though localStream is set,
+        // streamURL is valid, and the track is enabled — see the
+        // `[video-preview] modal render` log lines). The Portal is
+        // still needed for the dim backdrop + Audio-only / Enable-camera
+        // buttons (those rendering paths are fine inside it).
+        const _modalPreviewUrl = (this.state.videoEnableDialogVisible
+            && this.state.localStream
+            && this.state.localStream.toURL)
+              ? this.state.localStream.toURL()
+              : null;
+
+        // Camera-enable modal with a NATIVE camera preview tile.
+        //
+        // The preview is rendered via RNCamera (react-native-camera),
+        // NOT via the webrtc RTCView. Reason: both iOS and Android
+        // pause the webrtc-managed AVCaptureSession / CameraX session
+        // when the RTCRtpSender is gated (replaceTrack(null) or
+        // setParameters({active:false})), so an RTCView mounted
+        // during the modal stays black even though all JS state looks
+        // correct. RNCamera opens its OWN native camera handle that
+        // has nothing to do with webrtc, so the preview always shows
+        // live frames. The webrtc capture is paused during this
+        // window (the sender's encodings are inactive), which also
+        // frees the camera hardware for RNCamera to use without
+        // multi-output conflicts. On Enable / Audio-only we unmount
+        // RNCamera FIRST (release the camera handle), then either
+        // un-gate webrtc (Enable) or leave it gated (Audio-only).
+        const renderCameraEnableModal = () => {
+            if (!this.state.videoEnableDialogVisible) return null;
+            const _topInset = (this.state.insets && this.state.insets.top) ? this.state.insets.top : 24;
+            const _bottomInset = (this.state.insets && this.state.insets.bottom) ? this.state.insets.bottom : 0;
+            const _headerBarHeight = 60;
+            try {
+                console.log('[video-preview] modal render (RNCamera)',
+                    'cameraFacing=' + this.state.cameraFacing,
+                    'detached=' + !!this._previewTrackWasReEnabled);
+            } catch (e) {
+                console.log('[video-preview] modal render trace threw:', (e && e.message) || String(e));
+            }
+            return (
+                <View
+                    pointerEvents="box-none"
+                    style={[StyleSheet.absoluteFillObject, { zIndex: 5000, elevation: 50 }]}
+                >
+                    {/* Opaque backdrop — starts BELOW the navbar so the
+                        caller name + kebab menu stay visible. */}
+                    <View style={{position:'absolute', top: _topInset + _headerBarHeight, left:0, right:0, bottom:0, backgroundColor:'#000'}} pointerEvents="auto" />
+
+                    {/* Native RNCamera preview tile. Independent of
+                        webrtc — its own AVCaptureSession (iOS) /
+                        CameraX session (Android) gives us a live
+                        preview that survives the webrtc sender being
+                        gated. */}
+                    <View style={{
+                        position:'absolute',
+                        top: _topInset + _headerBarHeight + 8,
+                        left: 12,
+                        right: 12,
+                        bottom: _bottomInset + 200,
+                        borderRadius: 12,
+                        overflow: 'hidden',
+                        backgroundColor: '#222',
+                    }}>
+                        <RNCamera
+                            style={{flex: 1}}
+                            type={this.state.cameraFacing === 'back'
+                                ? RNCamera.Constants.Type.back
+                                : RNCamera.Constants.Type.front}
+                            captureAudio={false}
+                            // No permission prompts here — by the time the
+                            // modal is up sylkrtc has already obtained
+                            // camera permission via its own getUserMedia
+                            // flow. RNCamera will reuse the granted
+                            // permission and just open a capture session.
+                            androidCameraPermissionOptions={null}
+                            iosCameraPermissionOptions={null}
+                        />
+                        {/* Top-right camera-flip button — same icon /
+                            size / placement / styling as the audio→
+                            video upgrade preview in Call.js so the
+                            two surfaces look identical. */}
+                        <View style={{position: 'absolute', top: 12, right: 12}}>
+                            <IconButton
+                                icon="camera-flip"
+                                size={28}
+                                onPress={() => {
+                                    // No track._switchCamera here — RNCamera
+                                    // owns the capture, not webrtc. Flipping
+                                    // is just a re-render with the swapped
+                                    // type prop, which RNCamera handles
+                                    // natively.
+                                    this.setState({
+                                        cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front',
+                                        mirror: this.state.cameraFacing === 'front' ? false : true,
+                                    });
+                                }}
+                                style={{backgroundColor: 'rgba(255,255,255,0.85)'}}
+                            />
+                        </View>
+                        {/* Small label showing which camera is active. */}
+                        <View style={{
+                            position: 'absolute',
+                            bottom: 8,
+                            left: 8,
+                            backgroundColor: 'rgba(0,0,0,0.55)',
+                            borderRadius: 8,
+                            paddingHorizontal: 8,
+                            paddingVertical: 3,
+                        }}>
+                            <PaperText style={{ color: '#fff', fontSize: 12 }}>
+                                {this.state.cameraFacing === 'back' ? 'Back camera' : 'Front camera'}
+                            </PaperText>
+                        </View>
+                    </View>
+
+                    {/* Bottom panel with the question + actions. */}
+                    <View style={{
+                        position:'absolute',
+                        bottom: _bottomInset + 12,
+                        left: 12,
+                        right: 12,
+                        backgroundColor: 'white',
+                        borderRadius: 12,
+                        paddingTop: 14,
+                        paddingBottom: 6,
+                        paddingHorizontal: 16,
+                        elevation: 8,
+                    }} pointerEvents="auto">
+                        <PaperText style={{fontSize: 18, fontWeight: 'bold', marginBottom: 8}}>
+                            Enable your camera?
+                        </PaperText>
+                        <PaperText style={{marginBottom: 12}}>
+                            {(this.state.remoteDisplayName || this.state.remoteUri || 'The other party')} is calling with video. Pick whether to start your camera now, or stay audio-only and turn it on later.
+                        </PaperText>
+                        {/* Camera-flip lives in the top-right of the
+                            preview tile (matches the audio→video
+                            upgrade screen). Bottom row is just the
+                            Audio-only / Enable-camera actions. */}
+                        <View style={{flexDirection: 'row', justifyContent: 'flex-end'}}>
+                            <Button onPress={this._onKeepAudioOnly}>Audio only</Button>
+                            <Button mode="contained" onPress={this._onEnableCamera} style={{marginLeft: 8}}>Enable camera</Button>
+                        </View>
+                    </View>
+                </View>
+            );
+        };
+
         return (
             <View style={styles.container}>
                 <Portal>
-                    {this.state.videoEnableDialogVisible && (() => {
-                        const _topInset = (this.state.insets && this.state.insets.top) ? this.state.insets.top : 24;
-                        const _bottomInset = (this.state.insets && this.state.insets.bottom) ? this.state.insets.bottom : 0;
-                        // Reserve room for the call's Appbar.Header so the
-                        // caller name + kebab menu stay visible while the
-                        // user is deciding on the camera. headerBarHeight
-                        // matches what the rest of VideoBox uses for that
-                        // bar (kept in sync with the constant near render()).
-                        const _headerBarHeight = 60;
-                        const localStreamUrl = this.state.localStream && this.state.localStream.toURL
-                            ? this.state.localStream.toURL()
-                            : null;
-                        return (
-                            <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
-                                {/* Dim backdrop — starts BELOW the navbar so the caller
-                                    name and menu remain readable. Blocks taps on the
-                                    video underneath, but lets header taps pass through. */}
-                                <View style={{position:'absolute', top: _topInset + _headerBarHeight, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.55)'}} pointerEvents="auto" />
-
-                                {/* Local camera preview — fills the screen above the bottom panel.
-                                    Uses top + bottom anchors so the rectangle stretches to use
-                                    all available space; objectFit:'cover' fills with the video.
-                                    A small camera-switch button overlays the top-right corner
-                                    so the user can flip front/back before committing. */}
-                                {localStreamUrl && (
-                                    <View style={{
-                                        position:'absolute',
-                                        top: _topInset + _headerBarHeight + 8,
-                                        left: 12,
-                                        right: 12,
-                                        bottom: _bottomInset + 200,
-                                        borderRadius: 12,
-                                        overflow: 'hidden',
-                                        backgroundColor: '#222',
-                                    }}>
-                                        <RTCView
-                                            objectFit="cover"
-                                            streamURL={localStreamUrl}
-                                            mirror={this.state.cameraFacing !== 'back'}
-                                            style={{flex: 1}}
-                                        />
-                                        {/* Camera-flip button — top-right of the preview. */}
-                                        <View style={{
-                                            position: 'absolute',
-                                            top: 8,
-                                            right: 8,
-                                            backgroundColor: 'rgba(0,0,0,0.55)',
-                                            borderRadius: 24,
-                                        }}>
-                                            <IconButton
-                                                icon="camera-flip"
-                                                size={24}
-                                                color="#ffffff"
-                                                onPress={() => {
-                                                    // Same logic as renderVideoPicker's swap:
-                                                    // toggle front/back via the local track and
-                                                    // mirror the preview accordingly.
-                                                    const localStream = this.state.localStream;
-                                                    if (localStream && localStream.getVideoTracks().length > 0) {
-                                                        const track = localStream.getVideoTracks()[0];
-                                                        try { track._switchCamera(); } catch (e) {}
-                                                        this.setState({
-                                                            cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front',
-                                                        });
-                                                    }
-                                                }}
-                                            />
-                                        </View>
-                                        {/* Small label showing which camera is active. */}
-                                        <View style={{
-                                            position: 'absolute',
-                                            bottom: 8,
-                                            left: 8,
-                                            backgroundColor: 'rgba(0,0,0,0.55)',
-                                            borderRadius: 8,
-                                            paddingHorizontal: 8,
-                                            paddingVertical: 3,
-                                        }}>
-                                            <PaperText style={{ color: '#fff', fontSize: 12 }}>
-                                                {this.state.cameraFacing === 'back' ? 'Back camera' : 'Front camera'}
-                                            </PaperText>
-                                        </View>
-                                    </View>
-                                )}
-
-                                {/* Bottom panel with the question + actions. */}
-                                <View style={{
-                                    position:'absolute',
-                                    bottom: _bottomInset + 12,
-                                    left: 12,
-                                    right: 12,
-                                    backgroundColor: 'white',
-                                    borderRadius: 12,
-                                    paddingTop: 14,
-                                    paddingBottom: 6,
-                                    paddingHorizontal: 16,
-                                    elevation: 8,
-                                }} pointerEvents="auto">
-                                    <PaperText style={{fontSize: 18, fontWeight: 'bold', marginBottom: 8}}>
-                                        Enable your camera?
-                                    </PaperText>
-                                    <PaperText style={{marginBottom: 12}}>
-                                        {(this.state.remoteDisplayName || this.state.remoteUri || 'The other party')} is calling with video. Pick whether to start your camera now, or stay audio-only and turn it on later.
-                                    </PaperText>
-                                    <View style={{flexDirection: 'row', justifyContent: 'flex-end'}}>
-                                        <Button onPress={this._onKeepAudioOnly}>Audio only</Button>
-                                        <Button mode="contained" onPress={this._onEnableCamera} style={{marginLeft: 8}}>Enable camera</Button>
-                                    </View>
-                                </View>
-                            </View>
-                        );
-                    })()}
                     <Dialog
                         visible={this.state.zrtpDialogVisible}
                         onDismiss={() => this.setState({ zrtpDialogVisible: false })}
@@ -1888,13 +2496,13 @@ class VideoBox extends Component {
                             )}
                             {verificationStatus === 'mismatch' && zrtpStored && (
                                 <PaperText style={{ color: 'red', marginTop: 8 }}>
-                                    ⚠ The other party's identity key has changed since the last verification on {new Date(zrtpStored.verifiedAt).toLocaleString()}. Re-verify carefully before tapping Match.
+                                    ⚠ The other party's identity key has changed since the last verification on {new Date(zrtpStored.verifiedAt).toLocaleString()}. Re-verify carefully before tapping Confirm.
                                 </PaperText>
                             )}
                         </Dialog.Content>
                         <Dialog.Actions>
                             <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
-                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Match</Button>
+                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
                     {/* zRTP mandatory-mode handshake failure prompt. */}
@@ -2109,6 +2717,12 @@ class VideoBox extends Component {
                         )}
                     </View>
                 ) : null}
+
+                {/* Camera-enable modal (RTCView + backdrop + buttons).
+                    Rendered OUTSIDE the Portal so the iOS RTCView
+                    native CALayer binds correctly. See comments at the
+                    top of render() for the full story. */}
+                {renderCameraEnableModal()}
             </View>
         );
     }

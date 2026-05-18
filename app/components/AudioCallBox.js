@@ -1,5 +1,5 @@
 import React, { Component } from 'react';
-import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions } from 'react-native';
+import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions, DeviceEventEmitter } from 'react-native';
 import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -15,6 +15,29 @@ import LoadingScreen from './LoadingScreen';
 import TrafficStats from './BarChart';
 import AudioSpeedometer from './AudioSpeedometer';
 import VuMeter from './VuMeter';
+
+// Used by _logProposedCodec: we re-run sylkrtc's mungeSdp() with the
+// currently active preferred-codec settings against pc.localDescription.sdp
+// so the log reflects what was actually shipped over the wire (the
+// PeerConnection's localDescription holds the un-munged SDP that
+// createOffer produced; the munged SDP goes to the wire but isn't set
+// back on the PC).
+import * as sylkrtc from 'react-native-sylkrtc';
+
+// QoS instrumentation: emits [qos] CONNECT / STATS / DISCONNECT lines
+// into metro.log / adb logcat so qos/qos-log.sh + qos/qos-probe.py can
+// correlate WebRTC-reported loss with iperf3 UDP probes and the
+// server-side qos-server.py tcpdump diagnostic.
+//
+// Gated on __DEV__: in production builds the calls become no-ops, so
+// the JS↔native bridge isn't loaded with extra getStats() traffic and
+// no [qos] lines appear in logcat.
+import {
+    startQosLogging as _startQosLogging,
+    stopQosLogging  as _stopQosLogging,
+} from '../../qos/qos-stats';
+const startQosLogging = __DEV__ ? _startQosLogging : () => {};
+const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
 
 // Call recording.
 //   • Android: SylkCallRecorder taps libwebrtc AudioTrackSink for both
@@ -98,9 +121,15 @@ class AudioCallBox extends Component {
 			insets                      : this.props.insets,
 			isLandscape                 : this.props.isLandscape,
 			audioDevicePickerVisible    : false,
-            // ZRTP indicator state. null = not started, 'probing' = in
-            // negotiation (yellow), 'key-agreed' = active (green), 'failed'
-            // (silent — call stays SDES-only).
+            // ZRTP indicator state, mirroring CallZrtp.js's state machine:
+            //   null         not started
+            //   probing      handshake in flight
+            //   key-agreed   handshake done, decryptor installed, but
+            //                NOT yet proven to be processing peer's
+            //                ciphertext (pill stays OFF here)
+            //   key-active   receiver counters confirm peer is emitting
+            //                AES-GCM ciphertext (pill ON)
+            //   failed       handshake gave up (pill OFF)
             zrtpState                   : null,
             zrtpDialogVisible           : false,
             // Shown when the call is in zRTP-mandatory mode and the
@@ -117,6 +146,14 @@ class AudioCallBox extends Component {
             // automatically. Updated by the interval started in
             // _startAutoStartTimer.
             autoStartCountdown          : 0,
+            // The INITIAL total seconds the countdown was armed with
+            // (the value `autoStartCountdown` starts at on a fresh
+            // run). Held separately so the progress bar can render
+            // exactly that many segments — one cell per second — and
+            // keep them stable across pause/resume even though
+            // `autoStartCountdown` itself ticks down. 0 when no
+            // countdown is in flight.
+            autoStartTotal              : 0,
             // Local-mic call recording state. `isRecording` toggles the
             // record button look + the red dot/timer indicator.
             // `recordingElapsedSec` is incremented by a 1-Hz interval
@@ -187,6 +224,23 @@ class AudioCallBox extends Component {
         // Thus, if the call is not null it means we are beyond the 'local media' phase
         // so don't call the mediaPlaying prop.
 
+        // UI transition trace, AudioCallBox mount. This is the moment the
+        // user-visible audio call screen is rendered. Anything between
+        // [ui] 04 route_change_call_requested (in app.acceptCall) and
+        // this line is JS+RN render time; anything between this line and
+        // [ui] 11 answer_sent is waiting for the localMedia prop (i.e.
+        // getUserMedia + microphone warmup on Android).
+        const _cid = (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id))
+                  || (this.props.call && (this.props.call._callId || this.props.call.callId || this.props.call.id))
+                  || '?';
+        const _hasMediaProp = !!(this.props.localMedia);
+        try {
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '09 audiocallbox_mount call.state=' + (this.state.call && this.state.call.state)
+                + ' direction=' + (this.state.call && this.state.call.direction)
+                + ' hasLocalMediaProp=' + _hasMediaProp);
+        } catch (e) {}
+
         if (this.state.call != null) {
             switch (this.state.call.state) {
                 case 'established':
@@ -195,6 +249,12 @@ class AudioCallBox extends Component {
                     // sampler immediately so the meter populates
                     // without waiting for the next state change.
                     this._startVuSampler();
+                    // Same for [qos] telemetry — start it now so the
+                    // qos pipeline can correlate stats from the
+                    // already-running call.
+                    if (this.state.call._pc) {
+                        startQosLogging(this.state.call._pc);
+                    }
                     break;
                 case 'incoming':
                     this.props.mediaPlaying();
@@ -408,13 +468,24 @@ class AudioCallBox extends Component {
      *  can pick up from a frozen countdown value. The interval ticks
      *  once per second to update the display + sliding progress bar;
      *  the timeout fires the actual confirmStartCall when 0 is reached.
-     *  Idempotent — cancels any previous timer first. */
-    _startAutoStartTimer(seconds = 4) {
+     *  Idempotent — cancels any previous timer first.
+     *
+     *  `isResume` distinguishes a fresh start from picking the timer
+     *  back up after a pause. On a fresh start we (re)stamp
+     *  `autoStartTotal` so the progress bar draws exactly one cell
+     *  per second of the new duration; on resume we leave it alone so
+     *  the bar still shows the original total — only the lit-cell
+     *  count shrinks. */
+    _startAutoStartTimer(seconds = 4, isResume = false) {
         this._cancelAutoStartTimer();
         if (this.unmounted) return;
         const startSeconds = Math.max(1, seconds);
         // Clear the paused flag — running again means we're not frozen.
-        this.setState({ autoStartCountdown: startSeconds, autoStartPaused: false });
+        // On a fresh start, also reset `autoStartTotal` to the new
+        // duration so the bar redraws with the right number of cells.
+        const _patch = { autoStartCountdown: startSeconds, autoStartPaused: false };
+        if (!isResume) _patch.autoStartTotal = startSeconds;
+        this.setState(_patch);
         this._autoStartTickInterval = setInterval(() => {
             if (this.unmounted) {
                 this._cancelAutoStartTimer();
@@ -445,8 +516,13 @@ class AudioCallBox extends Component {
             clearInterval(this._autoStartTickInterval);
             this._autoStartTickInterval = null;
         }
-        if (!this.unmounted && this.state.autoStartCountdown !== 0) {
-            this.setState({ autoStartCountdown: 0 });
+        if (!this.unmounted
+            && (this.state.autoStartCountdown !== 0
+                || this.state.autoStartTotal !== 0)) {
+            // Reset both so the next fresh start re-stamps total from
+            // its own `seconds` arg, and so the bar isn't briefly left
+            // rendering empty cells from the previous duration.
+            this.setState({ autoStartCountdown: 0, autoStartTotal: 0 });
         }
     }
 
@@ -478,7 +554,10 @@ class AudioCallBox extends Component {
             if (this.props.confirmStartCall) this.props.confirmStartCall();
             return;
         }
-        this._startAutoStartTimer(remaining);
+        // isResume=true: preserve `autoStartTotal` so the progress
+        // bar keeps the same number of segments — only the lit count
+        // shrinks to `remaining`.
+        this._startAutoStartTimer(remaining, true);
     }
 
     zrtpStateChanged(newState) {
@@ -495,7 +574,9 @@ class AudioCallBox extends Component {
     // without E2E (downgrade to optional).
     zrtpMandatoryFailed(info) {
         if (this.unmounted) return;
-        utils.timestampedLog('[ZRTP] AudioCallBox received zrtpMandatoryFailed:', info);
+        utils.timestampedLog('[call] [zrtp] call_id='
+            + (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)),
+            'AudioCallBox received zrtpMandatoryFailed:', info);
         this.setState({
             zrtpMandatoryFailedVisible: true,
             zrtpMandatoryFailedInfo: info,
@@ -525,7 +606,12 @@ class AudioCallBox extends Component {
      *                   has changed since (key rotation OR potential MITM)
      */
     _zrtpVerificationStatus() {
-        if (this.state.zrtpState !== 'key-agreed') return null;
+        // The SAS verification dialog is only meaningful when media is
+        // actually flowing through the AES-GCM decryptor. 'key-agreed'
+        // alone means handshake done; 'key-active' means decryptor
+        // counters confirm the peer is encrypting. Bind both the pill
+        // and the SAS modal to 'key-active' for consistency.
+        if (this.state.zrtpState !== 'key-active') return null;
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) return null;
         const stored = this.props.callContact
@@ -538,7 +624,9 @@ class AudioCallBox extends Component {
     }
 
     _onZrtpBadgePress() {
-        if (this.state.zrtpState === 'key-agreed') {
+        // Match the pill's visibility gate — modal only opens when media
+        // is actually flowing through the decryptor (see renderZrtpBadge).
+        if (this.state.zrtpState === 'key-active') {
             this.setState({ zrtpDialogVisible: true });
         }
     }
@@ -591,6 +679,11 @@ class AudioCallBox extends Component {
 
         // Stop the VU meter sampler.
         this._stopVuSampler();
+
+        // Defensive: stop the [qos] sampler if it was still running
+        // (the 'terminated' state transition already does this, but a
+        // hard navigate-away can bypass that path).
+        stopQosLogging();
     }
 
     /** Start capturing the call to a compressed audio file. On
@@ -866,15 +959,86 @@ class AudioCallBox extends Component {
         return `${m}:${r < 10 ? '0' : ''}${r}`;
     }
 
-    /** Start a 100 ms interval that polls the peer connection for
+    /** Start a periodic interval that polls the peer connection for
      *  inbound audioLevel and feeds it into a smoothed envelope so
-     *  the VU meter responds quickly to speech but doesn't flicker
-     *  on every micro-pause. Idempotent. */
+     *  the VU meter responds to speech but doesn't flicker on every
+     *  micro-pause. Idempotent.
+     *
+     *  Interval is 200 ms (5 Hz) — a compromise between meter
+     *  responsiveness and bridge throughput. 10 Hz can overload
+     *  WebRTCModule.peerConnectionGetStats on Android and cause
+     *  audible inbound RTP loss; 1 Hz feels sluggish. If you see
+     *  "Excessive number of pending callbacks" warnings or hear
+     *  RTP loss correlated with the meter, raise this back toward
+     *  500–1000 ms. */
     _startVuSampler() {
         if (this._vuSamplerInterval) return;
         this._vuSamplerInterval = setInterval(() => {
             this._sampleAudioLevels();
-        }, 100);
+        }, 200);
+    }
+
+    /** Log the audio codecs we PROPOSED in our outgoing offer, in
+     *  preference order (the order they appear on the m=audio line).
+     *
+     *  Important: pc.localDescription.sdp holds the UN-munged SDP that
+     *  createOffer produced — the preferred-codec reorder is applied
+     *  later by sylkrtc's mungeSdp() and the munged result is sent on
+     *  the wire but never written back to pc. So to log what actually
+     *  shipped, we re-run mungeSdp() with the same preferences sylkrtc
+     *  has stored. */
+    _logProposedCodec() {
+        const call = this.state.call;
+        if (!call || !call._pc) return;
+        const rawSdp = call._pc.localDescription && call._pc.localDescription.sdp;
+        if (!rawSdp) return;
+        try {
+            // Re-apply the same preferred-codec munging sylkrtc did when
+            // it shipped the offer. If sylkrtc.utils isn't exposing the
+            // helpers (older builds), fall back to the raw SDP — at
+            // least the log is correct about what the PC had.
+            let sdp = rawSdp;
+            let prefAudioDebug = '(no util)';
+            let prefVideoDebug = '(no util)';
+            try {
+                const u = sylkrtc && sylkrtc.utils;
+                if (u && typeof u.mungeSdp === 'function') {
+                    const prefVideo = typeof u.getPreferredVideoCodec === 'function'
+                        ? u.getPreferredVideoCodec() : null;
+                    const prefAudio = typeof u.getPreferredAudioCodec === 'function'
+                        ? u.getPreferredAudioCodec() : null;
+                    prefAudioDebug = String(prefAudio);
+                    prefVideoDebug = String(prefVideo);
+                    sdp = u.mungeSdp(rawSdp, prefVideo, false, prefAudio);
+                }
+            } catch (e) {
+                prefAudioDebug = 'mungeSdp threw: ' + (e && e.message);
+            }
+            utils.timestampedLog('[call] codec preference at log-time: audio=', prefAudioDebug, 'video=', prefVideoDebug);
+
+            // Find the m=audio line.
+            const mLine = sdp.split(/\r?\n/).find(l => l.startsWith('m=audio'));
+            if (!mLine) return;
+            // m=audio 9 UDP/TLS/RTP/SAVPF 111 63 9 0 8 13 126
+            const ptList = mLine.split(/\s+/).slice(3); // payload types
+            // Index a=rtpmap:<pt> <codec>/<rate>[/<channels>] and a=fmtp:<pt> <params>
+            const rtpmap = {};
+            const fmtp   = {};
+            for (const line of sdp.split(/\r?\n/)) {
+                let m = line.match(/^a=rtpmap:(\d+)\s+(\S+)/);
+                if (m) rtpmap[m[1]] = m[2];
+                m = line.match(/^a=fmtp:(\d+)\s+(.*)$/);
+                if (m) fmtp[m[1]] = m[2];
+            }
+            const summary = ptList.map(pt => {
+                const codec = rtpmap[pt] || '?';
+                const params = fmtp[pt] ? ` (${fmtp[pt]})` : '';
+                return `${codec} pt=${pt}${params}`;
+            }).join(', ');
+            utils.timestampedLog('[call] proposed audio codecs (offer m-line order):', summary);
+        } catch (e) {
+            utils.timestampedLog('[call] codec parse failed:', (e && e.message) || e);
+        }
     }
 
     /** Stop the VU meter sampler. */
@@ -1013,6 +1177,29 @@ class AudioCallBox extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        // Two specific cwrp transitions matter for the accept-latency
+        // trace: the moment the sylkrtc Call prop first arrives (for
+        // outgoing or post-mount incoming), and the moment localMedia
+        // becomes non-null (the prop that unblocks answerCall on the
+        // incoming path). Logged with [ui] tag + call_id so the trace
+        // composes with the app.acceptCall lines.
+        try {
+            const newCall = nextProps.call;
+            const oldCall = this.state.call;
+            const _cid = (newCall && (newCall._callId || newCall.callId || newCall.id))
+                       || (oldCall && (oldCall._callId || oldCall.callId || oldCall.id))
+                       || '?';
+            if (newCall && newCall !== oldCall) {
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    '10 audiocallbox_call_prop_arrived state=' + newCall.state
+                    + ' direction=' + newCall.direction);
+            }
+            if (nextProps.localMedia && !this.props.localMedia) {
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    '11 audiocallbox_localmedia_prop_arrived — answerCall path next');
+            }
+        } catch (e) {}
+
         // Auto-record arming on the call's first appearance. Mirrors the
         // componentDidMount block — if the call object only arrives via
         // props after mount (typical for the outgoing flow), arm the
@@ -1115,11 +1302,30 @@ class AudioCallBox extends Component {
 
     callStateChanged(oldState, newState, data) {
         if (newState === 'established') {
+            // Final UI transition stage — call.state went 'accepted' →
+            // 'established', meaning ICE/DTLS finished and audio frames
+            // can now flow. attachStream wires the remote audio track
+            // to the audio renderer, which is what the user actually
+            // hears.
+            const _cid = (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)) || '?';
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '15 state_established — attachStream next (audio audible after this)');
+            this._logNegotiatedSdp();
             this.attachStream(this.state.call);
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '16 attachStream_done — UI transition complete');
             this.setState({reconnectingCall: false});
             // Kick off the VU meter sampler now that there's a media
             // stream to read audioLevel from.
             this._startVuSampler();
+            // Start [qos] CONNECT / STATS sampler against the same
+            // PeerConnection — see qos/qos-stats.js.
+            if (this.state.call && this.state.call._pc) {
+                startQosLogging(this.state.call._pc);
+            }
+            // One-shot: log the audio codecs proposed in our outgoing
+            // offer (m=audio payload-type list with the rtpmap names).
+            this._logProposedCodec();
             // Honour pre-call "armed" recording requests: if the user
             // tapped the record pill before the call connected, kick
             // off the recorder now that there's actually a media leg
@@ -1158,11 +1364,60 @@ class AudioCallBox extends Component {
                 utils.timestampedLog('[call] auto-stopping recording — call terminated');
                 this._stopCallRecording();
             }
+            // Emit [qos] DISCONNECT and stop the qos sampler.
+            stopQosLogging();
         }
     }
 
     attachStream(call) {
         this.setState({stream: call.getRemoteStreams()[0]}); //we dont use it anywhere though as audio gets automatically piped
+    }
+
+    /*
+     * Dump the SDP that we actually received from SylkServer/Janus, so
+     * we can diff it against what the SIP peer (e.g. Blink/pjsip)
+     * thinks it sent. Janus's SIP plugin terminates the SIP SDP and
+     * builds a fresh JSEP offer for libwebrtc on this side; the
+     * re-write can silently strip codec attributes (rtcp-fb,
+     * transport-cc, extmap, rtx, fec), force a particular profile,
+     * or reorder codecs.
+     *
+     * One-shot per call. Fires from callStateChanged on 'established'.
+     * Identical helper lives on VideoBox.js for the video-call path.
+     */
+    _logNegotiatedSdp() {
+        if (this._sdpDumped) return;
+        this._sdpDumped = true;
+        const call = this.state && this.state.call;
+        const pc = call && call._pc;
+        if (!pc) {
+            console.log('[sdp-dump] no peer connection yet, skipping');
+            return;
+        }
+        const cid = (call && (call.id || call._callId || call.callId)) || '?';
+        const dump = (label, desc) => {
+            if (!desc || typeof desc.sdp !== 'string') {
+                console.log('[sdp-dump] cid=' + cid, label, '<none>');
+                return;
+            }
+            console.log('[sdp-dump] cid=' + cid, label, 'type=' + desc.type,
+                        'len=' + desc.sdp.length);
+            const lines = desc.sdp.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].length === 0) continue;
+                console.log('[sdp-dump] cid=' + cid, label,
+                            '[' + (i + 1).toString().padStart(3, '0') + ']',
+                            lines[i]);
+            }
+        };
+        try {
+            const rem = pc.remoteDescription || pc.currentRemoteDescription;
+            const loc = pc.localDescription  || pc.currentLocalDescription;
+            dump('REMOTE', rem);
+            dump('LOCAL',  loc);
+        } catch (e) {
+            console.log('[sdp-dump] failed:', (e && e.message) || e);
+        }
     }
 
     escalateToConference(participants) {
@@ -1753,9 +2008,31 @@ class AudioCallBox extends Component {
         // only shown once keys are agreed (so the user doesn't see a
         // yellow pill flash on every setup). Distinct look once the user
         // has verified SAS for this contact.
-        // Tap the pill (when key-agreed) to open the SAS verification modal.
+        // Tap the pill (when key-active) to open the SAS verification modal.
+        //
+        // The pill is gated on 'key-active', NOT 'key-agreed': 'key-agreed'
+        // means the DH handshake completed and our setMediaEncryption /
+        // setMediaDecryption native calls returned without throwing, but
+        // it does NOT prove the peer is actually emitting AES-GCM
+        // ciphertext. The decryptor's per-frame counters do — CallZrtp.js
+        // polls receiver.getMediaDecryptionStats() every 500ms and
+        // promotes us to 'key-active' only when decryptedFrames climbs.
+        // It demotes back to 'key-agreed' (pill off) after 2 s of all-
+        // passthrough. So the pill is an HONEST media-encryption signal,
+        // not a "handshake done" signal.
         const renderZrtpBadge = () => {
-            if (this.state.zrtpState !== 'key-agreed') {
+            if (this.state.zrtpState !== 'key-active') {
+                return null;
+            }
+            // Suppress the pill while the audio-device picker is open.
+            // The pill sits above the call buttons and overlaps the
+            // floating device picker panel; raising the picker above
+            // the pill is fragile because it lives inside several
+            // relatively-positioned wrappers whose stacking contexts
+            // trap zIndex locally. Hiding the pill while the user is
+            // interacting with the picker is the cleaner UX — the
+            // pill returns the moment the picker closes.
+            if (this.state.audioDevicePickerVisible) {
                 return null;
             }
             let bg, label;
@@ -1844,13 +2121,13 @@ class AudioCallBox extends Component {
                             )}
                             {verificationStatus === 'mismatch' && stored && (
                                 <Text style={{ color: 'red', marginTop: 8 }}>
-                                    ⚠ The other party's identity key has changed since the last verification on {new Date(stored.verifiedAt).toLocaleString()}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Match.
+                                    ⚠ The other party's identity key has changed since the last verification on {new Date(stored.verifiedAt).toLocaleString()}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Confirm.
                                 </Text>
                             )}
                         </Dialog.Content>
                         <Dialog.Actions>
                             <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
-                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Match</Button>
+                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
                     {/* zRTP mandatory-mode handshake failure prompt. */}
@@ -1998,9 +2275,7 @@ class AudioCallBox extends Component {
 											// ticks 10 → 1 → blank.
 											style={{ marginRight: 12, minWidth: 180 }}
 										>
-											{this.state.autoStartCountdown > 0
-												? `Start audio call (${this.state.autoStartCountdown})`
-												: 'Start audio call'}
+											Start audio call
 										</Button>
 										<View style={{
 											flexDirection: 'row',
@@ -2021,7 +2296,11 @@ class AudioCallBox extends Component {
 											// with the button width.
 											marginRight: 12,
 										}}>
-											{[...Array(6)].map((_, i) => (
+											{/* One cell per second of the original
+											    countdown (`autoStartTotal`), filling
+											    from left as `autoStartCountdown` ticks
+											    down. So a 5 s timer = 5 bars max. */}
+											{[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
 												<View
 													key={'autostart-cell-folded-' + i}
 													style={{
@@ -2253,13 +2532,26 @@ class AudioCallBox extends Component {
                                             key={'cb-btn-startvideo-' + _callRemountKey}
                                             size={buttonSize}
                                             style={whiteButtonClass}
-                                            // MaterialCommunityIcons "video-plus" — a
-                                            // video camera glyph with a small plus in
-                                            // the corner. Communicates "add video to
-                                            // this call" much better than a bare
-                                            // "video" icon, which on its own reads as
-                                            // "you're already in a video call".
-                                            icon="video-plus"
+                                            // MaterialCommunityIcons "video-outline".
+                                            // Tried `video-plus` and
+                                            // `video-plus-outline` first — both MCI
+                                            // glyphs render the `+` INSIDE the camera
+                                            // lens (the only difference between the
+                                            // two is the silhouette stroke weight),
+                                            // which reads as a focus reticle / busy
+                                            // icon at the 24-32 px sizes we use. No
+                                            // MCI variant puts the `+` in a corner
+                                            // badge.
+                                            //
+                                            // Plain `video-outline` instead. The
+                                            // audio call screen only has hangup +
+                                            // this button when the call is
+                                            // established AND the peer supports
+                                            // video, so the meaning ("add video to
+                                            // this call") is unambiguous from
+                                            // context alone — the centred-`+` badge
+                                            // wasn't carrying load.
+                                            icon="video-outline"
                                             onPress={this.props.startVideo}
                                         />
                                     </TouchableHighlight>
@@ -2396,17 +2688,18 @@ class AudioCallBox extends Component {
                                             }
                                         }}
                                     >
-                                        {this.state.autoStartCountdown > 0
-                                            ? `Start audio call (${this.state.autoStartCountdown})`
-                                            : 'Start audio call'}
+                                        Start audio call
                                     </Button>
 
-                                    {/* 6-cell sliding bar — width
-                                        inherited from the wrapper
-                                        (= Start button width). Cell
-                                        count matches the 6-second
-                                        countdown so the rightmost
-                                        cell is fully filled at start. */}
+                                    {/* Sliding bar — width inherited
+                                        from the wrapper (= Start button
+                                        width). One cell per second of
+                                        the original countdown
+                                        (`autoStartTotal`), so the
+                                        rightmost cell is fully filled
+                                        at start regardless of whether
+                                        the timer was armed for 4 s, 5 s,
+                                        10 s, etc. */}
                                     <View style={{
                                         flexDirection: 'row',
                                         marginTop: 10,
@@ -2414,7 +2707,11 @@ class AudioCallBox extends Component {
                                         alignSelf: 'stretch',
                                         justifyContent: 'space-between',
                                     }}>
-                                        {[...Array(6)].map((_, i) => (
+                                        {/* One cell per second of the original
+                                            countdown (`autoStartTotal`), filling
+                                            from left as `autoStartCountdown` ticks
+                                            down. So a 5 s timer = 5 bars max. */}
+                                        {[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
                                             <View
                                                 key={'autostart-cell-' + i}
                                                 style={{

@@ -711,7 +711,24 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
 
     self->_started = YES;
 
-    // If deviceMap provided try to switch route
+    // If deviceMap provided try to switch route. Otherwise fall back to
+    // forceSelectBestDeviceAtStart, which walks the priority list
+    // [BLUETOOTH_SCO, WIRED_HEADSET, BUILTIN_EARPIECE, BUILTIN_SPEAKER].
+    //
+    // CRITICAL: do NOT run forceSelectBestDeviceAtStart after a successful
+    // explicit switch. That used to fire unconditionally and silently broke
+    // audio on speaker calls: after switchAudioRouteInternal({Speaker})
+    // pinned speaker (DefaultToSpeaker, BuiltInMic preferred input,
+    // overrideOutputAudioPort=Speaker), forceSelectBestDeviceAtStart would
+    // match BUILTIN_EARPIECE next in priority and call
+    // switchAudioRouteInternal({Earpiece}) — whose else branch clears the
+    // speaker override and preferredInput as a side effect (lines ~1040-
+    // 1042) BEFORE failing to find Receiver in availableInputs. The session
+    // ended up with no override + no preferred input; CallKit settled it on
+    // an inaudible route; the deferred speaker-re-apply 500 ms later only
+    // partially recovered. Symptom: iOS callee couldn't hear remote audio
+    // even though FrameDecryptor reported 1900+ frames AES-GCM-authenticated
+    // per minute.
     if (deviceMap && deviceMap.count > 0) {
       BOOL switched = [self switchAudioRouteInternal:deviceMap];
       if (!switched) {
@@ -719,10 +736,10 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
       } else {
         [SylkLogger log:@"[audio] start: switched to %@", deviceMap[@"type"]];
       }
+    } else {
+      [self forceSelectBestDeviceAtStart];
     }
 
-      [self forceSelectBestDeviceAtStart];
-      
     // Emit initial event
     [self sendReactNativeEvent];
 

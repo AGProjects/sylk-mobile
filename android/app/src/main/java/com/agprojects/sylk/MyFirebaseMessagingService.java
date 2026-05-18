@@ -389,12 +389,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			return false;
 		}
 	
-		// Do Not Disturb
-		if (isDnd) {
-			SylkLogger.e("[call] [fcm] Do not disturb me now");
-			showRejectedCallNotification(fromUri, "Do not disturb now");
-			return false;
-		}
+		// App DND (privacy.dnd in accounts.settings JSON) used to reject
+		// the call here. It no longer does. The caller is expected to
+		// re-read the same flag via isAppDndOn() and decide whether to
+		// suppress the ringtone — app DND now means "deliver the push
+		// silently", not "drop it". The OS DND path (isDndEnabled +
+		// canBypassDnd) is separate and still does what it did before.
+		// (isDnd is intentionally left read above so the log line above
+		// continues to show the current value for diagnostics.)
 	
 		if (!isActive) {
 			SylkLogger.e("[call] [fcm] Account is not active");
@@ -446,6 +448,49 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 		}
 	
+		return false;
+	}
+
+	/**
+	 * Read the in-app DND flag (privacy.dnd in accounts.settings JSON)
+	 * for the given account. Returns false if the row is missing, the
+	 * JSON is malformed, the DB is locked, or anything else goes wrong
+	 * — same fail-open posture as isAccountActive. Mirrors exactly the
+	 * read isAccountActive does so the two paths can't disagree.
+	 */
+	private boolean isAppDndOn(String account) {
+		if (account == null || account.isEmpty()) return false;
+
+		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+		if (!dbFile.exists()) {
+			return false;
+		}
+
+		SQLiteDatabase db = null;
+		Cursor cursor = null;
+		try {
+			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+			cursor = db.rawQuery(
+					"SELECT settings FROM accounts WHERE account = ?",
+					new String[]{account}
+			);
+			if (cursor != null && cursor.moveToFirst()) {
+				String settingsJson = cursor.getString(cursor.getColumnIndexOrThrow("settings"));
+				if (settingsJson != null && !settingsJson.isEmpty()) {
+					JSONObject root = new JSONObject(settingsJson);
+					JSONObject privacy = root.optJSONObject("privacy");
+					if (privacy != null) {
+						return privacy.optBoolean("dnd", false);
+					}
+				}
+			}
+		} catch (Exception e) {
+			SylkLogger.w("[call] [fcm] isAppDndOn: read failed (failing OFF) — " + e.getMessage());
+		} finally {
+			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
+		}
+
 		return false;
 	}
 
@@ -894,18 +939,39 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				IncomingCallService.handledCalls.add(callId);
 				return;
 			}
-	
-			// DND + bypass logic
-			boolean dnd = isDndEnabled(this);
 
-			if (dnd && !canBypassDnd(tags)) {
+			// Two DND gates with different semantics:
+			//
+			//   OS DND (NotificationManager interruption filter):
+			//     hard drop unless the contact is tagged bypassdnd.
+			//     This is unchanged.
+			//
+			//   App DND (privacy.dnd in accounts.settings JSON, the bell
+			//     on the navbar):
+			//     soft gate — let the push through but tell the
+			//     IncomingCallService to skip the ringtone. The
+			//     notification, full-screen intent, Telecom hand-off
+			//     still happen, so the call is visible and answerable;
+			//     it just doesn't ring. Contacts tagged bypassdnd
+			//     override this and ring normally.
+			boolean osDnd  = isDndEnabled(this);
+			boolean appDnd = isAppDndOn(lookupAccount);
+			boolean bypass = canBypassDnd(tags);
+
+			if (osDnd && !bypass) {
 				IncomingCallService.handledCalls.add(callId);
-				SylkLogger.d("[call] [fcm] DND active, dropping message from " + fromUri);
+				SylkLogger.d("[call] [fcm] OS DND active, dropping message from " + fromUri);
 				return; // notification dropped
 			}
-			
-			if (dnd && canBypassDnd(tags)) {
-				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri);
+
+			if ((osDnd || appDnd) && bypass) {
+				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri
+					+ " (osDnd=" + osDnd + " appDnd=" + appDnd + ")");
+			}
+
+			boolean suppressRingtone = appDnd && !bypass;
+			if (suppressRingtone) {
+				SylkLogger.d("[call] [fcm] App DND on, delivering silent push for " + fromUri);
 			}
 
             Intent serviceIntent = new Intent(this, IncomingCallService.class);
@@ -913,11 +979,13 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
             for (Map.Entry<String, String> entry : data.entrySet()) {
                 serviceIntent.putExtra(entry.getKey(), entry.getValue());
             }
-            
+
             serviceIntent.putExtra("displayName", displayName);
             serviceIntent.putExtra("phoneLocked", phoneLocked);
-			SylkLogger.d("[call] [fcm] phoneLocked: " + phoneLocked);
-			
+            serviceIntent.putExtra("suppress_ringtone", suppressRingtone);
+			SylkLogger.d("[call] [fcm] phoneLocked: " + phoneLocked
+				+ " suppress_ringtone: " + suppressRingtone);
+
 			ContextCompat.startForegroundService(this, serviceIntent);
 
         } else if (event.equals("cancel")) {

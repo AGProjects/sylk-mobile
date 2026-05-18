@@ -34,7 +34,7 @@ import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
 import SoundPlayer from 'react-native-sound-player';
 import OpenPGP from "react-native-fast-openpgp";
-import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setEncryptionMode } from './components/CallZrtp';
+import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams } from './components/CallZrtp';
 import ShortcutBadge from 'react-native-shortcut-badge';
 import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 import {Keyboard} from 'react-native';
@@ -82,14 +82,52 @@ const SYLK_E2EE_BUILD = 'build-2026-05-02-public-aesgcm';
 //   maxBitrateKbps         -> RTCRtpSender.setParameters on the video sender
 //
 // Reference points if you want to tune:
+//   480p / 24fps / 800  kbps  -> default. Reasonable mobile uplink,
+//                                survives moderate packet loss on 4G/5G.
 //   480p / 24fps / 1200 kbps  -> reasonable WiFi
 //   240p / 15fps / 250  kbps  -> congested networks / weak hardware
-export const VIDEO_PROFILE = {
-    width: null,
-    height: null,
-    frameRate: null,
-    maxBitrateKbps: null,
+//
+// We ship with 480p / 24fps / 800kbps on by default. Without these the
+// camera was happily handing libwebrtc 1088x1088 @ 45fps on some
+// devices (phones picking their "square selfie" mode when given only
+// an `ideal:` hint), which produced the high-bitrate / high-loss
+// playback artefacts on the receiving side. The constraints in
+// getLocalMedia are emitted with BOTH `ideal:` and `max:` so the
+// camera driver is actually forced to honour them.
+//
+// Three named profiles — the user picks one in Preferences → Video.
+// They roughly cover the standard tiers in the consumer video-call
+// world:
+//   '480p'   Standard.   Reasonable mobile uplink, survives moderate
+//                        packet loss on 4G/5G. Default.
+//   '720p'   Balanced.   Solid WiFi / strong cellular.
+//   '1080p'  High.       Robust uplink (home/office WiFi, wired).
+// The selection is persisted through the same accounts.settings JSON
+// blob every other Preferences knob uses (setAccountSetting →
+// _persistAccountSettings → SQL accounts.settings column), stored
+// under accountSetting.device.videoProfile alongside cameraDevice /
+// micDevice / proximityEnabled. Persists per-account, but the
+// device.* namespace already exists for "this phone's hardware
+// preferences" so the placement is consistent with the existing
+// pattern.
+export const VIDEO_PROFILES = {
+    '480p':  { width:  640, height:  480, frameRate: 24, maxBitrateKbps:  800 },
+    '720p':  { width: 1280, height:  720, frameRate: 30, maxBitrateKbps: 1500 },
+    '1080p': { width: 1920, height: 1080, frameRate: 30, maxBitrateKbps: 3000 },
 };
+export const VIDEO_PROFILE_IDS = Object.keys(VIDEO_PROFILES);
+export const VIDEO_PROFILE_DEFAULT_ID = '480p';
+
+// `VIDEO_PROFILE` is kept as the live, mutable view of the active
+// profile so code that already reads from it (e.g. the boot-time
+// banner log a few lines below) keeps working without a rewrite.
+// The shape is the same as before. _applyVideoProfileId() (method on
+// App, defined further down) mutates these fields in place when the
+// user picks a different profile in Preferences and immediately
+// pushes the new values into setVideoEncoderTarget /
+// setVideoMaxBitrateKbps so future getLocalMedia calls and any
+// reapplyVideoEncoderParams pulls see the new profile.
+export const VIDEO_PROFILE = { ...VIDEO_PROFILES[VIDEO_PROFILE_DEFAULT_ID] };
 
 // Preferred video codec — applies to both outgoing offers and incoming
 // answers. Both endpoints need to agree.
@@ -212,6 +250,17 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // shape under .camera / .mic.
         cameraDevice: null,
         micDevice: null,
+        // Active video quality profile id. One of VIDEO_PROFILE_IDS
+        // ('480p' / '720p' / '1080p'); resolved to a concrete
+        // {width, height, frameRate, maxBitrateKbps} via
+        // VIDEO_PROFILES[id]. Drives getLocalMedia's camera-side
+        // constraints and the libwebrtc-side encoder caps applied
+        // by CallZrtp.setVideoEncoderTarget /
+        // setVideoMaxBitrateKbps. Settable from Preferences →
+        // Video; changing it re-applies to the active call via
+        // reapplyVideoEncoderParams so the bump takes effect mid-
+        // call without a hang-up + redial.
+        videoProfile: VIDEO_PROFILE_DEFAULT_ID,
     }),
     // ---- Privacy / call-acceptance & messaging behaviour ---------------
     // Moved out of the dedicated SQL columns
@@ -398,6 +447,14 @@ require('./utils').timestampedLog('[video] preferred video codec at start =',
 require('./utils').timestampedLog('[audio] preferred audio codec at start =',
     PREFERRED_AUDIO_CODEC || 'default');
 setVideoMaxBitrateKbps(VIDEO_PROFILE.maxBitrateKbps);
+// Encoder-side downscale + framerate cap. Camera-side getUserMedia
+// constraints are only a hint on Android (react-native-webrtc maps
+// them to Camera2 preview-size selection, which silently picks a
+// larger mode when no exact match exists — e.g. Motorola razrs handing
+// us 1088x1088 / 30 fps despite our 640x480 / 24 fps ask). These
+// encoder knobs run AFTER the camera inside libwebrtc, so they
+// guarantee the wire-side resolution and framerate match the profile.
+setVideoEncoderTarget(VIDEO_PROFILE.width, VIDEO_PROFILE.height, VIDEO_PROFILE.frameRate);
 
 // Verify the native sylk_e2ee binary on both Android and iOS reports the
 // same SYLK_E2EE_BUILD string the JS expects. Mismatch means one of:
@@ -1103,6 +1160,14 @@ class Sylk extends Component {
             targetUri: '',
             missedTargetUri: '',
             loading: null,
+            // Truthy = "Answering call..." floating overlay is visible.
+            // Set the instant the user presses Accept (either in-app
+            // alert or OS CallKeep). Cleared when changeRoute reaches
+            // /call, when AudioCallBox componentDidMount fires for the
+            // matching call, or after a 15 s safety timeout. Value is
+            // the callUUID so renderers can verify the overlay is for
+            // the right call before clearing.
+            answeringCallOverlayUUID: null,
             syncConversations: false,
             // True from the moment requestSyncConversations actually
             // dispatches a sync to the server until the server response
@@ -1534,6 +1599,28 @@ class Sylk extends Component {
 				  // route to contacts, parse link, etc
 				}
 			  );
+
+			// Dismiss the "Answering call..." fullscreen overlay the
+			// moment AudioCallBox.componentDidMount fires for any call.
+			// The overlay was painted on press to mask the ~1 s RN
+			// mount latency between accept and the real call screen;
+			// once the real screen is up, hand off without a
+			// perceptible gap. The 8 s safety timer set on press is
+			// a backstop in case AudioCallBox never mounts (e.g. the
+			// call was rejected mid-transition).
+			DeviceEventEmitter.addListener('SylkAudioCallBoxMounted',
+				(payload) => {
+					if (this.state.answeringCallOverlayUUID) {
+						utils.timestampedLog('[call] [ui] call_id='
+							+ (payload && payload.call_id || '?'),
+							'overlay_dismissed_on_mount');
+						this.setState({answeringCallOverlayUUID: null});
+					}
+					if (this._answeringOverlayTimer) {
+						clearTimeout(this._answeringOverlayTimer);
+						this._answeringOverlayTimer = null;
+					}
+				});
         }
         		
 		DarkModeManager.addListener((isDark) => {
@@ -1842,7 +1929,7 @@ class Sylk extends Component {
 	  const id = setTimeout(() => controller.abort(), timeout);
 	
 	  try {
-	    console.log('fetchWithTimeout', url);
+	    //console.log('fetchWithTimeout', url);
 		const response = await fetch(url, {
 		  ...options,
 		  signal: controller.signal,
@@ -1981,7 +2068,7 @@ class Sylk extends Component {
 			utils.timestampedLog('[config] discovery URL (checkOnly)', configurationUrl);
 			await this.downloadSylkConfiguration(domain, configurationUrl, checkOnly);
 		} else if (configurationUrl) {
-			console.log('Sylkserver configuration URL', configurationUrl);
+			//console.log('Sylkserver configuration URL', configurationUrl);
 			utils.timestampedLog('[config] discovery URL', configurationUrl);
 			this.setState({ configurationUrl: configurationUrl });
 			await this.downloadSylkConfiguration(domain, configurationUrl, false, closeConnection, force);
@@ -3077,7 +3164,7 @@ class Sylk extends Component {
             );
             const rows = results.rows;
             if (!rows || rows.length === 0) {
-                console.log('migrateBarePhoneUris: no candidate rows found');
+                //console.log('migrateBarePhoneUris: no candidate rows found');
                 return;
             }
             console.log('migrateBarePhoneUris: found', rows.length, 'candidate row(s)');
@@ -3148,13 +3235,13 @@ class Sylk extends Component {
 	     }
 
 	     if (this.state.accountId != prevState.accountId) {
-		     console.log(this.cdu_counter, 'CDU --- accountId changed', prevState.accountId, '->', this.state.accountId);
+		     //console.log(this.cdu_counter, 'CDU --- accountId changed', prevState.accountId, '->', this.state.accountId);
 			 this.cdu_counter = this.cdu_counter + 1;
 			 this.loadAccount();
 		 }
 
 	     if (this.state.account != prevState.account) {
-			 console.log(this.cdu_counter, 'CDU --- account did change', this.state.account?.id);
+			 //console.log(this.cdu_counter, 'CDU --- account did change', this.state.account?.id);
 			 this.cdu_counter = this.cdu_counter + 1;
 			 if (this.state.account && this.state.accountVerified) {
 //				 this.requestSyncConversations(this.state.lastSyncId);
@@ -3185,12 +3272,12 @@ class Sylk extends Component {
 		 }
 
 	     if (this.state.accountVerified != prevState.accountVerified) {
-			 console.log(this.cdu_counter, 'CDU --- accountVerified did change', this.state.accountVerified);
+			 //console.log(this.cdu_counter, 'CDU --- accountVerified did change', this.state.accountVerified);
 			 this.cdu_counter = this.cdu_counter + 1;
 	     }
 
 	     if (this.state.keyStatus !== prevState.keyStatus) {
-			 console.log(this.cdu_counter, 'CDU --- keyStatus changed', 'local', this.state.keyStatus.existsLocal, 'remote', this.state.keyStatus.existsOnServer);
+			 //console.log(this.cdu_counter, 'CDU --- keyStatus changed', 'local', this.state.keyStatus.existsLocal, 'remote', this.state.keyStatus.existsOnServer);
 			 this.cdu_counter = this.cdu_counter + 1;
 			 this.generateKeysIfNecessary();
 	     }
@@ -3211,7 +3298,7 @@ class Sylk extends Component {
  		 }
 
 	     if (this.state.syncConversations != prevState.syncConversations) {
-			 console.log(this.cdu_counter, 'CDU --- syncConversations did change', this.state.syncConversations);
+			 //console.log(this.cdu_counter, 'CDU --- syncConversations did change', this.state.syncConversations);
 			 this.cdu_counter = this.cdu_counter + 1;
 	     }
 
@@ -3263,7 +3350,7 @@ class Sylk extends Component {
 	     }
 
 		 if (!utils.deepEqual(this.state.keyStatus, prevState.keyStatus)) {
-			 console.log(this.cdu_counter, 'CDU --- keyStatus changed', this.state.keyStatus);
+			 //console.log(this.cdu_counter, 'CDU --- keyStatus changed', this.state.keyStatus);
 			 this.cdu_counter = this.cdu_counter + 1;
 		 }
 		
@@ -3563,7 +3650,7 @@ class Sylk extends Component {
 	}
 
     createTestNumbers() {
-        console.log('createTestNumbers');
+        //console.log('createTestNumbers');
         let test_numbers = this.state.testNumbers;
 
         test_numbers.forEach((item) => {
@@ -4960,6 +5047,17 @@ class Sylk extends Component {
     changeRoute(route, reason) {
         console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('[app] Route', this.currentRoute, '->', route, ':', reason);
+        // Overlay dismissal is now driven by the
+        // SylkAudioCallBoxMounted DeviceEventEmitter event (see the
+        // listener in constructor) — that's the precise moment the
+        // real AudioCallBox is on screen, with no perceived gap.
+        // The only route-driven clear we still need is when the user
+        // navigates away from the call without ever reaching
+        // /call (rare: rejection mid-transition).
+        if (this.state.answeringCallOverlayUUID
+            && (route === '/ready' || route === '/login')) {
+            this.setState({answeringCallOverlayUUID: null});
+        }
         let messages = this.state.messages;
 
         // Codec + encryption-mode restore: when leaving /conference or
@@ -5332,7 +5430,7 @@ class Sylk extends Component {
     }
 
     async initConfiguration(configurationJson, origin=null) {
-		console.log('--- initConfiguration', origin);
+		//console.log('--- initConfiguration', origin);
 		//console.log('--- initConfiguration', configurationJson, origin);
 		try {
 			configuration = await JSON.parse(configurationJson);
@@ -5468,6 +5566,70 @@ class Sylk extends Component {
 		}
 
 		console.log('IncomingCallAction callUUID:', payload);
+
+		// EARLY ROUTE FLIP for ACCEPT actions: when the user taps
+		// Accept on the OS-native incoming call screen and the app was
+		// in background / just booting, callEventHandler is the very
+		// first JS code that runs on the accept. If we leave the route
+		// at the default (/ready or /login), the user sees ContactsList
+		// for 1-2 s while callKeepAcceptCall's own route-flip catches
+		// up. Doing changeRoute('/call') HERE — before backToForeground,
+		// before any other setState — gets AudioCallBox mounted in the
+		// first render commit. Reject actions don't need this; they
+		// stay on the user's previous screen.
+		//
+		// We ALSO seed the remote-party state (targetUri + callContact)
+		// in the same setState batch so AudioCallBox's CallOverlay
+		// renders the calling party's name + avatar on its very first
+		// frame — instead of showing "Starting call…" with no name
+		// while the rest of the flow catches up. The push payload
+		// already carries enough info (fromUri, optional displayName)
+		// to populate these.
+		const _isAcceptAction = (
+			payload.action === 'ACTION_ACCEPT_AUDIO'
+			|| payload.action === 'ACTION_ACCEPT_VIDEO'
+			|| payload.action === 'ACTION_ACCEPT'
+		);
+		if (_isAcceptAction) {
+			utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+				'00 push_launch_route_first — flipping to /call BEFORE backToForeground');
+			// Seed remote-party state synchronously so the FIRST render
+			// of AudioCallBox already knows the caller. fromUri is the
+			// authoritative URI from the OS-native payload; if the
+			// native side also supplied a display name (some builds do
+			// via payload.displayName / payload.fromDisplayName), we
+			// keep that. Contact lookup is best-effort — if no Sylk
+			// contact entry exists for this URI we just leave
+			// callContact null and Call.lookupContact will refine the
+			// display name later via the AB-contacts path.
+			const _fromUri = payload.fromUri;
+			const _displayName = payload.displayName
+				|| payload.fromDisplayName
+				|| payload.from_display_name
+				|| (_fromUri && _fromUri.split('@')[0])
+				|| null;
+			const _seedState = {};
+			if (_fromUri) {
+				_seedState.targetUri = _fromUri;
+				try {
+					const c = this.lookupContact && this.lookupContact(_fromUri);
+					if (c) _seedState.callContact = c;
+				} catch (e) { /* ignore — Call.js refines later */ }
+			}
+			if (_displayName) _seedState.remoteDisplayName = _displayName;
+			if (Object.keys(_seedState).length > 0) {
+				this.setState(_seedState);
+				utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+					'00 push_launch_seeded_party uri=' + _fromUri
+					+ ' displayName=' + (_displayName || '?')
+					+ ' contact=' + (!!_seedState.callContact));
+			}
+			try { this.changeRoute('/call', 'push_launch_accept'); }
+			catch (e) {
+				utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+					'00 push_launch_route_first threw:', (e && e.message) || e);
+			}
+		}
 
 	    this.backToForeground();
 		this.handledCalls.add(payload.callUUID);
@@ -5795,7 +5957,7 @@ class Sylk extends Component {
         });
 
         getPhoneNumber().then(myPhoneNumber => {
-            console.log('myPhoneNumber', myPhoneNumber);
+            //console.log('myPhoneNumber', myPhoneNumber);
             this.setState({myPhoneNumber: myPhoneNumber});
         });
 
@@ -6472,6 +6634,39 @@ class Sylk extends Component {
 
         const callUUID = data['session-id'];
         const media = {audio: true, video: data['media-type'] === 'video'};
+
+        // Mirror the early-route flip from callEventHandler — if this
+        // FCM notification interaction is an Accept on a call, jump to
+        // /call before any other work so AudioCallBox is mounted in
+        // the first render commit instead of the user seeing
+        // ContactsList briefly first. Also seed the remote-party
+        // state from the FCM payload so the CallOverlay shows the
+        // caller name + avatar on the first frame.
+        if ((event === 'incoming_session' || event === 'incoming_conference_request')
+            && notification.action === 'Accept') {
+            const _target = (event === 'incoming_conference_request') ? '/conference' : '/call';
+            const _fromUri = data['from_uri'];
+            const _displayName = data['from_display_name'] || data['displayName']
+                || (_fromUri && _fromUri.split('@')[0]) || null;
+            const _seedState = {};
+            if (_fromUri) {
+                _seedState.targetUri = _fromUri;
+                try {
+                    const c = this.lookupContact && this.lookupContact(_fromUri);
+                    if (c) _seedState.callContact = c;
+                } catch (e) {}
+            }
+            if (_displayName) _seedState.remoteDisplayName = _displayName;
+            if (Object.keys(_seedState).length > 0) {
+                this.setState(_seedState);
+            }
+            utils.timestampedLog('[call] [ui] call_id=' + (callUUID || '?'),
+                '00 fcm_launch_route_first — flipping to ' + _target
+                + ' uri=' + _fromUri + ' displayName=' + (_displayName || '?')
+                + ' contact=' + (!!_seedState.callContact));
+            try { this.changeRoute(_target, 'fcm_push_accept'); }
+            catch (e) { /* swallow — accept call will redo it */ }
+        }
 
         if (event === 'incoming_conference_request') {
             if (notification.action === 'Accept') {
@@ -7799,6 +7994,17 @@ class Sylk extends Component {
         }
         setEncryptionMode(rtp.encryptionMode || 'zrtp_optional');
 
+        // Resolve the persisted video profile id (480p / 720p / 1080p)
+        // and push it into the CallZrtp module's encoder/bitrate
+        // setters AND the live VIDEO_PROFILE export. Same shape the
+        // boot-time setup uses (right above the App class), just
+        // sourced from this account's saved blob rather than the
+        // default constant. _applyVideoProfileId tolerates unknown
+        // ids by falling back to the default.
+        const dev = props.device || {};
+        this._applyVideoProfileId(dev.videoProfile || VIDEO_PROFILE_DEFAULT_ID,
+            { skipLiveCallReapply: true });
+
         // Dump the full settings dict at startup so the on-device log
         // captures exactly what was loaded from accounts.settings.
         // Printed as a key/value table (one preference per line) for
@@ -7911,7 +8117,96 @@ class Sylk extends Component {
         if (path === 'rtp.encryptionMode') {
             setEncryptionMode(value || 'zrtp_optional');
         }
+        if (path === 'device.videoProfile') {
+            // Re-resolve VIDEO_PROFILE, push to CallZrtp's
+            // setVideoEncoderTarget / setVideoMaxBitrateKbps, AND
+            // walk every live call so the new caps reach the
+            // already-installed video sender via
+            // reapplyVideoEncoderParams. Future calls (and the
+            // upgrade path) will pick up the new VIDEO_PROFILE
+            // automatically when getLocalMedia / _buildUpgradeVideoConstraints
+            // read it.
+            this._applyVideoProfileId(value || VIDEO_PROFILE_DEFAULT_ID);
+        }
         return next;
+    }
+
+    /**
+     * Apply a named video profile (one of VIDEO_PROFILE_IDS) to all
+     * the runtime knobs that depend on it:
+     *   * VIDEO_PROFILE         — the exported live view, mutated in
+     *                             place so existing references keep
+     *                             working without rebinding.
+     *   * setVideoMaxBitrateKbps / setVideoEncoderTarget — push to
+     *                             CallZrtp so the next handshake's
+     *                             _installSenders applies the new
+     *                             caps via setParameters.
+     *   * reapplyVideoEncoderParams(currentCall) — for the case
+     *                             where the user changes profile
+     *                             mid-call. _applyVideoBitrate
+     *                             is one-shot; reapply forces it to
+     *                             re-run against the already-
+     *                             installed video sender.
+     *
+     * Unknown ids fall back to VIDEO_PROFILE_DEFAULT_ID so a profile
+     * removed in a future build doesn't leave the runtime stuck on
+     * a no-op zero-bitrate cap.
+     *
+     * `opts.skipLiveCallReapply` — used by _applyAccountSettings on
+     * login, where there can't be a live call yet and the reapply
+     * walk is wasted work.
+     */
+    _applyVideoProfileId(id, opts = {}) {
+        const resolved = VIDEO_PROFILES[id]
+            ? id
+            : VIDEO_PROFILE_DEFAULT_ID;
+        const profile = VIDEO_PROFILES[resolved];
+        // Mutate the live export in place. Anything that already has
+        // a reference to VIDEO_PROFILE (notably getLocalMedia in
+        // app.js and _buildUpgradeVideoConstraints in Call.js via
+        // getVideoEncoderTarget) keeps working.
+        VIDEO_PROFILE.width          = profile.width;
+        VIDEO_PROFILE.height         = profile.height;
+        VIDEO_PROFILE.frameRate      = profile.frameRate;
+        VIDEO_PROFILE.maxBitrateKbps = profile.maxBitrateKbps;
+
+        // Push the new caps into CallZrtp's module-level lets.
+        setVideoMaxBitrateKbps(profile.maxBitrateKbps);
+        setVideoEncoderTarget(profile.width, profile.height, profile.frameRate);
+
+        try {
+            utils.timestampedLog('[video] profile =', resolved,
+                '(' + profile.width + 'x' + profile.height
+                + ' @' + profile.frameRate + 'fps'
+                + ', cap ' + profile.maxBitrateKbps + ' kbps)');
+        } catch (_) {}
+
+        if (opts.skipLiveCallReapply) return;
+
+        // Live-call refresh — walk every active sylkrtc Call we know
+        // about so the profile change takes effect immediately on
+        // the call in progress. Belt-and-braces: callKeeper is the
+        // primary registry; currentCall covers the common path even
+        // if callKeeper hasn't seen this call yet.
+        try {
+            const seen = new Set();
+            const touch = (c) => {
+                if (!c || seen.has(c)) return;
+                seen.add(c);
+                try { reapplyVideoEncoderParams(c); }
+                catch (e) {
+                    console.log('[video] reapply for call failed:',
+                        e && e.message ? e.message : e);
+                }
+            };
+            touch(this.state.currentCall);
+            if (this.callKeeper && this.callKeeper._calls) {
+                for (const [, c] of this.callKeeper._calls) touch(c);
+            }
+        } catch (e) {
+            console.log('[video] live-call reapply walk threw:',
+                e && e.message ? e.message : e);
+        }
     }
 
     /**
@@ -8064,7 +8359,7 @@ class Sylk extends Component {
     }
 
     async loadAccounts(init=false) {
-        console.log(' --- loadAccounts (init=', init, ')');
+        //console.log(' --- loadAccounts (init=', init, ')');
 
 		// NOTE: the `verified` SQL column is deprecated and no longer read
 		// or written. Auto-login is now gated on `active == 1` alone: the
@@ -9063,9 +9358,17 @@ class Sylk extends Component {
                 }
 
                 utils.timestampedLog('[call]', callUUID, direction, 'terminated reason', data.reason, '->', reason);
-                
+
+                // If we prewarmed the mic for this call and it ended
+                // without ever consuming the stream (missed call, busy,
+                // declined remotely), close it now so we don't leak the
+                // mic.
+                if (this._prewarmedMicCallUUID === callUUID) {
+                    this._closePrewarmedMicStream('terminated');
+                }
+
                 //this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
-                
+
                 if (play_busy_tone) {
                     //utils.timestampedLog('Play busy tone');
                     InCallManager.stop({busytone: '_BUNDLE_'});
@@ -9639,7 +9942,7 @@ class Sylk extends Component {
     }
     
     processRegistration(accountId, password, displayName) {
-		console.log('[register] processRegistration');
+		//console.log('[register] processRegistration');
 
         if (!accountId) {
 			return;
@@ -9694,7 +9997,18 @@ class Sylk extends Component {
         const options = {
             account: accountId,
             password: password,
-            displayName: displayName || ''
+            displayName: displayName || '',
+            // Tell sylk-server (and through it, the Janus SIP plugin) to
+            // surface custom X-* headers in incoming-session WebSocket
+            // events. Without this, the Janus SIP plugin strips them and
+            // call.headers arrives empty — Sylk-ZRTP escalation from raw
+            // SIP peers (sip-session3, Blink) silently fails the
+            // capability check on the receiving mobile because the
+            // X-Sylk-ZRTP advert never makes it across the bridge.
+            // Use the broad 'X-' prefix so any future X-Sylk-* header
+            // (X-Sylk-App, X-Sylk-Token-Provider, future capability
+            // flags) is forwarded automatically too.
+            incomingHeaderPrefixes: ['X-']
         };
 
         if (this.state.connection._accounts.has(options.account)) {
@@ -9824,14 +10138,85 @@ class Sylk extends Component {
         this.getLocalMedia();
     }
 
-    getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null) {    // eslint-disable-line space-infix-ops
+    /**
+     * Drop the prewarmed mic stream if it exists. Safe to call multiple
+     * times. The `reason` argument is logged for tracing — values seen
+     * in practice are 'new_incoming' (a fresh INVITE arrived; we drop
+     * the previous prewarm), 'rejected' (user tapped reject before
+     * answering), 'terminated' (call ended), 'consumed' (handed off
+     * to getLocalMedia — caller now owns the lifetime).
+     */
+    _closePrewarmedMicStream(reason) {
+        if (this._prewarmedMicStream) {
+            const _stream = this._prewarmedMicStream;
+            // Defensive: if state.localMedia somehow points at this
+            // same stream (shouldn't happen on the audio-only prewarm
+            // path, but cheap to handle), clear it so the UI isn't
+            // left with a reference to a closed track.
+            if (this.state && this.state.localMedia === _stream) {
+                this.setState({localMedia: null});
+            }
+            try {
+                sylkrtc.utils.closeMediaStream(_stream);
+            } catch (_) {}
+            utils.timestampedLog('[call] [ui] call_id='
+                + (this._prewarmedMicCallUUID || '?'),
+                'prewarm_mic_closed reason=' + reason);
+            this._prewarmedMicStream = null;
+        }
+        this._prewarmedMicCallUUID = null;
+    }
+
+    getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null, callUUID=null) {    // eslint-disable-line space-infix-ops
         // DEBUG: very first line of the function — if this doesn't log,
         // the new build hasn't actually loaded.
-        utils.timestampedLog('[media] getLocalMedia ENTER route=', nextRoute,
+        // Resolve the call_id for log filtering. Callers that don't know
+        // the UUID (e.g. /preview) pass null; we fall back to the
+        // currently-active accepted call's id and finally to '?'.
+        const _cid = callUUID
+            || (this.state && this.state.incomingCall && this.state.incomingCall.id)
+            || (this.state && this.state.currentCall && this.state.currentCall.id)
+            || '?';
+        utils.timestampedLog('[call] [media] call_id=' + _cid,
+                             'getLocalMedia ENTER route=', nextRoute,
                              'mediaConstraints=', JSON.stringify(mediaConstraints));
         let callType = mediaConstraints.video ? 'video': 'audio';
 
-        utils.timestampedLog('Get local media for', callType, 'call');
+        utils.timestampedLog('[call] [media] call_id=' + _cid,
+                             'Get local media for', callType, 'call');
+
+        // Mic-prewarm fast path: if we opened the mic during ringing
+        // (incomingCallFromWebSocket) and the user accepted with
+        // audio-only constraints, hand the prewarmed stream straight
+        // to the caller. Saves the ~1-2 s Android AudioRecord warmup
+        // on the press-Accept critical path.
+        //
+        // Audio-only is the ONLY safe short-circuit on iOS. The
+        // camera CANNOT be prewarmed (sylkrtc's call.answer() opens
+        // its own AVCaptureVideoDataOutput and iOS refuses a second
+        // connection to the same camera) so video accepts always
+        // fall through to a fresh getUserMedia({audio,video}) here.
+        if (this._prewarmedMicStream
+            && this._prewarmedMicCallUUID === callUUID
+            && mediaConstraints.audio === true
+            && !mediaConstraints.video) {
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '07 getUserMedia_ok (mic-prewarm reused — no warmup needed)');
+            const prewarmedStream = this._prewarmedMicStream;
+            // Caller now owns the stream lifetime — closeLocalMedia
+            // / endCall closes it. Clear our reference so a future
+            // incoming call doesn't try to re-use the consumed stream.
+            this._prewarmedMicStream = null;
+            this._prewarmedMicCallUUID = null;
+            this.setState({localMedia: prewarmedStream});
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '08 localMedia_state_set — prop flows to AudioCallBox via cwrp (prewarm fast path)');
+            if (nextRoute !== null) {
+                this.setState({loading: null});
+                setTimeout(() => this.changeRoute(nextRoute, 'media_ready_prewarm'), 0);
+            }
+            return;
+        }
 
         let constraints;
         try {
@@ -9843,17 +10228,32 @@ class Sylk extends Component {
                 // there's no Safari, and the bare reference threw a
                 // ReferenceError that silently broke the whole getLocalMedia
                 // chain.
+                //
+                // ideal+max pair: `ideal` is just a hint and most phone
+                // camera drivers ignore it when they have a preferred
+                // mode (e.g. iOS/Android phones default to 1088x1088 or
+                // 1920x1080 in some "square selfie" / "portrait" modes,
+                // ignoring an `ideal: 640` hint). `max` is a hard
+                // constraint that the driver MUST honour or
+                // getUserMedia will reject — so we always get back a
+                // frame size <= our profile.
+                const w = VIDEO_PROFILE.width  != null ? VIDEO_PROFILE.width  : 640;
+                const h = VIDEO_PROFILE.height != null ? VIDEO_PROFILE.height : 480;
                 constraints.video = {
-                    width:  { ideal: VIDEO_PROFILE.width  != null ? VIDEO_PROFILE.width  : 640 },
-                    height: { ideal: VIDEO_PROFILE.height != null ? VIDEO_PROFILE.height : 480 },
+                    width:  { ideal: w, max: w },
+                    height: { ideal: h, max: h },
                 };
                 if (VIDEO_PROFILE.frameRate != null) {
-                    constraints.video.frameRate = { ideal: VIDEO_PROFILE.frameRate };
+                    constraints.video.frameRate = {
+                        ideal: VIDEO_PROFILE.frameRate,
+                        max:   VIDEO_PROFILE.frameRate,
+                    };
                 }
             }
             //utils.timestampedLog('[getLocalMedia] constraints built ok');
         } catch (e) {
-            utils.timestampedLog('[media] getLocalMedia constraints build threw:', e && e.message);
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'getLocalMedia constraints build threw:', e && e.message);
             return;
         }
 
@@ -9861,14 +10261,17 @@ class Sylk extends Component {
             logger.debug('getLocalMedia(), (modified) mediaConstraints=%o', constraints);
             //utils.timestampedLog('[getLocalMedia] logger.debug returned ok');
         } catch (e) {
-            utils.timestampedLog('[media] getLocalMedia logger.debug threw:', e && e.message);
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'getLocalMedia logger.debug threw:', e && e.message);
         }
 
-        utils.timestampedLog('[media] getLocalMedia route=', nextRoute, 'constraints=', JSON.stringify(constraints));
+        utils.timestampedLog('[call] [media] call_id=' + _cid,
+            'getLocalMedia route=', nextRoute, 'constraints=', JSON.stringify(constraints));
 
         navigator.mediaDevices.enumerateDevices()
         .then((devices) => {
-            utils.timestampedLog('[media] getLocalMedia enumerateDevices ok, count=', devices.length);
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'getLocalMedia enumerateDevices ok, count=', devices.length);
             const cameraPref = this.state.accountSetting
                 && this.state.accountSetting.device
                 && this.state.accountSetting.device.cameraDevice;
@@ -9899,17 +10302,21 @@ class Sylk extends Component {
             });
         })
         .catch((error) => {
-            utils.timestampedLog('[media] Error: device enumeration failed:', error);
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'Error: device enumeration failed:', error);
         })
         .then(() => {
-            utils.timestampedLog('[media] getLocalMedia calling getUserMedia');
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'getLocalMedia calling getUserMedia');
             return navigator.mediaDevices.getUserMedia(constraints)
         })
         .then((localStream) => {
-            utils.timestampedLog('[[media]] getUserMedia OK, route=', nextRoute);
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '07 getUserMedia_ok — localStream acquired, setState({localMedia}) next');
             clearTimeout(this.loadScreenTimer);
-            //utils.timestampedLog('Local media acquired');
             this.setState({localMedia: localStream});
+            utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                '08 localMedia_state_set — prop flows to AudioCallBox via cwrp');
             if (nextRoute !== null) {
                 this.setState({loading: null});
                 setTimeout(() => this.changeRoute(nextRoute, 'media_ready'), 0);
@@ -9919,7 +10326,8 @@ class Sylk extends Component {
             }
         })
         .catch((error) => {
-            utils.timestampedLog('[media] Access to local media failed, trying audio only', error);
+            utils.timestampedLog('[call] [media] call_id=' + _cid,
+                'Access to local media failed, trying audio only', error);
             navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false
@@ -9932,7 +10340,8 @@ class Sylk extends Component {
                 }
             })
             .catch((error) => {
-                utils.timestampedLog('[media] Access to local media failed:', error);
+                utils.timestampedLog('[call] [media] call_id=' + _cid,
+                    'Access to local media failed:', error);
                 clearTimeout(this.loadScreenTimer);
                 this._notificationCenter.postSystemNotification("Can't access camera or microphone");
                 this.updateLoading(null, 'get_media');
@@ -9977,7 +10386,7 @@ class Sylk extends Component {
 
         console.log('callKeepStartConference', options);
 
-        this.changeRoute('/conference');
+        this.changeRoute('/conference', 'callKeepStartConference');
 
         this.backToForeground();
 
@@ -10031,7 +10440,7 @@ class Sylk extends Component {
         const micAllowed = await this.requestMicPermission('callKeepStartConference');
         if (!micAllowed) {
             this._notificationCenter.postSystemNotification('Microphone permission denied');
-            this.changeRoute('/ready');
+            this.changeRoute('/ready', 'mic_permission_denied');
             return;
         }
 
@@ -10149,9 +10558,9 @@ class Sylk extends Component {
         }
 
         if (options.conference) {
-            this.changeRoute('/conference');
+            this.changeRoute('/conference', 'callKeepStartCall');
         } else {
-            this.changeRoute('/call');
+            this.changeRoute('/call', 'callKeepStartCall');
         }
 
         if (Platform.OS === 'android') {
@@ -10280,33 +10689,96 @@ class Sylk extends Component {
     async callKeepAcceptCall(callUUID, options={}) {
         // called from user interaction with Old alert panel
         // options used to be media to accept audio only but native panels do not have this feature
-        
-        this.hideInternalAlertPanel('accept');
-        
-        utils.timestampedLog('Callkeep accept [call]', callUUID, options);
+        //
+        // UI transition trace, OS-native (CallKit/CallKeep) accept path —
+        // mirrors the in-app acceptCall trace but with the additional
+        // permission-check stages this path goes through.
+
+        // Dedupe: on Android, CallKeep fires the accept event ~1 s apart
+        // for the same call. Without this guard the second invocation
+        // runs the full hideInternalAlertPanel + setState + changeRoute
+        // path again, and its setState cycle races the first invocation
+        // — pushing the visible route transition out by 2-3 s (visible
+        // in metro.log as a 3 s gap between '02 alert_hidden' and
+        // '04 route_change_call_requested').
+        //
+        // Important: this dedupe is SCOPED to callKeepAcceptCall only.
+        // It does NOT share state with the in-app `acceptCall` handler,
+        // because callKeepAcceptCall doesn't actually acquire media —
+        // it just routes + permissions, then forwards to
+        // this.callKeeper.acceptCall(callUUID) → CallManager.acceptCall
+        // → sylkAcceptCall → app.acceptCall, where the real
+        // getLocalMedia happens. A shared dedupe would block that
+        // forwarded acceptCall and the call would get stuck at
+        // "waiting for local media".
+        if (this._lastCallKeepAcceptUUID === callUUID
+                && Date.now() - (this._lastCallKeepAcceptTs || 0) < 2000) {
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                'DUPLICATE callKeep accept within 2 s — ignoring (likely Android CallKeep re-fire)');
+            return;
+        }
+        this._lastCallKeepAcceptUUID = callUUID;
+        this._lastCallKeepAcceptTs = Date.now();
+
+        // Overlay removed by request — AudioCallBox is the call screen
+        // and mounts directly via the route flip below. No extra
+        // setState before changeRoute, so React doesn't have any
+        // batched-render reason to delay the route commit.
+
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '01 accept_pressed (callkeep) — options=', options);
+
         if (this.unmounted) {
 			console.log('Wait until the app mounts');
-			return;        
+			return;
         }
-        
-        if (options.event === "incoming_conference_request") {
+
+        // Route-first: flip to /call (or /conference) as the very first
+        // visible action AFTER the overlay state is queued. The previous
+        // alert_hidden + setState(targetUri) work used to run before
+        // changeRoute, and on a busy JS thread that pushed the visible
+        // route flip out by 2-3 s. Doing changeRoute now means the
+        // AudioCallBox mounts in the immediately-next render commit;
+        // the rest of the bookkeeping (alert hide, targetUri,
+        // foreground, permissions) catches up after.
+        const _isConference = (options.event === "incoming_conference_request");
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '04 route_change_' + (_isConference ? 'conference' : 'call') + '_requested (route-first)');
+        this.changeRoute(_isConference ? '/conference' : '/call', 'accept_call');
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '05 route_change_returned');
+
+        // Yield once so React commits the overlay + route render before
+        // the rest of the work runs. Without this, all the setState
+        // calls in this function batch into one render — overlay,
+        // route, and the cleanup all commit together and the user
+        // sees a single screen flip with no intermediate overlay.
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        this.hideInternalAlertPanel('accept');
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '02 alert_hidden');
+
+        if (_isConference) {
             if (options.toUri) {
 				this.setState({targetUri: options.toUri});
 				const outgoingMedia = {audio: options.audio, video:  options.video}
 				this.incomingConference(callUUID, options.toUri, options.fromUri, options.fromUri, outgoingMedia, 'push');
 			}
-			this.changeRoute('/conference', 'accept_call');
         } else {
             if (options.fromUri) {
 				this.setState({targetUri: options.fromUri});
 			}
-			this.changeRoute('/call', 'accept_call');
         }
-        
+
         this.backToForeground();
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '06 foreground_resumed');
 
         if (Platform.OS === 'android') {
             const phoneAllowed = await this.requestPhonePermission();
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '07 phone_permission resolved allowed=' + phoneAllowed);
             if (!phoneAllowed) {
                 this._notificationCenter.postSystemNotification('Phone permission denied');
                 this.changeRoute('/ready', 'phone_permission_denied');
@@ -10315,6 +10787,8 @@ class Sylk extends Component {
         }
 
         const micAllowed = await this.requestMicPermission('callKeepAcceptCall');
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '08 mic_permission resolved allowed=' + micAllowed);
         if (!micAllowed) {
             this.setState({loading: null});
             this.changeRoute('/ready', 'mic_permission_denied');
@@ -10323,11 +10797,15 @@ class Sylk extends Component {
 
         if (options.video) {
             const cameraAllowed = await this.requestCameraPermission();
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '09 camera_permission resolved allowed=' + cameraAllowed);
             if (!cameraAllowed) {
                 options.video = false;
             }
         }
 
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '10 callKeeper.acceptCall_invoked — sylkrtc accept follows');
         this.callKeeper.acceptCall(callUUID, options);
         this.updateLoading(incomingCallLabel, 'incoming_call');
         this.setState({loading: null});
@@ -10347,6 +10825,7 @@ class Sylk extends Component {
         // called from user interaction with Old alert panel
         utils.timestampedLog('CallKeep will reject [call]', callUUID);
         this.hideInternalAlertPanel('reject');
+        this._closePrewarmedMicStream('rejected');
         this.callKeeper.rejectCall(callUUID);
     }
 
@@ -10355,24 +10834,75 @@ class Sylk extends Component {
         this.hideInternalAlertPanel('dismiss');
     }
 
-    acceptCall(callUUID, options={}) {
-        utils.timestampedLog('User accepted [call]', callUUID, options);
+    async acceptCall(callUUID, options={}) {
+        // UI transition trace from press-Accept to AudioCallBox.attachStream().
+        // Each step is logged with [call] + call_id so a grep of metro.log
+        // for a specific call shows exactly where the wall-clock time goes
+        // between user input and audio being audible. The progression is:
+        //   accept_pressed -> alert_hidden -> foreground -> route_changed
+        //   -> getLocalMedia_started -> getUserMedia_ok -> audiocallbox_mount
+        //   -> localmedia_prop_received -> answer_sent -> state_established
+        //   -> attach_stream. Anything between two consecutive timestamps
+        //   IS the delay for that transition.
+
+        // No dedupe here. CallManager.acceptCall already prevents double-
+        // accept for the CallKeep forwarding path (via _acceptedCalls),
+        // and the in-app alert panel button is single-press. A dedupe
+        // shared with callKeepAcceptCall would block the very acceptCall
+        // that's supposed to acquire media, leaving the call stuck at
+        // "waiting for local media" — that bug bit us in metro.log
+        // around 13:53:59 when both UUID fields were the same.
+
+        // Light up the floating "Answering call..." overlay only if the
+        // user pressed Accept on the in-app alert panel directly. When
+        // Overlay removed by request — AudioCallBox itself is the call
+        // screen. No extra setState before changeRoute below so React
+        // can commit the route flip in the soonest possible render
+        // tick.
+
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '01 accept_pressed — User accepted', options);
+
+        // Route-first when we have no current call to hang up: flip to
+        // /call immediately so AudioCallBox mounts in the next render
+        // commit. hideInternalAlertPanel / backToForeground / loading
+        // bookkeeping run after the yield, by which point React has
+        // already committed the route change and AudioCallBox has
+        // started mounting.
+        if (!this.state.currentCall) {
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '04 route_change_call_requested (route-first)');
+            this.changeRoute('/call', 'accept_call_early_route');
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '05 route_change_returned');
+            // Yield so React commits the route change before the rest
+            // of the (heavy) work blocks the JS thread.
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
         this.hideInternalAlertPanel('accept');
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '02 alert_hidden');
         this.backToForeground();
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            '03 foreground_resumed');
         this.resetGoToReadyTimer();
         this.updateLoading(null, 'accept_call');
 
         if (this.state.currentCall) {
-            utils.timestampedLog('Will hangup current [call] first');
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                'will hangup current call first',
+                this.state.currentCall.id);
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
             // call will continue after transition to /ready
         } else {
-            //utils.timestampedLog('Will get local media now');
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
             if ('video' in options) {
                 hasVideo = hasVideo && options.video;
             }
-            this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
+            this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), null, callUUID);
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '06 getLocalMedia_started (async; getUserMedia_ok line follows when it resolves)');
         }
     }
 
@@ -10380,6 +10910,7 @@ class Sylk extends Component {
         // called by Call Keep when user rejects call
         utils.timestampedLog('User rejected [call]', callUUID);
         this.hideInternalAlertPanel('reject');
+        this._closePrewarmedMicStream('rejected');
 
         if (!this.state.currentCall) {
             this.changeRoute('/ready', 'rejected');
@@ -10507,6 +11038,16 @@ class Sylk extends Component {
         if (call) {
             let direction = call.direction;
             utils.timestampedLog('Sylkrtc terminate [call]', callUUID, 'in', call.state, 'state');
+            // Belt-and-braces ZRTP teardown. _attachCleanup in CallZrtp.js
+            // listens for sylkrtc 'stateChanged' → 'terminated' and tears
+            // down the session there, but we've seen cases where the BYE
+            // round-trip doesn't deliver the event (caller missed the
+            // remote BYE; call object stays alive; media-activity poller
+            // ticks forever). Calling stopZrtpForCall here covers the
+            // local-hangup path explicitly so the session is always
+            // reclaimed when the user ends a call, regardless of whether
+            // the sylkrtc state event lands.
+            try { stopZrtpForCall(call); } catch (_) {}
             call.terminate();
             this.vibrate();
         } else {
@@ -11507,6 +12048,77 @@ class Sylk extends Component {
 
         call.mediaTypes = mediaTypes;
 
+        // Pre-warm the PeerConnection during the ringing window so the
+        // press-Accept path doesn't have to construct it. Fires
+        // asynchronously and doesn't block call setup — answer() will
+        // wait on the prewarm Promise (or fall back to from-scratch
+        // if it failed). Saves ~200-500 ms on press-Accept.
+        //
+        // ICE servers: restored to the user-configured iceServers list.
+        // Earlier we passed an empty list (skip STUN) on the assumption
+        // that Janus was directly reachable from both parties — that's
+        // true on home Wi-Fi (hairpin NAT lets the LAN host route back
+        // through the gateway), but on cellular / CGNAT the host
+        // candidate (the device's RFC1918 private IP) is unreachable
+        // from Janus's side and inbound RTP gets blackholed. With
+        // STUN, the device discovers its server-reflexive (public-
+        // mapped) candidate and signals it to Janus alongside the
+        // host candidate; ICE picks whichever pair actually works.
+        // The 500-1500 ms STUN setup cost is the price of admission
+        // for reliable cellular calls.
+        if (typeof call.prewarm === 'function') {
+            const cid = call._callId || call.callId || call.id;
+            const _iceServers = this.state.iceServers || [];
+            utils.timestampedLog('[call] [ui] call_id=' + cid,
+                '00 prewarm_pc_started during ringing (iceServers count='
+                + _iceServers.length + ')');
+            call.prewarm({iceServers: _iceServers})
+                .then(() => {
+                    utils.timestampedLog('[call] [ui] call_id=' + cid,
+                        '00 prewarm_pc_ok (remote SDP applied during ringing)');
+                })
+                .catch((err) => {
+                    utils.timestampedLog('[call] [ui] call_id=' + cid,
+                        '00 prewarm_pc_failed — answer() will rebuild from scratch:',
+                        (err && err.message) || String(err));
+                });
+        }
+
+        // Prewarm is DISABLED.
+        //
+        // The original idea was to open getUserMedia during ringing
+        // so AudioRecord / AVAudioSession were already in RECORDING
+        // state when the user pressed Accept, saving ~1-2 s on the
+        // press-Accept critical path on Android.
+        //
+        // In practice it kept breaking the video-call accept flow:
+        //
+        //   * Camera prewarm → iOS AVCaptureMultiCamSession crash
+        //     when sylkrtc's call.answer() tries to attach a second
+        //     AVCaptureVideoDataOutput to the same physical camera.
+        //   * Audio-only prewarm interferes with the audio session
+        //     setup on the press-Accept code path of a video call,
+        //     leaving the local thumbnail white and the camera not
+        //     starting cleanly.
+        //
+        // Net: trade 1-2 s of Android mic warmup for a reliable
+        // accept flow on iOS video calls. If a focused
+        // Android-only audio-call optimisation is needed later, it
+        // should be gated specifically to that case (Platform.OS
+        // === 'android' AND mediaType is audio) and live behind a
+        // flag so it can be turned off quickly when it regresses.
+        //
+        // The _prewarmedMicStream / _prewarmedMicCallUUID fields
+        // and the matching fast-path in getLocalMedia remain in
+        // place (harmless when nothing ever populates them), so
+        // a future re-enable is a single block-uncomment.
+        try {
+            this._closePrewarmedMicStream('prewarm_disabled');
+        } catch (e) {
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '00 prewarm_disabled_close_threw:', (e && e.message) || String(e));
+        }
+
         call.on('stateChanged', this.callStateChanged);
         // Receive-side in-dialog messaging wiring — symmetrical with
         // outgoingCall / outgoingConference. The receiver MUST have
@@ -11763,8 +12375,8 @@ class Sylk extends Component {
             try {
                 throw new Error('self-contact save trace');
             } catch (e) {
-                console.log('save [contact] SELF bump from origin=', origin,
-                    '— stack:\n', (e.stack || '').split('\n').slice(1, 12).join('\n'));
+                /*console.log('save [contact] SELF bump from origin=', origin,
+                    '— stack:\n', (e.stack || '').split('\n').slice(1, 12).join('\n'));*/
             }
         }
 
@@ -14201,7 +14813,7 @@ class Sylk extends Component {
     }
 
     async sendPendingMessages() {
-        console.log('sendPendingMessages');
+        //console.log('sendPendingMessages');
 
         if (this.signOut) {
            return;
@@ -19275,11 +19887,11 @@ class Sylk extends Component {
                         }
                     }
                 }
-                console.log('[journal-diag] batch',
-                    'size=' + messages.length,
-                    'cumulative=' + S.totalSeen,
-                    'batches=' + S.batches,
-                    'decrypt(ok/fail)=' + S.decryptOk + '/' + S.decryptFail);
+                //console.log('[journal-diag] batch',
+                //    'size=' + messages.length,
+                //    'cumulative=' + S.totalSeen,
+                //    'batches=' + S.batches,
+                //    'decrypt(ok/fail)=' + S.decryptOk + '/' + S.decryptFail);
             } catch (e) {
                 console.log('[journal-diag] aggregate failed',
                     e && e.message ? e.message : e);
@@ -19975,12 +20587,19 @@ class Sylk extends Component {
         // "Verify" in the SAS confirmation dialog (from VideoBox or
         // AudioCallBox). Logged BEFORE the contact lookup so we see
         // the action even when the no-contact branch returns early.
-        utils.timestampedLog('[ZRTP] [call] user confirmed identity for', uri,
+        // The SAS verification is tied to the *currently active* call;
+        // we look it up off this.state so the line carries call_id for
+        // post-hoc filtering.
+        const _cc = this.state && this.state.currentCall;
+        const _cid = _cc && (_cc._callId || _cc.callId || _cc.id) || '?';
+        utils.timestampedLog('[call] [zrtp] call_id=' + _cid,
+            'user confirmed identity for', uri,
             'sas=', sasChars, sasEmojis);
         try {
             const contact = this.lookupContact(uri);
             if (!contact) {
-                utils.timestampedLog('[ZRTP] [call] markZrtpVerified: no contact for', uri);
+                utils.timestampedLog('[call] [zrtp] call_id=' + _cid,
+                    'markZrtpVerified: no contact for', uri);
                 return;
             }
             contact.localProperties = contact.localProperties || {};
@@ -19990,10 +20609,55 @@ class Sylk extends Component {
                 verifiedAt: Date.now(),
                 publicKey: contact.publicKey || null,
             };
+
+            // state.callContact is set ONCE at call start (e.g. from
+            // selectedContact or lookupContact in render) and is never
+            // refreshed when updateSylkContact replaces the contact object
+            // in allContacts/contactIndex via {...c, ...contact}. Any
+            // earlier contact-update during the call — typically a
+            // savePublicKey when the peer's PGP key arrives — leaves
+            // state.callContact pointing at a stale object. The mutation
+            // above lands on the *current* contactIndex object (returned
+            // by lookupContact); if that's a different reference from
+            // state.callContact, the AudioCallBox/VideoBox pill reads its
+            // localProperties.zrtp off the stale prop and never sees the
+            // new verification — pill stays orange/red even though the
+            // save succeeded. Mirror the mutation onto the stale ref so
+            // the synchronous re-render after the user tap shows green
+            // immediately, without waiting for the SQL round-trip.
+            const sc = this.state.callContact;
+            if (sc && sc.uri === uri && sc !== contact) {
+                sc.localProperties = sc.localProperties || {};
+                sc.localProperties.zrtp = contact.localProperties.zrtp;
+                // If the stale ref pre-dates the peer's PGP key arriving,
+                // its publicKey may be empty; the verified-vs-unverified
+                // check compares stored.publicKey to props.callContact.publicKey,
+                // so they must agree. Carry the current key over.
+                if (contact.publicKey && !sc.publicKey) {
+                    sc.publicKey = contact.publicKey;
+                }
+            }
+
             await this.saveSylkContact(uri, contact, 'zrtpVerified');
-            utils.timestampedLog('[ZRTP] [call] verification saved for', uri, 'sas=', sasChars, sasEmojis);
+            utils.timestampedLog('[call] [zrtp] call_id=' + _cid,
+                'verification saved for', uri, 'sas=', sasChars, sasEmojis);
+
+            // After the save, allContacts contains a fresh object (the
+            // {...c, ...contact} copy from updateSylkContact) and
+            // buildContactIndex has pointed contactIndex[uri] at it.
+            // Re-setState callContact to that fresh object so subsequent
+            // renders are no longer reading off a stale reference — keeps
+            // future passes (next call event, next prop sync) consistent
+            // with what's stored on disk.
+            const refreshed = this.lookupContact(uri);
+            if (refreshed && this.state.callContact
+                && this.state.callContact.uri === uri
+                && this.state.callContact !== refreshed) {
+                this.setState({ callContact: refreshed });
+            }
         } catch (e) {
-            utils.timestampedLog('[ZRTP] [call] markZrtpVerified failed:', e && e.message ? e.message : e);
+            utils.timestampedLog('[call] [zrtp] call_id=' + _cid,
+                'markZrtpVerified failed:', e && e.message ? e.message : e);
         }
     }
 
@@ -20063,7 +20727,17 @@ class Sylk extends Component {
             if (call) {
                 dispatchIncomingZrtp(call, this.state.account, contact, this.state.keys, message.content);
             } else {
-                console.log('[ZRTP] no active call for', message.sender.uri, '— ignoring forked zrtp msg');
+                // No active call to attach call_id to — this is the
+                // forked-account-message case where another device is
+                // on the call and we received the fork. call_id is
+                // logged from the message body so a grep still finds it.
+                let _msgCid = '?';
+                try {
+                    const _parsed = JSON.parse(message.content);
+                    if (_parsed && _parsed.call_id) _msgCid = _parsed.call_id;
+                } catch (_) {}
+                console.log('[call] [zrtp] call_id=' + _msgCid,
+                    'no active call for', message.sender.uri, '— ignoring forked zrtp msg');
             }
             return;
         }
@@ -27527,9 +28201,9 @@ class Sylk extends Component {
         this.setState({historyFilter: filter});
     }
 
-    saveConference(room, participants, displayName=null) {
+    saveConference(room, participants, displayName=null, muted=null) {
         let uri = room;
-        console.log('Save conference', room, 'with display name', displayName, 'and participants', participants);
+        console.log('Save conference', room, 'with display name', displayName, 'and participants', participants, 'muted', muted);
 
         let contact = this.lookupContact(uri, true);
 
@@ -27543,6 +28217,28 @@ class Sylk extends Component {
         // nickname.
         if (displayName != null) {
             contact.name = displayName;
+        }
+
+        // Apply the "Mute notifications" toggle from
+        // EditConferenceModal. The mute state for a conference room
+        // is persisted on the contact-row tag list exactly the same
+        // way it is for a regular contact (EditContactModal's
+        // editableTags.muted), so the native FCM gate
+        // (MyFirebaseMessagingService.isMuted) treats the room and
+        // a regular contact identically when deciding whether to
+        // drop a push. Callers that don't care about mute state
+        // (appendInvitedParties — auto-save at conference end) pass
+        // muted=null and we leave the tags array alone so we don't
+        // clobber a previously-set preference.
+        if (muted !== null && muted !== undefined) {
+            const _tags = Array.isArray(contact.tags) ? contact.tags.slice() : [];
+            const _idx = _tags.indexOf('muted');
+            if (muted && _idx === -1) {
+                _tags.push('muted');
+            } else if (!muted && _idx > -1) {
+                _tags.splice(_idx, 1);
+            }
+            contact.tags = _tags;
         }
 
         let new_participants = [];
@@ -27934,6 +28630,19 @@ return (
 					</View>
 					)
 					}
+
+				{/* Overlay removed by request: the user wants AudioCallBox
+				    itself visible the instant they press Accept; all
+				    setup work (getLocalMedia, sylkrtc.answer, ICE/DTLS,
+				    ZRTP handshake) runs inside it. The route-first
+				    reordering in callKeepAcceptCall / acceptCall gets
+				    AudioCallBox on screen in roughly one RN render
+				    tick after press; the prior overlay just covered
+				    that with an avatar/spinner which arguably made
+				    things worse (covering the real call screen).
+				    answeringCallOverlayUUID state and the safety
+				    timer stay in place as harmless no-ops so we can
+				    bring something back later without re-plumbing. */}
 			    
                     {Platform.OS === 'android' && (
                       <IncomingCallModal
@@ -28415,6 +29124,8 @@ return (
                     rejectNonContacts = {this.state.accountSetting.privacy.rejectNonContacts}
                     preferredVideoCodec = {this.state.accountSetting.rtp.preferredVideoCodec || PREFERRED_VIDEO_CODEC}
                     setPreferredVideoCodec = {(codec) => this.setAccountSetting('rtp.preferredVideoCodec', codec)}
+                    videoProfile = {this.state.accountSetting.device.videoProfile || VIDEO_PROFILE_DEFAULT_ID}
+                    setVideoProfile = {(id) => this.setAccountSetting('device.videoProfile', id)}
                     preferredAudioCodec = {this.state.accountSetting.rtp.preferredAudioCodec || PREFERRED_AUDIO_CODEC}
                     setPreferredAudioCodec = {(codec) => this.setAccountSetting('rtp.preferredAudioCodec', codec)}
                     enableAudioRecording = {!!this.state.accountSetting.rtp.enableAudioRecording}
@@ -28592,6 +29303,16 @@ return (
                        denial. Same react-native-permissions helper the
                        NavigationBar 'appSettings' menu item uses. */
                     openAppSettings = {openSettings}
+                    /* In-app DND state (privacy.dnd from accountSetting),
+                       mirrored from the navbar bell. ReadyBox renders a
+                       persistent pill above the contacts list whenever
+                       this is true so the user always sees that incoming
+                       calls are being delivered silently. Tapping the
+                       pill toggles DND back off via toggleDnd below. */
+                    appDnd = {!!(this.state.accountSetting
+                                 && this.state.accountSetting.privacy
+                                 && this.state.accountSetting.privacy.dnd)}
+                    toggleDnd = {this.toggleDnd}
                     isTablet = {this.state.isTablet}
                     isFolded = {this.state.isFolded}
                     isLandscape = {this.state.orientation === 'landscape'}
@@ -28889,14 +29610,18 @@ return (
             }
         }
 
-        // All callees come in with the camera muted by default — gives
-        // them an explicit "Enable camera" decision once VideoBox loads
-        // (handled via the modal there) instead of broadcasting video
-        // before the user has a chance to opt in. Applies to both iOS
-        // and Android.
-        // Coerce to a real boolean — `incomingCall` is either a Call
-        // object or null, and PropTypes.bool was warning when we
-        // forwarded the raw object/null.
+        // videoMuted defaults to true for incoming calls so the
+        // VideoBox "Enable your camera?" preview-modal appears on
+        // accept. The modal renders gated on
+        //   props.call.direction === 'incoming' && props.videoMuted
+        // (see VideoBox.videoEnableDialogVisible). It shows a live
+        // local-camera preview with a "Start camera" button — the
+        // user reviews their framing / camera choice before the
+        // video track actually goes on the wire.
+        //
+        // Coerce to a real boolean; `incomingCall` is either a Call
+        // object or null. PropTypes.bool warns when we forward the
+        // raw object/null.
         const videoMuted = !!this.state.incomingCall;
 
         return (

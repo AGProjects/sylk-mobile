@@ -22,6 +22,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
+import PlatformToggle from './PlatformToggle';
 
 // ---------------------------------------------------------------------------
 // Conference-invitee normalisation.
@@ -103,19 +104,18 @@ const labelForUri = (uri, contactsByUri) => {
 const filterInvitableContacts = (allContacts, accountId, localDomain) => {
   if (!Array.isArray(allContacts)) return [];
   const accId = accountId ? String(accountId).toLowerCase() : '';
-  // Local-domain gate. Cross-domain conference invites aren't
-  // currently supported on the server side — only contacts whose
-  // SIP domain matches the user's account domain are valid invite
-  // targets. Derive the gate from `localDomain` (the defaultDomain
-  // prop passed by NavigationBar) when available, otherwise fall
-  // back to the domain portion of the user's account ID. Either
-  // source agrees in practice; the fallback covers the brief window
-  // during account-switch where defaultDomain may not have been
-  // re-propagated yet.
-  let domainGate = localDomain ? String(localDomain).toLowerCase() : '';
-  if (!domainGate && accId.indexOf('@') > -1) {
-    domainGate = accId.split('@')[1];
-  }
+  // Note: same-domain gating was previously enforced here (only
+  // contacts in the user's own SIP domain were invitable).
+  // That restriction has been LIFTED — any legitimate cross-domain
+  // SIP user is a valid conference invitee, so the picker now
+  // shows them all. We still strip the un-invitable categories
+  // below (self, conference rooms, guest / anonymous, phone
+  // numbers, blocked, test, bare URIs). `localDomain` is still
+  // accepted as an arg so callers don't need to change, but it's
+  // intentionally unused inside the filter — leave it documented
+  // here so a future refactor can re-enable the gate cheaply if
+  // the server side ever drops cross-domain conference invites.
+  void localDomain;
   const filtered = allContacts.filter((c) => {
     if (!c || !c.uri) return false;
     const uri = String(c.uri).toLowerCase();
@@ -139,23 +139,14 @@ const filterInvitableContacts = (allContacts, accountId, localDomain) => {
       // picker — hide them.
       if (c.tags.indexOf('test') > -1) return false;
     }
-    // Skip caregivers. A "caregiver" in this app is a contact
-    // configured to auto-answer the user's incoming calls (see
-    // localProperties.autoanswer wiring in newContact / app.js).
-    // Those rows are operator-of-the-app helpers, not people the
-    // user would normally invite to a conference room, so they
-    // would only clutter the picker.
-    if (c.localProperties && c.localProperties.autoanswer === true) return false;
-    // Same-domain only. A bare URI (no '@') is also rejected — a
-    // valid Sylk contact should always be FQDN; bare entries are
-    // typically AB-import artifacts that haven't been resolved
-    // yet and aren't safe to invite to a SIP conference.
-    if (domainGate) {
-      const at = uri.indexOf('@');
-      if (at < 0) return false;
-      const dom = uri.substring(at + 1);
-      if (dom !== domainGate) return false;
-    }
+    // Bare URIs (no '@') are still dropped — those are typically
+    // AB-import artifacts (a phone-book entry that hasn't been
+    // resolved to a SIP address yet) and aren't safe to invite
+    // to a SIP conference no matter the domain policy.
+    if (uri.indexOf('@') < 0) return false;
+    // (Caregiver check intentionally removed — a caregiver is
+    // still a legitimate Sylk contact and there are valid
+    // reasons to invite one to a conference.)
     return true;
   });
 
@@ -216,6 +207,16 @@ const EditConferenceModal = ({
   // simple and matches what users expect from a single-screen
   // configuration dialog.
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Mute notifications for this conference room. Persisted on the
+  // conference contact's `tags` array as the string "muted" — the
+  // same tag string regular contacts use (see EditContactModal's
+  // editableTags.muted, and the native FCM gate in
+  // MyFirebaseMessagingService.isMuted, which matches case-
+  // insensitively on this exact tag). Hydrated on the false→true
+  // edge of `show` alongside the rest of the form state; emitted to
+  // app.js via the saveConference handler's `muted` parameter.
+  const [muted, setMuted] = useState(false);
+
   // Searchbar value for filtering the contact list inside the
   // picker pane. Local string, lower-cased on use, never persisted.
   const [search, setSearch] = useState('');
@@ -278,6 +279,15 @@ const EditConferenceModal = ({
     });
     setParticipants(normalized);
     setDisplayName(initialDisplayName || '');
+    // Seed the mute toggle from the conference contact's current
+    // tags. selectedContact is the same shape produced by
+    // app.js's lookupContact (a regular Sylk contact row), so the
+    // tags array is authoritative — saveConference adds or removes
+    // the "muted" entry on save below.
+    const _initialTags = (selectedContact && Array.isArray(selectedContact.tags))
+      ? selectedContact.tags
+      : [];
+    setMuted(_initialTags.indexOf('muted') > -1);
     setPickerOpen(false);
     setSearch('');
     setTagFilter(null);
@@ -411,7 +421,8 @@ const EditConferenceModal = ({
     saveConference && saveConference(
       selectedContact && selectedContact.uri,
       finalList,
-      name
+      name,
+      muted
     );
     close && close();
   };
@@ -769,7 +780,28 @@ const EditConferenceModal = ({
               selection because of a fat-finger is annoying). */}
       {!pickerOpen && (
         <>
+          {/* Mute notifications toggle. Mirrors the per-contact
+              "Mute notifications" switch in EditContactModal.js
+              (editableTags.muted → description: 'Mute notifications').
+              The tag is the literal string "muted"; the native FCM
+              gate (MyFirebaseMessagingService.isMuted) matches it
+              case-insensitively to drop incoming pushes from this
+              room before they reach IncomingCallService — same
+              behaviour the user gets per-contact. Rendered through
+              the shared PlatformToggle so the sliding-pill style is
+              identical to every other toggle in the app and any
+              future visual tweak lands in one place. */}
           <Divider style={{ marginTop: 12, marginBottom: 8 }} />
+          <PlatformToggle
+            value={muted}
+            onValueChange={setMuted}
+            iconName={muted ? 'bell-off-outline' : 'bell-outline'}
+            label="Mute notifications"
+            description="Don't notify me about activity in this room."
+            style={{ paddingVertical: 6, marginBottom: 4 }}
+          />
+
+          <Divider style={{ marginTop: 8, marginBottom: 8 }} />
           <View style={styles.buttonRow}>
             <Button
               mode="outlined"

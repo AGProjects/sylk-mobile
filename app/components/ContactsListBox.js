@@ -1496,7 +1496,18 @@ class ContactsListBox extends Component {
 				<TouchableOpacity onPress={this.aquireFromCamera}>
 				  <Icon
 					style={chatActionContainer}
-					type="font-awesome"
+					// Reverted to the original `camera` glyph. This
+					// chat-composer button captures a SNAPSHOT for
+					// the message (still photo), not a video clip,
+					// so the stills-camera icon matches the action.
+					// Earlier swaps to `camera-outline` and
+					// `video-outline` were attempts to address the
+					// "+ in the lens" concern, but that concern
+					// only applied to the `video-plus` glyph
+					// elsewhere (AudioCallBox add-video button) —
+					// the plain `camera` here renders without the
+					// reticle dot at 20 px and was the right icon
+					// all along.
 					name="camera"
 					size={20}
 					color='gray'
@@ -3441,6 +3452,35 @@ class ContactsListBox extends Component {
         return null;
     }
 
+    /** Mirrors the read-only branches in the chatInputClass picker
+     *  below (~ line 7261). Used to gate UI affordances that only
+     *  make sense when the user can actually post — currently the
+     *  floating ReactionBar (tapping a message bubble must NOT
+     *  surface an emoji picker when there's no input toolbar to
+     *  send the reaction through). Returns true when any of:
+     *    • no local private key is loaded (encryption gate),
+     *    • we have a selected contact AND
+     *        - it's a videoconference room (the room's chat lives
+     *          in ConferenceBox; from the contacts side it's a
+     *          read-only history view),
+     *        - search-messages mode is active,
+     *    • there is no selected contact and the chat panel is not
+     *      open at all.
+     *  Keep this in lockstep with the chatInputClass picker below;
+     *  any new "read-only" condition added there should also be
+     *  added here. */
+    _chatIsReadOnly() {
+        const hasPrivateKey = !!(this.state.keys && this.state.keys.private);
+        if (!hasPrivateKey) return true;
+        if (this.state.selectedContact) {
+            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) return true;
+            if (this.state.searchMessages) return true;
+            return false;
+        }
+        if (!this.state.chat) return true;
+        return false;
+    }
+
     // Input-toolbar replacement used when the active account has no local
     // private key. Sending requires a key, so the composer is swapped for
     // this read-only banner pointing users to the menu path where they can
@@ -3563,6 +3603,25 @@ class ContactsListBox extends Component {
                 const defaultEmoji = (this.state.recentReactions
                     && this.state.recentReactions[0]) || '❤️';
                 this.quickReact(message, defaultEmoji);
+                return;
+            }
+
+            // Skip the floating ReactionBar entirely when the chat
+            // is read-only. Same predicate (`_chatIsReadOnly`)
+            // governs whether the bottom input toolbar is replaced
+            // with the inert `noChatInputToolbar` / `noKeyInputToolbar`
+            // variant a few hundred lines below, so the two surfaces
+            // stay in lockstep: if the user can't send a message
+            // they can't add a reaction either, and surfacing the
+            // emoji bar implied an action that would silently fail.
+            // Cases this catches:
+            //   • no private key loaded (encryption gate)
+            //   • viewing a videoconference room's chat history
+            //     outside of an active conference (read-only — the
+            //     real conference chat is in ConferenceBox)
+            //   • searchMessages mode
+            //   • no chat panel is open at all
+            if (this._chatIsReadOnly()) {
                 return;
             }
 
@@ -4639,6 +4698,15 @@ class ContactsListBox extends Component {
           if (typeof this.props.setChatReactionMode === 'function') {
               this.props.setChatReactionMode(!!this.state.reactionTarget);
           }
+          // (Previously scrolled the targeted bubble to a position
+          // just above the floating ReactionBar so users would see
+          // it as the anchor. That worked but felt like animation
+          // theatre; replaced with the more direct "hide everything
+          // else" approach in the visibleMessages filter below —
+          // when reactionTarget is set the messages list is
+          // collapsed to ONLY that message, so there's nothing to
+          // dim or scroll past. No further action needed here on
+          // the reactionTarget transition.)
       }
 
       // Dismiss the reaction bar whenever the chat we're showing
@@ -7394,6 +7462,46 @@ scrollToMessage(id) {
                 return;
             }
 
+            // Conference-invite mode shares the same eligibility
+            // rules as EditConferenceModal's pill picker — only
+            // real, addressable SIP users belong in the list.
+            // Mirror the exclusion set from
+            // filterInvitableContacts in EditConferenceModal.js
+            // here so the two surfaces stay in lockstep.
+            //   • self          — can't invite yourself
+            //   • guest /
+            //     anonymous     — no inbox to invite
+            //   • phone-number
+            //     URIs (leading
+            //     '+' OR 'tel'
+            //     tag)          — dialled numbers can't receive
+            //                     a SIP conference invite
+            //   • blocked       — user opted them out
+            //   • test          — QA / developer fixture rows
+            //   • bare URI
+            //     (no '@')      — AB-import artifact, unsafe
+            // (Caregiver auto-answer rows are still allowed —
+            // they're regular Sylk contacts and a caregiver may
+            // be a valid invitee. Cross-domain rows are ALSO now
+            // allowed — the previous same-domain gate has been
+            // lifted; any legitimate SIP URI in another domain
+            // is a valid conference invitee. See the matching
+            // change in EditConferenceModal's filterInvitableContacts.)
+            if (this.state.inviteContacts) {
+                const _itemUri = (item.uri || '').toLowerCase();
+                const _accId = (this.state.accountId || '').toLowerCase();
+                if (_itemUri === _accId) return;
+                if (_itemUri.indexOf('@guest.') > -1) return;
+                if (_itemUri.indexOf('anonymous@') > -1) return;
+                if (_itemUri.startsWith('+')) return;
+                if (Array.isArray(item.tags)) {
+                    if (item.tags.indexOf('blocked') > -1) return;
+                    if (item.tags.indexOf('tel') > -1) return;
+                    if (item.tags.indexOf('test') > -1) return;
+                }
+                if (_itemUri.indexOf('@') < 0) return;
+            }
+
             if (item.uri.indexOf('@videoconference.') > -1 && this.state.filter == 'calls') {
                 return;
             }
@@ -7631,6 +7739,19 @@ scrollToMessage(id) {
 			chatMessages = [];
 			loadEarlier = false;
         }
+
+        // While the floating ReactionBar is open the chat is
+        // collapsed to a single message (see the visibleMessages
+        // IIFE below). The "Load earlier messages" button has no
+        // role in that mode — there's nothing to scroll above
+        // and tapping it would fire a backfill request the user
+        // can't see the result of anyway. Suppressing it keeps
+        // the reaction UI to exactly two elements on screen: the
+        // targeted bubble + the emoji bar. Falls back to the
+        // normal `loadEarlier` value when the bar closes.
+        if (this.state.reactionTarget) {
+            loadEarlier = false;
+        }
         
         //console.log('chatContainer', chatContainer);
         // safe-area-context occasionally reports topInset as 0 on
@@ -7763,19 +7884,43 @@ scrollToMessage(id) {
 		    ? this.props.appBarHeight
 		    : 60;
 		
-		const visibleMessages = chatMessages.filter(msg => {
+		const visibleMessages = (() => {
+		    // While the floating ReactionBar is open, collapse the
+		    // entire chat view to just the targeted message. Dimming
+		    // the rest of the conversation turned out to confuse
+		    // users — they couldn't tell they had caused the dim
+		    // and assumed the chat had broken or entered some
+		    // unknown mode. Hiding the rest of the list entirely
+		    // removes any ambiguity: the user sees ONE message,
+		    // the emoji bar below it, and nothing else. Closing the
+		    // bar (setting reactionTarget back to null) restores the
+		    // full list naturally on the next render. GiftedChat is
+		    // happy with a single-message array — no virtualisation
+		    // or layout fallout, and the existing image-group
+		    // dedup below isn't relevant for a one-element list.
+		    if (this.state.reactionTarget) {
+		        const targetId = this.state.reactionTarget._id;
+		        const single = chatMessages.filter(m => m._id === targetId);
+		        if (single.length > 0) return single;
+		        // Fallback: target rebuilt with a different _id
+		        // between the tap and this render. Bail to the full
+		        // list rather than render an empty chat — better
+		        // visual than a black hole.
+		    }
+		    return chatMessages.filter(msg => {
 		      // skipped duplicate grouped images
 			  // if not an image → always show
 			  if (!msg.image) return true;
-			
+
 			  const groupId = this.state.groupOfImage[msg._id];
-			
+
 			  // not grouped → show
 			  if (!groupId) return true;
-			
+
 			  // show only first image of group
 			  return this.state.imageGroups[groupId][0] === msg._id;
 			});
+		})();
 			
 		//console.log('visibleMessages', visibleMessages.length);
 		//console.log('chatMessages', chatMessages.length);

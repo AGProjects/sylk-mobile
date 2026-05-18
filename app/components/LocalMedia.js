@@ -45,7 +45,7 @@ class LocalMedia extends Component {
         if (mediaType === 'video') {
             const track = localMedia.getVideoTracks()[0];
             try {
-                const settings = track.getSettings ? track.getSettings() : null;
+                const settings = (track && track.getSettings) ? track.getSettings() : null;
                 if (settings && settings.facingMode === 'environment') {
                     initialFacing = 'back';
                 }
@@ -54,7 +54,7 @@ class LocalMedia extends Component {
             }
             // Pick up an already-disabled track (e.g. the user came back
             // to the preview after muting) so the bar shows the X.
-            if (track.enabled === false) {
+            if (track && track.enabled === false) {
                 initialVideoMuted = true;
             }
         }
@@ -76,9 +76,18 @@ class LocalMedia extends Component {
 			videoMuted: initialVideoMuted,
 			videoPickerVisible: false,
 			audioDevicePickerVisible: false,
-			// 9-second auto-start countdown for outgoing video calls,
-			// matching the AudioCallBox behaviour.
-			autoStartCountdown: 0
+			// 6-second auto-start countdown for outgoing video calls.
+			// Mirrors the AudioCallBox shape (interval ticks, paused
+			// while camera/device pickers are open, resumes from the
+			// frozen value) but the absolute duration is shorter —
+			// long enough for the user to tap "stop" or switch
+			// cameras, short enough to avoid making the pre-call
+			// screen feel like it's stuck waiting.
+			autoStartCountdown: 0,
+			// Initial total seconds of the countdown — drives the
+			// progress-bar cell count (one cell per second). Stays 0
+			// while no timer is in flight so the bar renders empty.
+			autoStartTotal: 0
         };
 
         this._autoStartTimer = null;
@@ -87,7 +96,7 @@ class LocalMedia extends Component {
 
     componentDidMount() {
         this.props.mediaPlaying();
-        // disableAutoStart suppresses the 9-second countdown that auto-
+        // disableAutoStart suppresses the 6-second countdown that auto-
         // fires confirmStartCall(). Used by the mid-call upgrade flow
         // (Call.js routes here for the +video preview): the user is
         // already in a call and shouldn't see a count-down timer telling
@@ -129,14 +138,24 @@ class LocalMedia extends Component {
         this._cancelAutoStartTimer();
     }
 
-    /** Auto-start countdown for outgoing video calls. Default 9 s,
+    /** Auto-start countdown for outgoing video calls. Default 6 s,
      *  override via `seconds` so we can resume from a paused state.
-     *  Slightly longer than the audio timer since the user is more
-     *  likely to want to fiddle with camera / mute first. */
-    _startAutoStartTimer(seconds = 9) {
+     *  Slightly longer than the audio timer (4 s) since the user is
+     *  more likely to want to fiddle with camera / mute first, but
+     *  short enough that the pre-call screen doesn't feel stalled. */
+    _startAutoStartTimer(seconds = 6) {
         this._cancelAutoStartTimer();
         const startSeconds = Math.max(1, seconds);
-        this.setState({ autoStartCountdown: startSeconds, autoStartPaused: false });
+        // Track the INITIAL total seconds the countdown was armed with
+        // so the progress-bar render below can draw exactly one cell
+        // per second of the actual duration. Without this the cell
+        // count was hardcoded and drifted out of sync whenever
+        // `seconds` changed (e.g. the 9→6 default change).
+        this.setState({
+            autoStartCountdown: startSeconds,
+            autoStartTotal:     startSeconds,
+            autoStartPaused:    false,
+        });
         this._autoStartTickInterval = setInterval(() => {
             this.setState((s) => ({
                 autoStartCountdown: Math.max(0, (s.autoStartCountdown || 0) - 1)
@@ -272,7 +291,11 @@ class LocalMedia extends Component {
         // Bar icon reflects the active camera. Muted state shows a
         // big red X overlay so the user knows both *which* camera is
         // active *and* that it's muted.
-        const mainIcon = facing === 'front' ? 'camera-front' : 'camera-rear';
+        // Stable `video` glyph on the call-bar button — see the
+        // matching note in VideoBox.js. Picker rows below still
+        // use camera-front / camera-rear icons so the per-option
+        // distinction is preserved exactly where it matters.
+        const mainIcon = 'video';
 
         // Camera options. When not muted, drop the active camera so the
         // user only sees what they can switch *to*. When muted, show
@@ -305,10 +328,23 @@ class LocalMedia extends Component {
         // remote video / a PIP thumbnail.
         const items = [
             ...cameraOptions,
-            ...(muted ? [] : [{
+            ...(muted ? [{
+                // Symmetric "Start video" entry while muted —
+                // gives the user an explicit re-enable affordance
+                // rather than relying on the implicit
+                // "tap-any-camera-to-unmute" pattern. See the
+                // matching change in VideoBox.js for context.
+                key: 'unmute',
+                icon: 'video',
+                label: 'Start video',
+                onPress: () => this.toggleVideoMute()
+            }] : [{
                 key: 'mute',
                 icon: 'video-off',
-                label: 'Mute Camera',
+                // Renamed "Mute Camera" → "Stop video" (consistent
+                // with the other surfaces). Tap → toggleVideoMute
+                // toggles the local track off.
+                label: 'Stop video',
                 onPress: () => this.toggleVideoMute()
             }])
         ];
@@ -397,8 +433,12 @@ class LocalMedia extends Component {
                                 alignItems: 'center'
                             }}
                         >
+                            {/* `close` is the regular-weight X
+                                glyph; the previous `close-thick`
+                                drew a heavier stroke that competed
+                                with the underlying camera icon. */}
                             <Icon
-                                name="close-thick"
+                                name="close"
                                 size={buttonSize + 14}
                                 color="#D32F2F"
                             />
@@ -631,7 +671,7 @@ class LocalMedia extends Component {
 
                             {/* Start video call + sliding reverse-progress
                                 bar — absolutely positioned ABOVE the device
-                                picker bar. Auto-fires in 9 s if the user
+                                picker bar. Auto-fires in 6 s if the user
                                 doesn't tap X / hangup. The button label
                                 shows the remaining seconds. Same layout as
                                 AudioCallBox.
@@ -662,9 +702,7 @@ class LocalMedia extends Component {
                                             }
                                         }}
                                     >
-                                        {this.state.autoStartCountdown > 0
-                                            ? `Start video call (${this.state.autoStartCountdown})`
-                                            : 'Start video call'}
+                                        Start video call
                                     </Button>
                                     {/* Countdown progress bar — hidden
                                         entirely when the auto-start
@@ -683,7 +721,17 @@ class LocalMedia extends Component {
                                         alignSelf: 'stretch',
                                         justifyContent: 'space-between',
                                     }}>
-                                        {[...Array(9)].map((_, i) => (
+                                        {/* One cell per second of the
+                                            armed countdown total. Driven
+                                            by state.autoStartTotal so the
+                                            bar always has the exact same
+                                            cell count as the seconds the
+                                            timer was started with — the
+                                            previous hardcoded 9 left an
+                                            empty 3-cell tail when the
+                                            default dropped from 9 s to
+                                            6 s. */}
+                                        {[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
                                             <View
                                                 key={'autostart-cell-' + i}
                                                 style={{
@@ -802,7 +850,7 @@ LocalMedia.propTypes = {
     media               : PropTypes.string,
     showLogs            : PropTypes.func,
     goBackFunc          : PropTypes.func,
-    // Suppress the 9-second auto-start countdown. Used by the mid-call
+    // Suppress the 6-second auto-start countdown. Used by the mid-call
     // audio→video upgrade flow (Call.js routes here for the preview):
     // the user already initiated the call, so a count-down is wrong —
     // tap Start to opt in, or back out.
