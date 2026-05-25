@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
-index af962e0..90f2e1d 100644
+index af962e0..3a6e2e0 100644
 --- a/node_modules/react-native-sylkrtc/lib/call.js
 +++ b/node_modules/react-native-sylkrtc/lib/call.js
 @@ -2,6 +2,7 @@
@@ -663,7 +663,29 @@ index af962e0..90f2e1d 100644
      }
  
      _handleEvent(message) {
-@@ -356,6 +909,10 @@ class Call extends EventEmitter {
+@@ -346,6 +899,21 @@ class Call extends EventEmitter {
+             case 'state':
+                 let oldState = this._state;
+                 let newState = message.state;
++
++                // Re-INVITE guard: once the call is established, the
++                // peer's 180 Ringing / proceeding responses to a
++                // mid-call UPDATE (e.g. addVideo) must NOT regress the
++                // call FSM. Those provisional states are only valid in
++                // the pre-established setup phase. Drop the event
++                // silently so neither this._state nor any listener
++                // sees an 'established -> ringing' / 'established ->
++                // proceeding' transition during renegotiation.
++                if (oldState === 'established' &&
++                        (newState === 'ringing' || newState === 'proceeding')) {
++                    DEBUG('Ignoring %s state during re-INVITE (call already established)', newState);
++                    break;
++                }
++
+                 this._state = newState;
+ 
+                 if (newState === 'accepted' || newState === 'early-media' && this._direction === 'outgoing') {
+@@ -356,6 +924,10 @@ class Call extends EventEmitter {
                      if (message.sdp !== undefined) {
                          const sdp = utils.mungeSdp(message.sdp);
                          DEBUG('Remote SDP: %s', sdp);
@@ -674,7 +696,7 @@ index af962e0..90f2e1d 100644
                          this._remoteMediaDirections = Object.assign(
                              {audio: [], video:[]}, utils.getMediaDirections(sdp)
                          );
-@@ -399,7 +956,20 @@ class Call extends EventEmitter {
+@@ -399,7 +971,20 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'message':
@@ -696,7 +718,7 @@ index af962e0..90f2e1d 100644
                  const incomingMessage = this._messages.get(message.message_id);
                  if (!incomingMessage) {
                      if (message.content_type === 'text/pgp-private-key') {
-@@ -423,7 +993,10 @@ class Call extends EventEmitter {
+@@ -423,7 +1008,10 @@ class Call extends EventEmitter {
                      if (message.disposition_notification &&
                          message.disposition_notification.indexOf('positive-delivery') !== -1
                      ) {
@@ -708,7 +730,7 @@ index af962e0..90f2e1d 100644
                              message.sender.uri,
                              message.message_id,
                              message.timestamp,
-@@ -433,6 +1006,17 @@ class Call extends EventEmitter {
+@@ -433,6 +1021,17 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'disposition-notification':
@@ -726,7 +748,7 @@ index af962e0..90f2e1d 100644
                  const outgoingMessage = this._messages.get(message.message_id);
                  if (outgoingMessage) {
                      if (outgoingMessage.state === 'displayed') {
-@@ -443,31 +1027,116 @@ class Call extends EventEmitter {
+@@ -443,31 +1042,116 @@ class Call extends EventEmitter {
                  const {reason, code} = message;
                  this.emit('messageStateChanged', message.message_id, message.state, {reason, code});
                  break;
@@ -861,7 +883,7 @@ index af962e0..90f2e1d 100644
  
      _sendRequest(req, cb) {
          this._account._sendRequest(req, cb);
-@@ -539,6 +1208,32 @@ class Call extends EventEmitter {
+@@ -539,6 +1223,32 @@ class Call extends EventEmitter {
          });
      }
  
@@ -895,10 +917,10 @@ index af962e0..90f2e1d 100644
          DEBUG('Closing RTCPeerConnection');
          if (this._pc !== null) {
 diff --git a/node_modules/react-native-sylkrtc/lib/conference.js b/node_modules/react-native-sylkrtc/lib/conference.js
-index 33da09d..a388b38 100644
+index 1111111..2222222 100644
 --- a/node_modules/react-native-sylkrtc/lib/conference.js
 +++ b/node_modules/react-native-sylkrtc/lib/conference.js
-@@ -121,10 +121,15 @@ class Participant extends EventEmitter {
+@@ -121,10 +121,15 @@
          const pc = new RTCPeerConnection(pcConfig);
          this._conference._statistics.addConnection({pc: pc, peerId: this._id});
  
@@ -918,7 +940,66 @@ index 33da09d..a388b38 100644
          pc.addEventListener('icecandidate', (event) => {
              if (event.candidate !== null) {
                  DEBUG('New ICE candidate %o', event.candidate);
-@@ -572,7 +577,10 @@ class ConferenceCall extends EventEmitter {
+@@ -296,6 +301,29 @@
+         this._delay_established = false;  // set to true when we need to delay posting the state change to 'established'
+         this._setup_in_progress = false;  // set while we set the remote description and setup the peer copnnection
+         this._statistics = new Statistics();
++        // Rolling per-participant audio-level accumulator. The
++        // webrtcgateway pushes a `conference-audio-levels` event every
++        // 250 ms (4 Hz); we don't want to log each one (that's a flood)
++        // but we DO want operator-visible evidence that levels are
++        // actually arriving from the SIP focus across the WebSocket.
++        // Mirror the focus / webrtcgateway design: accumulate for 5 s,
++        // then emit one compact summary line per participant. Key by
++        // participant_id; values: {tx_sum, rx_sum, tx_peak, rx_peak,
++        // count}. The label is resolved lazily from `_sipParticipantLabels`
++        // (refreshed from every conference-participants event) so the
++        // line matches the server-side format.
++        this._audioLevelAcc = new Map();
++        this._audioLevelLogPeriodMs = 5000;
++        this._audioLevelLogTimer = null;
++        // participant_id -> short "who" label (display name if SIP
++        // carried one, else local part of AoR). Refreshed from every
++        // conference-participants event.
++        this._sipParticipantLabels = new Map();
++        // Most recent SIP-side participants payload's first entry of
++        // type=='bridge' — its endpoints' participant_id values are
++        // skipped from the audio-level log (bridge plumbing, not user-
++        // facing audio).
++        this._sipBridgeParticipantIds = new Set();
+     }
+ 
+     get account() {
+@@ -504,6 +532,28 @@
+         this._sendRequest(req, null);
+     }
+ 
++    // Symmetric counterpart of inviteParticipants. Asks the webrtc-
++    // gateway to send REFER ;method=BYE (RFC 4579) for each named
++    // participant — the conference focus then BYEs them out of the
++    // room. Use this for explicit "remove from conference" UI
++    // actions. The server-side auto-kick that fires when the last
++    // WebRTC publisher leaves the room is independent of this call.
++    removeParticipants(ps) {
++        if (this._terminated) {
++            return;
++        }
++        if (!Array.isArray(ps) || ps.length === 0) {
++            return;
++        }
++        DEBUG('Removing participants: %o', ps);
++        const req = {
++            sylkrtc: 'videoroom-remove',
++            session: this.id,
++            participants: ps
++        };
++        this._sendRequest(req, null);
++    }
++
+     sendMessage(message, type) {
+         return this._sendMessage(message, type);
+     }
+@@ -572,7 +622,10 @@
              this._sendTrickle(event.candidate);
          });
  
@@ -930,6 +1011,251 @@ index 33da09d..a388b38 100644
          this.emit('localStreamAdded', options.localStream);
          DEBUG('Offer options: %o', offerOptions);
          utils.createLocalSdp(this._pc, 'offer', offerOptions)
+@@ -596,6 +649,19 @@
+                 this._state = newState;
+ 
+                 if (newState === 'accepted') {
++                    // Capture the server-reported conference duration on
++                    // the very first state transition. The webrtcgateway
++                    // stamps VideoroomSessionAcceptedEvent with a
++                    // gateway-side duration (seconds since the videoroom
++                    // was created), independent of any SIP focus clock.
++                    // Re-emitting it as `conferenceDuration` lets the UI
++                    // seed its local meter to "started N minutes ago"
++                    // from the moment of join, before the first
++                    // conference-info NOTIFY arrives.
++                    if (typeof message.duration === 'number') {
++                        this._conferenceDuration = message.duration;
++                        this.emit('conferenceDuration', message.duration);
++                    }
+                     this.emit('stateChanged', oldState, newState, {id: this._id});
+                     const sdp = utils.mungeSdp(message.sdp);
+                     DEBUG('Remote SDP: %s', sdp);
+@@ -779,6 +845,131 @@
+                 this._raisedHands = raisedHands;
+                 this.emit('raisedHands', {raisedHands: this._raisedHands});
+                 break;
++            case 'conference-participants':
++                // RFC 4575 conference-info snapshot forwarded by
++                // sylkserver/webrtcgateway whenever the SIP-side
++                // conference focus reports a change in the set of
++                // participants. Carries the full participant list,
++                // each with its endpoints and per-endpoint media. We
++                // log it here so it's easy to see in development, then
++                // re-emit as a JS event so the React layer can listen
++                // for it. Suppressed by webrtcgateway when the set of
++                // participant URIs hasn't actually changed.
++                //
++                // The webrtcgateway also stamps every event with the
++                // current conference duration (seconds since the
++                // videoroom was created on the gateway, computed
++                // gateway-side — independent of any SIP focus clock).
++                // We forward it as a second arg so React listeners can
++                // seed a local conference timer from this anchor.
++                console.log('[Conference] SIP conference participants:', message.participants,
++                            'duration=', message.duration);
++                // Rebuild participant_id → label and bridge-pid sets so
++                // the audio-level logger can render "who" and skip the
++                // audio-bridge. Labels: display name if SIP carried one,
++                // else user part of AoR. Bridge: every endpoint
++                // participant_id under a participant whose type=='bridge'.
++                {
++                    const labels = new Map();
++                    const bridgePids = new Set();
++                    const participants = message.participants || [];
++                    for (const p of participants) {
++                        const uri = p.uri || '';
++                        const userPart = uri.includes('@')
++                            ? (uri.includes(':') && uri.indexOf(':') < uri.indexOf('@')
++                                ? uri.split(':', 2)[1].split('@', 1)[0]
++                                : uri.split('@', 1)[0])
++                            : uri;
++                        const who = p.display_name || userPart || uri || '?';
++                        const isBridge = p.type === 'bridge';
++                        for (const ep of (p.endpoints || [])) {
++                            const pid = ep.participant_id;
++                            if (!pid) continue;
++                            if (isBridge) {
++                                bridgePids.add(pid);
++                            } else {
++                                labels.set(pid, who);
++                            }
++                        }
++                    }
++                    this._sipParticipantLabels = labels;
++                    this._sipBridgeParticipantIds = bridgePids;
++                }
++                this.emit('sipConferenceParticipants', message.participants || [], message.duration);
++                break;
++            case 'conference-audio-levels':
++                // Real-time per-participant audio levels pushed by the
++                // webrtcgateway at audio_level_notify_period (default
++                // 250ms). The webrtcgateway picks them up via UDP from
++                // the conference focus's audio-level server and forwards
++                // them here. Carries a typed list of per-participant
++                // entries, each keyed by participant_id (same token
++                // published on the matching Endpoint in the conference-
++                // participants event — JS tiles join the two streams
++                // by participant_id to render a VU meter).
++                //
++                // To keep the console useful we don't log every event
++                // (4 Hz × N participants is a flood); instead we
++                // accumulate for 5 s and emit one compact summary line
++                // per participant, matching the focus / webrtcgateway
++                // log shape. The first event also produces an
++                // operator-visible "first audio-levels arrived" line so
++                // it's obvious data is flowing across the WebSocket.
++                {
++                    const levels = message.levels || [];
++                    if (!this._audioLevelFirstSeen && levels.length > 0) {
++                        this._audioLevelFirstSeen = true;
++                        console.log('[Conference] first audio-levels event arrived ('
++                            + levels.length + ' participant entries)');
++                    }
++                    for (const entry of levels) {
++                        const pid = entry.participant_id;
++                        if (!pid) continue;
++                        const tx = entry.tx | 0;
++                        const rx = entry.rx | 0;
++                        const txPeak = entry.tx_peak | 0;
++                        const rxPeak = entry.rx_peak | 0;
++                        let acc = this._audioLevelAcc.get(pid);
++                        if (!acc) {
++                            acc = {tx_sum: 0, rx_sum: 0, tx_peak: 0, rx_peak: 0, count: 0};
++                            this._audioLevelAcc.set(pid, acc);
++                        }
++                        acc.tx_sum += tx;
++                        acc.rx_sum += rx;
++                        if (txPeak > acc.tx_peak) acc.tx_peak = txPeak;
++                        if (rxPeak > acc.rx_peak) acc.rx_peak = rxPeak;
++                        acc.count += 1;
++                    }
++                    if (this._audioLevelLogTimer === null) {
++                        this._audioLevelLogTimer = setInterval(
++                            () => this._flushAudioLevelLog(),
++                            this._audioLevelLogPeriodMs,
++                        );
++                    }
++                }
++                this.emit('sipConferenceAudioLevels', {
++                    levels: message.levels || [],
++                    ts: message.ts || null,
++                });
++                break;
++            case 'invite-status':
++                // Outcome of a SIP REFER sent by webrtcgateway to the
++                // conference focus on the user's behalf. Carries
++                // participant URI, state ('progress'|'success'|'failed'),
++                // SIP code and reason. Re-emitted so the UI can mark
++                // the invited tile (e.g. show "403 Relaying denied").
++                console.log('[Conference] invite-status raw=', message);
++                console.log('[Conference] invite-status participant=' + message.participant +
++                            ' state=' + message.state +
++                            ' code=' + message.code +
++                            ' reason=' + (message.reason || ''));
++                this.emit('inviteStatus', {
++                    participant: message.participant,
++                    state: message.state,
++                    code: message.code,
++                    reason: message.reason,
++                });
++                break;
+             default:
+                 break;
+         }
+@@ -943,6 +1134,44 @@
+         for (let p of participants) {
+             p._close();
+         }
++        // Tear down the audio-level summary timer so it doesn't keep
++        // the JS context alive after the conference ends. setInterval
++        // returns either a Node Timeout or an RN handle depending on
++        // platform; clearInterval handles both.
++        if (this._audioLevelLogTimer !== null) {
++            clearInterval(this._audioLevelLogTimer);
++            this._audioLevelLogTimer = null;
++        }
++        this._audioLevelAcc.clear();
++    }
++
++    _flushAudioLevelLog() {
++        // Periodic flush of the rolling audio-level accumulator —
++        // emits one console line per participant_id seen in the last
++        // window, then resets. Format matches the focus / webrtcgateway
++        // / audio-bridge log shape so the four sides line up when
++        // viewed together. Skips the audio-bridge entries (server-
++        // hidden too, but mobile may briefly see them if a NOTIFY is
++        // still in flight).
++        if (this._audioLevelAcc.size === 0) {
++            return;
++        }
++        const acc = this._audioLevelAcc;
++        this._audioLevelAcc = new Map();
++        const labels = this._sipParticipantLabels || new Map();
++        const bridgePids = this._sipBridgeParticipantIds || new Set();
++        const periodS = (this._audioLevelLogPeriodMs / 1000).toFixed(0);
++        for (const [pid, entry] of acc) {
++            if (bridgePids.has(pid)) continue;
++            if (entry.count <= 0) continue;
++            const avgTx = Math.floor(entry.tx_sum / entry.count);
++            const avgRx = Math.floor(entry.rx_sum / entry.count);
++            const who = (labels.get(pid) || '?').slice(0, 10).padEnd(10);
++            console.log('[Conference] audio level: "' + who + '" "' + pid + '" '
++                + periodS + 's mean/peak, n=' + entry.count
++                + ', tx=' + avgTx + '/' + entry.tx_peak
++                + ' rx=' + avgRx + '/' + entry.rx_peak);
++        }
+     }
+ 
+     _localTerminate(reason) {
+diff --git a/node_modules/react-native-sylkrtc/lib/connection.js b/node_modules/react-native-sylkrtc/lib/connection.js
+index 2469ceb..3187f11 100644
+--- a/node_modules/react-native-sylkrtc/lib/connection.js
++++ b/node_modules/react-native-sylkrtc/lib/connection.js
+@@ -234,6 +234,22 @@ class Connection extends EventEmitter {
+         this._delay = INITIAL_DELAY;
+         this._setState('connected');
+ 
++        // Application-layer keep-alive for the Sylk WSS control plane.
++        //
++        // Previously: ping every 3 s, drop after 7 missed acks (~21 s
++        // budget). That was too aggressive in the field — a single
++        // cell handover, NAT pinhole rotation, brief Wi-Fi-to-cell
++        // transition or transient SylkServer hiccup would trip the
++        // watchdog while the media plane (Janus RTCPeerConnection over
++        // DTLS/SRTP, with its own ICE keepalive) was still perfectly
++        // healthy. The call got torn down for no real reason.
++        //
++        // New: ping every 5 s, drop after 9 missed acks (~45 s
++        // budget). That's long enough to ride out transient network
++        // events without making genuine outages take too long to
++        // detect.
++        const PING_INTERVAL_MS = 5000;
++        const MAX_MISSED_PINGS = 9;
+         this._missedPings = 0;
+         this._pingInterval = setInterval(() => {
+             const req = {
+@@ -245,8 +261,9 @@ class Connection extends EventEmitter {
+                 }
+             });
+             this._missedPings = this._missedPings + 1;
+-            if (this._missedPings >= 7) {
+-                DEBUG('Disconnected, 2 pings are missed');
++            if (this._missedPings >= MAX_MISSED_PINGS) {
++                DEBUG('Disconnected, %d pings are missed (~%d s)',
++                    this._missedPings, (PING_INTERVAL_MS * this._missedPings) / 1000);
+                 clearInterval(this._pingInterval);
+                 if (this._sock !== null) {
+                     const noop = function() {};
+@@ -257,7 +274,7 @@ class Connection extends EventEmitter {
+                 }
+                 this._onClose();
+             }
+-        }, 3000);
++        }, PING_INTERVAL_MS);
+     }
+ 
+     _onClose() {
 diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
 index ae521ed..8c37edb 100644
 --- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js

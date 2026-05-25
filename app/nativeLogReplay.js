@@ -41,14 +41,51 @@ const EVENT_NAME = 'NativeLogLine';
 let _replayInFlight = false;
 let _liveSubscription = null;     // EmitterSubscription | null
 
+// SylkLogger (both Android and iOS) prefixes every line it emits with
+//   <ISO timestamp> | <level> | pid=<N> | <message>
+// e.g. "2026-05-19T18:56:38.361 | D | pid=8297 | [call] [service] …"
+//
+// We want exactly one timestamp on each persisted log entry, and the
+// native one is the more useful of the two (it captures when the event
+// actually happened in native code; the JS-side timestamp would only
+// reflect when the bridge got around to delivering the event, which can
+// be seconds later — especially during the startup drain). So we parse
+// the SylkLogger prefix here, drop pid (not useful to consumers of the
+// merged log), keep the level, and rewrite the line into the same
+// "<YYYY-MM-DD HH:MM:SS.ms> [native] <LVL> <message>" shape used by the
+// rest of the APPLOG file (only with the higher-precision native
+// timestamp). Lines that don't match the SylkLogger prefix fall back to
+// the JS-timestamped path so anything that slips through is still
+// captured.
+const _SYLK_LOGGER_PREFIX_RE =
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}\.\d{3})\s*\|\s*([A-Za-z]+)\s*\|\s*pid=\d+\s*\|\s*(.*)$/;
+
 function _emitLine(line) {
     if (!line) return;
     // Defence in depth: log2file already flattens embedded newlines,
     // but a native line that for some reason contains '\n' would be
     // split BEFORE log2file gets it (e.g. by a caller that does its
     // own .split on the raw text). Strip CR/LF here so the value
-    // handed to timestampedLog is always one line.
+    // handed downstream is always one line.
     const flat = String(line).replace(/\r\n|\r|\n/g, ' \\n ');
+
+    const m = _SYLK_LOGGER_PREFIX_RE.exec(flat);
+    if (m) {
+        // m[1] = "2026-05-19", m[2] = "18:56:38.361",
+        // m[3] = "D" / "W" / "E" / …, m[4] = rest of message.
+        const formatted = `${m[1]} ${m[2]} ${TAG} ${m[3]} ${m[4]}`;
+        try {
+            utils.log2file(formatted);
+            return;
+        } catch (err) {
+            // Fall through to the JS-timestamped fallback below if the
+            // direct write path broke for some reason.
+            // eslint-disable-next-line no-console
+            console.log('[APPLOG] [native] (log2file fallback)', formatted,
+                        'err=', err && err.message ? err.message : String(err));
+        }
+    }
+
     try {
         utils.timestampedLog(TAG, flat);
     } catch (err) {

@@ -445,7 +445,7 @@ class ShowLogsModal extends Component {
     }
 
     // Send the (optionally anonymized) log text to support@sylk.link as
-    // a PGP-encrypted file attachment over the regular Sylk file-transfer
+    // a PGP-encrypted file attachment over the regular Blink file-transfer
     // pipeline. The orchestration (write temp .txt, autocreate the
     // support contact, send a plaintext "Request for support" to nudge
     // the PGP key exchange, wait for the support public key, then upload
@@ -556,7 +556,7 @@ class ShowLogsModal extends Component {
                         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
                     >
-                        {/* Header: single-line "Sylk logs · user@domain"
+                        {/* Header: single-line "Blink logs · user@domain"
                             title with the close (X) on the right. The
                             URI is the SIP identity the logs belong to
                             (own account in live-tail mode, file_transfer
@@ -564,7 +564,7 @@ class ShowLogsModal extends Component {
                             only appended when it differs from the
                             current account — viewing one's own live
                             tail or own self-attached snapshot renders
-                            just "Sylk logs". */}
+                            just "Blink logs". */}
                         {/* In landscape the header row is dropped
                             entirely — we don't want to spend any vertical
                             pixels on chrome when height is the scarce
@@ -581,7 +581,7 @@ class ShowLogsModal extends Component {
                             borderBottomWidth: StyleSheet.hairlineWidth,
                             borderBottomColor: '#e0e0e0',
                         }}>
-                            {/* "Sylk logs" stays at the regular title
+                            {/* "Blink logs" stays at the regular title
                                 size; the SIP URI gets ~half size and a
                                 muted colour so it reads as a secondary
                                 label without breaking out of the
@@ -594,7 +594,7 @@ class ShowLogsModal extends Component {
                                 numberOfLines={1}
                                 ellipsizeMode="middle"
                             >
-                                Sylk logs
+                                Blink logs
                                 {this.props.subtitle ? (
                                     <Text style={{ fontSize: 11, color: '#666', fontWeight: 'normal' }}>
                                         {'  ·  ' + this.props.subtitle}

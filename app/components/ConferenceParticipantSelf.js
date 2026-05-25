@@ -176,7 +176,21 @@ class ConferenceParticipantSelf extends Component {
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        paddingLeft: 12,
+                        // iOS in fullscreen mode (both portrait and
+                        // landscape): shift the "Myself" label 20 dp
+                        // further to the right so it clears the
+                        // phone's bottom-left rounded corner
+                        // (iPhone X+). In portrait the round corner
+                        // sits at the bottom-left; in landscape the
+                        // bottom-left corner is also rounded
+                        // (different orientation, same physical
+                        // glass). Other surfaces handle the safe-
+                        // area inset themselves; in fullscreen there
+                        // is no SafeAreaView padding and the label
+                        // would otherwise ride under the rounded
+                        // corner.
+                        paddingLeft: (Platform.OS === 'ios'
+                            && this.props.fullScreen) ? 32 : 12,
                         paddingBottom: 10,
                         paddingTop: 24,
                     }}
@@ -203,7 +217,11 @@ ConferenceParticipantSelf.propTypes = {
     generatedVideoTrack: PropTypes.bool,
     isLandscape: PropTypes.bool,
     big: PropTypes.bool,
-    cameraFacing: PropTypes.string
+    cameraFacing: PropTypes.string,
+    // True when the conference is in fullscreen mode (navbar hidden,
+    // self-view fills the screen). Used to shift the "Myself" label
+    // away from the bottom-left phone corner on iOS portrait.
+    fullScreen: PropTypes.bool
 };
 
 export default ConferenceParticipantSelf;

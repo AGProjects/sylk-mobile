@@ -48,6 +48,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginBottom: 0,
     justifyContent: 'center', // margin: auto not supported
+    // Match the AUDIO call landscape button bar's vertical
+    // position (AudioCall.js landscapeButtonContainer: bottom 30 +
+    // translateY 30 = ~60dp above the screen edge). The video
+    // bar used to sit flush with the bottom while the audio bar
+    // floated higher; the user wants them at the same height.
+    bottom: 30,
+    transform: [{ translateY: 30 }],
   },
 
   tabletPortraitbuttonsContainer: {
@@ -89,7 +96,7 @@ const styles = StyleSheet.create({
   },
 
   greenButton: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)', // #6DAA63 + 0.9
+    backgroundColor: '#25D366', // #6DAA63 + 0.9
   },
 
   disabledGreenButton: {
@@ -116,7 +123,7 @@ const styles = StyleSheet.create({
 
   hangupButton: {
     marginLeft: 30,
-    backgroundColor: 'rgba(169, 68, 66, 0.5)', // #a94442 + 0.5
+    backgroundColor: '#E53935',
   },
 
   buttonContainer: {
@@ -154,7 +161,7 @@ const styles = StyleSheet.create({
   },
 
   audioDeviceSelected: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    backgroundColor: '#25D366',
     borderColor: 'green',
   },
 

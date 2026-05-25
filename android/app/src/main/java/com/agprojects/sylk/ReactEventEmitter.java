@@ -24,6 +24,26 @@ public class ReactEventEmitter {
             String event,
             ReactApplication app
     ) {
+        sendEventToReact(action, callUUID, fromUri, toUri, phoneLocked, event, null, app);
+    }
+
+    /**
+     * Variant that also carries the raw SIP-level display name from the push
+     * payload (FCM "from_display_name"). This is the display name the
+     * remote party put in their SIP From header, before any local
+     * contact-name resolution. JS uses it to seed a missing/URI-equal
+     * contact name on the matched contact.
+     */
+    public static synchronized void sendEventToReact(
+            String action,
+            String callUUID,
+            String fromUri,
+            String toUri,
+            boolean phoneLocked,
+            String event,
+            String fromDisplayName,
+            ReactApplication app
+    ) {
         try {
             ReactInstanceManager rim =
                 app.getReactNativeHost().getReactInstanceManager();
@@ -36,6 +56,9 @@ public class ReactEventEmitter {
             payload.putString("action", action);
             payload.putString("event", event);
             payload.putBoolean("phoneLocked", phoneLocked);
+            if (fromDisplayName != null) {
+                payload.putString("fromDisplayName", fromDisplayName);
+            }
 
             SylkLogger.d("[bridge] [event] action " + action);
             SylkLogger.d("[bridge] [event] event " + event);

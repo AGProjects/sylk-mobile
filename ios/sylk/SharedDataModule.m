@@ -48,5 +48,27 @@ RCT_EXPORT_METHOD(setActiveChat:(NSString *)jid)
     }
 }
 
+// Persist the configured SIP-focus bridge host so the push-receipt
+// path in AppDelegate can drop the duplicate "incoming_session" push
+// the conference focus sends in parallel with a sylk
+// "incoming_conference_request". Stored in standardUserDefaults under
+// "sipBridgeDomain"; AppDelegate reads the same key. Setting nil or
+// empty clears it (dedupe disabled — safe default if the server hasn't
+// published a sipBridge value).
+RCT_EXPORT_METHOD(setSipBridgeDomain:(NSString *)domain)
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (domain == nil || [domain length] == 0) {
+        [defaults removeObjectForKey:@"sipBridgeDomain"];
+        [SylkLogger log:@"[shared-data] sipBridgeDomain cleared"];
+    } else {
+        NSString *trimmed = [[domain stringByTrimmingCharactersInSet:
+                              [NSCharacterSet whitespaceAndNewlineCharacterSet]]
+                             lowercaseString];
+        [defaults setObject:trimmed forKey:@"sipBridgeDomain"];
+        [SylkLogger log:@"[shared-data] sipBridgeDomain set to %@", trimmed];
+    }
+}
+
 
 @end

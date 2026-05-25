@@ -133,7 +133,7 @@ chatContainerPortraitAudio: {
   },
 
   hangupButton: {
-    backgroundColor: 'rgba(169, 68, 66, 0.8)',
+    backgroundColor: '#E53935',
   },
 
   wholePageVideo: {

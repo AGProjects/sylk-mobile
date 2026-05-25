@@ -21,24 +21,29 @@ const styles = StyleSheet.create({
   containerPortrait: {},
   containerLandscape: {},
 
+  // Borders between contact cards removed per user request. The
+  // marginTop:0.6 (and marginTop:1 on landscape) used to show as a
+  // hairline separator against the underlying background — now zero
+  // so the cards stack flush. borderWidth:1 also stripped from the
+  // tablet variants.
   cardPortraitContainer: {
-    marginTop: 0.6,
+    marginTop: 0,
     borderRadius: 0,
   },
   cardLandscapeContainer: {
     flex: 1,
     marginLeft: 1,
-    marginTop: 1,
+    marginTop: 0,
     borderRadius: 0,
   },
   cardLandscapeTabletContainer: {
     flex: 1,
-    borderWidth: 1,
+    borderWidth: 0,
     borderRadius: 0,
   },
   cardPortraitTabletContainer: {
     flex: 1,
-    borderWidth: 1,
+    borderWidth: 0,
     borderRadius: 0,
   },
 
@@ -358,14 +363,39 @@ class ContactCard extends Component {
 		// Falls back to the generic "Conference" when we've never
 		// recorded a run for this room yet (the room exists in the
 		// contacts list because someone saved invitees / favourited
-		// it, but it's never been dialed). The previous code
-		// hardcoded "Video conference" for every room regardless of
-		// how it was actually used, which was wrong for audio
-		// conferences and uninformative for rooms with no history.
-		if (contact.lastCallMediaType === 'audio') {
-			subtitle = 'Audio';
-		} else if (contact.lastCallMediaType === 'video') {
-			subtitle = 'Video';
+		// it, but it's never been dialed).
+		//
+		// Consistent two-word naming: "Audio Conference" / "Video
+		// Conference" / "Conference". The earlier single-word
+		// variant ("Audio" / "Video") was visually inconsistent
+		// with the no-history fallback ("Conference").
+		//
+		// Two source fields, in priority order:
+		//   1. contact.lastCallMediaType — in-memory only, set by
+		//      app.js updateHistoryEntry the moment a call ends.
+		//      Lost on app restart (not persisted to SQL).
+		//   2. contact.lastCallMedia      — comma-joined string OR
+		//      array of media types from the SQL `last_call_media`
+		//      column. Survives restart. May carry multiple values
+		//      ("audio,video") when the contact has been dialed
+		//      both ways; pick the LAST entry as the most-recent
+		//      run. The earlier code only read lastCallMediaType,
+		//      so after a restart every saved conference flipped
+		//      from "Audio" → "Conference" — the bug the user saw.
+		let _mediaType = contact.lastCallMediaType;
+		if (!_mediaType && contact.lastCallMedia) {
+			const _arr = Array.isArray(contact.lastCallMedia)
+				? contact.lastCallMedia
+				: String(contact.lastCallMedia).split(',');
+			const _last = _arr[_arr.length - 1];
+			if (_last === 'audio' || _last === 'video') {
+				_mediaType = _last;
+			}
+		}
+		if (_mediaType === 'audio') {
+			subtitle = 'Audio Conference';
+		} else if (_mediaType === 'video') {
+			subtitle = 'Video Conference';
 		} else {
 			subtitle = 'Conference';
 		}

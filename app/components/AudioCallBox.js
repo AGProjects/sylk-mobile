@@ -1,14 +1,15 @@
 import React, { Component } from 'react';
-import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions, DeviceEventEmitter } from 'react-native';
-import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu } from 'react-native-paper';
+import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions, DeviceEventEmitter, Animated, Easing } from 'react-native';
+import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu, Surface } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
+import uuid from 'react-native-uuid';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import UserIcon from './UserIcon';
-import { getZrtpSession } from './CallZrtp';
+import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
 import utils from '../utils';
 import LoadingScreen from './LoadingScreen';
 
@@ -138,6 +139,9 @@ class AudioCallBox extends Component {
             // call or continue without end-to-end encryption.
             zrtpMandatoryFailedVisible  : false,
             zrtpMandatoryFailedInfo     : null,
+            zrtpDowngradeBannerVisible  : false,
+            zrtpDowngradeBannerInfo     : null,
+            zrtpMismatchAlarmVisible    : false,
             // Toggle between the AudioSpeedometer (default) and the
             // legacy TrafficStats bar-chart. Tap the stats area to flip.
             showOldStats                : false,
@@ -203,6 +207,24 @@ class AudioCallBox extends Component {
             // unlit bars during the ~2 s between call-connect and
             // the first stats sample.
             vuMetersHaveData            : false,
+            // Small panel anchored to the avatar's bottom-right "+"
+            // chip. Currently surfaces a single action: "Escalate to
+            // conference". Tap the + to toggle, tap anywhere outside
+            // (overlay press) to dismiss — same self-dismiss pattern
+            // as the audio-device floating picker.
+            showConferenceRequestPanel  : false,
+            // True between sending a conference_request to the peer
+            // and either: (a) receiving the peer's accept echo, or
+            // (b) the peer's explicit reject, or (c) the 60 s window
+            // expiring. While true the + chip shows a pulsing
+            // "waiting" look so the user knows the peer hasn't
+            // responded yet.
+            conferenceRequestPending    : false,
+            // Tracks the requestId of the outgoing conference_request
+            // so the DeviceEventEmitter('conferenceRequestResolved')
+            // listener can match the event to this specific request
+            // (multiple sends would otherwise race the chip state).
+            conferenceRequestPendingId  : null,
         };
 
         this.remoteAudio = React.createRef();
@@ -217,6 +239,42 @@ class AudioCallBox extends Component {
         // ~10 Hz interval that samples the remote audio level for the
         // VU meter via call._pc.getStats().
         this._vuSamplerInterval = null;
+    }
+
+    // Pulse opacity for the recording pill. Starts at 1 (visible),
+    // loops 1 → 0.4 → 1 every ~1.2 s while recording. Instance-level
+    // so it survives re-renders without resetting; started in
+    // componentDidUpdate when isRecording flips true and stopped
+    // when it flips false (see _startRecordPulse / _stopRecordPulse).
+    _recordPulse = new Animated.Value(1);
+
+    _startRecordPulse() {
+        if (this._recordPulseLoop) return;
+        this._recordPulseLoop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(this._recordPulse, {
+                    toValue: 0.4,
+                    duration: 600,
+                    easing: Easing.inOut(Easing.ease),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(this._recordPulse, {
+                    toValue: 1,
+                    duration: 600,
+                    easing: Easing.inOut(Easing.ease),
+                    useNativeDriver: true,
+                }),
+            ])
+        );
+        this._recordPulseLoop.start();
+    }
+
+    _stopRecordPulse() {
+        if (this._recordPulseLoop) {
+            this._recordPulseLoop.stop();
+            this._recordPulseLoop = null;
+        }
+        this._recordPulse.setValue(1);
     }
 
     componentDidMount() {
@@ -270,6 +328,7 @@ class AudioCallBox extends Component {
             // Mandatory-mode handshake failure: surface the warning
             // dialog so the user can pick End call vs Continue.
             this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            this.state.call.on('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
             // Catch up if the session already finished its handshake before
             // this component mounted (e.g. after a Fast Refresh / reload).
             const existing = getZrtpSession(this.state.call);
@@ -281,6 +340,15 @@ class AudioCallBox extends Component {
         if (this.state.selectedContacts && this.state.selectedContacts.length > 0) {
             this.toggleEscalateConferenceModal();
         }
+
+        // Listen for app.js → AudioCallBox notifications that an
+        // outstanding conference_request was resolved (accept, reject,
+        // or sibling-handled). Clears the "Waiting…" chip immediately
+        // instead of waiting on the 60 s self-clear.
+        this._conferenceRequestResolvedSub = DeviceEventEmitter.addListener(
+            'conferenceRequestResolved',
+            this._handleConferenceRequestResolved
+        );
 
         // If we mounted directly into the awaiting-outgoing state, kick
         // off the auto-start timer immediately. componentDidUpdate
@@ -564,7 +632,67 @@ class AudioCallBox extends Component {
         if (this.unmounted) {
             return;
         }
-        this.setState({ zrtpState: newState });
+        this.setState({ zrtpState: newState }, () => {
+            if (newState !== 'key-active') return;
+            const status = this._zrtpVerificationStatus();
+            if (status === 'mismatch' && !this.state.zrtpMismatchAlarmVisible) {
+                utils.timestampedLog('[call] [zrtp] call_id='
+                    + (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)),
+                    'SAS mismatch detected — opening alarm modal');
+                this.setState({ zrtpMismatchAlarmVisible: true });
+            }
+            // Auto-upgrade legacy PGP-verified peers to v2 rs1
+            // continuity. When this call's continuityState is first-time
+            // / one-sided (no rs1 was mixed) but the legacy PGP-key
+            // fallback would say 'verified' (which is why the pill is
+            // green right now), treat that as user consent to seed v2
+            // rs1 — so the NEXT call between these peers has real
+            // protocol-level continuity instead of relying on the PGP
+            // anchor again. Idempotent: confirmSasAndSeedRs1 just
+            // re-derives the same next_rs1.
+            this._maybeAutoUpgradeRs1(status);
+        });
+    }
+
+    _maybeAutoUpgradeRs1(status) {
+        if (status !== 'verified') return;
+        const session = getZrtpSession(this.state.call);
+        if (!session) return;
+        const cs = session.continuityState;
+        if (cs !== 'first-time' && cs !== 'one-sided-local'
+                && cs !== 'one-sided-peer') return;
+        if (this._rs1AutoUpgraded) return;
+        if (typeof session.confirmSasAndSeedRs1 !== 'function') return;
+        try {
+            session.confirmSasAndSeedRs1();
+            this._rs1AutoUpgraded = true;
+            utils.timestampedLog('[call] [zrtp] call_id='
+                + (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)),
+                'auto-upgraded legacy verification to v2 rs1 continuity (was=' + cs + ')');
+        } catch (e) {
+            utils.timestampedLog('[call] [zrtp] rs1 auto-upgrade threw:',
+                (e && e.message) || e);
+        }
+    }
+
+    _onZrtpMismatchAcknowledge() {
+        // User chose to continue past the mismatch alarm. Drop the
+        // stored rs1 so subsequent calls re-bootstrap (no continuity
+        // until the user verifies SAS again). Without this clear, the
+        // old rs1 would stay in place and the same mismatch would fire
+        // on every future call.
+        const session = getZrtpSession(this.state.call);
+        if (session && typeof session.clearRs1 === 'function') {
+            try { session.clearRs1(); } catch (e) {}
+        }
+        this.setState({ zrtpMismatchAlarmVisible: false });
+    }
+
+    _onZrtpMismatchEndCall() {
+        this.setState({ zrtpMismatchAlarmVisible: false });
+        if (this.state.call) {
+            try { this.state.call.terminate(); } catch (e) {}
+        }
     }
 
     // Fired by CallZrtp.js when zRTP-mandatory mode fails to agree on
@@ -594,6 +722,21 @@ class AudioCallBox extends Component {
         this.setState({ zrtpMandatoryFailedVisible: false });
     }
 
+    zrtpDowngradeWarning(info) {
+        if (this.unmounted) return;
+        utils.timestampedLog('[call] [zrtp] call_id='
+            + (this.state.call && (this.state.call._callId || this.state.call.callId || this.state.call.id)),
+            'AudioCallBox received zrtpDowngradeWarning:', info);
+        this.setState({
+            zrtpDowngradeBannerVisible: true,
+            zrtpDowngradeBannerInfo: info,
+        });
+    }
+
+    _onZrtpDowngradeBannerDismiss() {
+        this.setState({ zrtpDowngradeBannerVisible: false });
+    }
+
     /** Determine the verification status for the badge. Anchored to the
      *  peer's PGP public key (a stable per-peer value), NOT to the per-call
      *  SAS — the SAS legitimately differs every call due to fresh ephemeral
@@ -614,12 +757,29 @@ class AudioCallBox extends Component {
         if (this.state.zrtpState !== 'key-active') return null;
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) return null;
+        // Primary anchor: v2 retained-secret (rs1) continuity decision
+        // taken inside the session at _deriveAndLog time.
+        if (session.continuityState === 'verified') return 'verified';
+        if (session.continuityState === 'mismatch') return 'mismatch';
+        // New-device guard: when the peer advertised a device_id AND we
+        // hold NO per-device rs1 for that specific device, treat the
+        // call as unverified — don't fall through to the legacy PGP
+        // compare. The PGP key is per-account, so without this guard a
+        // brand-new device behind a previously-verified account would
+        // automatically get the green pill, which silently grants trust
+        // to a device that has never been verified.
+        if (session.peerDeviceId && !session.localRs1) {
+            return 'unverified';
+        }
+        // Legacy fallback for v1 / v2 peers (no device_id advertised) or
+        // sessions where we did once seed rs1 under the AOR-only slot —
+        // compare stored PGP key fingerprint as we did before v3.
         const stored = this.props.callContact
             && this.props.callContact.localProperties
             && this.props.callContact.localProperties.zrtp;
         if (!stored || !stored.publicKey) return 'unverified';
         const currentKey = this.props.callContact && this.props.callContact.publicKey;
-        if (currentKey && stored.publicKey === currentKey) return 'verified';
+        if (currentKey && constantTimeStringEqual(stored.publicKey, currentKey)) return 'verified';
         return 'mismatch';
     }
 
@@ -631,11 +791,42 @@ class AudioCallBox extends Component {
         }
     }
 
+    _onZrtpReset() {
+        // Mirror the SDK's /zrtp_reset: wipe rs1 in-memory on the
+        // session, clear the persisted contact.localProperties.zrtp
+        // record, and close the dialog. The next call between these
+        // peers re-bootstraps from continuity=first-time. Pill flips
+        // to unverified once the contact prop refreshes.
+        const session = getZrtpSession(this.state.call);
+        if (session && typeof session.clearRs1 === 'function') {
+            try { session.clearRs1(); } catch (e) {}
+        }
+        if (session) {
+            try {
+                session.continuityState = 'first-time';
+                session.localRs1 = null;
+                session.localRsIdHex = null;
+            } catch (e) {}
+        }
+        if (this.props.resetContactZrtp && this.state.remoteUri) {
+            try { this.props.resetContactZrtp(this.state.remoteUri); } catch (e) {}
+        }
+        this._rs1AutoUpgraded = false;
+        this.setState({ zrtpDialogVisible: false });
+        this.forceUpdate();
+    }
+
     _onZrtpVerifyConfirm() {
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) {
             this.setState({ zrtpDialogVisible: false });
             return;
+        }
+        // Seed (or refresh) the per-peer retained secret. The session
+        // emits 'zrtpRs1Update' on the Call which app.js listens for and
+        // persists into contact.localProperties.zrtp.rs1_hex.
+        if (typeof session.confirmSasAndSeedRs1 === 'function') {
+            try { session.confirmSasAndSeedRs1(); } catch (e) {}
         }
         if (this.props.markZrtpVerified && this.state.remoteUri) {
             this.props.markZrtpVerified(this.state.remoteUri, session.sas.chars, session.sas.emojis);
@@ -648,10 +839,12 @@ class AudioCallBox extends Component {
     componentWillUnmount() {
         console.log('AudioCallBox will unmount');
         this.unmounted = true;
+        this._stopRecordPulse();
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
             this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
             this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            this.state.call.removeListener('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
         }
 
         if (this.state.call != null && this.state.call.statistics != null) {
@@ -684,6 +877,18 @@ class AudioCallBox extends Component {
         // (the 'terminated' state transition already does this, but a
         // hard navigate-away can bypass that path).
         stopQosLogging();
+
+        // Outgoing conference-request expiry timer — clear it if the
+        // user navigates away before the 60 s window elapses, so the
+        // setState callback doesn't fire on an unmounted instance.
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+            this._conferenceRequestExpiryTimer = null;
+        }
+        if (this._conferenceRequestResolvedSub) {
+            this._conferenceRequestResolvedSub.remove();
+            this._conferenceRequestResolvedSub = null;
+        }
     }
 
     /** Start capturing the call to a compressed audio file. On
@@ -1141,15 +1346,33 @@ class AudioCallBox extends Component {
         if (!this.state.vuMetersHaveData) {
             return null;
         }
+        // VU meter vertical offset in LANDSCAPE only — net 0
+        // (history: -30 → +20 → -10 → -10 more = back to natural
+        // position). Keeping the conditional in case future
+        // landscape tweaks add another offset. Portrait keeps
+        // natural too.
+        const _vuLift = this.state.isLandscape ? { transform: [{ translateY: 0 }] } : null;
         return (
-            <View style={{ alignSelf: 'stretch', alignItems: 'center' }}>
-                <VuMeter level={this.state.remoteAudioLevel} label="Remote" width="60%" />
-                <VuMeter level={this.state.localAudioLevel}  label="Local"  width="60%" />
+            <View style={[{ alignSelf: 'stretch', alignItems: 'center' }, _vuLift]}>
+                {/* Labels removed per user request — the bar geometry
+                    (remote on top, local on bottom) is consistent
+                    enough that the captions weren't carrying weight. */}
+                <VuMeter level={this.state.remoteAudioLevel} width="60%" />
+                <VuMeter level={this.state.localAudioLevel}  width="60%" />
             </View>
         );
     }
 
     componentDidUpdate(prevProps, prevState) {
+        // Pulse the recording pill while a recording is in progress.
+        // Starts the loop on the false→true edge and stops it on the
+        // true→false edge — instance-level Animated.Value so the
+        // animation doesn't restart on every render.
+        if (!prevState.isRecording && this.state.isRecording) {
+            this._startRecordPulse();
+        } else if (prevState.isRecording && !this.state.isRecording) {
+            this._stopRecordPulse();
+        }
         if (prevProps.call == null && this.props.call) {
             this.props.call.statistics.on('stats', this.statistics);
         }
@@ -1245,6 +1468,7 @@ class AudioCallBox extends Component {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
                 this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
                 this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+                this.state.call.removeListener('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
             }
 
             // Attach new listener if available
@@ -1252,6 +1476,7 @@ class AudioCallBox extends Component {
                 nextProps.call.on('stateChanged', this.callStateChanged);
                 nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
                 nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+                nextProps.call.on('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
                 // Catch up: if the session already reached key-agreed on a
                 // prior mount, pull its state so the badge shows immediately.
                 const existing = getZrtpSession(nextProps.call);
@@ -1353,7 +1578,19 @@ class AudioCallBox extends Component {
             // start recording on anymore. Stop the VU sampler too —
             // no more audio to meter.
             this._stopVuSampler();
-            this.setState({ zrtpState: null, zrtpDialogVisible: false, recordingArmed: false, remoteAudioLevel: 0, localAudioLevel: 0, vuMetersHaveData: false });
+            // Clear ALL Sylk-ZRTP-related UI state so nothing lingers
+            // on the wrap-up screen — the pill, the SAS dialog, the
+            // mismatch alarm, and the downgrade banner all hide.
+            this.setState({
+                zrtpState: null,
+                zrtpDialogVisible: false,
+                zrtpMismatchAlarmVisible: false,
+                zrtpDowngradeBannerVisible: false,
+                recordingArmed: false,
+                remoteAudioLevel: 0,
+                localAudioLevel: 0,
+                vuMetersHaveData: false,
+            });
 
             // Auto-stop the recording on call end. componentWillUnmount
             // already does this when AudioCallBox actually unmounts, but
@@ -1422,6 +1659,179 @@ class AudioCallBox extends Component {
 
     escalateToConference(participants) {
         this.props.escalateToConference(participants);
+    }
+
+    // Handler for the 'conferenceRequestResolved' event emitted by
+    // app.js when the peer accepts / rejects our outstanding
+    // conference_request, or when a sibling device handles it. Clears
+    // the chip's pending state if the event's requestId matches the
+    // one we're currently waiting on.
+    _handleConferenceRequestResolved(event) {
+        if (!event || !event.requestId) return;
+        if (this.state.conferenceRequestPendingId !== event.requestId) return;
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+            this._conferenceRequestExpiryTimer = null;
+        }
+        this.setState({
+            conferenceRequestPending: false,
+            conferenceRequestPendingId: null,
+        });
+    }
+
+    // Toggle the small "+" panel that floats off the avatar's
+    // bottom-right corner. Today it surfaces a single action
+    // (escalate-to-conference handshake); adding more in-call quick
+    // actions later is a one-line append inside the panel render.
+    toggleConferenceRequestPanel() {
+        this.setState({ showConferenceRequestPanel: !this.state.showConferenceRequestPanel });
+    }
+
+    closeConferenceRequestPanel() {
+        if (this.state.showConferenceRequestPanel) {
+            this.setState({ showConferenceRequestPanel: false });
+        }
+    }
+
+    // User picked "Escalate to conference" from the + panel.
+    //
+    // Ships a single application/sylk-message-metadata payload to the
+    // peer with action='conference_request', a freshly generated room
+    // URI (sorted local/remote usernames + short suffix, scoped to the
+    // account's defaultConferenceDomain), and a 60 s expires window.
+    // Mirrors the location_request handshake shape so the peer's
+    // metadata router recognises it without bespoke plumbing.
+    //
+    // No room-side state is created here — both sides defer creating
+    // the conference until the accept echo lands. That keeps a
+    // declined / expired request from leaving a stale empty room on
+    // the conference server.
+    // DJB2 hash of an arbitrary string → 9-digit numeric room name.
+    // Deterministic, no crypto needed: the room name is just a label
+    // for routing on the conference server, not a secret. Output is
+    // padded out to 9 digits so the URI's local-part looks like a
+    // proper extension (e.g. 074219385@videoconference…) instead of
+    // a variable-width 1–9 digit run.
+    _hashUsernamesToRoom(input) {
+        let h = 5381;
+        for (let i = 0; i < input.length; i++) {
+            // h * 33 + c, coerced to int32 so it doesn't blow up
+            // into floating-point land for long inputs.
+            h = ((h << 5) + h + input.charCodeAt(i)) | 0;
+        }
+        // | 0 leaves a signed int32. >>> 0 reinterprets to uint32.
+        const positive = (h >>> 0);
+        const mod = positive % 1000000000;
+        // Pad to 9 chars so the room URI's local part is always the
+        // same width — easier to spot in logs.
+        return mod.toString().padStart(9, '0');
+    }
+
+    sendConferenceRequest() {
+        this.closeConferenceRequestPanel();
+
+        const call = this.state.call;
+        if (!call || !call.remoteIdentity) {
+            console.log('[conference-request] no active call, cannot send');
+            return;
+        }
+        const peerUri = call.remoteIdentity.uri;
+        if (!peerUri) {
+            console.log('[conference-request] active call has no remote uri');
+            return;
+        }
+        if (typeof this.props.sendMessage !== 'function') {
+            console.log('[conference-request] sendMessage prop not wired');
+            return;
+        }
+        const myUri = this.props.accountId;
+        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const myUser = (myUri && myUri.split('@')[0]) || 'me';
+        const peerUser = peerUri.split('@')[0] || 'peer';
+        // Room name is a deterministic numeric hash of the sorted
+        // caller + callee usernames. Same inputs in either order yield
+        // the same number — useful as a sanity check both sides can
+        // run locally if the metadata is ever lost in flight, and
+        // keeps the conference URI's local part short / human-readable
+        // (max 9 digits, fits a typical extension-style identifier).
+        // DJB2 hashed → unsigned 32-bit → mod 1e9.
+        const parts = [myUser, peerUser].map(s => s.toLowerCase()).sort();
+        const room = `${this._hashUsernamesToRoom(parts.join('|'))}@${conferenceDomain}`;
+
+        const requestId = uuid.v4();
+        const now = new Date();
+        const expiresAtIso = new Date(Date.now() + 60 * 1000).toISOString();
+
+        const metadataContent = {
+            action: 'conference_request',
+            messageId: requestId,
+            timestamp: now,
+            uri: peerUri,
+            room,
+            expires: expiresAtIso,
+            // `requester` on the outgoing leg is the local user. The
+            // receiver flips this to its own uri on its accept echo;
+            // that flip is what the originator listens for.
+            requester: myUri,
+            // call_id binds this conference_request to the in-flight
+            // 1-1 call. Sibling devices of either party that aren't
+            // participating in that specific call session use this
+            // to recognise "this request belongs to a call we're not
+            // on" and skip both the modal popup and any push
+            // notification.
+            //
+            // IMPORTANT: this is the SIP Call-ID header
+            // (`call._callId` / `call.callId`), NOT `call.id`.
+            // `call.id` is each side's locally-generated sylkrtc
+            // UUID — caller and callee see different values for the
+            // same call so it can't be used to pair them. The SIP
+            // Call-ID is set from the server's signalling layer (see
+            // react-native-sylkrtc/lib/call.js _initIncoming /
+            // _initOutgoing message.call_id assignments) and is
+            // identical on both sides of the dialogue.
+            call_id: (call._callId || call.callId || call.id),
+        };
+        const metadataMessage = {
+            _id: requestId,
+            key: requestId,
+            createdAt: now,
+            metadata: metadataContent,
+            text: JSON.stringify(metadataContent),
+            user: {},
+        };
+
+        try {
+            this.props.sendMessage(peerUri, metadataMessage, 'application/sylk-message-metadata');
+        } catch (e) {
+            console.log('[conference-request] send failed',
+                e && e.message ? e.message : e);
+            return;
+        }
+
+        // Mark the local "waiting" state and arm a 60 s self-clear
+        // mirroring the metadata's expires window. Either of the
+        // accept-echo (host hangup → start-conference) or the
+        // explicit reject (DeviceEventEmitter dispatch in
+        // _handleConferenceRequestResolved) will clear this sooner.
+        this.setState({
+            conferenceRequestPending: true,
+            conferenceRequestPendingId: requestId,
+        });
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+        }
+        this._conferenceRequestExpiryTimer = setTimeout(() => {
+            this._conferenceRequestExpiryTimer = null;
+            if (this.state.conferenceRequestPendingId === requestId) {
+                this.setState({
+                    conferenceRequestPending: false,
+                    conferenceRequestPendingId: null,
+                });
+            }
+        }, 60 * 1000);
+
+        console.log('[conference-request] sent →', peerUri,
+            'room=', room, 'reqId=', requestId);
     }
 
     hangupCall() {
@@ -1673,6 +2083,15 @@ class AudioCallBox extends Component {
      *  decides between start / stop / arm based on call state.
      */
     _renderRecordControl() {
+        // Hide the recording pill until the call is actually live —
+        // there's no recording to start while we're still ringing /
+        // negotiating, and the pill was visually noise during the
+        // pre-connected phase. Only render once the call reaches
+        // 'accepted' or 'established'.
+        const _cs = this.state.call && this.state.call.state;
+        if (_cs !== 'accepted' && _cs !== 'established') {
+            return null;
+        }
         const isRec = !!this.state.isRecording;
         const isArmed = !isRec && !!this.state.recordingArmed;
 
@@ -1680,7 +2099,11 @@ class AudioCallBox extends Component {
         if (isRec) {
             bg = 'rgba(220, 30, 30, 0.95)';
             dotColor = '#fff';
-            label = `Recording ${this._formatRecordingElapsed(this.state.recordingElapsedSec)}`;
+            // Elapsed-time counter removed from the pill per user
+            // request — the red dot + "Recording" label already
+            // communicates the state, and dropping the dynamic
+            // HH:MM:SS keeps the pill width stable.
+            label = 'Recording';
         } else if (isArmed) {
             bg = 'rgba(230, 140, 0, 0.95)';
             dotColor = '#fff';
@@ -1692,6 +2115,7 @@ class AudioCallBox extends Component {
         }
 
         return (
+            <Animated.View style={{ opacity: isRec ? this._recordPulse : 1 }}>
             <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={(e) => {
@@ -1702,22 +2126,46 @@ class AudioCallBox extends Component {
                     flexDirection: 'row',
                     alignItems: 'center',
                     backgroundColor: bg,
-                    paddingVertical: 6,
-                    paddingHorizontal: 14,
-                    borderRadius: 18,
+                    // Pill body thickness — bumped twice per user:
+                    // 3 → 6 ("5px thicker") → 10 ("4 px more").
+                    // borderRadius bumped to keep corners proportional.
+                    // paddingHorizontal bumped 10 → 24 per
+                    // "enlarge width of recording pill".
+                    paddingVertical: 10,
+                    paddingHorizontal: 24,
+                    borderRadius: 16,
                 }}
             >
                 <View style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 5,
+                    // Dot enlarged + more gap to "Record" label per
+                    // user request: 8×8 → 12×12, marginRight 6 → 12.
+                    // Negative marginLeft pulls the dot toward the
+                    // pill's LEFT edge per "shift red more to the
+                    // left" — visually anchors the indicator at the
+                    // start of the pill instead of after the
+                    // paddingHorizontal gutter.
+                    width: 12,
+                    height: 12,
+                    borderRadius: 6,
                     backgroundColor: dotColor,
-                    marginRight: 8,
+                    marginLeft: -10,
+                    marginRight: 12,
                 }} />
-                <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>
+                <Text style={{
+                    color: '#fff',
+                    fontWeight: 'bold',
+                    fontSize: 12,
+                    // Right margin: started symmetric with the dot's
+                    // -10 marginLeft (so the distance from "Record"
+                    // to the right pill edge mirrored the left), then
+                    // bumped 3 px more breathing room per user
+                    // request → -10 + 3 = -7.
+                    marginRight: -7,
+                }}>
                     {label}
                 </Text>
             </TouchableOpacity>
+            </Animated.View>
         );
     }
 
@@ -1752,6 +2200,14 @@ class AudioCallBox extends Component {
         // isFolded branch in render(). Skip the floating overlay so we
         // don't draw it twice.
         if (this.props.isFolded) {
+            return null;
+        }
+        // Same dedupe in LANDSCAPE: we now render the record-call
+        // pill inline under the URI in the left column of the
+        // landscape two-column layout (see render() landscape
+        // branch). Without this guard the floating overlay below
+        // would also draw, producing two record buttons.
+        if (this.state.isLandscape && !this.props.isTablet) {
             return null;
         }
         // Vertical offset has to clear the button bar, whose position
@@ -1818,12 +2274,30 @@ class AudioCallBox extends Component {
         }
 
         const showOld = this.state.showOldStats;
+        // Both stats views share the SAME slot width AND height so
+        // flipping between graph and speedo never resizes the
+        // column — width was 170 (BarChart's natural width) but
+        // squeezed the zRTP pill rendered below; 260 fits the long
+        // pill label on one line.
+        // Height pinned to 200 dp covers the tallest of the two
+        // (TrafficStats: ~180dp = 2× chartHeight(60) + labels +
+        // paddingTop. AudioSpeedometer: ~150dp = W=162 dial +
+        // metrics line). With a fixed height, the zRTP pill below
+        // sits at the same y regardless of which view is showing.
+        const _statsSlotWidth = 260;
+        const _statsSlotHeight = 200;
         return (
             <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={this.toggleStatsView}
+                style={{ alignSelf: 'center', width: _statsSlotWidth }}
             >
-                <View style={{ display: showOld ? 'flex' : 'none' }}>
+                <View style={{
+                    display: showOld ? 'flex' : 'none',
+                    width: _statsSlotWidth,
+                    height: _statsSlotHeight,
+                    alignItems: 'center',
+                }}>
                     <TrafficStats
                         key={'cb-stats-' + remountKey}
                         isTablet={this.props.isTablet}
@@ -1831,12 +2305,40 @@ class AudioCallBox extends Component {
                         isFolded={this.props.isFolded}
                         data={this.state.audioGraphData}
                         media="audio"
-                        footer={showOld ? footer : null}
+                        /* Footer (zRTP pill) used to render INSIDE
+                           TrafficStats whose internal container is
+                           only 170 dp wide — which constrained the
+                           pill and made its width visibly differ
+                           between graph and speedo modes. Now the
+                           footer is rendered as a sibling of both
+                           views below, so it shares the same 260 dp
+                           slot regardless of which stats view is
+                           visible. */
+                        footer={null}
                     />
                 </View>
                 <View style={{
                     display: showOld ? 'none' : 'flex',
+                    width: _statsSlotWidth,
+                    height: _statsSlotHeight,
                     alignItems: 'center',
+                    // Folded cover-display layout history:
+                    //   +10 (initial nudge down)
+                    //   -20 (user "20 px up")
+                    //   +10 (user "10 px down")
+                    //   ±0  → +5 (user "speedo add 5 px margin top in folded")
+                    // Net = +5 px nudge below the column baseline.
+                    marginTop: this.props.isFolded ? 5 : 0,
+                    // Raise the speedometer in LANDSCAPE only — and
+                    // only on Android. iOS uses a slightly different
+                    // navbar height + safe-area handling, so the same
+                    // -18 lift pushed the dial up under the appbar
+                    // on iOS landscape. Cap iOS to 0 (no lift) and
+                    // keep the Android value at -18 where the layout
+                    // worked.
+                    transform: (this.state.isLandscape && Platform.OS === 'android')
+                        ? [{ translateY: -18 }]
+                        : undefined,
                 }}>
                     <AudioSpeedometer
                         key={'cb-spd-' + remountKey}
@@ -1845,8 +2347,12 @@ class AudioCallBox extends Component {
                         isFolded={this.props.isFolded}
                     />
                     {!showOld ? this._renderRemoteVuMeter() : null}
-                    {!showOld ? footer : null}
                 </View>
+                {/* Footer (zRTP pill) rendered ONCE as a sibling of
+                    both stats views, so its container width is the
+                    same 260 dp slot in both graph and speedo modes —
+                    fixes the pill changing width when toggling. */}
+                {footer}
             </TouchableOpacity>
         );
     }
@@ -1901,6 +2407,144 @@ class AudioCallBox extends Component {
 		</View>
 	  );
 	}
+
+    // "+" affordance anchored at the avatar's bottom-right corner +
+    // its drop-up panel. Today the panel surfaces a single action,
+    // "Escalate to conference", which fires sendConferenceRequest.
+    // The whole stack is gated on the call being in flight (no use
+    // showing it while the line is still ringing — there's no peer
+    // session to address a metadata payload to yet) and is rendered
+    // inside a relatively positioned wrapper so the absolute
+    // positioning here pins to the avatar, not the screen.
+    _renderConferenceRequestPlus(avatarSize) {
+        const c = this.state.call;
+        const callLive = c
+            && (c.state === 'accepted'
+                || c.state === 'established'
+                || c.state === 'early-media')
+            && !this.state.reconnectingCall;
+        if (!callLive) return null;
+
+        // Suppress the "+" escalate-to-conference affordance for
+        // contacts where escalation is meaningless or impossible:
+        //   • 'test' tag — echo/IVR/playback endpoints have nobody on
+        //     the other end to invite into a multi-party call. Mirrors
+        //     the isTestCall gate the in-call action bar uses for the
+        //     legacy invite IconButton (see render(), ~line 2435).
+        //   • no publicKey — the conference-request handshake is
+        //     delivered as an end-to-end encrypted metadata payload.
+        //     Without the peer's public key we can't address them, so
+        //     the request would silently fail. Hide the "+" entirely
+        //     rather than letting the user tap into a dead path.
+        const contact = this.state.callContact;
+        if (contact) {
+            const tags = Array.isArray(contact.tags) ? contact.tags : [];
+            if (tags.indexOf('test') > -1) return null;
+            if (!contact.publicKey) return null;
+        } else {
+            // No contact resolved at all — safer to hide than to show
+            // an action that can't be wired up.
+            return null;
+        }
+
+        // Chip size: keep it readable but visually subordinate to the
+        // avatar. ~24% of the avatar diameter lands at 27 px on the
+        // 113 px portrait avatar and 18 px on the 75 px landscape
+        // avatar — both look like a quick-action affordance rather
+        // than a primary button.
+        const chipSize = Math.max(20, Math.round(avatarSize * 0.24));
+        const pending = this.state.conferenceRequestPending;
+        const showPanel = this.state.showConferenceRequestPanel;
+        // Drop-UP panel: anchored so its bottom-right corner sits
+        // right above the chip. Width is a fixed comfortable value
+        // (190 px) so the single label "Escalate to conference"
+        // doesn't wrap on smaller phones.
+        const panelOffset = chipSize + 6;
+
+        return (
+            <>
+                <TouchableOpacity
+                    onPress={this.toggleConferenceRequestPanel}
+                    accessibilityLabel="More call actions"
+                    style={{
+                        position: 'absolute',
+                        right: -2,
+                        bottom: -2,
+                        width: chipSize,
+                        height: chipSize,
+                        borderRadius: chipSize / 2,
+                        backgroundColor: pending ? 'rgba(255,193,7,0.95)' : 'rgba(33,150,243,0.95)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        // Soft shadow / elevation so the chip lifts
+                        // off the avatar background regardless of
+                        // light/dark.
+                        elevation: 6,
+                        shadowColor: '#000',
+                        shadowOpacity: 0.25,
+                        shadowRadius: 3,
+                        shadowOffset: { width: 0, height: 1 },
+                        zIndex: 50,
+                    }}
+                >
+                    <Text style={{
+                        color: 'white',
+                        fontSize: Math.round(chipSize * 0.65),
+                        lineHeight: Math.round(chipSize * 0.85),
+                        fontWeight: '700',
+                        // Tiny optical nudge: the `+` glyph in the
+                        // default font renders slightly below center.
+                        marginTop: -1,
+                    }}>
+                        {pending ? '…' : '+'}
+                    </Text>
+                </TouchableOpacity>
+
+                {showPanel ? (
+                    <View
+                        style={{
+                            position: 'absolute',
+                            right: -2,
+                            bottom: panelOffset,
+                            width: 220,
+                            zIndex: 60,
+                            elevation: 10,
+                        }}
+                    >
+                        <Surface
+                            style={{
+                                borderRadius: 8,
+                                paddingVertical: 4,
+                                backgroundColor: 'rgba(40,40,40,0.97)',
+                            }}
+                        >
+                            <TouchableOpacity
+                                onPress={this.sendConferenceRequest}
+                                disabled={pending}
+                                style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    paddingHorizontal: 12,
+                                    paddingVertical: 10,
+                                    opacity: pending ? 0.5 : 1,
+                                }}
+                            >
+                                <IconButton
+                                    icon="account-multiple-plus"
+                                    size={20}
+                                    style={{ margin: 0, marginRight: 6 }}
+                                    color="#FFFFFF"
+                                />
+                                <Text style={{ color: 'white', fontSize: 14, flexShrink: 1 }}>
+                                    {pending ? 'Waiting for response…' : 'Escalate to conference'}
+                                </Text>
+                            </TouchableOpacity>
+                        </Surface>
+                    </View>
+                ) : null}
+            </>
+        );
+    }
 
     render() {
 
@@ -1971,22 +2615,16 @@ class AudioCallBox extends Component {
         
         let userIconSize;
         if (this.props.isFolded) {
-            // Folded avatar enlarged 25% (90 → 113) — the rest of
-            // the cover-display layout (foldedTopRow.height = 140)
-            // still accommodates the avatar + name + URI stack
-            // because the row's overflow defaults to visible, and
-            // the bottom row sits below it with marginTop:56 of
-            // breathing room.
-            userIconSize = 113;
+            // Folded cover-display avatar — was 113, dropped 10% to
+            // 102 per user request ("lower size of avatar 10%"). The
+            // rest of the cover-display layout (foldedTopRow.height
+            // = 140) still accommodates the avatar + name + URI
+            // stack.
+            userIconSize = 102;
         } else {
-            // Portrait avatar shrunk 25% (150 → 113) so the
-            // record-call pill overlay no longer overlaps the
-            // "Tap to verify" sub-label of the ZRTP badge on
-            // shorter portrait screens. Landscape avatar
-            // unchanged — that layout is two-column and the
-            // record overlay sits well below the right-hand
-            // stats block.
-            userIconSize = this.state.isLandscape ? 75 : 113;
+            // Portrait avatar — was 113, dropped 10% to 102.
+            // Landscape avatar — was 75, dropped 10% to 68.
+            userIconSize = this.state.isLandscape ? 68 : 102;
         }
 
         // Force-remount key for the audio call UI. Same stale-native-frame
@@ -2024,6 +2662,14 @@ class AudioCallBox extends Component {
             if (this.state.zrtpState !== 'key-active') {
                 return null;
             }
+            // Defensive: if the call has terminated but our state hasn't
+            // caught up yet (rare race between BYE and the stateChanged
+            // listener), still hide the pill — the encryption state is
+            // meaningless once there's no media leg.
+            const callState = this.state.call && this.state.call.state;
+            if (!this.state.call || callState === 'terminated') {
+                return null;
+            }
             // Suppress the pill while the audio-device picker is open.
             // The pill sits above the call buttons and overlaps the
             // floating device picker panel; raising the picker above
@@ -2037,15 +2683,50 @@ class AudioCallBox extends Component {
             }
             let bg, label;
             const status = this._zrtpVerificationStatus();
+            const session = getZrtpSession(this.state.call);
+            const kinds = (session && session.encryptedKinds) || [];
+            const kindsLabel = formatEncryptedKindsLabel(kinds);
+            // In AudioCallBox the call is audio-only, so kindsLabel
+            // is essentially always 'audio' and the word is
+            // redundant in the pill. Suppress it here — keep the
+            // kindsLabel ONLY when it carries something other than
+            // plain 'audio' (e.g. 'audio and video' if the call
+            // ever escalates) so an unusual state still surfaces.
+            // Label simplification — AudioCallBox-specific rules:
+            // this component renders for AUDIO-ONLY calls, so a
+            // kindsLabel of 'audio' just means "everything in the
+            // call is encrypted" and the "audio only" qualifier is
+            // misleading (there's no video to compare against).
+            // → 'audio' or 'audio and video' or '' → no prefix
+            // → 'video' (would be unusual here) → 'video only '
+            //   prefix to flag that audio isn't encrypted
+            let _kindsPrefix = '';
+            if (kindsLabel === 'video') {
+                _kindsPrefix = 'video only ';
+            }
+            // Folded (cover-display) layout has very little horizontal
+            // room in the stats column, so the long "end to end
+            // encryption" copy gets swapped for the compact "encrypted"
+            // wording per user request ('zRTP encrypted'). The
+            // video-only prefix is still honoured because it's the only
+            // way to convey that audio isn't covered by the agreed key.
+            const _zrtpLabel = this.props.isFolded
+                ? '🔒 zRTP ' + _kindsPrefix + 'encrypted'
+                : '🔒 zRTP ' + _kindsPrefix + 'end to end encryption';
             if (status === 'verified') {
                 bg = 'rgba(0, 170, 80, 0.9)';     // green — verified
-                label = '🔒 zRTP verified';
+                // "verified" word suppressed in the green pill per
+                // user request — the green colour itself already
+                // communicates the verified state. The mismatch /
+                // unverified branches keep their text since their
+                // colours alone aren't as self-explanatory.
+                label = _zrtpLabel;
             } else if (status === 'mismatch') {
                 bg = 'rgba(200, 30, 30, 0.9)';    // red — failed/MITM
                 label = '⚠ SAS changed';
             } else {
                 bg = 'rgba(230, 120, 0, 0.95)';   // orange — unverified
-                label = '🔒 zRTP end-to-end encrypted';
+                label = _zrtpLabel;
             }
             const isTappable = true;
             const inner = (
@@ -2054,34 +2735,45 @@ class AudioCallBox extends Component {
                     paddingVertical: 3,
                     paddingHorizontal: 10,
                     borderRadius: 10,
+                    alignSelf: 'center',
+                    flexShrink: 0,
+                    // Don't let the stats column's narrow width
+                    // truncate or wrap the pill. Letting the View
+                    // overflow horizontally — combined with the
+                    // numberOfLines/ellipsizeMode trio dropped from
+                    // the Text — keeps the pill at its NATURAL full
+                    // width regardless of the parent's flex math.
                 }}>
-                    <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>{label}</Text>
+                    <Text
+                        style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}
+                    >
+                        {label}
+                    </Text>
                 </View>
             );
-            // Dim "Tap to verify" sub-label is always shown (even on
-            // the green verified state) so the pill always invites
-            // the user to re-check / open the SAS dialog. The pill
-            // itself no longer carries the "(tap to verify)" suffix —
-            // the call-to-action lives here as a quieter sub-label so
-            // the pill can stay focused on conveying the encrypted
-            // state.
+            // Dim "Tap to verify" sub-label is shown under the pill
+            // ONLY when verification hasn't happened yet (orange /
+            // unverified state). On the green "verified" pill we
+            // skip the call-to-action entirely — re-verifying isn't
+            // something the user usually wants to do, and the green
+            // pill is already self-explanatory.
             // marginTop separates the badge from the stats dial.
-            // Same value across folded and unfolded — the badge
-            // now renders inside renderStatsBlock in both layouts,
-            // so it always sits directly under the speedometer.
+            const _showTapToVerify = status !== 'verified';
             return (
-                <View style={{ alignItems: 'center', marginTop: 26 }}>
+                <View style={{ alignItems: 'center', marginTop: 26, overflow: 'visible' }}>
                     {isTappable ? (
                         <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
                     ) : inner}
-                    <Text style={{
-                        color: 'rgba(255, 255, 255, 0.55)',
-                        fontSize: 10,
-                        fontStyle: 'italic',
-                        marginTop: 4,
-                    }}>
-                        Tap to verify
-                    </Text>
+                    {_showTapToVerify ? (
+                        <Text style={{
+                            color: 'rgba(255, 255, 255, 0.55)',
+                            fontSize: 10,
+                            fontStyle: 'italic',
+                            marginTop: 4,
+                        }}>
+                            Tap to verify
+                        </Text>
+                    ) : null}
                 </View>
             );
         };
@@ -2101,10 +2793,22 @@ class AudioCallBox extends Component {
                         visible={this.state.zrtpDialogVisible}
                         onDismiss={() => this.setState({ zrtpDialogVisible: false })}
                     >
+                        <IconButton
+                            icon="close"
+                            size={22}
+                            onPress={() => this.setState({ zrtpDialogVisible: false })}
+                            accessibilityLabel="Close"
+                            style={{ position: 'absolute', top: 4, right: 4, zIndex: 10, margin: 0 }}
+                        />
                         <Dialog.Title>Verify zRTP encryption</Dialog.Title>
                         <Dialog.Content>
+                            {zrtpSession && (
+                                <Text style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                                    Sylk-ZRTP v{zrtpSession.negotiatedVersion || '?'} · {zrtpSession.continuityState || 'first-time'}
+                                </Text>
+                            )}
                             <Text style={{ marginBottom: 12 }}>
-                                Compare these with the other party. Both phones must show the same letters AND emojis.
+                                Compare these with the other party. Both parties must show the same letters AND emojis.
                             </Text>
                             {zrtpSas ? (
                                 <View style={{ alignItems: 'center', marginVertical: 12 }}>
@@ -2116,49 +2820,151 @@ class AudioCallBox extends Component {
                             )}
                             {verificationStatus === 'verified' && stored && (
                                 <Text style={{ color: 'green', marginTop: 8 }}>
-                                    ✓ Previously verified on {new Date(stored.verifiedAt).toLocaleString()}
+                                    ✓ Verified on {formatVerifiedTimestamp(stored.verifiedAt)}
                                 </Text>
                             )}
                             {verificationStatus === 'mismatch' && stored && (
                                 <Text style={{ color: 'red', marginTop: 8 }}>
-                                    ⚠ The other party's identity key has changed since the last verification on {new Date(stored.verifiedAt).toLocaleString()}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Confirm.
+                                    ⚠ The other party's identity key has changed since the last verification on {formatVerifiedTimestamp(stored.verifiedAt)}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Confirm.
                                 </Text>
                             )}
                         </Dialog.Content>
-                        <Dialog.Actions>
-                            <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
+                        <Dialog.Actions style={{ justifyContent: 'space-between' }}>
+                            <Button onPress={this._onZrtpReset}>Reset</Button>
                             <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
-                    {/* zRTP mandatory-mode handshake failure prompt. */}
+                    {/* zRTP mandatory-mode handshake failure prompt
+                        used to live HERE (inside <Portal>, as a Paper
+                        Dialog). That renders above the entire app,
+                        which the user didn't want — the failure is a
+                        per-call event and should be presented inside
+                        the call screen. The panel has moved out of the
+                        Portal and now renders as an in-call banner
+                        below — see the View just below the downgrade
+                        banner. */}
                     <Dialog
-                        visible={this.state.zrtpMandatoryFailedVisible}
-                        onDismiss={this._onZrtpMandatoryContinue}
+                        visible={this.state.zrtpMismatchAlarmVisible}
+                        onDismiss={this._onZrtpMismatchAcknowledge}
                         dismissable={false}
                     >
-                        <Dialog.Title>End-to-end encryption failed</Dialog.Title>
+                        <Dialog.Title style={{ color: 'red' }}>
+                            ⚠ Identity key changed
+                        </Dialog.Title>
                         <Dialog.Content>
                             <Text>
-                                The zRTP key exchange did not complete. You set
-                                encryption to "mandatory" in Preferences, but the
-                                other party may not support it.
+                                The other party's identity key has changed since
+                                your last verified call with them.
                                 {'\n\n'}
-                                You can end the call now, or continue without
-                                end-to-end encryption. The call will still be
-                                encrypted between your phone and the SylkServer
-                                relay (DTLS), but the relay can read the media.
+                                This may mean they reinstalled the app, OR
+                                someone is impersonating them in a
+                                man-in-the-middle attack.
+                                {'\n\n'}
+                                Verify in person or through a trusted channel
+                                before continuing the conversation. Tap the
+                                lock icon to re-check the SAS.
                             </Text>
                         </Dialog.Content>
                         <Dialog.Actions>
-                            <Button onPress={this._onZrtpMandatoryContinue}>
-                                Continue
-                            </Button>
-                            <Button mode="contained" onPress={this._onZrtpMandatoryEndCall}>
+                            <Button onPress={this._onZrtpMismatchEndCall}>
                                 End call
+                            </Button>
+                            <Button mode="contained" onPress={this._onZrtpMismatchAcknowledge}>
+                                I understand
                             </Button>
                         </Dialog.Actions>
                     </Dialog>
                 </Portal>
+                {this.state.zrtpDowngradeBannerVisible && (
+                    <View
+                        style={{
+                            backgroundColor: 'rgba(230, 120, 0, 0.95)',
+                            paddingVertical: 8,
+                            paddingHorizontal: 12,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                        }}
+                    >
+                        <Text style={{ color: 'white', flex: 1, fontSize: 13 }}>
+                            ⚠ End-to-end encryption was attempted but did not
+                            activate. This call is encrypted only between your
+                            device and the relay (DTLS), not end-to-end.
+                        </Text>
+                        <Button
+                            compact
+                            mode="text"
+                            onPress={this._onZrtpDowngradeBannerDismiss}
+                            labelStyle={{ color: 'white', fontSize: 12 }}
+                        >
+                            Dismiss
+                        </Button>
+                    </View>
+                )}
+                {/* zRTP mandatory-mode handshake failure panel —
+                    previously a Paper Dialog inside Portal (covered
+                    the whole app), now an in-call banner so the
+                    prompt is visually anchored to the call it
+                    qualifies. Red backplate to distinguish from the
+                    softer-orange downgrade-only banner above. The
+                    two are mutually exclusive in practice but render
+                    independently so a stacked appearance is benign
+                    if it ever happens (red sits below orange,
+                    obvious which one is more urgent). */}
+                {this.state.zrtpMandatoryFailedVisible && (
+                    <View
+                        style={{
+                            backgroundColor: 'rgba(200, 30, 30, 0.95)',
+                            paddingVertical: 10,
+                            paddingHorizontal: 14,
+                        }}
+                    >
+                        <Text style={{
+                            color: 'white',
+                            fontSize: 14,
+                            fontWeight: 'bold',
+                            marginBottom: 6,
+                        }}>
+                            End-to-end encryption failed
+                        </Text>
+                        <Text style={{
+                            color: 'white',
+                            fontSize: 12,
+                            lineHeight: 16,
+                        }}>
+                            The zRTP key exchange did not complete. You set
+                            encryption to "mandatory" in Preferences, but the
+                            other party may not support it.{'\n\n'}
+                            You can end the call now, or continue without
+                            end-to-end encryption. The call will still be
+                            encrypted between your phone and the SylkServer
+                            relay (DTLS), but the relay can read the media.
+                        </Text>
+                        <View style={{
+                            flexDirection: 'row',
+                            justifyContent: 'flex-end',
+                            marginTop: 8,
+                        }}>
+                            <Button
+                                compact
+                                mode="text"
+                                onPress={this._onZrtpMandatoryContinue}
+                                labelStyle={{ color: 'white', fontSize: 12 }}
+                            >
+                                Continue
+                            </Button>
+                            <Button
+                                compact
+                                mode="contained"
+                                onPress={this._onZrtpMandatoryEndCall}
+                                buttonColor="white"
+                                labelStyle={{ color: 'rgb(200, 30, 30)', fontSize: 12 }}
+                                style={{ marginLeft: 8 }}
+                            >
+                                End call
+                            </Button>
+                        </View>
+                    </View>
+                )}
                 <CallOverlay style={styles.callStatus}
                     show={true}
                     remoteUri={this.state.remoteUri}
@@ -2169,6 +2975,11 @@ class AudioCallBox extends Component {
                     accountId={this.props.accountId}
                     media='audio'
                     localMedia={this.state.localMedia}
+                    /* Drives the "Accepting call…" copy in the warmup
+                       branch — see render() in CallOverlay. True only
+                       while the cold-start push-accept route gate is
+                       open in app.js. */
+                    pushAcceptInProgress={this.props.pushAcceptInProgress}
                     declineReason={this.state.declineReason}
                     goBackFunc={this.props.goBackFunc}
                     callState={this.props.callState}
@@ -2253,30 +3064,7 @@ class AudioCallBox extends Component {
 										alignItems: 'center',
 										justifyContent: 'center',
 									}}>
-										<Button
-											mode="contained"
-											onPress={() => {
-												this._cancelAutoStartTimer();
-												if (this.props.confirmStartCall) {
-													this.props.confirmStartCall();
-												}
-											}}
-											// Right margin pulls the
-											// Start button (and the
-											// countdown bar below it)
-											// away from the cover-
-											// display's right edge.
-											// minWidth holds the
-											// button at its widest
-											// label ("Start audio
-											// call (10)") so the
-											// button doesn't visibly
-											// shrink as the countdown
-											// ticks 10 → 1 → blank.
-											style={{ marginRight: 12, minWidth: 180 }}
-										>
-											Start audio call
-										</Button>
+										{/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
 										<View style={{
 											flexDirection: 'row',
 											marginTop: 10,
@@ -2318,7 +3106,22 @@ class AudioCallBox extends Component {
 										</View>
 									</View>
 								) : (
-									this.renderStatsBlock(_callRemountKey, renderZrtpBadge())
+									// Folded layout only: lift the ZRTP
+									// pill above its natural slot inside
+									// the stats column. History: first
+									// pass lifted by 70 px to pull the
+									// pill close to the dial; lowered 30
+									// (net -40); user then asked for 20
+									// more up, net -60. The badge's own
+									// outer wrapper has marginTop: 26
+									// (see renderZrtpBadge), so net
+									// effect from the speedometer
+									// baseline is 26 - 60 = -34.
+									this.renderStatsBlock(_callRemountKey, (
+										<View style={{ marginTop: -60 }}>
+											{renderZrtpBadge()}
+										</View>
+									))
 								)}
 							</View>
 						</View>
@@ -2340,7 +3143,14 @@ class AudioCallBox extends Component {
 						    audio-device picker is open, and skip once
 						    the call has terminated. */}
 						<View key={'cb-bottomrow-' + _callRemountKey} style={styles.foldedBottomRow}>
-							<View style={styles.foldedBottomLeft}>
+							{/* Record-call pill in folded mode is lifted
+							    30 px above its row baseline per user
+							    request ("Lift Record Call pill 30px"). A
+							    negative marginTop is used rather than
+							    moving styles.foldedBottomRow's marginTop
+							    so that the now-empty right column doesn't
+							    follow it up — only the pill moves. */}
+							<View style={[styles.foldedBottomLeft, { marginTop: -30 }]}>
 								{(!this.state.audioDevicePickerVisible
 									&& !(this.state.call && this.state.call.state === 'terminated')) ?
 									this._renderRecordControl()
@@ -2353,12 +3163,26 @@ class AudioCallBox extends Component {
 					/* Landscape on a regular phone: two-column layout — caller
 					   info on the left, stats (with ZRTP badge) on the right. */
 					<View key={'cb-landscape-row-' + _callRemountKey} style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
-						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', transform: [{ translateY: -20 }] }}>
+						{/* Landscape left column. translateY: 0 — the
+						    previous -50 lift was reverted per user
+						    request ("lower avatar 50 px" after the
+						    earlier 30 px lift, net = sits at natural
+						    centerline). Restoring the natural position
+						    lets the row anchor to the vertical centre
+						    again. */}
+						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
 							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
 							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
 							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
 								<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
 							</TouchableWithoutFeedback>
+							{/* Record-call pill — sits under the URI in
+							    landscape. marginTop history: 50 →
+							    40 → 20 → 25 → 30 → 0 per "raise
+							    record pill 30px". */}
+							<View style={{ marginTop: 0 }}>
+							    {this._renderRecordControl()}
+							</View>
 						</View>
 						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
 							{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
@@ -2367,7 +3191,21 @@ class AudioCallBox extends Component {
 				) : (
 					<>
 						<View key={'cb-usericon-wrap-' + _callRemountKey} style={userIconContainerClass}>
-							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+							{/* Avatar + bottom-right "+" chip live in a
+							    relatively positioned wrapper so the chip
+							    can be absolutely positioned against the
+							    avatar's bounds without perturbing the
+							    surrounding column layout (the column
+							    still measures the avatar at userIconSize
+							    × userIconSize). The chip + its drop-up
+							    panel only render while the call is
+							    actually in progress — see
+							    _renderConferenceRequestPlus for the
+							    state gate. */}
+							<View style={{ width: userIconSize, height: userIconSize }}>
+								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+								{this._renderConferenceRequestPlus(userIconSize)}
+							</View>
 						</View>
 
 						<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
@@ -2650,22 +3488,35 @@ class AudioCallBox extends Component {
                             </View>
 
                             {/* Start audio call + sliding reverse-progress
-                                bar — absolutely positioned ABOVE the device
-                                picker bar. Auto-fires in 9 s if the user
-                                doesn't tap X. The button label shows the
-                                remaining seconds. Pulled 200 px higher to
-                                clear the user-icon / display-name area.
-
-                                Hidden in folded mode: the cover-display
-                                layout renders the same Button + progress
-                                bar inline inside foldedStatsColumn (the
-                                right half of foldedTopRow) so the action
-                                sits next to the avatar instead of
-                                floating over it. */}
+                                bar — absolutely positioned ABOVE the
+                                audio-device / hangup button bar. Auto-
+                                fires in 9 s if the user doesn't tap X.
+                                bottom:150 puts the action right above
+                                the button bar (which itself sits ~100
+                                px from the bottom edge in portrait),
+                                so the Start button is in easy thumb
+                                reach next to the controls instead of
+                                floating high near the avatar.
+                                Hidden in folded mode: the cover-
+                                display layout renders the same Button
+                                + progress bar inline inside
+                                foldedStatsColumn (the right half of
+                                foldedTopRow) so the action sits next
+                                to the avatar instead of floating
+                                over it. */}
                             {this.props.isFolded ? null : (
                             <View style={{
                                 position: 'absolute',
-                                bottom: 330,
+                                // bottom:190 leaves a comfortable gap
+                                // above the call-buttons bar. The bar
+                                // sits at marginBottom:50 with its
+                                // own ~60 px height (top at y≈110);
+                                // anchoring the Start wrapper at 190
+                                // puts its bottom edge ~80 px above
+                                // the bar's top — comfortable thumb-
+                                // reach gap without crowding either
+                                // surface.
+                                bottom: 190,
                                 left: 0,
                                 right: 0,
                                 alignItems: 'center',
@@ -2679,17 +3530,7 @@ class AudioCallBox extends Component {
                                     keeping countdown width === button
                                     width regardless of label changes. */}
                                 <View>
-                                    <Button
-                                        mode="contained"
-                                        onPress={() => {
-                                            this._cancelAutoStartTimer();
-                                            if (this.props.confirmStartCall) {
-                                                this.props.confirmStartCall();
-                                            }
-                                        }}
-                                    >
-                                        Start audio call
-                                    </Button>
+                                    {/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
 
                                     {/* Sliding bar — width inherited
                                         from the wrapper (= Start button
@@ -2857,7 +3698,13 @@ AudioCallBox.propTypes = {
 	// Receives { filePath, remoteUri, remoteDisplayName, durationSec }
 	// so the parent can persist it as an inbound chat message from
 	// the remote party and sync it to other devices of the user.
-	saveCallRecording: PropTypes.func
+	saveCallRecording: PropTypes.func,
+	// Default sylk conference domain (e.g. videoconference.sip2sip.info)
+	// used to compose the room URI sent in conference_request metadata.
+	// Falls back to the hard-coded default inside sendConferenceRequest
+	// when omitted, so this prop being undefined never breaks the
+	// escalation flow.
+	defaultConferenceDomain: PropTypes.string
 };
 
 export default AudioCallBox;

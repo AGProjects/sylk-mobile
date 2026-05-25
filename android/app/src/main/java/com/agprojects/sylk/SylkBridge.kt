@@ -61,4 +61,26 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
         SylkLogger.d("[bridge] setAppActive: $active")
         prefs.edit().putBoolean("appActive", active).apply()
     }
+
+    // ---------------------------------------------------------------
+    // sipBridgeDomain — written by JS whenever the server
+    // configuration (configuration.conference.sipBridge) is loaded.
+    // MyFirebaseMessagingService.onMessageReceived reads it to drop
+    // duplicate "incoming_session" pushes that are the SIP audio twin
+    // of a sylk "incoming_conference_request" push (the conference
+    // focus dialing the invitee in addition to the conferenceInvite
+    // signalled over websocket). The drop is keyed strictly on the
+    // from_uri host part, so a misconfigured (empty) value means "no
+    // dedupe" — never accidentally rejects legitimate calls.
+    // ---------------------------------------------------------------
+    @ReactMethod
+    fun setSipBridgeDomain(domain: String?) {
+        val trimmed = domain?.trim()?.lowercase()
+        SylkLogger.d("[bridge] setSipBridgeDomain: $trimmed")
+        if (trimmed.isNullOrEmpty()) {
+            prefs.edit().remove("sipBridgeDomain").apply()
+        } else {
+            prefs.edit().putString("sipBridgeDomain", trimmed).apply()
+        }
+    }
 }

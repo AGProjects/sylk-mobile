@@ -1,4 +1,4 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import { Alert, Animated, AppState, Easing, Linking, Image, NativeModules, Platform, PermissionsAndroid, View , TouchableHighlight, Dimensions, ActivityIndicator} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
@@ -22,7 +22,7 @@ try {
     console.log('@react-native-community/geolocation not installed:', e && e.message);
 }
 
-// Native bridge to Sylk's Android foreground service that keeps the
+// Native bridge to Blink's Android foreground service that keeps the
 // process promoted while a location share is active. Declared at module
 // scope so we don't hit NativeModules in a hot path. Guarded so iOS and
 // dev-time stripped builds don't explode if the module isn't registered.
@@ -94,6 +94,7 @@ import LocationPrivacyDisclosureModal from './LocationPrivacyDisclosureModal';
 import ActiveLocationSharesModal from './ActiveLocationSharesModal';
 import {openSettings, check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import SylkAppbarContent from './SylkAppbarContent';
+import DarkModeManager from '../DarkModeManager';
 import UserIcon from './UserIcon';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
 import * as Progress from 'react-native-progress';
@@ -299,7 +300,24 @@ class NavigationBar extends Component {
 			// lists every active share. Cleared on close.
 			activeSharesFilterUri: null,
 			showExportPrivateKeyModal: this.props.showExportPrivateKeyModal,
-			showCallMeMaybeModal: this.props.showCallMeMaybeModal
+			showCallMeMaybeModal: this.props.showCallMeMaybeModal,
+			// Warmup phase tracking — surfaced in the Appbar subtitle so
+			// the user gets continuous feedback during the (sometimes
+			// multi-second) window between tapping Accept/Dial and the
+			// call reaching 'established'. Each field tracks one signal:
+			//   • _warmupCallState — sylkrtc Call.state ('incoming',
+			//     'progress', 'accepted', 'established', 'terminated').
+			//     Updated from a stateChanged listener attached in
+			//     _attachCallWarmup; falls back to props.call.state on
+			//     mount.
+			//   • _warmupIceConn / _warmupGather / _warmupConn — sampled
+			//     off call._pc on a 500 ms interval while warming. Stops
+			//     once 'established' or when there's no call.
+			// All four start null so render() can detect a fresh state.
+			_warmupCallState: null,
+			_warmupIceConn: null,
+			_warmupGather: null,
+			_warmupConn: null,
         }
 
         this.menuRef = React.createRef();
@@ -347,6 +365,187 @@ class NavigationBar extends Component {
         // Reset to full opacity in case the indicator briefly stays
         // mounted during the next render cycle.
         this._activeSharePulse.setValue(1);
+    }
+
+    // ---- Call warmup tracking -------------------------------------------
+    //
+    // The Appbar subtitle normally shows the account URI / organization
+    // line. While a call is warming up we hijack it to surface the
+    // current phase ("Acquiring mic…", "Gathering candidates…",
+    // "Connecting peer…", …) so the user isn't left staring at a
+    // static label for the multi-second window between
+    // accept/dial and 'established'.
+    //
+    // Three independent signals are stitched together:
+    //   1. sylkrtc Call.state — from a 'stateChanged' listener on
+    //      this.props.call. Updates instantly on SIP-level transitions.
+    //   2. local media — from props.localMedia (set by app.js after
+    //      getUserMedia resolves). No listener needed; React re-renders
+    //      when the prop changes.
+    //   3. RTCPeerConnection (call._pc) iceGatheringState /
+    //      iceConnectionState / connectionState — polled on a 500 ms
+    //      interval. The native bridge doesn't fan out these events
+    //      to JS in a stable way, so polling is the portable option.
+    //
+    // _attachCallWarmup wires up (1) and (3) for a given Call. It is
+    // safe to call repeatedly with the same call (idempotent via the
+    // _warmupAttachedCall identity check). _detachCallWarmup tears the
+    // listener + interval down. componentDidMount / componentDidUpdate
+    // / componentWillUnmount orchestrate which call is attached.
+    _attachCallWarmup(call) {
+        if (!call || this._warmupAttachedCall === call) {
+            return;
+        }
+        // Replace any previously-attached call before binding the new one
+        // so we never end up with stale listeners across an outgoing→
+        // incoming swap inside the same NavBar mount.
+        this._detachCallWarmup();
+        this._warmupAttachedCall = call;
+        // Seed initial state synchronously so the very first render
+        // after attach already reflects whatever the call object knew.
+        const initialState = call.state || null;
+        this.setState({
+            _warmupCallState: initialState,
+            _warmupIceConn: null,
+            _warmupGather: null,
+            _warmupConn: null,
+        });
+        try {
+            this._warmupStateListener = (oldS, newS /*, data*/) => {
+                if (this._unmounted) return;
+                this.setState({ _warmupCallState: newS });
+                if (newS === 'established' || newS === 'terminated') {
+                    // Stop polling — once established the subtitle
+                    // falls back to its normal contact URI and the
+                    // poll loop has no UI to drive.
+                    this._stopWarmupPoll();
+                }
+            };
+            call.on('stateChanged', this._warmupStateListener);
+        } catch (e) { /* call may already be torn down — non-fatal */ }
+        // Start polling _pc state. Even if _pc isn't there yet (sylkrtc
+        // sometimes lazy-creates it after the first INVITE), the poll
+        // re-checks every tick.
+        this._startWarmupPoll();
+    }
+
+    _detachCallWarmup() {
+        const call = this._warmupAttachedCall;
+        if (call && this._warmupStateListener) {
+            try { call.removeListener('stateChanged', this._warmupStateListener); }
+            catch (e) { /* noop */ }
+        }
+        this._warmupStateListener = null;
+        this._warmupAttachedCall = null;
+        this._stopWarmupPoll();
+        // Clear the rendered warmup so a fresh call's first render
+        // doesn't briefly inherit the previous call's substate.
+        if (this.state._warmupCallState
+                || this.state._warmupIceConn
+                || this.state._warmupGather
+                || this.state._warmupConn) {
+            this.setState({
+                _warmupCallState: null,
+                _warmupIceConn: null,
+                _warmupGather: null,
+                _warmupConn: null,
+            });
+        }
+    }
+
+    _startWarmupPoll() {
+        if (this._warmupPollTimer) return;
+        const POLL_MS = 500;
+        const tick = () => {
+            if (this._unmounted) return;
+            const call = this._warmupAttachedCall;
+            const pc = call && call._pc;
+            if (!pc) return;
+            // Only call setState when something actually changed —
+            // every NavBar re-render walks a fair amount of JSX and
+            // we don't need to pay that cost twice a second when
+            // nothing moved.
+            const ice = pc.iceConnectionState || null;
+            const gather = pc.iceGatheringState || null;
+            const conn = pc.connectionState || null;
+            if (ice !== this.state._warmupIceConn
+                    || gather !== this.state._warmupGather
+                    || conn !== this.state._warmupConn) {
+                this.setState({
+                    _warmupIceConn: ice,
+                    _warmupGather: gather,
+                    _warmupConn: conn,
+                });
+            }
+            // Once the PC reports a stable end-state, the poller can
+            // stop on its own — the SIP-level 'established' transition
+            // would do the same, but on cross-network calls the PC
+            // sometimes flips to 'connected' a beat before sylkrtc
+            // raises the state change.
+            if (ice === 'connected' || ice === 'completed'
+                    || conn === 'connected') {
+                this._stopWarmupPoll();
+            }
+        };
+        // Fire once immediately so the subtitle picks up the initial
+        // PC values rather than waiting POLL_MS for the first read.
+        tick();
+        this._warmupPollTimer = setInterval(tick, POLL_MS);
+    }
+
+    _stopWarmupPoll() {
+        if (this._warmupPollTimer) {
+            clearInterval(this._warmupPollTimer);
+            this._warmupPollTimer = null;
+        }
+    }
+
+    // Build the human-readable subtitle for the current warmup phase.
+    // Returns null when nothing should be overridden (no call, or the
+    // call has reached 'established' / 'terminated'). The branches are
+    // ordered so the MOST informative signal wins: PC connected /
+    // gathered states trump pure SIP states, and the local-media
+    // acquisition gate beats both early on.
+    _warmupSubtitle() {
+        const call = this.props.call;
+        if (!call) return null;
+        const cs = this.state._warmupCallState || call.state;
+        if (!cs || cs === 'established' || cs === 'terminated') {
+            return null;
+        }
+        // Local media not yet acquired — for an outgoing call this is
+        // the first thing the user is waiting on; for an incoming call
+        // it gates between tapping Accept and the answer SDP firing.
+        if (!this.props.localMedia
+                && (cs === 'progress' || cs === null
+                    || cs === 'incoming' || cs === 'accepted')) {
+            // 'incoming' shouldn't normally surface (the alert panel
+            // is up), but cover it for completeness.
+            if (cs !== 'incoming') {
+                return 'Acquiring mic…';
+            }
+        }
+        const ice = this.state._warmupIceConn;
+        const gather = this.state._warmupGather;
+        const conn = this.state._warmupConn;
+        // PC reports a failure — surface it rather than the optimistic
+        // SIP state.
+        if (ice === 'failed' || conn === 'failed') {
+            return 'Connection failed';
+        }
+        if (ice === 'checking' || conn === 'connecting') {
+            return 'Connecting peer…';
+        }
+        if (gather === 'gathering') {
+            return 'Gathering candidates…';
+        }
+        // Fall back to the SIP-level state when we haven't seen any PC
+        // signal yet. 'progress' = remote is ringing, 'accepted' = SDP
+        // exchanged, 'incoming' = ringing locally.
+        if (cs === 'progress') return 'Ringing…';
+        if (cs === 'accepted') return 'Establishing media…';
+        if (cs === 'incoming') return 'Incoming call…';
+        return null;
     }
 
     componentDidMount() {
@@ -410,6 +609,14 @@ class NavigationBar extends Component {
             this._didResumeShares = true;
             this._loadAndResumeActiveShares();
         }
+
+        // If we mount with a call already in flight (NavBar gets re-
+        // mounted from /ready while a call is mid-warmup, or fast-
+        // refresh during dev) bind the warmup listeners immediately
+        // so the subtitle reflects the current phase from frame 1.
+        if (this.props.call) {
+            this._attachCallWarmup(this.props.call);
+        }
     }
 
     componentWillUnmount() {
@@ -430,6 +637,9 @@ class NavigationBar extends Component {
         // / activeLocationShares / AsyncStorage state intact for the
         // next mount to inherit.
         this._unmounted = true;
+        // Tear down the call-warmup listener + poll interval so they
+        // don't keep firing into a setState on an unmounted component.
+        this._detachCallWarmup();
         const uris = Object.keys(this.locationTimers || {});
         for (const uri of uris) {
             const entry = this.locationTimers[uri];
@@ -731,6 +941,39 @@ class NavigationBar extends Component {
 	componentDidUpdate(prevProps, prevState) {
 	    if (this.state.menuVisible != prevState.menuVisible && this.state.menuVisible) {
 		    Keyboard.dismiss();
+		}
+
+		// Fold-state transition: clear the cached appBarMeasuredHeight
+		// so the next onLayout on the freshly-mounted Appbar.Header
+		// (we already remount it via key={'appbar-header-' +
+		// _navRemountKey}) reports the new height to the parent.
+		// Without this clear, the height the parent uses for the
+		// chat panel's keyboardVerticalOffset would stay frozen at
+		// whatever was measured on the cover display, which made the
+		// inner-display layout look "smaller than normal" after
+		// unfolding.
+		if (prevProps.isFolded !== this.props.isFolded) {
+			if (this.state.appBarMeasuredHeight !== null) {
+				this.setState({ appBarMeasuredHeight: null });
+			}
+		}
+
+		// Track call identity changes so the warmup listener / poll
+		// interval follow the right Call object. Three relevant cases:
+		//   1. call appeared (null -> Call)   → attach
+		//   2. call swapped (CallA -> CallB)  → detach A, attach B
+		//   3. call cleared (Call -> null)    → detach
+		// Identity is checked by object reference rather than by id;
+		// sylkrtc keeps the same JS object across state transitions, so
+		// re-attaching every render would be a leak risk. The
+		// idempotency guard inside _attachCallWarmup is a safety net,
+		// not the primary mechanism.
+		if (prevProps.call !== this.props.call) {
+			if (this.props.call) {
+				this._attachCallWarmup(this.props.call);
+			} else {
+				this._detachCallWarmup();
+			}
 		}
 
 		// accountId changed (sign-out → sign-in with a different SIP
@@ -1308,8 +1551,8 @@ class NavigationBar extends Component {
             Alert.alert(
                 'Location permission required',
                 Platform.OS === 'ios'
-                    ? "Open Settings → Sylk → Location to allow location access."
-                    : "Open Settings to allow Sylk to access your location.",
+                    ? "Open Settings → Blink → Location to allow location access."
+                    : "Open Settings to allow Blink to access your location.",
                 [
                     {text: 'Cancel', style: 'cancel'},
                     {text: 'Open Settings', onPress: openSettingsFn},
@@ -1664,8 +1907,8 @@ class NavigationBar extends Component {
                 Alert.alert(
                     'Location permission required',
                     Platform.OS === 'ios'
-                        ? "Open Settings → Sylk → Location to allow location access."
-                        : "Open Settings to allow Sylk to access your location.",
+                        ? "Open Settings → Blink → Location to allow location access."
+                        : "Open Settings to allow Blink to access your location.",
                     [
                         {text: 'Cancel', style: 'cancel'},
                         {text: 'Open Settings', onPress: openSettingsFn},
@@ -1942,7 +2185,7 @@ class NavigationBar extends Component {
                     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
                     {
                         title: 'Share location',
-                        message: 'Sylk needs access to your location so it can be shared with your contact.',
+                        message: 'Blink needs access to your location so it can be shared with your contact.',
                         buttonPositive: 'OK',
                     }
                 );
@@ -3015,7 +3258,7 @@ class NavigationBar extends Component {
     // meet-up point in the middle of the North Sea (or any other
     // body of water). Free public service — usage is rate-limited at
     // 1 req/s and asks for a descriptive User-Agent. We send a
-    // Sylk-specific agent and only call this from the debug
+    // Blink-specific agent and only call this from the debug
     // simulator path (gated on ENABLE_MEET_SIMULATION) so the
     // request load stays comfortably inside the policy.
     //
@@ -3036,7 +3279,7 @@ class NavigationBar extends Component {
             headers: {
                 // Nominatim's usage policy requires a descriptive
                 // User-Agent identifying the application.
-                'User-Agent': 'Sylk-Mobile/meet-sim (https://sylk.com)',
+                'User-Agent': 'Blink-Mobile/meet-sim (https://sylk.com)',
                 'Accept': 'application/json',
             },
         });
@@ -4258,8 +4501,8 @@ class NavigationBar extends Component {
             Alert.alert(
                 'Location access blocked',
                 Platform.OS === 'ios'
-                    ? "Sylk can't access your location.\n\nOpen Settings → Sylk → Location and choose 'Always'. The share will start automatically once you do."
-                    : "Sylk can't access your location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time'. The share will start automatically once you do.",
+                    ? "Blink can't access your location.\n\nOpen Settings → Blink → Location and choose 'Always'. The share will start automatically once you do."
+                    : "Blink can't access your location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time'. The share will start automatically once you do.",
                 [
                     {
                         text: 'Cancel',
@@ -4292,7 +4535,7 @@ class NavigationBar extends Component {
         if (Platform.OS === 'ios' && permState === 'whenInUse') {
             // User granted "While Using" but not "Always". Foreground
             // sharing works; the share WILL stop the moment the user
-            // swipes Sylk into the background. Be explicit about the
+            // swipes Blink into the background. Be explicit about the
             // consequence and offer a one-tap path to upgrade.
             //
             // Three buttons map to three outcomes:
@@ -4305,7 +4548,7 @@ class NavigationBar extends Component {
             const proceed = await new Promise((resolve) => {
                 Alert.alert(
                     "Background sharing needs 'Always'",
-                    "Sylk has 'While Using' location access. The share will pause when you move Sylk to the background.\n\nOpen Settings → Sylk → Location and pick 'Always' — the share will start automatically once you do.",
+                    "Blink has 'While Using' location access. The share will pause when you move Blink to the background.\n\nOpen Settings → Blink → Location and pick 'Always' — the share will start automatically once you do.",
                     [
                         {text: 'Cancel', style: 'cancel', onPress: () => resolve('cancel')},
                         {text: 'Start anyway', onPress: () => resolve('start')},
@@ -4347,7 +4590,7 @@ class NavigationBar extends Component {
             const proceed = await new Promise((resolve) => {
                 Alert.alert(
                     'Background sharing needs "Allow all the time"',
-                    'Sylk has location access only while the app is in use. Your share will pause when you switch away from Sylk.\n\nOpen Settings → Permissions → Location and pick "Allow all the time" — the share will start automatically once you do.',
+                    'Blink has location access only while the app is in use. Your share will pause when you switch away from Blink.\n\nOpen Settings → Permissions → Location and pick "Allow all the time" — the share will start automatically once you do.',
                     [
                         {text: 'Cancel', style: 'cancel', onPress: () => resolve('cancel')},
                         {text: 'Start anyway', onPress: () => resolve('start')},
@@ -4431,8 +4674,8 @@ class NavigationBar extends Component {
             Alert.alert(
                 'Location permission required',
                 Platform.OS === 'ios'
-                    ? "Open Settings → Sylk → Location to allow location access. Pick 'Always' for background sharing — the share will start automatically once you do."
-                    : "Sylk needs location access to share your live location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time' — the share will start automatically once you do.",
+                    ? "Open Settings → Blink → Location to allow location access. Pick 'Always' for background sharing — the share will start automatically once you do."
+                    : "Blink needs location access to share your live location.\n\nOpen Settings → Permissions → Location and choose 'Allow all the time' — the share will start automatically once you do.",
                 [
                     {
                         text: 'Cancel',
@@ -5028,7 +5271,7 @@ class NavigationBar extends Component {
                                 if (typeof this.props.saveSystemMessage === 'function') {
                                     this.props.saveSystemMessage(
                                         uri,
-                                        `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (location permission denied). Enable 'Always' location access for Sylk in Settings to share in the background.`,
+                                        `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (location permission denied). Enable 'Always' location access for Blink in Settings to share in the background.`,
                                         'outgoing'
                                     );
                                 }
@@ -5048,7 +5291,7 @@ class NavigationBar extends Component {
                                             // longer on a locked screen. The 'open
                                             // Settings' action lives on the tap-handler
                                             // (onLocalNotification → location_stopped).
-                                            "Tap to open Sylk's Settings and enable 'Always' access.",
+                                            "Tap to open Blink's Settings and enable 'Always' access.",
                                             {
                                                 // from_uri drives sendLocalNotification's
                                                 // throttle bucket; using the contact uri
@@ -5362,8 +5605,8 @@ class NavigationBar extends Component {
             Alert.alert(
                 'Location permission required',
                 Platform.OS === 'ios'
-                    ? "Open Settings → Sylk → Location to allow location access."
-                    : 'Sylk needs location access to share your location with your contact. Open Settings to enable it.',
+                    ? "Open Settings → Blink → Location to allow location access."
+                    : 'Blink needs location access to share your location with your contact. Open Settings to enable it.',
                 [
                     {text: 'Cancel', style: 'cancel'},
                     {text: 'Open Settings', onPress: openSettingsFn},
@@ -5446,7 +5689,7 @@ class NavigationBar extends Component {
             // sleeping iPhone / Android. Without it the metadata
             // message lands silently when the receiver's app is in
             // background or terminated, and they never see the
-            // request until they happen to open Sylk. The companion
+            // request until they happen to open Blink. The companion
             // metadata still drives the modal — this text is just
             // the wake-up.
             try {
@@ -5792,7 +6035,33 @@ class NavigationBar extends Component {
         let organization = this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization;
         let displayName = this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName;
 
-        let title = displayName || 'Myself';
+        // Title fallback chain when no contact is selected:
+        //   1. selectedContact.name (handled above)
+        //   2. props.displayName — the explicitly-set display name
+        //      for the active account
+        //   3. beautified username portion of accountId — e.g.
+        //      'ag@example.com' → 'Ag', 'john.doe@x' → 'John Doe'
+        //      (prettifyName handles the casing + separator
+        //      conversion identically to the contact-list rendering)
+        //   4. 'Myself' as a last-resort label — only happens when we
+        //      have neither a display name nor a parseable accountId.
+        // "Myself" used to be the immediate fallback whenever
+        // displayName was empty, which surfaced the placeholder in the
+        // navbar even when the account URI was perfectly usable —
+        // that's the regression this chain fixes. ContactsListBox
+        // continues to use 'Myself' for the self-row label, which is
+        // appropriate in that context.
+        let title;
+        if (this.props.selectedContact) {
+            title = displayName || 'Myself';
+        } else if (this.props.displayName) {
+            title = this.props.displayName;
+        } else if (this.props.accountId && this.props.accountId.indexOf('@') > -1) {
+            const _user = this.props.accountId.split('@')[0];
+            title = prettifyName(_user) || _user;
+        } else {
+            title = 'Myself';
+        }
         // Two distinct icons for the two search modes — the contacts
         // list uses an account+magnifier glyph (search through PEOPLE),
         // and the in-chat search uses a text+magnifier glyph (search
@@ -5878,6 +6147,15 @@ class NavigationBar extends Component {
 			}
 
 		}
+
+        // Warmup-phase subtitle override. _warmupSubtitle returns null
+        // unless a call is active and not yet 'established', so the
+        // normal subtitle (account URI / org line / 'Conference room')
+        // remains in place outside of warmup.
+        const _warmupLine = this._warmupSubtitle();
+        if (_warmupLine) {
+            subtitle = _warmupLine;
+        }
 
         let backButtonTitle = 'Back to call';
 
@@ -5983,15 +6261,33 @@ class NavigationBar extends Component {
                               height: _navBarHeight,
                               };
 
+		// Pull the app-bar background from the active theme. Always
+		// Blink-blue across both Day / Night per the user's preference;
+		// see DarkModeManager for the exact colour.
+		const _theme = DarkModeManager.getTheme();
+		// Asymmetric, INSET-FREE padding on the Appbar children:
+		//   • LEFT — 15dp when the leading slot is the avatar /
+		//     display name (so they don't hug the screen edge now
+		//     that the legacy logo has moved to the brand strip).
+		//     0dp when the slot is the back arrow — native iOS /
+		//     Android convention is for the back chevron to sit
+		//     close to the edge, and Paper's Appbar.BackAction has
+		//     its own internal padding which gives it the small
+		//     amount of optical breathing room it needs.
+		//   • RIGHT — 0 flat, so the kebab / overflow menu sits as
+		//     close to the edge as Paper's Appbar.Action allows.
+		// We deliberately do NOT add leftInset / rightInset here —
+		// per the historical fix documented in the comment block
+		// below ("Android landscape: we used to add paddingLeft:
+		// leftInset…"), the Appbar.Header keeps its horizontal
+		// padding inset-free to avoid the empty-gap regression.
+		const _appBarLeftPad = showBackButton ? 0 : 15;
 		let appBarContainer = {
-		                 backgroundColor: 'black',
+		                 backgroundColor: _theme.appBarBackground,
                          marginLeft: 0,
                          marginTop: 0,
 						 height: _navBarHeight,
-						 // Override Paper's inner Appbar built-in
-						 // paddingHorizontal: 4 so children align flush
-						 // with the header edges.
-						 paddingLeft: 0,
+						 paddingLeft: _appBarLeftPad,
 						 paddingRight: 0,
                  };
 
@@ -6060,18 +6356,106 @@ class NavigationBar extends Component {
 		// 				'landscape=', !!this.props.isLandscape);
 		// 	this._loggedNavLayoutKey = _layoutKey;
 		// }
+        // ─── Brand strip ───────────────────────────────────────────
+        // Slim row above the Appbar carrying the Blink logo and
+        // "Sylk Mobile" wordmark. It sits OUTSIDE the existing
+        // Appbar.Header so adding it didn't disturb any of the
+        // hard-won Appbar layout maths above. Both rows live inside
+        // a column container; the combined height is reported via
+        // onAppBarHeightChange so ContactsListBox's
+        // KeyboardAvoidingView still gets the right offset.
+        //
+        // Padding matches the visual margin of the kebab (Appbar.Action
+        // ≈ 15dp internal padding to the screen edge) plus the safe-
+        // area insets so on iOS landscape with notch / Dynamic Island
+        // the title isn't squashed under the cutout. Without the
+        // leftInset addition the wordmark sat hard against the screen
+        // edge — that was the "too close to the edge" complaint.
+        // Brand strip is hidden in landscape — vertical pixels are
+        // scarce in that orientation and the wordmark is decorative,
+        // not functional. Setting the effective height to 0 collapses
+        // both the rendered row AND the combined-container height /
+        // onAppBarHeightChange report so the chat panel's
+        // KeyboardAvoidingView offset stays accurate.
+        const _showBrandStrip = !this.props.isLandscape;
+        // 26dp: leaves room for an 18dp logo + 13dp wordmark
+        // text without feeling like a second header band above
+        // the navbar. The previous 34dp felt too thick.
+        const _brandStripHeight = _showBrandStrip ? 26 : 0;
+        // Edge padding for the brand strip — generous enough that the
+        // logo doesn't hug the screen edge but tight enough that it
+        // still reads as "row pinned to top-left", not "centered
+        // header". 12dp on top of any safe-area inset (notched
+        // iPhones, foldables in landscape) keeps the logo at a
+        // comfortable optical margin without pushing the wordmark
+        // toward the centre of the bar.
+        const _brandStripEdgePad = 12;
+        const _brandStripStyle = {
+            height: _brandStripHeight,
+            width: '100%',
+            // Brand strip reflects the THEME background (white in Day,
+            // dark in Night) — distinct from the Blink-blue navbar
+            // below so the top of the app reads as "screen surface
+            // with branding strip" rather than a double-decker
+            // coloured header. See DarkModeManager DAY_THEME /
+            // NIGHT_THEME for the exact colours.
+            backgroundColor: _theme.brandStripBackground,
+            paddingLeft: _brandStripEdgePad + leftInset,
+            paddingRight: _brandStripEdgePad + rightInset,
+            flexDirection: 'row',
+            alignItems: 'center',
+        };
+        const _brandLogoStyle = {
+            width: 18,
+            height: 18,
+            marginRight: 6,
+        };
+        const _brandTitleStyle = {
+            color: _theme.brandStripText,
+            fontSize: 13,
+            // Explicit '400' (Regular) — on Android, fontWeight:
+            // 'normal' can still resolve to Roboto Medium when the
+            // parent (Paper Text) has its own medium-weight default.
+            // Pinning the numeric weight + textTransform:none guards
+            // against that and keeps the wordmark visually light.
+            fontWeight: '400',
+            textTransform: 'none',
+            letterSpacing: 0.3,
+        };
+        // No fixed-height wrapper. The previous implementation wrapped
+        // the brand strip + navBarContainer in a parent View with an
+        // explicit `height: _navBarHeight + _brandStripHeight`. That
+        // worked in isolation, but the Appbar.Header that lives inside
+        // navBarContainer has its own intrinsic height contributions
+        // from react-native-paper's outer wrapper, which made the
+        // wrapper's nominal 94dp height under-count the rendered
+        // height. The result was the rest of the ready-view content
+        // (search bar, source pills, sort row, chat / contacts list)
+        // sliding UP UNDER the navbar by ~34dp because the parent
+        // flex flow only reserved 60dp for NavigationBar.
+        //
+        // Returning a Fragment instead lets the brand strip and the
+        // existing navBarContainer participate as DIRECT siblings in
+        // the parent's flex flow. Each one contributes its intrinsic
+        // height and the parent stacks them with no nested-wrapper
+        // mis-measurement — same as the pre-brand-strip layout, just
+        // with one extra row at the top.
+
         return (
 
-			<View style={navBarContainer}
-			      /* Diagnostic (disabled — re-enable to debug NavBar layout):
-			      onLayout={(e) => {
-			          const { x, y, width: w, height: h } = e.nativeEvent.layout;
-			          console.log('[FoldUI] NavBar outer onLayout x=', Math.round(x),
-			                      'y=', Math.round(y),
-			                      'w=', Math.round(w),
-			                      'h=', Math.round(h));
-			      }}
-			      */
+			<Fragment>
+            {/* Brand strip — Blink logo + "Sylk Mobile" wordmark.
+                Themed to match the Appbar so the two rows read as a
+                single header block. Hidden in landscape to reclaim
+                vertical space (the wordmark is decorative, not
+                functional). */}
+            {_showBrandStrip ? (
+                <View style={_brandStripStyle}>
+                    <Image source={blinkLogo} style={_brandLogoStyle} />
+                    <Text style={_brandTitleStyle}>Blink</Text>
+                </View>
+            ) : null}
+            <View style={navBarContainer}
 			      >
             {/*
               react-native-paper v5's Appbar.Header wraps its content in an
@@ -6087,8 +6471,28 @@ class NavigationBar extends Component {
               as restStyle on the inner Appbar) span the full width.
             */}
             <SafeAreaInsetsContext.Provider value={{ top: 0, bottom: 0, left: 0, right: 0 }}>
-            <Appbar.Header style={appBarContainer}
+            <Appbar.Header
+                 /* Force-remount on fold / size transitions. Paper's
+                    Appbar.Header (and the IconButtons / Text inside it)
+                    cache their measured layout at the density of the
+                    first mount. On the Razr 60 Ultra, unfolding from
+                    the cover display (where Appbar last measured
+                    itself at folded density / dimensions) doesn't
+                    re-measure automatically — the inner-display
+                    onLayout sometimes fires once with the new height,
+                    but the cached frames for nested IconButton /
+                    Text children stick around. Re-keying on
+                    _navRemountKey (already used to remount the title
+                    and icons below) forces the whole Appbar.Header
+                    subtree to re-mount, which clears the cache and
+                    lets the new fold-state geometry take effect. */
+                 key={'appbar-header-' + _navRemountKey}
+                 style={appBarContainer}
                  statusBarHeight={0}
+                 /* App bar is always Blink-blue across both themes
+                    now, so dark={true} permanently — Paper renders
+                    white icon / text glyphs on the dark blue
+                    background regardless of which theme is active. */
                dark
                  onLayout={(e) => {
                      // Measure the actual Appbar.Header height so the
@@ -6098,8 +6502,10 @@ class NavigationBar extends Component {
                      // hardcoded 60dp fallback in ContactsListBox.
                      // Reported up to app.js (which owns ReadyBox →
                      // ContactsListBox in the tree) via the
-                     // onAppBarHeightChange callback.
-                     const h = Math.round(e.nativeEvent.layout.height);
+                     // onAppBarHeightChange callback. Add the brand
+                     // strip height so the reported value covers the
+                     // FULL header block (brand strip + Appbar).
+                     const h = Math.round(e.nativeEvent.layout.height) + _brandStripHeight;
                      if (h && h !== this.state.appBarMeasuredHeight) {
                          this.setState({ appBarMeasuredHeight: h });
                          if (typeof this.props.onAppBarHeightChange === 'function') {
@@ -6109,9 +6515,15 @@ class NavigationBar extends Component {
                  }}
                  >
   
+                {/* When there's no back button the bar used to render
+                    the Blink logo here. The logo now lives in the
+                    dedicated brand strip above the Appbar, so we
+                    render nothing in this slot when not in back-button
+                    mode — keeping it would duplicate the logo and push
+                    the avatar / title further off the left edge. */}
                 {showBackButton ?
                 <Appbar.BackAction onPress={() => {this.props.goBackFunc()}} />
-                : <Image source={blinkLogo} style={[styles.logo, { width: navLogoSize, height: navLogoSize }]}/>}
+                : null}
 
 				{this.props.selectedContact ?
 					<View style={styles.avatarContent}>
@@ -6128,8 +6540,23 @@ class NavigationBar extends Component {
                     key={'title-' + _navRemountKey}
                     title={title}
                     subtitle={subtitle}
-                    titleStyle={[titleStyle, { marginLeft: 0 }]}
-                    subtitleStyle={[subtitleStyle, { marginLeft: 0 }]}
+                    /* App bar background is always Blink-blue (see
+                       DarkModeManager's appBarBackground), so force
+                       the title to white explicitly. Relying on
+                       Paper's `dark` prop for the colour resolution
+                       wasn't always reliable here — the title
+                       rendered dark on the user's device against the
+                       blue bar — so we pin the colour at the call
+                       site. */
+                    /* Title: bold per user preference (the own-
+                       account name and selected-contact name should
+                       stand out from the surrounding chrome).
+                       Subtitle uses '400' (Regular) so the URI /
+                       organisation line reads as secondary text —
+                       explicit numeric weight because Android maps
+                       'normal' to Medium under Paper's defaults. */
+                    titleStyle={[titleStyle, { marginLeft: 0, color: 'white', fontWeight: 'bold' }]}
+                    subtitleStyle={[subtitleStyle, { marginLeft: 0, color: 'white', fontWeight: '400' }]}
                 />
 
                { this.props.isTablet && this.props.syncPercentage != 100 ?
@@ -6156,16 +6583,13 @@ class NavigationBar extends Component {
 				</View>
 				   : null }
 
- 				{ this.showBackToCallButton ?
-						<Button
-							mode="contained"
-						    labelStyle={{ fontSize: 14 }}
-						    style={styles.backButton}
-							onPress={this.props.goBackToCallFunc}
-							accessibilityLabel={backButtonTitle}
-							>{backButtonTitle}
-						</Button>
-                : null}
+				{/* "Back to call" / "Back to conference" button removed —
+				    the navbar's own back affordances (and the global
+				    call-overlay) already surface that action, so this
+				    second red button in the title bar was redundant.
+				    showBackToCallButton is still computed because other
+				    code paths read it; only the visible button here
+				    has been dropped. */}
 
                 { false && !this.props.rejectNonContacts && ! this.props.selectedContact?
                 <IconButton
@@ -6287,14 +6711,16 @@ class NavigationBar extends Component {
                     search contacts on the list view). Positioned so it
                     sits immediately to the LEFT of the kebab menu, with
                     the DND bell on its own left in the contacts-list
-                    view. Hidden while a call is active so the navbar
-                    stays uncluttered for the pulsing "Back to call"
-                    indicator — the user is in a transient mid-call mode
-                    and search is a low-priority affordance there. Same
-                    pattern as the existing cover-display hide for the
-                    search-messages variant. */}
-                {this.props.inCall ? null :
-                 this.props.selectedContact ?
+                    view. Stays visible during an active call too —
+                    the user often wants to find a contact or look up
+                    a previous message while a conference is up.
+
+                    Hidden entirely while the conference-invite picker
+                    is up (inviteContacts === true): the picker has its
+                    own pinned search bar — Blink/AB toggle + dialpad —
+                    and the navbar's search icon would only collide
+                    with it. */}
+                {this.props.selectedContact ?
                     // Hide the "search messages" icon on the cover display —
                     // the NavBar is too cramped to also host a search UI there.
                     (this.props.isFolded ? null :
@@ -6307,6 +6733,7 @@ class NavigationBar extends Component {
                         icon={searchMessagesIcon}
                     />)
                 :
+                this.props.inviteContacts ? null :
 				<IconButton
                     key={'search-contacts-' + _navRemountKey}
                     style={styles.whiteButton}
@@ -6315,7 +6742,6 @@ class NavigationBar extends Component {
                     onPress={this.props.toggleSearchContacts}
                     icon={searchContactsIcon}
                 />
-
                 }
 
                { (!this.props.selectedContact && !this.props.searchContacts && false) ?
@@ -6419,7 +6845,14 @@ class NavigationBar extends Component {
                     );
                 })()}
 
-                { this.props.selectedContact ?
+                { /* Hide the kebab / overflow menu while a search
+                     mode is active in the main interface — the user
+                     wants the navbar trimmed down to just the search
+                     controls until search is dismissed. Applies to
+                     both contacts-search and messages-search; either
+                     flag being set suppresses the kebab. */ }
+                { (!this.props.searchContacts && !this.props.searchMessages) ?
+                  (this.props.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}
                         onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false})}
@@ -6809,7 +7242,7 @@ class NavigationBar extends Component {
                      : null}
 
                         {/* Permissions — deep-links to the OS settings
-                            screen for Sylk. Useful mid-call when the
+                            screen for Blink. Useful mid-call when the
                             user realises camera/mic/location wasn't
                             granted. We keep the folded-layout guard,
                             but drop the inCall gate. */}
@@ -6843,10 +7276,10 @@ class NavigationBar extends Component {
                             point — including from inside an open chat. */}
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
 
-                        {/* About Sylk — purely informational (version,
+                        {/* About Blink — purely informational (version,
                             build id, dev-mode toggle). No call overlap
                             so we keep it visible. */}
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Sylk"/>
+                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Blink"/>
                         {/* Divider above Sign out — sets the destructive
                             session-end action visually apart from the
                             settings/info entries above. */}
@@ -6855,7 +7288,8 @@ class NavigationBar extends Component {
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
-                    }
+                    )
+                  : null }
 
                 <AboutModal
                     show={this.state.showAboutModal}
@@ -7016,6 +7450,8 @@ class NavigationBar extends Component {
                     setLocationProximityMeters={this.props.setLocationProximityMeters}
                     locationPrivacyRadiusMeters={this.props.locationPrivacyRadiusMeters}
                     setLocationPrivacyRadiusMeters={this.props.setLocationPrivacyRadiusMeters}
+                    themeMode={this.props.themeMode}
+                    setThemeMode={this.props.setThemeMode}
                 />
 
                 { this.state.showEditConferenceModal ?
@@ -7036,7 +7472,7 @@ class NavigationBar extends Component {
                     invitedParties={this.props.selectedContact ? this.props.selectedContact.participants : []}
                     selectedContact={this.props.selectedContact}
                     // allContacts feeds the new pill-picker inside the
-                    // modal — the user now selects Sylk contacts from
+                    // modal — the user now selects Blink contacts from
                     // a multi-select list rather than typing addresses
                     // free-form, so the modal needs the full contact
                     // roster to filter and display.
@@ -7056,6 +7492,7 @@ class NavigationBar extends Component {
                     conferenceUrl={conferenceUrl}
                     conferenceRoom={conferenceRoom}
                     sylkDomain={this.props.sylkDomain}
+                    conferenceSettings={this.props.conferenceSettings}
                 />
 
                 <ShareLocationModal
@@ -7241,6 +7678,7 @@ class NavigationBar extends Component {
             </Appbar.Header>
             </SafeAreaInsetsContext.Provider>
 		</View>
+		</Fragment>
         );
     }
 }
@@ -7342,6 +7780,7 @@ NavigationBar.propTypes = {
     toggleSearchContacts: PropTypes.func,
     searchMessages: PropTypes.bool,
     searchContacts: PropTypes.bool,
+    inviteContacts: PropTypes.bool,
     isLandscape: PropTypes.bool,
     publicUrl: PropTypes.string,
     serverSettingsUrl: PropTypes.string,

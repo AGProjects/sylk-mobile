@@ -49,6 +49,11 @@ const styles = StyleSheet.create({
     bottom: 30,
     marginBottom: 0,
     justifyContent: 'center',
+    // Vertical nudge on the landscape call-button strip:
+    //   started at translateY:50 (50 px lower) per "lower call
+    //   buttons 50px" request, then RAISED 20 px per "landscape
+    //   raise button bar 20px" → net +30.
+    transform: [{ translateY: 30 }],
   },
 
   tabletLandscapeButtonContainer: {
@@ -101,15 +106,19 @@ const styles = StyleSheet.create({
   },
 
   greenButton: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)', // #6DAA63 + 0.9
+    backgroundColor: '#25D366', // #6DAA63 + 0.9
   },
 
   disabledGreenButton: {
     backgroundColor: 'rgba(57, 89, 54, 0.9)', // #395936 + 0.9
   },
 
+  // WhatsApp-style hang-up red — vivid, fully opaque, Material Red 600.
+  // Replaces the previous dusky #a94442 @ 0.8 alpha which read as
+  // muted and easy to mistake for the disabled-green-button colour
+  // in low-light situations.
   hangupButton: {
-    backgroundColor: 'rgba(169, 68, 66, 0.8)', // #a94442 + 0.8
+    backgroundColor: '#E53935',
   },
 
   whiteButtoniOS: {
@@ -119,7 +128,7 @@ const styles = StyleSheet.create({
 
   greenButtoniOS: {
     paddingTop: 0,
-    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    backgroundColor: '#25D366',
   },
 
   disabledGreenButtoniOS: {
@@ -129,18 +138,35 @@ const styles = StyleSheet.create({
 
   hangupButtoniOS: {
     paddingTop: 0,
-    backgroundColor: 'rgba(169, 68, 66, 0.8)',
+    backgroundColor: '#E53935',
   },
 
   displayName: {
-    paddingTop: 10,
+    // Paper's Dialog.Title applies paddingTop:24 / paddingBottom:16
+    // by default. We override both. paddingBottom:0 strips Paper's
+    // bottom gap; marginBottom: 10 then adds a comfortable 10px
+    // breathing room under the name per the latest user request
+    // (was -6 to tuck the URI snug; bumped per "add 10px under
+    // display name").
+    paddingTop: 4,
+    paddingBottom: 0,
+    // Display-name → URI gap fine-tuning:
+    //   −6 (original tuck-tight) → 10 (per "add 10px under display
+    //   name") → 5 (per "remove 5px under display name") → 0 (per
+    //   "less 5px between DN and uri"). DN now sits flush with URI.
+    marginBottom: 0,
     fontSize: 30,
     textAlign: 'center',
     color: 'white',
   },
 
   uri: {
+    // Tuck the URI right under the display name and reduce the gap
+    // to the speedometer below it (per the user's "smaller margin
+    // between URI and Speedometer" request).
     padding: 0,
+    marginTop: 0,
+    marginBottom: -6,
     fontSize: 18,
     textAlign: 'center',
     color: 'white',
@@ -166,7 +192,7 @@ const styles = StyleSheet.create({
   },
 
   audioDeviceSelected: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    backgroundColor: '#25D366',
     borderColor: 'green',
   },
 
@@ -182,7 +208,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     justifyContent: 'space-between',
-    marginTop: 36,
+    // Top margin history: 36 -> 16 (user said up 20) -> 26 (user
+    // followed with "10 px down"). Net effect from original is -10 px.
+    marginTop: 26,
     paddingHorizontal: 8,
     height: 140,
   },

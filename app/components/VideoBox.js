@@ -5,7 +5,7 @@ import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
-import { getZrtpSession } from './CallZrtp';
+import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
 import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 // RNCamera is used ONLY for the camera-enable modal preview tile —
@@ -195,6 +195,11 @@ class VideoBox extends Component {
                     || !!this.props.cameraInitiallyMuted
                 )
                 && !this.props.call._sylkCameraPromptHandled
+                && !(this.props.call && this.props.call._zrtpStrictNoVideo),
+            // Mirror of call._zrtpStrictNoVideo so a re-render fires when
+            // CallZrtp emits 'zrtpStrictH264VideoDrop'. When true the
+            // camera prompt and the local preview are suppressed.
+            zrtpStrictNoVideo: !!(this.props.call && this.props.call._zrtpStrictNoVideo),
         };
 
 		this.prevStats = {}; // initialize here
@@ -300,11 +305,13 @@ class VideoBox extends Component {
             nextProps.call.on('stateChanged', this.callStateChanged);
             nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
             nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            nextProps.call.on('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
 
             if (this.state.call !== null) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
                 this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
                 this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+                this.state.call.removeListener('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
             }
             const existing = getZrtpSession(nextProps.call);
             const newLocalStream = nextProps.call.getLocalStreams()[0];
@@ -434,19 +441,22 @@ class VideoBox extends Component {
                 && !this._previewTrackWasReEnabled
                 && _resolvedLocalStream) {
             this._pendingPreviewStream = _resolvedLocalStream;
-            const _hadSenderBefore = !!this._previewSender;
             try { this._enableTrackForPreview(); }
             catch (e) {
                 console.log('[video-preview] cWRP _enableTrackForPreview threw:',
                     (e && e.message) || String(e));
             }
             this._pendingPreviewStream = null;
-            const _hasSenderNow = !!this._previewSender;
+            // _enableTrackForPreview now operates on the track
+            // directly (track.enabled=false), so it succeeds the
+            // moment the localStream has a video track — no need to
+            // wait for the RTPSender to materialise. The retry loop
+            // still runs on every cWRP until success, in case the
+            // first cWRP fires before getUserMedia has resolved.
             if (this._previewTrackWasReEnabled) {
-                console.log('[video-preview] cWRP detach SUCCEEDED — preview-only mode active'
-                    + ' (sender existed=' + _hadSenderBefore + '→' + _hasSenderNow + ')');
+                console.log('[video-preview] cWRP track-gate SUCCEEDED — modal phase active, wire silenced');
             } else {
-                console.log('[video-preview] cWRP detach pending — sender not ready yet, will retry on next prop update'
+                console.log('[video-preview] cWRP track-gate pending — localStream has no video track yet, will retry'
                     + ' (resolvedLocalStream tracks=' + ((_resolvedLocalStream.getTracks && _resolvedLocalStream.getTracks().length) || 0) + ')');
             }
         }
@@ -697,7 +707,38 @@ class VideoBox extends Component {
 
     zrtpStateChanged(newState) {
         if (this.unmounted) return;
-        this.setState({ zrtpState: newState });
+        this.setState({ zrtpState: newState }, () => {
+            if (newState !== 'key-active') return;
+            const status = this._zrtpVerificationStatus();
+            this._maybeAutoUpgradeRs1(status);
+        });
+    }
+
+    // Fired by CallZrtp when zRTP strict mode collides with H264 video.
+    // The session has already stopped the local video sender; we suppress
+    // the camera-enable prompt and any local preview tile.
+    zrtpStrictH264VideoDrop(info) {
+        if (this.unmounted) return;
+        utils.timestampedLog('[call] [zrtp] strict-H264: dropping video media on this call');
+        this.setState({
+            zrtpStrictNoVideo: true,
+            videoEnableDialogVisible: false,
+        });
+    }
+
+    _maybeAutoUpgradeRs1(status) {
+        if (status !== 'verified') return;
+        const session = getZrtpSession(this.state.call);
+        if (!session) return;
+        const cs = session.continuityState;
+        if (cs !== 'first-time' && cs !== 'one-sided-local'
+                && cs !== 'one-sided-peer') return;
+        if (this._rs1AutoUpgraded) return;
+        if (typeof session.confirmSasAndSeedRs1 !== 'function') return;
+        try {
+            session.confirmSasAndSeedRs1();
+            this._rs1AutoUpgraded = true;
+        } catch (e) { /* ignore */ }
     }
 
     // Fired by CallZrtp.js when zRTP-mandatory mode fails to agree on
@@ -734,12 +775,22 @@ class VideoBox extends Component {
         if (this.state.zrtpState !== 'key-active') return null;
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) return null;
+        // Primary anchor: v2 retained-secret continuity decision.
+        if (session.continuityState === 'verified') return 'verified';
+        if (session.continuityState === 'mismatch') return 'mismatch';
+        // New-device guard: when peer advertised device_id AND we hold
+        // no per-device rs1 for them, treat as unverified — don't fall
+        // through to the legacy PGP compare which is per-account.
+        if (session.peerDeviceId && !session.localRs1) {
+            return 'unverified';
+        }
+        // Legacy fallback for v1 / v2 peers / sessions without rs1 yet.
         const stored = this.props.callContact
             && this.props.callContact.localProperties
             && this.props.callContact.localProperties.zrtp;
         if (!stored || !stored.publicKey) return 'unverified';
         const currentKey = this.props.callContact && this.props.callContact.publicKey;
-        if (currentKey && stored.publicKey === currentKey) return 'verified';
+        if (currentKey && constantTimeStringEqual(stored.publicKey, currentKey)) return 'verified';
         return 'mismatch';
     }
 
@@ -749,11 +800,34 @@ class VideoBox extends Component {
         }
     }
 
+    _onZrtpReset() {
+        const session = getZrtpSession(this.state.call);
+        if (session && typeof session.clearRs1 === 'function') {
+            try { session.clearRs1(); } catch (e) {}
+        }
+        if (session) {
+            try {
+                session.continuityState = 'first-time';
+                session.localRs1 = null;
+                session.localRsIdHex = null;
+            } catch (e) {}
+        }
+        if (this.props.resetContactZrtp && this.state.remoteUri) {
+            try { this.props.resetContactZrtp(this.state.remoteUri); } catch (e) {}
+        }
+        this._rs1AutoUpgraded = false;
+        this.setState({ zrtpDialogVisible: false });
+        this.forceUpdate();
+    }
+
     _onZrtpVerifyConfirm() {
         const session = getZrtpSession(this.state.call);
         if (!session || !session.sas) {
             this.setState({ zrtpDialogVisible: false });
             return;
+        }
+        if (typeof session.confirmSasAndSeedRs1 === 'function') {
+            try { session.confirmSasAndSeedRs1(); } catch (e) {}
         }
         if (this.props.markZrtpVerified && this.state.remoteUri) {
             this.props.markZrtpVerified(this.state.remoteUri, session.sas.chars, session.sas.emojis);
@@ -810,14 +884,41 @@ class VideoBox extends Component {
         return null;
     }
 
-    /** While the camera-enable prompt is visible the user sees a local
-     *  preview rendered from the live track. To prevent that preview from
-     *  leaking to the remote BEFORE the user has chosen, we detach the
-     *  video track from the RTCRtpSender via replaceTrack(null). The
-     *  track stays alive and the local <RTCView> keeps rendering it; only
-     *  the wire stream stops carrying video. We re-attach (or drop) the
-     *  track based on the user's choice in _onEnableCamera /
-     *  _onKeepAudioOnly.
+    /** While the camera-enable prompt is visible we need to prevent the
+     *  local camera frames from reaching the remote BEFORE the user has
+     *  confirmed. The mechanism is exactly the same as the in-call
+     *  "mute camera" button (`toggleVideoMute` below): set
+     *  `track.enabled = false`. The wire-level RTPSender keeps its track
+     *  attached and the libwebrtc encoder lifecycle stays untouched, but
+     *  WebRTC replaces real frames with "silenced" frames at the track
+     *  level so nothing of the user is visible to the peer until they
+     *  press Enable Camera.
+     *
+     *  History — what was here before, and why it broke:
+     *
+     *  The previous implementation used either
+     *    setParameters({encodings:[{active:false}]})  (preferred), or
+     *    replaceTrack(null)                           (fallback).
+     *  The setParameters path called {active:false} during the early
+     *  accept window (around state=accepted, before state=established
+     *  and before the SDP answer was set). On react-native-webrtc
+     *  Android, marking encodings inactive BEFORE the encoder is
+     *  instantiated makes libwebrtc skip allocating the encoder
+     *  entirely — no later setParameters({active:true}) or
+     *  replaceTrack(track) revives it. Symptom: outbound-rtp stats
+     *  stay at framesSent=0 / framesEncoded=0 / encoderImplementation=?
+     *  for the entire call, and the user's self-preview thumbnail is
+     *  also empty because the same broken path stops the capturer feed.
+     *  Reproduced for call_id=327373bf-... in metro.log around
+     *  2026-05-19 08:27:12..08:27:27 — every TX line was 0/0/0 even
+     *  after _onEnableCamera ran setParameters({active:true}) and the
+     *  replaceTrack "kick".
+     *
+     *  Switching to track.enabled=false makes the gate symmetric with
+     *  the in-call mute button (the existing, working code path),
+     *  reuses the same getUserMedia stream we already acquired, and
+     *  never touches the encoder/sender allocation that libwebrtc
+     *  decides during negotiation.
      */
     _enableTrackForPreview() {
         // Resolution order:
@@ -836,78 +937,38 @@ class VideoBox extends Component {
         if (tracks.length === 0) return;
         const track = tracks[0];
 
-        // Stash the track so we can re-attach it on Enable.
+        // Stash the track so _onEnableCamera / _onKeepAudioOnly can
+        // act on the same instance even after cWRP swaps in a
+        // different localStream object (sylkrtc re-uses the same
+        // underlying track but may wrap it in a new stream after the
+        // SDP answer applies).
         this._previewVideoTrack = track;
 
-        // 1. Detach from the wire — peer stops getting frames immediately.
-        //
-        // The _previewTrackWasReEnabled flag (which gates the retry
-        // loop in cWRP) is ONLY set on actual replaceTrack(null)
-        // success. The previous version set it unconditionally
-        // BEFORE the detach attempt, so when the sender was null
-        // (the typical case at first call — sender materialises only
-        // after the SDP answer applies) the flag was already true
-        // and cWRP's retry loop wouldn't try again. Result: the
-        // video track stayed attached to the sender, the remote saw
-        // the camera, and the user complained "the other party sees
-        // me before I press Start camera". Now we only declare
-        // success when the detach actually happens, and the retry
-        // loop keeps going until either it does or the modal closes.
-        // Two-tier gate:
-        //   A. Preferred: setParameters({active:false}) on each
-        //      encoding. The track STAYS attached to the sender so iOS
-        //      keeps the AVCaptureSession running — the local
-        //      preview / PIP RTCViews actually get frames. The
-        //      encoder produces nothing on the wire because every
-        //      encoding is inactive. This is the only way to get a
-        //      working local preview during the modal phase.
-        //   B. Fallback: replaceTrack(null). Used only if
-        //      setParameters isn't available or the sender has no
-        //      encodings yet (encoder not negotiated). The wire is
-        //      blocked but iOS will pause the camera — the local
-        //      preview tile / PIP will stay black until we
-        //      re-attach. That's acceptable as a fallback because
-        //      the alternative is leaking the camera to the remote.
+        // Stash the sender as well so the in-call code paths
+        // (toggleVideoMute, _ensureSenderHasTrack, camera picker)
+        // know we've already wired up a sender for this track —
+        // matters when toggleVideoMute runs after _onEnableCamera and
+        // expects to find the sender alive.
         const sender = this._videoSender();
-        let usedSetParameters = false;
-        if (sender && typeof sender.getParameters === 'function'
-                   && typeof sender.setParameters === 'function') {
-            try {
-                const params = sender.getParameters();
-                if (params && Array.isArray(params.encodings) && params.encodings.length > 0) {
-                    // Remember the prior active flags so _onEnableCamera
-                    // can restore them exactly (don't blindly flip all
-                    // back to true — the user may have multiple
-                    // simulcast layers with deliberate active=false).
-                    this._previewPriorEncodings = params.encodings.map(e => ({ active: e.active !== false }));
-                    params.encodings.forEach(e => { e.active = false; });
-                    const p = sender.setParameters(params);
-                    if (p && typeof p.then === 'function') {
-                        p.catch(err => console.log('[video-preview] setParameters(active=false) rejected:', (err && err.message) || String(err)));
-                    }
-                    this._previewSender = sender;
-                    this._previewTrackWasReEnabled = true;
-                    usedSetParameters = true;
-                    console.log('[video-preview] sender encodings deactivated (track stays attached, camera keeps running)');
-                }
-            } catch (e) {
-                console.log('[video-preview] setParameters(active=false) threw:', (e && e.message) || String(e));
-            }
+        if (sender) {
+            this._previewSender = sender;
         }
-        // Fallback path — only if setParameters wasn't possible.
-        if (!usedSetParameters && sender && typeof sender.replaceTrack === 'function') {
-            try {
-                sender.replaceTrack(null);
-                this._previewSender = sender;
-                this._previewTrackWasReEnabled = true;
-                console.log('[video-preview] FALLBACK: sender.replaceTrack(null) — iOS will pause camera, preview will be black');
-            } catch (e) {
-                console.log('[video-preview] sender.replaceTrack(null) failed:', e && e.message);
-            }
+        // We never deactivated encodings, so there's nothing to
+        // remember as a "prior" state for _onEnableCamera to restore.
+        this._previewPriorEncodings = null;
+
+        // Track-level mute — same primitive as toggleVideoMute uses.
+        // Wire still negotiates m=video sendrecv and the encoder is
+        // instantiated by libwebrtc the usual way, but the track
+        // emits silenced frames to the encoder so the peer sees
+        // nothing of the user until Enable Camera fires.
+        if (track.enabled !== false) {
+            try { track.enabled = false; }
+            catch (e) { console.log('[video-preview] track.enabled=false threw:', (e && e.message) || String(e)); }
         }
 
-        // 2. Enable the track so RTCView renders the local preview.
-        if (track.enabled === false) track.enabled = true;
+        this._previewTrackWasReEnabled = true;
+        console.log('[video-preview] track muted (track.enabled=false) — encoder lifecycle untouched');
     }
 
     /** Camera-enable prompt actions. */
@@ -917,57 +978,81 @@ class VideoBox extends Component {
         if (this.props.call) this.props.call._sylkCameraPromptHandled = true;
         this.setState({ videoEnableDialogVisible: false });
 
-        const sender = this._previewSender;
-        if (sender) {
-            // Preferred path: we deactivated encodings via setParameters
-            // in _enableTrackForPreview. Reactivate them now so the
-            // encoder starts pushing frames on the wire.
-            if (this._previewPriorEncodings && typeof sender.getParameters === 'function'
-                                              && typeof sender.setParameters === 'function') {
-                try {
-                    const params = sender.getParameters();
-                    if (params && Array.isArray(params.encodings)) {
-                        params.encodings.forEach((e, i) => {
-                            const prior = this._previewPriorEncodings[i];
-                            e.active = prior ? prior.active : true;
-                        });
-                        const p = sender.setParameters(params);
-                        if (p && typeof p.then === 'function') {
-                            p.catch(err => console.log('[video-preview] setParameters(active=true) rejected:', (err && err.message) || String(err)));
-                        }
-                    }
-                } catch (e) {
-                    console.log('[video-preview] setParameters(active=true) threw:', (e && e.message) || String(e));
-                }
-            }
-            // Fallback path: we used replaceTrack(null). Re-attach the
-            // stashed track so the wire gets frames.
-            else if (this._previewVideoTrack && typeof sender.replaceTrack === 'function') {
-                try { sender.replaceTrack(this._previewVideoTrack); }
-                catch (e) { console.log('[video-preview] re-attach replaceTrack failed:', (e && e.message) || String(e)); }
-            }
+        // Resolve the same track _enableTrackForPreview muted.
+        // Same identity-resolution order as in_enableTrackForPreview.
+        const localStream = this._pendingPreviewStream
+            || this.state.localStream
+            || (this.props.call && this.props.call.getLocalStreams
+                && this.props.call.getLocalStreams()[0])
+            || null;
+        const currentTrack = this._previewVideoTrack
+            || (localStream && localStream.getVideoTracks
+                && localStream.getVideoTracks()[0])
+            || null;
+
+        // Symmetric counterpart of the gate in _enableTrackForPreview:
+        // flip the same track.enabled back to true. The libwebrtc
+        // encoder was instantiated normally during negotiation (we
+        // never deactivated encodings), so as soon as the track
+        // emits real frames the wire gets them — no setParameters,
+        // no replaceTrack, no encoder/capturer "kick" needed.
+        if (currentTrack && currentTrack.enabled === false) {
+            try { currentTrack.enabled = true; }
+            catch (e) { console.log('[video-preview] track.enabled=true threw:', (e && e.message) || String(e)); }
         }
+        console.log('[video-preview] track unmuted (track.enabled=true) — wire now sends real frames');
+
+        // Defensive: if some earlier code path (toggleVideoMute, the
+        // camera picker) had detached the sender via replaceTrack(null),
+        // re-attach the track here. This is the same helper
+        // toggleVideoMute calls on its unmute branch. No-op when the
+        // sender already has the track.
+        if (currentTrack && typeof this._ensureSenderHasTrack === 'function') {
+            try { this._ensureSenderHasTrack(currentTrack); }
+            catch (e) { /* best effort */ }
+        }
+
+        // Sync state.videoMuted so the camera button on the call
+        // overlay renders as "camera on". We do this directly rather
+        // than calling toggleVideoMute() (which would flip the track
+        // back to disabled if state.videoMuted is already false).
+        if (this.state.videoMuted) {
+            this.setState({ videoMuted: false });
+        }
+
         this._previewSender = null;
         this._previewVideoTrack = null;
         this._previewPriorEncodings = null;
-
-        if (this.state.videoMuted && typeof this.toggleVideoMute === 'function') {
-            this.toggleVideoMute();
-        }
         this._previewTrackWasReEnabled = false;
     }
 
     _onKeepAudioOnly() {
-        // Audio-only choice. Whatever gate we used in
-        // _enableTrackForPreview (setParameters or replaceTrack(null))
-        // stays in place — the encodings remain inactive / the sender
-        // stays detached, so the remote keeps seeing nothing. We
-        // additionally disable the track itself so any local sinks
-        // (PIP thumbnail) also go dark, matching the user's "audio
-        // only" intent.
-        if (this._previewVideoTrack) {
-            try { this._previewVideoTrack.enabled = false; } catch (e) {}
+        // Audio-only choice. _enableTrackForPreview already muted the
+        // track (track.enabled=false), so the wire keeps sending
+        // silenced frames and the remote sees nothing. Just leave it
+        // muted and dismiss the modal — same end state as if the user
+        // had answered the call and then tapped the in-call "mute
+        // camera" button. The user can later tap unmute / camera to
+        // turn it on without renegotiation.
+        const localStream = this.state.localStream
+            || (this.props.call && this.props.call.getLocalStreams
+                && this.props.call.getLocalStreams()[0])
+            || null;
+        const currentTrack = this._previewVideoTrack
+            || (localStream && localStream.getVideoTracks
+                && localStream.getVideoTracks()[0])
+            || null;
+        if (currentTrack && currentTrack.enabled !== false) {
+            try { currentTrack.enabled = false; }
+            catch (e) { console.log('[video-preview] track.enabled=false (audio-only) threw:', (e && e.message) || String(e)); }
         }
+        console.log('[video-preview] audio-only chosen — track stays muted');
+
+        // Reflect the muted state on the call overlay's camera button.
+        if (!this.state.videoMuted) {
+            this.setState({ videoMuted: true });
+        }
+
         this._previewSender = null;
         this._previewVideoTrack = null;
         this._previewPriorEncodings = null;
@@ -992,6 +1077,7 @@ class VideoBox extends Component {
             this.state.call.on('stateChanged', this.callStateChanged);
             this.state.call.on('zrtpStateChanged', this.zrtpStateChanged);
             this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            this.state.call.on('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
             const existing = getZrtpSession(this.state.call);
             if (existing && existing.state) {
                 this.setState({ zrtpState: existing.state });
@@ -2040,7 +2126,13 @@ class VideoBox extends Component {
         }
         
         const debugBorderWidth = 0;
-        const headerBarHeight = 60;
+        // headerBarHeight = Appbar height (60) PLUS the Blink brand
+        // strip above it (34dp, only shown in portrait — landscape
+        // hides it). Previously hard-coded 60, which left the
+        // video thumbnails / overlay content positioned UNDER the
+        // brand strip in portrait. Adding the strip height in
+        // portrait pushes them clear.
+        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
 
 		let { width, height } = Dimensions.get('window');
         
@@ -2238,15 +2330,31 @@ class VideoBox extends Component {
             }
             let bg, label;
             const status = this._zrtpVerificationStatus();
+            const session = getZrtpSession(this.state.call);
+            const kinds = (session && session.encryptedKinds) || [];
+            const kindsLabel = formatEncryptedKindsLabel(kinds);
+            // Label simplification per user spec:
+            //   both audio + video (or unknown) → "zRTP end to end encryption"
+            //   audio only                      → "zRTP audio only end to end encryption"
+            //   video only                      → "zRTP video only end to end encryption"
+            let _kindsPrefix = '';
+            if (kindsLabel === 'audio') {
+                _kindsPrefix = 'audio only ';
+            } else if (kindsLabel === 'video') {
+                _kindsPrefix = 'video only ';
+            }
+            const _zrtpLabel = '🔒 zRTP ' + _kindsPrefix + 'end to end encryption';
             if (status === 'verified') {
                 bg = 'rgba(0, 170, 80, 0.9)';
-                label = '🔒 zRTP verified';
+                // "verified" suffix suppressed in the green pill — the
+                // green colour communicates the state on its own.
+                label = _zrtpLabel;
             } else if (status === 'mismatch') {
                 bg = 'rgba(200, 30, 30, 0.9)';
                 label = '⚠ SAS changed';
             } else {
                 bg = 'rgba(230, 120, 0, 0.95)';
-                label = '🔒 zRTP end-to-end encrypted';
+                label = _zrtpLabel;
             }
             const isTappable = this.state.zrtpState === 'key-active';
             const inner = (
@@ -2255,8 +2363,16 @@ class VideoBox extends Component {
                     paddingVertical: 4,
                     paddingHorizontal: 10,
                     borderRadius: 12,
+                    alignSelf: 'center',
+                    flexShrink: 0,
                 }}>
-                    <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>{label}</Text>
+                    <Text
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                        style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}
+                    >
+                        {label}
+                    </Text>
                 </View>
             );
             // Dim "Tap to verify" sub-label is always shown (even on
@@ -2283,6 +2399,10 @@ class VideoBox extends Component {
             } else {
                 bottomOffset = this.state.isLandscape ? 80 : 130;
             }
+            // Hide "Tap to verify" once the SAS has been confirmed —
+            // the green pill is enough on its own and re-verification
+            // isn't a normal user task.
+            const _showTapToVerify = status !== 'verified';
             return (
                 <View pointerEvents="box-none" style={{
                     position: 'absolute',
@@ -2296,17 +2416,19 @@ class VideoBox extends Component {
                     {isTappable ? (
                         <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
                     ) : inner}
-                    <Text style={{
-                        color: 'rgba(255, 255, 255, 0.65)',
-                        fontSize: 10,
-                        fontStyle: 'italic',
-                        marginTop: 4,
-                        textShadowColor: 'rgba(0, 0, 0, 0.6)',
-                        textShadowOffset: { width: 0, height: 1 },
-                        textShadowRadius: 2,
-                    }}>
-                        Tap to verify
-                    </Text>
+                    {_showTapToVerify ? (
+                        <Text style={{
+                            color: 'rgba(255, 255, 255, 0.65)',
+                            fontSize: 10,
+                            fontStyle: 'italic',
+                            marginTop: 4,
+                            textShadowColor: 'rgba(0, 0, 0, 0.6)',
+                            textShadowOffset: { width: 0, height: 1 },
+                            textShadowRadius: 2,
+                        }}>
+                            Tap to verify
+                        </Text>
+                    ) : null}
                 </View>
             );
         };
@@ -2353,14 +2475,87 @@ class VideoBox extends Component {
             if (!this.state.videoEnableDialogVisible) return null;
             const _topInset = (this.state.insets && this.state.insets.top) ? this.state.insets.top : 24;
             const _bottomInset = (this.state.insets && this.state.insets.bottom) ? this.state.insets.bottom : 0;
-            const _headerBarHeight = 60;
+            // Same brand-strip adjustment as the headerBarHeight
+            // above — portrait adds the 34dp Blink strip on top of
+            // the 60dp Appbar.
+            const _headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
             try {
                 console.log('[video-preview] modal render (RNCamera)',
                     'cameraFacing=' + this.state.cameraFacing,
-                    'detached=' + !!this._previewTrackWasReEnabled);
+                    'detached=' + !!this._previewTrackWasReEnabled,
+                    'isFolded=' + !!this.props.isFolded);
             } catch (e) {
                 console.log('[video-preview] modal render trace threw:', (e && e.message) || String(e));
             }
+
+            // Folded (Razr cover display) variant. The cover display is
+            // tiny and the preview tile + descriptive panel don't fit
+            // comfortably, so when an incoming video call brings up the
+            // camera-enable prompt we collapse the modal down to just
+            // the two action buttons — Start Camera and Audio only —
+            // stacked in the centre of the cover screen. Both buttons
+            // call the same handlers as their full-size counterparts in
+            // the unfolded modal (_onEnableCamera / _onKeepAudioOnly).
+            // We deliberately omit the RNCamera preview tile (the
+            // "Video Preview") and the explanatory text — there's no
+            // room for them on the cover display.
+            if (this.props.isFolded) {
+                return (
+                    <View
+                        pointerEvents="box-none"
+                        style={[StyleSheet.absoluteFillObject, { zIndex: 5000, elevation: 50 }]}
+                    >
+                        {/* Opaque backdrop — starts BELOW the navbar so the
+                            caller name + kebab menu stay visible, same as
+                            the unfolded variant below. */}
+                        <View
+                            style={{
+                                position: 'absolute',
+                                top: _topInset + _headerBarHeight,
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                backgroundColor: '#000',
+                            }}
+                            pointerEvents="auto"
+                        />
+                        {/* Centred action buttons — Start Camera on top,
+                            Audio only below. Stacked vertically because
+                            the cover display is too narrow to fit them
+                            side by side at a comfortable tap target. */}
+                        <View
+                            style={{
+                                position: 'absolute',
+                                top: _topInset + _headerBarHeight,
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                zIndex: 1,
+                            }}
+                            pointerEvents="box-none"
+                        >
+                            <Button
+                                mode="contained"
+                                icon="video"
+                                onPress={this._onEnableCamera}
+                            >
+                                Start Camera
+                            </Button>
+                            <Button
+                                mode="outlined"
+                                onPress={this._onKeepAudioOnly}
+                                style={{ marginTop: 12 }}
+                                color="white"
+                            >
+                                Audio only
+                            </Button>
+                        </View>
+                    </View>
+                );
+            }
+
             return (
                 <View
                     pointerEvents="box-none"
@@ -2476,10 +2671,22 @@ class VideoBox extends Component {
                         visible={this.state.zrtpDialogVisible}
                         onDismiss={() => this.setState({ zrtpDialogVisible: false })}
                     >
+                        <IconButton
+                            icon="close"
+                            size={22}
+                            onPress={() => this.setState({ zrtpDialogVisible: false })}
+                            accessibilityLabel="Close"
+                            style={{ position: 'absolute', top: 4, right: 4, zIndex: 10, margin: 0 }}
+                        />
                         <Dialog.Title>Verify zRTP encryption</Dialog.Title>
                         <Dialog.Content>
+                            {zrtpSession && (
+                                <PaperText style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                                    Sylk-ZRTP v{zrtpSession.negotiatedVersion || '?'} · {zrtpSession.continuityState || 'first-time'}
+                                </PaperText>
+                            )}
                             <PaperText style={{ marginBottom: 12 }}>
-                                {`Compare these with ${this.state.remoteDisplayName || this.state.remoteUri || 'the other party'}. Both phones must show the same letters AND emojis.`}
+                                {`Compare these with ${this.state.remoteDisplayName || this.state.remoteUri || 'the other party'}. Both parties must show the same letters AND emojis.`}
                             </PaperText>
                             {zrtpSas ? (
                                 <View style={{ alignItems: 'center', marginVertical: 12 }}>
@@ -2491,49 +2698,94 @@ class VideoBox extends Component {
                             )}
                             {verificationStatus === 'verified' && zrtpStored && (
                                 <PaperText style={{ color: 'green', marginTop: 8 }}>
-                                    ✓ Previously verified on {new Date(zrtpStored.verifiedAt).toLocaleString()}
+                                    ✓ Verified on {formatVerifiedTimestamp(zrtpStored.verifiedAt)}
                                 </PaperText>
                             )}
                             {verificationStatus === 'mismatch' && zrtpStored && (
                                 <PaperText style={{ color: 'red', marginTop: 8 }}>
-                                    ⚠ The other party's identity key has changed since the last verification on {new Date(zrtpStored.verifiedAt).toLocaleString()}. Re-verify carefully before tapping Confirm.
+                                    ⚠ The other party's identity key has changed since the last verification on {formatVerifiedTimestamp(zrtpStored.verifiedAt)}. Re-verify carefully before tapping Confirm.
                                 </PaperText>
                             )}
                         </Dialog.Content>
-                        <Dialog.Actions>
-                            <Button onPress={() => this.setState({ zrtpDialogVisible: false })}>Close</Button>
+                        <Dialog.Actions style={{ justifyContent: 'space-between' }}>
+                            <Button onPress={this._onZrtpReset}>Reset</Button>
                             <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
-                    {/* zRTP mandatory-mode handshake failure prompt. */}
-                    <Dialog
-                        visible={this.state.zrtpMandatoryFailedVisible}
-                        onDismiss={this._onZrtpMandatoryContinue}
-                        dismissable={false}
+                    {/* zRTP mandatory-mode handshake failure prompt
+                        moved out of the Portal — see AudioCallBox for
+                        the same change. The in-call banner that
+                        replaces it is rendered as a sibling of the
+                        Portal below so it sits inside the call
+                        screen, not above the whole app. */}
+                </Portal>
+                {/* In-call zRTP mandatory-failed banner. Renders as a
+                    full-width red bar pinned just above the rest of
+                    the video UI when the handshake gives up in
+                    mandatory mode. Continue / End call actions stay
+                    available; "Continue" downgrades to DTLS-only
+                    (relay can read media), "End call" tears down. */}
+                {this.state.zrtpMandatoryFailedVisible && (
+                    <View
+                        style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            backgroundColor: 'rgba(200, 30, 30, 0.95)',
+                            paddingVertical: 10,
+                            paddingHorizontal: 14,
+                            zIndex: 2000,
+                            elevation: 30,
+                        }}
                     >
-                        <Dialog.Title>End-to-end encryption failed</Dialog.Title>
-                        <Dialog.Content>
-                            <PaperText>
-                                The zRTP key exchange did not complete. You set
-                                encryption to "mandatory" in Preferences, but the
-                                other party may not support it.
-                                {'\n\n'}
-                                You can end the call now, or continue without
-                                end-to-end encryption. The call will still be
-                                encrypted between your phone and the SylkServer
-                                relay (DTLS), but the relay can read the media.
-                            </PaperText>
-                        </Dialog.Content>
-                        <Dialog.Actions>
-                            <Button onPress={this._onZrtpMandatoryContinue}>
+                        <PaperText style={{
+                            color: 'white',
+                            fontSize: 14,
+                            fontWeight: 'bold',
+                            marginBottom: 6,
+                        }}>
+                            End-to-end encryption failed
+                        </PaperText>
+                        <PaperText style={{
+                            color: 'white',
+                            fontSize: 12,
+                            lineHeight: 16,
+                        }}>
+                            The zRTP key exchange did not complete. You set
+                            encryption to "mandatory" in Preferences, but the
+                            other party may not support it.{'\n\n'}
+                            You can end the call now, or continue without
+                            end-to-end encryption. The call will still be
+                            encrypted between your phone and the SylkServer
+                            relay (DTLS), but the relay can read the media.
+                        </PaperText>
+                        <View style={{
+                            flexDirection: 'row',
+                            justifyContent: 'flex-end',
+                            marginTop: 8,
+                        }}>
+                            <Button
+                                compact
+                                mode="text"
+                                onPress={this._onZrtpMandatoryContinue}
+                                labelStyle={{ color: 'white', fontSize: 12 }}
+                            >
                                 Continue
                             </Button>
-                            <Button mode="contained" onPress={this._onZrtpMandatoryEndCall}>
+                            <Button
+                                compact
+                                mode="contained"
+                                onPress={this._onZrtpMandatoryEndCall}
+                                buttonColor="white"
+                                labelStyle={{ color: 'rgb(200, 30, 30)', fontSize: 12 }}
+                                style={{ marginLeft: 8 }}
+                            >
                                 End call
                             </Button>
-                        </Dialog.Actions>
-                    </Dialog>
-                </Portal>
+                        </View>
+                    </View>
+                )}
                 {renderZrtpBadge()}
                 <CallOverlay
                     show = {show}

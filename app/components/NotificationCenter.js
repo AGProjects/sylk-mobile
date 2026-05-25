@@ -1,5 +1,7 @@
 import React, { Component } from 'react';
+import { View } from 'react-native';
 import { ProgressBar, Colors, Snackbar } from 'react-native-paper';
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import moment from 'moment';
 import autoBind from 'auto-bind';
 import styles from '../assets/styles/blink/_StatusBox.scss';
@@ -158,18 +160,75 @@ class NotificationCenter extends Component {
     }
 
     render() {
+        // Paper's Snackbar wraps content in an inner Surface that adds
+        // its own ~8 dp margin + 10 dp padding regardless of what we
+        // pass via the `style` prop, so the pill kept reading as ~40 dp
+        // tall. Replace it with a plain absolute-positioned View pinned
+        // to the screen bottom so we can match the lower category
+        // navbar's 36 dp height exactly. State / action handling stays
+        // the same (auto-dismiss via setTimeout below).
+        if (!this.state.visible) return null;
+        if (this._autoDismissTimer) clearTimeout(this._autoDismissTimer);
+        this._autoDismissTimer = setTimeout(() => {
+            this.setState({ visible: false, message: null, title: null });
+        }, (this.state.autoDismiss || 4) * 1000);
         const theme = this.props.theme;
-        // console.log('showing snackbar', this.state.title, this.state.message);
+        const _txt = (this.state.title ? this.state.title + ' ' : '')
+                   + (this.state.message || '');
         return (
-            <Snackbar
-                style={styles.snackbar}
-                visible={this.state.visible}
-                duration={this.state.autoDismiss * 1000}
-                onDismiss={() => this.setState({ visible: false, message: null, title: null })}
-                action={this.state.action}
-            >
-                <Text style={{color: theme.colors.inverseOnSurface}}>{this.state.title} {this.state.message}</Text>
-            </Snackbar>
+            <SafeAreaInsetsContext.Consumer>
+                {(insets) => {
+                    // NotificationCenter is mounted INSIDE app.js's
+                    // SafeAreaView (see render at ~line 30359), so
+                    // absolute bottom:0 already sits ABOVE the iOS
+                    // home-indicator safe area — same anchor as the
+                    // category bar. Earlier we added insets.bottom
+                    // here thinking the parent was unconstrained;
+                    // that pushed the snackbar another ~34dp too
+                    // high on iOS. Reverted to a flat 0.
+                    return (
+                        <View
+                            pointerEvents="box-none"
+                            style={{
+                                position: 'absolute',
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                height: 36,
+                                backgroundColor: '#333',
+                                paddingHorizontal: 12,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                zIndex: 9999,
+                                elevation: 20,
+                            }}
+                        >
+                            <Text
+                                numberOfLines={1}
+                                ellipsizeMode="tail"
+                                style={{ color: '#fff', fontSize: 13, flex: 1 }}
+                            >
+                                {_txt}
+                            </Text>
+                            {this.state.action ? (
+                                <Text
+                                    onPress={() => {
+                                        try {
+                                            if (this.state.action && typeof this.state.action.onPress === 'function') {
+                                                this.state.action.onPress();
+                                            }
+                                        } catch (e) {}
+                                        this.setState({ visible: false, message: null, title: null });
+                                    }}
+                                    style={{ color: '#42A5F5', fontSize: 13, fontWeight: 'bold', marginLeft: 12 }}
+                                >
+                                    {this.state.action.label}
+                                </Text>
+                            ) : null}
+                        </View>
+                    );
+                }}
+            </SafeAreaInsetsContext.Consumer>
         );
     }
 }

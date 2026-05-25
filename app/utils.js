@@ -1122,11 +1122,10 @@ function findContact(uri) {
 }
 
 function generateSillyName() {
-    const adjective = SillyNames.randomAdjective();
-    const number = Math.floor(Math.random() * 10);
-    const noun1 =  SillyNames.randomNoun();
-    const noun2 = SillyNames.randomNoun();
-    return adjective + noun1 + noun2 + number;
+    // 6-digit numeric room ID (range 100000..999999) — replaces the
+    // previous adjective+noun+noun+digit generator. Easier to read,
+    // dictate over the phone, and keeps the room URI compact.
+    return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 function generateMaterialColor(text) {
@@ -1692,6 +1691,7 @@ exports.copyToClipboard = copyToClipboard;
 exports.normalizeUri = normalizeUri;
 exports.generateSillyName = generateSillyName;
 exports.timestampedLog = timestampedLog;
+exports.log2file = log2file;
 exports.appendLeadingZeroes = appendLeadingZeroes;
 exports.generateUniqueId = generateUniqueId;
 exports.generateMaterialColor = generateMaterialColor;

@@ -99,7 +99,17 @@ export default function ThumbnailGrid({
   // ids to shareImages, which is expected to resolve them to file
   // paths and invoke react-native-share / a native share sheet.
   enableShare = false,
-  shareImages
+  shareImages,
+  // When true, tapping a tile ALWAYS opens the viewer (or fires
+  // onItemPress) — the "if anything is already selected, tap
+  // toggles selection" shortcut is suppressed. The checkbox in
+  // the corner becomes the only way to add/remove items from the
+  // selection. Used by the inline chat photo-group bubble where
+  // viewing the photo is the primary intent and multi-select is
+  // a secondary, deliberate action. The media gallery view leaves
+  // this off so the photo-picker UX (tap-to-toggle once selection
+  // mode is active) is preserved.
+  tapAlwaysOpens = false,
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
@@ -263,10 +273,30 @@ const toggleSelect = useCallback((item) => {
   onSelectionChange && onSelectionChange(newSelected, item);
 }, [selected, isControlled, onSelectionChange]);
 
+// Inject per-item selection + rotation into the data passed to
+// FlatList. FlatList compares items by reference when deciding
+// whether to re-render a cached cell — closure-only state like the
+// outer `selected` array (passed via extraData) was being ignored
+// in practice on this version of RN, so tiles "remembered" their
+// first render and never repainted when selection changed. By
+// rebuilding the data array whenever `selected` or `rotations`
+// changes, the item reference itself changes for the affected
+// rows, which forces a cell-level re-render via the normal item
+// diff path. The result: tap-to-toggle reflects immediately, and
+// rotations also propagate without relying on extraData.
+const displayData = useMemo(
+  () => visibleImages.map(img => ({
+    ...img,
+    _selected: selected.includes(img.id),
+    _rotation: rotations[img.id] || 0,
+  })),
+  [visibleImages, selected, rotations],
+);
+
 const renderItem = useCallback(
   ({item, index}) => {
-    const isSelected = selected.includes(item.id);
-    const itemRotation = rotations[item.id] || 0;
+    const isSelected = !!item._selected;
+    const itemRotation = item._rotation || 0;
     const sizeLabel = formatSize(item.size);
 
     return (
@@ -375,7 +405,14 @@ const renderItem = useCallback(
             // should just add/remove from the selection until
             // you Cancel or Delete. Drops the small "tap the
             // checkbox precisely" UX hurdle.
-            if (selectMode && selected.length > 0) {
+            //
+            // tapAlwaysOpens opts out of this shortcut: the
+            // inline chat photo-group bubble wants tap → viewer
+            // every time, with the corner checkbox being the
+            // only way to add/remove items from selection. The
+            // media-gallery grid leaves the prop off and keeps
+            // the photo-picker shortcut.
+            if (!tapAlwaysOpens && selectMode && selected.length > 0) {
               toggleSelect(item);
               return;
             }
@@ -422,7 +459,7 @@ const renderItem = useCallback(
       </View>
     );
   },
-  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress],
+  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens],
 );
 
   if (!images || images.length === 0) {
@@ -462,7 +499,13 @@ return (
         was dropped instead of forwarded to the FlatList. Removing
         the wrapper restores predictable scroll behaviour. */}
     <FlatList
-      data={visibleImages}
+      // `displayData` is `visibleImages` rebuilt whenever the
+      // selection (or rotations) changes, with `_selected` /
+      // `_rotation` baked onto each item. Item references therefore
+      // change exactly when the cell's visible state changes, which
+      // is the signal FlatList uses for re-renders. No extraData
+      // needed.
+      data={displayData}
       key={`grid-${numColumns}`}
       keyExtractor={(item) => String(item.id ?? item.uri)}
       renderItem={renderItem}
@@ -751,12 +794,21 @@ checkmark: {
   fontWeight: 'bold',
 },
 
+// Tile-wide tap surface. Previously a 50% × 50% center square,
+// which left the corners/edges of each thumbnail uncovered — those
+// taps then bubbled up through GiftedChat's Bubble to the chat's
+// onPress={onMessagePress} handler and triggered the quick-reaction
+// emoji bar instead of selecting/viewing the image. Cover the
+// whole tile so the grid claims the touch responder for every
+// in-tile press. The checkbox keeps its higher zIndex (see
+// `checkbox` style), so its tap zone in the corner still wins for
+// hit testing.
 centerTouch: {
   position: 'absolute',
-  top: '25%',
-  left: '25%',
-  width: '50%',
-  height: '50%',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
   zIndex: 1,
 },
 sizeBadge: {

@@ -1,0 +1,3 @@
+Fix Adressbook contacts management
+Allow edit contact URIs for existing contact
+Improve Contact URI editing and deletion

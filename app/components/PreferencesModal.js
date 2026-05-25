@@ -203,15 +203,15 @@ const ENCRYPTION_OPTIONS = [
         label: 'Enabled',
         title: 'zRTP — enabled',
         subtitle: 'End-to-end encryption; '
-                + 'falls back to DTLS if negotiation fails',
+                + 'falls back to DTLS if negotiation fails.',
     },
     {
-        value: 'sdes',
-        label: 'Disabled',
-        title: 'zRTP — disabled',
-        subtitle: 'No end-to-end encryption is negotiated. '
-                + 'Calls are still encrypted between the device '
-                + 'and the relay via DTLS-SRTP.',
+        value: 'zrtp_mandatory',
+        label: 'Strict',
+        title: 'zRTP — strict',
+        subtitle: 'End-to-end encryption required. '
+                + 'Call shows a prompt to end or continue '
+                + 'if zRTP cannot be negotiated.',
     },
 ];
 
@@ -335,6 +335,16 @@ const PreferencesModal = ({
     // in Preferences. 0 = "Off" (no privacy radius).
     locationPrivacyRadiusMeters,
     setLocationPrivacyRadiusMeters,
+    // Visual theme. Persisted in accountSetting.device.themeMode
+    // alongside every other Preferences knob. One of 'system' / 'day'
+    // / 'night' — 'system' tracks the OS Appearance (default; matches
+    // historical behaviour), 'day' forces the light WhatsApp-styled
+    // look, 'night' forces the dark Blink look. The setter is expected
+    // to BOTH persist the choice (via setAccountSetting) and call
+    // DarkModeManager.setMode(mode) so the in-memory singleton stays
+    // in sync with the persisted value.
+    themeMode,
+    setThemeMode,
 }) => {
     const currentCodec = preferredVideoCodec || VIDEO_CODECS_DEFAULT;
     const currentVideoProfile = VIDEO_PROFILE_OPTIONS.some(o => o.id === videoProfile)
@@ -348,8 +358,8 @@ const PreferencesModal = ({
     // correctly without forcing a migration write. Any other unknown
     // value defaults to Enabled too — same shape as app.js's runtime
     // default.
-    const currentMode = encryptionMode === 'sdes'
-        ? 'sdes'
+    const currentMode = encryptionMode === 'zrtp_mandatory'
+        ? 'zrtp_mandatory'
         : 'zrtp_optional';
     const currentDtmf = dtmfMode || DTMF_DEFAULT;
     const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalSec)
@@ -381,6 +391,24 @@ const PreferencesModal = ({
         marginHorizontal: 8,
         lineHeight: 16,
     };
+
+    // ─── Theme picker options ───────────────────────────────────────
+    // Backed by the standard per-account-setting plumbing: themeMode
+    // comes from state.accountSetting.device.themeMode (via app.js →
+    // NavigationBar → here), and setThemeMode dispatches through
+    // setAccountSetting('device.themeMode', mode) on the app side
+    // (which also calls DarkModeManager.setMode(mode) so the in-memory
+    // singleton stays in sync). 'System' tracks the OS appearance —
+    // the historical behaviour.
+    const currentThemeMode = themeMode || 'system';
+    const THEME_OPTIONS = [
+        // System pill renders WITHOUT an icon per user request — the
+        // mixed dark/light glyph next to "System" read as visual
+        // noise; just the word is cleaner.
+        { value: 'system', label: 'System', icon: undefined },
+        { value: 'day',    label: 'Day',    icon: 'white-balance-sunny' },
+        { value: 'night',  label: 'Night',  icon: 'weather-night' },
+    ];
 
     // Call-recording disclosure modal state.
     //   'hidden'  — modal is closed
@@ -579,7 +607,7 @@ const PreferencesModal = ({
                     accessibilityLabel="Close preferences"
                 />
                 <Surface style={containerStyles.modalSurface}>
-                            <Text style={containerStyles.title}>Sylk preferences</Text>
+                            <Text style={containerStyles.title}>Blink preferences</Text>
 
                             <ScrollView
                                 style={{ maxHeight: scrollMaxHeight, paddingHorizontal: 16 }}
@@ -616,6 +644,59 @@ const PreferencesModal = ({
                                 scrollEventThrottle={16}
                                 decelerationRate="normal"
                             >
+                                {/* ───── Theme ───────────────────────────────────
+                                    Three pills: System / Day / Night.
+                                    'System' tracks the OS appearance
+                                    (today's behaviour); 'Day' / 'Night'
+                                    are explicit overrides. Backed by
+                                    DarkModeManager (singleton,
+                                    persisted to AsyncStorage); the
+                                    rest of the app picks up the change
+                                    via the existing dark-mode listener
+                                    plumbing, so flipping the pill
+                                    re-themes navbar / chat / contacts
+                                    immediately without restart. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Theme
+                                    </Text>
+                                    {/* Caption removed per user request — the
+                                        three pill labels (System / Day /
+                                        Night) speak for themselves. */}
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 }}>
+                                        {THEME_OPTIONS.map(opt => {
+                                            const selected = currentThemeMode === opt.value;
+                                            return (
+                                                <Button
+                                                    key={opt.value}
+                                                    mode={selected ? 'contained' : 'outlined'}
+                                                    compact
+                                                    icon={opt.icon}
+                                                    style={{ marginRight: 6, marginBottom: 6 }}
+                                                    contentStyle={pillContentStyle}
+                                                    labelStyle={pillLabelStyle}
+                                                    onPress={() => {
+                                                        if (typeof setThemeMode === 'function') {
+                                                            setThemeMode(opt.value);
+                                                        }
+                                                    }}
+                                                >
+                                                    {opt.label}
+                                                </Button>
+                                            );
+                                        })}
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
                                 {/* ───── Video Calls ─────────────────────────────
                                     Two rows:
                                       1. Preferred video codec — VP9 /
@@ -956,7 +1037,7 @@ const PreferencesModal = ({
                                     backed by the same encryptionMode
                                     string CallZrtp consumes (Enabled
                                     → 'zrtp_optional', Disabled →
-                                    'sdes'). When Disabled, no X-Sylk-
+                                    'sdes'). When Disabled, no X-Blink-
                                     ZRTP capability header is sent on
                                     the INVITE and the handshake never
                                     starts (the call still goes through
@@ -1199,7 +1280,7 @@ PreferencesModal.propTypes = {
     // Accepts every mode CallZrtp recognises: 'sdes' (Disabled in the
     // UI), 'zrtp_optional' (Enabled — the default), and the legacy
     // 'zrtp_mandatory' for old saves that haven't been touched yet.
-    encryptionMode: PropTypes.oneOf(['sdes', 'zrtp_optional', 'zrtp_mandatory']),
+    encryptionMode: PropTypes.oneOf(['sdes', 'zrtp_optional', 'zrtp_mandatory']),  // 'sdes' accepted for legacy saved values only
     setEncryptionMode: PropTypes.func.isRequired,
     dtmfMode: PropTypes.oneOf(['rfc4733', 'info']),
     setDtmfMode: PropTypes.func,
@@ -1212,6 +1293,13 @@ PreferencesModal.propTypes = {
     setLocationTickIntervalSec: PropTypes.func,
     locationProximityMeters: PropTypes.number,
     setLocationProximityMeters: PropTypes.func,
+    // Visual theme. Optional so older callers / tests that haven't
+    // wired the setter yet still render the modal cleanly — the
+    // Theme section's onPress already guards against a missing setter
+    // and falls back to 'system' for the highlighted pill when the
+    // value is undefined.
+    themeMode: PropTypes.oneOf(['system', 'day', 'night']),
+    setThemeMode: PropTypes.func,
 };
 
 export default PreferencesModal;

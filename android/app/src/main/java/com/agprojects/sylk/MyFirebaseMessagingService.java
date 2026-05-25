@@ -338,7 +338,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						SylkLogger.w("[call] [fcm] settings JSON parse failed — failing open", jsonEx);
 					}
 				}
-				SylkLogger.d("[call] [fcm] account flags (from settings JSON): active=" + isActive
+				SylkLogger.d("[fcm] account flags (from settings JSON): active=" + isActive
 					+ " dnd=" + isDnd
 					+ " rejectAnonymous=" + rejectAnonymous
 					+ " rejectNonContacts=" + rejectNonContacts);
@@ -402,8 +402,77 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			SylkLogger.e("[call] [fcm] Account is not active");
 			return false;
 		}
-	
+
 		return true;
+	}
+
+	/**
+	 * Read the configured SIP-focus bridge host for a given account
+	 * from the accounts.settings JSON blob in sylk.db. JS persists it
+	 * under conference.sipBridge whenever initConfiguration ingests
+	 * fresh server config (see applySipBridgeDomain in app.js).
+	 *
+	 * Used by onMessageReceived to drop the duplicate
+	 * "incoming_session" push that the conference focus SIP-dials in
+	 * parallel with the real "incoming_conference_request" — same
+	 * dedupe as iOS. Mirrors the privacy.dnd / rejectAnonymous /
+	 * rejectNonContacts read pattern already used in isAccountActive
+	 * above — same DB path, same SELECT, same JSONObject parse — just
+	 * pulling a different key out of the dictionary.
+	 *
+	 * Returns null when the row is missing, the JSON is malformed,
+	 * the DB is locked, or conference.sipBridge isn't set. Callers
+	 * treat null as "dedupe disabled" (safe default — push still
+	 * rings).
+	 */
+	private String readSipBridgeDomainForAccount(String account) {
+		if (account == null || account.isEmpty()) return null;
+
+		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+		if (!dbFile.exists()) {
+			SylkLogger.w("[call] [fcm] readSipBridgeDomain: database file not found");
+			return null;
+		}
+
+		String sipBridge = null;
+		SQLiteDatabase db = null;
+		Cursor cursor = null;
+		try {
+			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+			cursor = db.rawQuery(
+					"SELECT settings FROM accounts WHERE account = ?",
+					new String[]{account}
+			);
+			if (cursor != null && cursor.moveToFirst()) {
+				String settingsJson = cursor.getString(cursor.getColumnIndexOrThrow("settings"));
+				if (settingsJson != null && !settingsJson.isEmpty()) {
+					try {
+						JSONObject root = new JSONObject(settingsJson);
+						JSONObject conference = root.optJSONObject("conference");
+						if (conference != null) {
+							String raw = conference.optString("sipBridge", null);
+							if (raw != null) {
+								String trimmed = raw.trim().toLowerCase();
+								if (!trimmed.isEmpty()) sipBridge = trimmed;
+							}
+						}
+					} catch (JSONException jsonEx) {
+						SylkLogger.w("[call] [fcm] readSipBridgeDomain: settings JSON parse failed", jsonEx);
+					}
+				}
+			}
+		} catch (SQLiteDatabaseLockedException locked) {
+			SylkLogger.w("[call] [fcm] readSipBridgeDomain: DB locked — dedupe disabled for this push");
+		} catch (SQLiteException sqlEx) {
+			SylkLogger.w("[call] [fcm] readSipBridgeDomain: SQLite error", sqlEx);
+		} catch (Exception e) {
+			SylkLogger.e("[call] [fcm] readSipBridgeDomain: failed", e);
+		} finally {
+			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
+		}
+
+		return sipBridge;
 	}
 
 	private boolean isBlocked(List<String> contactTags) {
@@ -528,7 +597,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
 		if (prefs.contains("appActive")) {
 			boolean jsActive = prefs.getBoolean("appActive", false);
-			SylkLogger.d("[call] [fcm] isAppInForeground: JS-reported appActive=" + jsActive);
+			SylkLogger.d("[fcm] isAppInForeground: JS-reported appActive=" + jsActive);
 			return jsActive;
 		}
 
@@ -567,7 +636,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	private void incrementUnreadForContact(String uri) {
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
 		int current = prefs.getInt("unread_chat_" + uri, 0) + 1;
-		SylkLogger.d("[call] [fcm] incrementUnreadForContact " + uri + " " + current);
+		SylkLogger.d("[fcm] incrementUnreadForContact " + uri + " " + current);
 		prefs.edit().putInt("unread_chat_" + uri, current).apply();
 	}
 	
@@ -595,7 +664,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		if (prev == count) {
 			return;
 		}
-		SylkLogger.d("[call] [fcm] setUnreadForContact " + uri + " " + count + " (was " + prev + ")");
+		SylkLogger.d("[fcm] setUnreadForContact " + uri + " " + count + " (was " + prev + ")");
 		prefs.edit().putInt("unread_chat_" + uri, count).apply();
 
 		// Eagerly reconcile both notification channels here — JS calls
@@ -680,7 +749,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		prefs.edit().putInt("last_badge_total", total).apply();
 		if (total <= 0) {
 			NotificationManagerCompat.from(context).cancel(GLOBAL_BADGE_NOTIFICATION_ID);
-			SylkLogger.d("[call] [fcm] refreshGlobalBadge: total=0, cancelled global badge");
+			SylkLogger.d("[fcm] refreshGlobalBadge: total=0, cancelled global badge");
 			return;
 		}
 		ensureBadgeChannel(context);
@@ -725,12 +794,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		}
 
 		NotificationManagerCompat.from(context).notify(GLOBAL_BADGE_NOTIFICATION_ID, builder.build());
-		SylkLogger.d("[call] [fcm] refreshGlobalBadge: posted setNumber=" + total);
+		SylkLogger.d("[fcm] refreshGlobalBadge: posted setNumber=" + total);
 	}
 
 	public static int getUnreadForContact(Context context, String uri) {
 		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
-		SylkLogger.d("[call] [fcm] getUnreadForContact " + uri);
+		SylkLogger.d("[fcm] getUnreadForContact " + uri);
 		return prefs.getInt("unread_chat_" + uri, 0);
 	}
 
@@ -746,7 +815,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		if (prev == 0 && !hasThrottle) {
 			return;
 		}
-		SylkLogger.d("[call] [fcm] resetUnreadForContact " + uri + " (was " + prev + ")");
+		SylkLogger.d("[fcm] resetUnreadForContact " + uri + " (was " + prev + ")");
 
 		// Reset unread counter and clear the notification throttle so the next
 		// incoming message from this sender produces a notification immediately.
@@ -871,7 +940,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			fromUri = fromUri.trim().toLowerCase();
-	
+
 	        if (event.equals("incoming_session")) {
 				String activeCall = prefs.getString("currentCall", null);
 				if (activeCall != null && activeCall.equals(fromUri)) {
@@ -891,6 +960,50 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			if (event.equals("incoming_session")) {
 				lookupAccount = toUri;
+
+				// Drop the SIP-focus dial-in twin of a conferenceInvite.
+				// When a sylk user invites someone to a conference, the
+				// server sends BOTH:
+				//   1) an "incoming_conference_request" push (the real
+				//      sylk conference invite, from_uri = inviter),
+				//   2) an "incoming_session" push generated by the
+				//      conference focus SIP-dialing the invitee
+				//      (from_uri = <room>@<sipBridge>).
+				// They arrive ~1 s apart and confuse the user (two
+				// rings, the wrong one tapped sticks the call at
+				// "Connecting..."). The sipBridge host is part of the
+				// per-account server configuration that JS persists
+				// into the accounts.settings JSON blob under
+				// conference.sipBridge — same blob this service
+				// already reads for privacy.dnd etc. (see
+				// isAccountActive above). If from_uri's host matches,
+				// suppress this push entirely. Empty / missing means
+				// dedupe is disabled (safe default — call rings).
+				//
+				// Unconditional on Android (vs. foreground-only on
+				// iOS): Android doesn't surface a "Tap to join" bubble
+				// for the second push the way iOS CallKit does — the
+				// foreground-background distinction isn't needed here.
+				String sipBridgeDomain = readSipBridgeDomainForAccount(lookupAccount);
+				if (sipBridgeDomain != null && !sipBridgeDomain.isEmpty()) {
+					int atIdx = fromUri.indexOf('@');
+					if (atIdx >= 0 && atIdx + 1 < fromUri.length()) {
+						String host = fromUri.substring(atIdx + 1);
+						// Drop any URI parameters (";transport=…" etc.)
+						int semi = host.indexOf(';');
+						if (semi >= 0) host = host.substring(0, semi);
+						if (host.equalsIgnoreCase(sipBridgeDomain)) {
+							SylkLogger.d("[call] [fcm] Dropping incoming_session push: "
+									+ "from_uri host '" + host
+									+ "' matches configured sipBridge '" + sipBridgeDomain
+									+ "' (duplicate of conferenceInvite, callId=" + callId + ")");
+							if (callId != null) {
+								IncomingCallService.handledCalls.add(callId);
+							}
+							return;
+						}
+					}
+				}
 			}
 		}
 
@@ -1018,44 +1131,73 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         } else if (event.equals("message")) {
 			String messageId = data.get("message_id");
 			if (messageId == null || messageId.trim().isEmpty()) {
-				SylkLogger.w("[call] [fcm] Message error: missing messageId");
+				SylkLogger.w("[message] [fcm] Message error: missing messageId");
 				return;
 			}
 
+			// Dump the full FCM data payload as soon as we know this is a
+			// message push. Mirrors the visibility we already have for
+			// incoming calls and is the only way to confirm whether the
+			// server is actually shipping from_display_name on the
+			// account-message channel — the per-field reads below only
+			// pull a handful of keys, so a missing field is invisible
+			// without this generic dump.
+			StringBuilder _payload = new StringBuilder();
+			_payload.append("[message] [fcm] payload {");
+			boolean _first = true;
+			for (Map.Entry<String, String> _e : data.entrySet()) {
+				if (!_first) _payload.append(", ");
+				_first = false;
+				_payload.append(_e.getKey()).append("=").append(_e.getValue());
+			}
+			_payload.append("}");
+			SylkLogger.d(_payload.toString());
+
 			List<String> tags = new ArrayList<>();
             Contact contact = getContact(toUri, fromUri);
-			String displayName = fromUri;
+			// Prefer the SIP "From" display name carried by the push over
+			// our locally-stored contact name, so a stranger's first
+			// message can surface as "Alice Foo" rather than the bare URI.
+			// If the field is missing we fall back to fromUri (the legacy
+			// behaviour), and the local DB lookup below still wins over
+			// either when a real contact exists.
+			String pushDisplayName = data.get("from_display_name");
+			String displayName = (pushDisplayName != null && !pushDisplayName.trim().isEmpty())
+					? pushDisplayName.trim()
+					: fromUri;
 
-			SylkLogger.w("[call] [fcm]" + event + " " + messageId + " from " + fromUri + " to " + toUri);
+			SylkLogger.w("[message] [fcm]" + event + " " + messageId
+					+ " from " + fromUri + " to " + toUri
+					+ " pushDisplayName=" + (pushDisplayName != null ? pushDisplayName : "(none)"));
 
 			if (fromUri.equals(toUri)) {
-				SylkLogger.d("[call] [fcm] Skipping notification for my own account");
+				SylkLogger.d("[message] [fcm] Skipping notification for my own account");
 				return;
 			}
 
 			if (contact != null) {
 				displayName = contact.getDisplayName();
                 tags = contact.getTags();
-			
-				SylkLogger.d("[call] [fcm] Display name: " + displayName);
-				SylkLogger.d("[call] [fcm] Tags: " + tags);
-						
+
+				SylkLogger.d("[message] [fcm] Display name: " + displayName);
+				SylkLogger.d("[message] [fcm] Tags: " + tags);
+
 			} else {
-				SylkLogger.d("[call] [fcm] Unknown contact");
+				SylkLogger.d("[message] [fcm] Unknown contact");
 			}
 
 			if (isBlocked(tags)) {
-				SylkLogger.w("[call] [fcm] Message from " + fromUri + " is blocked");
+				SylkLogger.w("[message] [fcm] Message from " + fromUri + " is blocked");
 				return;
 			}
 
 			if (isMuted(tags)) {
-				SylkLogger.d("[call] [fcm] Skipping notification: user " + fromUri + " is muted");
+				SylkLogger.d("[message] [fcm] Skipping notification: user " + fromUri + " is muted");
 				return;
 			}
 
 			if (!isAccountActive(toUri, fromUri, tags)) {
-				SylkLogger.w("[call] [fcm] Message from " + fromUri + " is not allowed");
+				SylkLogger.w("[message] [fcm] Message from " + fromUri + " is not allowed");
 				return;
 			}
 
@@ -1063,34 +1205,34 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			boolean dnd = isDndEnabled(this);
 
 			if (dnd && !canBypassDnd(tags)) {
-				SylkLogger.d("[call] [fcm] DND active, dropping message from " + fromUri);
+				SylkLogger.d("[message] [fcm] DND active, dropping message from " + fromUri);
 				return; // notification dropped
 			}
-			    
+
 			if (dnd && canBypassDnd(tags)) {
-				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri);
+				SylkLogger.d("[message] [fcm] DND bypass for " + fromUri);
 			}
 
 			// inside onMessageReceived or wherever you handle the message
 			String activeChat = prefs.getString("currentChat", null);
-			
+
 			if (activeChat != null && activeChat.equals(fromUri)) {
 				// User is already in this chat, skip showing notification/bubble
-				SylkLogger.d("[call] [fcm] Skipping notification: user is in chat " + activeChat);
+				SylkLogger.d("[message] [fcm] Skipping notification: user is in chat " + activeChat);
 				return;
 			}
-			
+
 			if (activeChat != null) {
-			    SylkLogger.d("[call] [fcm] Active chat " + activeChat);
+			    SylkLogger.d("[message] [fcm] Active chat " + activeChat);
 			} else {
-			    SylkLogger.d("[call] [fcm] No active chat");
+			    SylkLogger.d("[message] [fcm] No active chat");
 			}
 
 			// Skip increment if app is in foreground — JS side will count this
 			// message via setUnreadForContact and we would otherwise double-count.
 			boolean appInForeground = isAppInForeground();
 			if (appInForeground) {
-				SylkLogger.d("[call] [fcm] App in foreground, JS handles unread counter for " + fromUri);
+				SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri);
 			} else {
 				// increase unread badge counter
 				incrementUnreadForContact(fromUri);
@@ -1106,7 +1248,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// because florig's notification got setNumber(4) (=total) on top
 			// of living233's existing setNumber(2).
 			int unreadCount = getUnreadForContact(fromUri);
-			SylkLogger.d("[call] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount
+			SylkLogger.d("[message] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount
 					+ " (total inbox=" + getTotalUnreadCount() + ")");
 
 			// Throttle the alert for visible notifications: if we showed a
@@ -1117,7 +1259,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			boolean throttled = shouldThrottleNotification(fromUri);
 			if (throttled) {
 				long elapsed = System.currentTimeMillis() - getLastNotificationTime(fromUri);
-				SylkLogger.d("[call] [fcm] Throttling notification alert for " + fromUri
+				SylkLogger.d("[message] [fcm] Throttling notification alert for " + fromUri
 						+ " (last alerted " + elapsed + "ms ago, window "
 						+ THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
 			}
@@ -1136,6 +1278,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			intent.putExtra("id", messageId);
 			intent.putExtra("content", content);
 			intent.putExtra("contentType", contentType);
+			// Forward the SIP "From" display name so the JS-side
+			// notificationTapped handler (DeviceEventEmitter) can pass it
+			// into incomingMessageFromPush. Used by the auto-create-contact
+			// path to land a friendly name on a first-time sender instead
+			// of an empty / URI-derived one.
+			if (pushDisplayName != null && !pushDisplayName.trim().isEmpty()) {
+				intent.putExtra("fromDisplayName", pushDisplayName.trim());
+			}
 			
 			intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 			
@@ -1257,11 +1407,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			if (throttled) {
-				SylkLogger.d("[call] [fcm] Silent notification update for " + fromUri
+				SylkLogger.d("[message] [fcm] Silent notification update for " + fromUri
 						+ " (count=" + unreadCount + ")");
 			} else {
 				setLastNotificationTime(fromUri, System.currentTimeMillis());
-				SylkLogger.d("[call] [fcm] Notification alerted for " + fromUri
+				SylkLogger.d("[message] [fcm] Notification alerted for " + fromUri
 						+ " (count=" + unreadCount + "), next throttle window "
 						+ THROTTLE_NOTIFICATION_MS + "ms");
 			}

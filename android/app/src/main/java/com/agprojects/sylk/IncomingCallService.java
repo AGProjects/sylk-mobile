@@ -496,6 +496,11 @@ public class IncomingCallService extends Service {
         String to_uri = intent.getStringExtra("to_uri");
         String mediaType = intent.getStringExtra("media-type");
         String from_uri = intent.getStringExtra("from_uri");
+        // remoteDisplayName: raw SIP-level display name from the push payload
+        // (FCM "from_display_name"). Preserved as-is so the JS side can use
+        // it to backfill a missing/URI-equal contact name. NEVER conflated
+        // with `displayName` below — that one is the locally-resolved
+        // caller label used by on-device UI (notification, Telecom).
         String remoteDisplayName = intent.getStringExtra("from_display_name");
         String displayName = intent.getStringExtra("displayName");
 
@@ -507,12 +512,30 @@ public class IncomingCallService extends Service {
         // only want to skip audio and vibration.
         boolean suppressRingtone = intent.getBooleanExtra("suppress_ringtone", false);
 
-		// Determine the caller name
-		String callerName;
-		
-		if (displayName != null && !displayName.equalsIgnoreCase(from_uri)) {
-			displayName = displayName;
-		} else if (remoteDisplayName != null && !remoteDisplayName.equalsIgnoreCase(from_uri)) {
+		// Determine the on-device caller label shown by the notification
+		// and Telecom (NOT the JS payload). Order:
+		//   1. Locally-resolved contact display name from MyFirebaseMessagingService,
+		//      but ONLY when it carries a real name — not when it merely echoes
+		//      the URI or the URI's local part. Contacts are auto-created with
+		//      name = URI local part for first-time callers, which is no more
+		//      informative than the URI itself, so treat that case as "no name".
+		//   2. Raw SIP "from_display_name" from the push (remoteDisplayName),
+		//      same "not URI/local-part" guard.
+		//   3. SIP URI itself.
+		// The raw remoteDisplayName variable above stays untouched so the JS
+		// side still sees the unmodified push value via the IncomingCallAction
+		// event and the launch-intent extra below.
+		String fromUriLocal = (from_uri != null && from_uri.contains("@"))
+				? from_uri.substring(0, from_uri.indexOf("@"))
+				: from_uri;
+
+		if (displayName != null
+				&& !displayName.equalsIgnoreCase(from_uri)
+				&& !displayName.equalsIgnoreCase(fromUriLocal)) {
+			// keep displayName as-is (real contact-resolved label)
+		} else if (remoteDisplayName != null
+				&& !remoteDisplayName.equalsIgnoreCase(from_uri)
+				&& !remoteDisplayName.equalsIgnoreCase(fromUriLocal)) {
 			displayName = remoteDisplayName;
 		} else {
 			displayName = from_uri;
@@ -592,7 +615,7 @@ public class IncomingCallService extends Service {
 			// Android Auto switches from the ringing state to the in-call
 			// state immediately, before the RN app has finished launching.
 			SylkTelecom.setActive(callId);
-			handleAcceptCall(callId, displayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
+			handleAcceptCall(callId, displayName, remoteDisplayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
 			return START_NOT_STICKY;
 		}
 
@@ -603,7 +626,7 @@ public class IncomingCallService extends Service {
             startRingtone(from_uri, suppressRingtone);
 
 			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, notificationId, 20);
+    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, remoteDisplayName, to_uri, mediaType, phoneLocked, notificationId, 20);
 			}
 
 			showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, "");
@@ -811,33 +834,34 @@ public class IncomingCallService extends Service {
 		NotificationManagerCompat.from(this).cancel(COMPLIANCE_NOTIFICATION_ID);
 	}
 
-	private void handleAcceptCall(String callId, String displayName, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
+	private void handleAcceptCall(String callId, String displayName, String fromDisplayName, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
 		stopRingtone();
 
 		if (callId == null) return;
-	
+
 		SylkLogger.d("[call] [service] handleAcceptCall called for call: " + callId + " phoneLocked: " + phoneLocked + " event " + event );
 		SylkLogger.d("[call] [service] handleAcceptCall from_uri: " + from_uri);
 		SylkLogger.d("[call] [service] handleAcceptCall to_uri: " + to_uri);
 		SylkLogger.d("[call] [service] handleAcceptCall displayName: " + displayName);
+		SylkLogger.d("[call] [service] handleAcceptCall fromDisplayName: " + fromDisplayName);
 		SylkLogger.d("[call] [service] handleAcceptCall mediaType: " + mediaType);
-		
+
 		String action = "ACTION_ACCEPT_AUDIO";
 		if ("video".equalsIgnoreCase(mediaType)) {
 			action = "ACTION_ACCEPT_VIDEO";
 		}
-	
+
 		// Cancel any scheduled auto-answer countdown
 		Runnable scheduled = autoAnswerRunnables.remove(callId);
 		if (scheduled != null) {
 			new Handler(Looper.getMainLooper()).removeCallbacks(scheduled);
 			SylkLogger.d("[call] [service] Cancelled scheduled auto-answer for call: " + callId);
 		}
-	
+
 		handledCalls.add(callId);
-	
+
 		cancelNotification(notificationId);
-	
+
 		SylkLogger.d("[call] [service] -- Launching Sylk app");
 		Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
 		if (launchIntent != null) {
@@ -848,6 +872,13 @@ public class IncomingCallService extends Service {
 			launchIntent.putExtra("media-type", mediaType);
 			launchIntent.putExtra("event", event);
 			launchIntent.putExtra("displayName", displayName);
+			// Raw SIP-level display name from the push (FCM "from_display_name"),
+			// forwarded verbatim so the JS side can use it to backfill a
+			// missing/URI-equal contact name. Distinct from `displayName`
+			// above, which carries the locally-resolved (contact-DB) label.
+			if (fromDisplayName != null) {
+				launchIntent.putExtra("from_display_name", fromDisplayName);
+			}
 			launchIntent.putExtra("phoneLocked", phoneLocked);
 			startActivity(launchIntent);
 			SylkLogger.d("[call] [service] RN app launched for call: " + callId);
@@ -855,7 +886,7 @@ public class IncomingCallService extends Service {
 
 		// RN app alive → send event only
 		if (getApplication() instanceof ReactApplication) {
-			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, false, event, (ReactApplication) getApplication());
+			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, false, event, fromDisplayName, (ReactApplication) getApplication());
 			SylkLogger.d("[call] [service] Sent React Native event for call: " + callId);
 		}
 
@@ -894,45 +925,47 @@ public class IncomingCallService extends Service {
 			String callId,
 			String from_uri,
 			String displayName,
+			String fromDisplayName,
 			String to_uri,
 			String mediaType,
 			boolean phoneLocked,
 			int notificationId,
 			int seconds
 	) {
-	
+
 		final Handler handler = new Handler(Looper.getMainLooper());
 		final long endTime = System.currentTimeMillis() + seconds * 1000L;
-	
+
 		Runnable countdownRunnable = new Runnable() {
 			@Override
 			public void run() {
-	
+
 				// Stop if handled externally
 				if (handledCalls.contains(callId)) {
 					SylkLogger.d("[call] [service] Countdown stopped for handled call " + callId);
 					autoAnswerRunnables.remove(callId);
 					return;
 				}
-	
+
 				long remaining = (endTime - System.currentTimeMillis()) / 1000;
 				if (remaining < 0) remaining = 0;
 
 	            String countdownTitle = "Auto answering in " + remaining + "s";
-	
+
 				showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, countdownTitle);
-		
+
 				if (remaining > 0) {
 					handler.postDelayed(this, 1000);
 				} else {
 					SylkLogger.d("[call] [service] Countdown finished, auto-accepting call " + callId);
-	
+
 					handledCalls.add(callId);
 					autoAnswerRunnables.remove(callId);
-	
+
 					handleAcceptCall(
 							callId,
 							displayName,
+							fromDisplayName,
 							from_uri,
 							to_uri,
 							mediaType,

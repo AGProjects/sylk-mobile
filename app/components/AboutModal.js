@@ -113,10 +113,10 @@ const AboutModal = (props) => {
                   style={{ maxHeight: 520 }}
                   keyboardShouldPersistTaps="handled"
                 >
-                  <Text style={containerStyles.title}>About Sylk</Text>
+                  <Text style={containerStyles.title}>About Blink</Text>
                   <View style={styles.inner}>
                     <Text style={styles.body}>
-                      Sylk is part of Sylk Suite, a set of real-time communications applications using IETF SIP protocol and WebRTC specifications
+                      Blink uses Sylk Suite to deliver real-time communications using the IETF SIP protocol and WebRTC specifications
                     </Text>
 
                     {/* Dev mode toggle + visual indicator. Five taps in

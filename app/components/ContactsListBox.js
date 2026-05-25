@@ -6,7 +6,7 @@ import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
 import uuid from 'react-native-uuid';
-import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer, Day, Message} from 'react-native-gifted-chat'
+import { GiftedChat, IMessage, Bubble, MessageText, Send, InputToolbar, MessageImage, Time, Composer, Day, Message, SystemMessage} from 'react-native-gifted-chat'
 // Deep import — needed so the menu IconButton inside a custom bubble
 // renderer can hand the same `context` object back to onLongMessagePress
 // that GiftedChat's built-in long-press path supplies. Without this the
@@ -38,6 +38,7 @@ import * as Progress from 'react-native-progress';
 
 import ChatBubble from './ChatBubble';
 import LocationBubble from './LocationBubble';
+import DarkModeManager from '../DarkModeManager';
 import ThumbnailGrid from './ThumbnailGrid';
 import AudioProgressSlider from './AudioProgressSlider';
 import VuMeter from './VuMeter';
@@ -1122,6 +1123,14 @@ class ContactsListBox extends Component {
 		  imageGroups={this.state.imageGroups}
 		  groupOfImage={this.state.groupOfImage}
 		  thumbnailGridSize={this.state.thumbnailGridSize}
+		  // Plumb selectedImages into the bubble so the memo comparator
+		  // in ChatBubble can detect grouped-image selection changes.
+		  // Without this, renderMessageImage (a stable method ref) was
+		  // re-evaluated only when one of the comparator's tracked
+		  // props changed, so the ThumbnailGrid stayed mounted with a
+		  // stale selectedIds prop and the checkbox tick never updated
+		  // — even though state.selectedImages was changing correctly.
+		  selectedImages={this.state.selectedImages}
 		  fullSize={this.state.fullSize}
 		  sortOrder={this.state.orderBy}
 		  styles={styles}
@@ -1622,7 +1631,7 @@ class ContactsListBox extends Component {
 
 		let options = {
 			title: 'Share Message',
-			subject: 'Sylk shared message',
+			subject: 'Blink shared message',
 			message: message.text
 		};    
 
@@ -2509,7 +2518,7 @@ class ContactsListBox extends Component {
         messages.forEach((message) => {
             if (this.state.replyingTo) {
 				const mId = uuid.v4();
-				const metadataContent = {messageId: message._id, 
+				const metadataContent = {messageId: message._id,
 				                         metadataId: mId,
 				                         action: 'reply',
 				                         value: this.state.replyingTo._id,
@@ -2519,7 +2528,7 @@ class ContactsListBox extends Component {
 
 				const metadataMessage = {_id: mId,
 										 key: mId,
-										 createdAt: timestamp,        
+										 createdAt: timestamp,
 										 metadata: metadataContent,
 										 text: JSON.stringify(metadataContent),
 										};
@@ -2530,7 +2539,7 @@ class ContactsListBox extends Component {
 			message.encrypted = this.state.selectedContact && this.state.selectedContact.publicKey ? 2 : 0;
             this.props.sendMessage(uri, message);
         });
-        
+
         this.setState({replyingTo: null, renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
@@ -3283,7 +3292,28 @@ class ContactsListBox extends Component {
 			numColumns={numColumns}
 			showTimestamp={false}
 			selectMode={!isPreview}
+			// ThumbnailGrid enters controlled-selection mode whenever
+			// onSelectionChange is provided — `selectedIds` then becomes
+			// the single source of truth (see isControlled in
+			// ThumbnailGrid.js). Without this prop, `selected` inside
+			// the grid is permanently [], so every tap recomputes
+			// newSelected from an empty array and the parent only ever
+			// receives a single-item selection. Wire both props so the
+			// grid sees the current selection and multi-select works.
+			selectedIds={this.state.selectedImages}
 			onSelectionChange = {this.thumbnailSelectionChanged}
+			// In the grouped-images bubble the primary action on a
+			// tile is "view the photo full-screen", not "add to
+			// selection". tapAlwaysOpens=true suppresses
+			// ThumbnailGrid's photo-picker shortcut (where tapping a
+			// tile while anything is selected toggles selection),
+			// and we omit onItemPress so taps fall through to the
+			// built-in openViewer (zoom viewer). The corner checkbox
+			// remains the only path into multi-select — same
+			// thumbnailSelectionChanged handler it wired before. The
+			// media-gallery grid keeps the photo-picker behaviour
+			// because it doesn't pass tapAlwaysOpens.
+			tapAlwaysOpens={true}
 			onLongPress={(item) => console.log('long', item)}
 			renderThumb={({item, index, size}) => (
 			  <View style={{flex:1}}>
@@ -6615,12 +6645,73 @@ class ContactsListBox extends Component {
 
 	renderDay = (props) => {
 	  const { currentMessage } = props;
-	
+
 	  // Don't render the day if the message is hidden
 	  if (this.state.orderBy === 'size') return null;
-	
-	  // Otherwise, render the default day
-	  return <Day {...props} />;
+
+	  // Theme-aware date separator. GiftedChat's default Day
+	  // component renders the date in Color.defaultColor (mid-grey)
+	  // with a transparent backdrop — that worked against the dark
+	  // linen but reads poorly on the new light linen Day-mode
+	  // background. We wrap each separator in a small contrast
+	  // pill: dark-translucent fill + white text in Day, and a
+	  // light-translucent fill + dark text in Night — same shape
+	  // either way, just channel-flipped so the date pops off
+	  // whichever linen pattern is behind it.
+	  const _dayTheme = DarkModeManager.getTheme();
+	  const _dayWrapperStyle = {
+	      backgroundColor: _dayTheme.isDark
+	          ? 'rgba(255,255,255,0.15)'
+	          : 'rgba(0,0,0,0.45)',
+	      paddingHorizontal: 10,
+	      paddingVertical: 3,
+	      borderRadius: 10,
+	  };
+	  const _dayTextStyle = {
+	      color: '#FFFFFF',
+	      fontSize: 12,
+	      fontWeight: '600',
+	  };
+	  return <Day {...props} wrapperStyle={_dayWrapperStyle} textStyle={_dayTextStyle} />;
+	};
+
+	// Theme-aware chat system message. Same pill treatment as
+	// the date separator above — a darker translucent fill in
+	// Day mode (so the white text reads against the light linen)
+	// and a lighter translucent fill in Night mode (so the same
+	// white text floats against the dark linen). Without this
+	// override, GiftedChat's default mid-grey "Color.defaultColor"
+	// system-message text disappeared on the new light Day-mode
+	// background.
+	renderSystemMessage = (props) => {
+	  const _smTheme = DarkModeManager.getTheme();
+	  const _smIsDark = _smTheme.isDark;
+	  // System messages render WITHOUT a pill — plain text, centered,
+	  // sitting directly on the chat background. Per user request:
+	  //   • Day mode → dark grey font on the light linen.
+	  //   • Night mode → white font on the dark linen.
+	  // The day-separator pill (see renderDay above) is unaffected;
+	  // only the system-message bubble is removed.
+	  const _smWrapperStyle = {
+	      backgroundColor: 'transparent',
+	      paddingHorizontal: 10,
+	      paddingVertical: 4,
+	      alignSelf: 'center',
+	      maxWidth: '85%',
+	  };
+	  const _smTextStyle = {
+	      color: _smIsDark ? '#FFFFFF' : '#444444',
+	      fontSize: 12,
+	      fontWeight: '400',
+	      textAlign: 'center',
+	  };
+	  return (
+	      <SystemMessage
+	          {...props}
+	          wrapperStyle={_smWrapperStyle}
+	          textStyle={_smTextStyle}
+	      />
+	  );
 	};
 
 	renderTime = (props) => {
@@ -6630,7 +6721,25 @@ class ContactsListBox extends Component {
 
 	  const isIncoming = currentMessage.direction === 'incoming';
 	  const isMedia = currentMessage.video || currentMessage.audio;
-	  let textColor = currentMessage.audio || isIncoming ? 'white' : 'black';
+	  // Footer colour (time + filesize + duration). Pulled from the
+	  // active theme so it reads correctly against whichever bubble
+	  // colour ChatBubble paints:
+	  //   Night theme: incoming bubble = green → footer = white;
+	  //                outgoing bubble = white → footer = black.
+	  //   Day theme:  incoming bubble = white  → footer = #667781;
+	  //               outgoing bubble = light blue → footer = #667781.
+	  // Audio bubbles keep light footer text in Night (their wrapper
+	  // is transparent over the dark chat backdrop) and switch to
+	  // muted grey in Day. Without this lookup the incoming-side
+	  // footer painted white-on-white in Day — that was the "still
+	  // white" complaint.
+	  const _themeForTime = DarkModeManager.getTheme();
+	  let textColor;
+	  if (_themeForTime.isDark) {
+	      textColor = (currentMessage.audio || isIncoming) ? 'white' : 'black';
+	  } else {
+	      textColor = '#667781';
+	  }
 	  let textOpacity = 0.85;
 	  // Reply-target dim mode: this bubble is one of the non-target
 	  // bubbles (every bubble except the one the reaction bar is
@@ -7211,7 +7320,8 @@ scrollToMessage(id) {
 	  let currentGroup = null;
 	  let lastImageTime = null;
 	  let lastImageId = null;
-	
+	  let lastSenderKey = null;
+
 		const seen = new Set();
 		messages = messages.filter(msg => {
 		  if (seen.has(msg._id)) return false;
@@ -7223,17 +7333,31 @@ scrollToMessage(id) {
 	  (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
 	);
 
+	  // Build a stable sender identity for each message so we never merge
+	  // photos from different people into one group. `direction` alone is
+	  // not enough — in a group chat every incoming participant shares
+	  // direction='incoming', so we'd still glue A's and B's photos
+	  // together. Combining direction with user._id (set on incoming rows
+	  // to the remote party's URI) disambiguates that case, and for
+	  // outgoing rows direction is enough on its own.
+	  const senderKeyFor = (m) => {
+	    const dir = m.direction || '';
+	    const uid = (m.user && m.user._id) || '';
+	    return dir + '|' + uid;
+	  };
+
 	  for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
 		const isImage = !!msg.image;
-	
+
 		if (isImage) {
 		  const currentTime = new Date(msg.createdAt).getTime();
+		  const currentSenderKey = senderKeyFor(msg);
 
 		/*
 		  if (lastImageTime) {
 			const diff = currentTime - lastImageTime;
-		
+
 			console.log('---');
 			console.log('prev:', lastImageId, new Date(lastImageTime).toISOString());
 			console.log('curr:', msg._id, new Date(currentTime).toISOString());
@@ -7242,29 +7366,32 @@ scrollToMessage(id) {
 		  */
 
 			const hasLabel = !!this.state.mediaLabels?.[msg._id];
-			
+
 			const shouldStartNewGroup =
 			  !currentGroup ||
 			  !lastImageTime ||
 			  currentTime - lastImageTime > FIVE_MIN ||
-			  (hasLabel && msg._id !== currentGroup); // ⬅️ NEW RULE
-    
-	
+			  currentSenderKey !== lastSenderKey || // ⬅️ different sender → new group
+			  (hasLabel && msg._id !== currentGroup); // ⬅️ labeled image starts its own group
+
+
 		  if (shouldStartNewGroup) {
 			currentGroup = msg._id;
 			groups[currentGroup] = [];
 			//console.log('Start group', currentGroup, msg.createdAt);
 		  }
-	
+
 		  groups[currentGroup].push(msg._id);
 		  byImage[msg._id] = currentGroup;
-	
+
 		  lastImageTime = currentTime;
 		  lastImageId = msg._id;
+		  lastSenderKey = currentSenderKey;
 		} else {
 		  currentGroup = null;
 		  lastImageTime = null;
 		  lastImageId = null;
+		  lastSenderKey = null;
 		}
 	  }
 	
@@ -7346,12 +7473,50 @@ scrollToMessage(id) {
         } else {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
 
-            // The address-book pile is only mixed in when the user has
-            // explicitly flipped the source toggle to 'ab'. In Sylk mode
-            // we leave searchExtraItems empty so the list shows just
-            // Sylk contacts — that's the toggle's whole point.
-            if (contactSource === 'ab' && Array.isArray(this.state.contacts)) {
-                searchExtraItems = searchExtraItems.concat(this.state.contacts);
+            // The address-book pile is mixed into searchExtraItems in
+            // two cases:
+            //   • the user has explicitly flipped the source toggle
+            //     to 'ab' (normal contacts-list browse path), OR
+            //   • we're in invite-to-conference mode, which merges
+            //     Blink + Phonebook into a single picker list (no
+            //     source toggle is shown for that workflow — the
+            //     user gets every reachable contact in one place).
+            // Share-to-contacts stays Blink-only as before.
+            //
+            // In invite mode the AB pile is filtered down to PHONE
+            // entries only — getABContacts() mints both a phone-number
+            // entry and an email entry per AB contact, but a conference
+            // invite cannot be dialled to an email address, so
+            // email-only entries would just be junk in the picker.
+            // The filter keys on the explicit 'phone' / 'email' tag
+            // that getABContacts attaches (rather than URI-shape
+            // sniffing, which misclassified phones whose URIs happen
+            // to contain '@' — e.g. WhatsApp-augmented contacts).
+            // Outside invite mode (the normal AB browse) we still
+            // show both, since the user might be looking up an email
+            // to start a chat.
+            if (Array.isArray(this.state.contacts)
+                && (contactSource === 'ab' || this.state.inviteContacts)) {
+                if (this.state.inviteContacts) {
+                    searchExtraItems = searchExtraItems.concat(
+                        this.state.contacts.filter(c => {
+                            if (!c) return false;
+                            // Prefer the explicit tag when present —
+                            // post-upgrade AB entries carry it. For
+                            // older cached entries (loaded before the
+                            // getABContacts change shipped) fall back
+                            // to URI-shape sniffing so the filter
+                            // doesn't drop them as untagged.
+                            if (Array.isArray(c.tags)) {
+                                if (c.tags.indexOf('phone') !== -1) return true;
+                                if (c.tags.indexOf('email') !== -1) return false;
+                            }
+                            return !!c.uri && c.uri.indexOf('@') === -1;
+                        })
+                    );
+                } else {
+                    searchExtraItems = searchExtraItems.concat(this.state.contacts);
+                }
             }
 
             if (contactSource === 'ab'
@@ -7362,6 +7527,14 @@ scrollToMessage(id) {
                 // that the merged-mode path used — the user is now
                 // explicitly browsing the address book and expects to
                 // see entries even with an empty query.
+                matchedContacts = this.state.targetUri
+                    ? searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri))
+                    : searchExtraItems;
+            } else if (this.state.inviteContacts && !this.state.selectedContact) {
+                // Invite mode: merge Sylk + Phonebook into the picker.
+                // Show the full Phonebook (no >2-char gate) so the
+                // user can browse and tap to select even with the
+                // search field empty.
                 matchedContacts = this.state.targetUri
                     ? searchExtraItems.filter(contact => this.matchContact(contact, this.state.targetUri))
                     : searchExtraItems;
@@ -7462,44 +7635,36 @@ scrollToMessage(id) {
                 return;
             }
 
-            // Conference-invite mode shares the same eligibility
-            // rules as EditConferenceModal's pill picker — only
-            // real, addressable SIP users belong in the list.
-            // Mirror the exclusion set from
-            // filterInvitableContacts in EditConferenceModal.js
-            // here so the two surfaces stay in lockstep.
+            // Conference-invite mode eligibility rules.
             //   • self          — can't invite yourself
             //   • guest /
             //     anonymous     — no inbox to invite
-            //   • phone-number
-            //     URIs (leading
-            //     '+' OR 'tel'
-            //     tag)          — dialled numbers can't receive
-            //                     a SIP conference invite
             //   • blocked       — user opted them out
             //   • test          — QA / developer fixture rows
-            //   • bare URI
-            //     (no '@')      — AB-import artifact, unsafe
+            //
+            // Phone-number entries (leading '+', bare URIs without
+            // '@', or AB entries tagged 'phone' / 'tel') USED to be
+            // excluded here because the previous conference focus
+            // couldn't dial out to a PSTN number. The current
+            // implementation can — the focus's SIP bridge handles
+            // dial-out — so phone-number entries are now valid
+            // invitees and the filter no longer drops them.
+            //
             // (Caregiver auto-answer rows are still allowed —
             // they're regular Sylk contacts and a caregiver may
-            // be a valid invitee. Cross-domain rows are ALSO now
-            // allowed — the previous same-domain gate has been
-            // lifted; any legitimate SIP URI in another domain
-            // is a valid conference invitee. See the matching
-            // change in EditConferenceModal's filterInvitableContacts.)
+            // be a valid invitee. Cross-domain rows are ALSO
+            // allowed — any legitimate SIP URI in another domain
+            // is a valid conference invitee.)
             if (this.state.inviteContacts) {
                 const _itemUri = (item.uri || '').toLowerCase();
                 const _accId = (this.state.accountId || '').toLowerCase();
                 if (_itemUri === _accId) return;
                 if (_itemUri.indexOf('@guest.') > -1) return;
                 if (_itemUri.indexOf('anonymous@') > -1) return;
-                if (_itemUri.startsWith('+')) return;
                 if (Array.isArray(item.tags)) {
                     if (item.tags.indexOf('blocked') > -1) return;
-                    if (item.tags.indexOf('tel') > -1) return;
                     if (item.tags.indexOf('test') > -1) return;
                 }
-                if (_itemUri.indexOf('@') < 0) return;
             }
 
             if (item.uri.indexOf('@videoconference.') > -1 && this.state.filter == 'calls') {
@@ -7544,10 +7709,18 @@ scrollToMessage(id) {
 			  if (aHasTimestamp && !bHasTimestamp) return -1;
 			  if (!aHasTimestamp && bHasTimestamp) return 1;
 			
-			  // Case 3: neither has timestamp -> sort alphabetically by name
+			  // Case 3: neither has timestamp -> sort alphabetically by
+			  // name, honouring the current sortOrder. Phonebook
+			  // entries (AB contacts) hit this branch because they
+			  // carry no timestamp at all, so respecting sortOrder
+			  // here is what makes the asc/desc chip actually flip the
+			  // phonebook A→Z vs Z→A. Previously the comparator
+			  // ignored sortOrder for this case, which is the
+			  // "order doesn't work on PB contacts" bug.
 			  var aName = (a.name || "").toLowerCase();
 			  var bName = (b.name || "").toLowerCase();
-			  return aName.localeCompare(bName);
+			  var _cmp = aName.localeCompare(bName);
+			  return sortOrder === 'desc' ? -_cmp : _cmp;
 			});
         }
 
@@ -8334,6 +8507,7 @@ scrollToMessage(id) {
                   videoMetaCache={this.state.videoMetaCache}
                   renderTime={this.renderTime}
                   renderDay={this.renderDay}
+                  renderSystemMessage={this.renderSystemMessage}
                   placeholder={this.state.placeholder}
                   lockStyle={styles.lock}
                   renderSend={this.renderSend}
@@ -8398,6 +8572,15 @@ scrollToMessage(id) {
 				  text={this.state.text}
 				  
                   onInputTextChanged={text => this.chatInputChanged(text)}
+                  /* Theme-aware bubble time stamps (same lookup as
+                     the search-results GiftedChat below). Without
+                     this the left stamp defaults to white and
+                     vanishes against the Day-mode white incoming
+                     bubble. */
+                  timeTextStyle={{
+                      left:  { color: DarkModeManager.getTheme().isDark ? 'white' : '#667781' },
+                      right: { color: '#667781' },
+                  }}
 					isScrollToBottomVisible={() => {
 					  return true;
 					}}
@@ -8464,6 +8647,8 @@ scrollToMessage(id) {
                   renderMessageImage={this.renderMessageImage}
                   renderMessageAudio={this.renderMessageAudio}
                   renderMessageVideo={this.renderMessageVideo}
+                  renderDay={this.renderDay}
+                  renderSystemMessage={this.renderSystemMessage}
                   onSend={this.onSendMessage}
                   lockStyle={styles.lock}
                   onLongPress={this.onLongMessagePress}
@@ -8481,7 +8666,19 @@ scrollToMessage(id) {
                   onPress={this.onMessagePress}
                   scrollToBottom={this.state.scrollToBottom}
                   inverted={true}
-                  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
+                  /* Bubble time-stamp colour. Pull from the active
+                     theme so the left (incoming) stamp stays
+                     readable against whichever bubble colour
+                     ChatBubble paints — white-on-white was the bug
+                     in Day mode, where the incoming bubble flipped
+                     from green to white but this style stayed
+                     hard-coded to 'white'. The right (outgoing)
+                     stamp is dark in both themes because the
+                     outgoing bubble is light in both. */
+                  timeTextStyle={{
+                      left:  { color: DarkModeManager.getTheme().isDark ? 'white' : '#667781' },
+                      right: { color: '#667781' },
+                  }}
                   infiniteScroll
                   loadEarlier={!this.state.totalMessageExceeded && this.state.selectedContact !== null}
                   onLoadEarlier={this.loadEarlierMessages}

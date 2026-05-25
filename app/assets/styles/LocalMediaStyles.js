@@ -40,21 +40,21 @@ const styles = StyleSheet.create({
     width: 150,
   },
 
+  // Hangup button colour now matches every other hang-up button in
+  // the app — WhatsApp-style Material Red 600, fully opaque. See the
+  // same swap in AudioCall.js / Sessions.js / ConferenceCall.js etc.
   hangupbutton: {
-    backgroundColor: 'rgba(169, 68, 66, 0.8)', // converted rgba(#a94442, .8)
+    backgroundColor: '#E53935',
   },
 
   tabletButtonContainer: {
     position: 'absolute',
-    // Was bottom: 100. LocalMedia.js adds the device's bottomInset
-    // (home indicator / nav bar) on top of this value at render time
-    // (see lines ~700 / ~724 in LocalMedia.js), so the effective lift
-    // was ~100 + bottomInset and the user saw "like 200 px" of
-    // empty space below the buttons. Match the phone-variant lift
-    // (30dp) so tablet and phone read the same — the safe-area
-    // inset on tablet is plenty to clear the home indicator on its
-    // own without a fixed bump on top.
-    bottom: 30,
+    // Bumped 30 → 50 so the local-media button strip sits at the
+    // same vertical position as the in-call button strip
+    // (portraitButtonContainer.marginBottom = 50 in AudioCall.js).
+    // The user wanted the pre-call and in-call button bars to line
+    // up at the same height across screens.
+    bottom: 50,
     width: '90%',
     zIndex: 99,
     justifyContent: 'center',
@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
 
   buttonContainer: {
     position: 'absolute',
-    bottom: 30,
+    bottom: 50,
     width: '90%',
     zIndex: 99,
     justifyContent: 'center',

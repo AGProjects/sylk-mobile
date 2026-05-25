@@ -176,7 +176,7 @@ const styles = StyleSheet.create({
   },
 
   greenButton: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)', // #6DAA63 + 0.9
+    backgroundColor: '#25D366', // #6DAA63 + 0.9
   },
 
   disabledGreenButton: {
@@ -184,7 +184,10 @@ const styles = StyleSheet.create({
   },
 
   blueButton: {
-    backgroundColor: 'rgba(69, 114, 166, 1)',
+    // Brighter blue — was rgba(69, 114, 166, 1) (dusky steel blue);
+    // bumped to Material Blue 400 (#42A5F5) so the record-audio
+    // message button pops more next to the green call buttons.
+    backgroundColor: '#42A5F5',
   },
 
   redButton: {
@@ -196,7 +199,11 @@ const styles = StyleSheet.create({
   // record/file-transfer buttons. Pin icon is rendered white via the
   // IconButton `color` prop.
   purpleButton: {
-    backgroundColor: 'rgba(142, 68, 173, 0.9)',
+    // Brighter magenta-purple — was Material Purple 500 (#8E44AD)
+    // at 0.9 alpha which read as dusky against the dark call
+    // background. Bumped to Material Purple A200 (#E040FB), a vivid
+    // magenta that pops more next to the green call buttons.
+    backgroundColor: '#E040FB',
   },
 
   categoryButton: {
@@ -214,7 +221,7 @@ const styles = StyleSheet.create({
   },
 
   greenButtoniOS: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    backgroundColor: '#25D366',
   },
 
   disabledGreenButtoniOS: {
@@ -222,7 +229,7 @@ const styles = StyleSheet.create({
   },
 
   blueButtoniOS: {
-    backgroundColor: 'rgba(69, 114, 166, 1)',
+    backgroundColor: '#42A5F5',
   },
 
   redButtoniOS: {
@@ -232,7 +239,7 @@ const styles = StyleSheet.create({
   // iOS twin of purpleButton — same colour; kept separate to mirror the
   // existing iOS/Android split the other buttons use.
   purpleButtoniOS: {
-    backgroundColor: 'rgba(142, 68, 173, 0.9)',
+    backgroundColor: '#E040FB',
   },
 
   disabledBlueButtoniOS: {

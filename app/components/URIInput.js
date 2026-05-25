@@ -104,19 +104,45 @@ class URIInput extends React.Component {
         if (showSourceHint) {
             placeholder =
                 this.state.contactSource === 'ab'
-                    ? 'Search Phonebook'
-                    : 'Search Sylk contacts';
+                    ? 'Search Tel'
+                    : 'Search SIP contacts';
         }
 
-        // Only apply dark mode colors if dark prop is true
+        // Theme-aware colour set. Pulled to be explicit in BOTH
+        // dark and light modes so we don't rely on Paper's default
+        // theme resolution — the user reported the search bar fonts
+        // not flipping correctly when the app theme changed, which
+        // tracked back to the previous code only overriding colours
+        // in the dark branch. The light branch now pins explicit
+        // dark text / muted placeholder against the search-bar
+        // background so the flip is symmetrical.
+        //
+        // Searchbar background is intentionally a *surface* tone
+        // (one step off the page background), not the page
+        // background itself. Day-theme body bg is #FFFFFF and
+        // Night-theme body bg is #121212; matching either of those
+        // here would render the search bar invisible against the
+        // surrounding screen (white-on-white in Day, black-on-black
+        // in Night), which is the regression the user reported as
+        // "search contacts does not appear anymore" after the brand
+        // strip / theming change. #F0F2F5 (Day) and #1F1F1F (Night)
+        // give just enough contrast that the pill clearly reads as
+        // an interactive control.
         const darkColors = this.props.dark
             ? {
-                  backgroundColor: '#121212',
+                  backgroundColor: '#1F1F1F',
                   textColor: '#ffffff',
-                  iconColor: '#bbbbbb',
+                  // Per user request: no gray icons inside the
+                  // search bar — high-contrast black-or-white only.
+                  iconColor: '#ffffff',
                   placeholderColor: '#aaaaaa',
               }
-            : {};
+            : {
+                  backgroundColor: '#F0F2F5',
+                  textColor: '#111B21',
+                  iconColor: '#000000',
+                  placeholderColor: '#667781',
+              };
 
         // Paper's built-in × clear sits at the right edge of the
         // bar, which is where we want the dialpad toggle to live
@@ -172,15 +198,35 @@ class URIInput extends React.Component {
                         size={22}
                         onPress={() => this.props.onChange('')}
                         accessibilityLabel="Clear search"
-                        style={uriInputStyles.clearOverlay}
+                        style={[
+                            uriInputStyles.clearOverlay,
+                            // Shift the clear-× further left when other
+                            // overlays occupy the right edge. The
+                            // Invite button only renders once at least
+                            // one contact is selected (inviteEnabled),
+                            // so the layout collapses back to its
+                            // smaller forms while nothing is picked:
+                            //   invite + dialpad → 2 buttons to clear → right:108
+                            //   invite alone    → 1 button to clear → right:56
+                            //   dialpad alone   → 1 button to clear → right:48 (default)
+                            //   nothing         → right:48 (default)
+                            (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
+                                ? uriInputStyles.clearOverlayInviteAndDialpadMode
+                                : (this.state.inviteContacts && this.props.inviteEnabled)
+                                    ? uriInputStyles.clearOverlayInviteMode
+                                    : null,
+                        ]}
                         iconColor={darkColors.iconColor}
                     />
                 ) : null}
                 {/* Dialpad toggle overlaid INSIDE the search bar,
-                    flush against the right edge (right:4). The × clear
-                    icon above sits to its LEFT at right:48. Highlighted
-                    (filled green background) when the pad is open so
-                    the toggle-state is obvious at a glance. */}
+                    always pinned flush against the right edge
+                    (right:4). In invite mode the green Invite
+                    (account-plus) button shifts LEFT to sit beside
+                    the dialpad rather than the other way around —
+                    keeps the dialpad in the consistent "tap the
+                    rightmost icon" spot across normal and invite
+                    flows. */}
                 {this.props.showDialpad ? (
                     <IconButton
                         icon="dialpad"
@@ -204,15 +250,62 @@ class URIInput extends React.Component {
                         }
                     />
                 ) : null}
+                {/* Invite-mode action pair: Cancel + Invite, overlaid
+                    INSIDE the search bar at the right edge. Visible
+                    only when inviteContacts is true (when the contacts
+                    list is a participant picker for an ongoing
+                    conference). Dialpad never renders in invite mode,
+                    so they share the same right-edge real estate
+                    without colliding. The × clear overlay sits to
+                    their left (auto-hidden when the field is empty),
+                    so order from right→left is: Invite, Cancel, ×. */}
+                {/* Invite-mode action overlay. Only the green Invite
+                    (account-plus) button is rendered inside the bar —
+                    the Cancel × that used to sit beside it was removed
+                    per user request. The search field's own clear-×
+                    (above) still serves to clear typed input. Backing
+                    out of invite mode entirely is handled by the
+                    navbar back affordance / route navigation, so the
+                    extra in-bar Cancel was redundant. */}
+                {/* Invite (account-plus) button. Rendered only when
+                    the user has actually selected at least one
+                    contact (inviteEnabled). Until then there's
+                    nothing to invite, so showing a disabled button
+                    just adds visual clutter — hiding it also frees
+                    up the right edge for the dialpad / clear-×. The
+                    button reappears the moment the first contact is
+                    picked. */}
+                {this.state.inviteContacts && this.props.inviteEnabled ? (
+                    <IconButton
+                        icon="account-plus"
+                        size={22}
+                        onPress={this.props.onInvitePress}
+                        accessibilityLabel="Invite selected contacts"
+                        style={[
+                            uriInputStyles.inviteOverlay,
+                            // When the dialpad is also rendered (in
+                            // the invite-to-conference picker), the
+                            // dialpad owns the rightmost slot (right:4)
+                            // so the Invite button shifts left to sit
+                            // beside it.
+                            this.props.showDialpad
+                                ? uriInputStyles.inviteOverlayWithDialpad
+                                : null,
+                            uriInputStyles.inviteOverlayEnabled,
+                        ]}
+                        iconColor="#ffffff"
+                    />
+                ) : null}
             </View>
         );
     }
 }
 
-// Searchbar height: 56 px (25% taller than the previous 45 px).
-// Roomier touch target and gives the input text and embedded
-// controls (clear ×, dialpad backspace) more vertical breathing room.
-const SEARCHBAR_HEIGHT = 56;
+// Searchbar height: 44 px (was 40, bumped ~10 % per user request).
+// Lands on Apple's 44 px minimum tap-target dead-on, still well
+// shorter than the original 56 px so the contacts list keeps the
+// vertical space the previous compression reclaimed.
+const SEARCHBAR_HEIGHT = 44;
 
 const uriInputStyles = StyleSheet.create({
     searchbarRow: {
@@ -262,6 +355,58 @@ const uriInputStyles = StyleSheet.create({
         backgroundColor: '#27ae60',
         borderRadius: 18,
     },
+    // Invite-mode action pair overlays. Right→left order:
+    //   • Invite (account-plus, green when enabled) at right:4
+    //   • Cancel (×, neutral) at right:56  ← +52px from Invite,
+    //     which is the IconButton width (~36px) + a 16px gap so
+    //     the two buttons read as separate touch targets.
+    //   • Clear-× (existing) shifts further left to right:108
+    //     when in invite mode to clear the action pair.
+    inviteOverlay: {
+        position: 'absolute',
+        right: 4,
+        top: (SEARCHBAR_HEIGHT - 36) / 2,
+        margin: 0,
+        zIndex: 5,
+        elevation: 5,
+        borderRadius: 18,
+    },
+    inviteOverlayEnabled: {
+        backgroundColor: '#27ae60',
+    },
+    cancelInviteOverlay: {
+        position: 'absolute',
+        right: 56,
+        top: (SEARCHBAR_HEIGHT - 36) / 2,
+        margin: 0,
+        zIndex: 5,
+        elevation: 5,
+        backgroundColor: '#ffffff',
+        borderRadius: 18,
+    },
+    clearOverlayInviteMode: {
+        // Cancel button removed; clear-× now only has to clear the
+        // single Invite overlay at right:4 (~40px wide), so right:48
+        // (== the normal "shift one IconButton over" offset) is
+        // enough.
+        right: 56,
+    },
+    // invite + dialpad combo. Right→left order:
+    //   • Dialpad at right:4   (flush right)
+    //   • Invite  at right:52  (one IconButton stride over)
+    //   • Clear-× at right:108 (one stride past invite)
+    // Dialpad owns the rightmost slot in invite mode so the
+    // pad-toggle stays in the same place as it would in a non-invite
+    // search workflow — keeps muscle memory consistent.
+    clearOverlayInviteAndDialpadMode: {
+        right: 108,
+    },
+    // Invite button shifted left when the dialpad shares the bar.
+    // ~52px stride past the dialpad (which sits at right:4) keeps a
+    // visible gap between the two buttons.
+    inviteOverlayWithDialpad: {
+        right: 52,
+    },
 });
 
 URIInput.propTypes = {
@@ -276,6 +421,13 @@ URIInput.propTypes = {
     showDialpad: PropTypes.bool,
     isDialpadActive: PropTypes.bool,
     onDialpadPress: PropTypes.func,
+    // Invite-mode action pair callbacks. URIInput renders the
+    // Cancel + Invite buttons as absolute overlays inside the search
+    // bar when `inviteContacts` is true; these props are how the
+    // hosting component (ReadyBox) wires the actions in.
+    inviteEnabled: PropTypes.bool,
+    onInvitePress: PropTypes.func,
+    onCancelInvitePress: PropTypes.func,
     dark: PropTypes.bool, // <-- dark mode as prop
 };
 

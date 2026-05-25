@@ -2,13 +2,31 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter} from 'react-native';
+import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter, NativeModules} from 'react-native';
+// SylkAudioRouteModule's prepareForRecording / restoreAfterRecording
+// helpers — see the native side in ios/sylk/AudioRouteModule.m for
+// rationale. On iOS this module configures AVAudioSession for VOIP
+// (PlayAndRecord + VoiceChat) at app init, which engages voice-
+// processing IO and makes AVAudioRecorder.record() return NO — the
+// underlying cause of the "Error occured during initiating recorder"
+// rejection. We bracket startRecorder/stopRecorder with these calls
+// so the voice-processing IO is released for the recording and
+// restored afterwards.
+const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
-import SoundLevel from "react-native-sound-level";
+// react-native-sound-level was previously used to drive the recording
+// VuMeter, but it conflicted with audioRecorderPlayer on iOS (both open
+// AVAudioRecorder on the same AVAudioSession and iOS rejects the
+// second one with "Error occured during initiating recorder"). The
+// recorder's own addRecordBackListener callback already provides
+// currentMetering in dBFS, so the VuMeter is driven from that instead
+// and this import is no longer needed.
+import { check as checkPermission, PERMISSIONS as RNP_PERMISSIONS, RESULTS as RNP_RESULTS } from 'react-native-permissions';
 
-import { red } from '../colors'; 
+import { red } from '../colors';
+import DarkModeManager from '../DarkModeManager';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
@@ -85,6 +103,14 @@ class ReadyBox extends Component {
 			showOrderBar: false,
 			playRecording: false,
 			level: 0,
+			// Elapsed recording time in ms, displayed under the VuMeter
+			// during recording. Sourced from
+			// audioRecorderPlayer.addRecordBackListener's
+			// `currentPosition` field (ticks ~every 100 ms) so the
+			// displayed value is in lockstep with what the recorder
+			// itself has captured — using a separate setInterval would
+			// drift relative to the actual file duration.
+			recordingElapsedMs: 0,
 			// Gated by a timer so the red "no private key" banner doesn't
 			// flash on the main screen behind the ImportPrivateKeyModal the
 			// moment keyStatus arrives. It only flips true after the modal
@@ -377,6 +403,17 @@ class ReadyBox extends Component {
                            orderBy: 'timestamp',
                            messagesCategoryFilter: null
                            });
+      }
+
+      // When the soft keyboard comes up while the in-bar dialpad is
+      // open, close the dialpad and don't auto-restore it on dismiss.
+      // The dialpad icon stays visible (it just toggles back to its
+      // inactive style); the user reopens the pad by tapping it
+      // again. This avoids the surprise of "I typed in the search,
+      // dismissed the keyboard, and the keypad came back from
+      // nowhere" — the keypad is now strictly toggle-on-tap.
+      if (!prevProps.keyboardVisible && this.props.keyboardVisible && this.state.showAbDialpad) {
+          this.setState({ showAbDialpad: false });
       }
 
 		let keys = Object.keys(this.state);
@@ -822,10 +859,16 @@ class ReadyBox extends Component {
             return false;
         }
 
+        // Invite mode used to keep the action bar visible because it
+        // hosted the Cancel / Invite button pair. Those buttons now
+        // live INSIDE the search bar (URIInput renders them as
+        // overlays), so the action bar in invite mode would just be
+        // an empty padded slab between the navbar and the search bar.
+        // Hide it.
         if (this.props.inviteContacts) {
-			return true;
+			return false;
         }
-                        
+
         if (this.props.shareToContacts) {
 			return true;
         }
@@ -1567,15 +1610,17 @@ class ReadyBox extends Component {
         }
 
         // When the user has flipped the contact-source toggle to
-        // AddressBook, hide the sort/order buttons. AB entries are a
-        // static system-loaded set with no message timestamps or
-        // per-contact storage to sort by, so the buttons are
-        // meaningless in that mode and just clutter the row. The pills
-        // remain visible (rendered separately on the LEFT side of
-        // this same nav row, now that source pills moved to the left
-        // of the search bar and sort/order moved to the right).
+        // AddressBook, hide the time / size SORT buttons (AB entries
+        // have no message timestamps or per-contact storage to sort
+        // by), but keep the alphabetical ASC / DESC order chips —
+        // sorting the phonebook A→Z vs Z→A is genuinely useful.
+        // The Sylk / Phonebook source pills continue to render on
+        // the left side of this same nav row.
         if (this.state.contactSource === 'ab') {
-            return [];
+            return [
+                {key: 'orderAscending',  title: '↑ Ascending',  enabled: this.state.sortOrder === 'asc',  selected: false},
+                {key: 'orderDescending', title: '↓ Descending', enabled: this.state.sortOrder === 'desc', selected: false},
+            ];
         }
 
         // Hide Sort and Order buttons if the user has fewer than 10
@@ -1667,8 +1712,64 @@ class ReadyBox extends Component {
         let key = object.item.key;
         let icon = object.item.icon;
 
-        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
-        let iconStyle = object.item.selected ? styles.categoryButtonSelected : styles.categoryButton;
+        // Selected chip background — pin to deep Sylk-blue so the
+        // active filter pops against the theme-flipped bar bg.
+        // The previous white chip + white bar (in Day mode) read as
+        // no chip at all; deep blue gives a strong contrast in both
+        // Day (blue chip on white) and Night (blue chip on dark).
+        let buttonStyle = object.item.selected
+            ? [styles.navigationButtonSelected, { backgroundColor: '#436294' }]
+            : styles.navigationButton;
+        // Mirror the same Sylk-blue chip on the icon-chip surface
+        // (the categoryButtonSelected style still drives the
+        // selected pill's shape). Inactive chip is transparent so
+        // the unselected icon glyph alone carries the affordance.
+        let iconStyle = object.item.selected
+            ? [styles.categoryButtonSelected, { backgroundColor: '#436294' }]
+            : [styles.categoryButton, { backgroundColor: 'transparent' }];
+        // Icon stroke colour. Selected → WHITE on the deep-blue
+        // chip (high contrast in both themes). Unselected → theme
+        // textPrimary so the glyph is BLACK in Day mode and WHITE
+        // in Night mode (no more washed-out "gray" icons against
+        // the theme-flipped bar background).
+        const _navItemIconColor = object.item.selected
+            ? '#FFFFFF'
+            : DarkModeManager.getTheme().textPrimary;
+        // Label colour for category-navbar Buttons. The bar now uses
+        // the theme background (white in Day, dark in Night), so the
+        // text colour has to flip with the theme too — otherwise the
+        // unselected label would be white-on-white in Day mode.
+        //   • Unselected → theme.textPrimary (dark in Day, white in
+        //     Night) so the label reads against the bar's bg.
+        //   • Selected   → deep Sylk-blue regardless of theme. The
+        //     selected pill's white bg (from
+        //     styles.navigationButtonSelected) means white text would
+        //     also vanish; the Sylk-blue colour keeps the active
+        //     filter visible without any further pill restyling.
+        // fontWeight: 'normal' tones down Paper Button's default
+        // 500-weight label.
+        const _theme = DarkModeManager.getTheme();
+        // Match the main navbar's subtitle (URI line) styling:
+        //   fontSize 12, weight 400, white text, no uppercase / wide
+        //   letterSpacing. We keep Paper Button's default
+        //   marginVertical (9dp) in place — overriding it to 0
+        //   broke the label's vertical centring inside the Button
+        //   and shifted the text upward, which the user reported.
+        //   Paper's built-in margin is what holds the label on the
+        //   row's centerline.
+        const _navItemLabelStyle = {
+            color: object.item.selected ? '#FFFFFF' : _theme.textPrimary,
+            fontWeight: '400',
+            letterSpacing: 0,
+            textTransform: 'none',
+            fontSize: 12,
+            // Paper Button's default labelStyle has marginVertical:9
+            // which adds ~18 px of vertical padding around the
+            // label. Dropped to 4 so the bar can be shorter without
+            // touching the font size (per user "keep the font but
+            // shrink the bar" request).
+            marginVertical: 4,
+        };
 
         // Diagnostic: log once at startup, then only when the bottom-bar
         // button font-size / isTablet actually changes (fold/unfold).
@@ -1714,19 +1815,19 @@ class ReadyBox extends Component {
             + '-' + Math.round(_bbWin.width) + 'x' + Math.round(_bbWin.height);
 
         if (key === "hideQRCodeScanner") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.toggleQRCodeScanner()}}>{title}</Button>);
         }
 
         if (key === "deleteAudio") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.deleteAudio()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.deleteAudio()}}>{title}</Button>);
         }
 
         if (key === "previewAudio") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.previewAudio()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.previewAudio()}}>{title}</Button>);
         }
 
         if (key === "sendAudio") {
-            return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
+            return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.sendAudioFile()}}>{title}</Button>);
         }
 
         // Sort toggles render as IconButtons too — same compact
@@ -1760,10 +1861,12 @@ class ReadyBox extends Component {
         const _sortAxisColStyle = {
             alignItems: 'center',
             justifyContent: 'center',
-            // Match the ~36 px wide footprint of a default
-            // IconButton so the cardinal arrows beside this sit at
-            // the same vertical centre.
-            width: 36,
+            // Width must clear the IconButton's circular footprint.
+            // Paper renders IconButton at `size + 16` (≈40 for the
+            // old 18 px icons, ≈40 for the bumped 24 px icons since
+            // padding scales). 44 gives the icon room to breathe
+            // and leaves the caption underneath unclipped.
+            width: 44,
             // Extra gutter between adjacent category icons so the
             // row doesn't feel cramped. 6 px on each side =
             // 12 px between two neighbouring icons.
@@ -1777,18 +1880,19 @@ class ReadyBox extends Component {
         const _sortAxisLabelStyle = {
             textAlign: 'center',
             fontSize: 9,
-            // White text — the bar sits on the app's dark accent
-            // background and a coloured/grey caption disappeared
-            // against it. White at full opacity reads cleanly and
-            // matches the icon stroke colour Paper uses on dark
-            // surfaces.
-            color: '#fff',
-            // No background halo — the caption is plain text on
-            // whatever the bar's background is. Slight upward
-            // margin pull (-2 px) trims the gap between the icon's
-            // own padding and the caption baseline so the pair
-            // reads as one element.
-            marginTop: -2,
+            // Theme-aware caption colour. The bar's background now
+            // follows theme.background (white in Day, dark in
+            // Night), so a hardcoded white caption was invisible
+            // in Day. textPrimary flips with the theme: dark on
+            // white in Day, white on dark in Night.
+            color: _theme.textPrimary,
+            // Strong negative top margin to claw back Paper
+            // IconButton's intrinsic bottom padding — that padding
+            // was leaving a visible gap between the icon and the
+            // caption, which the user reported as too much air.
+            // -8 px pulls the caption flush under the icon stroke
+            // so the chip + label read as one stacked element.
+            marginTop: -8,
             backgroundColor: 'transparent',
         };
         // Short caption for each filter / sort key so an overlay
@@ -1827,7 +1931,8 @@ class ReadyBox extends Component {
                 >
                     <IconButton
                         icon={icon || 'clock-outline'}
-                        size={18}
+                        size={20}
+                        iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
                             console.log('[sort] orderBy: timestamp -> size (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
@@ -1852,7 +1957,8 @@ class ReadyBox extends Component {
                 >
                     <IconButton
                         icon={icon || 'harddisk'}
-                        size={18}
+                        size={20}
+                        iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
                             console.log('[sort] orderBy: size -> timestamp (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
@@ -1883,7 +1989,8 @@ class ReadyBox extends Component {
                 >
                     <IconButton
                         icon={icon || 'arrow-up'}
-                        size={18}
+                        size={20}
+                        iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
                             console.log('[sort] sortOrder: asc -> desc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
@@ -1908,7 +2015,8 @@ class ReadyBox extends Component {
                 >
                     <IconButton
                         icon={icon || 'arrow-down'}
-                        size={18}
+                        size={20}
+                        iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
                             console.log('[sort] sortOrder: desc -> asc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
@@ -1939,7 +2047,8 @@ class ReadyBox extends Component {
                     >
                         <IconButton
                             icon={icon}
-                            size={18}
+                            size={20}
+                            iconColor={_navItemIconColor}
                             style={[iconStyle, _sortAxisIconStyle]}
                             onPress={() => {this.filterHistory(key)}}
                         />
@@ -1952,14 +2061,15 @@ class ReadyBox extends Component {
             return (<IconButton
                 key={_bbRemountKey}
                 icon={icon}
-                size={18}
+                size={20}
+                iconColor={_navItemIconColor}
                 style={iconStyle}
                 accessibilityLabel={title}
                 onPress={() => {this.filterHistory(key)}}
             />);
         }
 
-        return (<Button key={_bbRemountKey} style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+        return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
     renderOrderItem(object) {
@@ -1970,24 +2080,32 @@ class ReadyBox extends Component {
         let title = object.item.title;
         let key = object.item.key;
         let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
+        // Same selection-aware label style as renderNavigationItem
+        // above (see explanatory comment there).
+        const _theme = DarkModeManager.getTheme();
+        const _navItemLabelStyle = {
+            color: object.item.selected ? '#FFFFFF' : _theme.textPrimary,
+            fontWeight: 'normal',
+            fontSize: 12,
+        };
 
         if (key === "orderByTime") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
+            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
         }
 
         if (key === "orderBySize") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
+            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
         }
 
         if (key === "orderAscending") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
+            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
         }
 
         if (key === "orderDescending") {
-            return (<Button style={buttonStyle} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
+            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
         }
 
-        return (<Button style={buttonStyle} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+        return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
     
     toggleQRCodeScanner(event) {
@@ -2149,14 +2267,17 @@ class ReadyBox extends Component {
 	}
         
     async onStartRecord () {
-		SoundLevel.start();
-
-		SoundLevel.onNewFrame = (data) => {
-			  // data.value is in dB (e.g., -40 to -5)
-			  // Normalize to 0–1
-			  const normalized = Math.min(Math.max((data.value + 60) / 60, 0), 1);
-			  this.setState({ level: normalized });
-		   };
+        // NB: we used to call SoundLevel.start() here to drive the
+        // VuMeter, but on iOS react-native-sound-level and
+        // react-native-audio-recorder-player both create AVAudioRecorder
+        // instances on the shared AVAudioSession, and iOS refuses to
+        // start a second one — startRecorder() below then fails with
+        // "Error occured during initiating recorder" while Android (which
+        // uses separate AudioRecord vs MediaRecorder backends) happily
+        // runs both. The recorder already emits the same dBFS level via
+        // addRecordBackListener's currentMetering, so we drive the
+        // VuMeter from that single source instead and keep the mic
+        // exclusive to the recorder.
 
         try {
             // Compressed AAC (M4A) recording — voice memos used to
@@ -2180,7 +2301,24 @@ class ReadyBox extends Component {
             // of msg.audio = filepath, breaking bubble rendering and
             // playback. iOS already defaults to .m4a but we set it
             // explicitly there too for symmetry.
-            const recordingPath = `${RNFS.CachesDirectoryPath}/sylk-audio-recording.m4a`;
+            // IMPORTANT: prefix with file:// on iOS. react-native-audio-
+            // recorder-player's setAudioFileURL() only treats a string as
+            // a literal file path when it starts with file://, http://, or
+            // https:// — anything else is fed through
+            // cachesDirectory.appendingPathComponent(), which percent-
+            // encodes the slashes in an already-absolute path and yields
+            // a non-existent URL like
+            // file:///.../Caches/%2Fvar%2Fmobile%2F.../sylk-audio-
+            // recording.m4a. AVAudioRecorder.prepareToRecord() then
+            // returns false (the smoking gun in the metro log was
+            // "prepareToRecord returned false"). Android's
+            // implementation is path-agnostic so we add the prefix on
+            // iOS only to keep the existing Android-side behavior
+            // untouched.
+            const rawRecordingPath = `${RNFS.CachesDirectoryPath}/sylk-audio-recording.m4a`;
+            const recordingPath = Platform.OS === 'ios'
+                ? `file://${rawRecordingPath}`
+                : rawRecordingPath;
             const audioSet = {
                 // iOS — AAC in an .m4a container at 16 kHz mono.
                 AVFormatIDKeyIOS: AVEncodingOption.aac,
@@ -2208,7 +2346,99 @@ class ReadyBox extends Component {
             // so it slots straight into the existing peaks pipeline.
             this._micPeaks = [];
 
-            await audioRecorderPlayer.startRecorder(recordingPath, audioSet, true);
+            // ---- pre-flight diagnostics ----
+            // The native iOS module throws a static "Error occured
+            // during initiating recorder" string for *any* failure
+            // inside [recorder prepareToRecord] or AVAudioSession
+            // setup, which makes the JS-side message useless on its
+            // own. Log the things that most often go wrong on iOS so
+            // the metro log tells us which one it is:
+            //   - mic permission (DENIED/BLOCKED/UNAVAILABLE all
+            //     present at native layer as a prepareToRecord
+            //     failure, not a permission error)
+            //   - cache path exists & is writable (a stale directory
+            //     or a path the sandbox can't open also surfaces as a
+            //     prepareToRecord failure)
+            //   - whether any previous recording is still on disk at
+            //     the same path (some iOS versions refuse to
+            //     overwrite a locked file).
+            try {
+                if (Platform.OS === 'ios') {
+                    const micPerm = await checkPermission(RNP_PERMISSIONS.IOS.MICROPHONE);
+                    console.log('[recorder] iOS mic permission =', micPerm,
+                        '(granted=', micPerm === RNP_RESULTS.GRANTED, ')');
+                } else if (Platform.OS === 'android') {
+                    const micPerm = await checkPermission(RNP_PERMISSIONS.ANDROID.RECORD_AUDIO);
+                    console.log('[recorder] android mic permission =', micPerm);
+                }
+            } catch (permErr) {
+                console.log('[recorder] permission check threw', permErr && permErr.message);
+            }
+            try {
+                const cacheDir = RNFS.CachesDirectoryPath;
+                const dirExists = await RNFS.exists(cacheDir);
+                // RNFS uses native filesystem paths (no scheme), so the
+                // pre-flight checks run against rawRecordingPath, not
+                // the file://-prefixed `recordingPath` we hand to the
+                // recorder.
+                const fileExists = await RNFS.exists(rawRecordingPath);
+                let fileStat = null;
+                if (fileExists) {
+                    try { fileStat = await RNFS.stat(rawRecordingPath); } catch (_e) {}
+                }
+                console.log('[recorder] cacheDir =', cacheDir,
+                    'exists=', dirExists,
+                    'targetExists=', fileExists,
+                    'targetSize=', fileStat && fileStat.size,
+                    'targetMTime=', fileStat && fileStat.mtime);
+                // If a leftover file is sitting at the target path,
+                // remove it before we try to start — that's a known
+                // trigger on iOS where AVAudioRecorder.prepareToRecord
+                // returns NO if the file is locked by something else
+                // (e.g. an unreleased AVAudioPlayer from a prior
+                // playback) and the native module surfaces that as
+                // "Error occured during initiating recorder".
+                if (fileExists) {
+                    try {
+                        await RNFS.unlink(rawRecordingPath);
+                        console.log('[recorder] removed stale recording at target path');
+                    } catch (unlinkErr) {
+                        console.log('[recorder] failed to remove stale recording:',
+                            unlinkErr && unlinkErr.message);
+                    }
+                }
+            } catch (fsErr) {
+                console.log('[recorder] fs pre-flight threw', fsErr && fsErr.message);
+            }
+
+            // iOS only: ask SylkAudioRouteModule to release the
+            // shared AVAudioSession before the recorder lib tries to
+            // claim it. See ios/sylk/AudioRouteModule.m
+            // prepareForRecording for the full rationale — the short
+            // version is that the session is held in PlayAndRecord +
+            // VoiceChat at app init for VOIP, which engages voice-
+            // processing IO and causes AVAudioRecorder.record() to
+            // return NO (the exact failure we were hitting). This
+            // helper deactivates the session with
+            // NotifyOthersOnDeactivation so the recorder lib's own
+            // setCategory(mode:.default) + setActive(true) actually
+            // takes the input route. We restore in onStopRecord.
+            if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.prepareForRecording) {
+                try {
+                    await SylkAudioRouteModule.prepareForRecording();
+                    console.log('[recorder] prepareForRecording ok');
+                } catch (prepErr) {
+                    // Non-fatal — if the native helper is missing or
+                    // fails, we still try to start the recorder. The
+                    // worst case is the same failure we had before.
+                    console.log('[recorder] prepareForRecording failed (continuing):',
+                        prepErr && prepErr.message);
+                }
+            }
+
+            console.log('[recorder] startRecorder ->', recordingPath, 'platform=', Platform.OS);
+            const startResult = await audioRecorderPlayer.startRecorder(recordingPath, audioSet, true);
+            console.log('[recorder] startRecorder ok, native path =', startResult);
             audioRecorderPlayer.addRecordBackListener((e) => {
                 // currentMetering is in dBFS (typically -160..0) on
                 // iOS / Android. Treat -50 dB as the noise floor so
@@ -2221,19 +2451,90 @@ class ReadyBox extends Component {
                 const NOISE_FLOOR_DB = -50;
                 const norm = Math.max(0, Math.min(1, (db - NOISE_FLOOR_DB) / -NOISE_FLOOR_DB));
                 this._micPeaks.push(Math.round(norm * 255));
+                // Drive the live VuMeter from the same metering tick.
+                // Previously this came from SoundLevel.onNewFrame, but
+                // that conflicted with the recorder on iOS (see note in
+                // onStartRecord above). `norm` is already 0..1 with the
+                // same -50 dB noise floor, so it slots straight in.
+                // Also surface the elapsed duration the recorder reports
+                // (currentPosition is ms since record() returned true on
+                // iOS / since prepareRecorder on Android, ticking ~every
+                // 100 ms) so the live counter under the VuMeter stays in
+                // lockstep with what's actually being written to disk.
+                const elapsed = (typeof e.currentPosition === 'number')
+                    ? Math.max(0, Math.floor(e.currentPosition))
+                    : 0;
+                this.setState({ level: norm, recordingElapsedMs: elapsed });
             });
 
-			this.setState({recording: true});
+			this.setState({recording: true, recordingElapsedMs: 0});
 
-			this.recordingStopTimer = setTimeout(() => {
-				//console.log('Stop recording by timer...');
-				this.onStopRecord();
-			}, 30000);
+			// 30s auto-stop timer removed per user request — the user
+			// stays in the recording screen as long as they want and
+			// stops the recording explicitly via the stop button.
+			// Previously this fired onStopRecord() after 30 seconds
+			// which capped voice messages and surprised users
+			// composing longer notes.
 
 			this.props.vibrate();
 
         } catch (e) {
-            console.log(e.message);
+            // The native iOS module throws a hard-coded
+            // "Error occured during initiating recorder" string for
+            // *every* AVAudioSession / AVAudioRecorder failure, so
+            // e.message alone tells us nothing. Dump everything React
+            // Native's NSError->JS bridge gives us — code, domain,
+            // userInfo, nativeStackIOS, and the JS-side stack — so
+            // the metro log actually tells us which underlying
+            // failure (busy session, missing entitlement, locked
+            // file, sandbox path, hardware route change) we're
+            // looking at.
+            try {
+                console.log('[recorder] startRecorder FAILED');
+                console.log('[recorder]   message =', e && e.message);
+                console.log('[recorder]   code    =', e && e.code);
+                console.log('[recorder]   domain  =', e && e.domain);
+                console.log('[recorder]   name    =', e && e.name);
+                if (e && e.userInfo) {
+                    try { console.log('[recorder]   userInfo =', JSON.stringify(e.userInfo)); }
+                    catch (_je) { console.log('[recorder]   userInfo (raw) =', e.userInfo); }
+                }
+                if (e && e.nativeStackIOS) {
+                    console.log('[recorder]   nativeStackIOS =', e.nativeStackIOS);
+                }
+                if (e && e.nativeStackAndroid) {
+                    console.log('[recorder]   nativeStackAndroid =', e.nativeStackAndroid);
+                }
+                if (e && e.stack) {
+                    console.log('[recorder]   js stack =', e.stack);
+                }
+                // Last resort — enumerate own props in case the
+                // module is returning something exotic.
+                try {
+                    const keys = e ? Object.getOwnPropertyNames(e) : [];
+                    if (keys.length) {
+                        const dump = {};
+                        keys.forEach((k) => { try { dump[k] = e[k]; } catch (_ke) {} });
+                        console.log('[recorder]   full =', JSON.stringify(dump));
+                    }
+                } catch (_de) {}
+            } catch (logErr) {
+                console.log('[recorder] (failure logging itself threw)', logErr && logErr.message);
+            }
+            // Failure path: we already called prepareForRecording (which
+            // deactivated the VoIP session) but startRecorder threw, so
+            // onStopRecord will never run and the session would stay
+            // deactivated. Restore it here so a subsequent call comes up
+            // in VoIP mode normally.
+            if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.restoreAfterRecording) {
+                try {
+                    await SylkAudioRouteModule.restoreAfterRecording();
+                    console.log('[recorder] restoreAfterRecording ok (after failure)');
+                } catch (restErr) {
+                    console.log('[recorder] restoreAfterRecording failed (after failure):',
+                        restErr && restErr.message);
+                }
+            }
         }
     };
 
@@ -2258,6 +2559,18 @@ class ReadyBox extends Component {
         let result = null;
         try {
             result = await audioRecorderPlayer.stopRecorder();
+            // stopRecorder returns audioFileURL.absoluteString on iOS,
+            // which is file://-prefixed. Strip the scheme so the value
+            // stored in state.recordingFile matches Android (bare path)
+            // and the rest of the app's downstream consumers
+            // (file2GiftedChat, audio bubble playback, the
+            // file://-prefix check at line ~1381) don't have to second-
+            // guess the format. We always know the path is a local
+            // file because we constructed it from RNFS.CachesDirectoryPath
+            // in onStartRecord.
+            if (typeof result === 'string' && result.startsWith('file://')) {
+                result = result.substring('file://'.length);
+            }
         } catch (e) {
             console.log('stopRecorder error', e && e.message);
         }
@@ -2268,14 +2581,38 @@ class ReadyBox extends Component {
         // installs the recordingFile + peaks in the same render so
         // ContactsListBox's "hide chat while recordingFile is set"
         // gate stays true the whole way through. See the no-flash
-        // note at the top of this method.
+        // note at the top of this method. `level: 0` is folded into
+        // the same setState (instead of being a separate call after
+        // audioRecorded) so the VuMeter resets without forcing the
+        // extra render the no-flash comment warns about. SoundLevel.stop()
+        // is no longer needed — see the note in onStartRecord for why
+        // SoundLevel was dropped entirely.
         this.setState({
             recording: false,
             recordingFile: result,
             recordingPeaks: finalPeaks,
+            level: 0,
+            // Clear the live counter so the meter+counter pair start
+            // clean on the next recording. recordingDuration (set by
+            // audioRecorded after Sound() reads the finished file) is
+            // a separate value used by the preview UI, so we don't
+            // touch it here.
+            recordingElapsedMs: 0,
         });
         this.audioRecorded(result);
-		SoundLevel.stop();
+        // Paired with prepareForRecording in onStartRecord — restore
+        // PlayAndRecord + VoiceChat so the next call comes up cleanly.
+        // No-op on Android, and safe to call even if prepareForRecording
+        // failed (the native side no-ops without a saved snapshot).
+        if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.restoreAfterRecording) {
+            try {
+                await SylkAudioRouteModule.restoreAfterRecording();
+                console.log('[recorder] restoreAfterRecording ok');
+            } catch (restErr) {
+                console.log('[recorder] restoreAfterRecording failed:',
+                    restErr && restErr.message);
+            }
+        }
     };
 
     resetContact() {
@@ -2409,13 +2746,33 @@ class ReadyBox extends Component {
 		// minHeight here keeps the bar a fixed slab regardless of
 		// what's rendered inside it. `justifyContent: 'center'` keeps
 		// whatever IS visible vertically centered in that slab.
+		// Pull the active theme. The sort/order bar now follows the
+		// theme background colour (white in Day, dark in Night)
+		// rather than the fixed Sylk-blue chrome it used to carry —
+		// the user wants this row to blend with the surrounding
+		// screen surface instead of reading as a second coloured
+		// header band beneath the navbar.
+		const _readyBoxTheme = DarkModeManager.getTheme();
 		let navigationContainer = {borderWidth: 0,
 						   borderColor: 'blue',
-						   // Lock the bar height so it survives the sort/order
-						   // chips disappearing and matches the stacked
-						   // Sylk/Phonebook pills' own minHeight (46) with a
-						   // little breathing room above/below.
-						   minHeight: 52,
+						   backgroundColor: _readyBoxTheme.background,
+						   // Floor (not cap) the bar height. The same
+						   // `navigationContainer` style is used by
+						   // multiple rows:
+						   //   • top sort/category pill bar — pills
+						   //     at icon size 20 + 9pt caption ≈ 46dp
+						   //   • in-chat media-filter bar — same
+						   //     pattern, sometimes with two-line
+						   //     chips or a divider+sort cluster
+						   //     that needs a bit more room
+						   //   • bottom recents bar — has its own
+						   //     `height: 38` override at the call
+						   //     site so it stays tighter
+						   // `minHeight: 50` guarantees the pill row
+						   // doesn't collapse under its content, but
+						   // lets the in-chat variant grow to fit
+						   // when its chip cluster wants more room.
+						   minHeight: 50,
 						   justifyContent: 'center',
 						   paddingBottom: this.props.isFolded ? bottomInset : 0
 						   }
@@ -2524,6 +2881,21 @@ class ReadyBox extends Component {
                         </Text>
                     </View>
                     : null}
+                    {/* Outer wrapper of the order/category navbar.
+                        IMPORTANT: despite the original comment and
+                        appearance, this <View> does NOT only wrap the
+                        sort-bar — its closing tag is way down at the
+                        end of the header+body section (it encloses
+                        the search bar, the call-buttons row, the
+                        contacts list, etc.). So a fixed `height: 44`
+                        here clipped the entire stack to 44dp the
+                        moment `showCategoryBar` flipped on, which is
+                        why the search bar and contacts list
+                        "disappeared" under search-contacts mode.
+                        Leave this wrapper unconstrained; the sort
+                        bar's own height pinning happens on the
+                        inner `navigationContainer` View further down
+                        (via `minHeight`). */}
                     <View>
                     {this.showCategoryBar ?
                         // Two-section bar.
@@ -2617,19 +2989,15 @@ class ReadyBox extends Component {
                         :
                         <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
                             {/* LEFT side of the Contacts-list nav row:
-                                Sylk / AddressBook source pills. They sit to
-                                the left of the search bar (which renders
-                                immediately below this row) and drive
+                                Sylk / AddressBook source pills. Drive
                                 ContactsListBox's search corpus via
-                                state.contactSource — Sylk is the synced
-                                contact list, AddressBook is the system-wide
-                                entries loaded once at app start. Hidden in
-                                share/invite modes because the toggle isn't
-                                meaningful there. Positioned BEFORE the
-                                Sort/Order FlatList so the two clusters
-                                read as "source on the left, sort on the
-                                right" — mirroring the visual layout of the
-                                URIInput row beneath. */}
+                                state.contactSource.
+
+                                Hidden in share/invite modes — the
+                                share path is Sylk-only, and the invite
+                                picker merges Sylk + Phonebook into a
+                                single list so the toggle isn't
+                                meaningful. */}
                             {!this.props.shareToContacts && !this.props.inviteContacts ? (
                                 <View style={[readyBoxPillStyles.pillGroup, readyBoxPillStyles.pillGroupLeading]}>
                                     {/* Stacked icon-button + caption layout
@@ -2667,10 +3035,10 @@ class ReadyBox extends Component {
                                             />
                                         </View>
                                         <Text
-                                            style={readyBoxPillStyles.pillCaption}
+                                            style={[readyBoxPillStyles.pillCaption, { color: _readyBoxTheme.textPrimary }]}
                                             numberOfLines={1}
                                         >
-                                            Sylk
+                                            SIP
                                         </Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
@@ -2706,7 +3074,7 @@ class ReadyBox extends Component {
                                             />
                                         </View>
                                         <Text
-                                            style={readyBoxPillStyles.pillCaption}
+                                            style={[readyBoxPillStyles.pillCaption, { color: _readyBoxTheme.textPrimary }]}
                                             numberOfLines={1}
                                         >
                                             Phonebook
@@ -2723,31 +3091,40 @@ class ReadyBox extends Component {
                                 next to the pill group. categoryItems
                                 returns [] when there are fewer than 10
                                 contacts, in which case the FlatList renders
-                                empty and the pills sit alone on the left. */}
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                                <FlatList contentContainerStyle={[styles.navigationButtonGroup, { justifyContent: 'flex-end', flexGrow: 1 }]}
-                                    horizontal={true}
-                                    showsHorizontalScrollIndicator={false}
-                                    ref={(ref) => { this.navigationRefCategory = ref; }}
-                                    onScrollToIndexFailed={info => {
-                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                        wait.then(() => {
-                                            if (!this.props.selectedContact
-                                                && this.navigationRefCategory
-                                                && this.categoryItems
-                                                && info.index < this.categoryItems.length) {
-                                                try {
-                                                    this.navigationRefCategory.scrollToIndex({ index: info.index, animated: false });
-                                                } catch (e) {}
-                                            }
-                                        });
-                                    }}
-                                    data={this.categoryItems}
-                                    extraData={this.state}
-                                    keyExtractor={(item, index) => item.key}
-                                    renderItem={this.renderNavigationItem}
-                                />
-                            </View>
+                                empty and the pills sit alone on the left.
+
+                                Hidden in invite-to-conference mode — the
+                                user is focused on picking participants,
+                                not on filtering / sorting the corpus, and
+                                the toggle pills + search bar above provide
+                                the only affordances that are meaningful
+                                in that workflow. */}
+                            {!this.props.inviteContacts ? (
+                                <View style={{ flex: 1, minWidth: 0 }}>
+                                    <FlatList contentContainerStyle={[styles.navigationButtonGroup, { justifyContent: 'flex-end', flexGrow: 1 }]}
+                                        horizontal={true}
+                                        showsHorizontalScrollIndicator={false}
+                                        ref={(ref) => { this.navigationRefCategory = ref; }}
+                                        onScrollToIndexFailed={info => {
+                                            const wait = new Promise(resolve => setTimeout(resolve, 10));
+                                            wait.then(() => {
+                                                if (!this.props.selectedContact
+                                                    && this.navigationRefCategory
+                                                    && this.categoryItems
+                                                    && info.index < this.categoryItems.length) {
+                                                    try {
+                                                        this.navigationRefCategory.scrollToIndex({ index: info.index, animated: false });
+                                                    } catch (e) {}
+                                                }
+                                            });
+                                        }}
+                                        data={this.categoryItems}
+                                        extraData={this.state}
+                                        keyExtractor={(item, index) => item.key}
+                                        renderItem={this.renderNavigationItem}
+                                    />
+                                </View>
+                            ) : null}
                         </View>
                     : null}
 
@@ -3102,58 +3479,14 @@ class ReadyBox extends Component {
                                           tap doesn't fall back into the
                                           conference with nothing to do.
                                       */}
-                                  {this.props.inviteContacts ?
-                                  <>
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        {/* Cancel button — deliberately
-                                            discrete (white circle, neutral
-                                            grey glyph) rather than the red
-                                            destructive style. "Cancel" here
-                                            does NOT lose any saved data; it
-                                            just drops out of selection mode
-                                            without sending invites. The red
-                                            colouring implied a destructive
-                                            action and clashed visually with
-                                            the surrounding green/blue call
-                                            buttons. White fill + iconColor
-                                            #888 reads as "secondary action"
-                                            — the user still notices it but
-                                            it doesn't shout. Styled inline
-                                            because the ReadyBox stylesheet
-                                            doesn't expose a "whiteButton"
-                                            equivalent and this is the only
-                                            site that needs it. */}
-                                        <IconButton
-                                            style={{ backgroundColor: '#ffffff' }}
-                                            iconColor="#888"
-                                            size={32}
-                                            onPress={this.props.finishInvite}
-                                            icon="close"
-                                            accessibilityLabel="Cancel inviting"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.props.selectedContacts && this.props.selectedContacts.length > 0
-                                                ? greenButtonClass
-                                                : disabledGreenButtonClass}
-                                            disabled={!this.props.selectedContacts || this.props.selectedContacts.length === 0}
-                                            size={32}
-                                            onPress={this.props.goBackFunc}
-                                            icon="account-plus"
-                                            accessibilityLabel={
-                                                this.props.selectedContacts && this.props.selectedContacts.length > 0
-                                                    ? `Invite ${this.props.selectedContacts.length} selected contact${this.props.selectedContacts.length === 1 ? '' : 's'} to the conference`
-                                                    : 'Invite — pick at least one contact first'
-                                            }
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  </>
-                                  : null}
+                                  {/* Invite-mode Cancel / Invite buttons used to
+                                      live HERE in the top action strip. They
+                                      were relocated to the right side of the
+                                      search bar (see the URIContainerClass
+                                      block lower in this file) so the action
+                                      pair sits adjacent to the picker input —
+                                      one row, one focus area, no jump-up-then-
+                                      look-back-down for the user. */}
 
                                   {this.showAudioSendButton ?
                                   <View style={styles.buttonContainer}>
@@ -3256,6 +3589,31 @@ class ReadyBox extends Component {
                                     label="Recording"
                                     width={280}
                                 />
+                                {/* Live elapsed-time counter, driven by
+                                    audioRecorderPlayer's currentPosition
+                                    (see addRecordBackListener in
+                                    onStartRecord). monospace + tabular
+                                    numerals so the digits don't jitter
+                                    horizontally as they tick. Same 280 px
+                                    width as the VuMeter so the two read
+                                    as a single unit. */}
+                                <Text style={{
+                                    marginTop: 8,
+                                    width: 280,
+                                    textAlign: 'center',
+                                    fontVariant: ['tabular-nums'],
+                                    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                                    fontSize: 18,
+                                    color: red[500],
+                                }}>
+                                    {(() => {
+                                        const ms = this.state.recordingElapsedMs || 0;
+                                        const totalSec = Math.floor(ms / 1000);
+                                        const m = Math.floor(totalSec / 60);
+                                        const s = totalSec % 60;
+                                        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+                                    })()}
+                                </Text>
                             </View>
                         </View>
                     : null
@@ -3535,6 +3893,23 @@ class ReadyBox extends Component {
                        !inviteContacts / !shareToContacts upstream). */}
                    {this.showSearchBar && (this.props.inviteContacts || this.props.shareToContacts) ?
                    <View style={URIContainerClass}>
+                       {/* Cancel / Invite live INSIDE the URIInput as
+                           absolute overlays (handled inside URIInput
+                           itself, alongside the existing clear-× and
+                           dialpad overlays). We just pass the action
+                           callbacks and the enabled flag — URIInput
+                           draws them when inviteContacts is true and
+                           positions them at the right edge of the
+                           search bar, with the existing clear-×
+                           shifted further left to clear them.
+
+                           Dialpad in invite mode: only when the user
+                           has flipped the source to AddressBook AND
+                           we're not in a share workflow (the share
+                           path doesn't support PSTN-style entry).
+                           Lets the inviter dial a phone number into
+                           the search bar to add a phone-only entry
+                           to the conference. */}
                        <URIInput
                            defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
                            onChange={this.handleSearch}
@@ -3543,11 +3918,52 @@ class ReadyBox extends Component {
                            inviteContacts={this.props.inviteContacts}
                            searchMessages={this.state.searchMessages}
                            contactSource={this.state.contactSource}
-                           showDialpad={false}
-                           isDialpadActive={false}
+                           // Dialpad is unconditionally available in
+                           // invite mode (no source toggle is shown in
+                           // this flow — the picker merges Sylk +
+                           // Phonebook into one list, so the pad is
+                           // just "type a number to add". Still hidden
+                           // in share/search-messages modes, AND while
+                           // the soft keyboard is up: the user is
+                           // typing into the search field, the dialpad
+                           // would compete for the same screen space.
+                           showDialpad={
+                               this.props.inviteContacts
+                               && !this.props.shareToContacts
+                               && !this.state.searchMessages
+                               && !this.props.keyboardVisible
+                           }
+                           isDialpadActive={this.state.showAbDialpad}
+                           onDialpadPress={this.toggleAbDialpad}
                            autoFocus={false}
                            dark={this.props.dark}
+                           inviteEnabled={!!(this.props.selectedContacts && this.props.selectedContacts.length > 0)}
+                           onInvitePress={this.props.goBackFunc}
+                           onCancelInvitePress={this.props.finishInvite}
                        />
+                       {/* Dialpad expansion under the relocated
+                           invite-mode search bar. Same showAbDialpad
+                           state, but here it's the invite picker's
+                           pad, not the AB-browse pad — gated on
+                           inviteContacts so it never doubles up with
+                           the upper-bar pad when the user toggles
+                           between modes. Also folded away while the
+                           soft keyboard is up (the on-screen pad and
+                           the system keyboard can't reasonably share
+                           the bottom of the screen). */}
+                       {this.props.inviteContacts
+                         && this.state.showAbDialpad
+                         && !this.props.shareToContacts
+                         && !this.state.searchMessages
+                         && !this.props.keyboardVisible ? (
+                           <View style={readyBoxDialpadStyles.dialpadWrap}>
+                               <DTMFPad
+                                   onDigit={this.handleAbDialpadDigit}
+                                   extraColumn={true}
+                                   onBackspace={this.handleAbDialpadBackspace}
+                               />
+                           </View>
+                       ) : null}
                    </View>
                    : null}
 
@@ -3691,7 +4107,19 @@ class ReadyBox extends Component {
                         key={'recents-' + (this.props.isFolded ? 'f' : 'u')
                             + '-' + (this.props.orientation || '?')
                             + '-' + Math.round(width) + 'x' + Math.round(height)}
-                        style={navigationContainer}
+                        // Override the shared bar height — the recents
+                        // bar at the BOTTOM of the contacts list
+                        // hosts plain IconButtons (no caption stack
+                        // underneath) so it can sit much tighter
+                        // than the top sort/category bar. 34dp wraps
+                        // the IconButton's ~32dp footprint with a
+                        // hairline gap top/bottom. We also zero out
+                        // navigationContainer's inherited
+                        // `minHeight: 50` and `paddingBottom` here —
+                        // those were leaving a phantom bottom margin
+                        // that pushed the icons up against the top
+                        // edge.
+                        style={[navigationContainer, { height: 34, minHeight: 0, paddingBottom: 0 }]}
                     >
                         <FlatList contentContainerStyle={styles.navigationButtonGroup}
                             horizontal={true}
@@ -3965,12 +4393,21 @@ const readyBoxPillStyles = StyleSheet.create({
     },
     // Caption is plain text below the chip — same styling shape as
     // the sort-order labels (`Time` / `Size` / `Asc` / `Desc`): tiny
-    // white text, centered, snug to the chip above.
+    // text, centered, snug to the chip above. fontWeight pinned to
+    // numeric '400' (Regular) — on Android the string 'normal' /
+    // '600' can drift to Roboto Medium under Paper's inherited
+    // defaults; the numeric value resolves more reliably to the
+    // intended Roboto Regular cut. textTransform:none guards
+    // against any uppercase parent.
     pillCaption: {
         fontSize: 9,
-        fontWeight: '600',
+        fontWeight: '400',
+        textTransform: 'none',
         color: '#ffffff',
-        marginTop: 2,
+        // Pull the caption right up under the chip — the previous
+        // +2 left a visible gap, the user wants the chip + label to
+        // read as a single stacked element.
+        marginTop: -2,
         textAlign: 'center',
         backgroundColor: 'transparent',
     },

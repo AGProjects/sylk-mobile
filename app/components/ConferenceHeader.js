@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, Fragment, Component } from 'react';
-import { View, TouchableOpacity } from 'react-native';
+import { View, TouchableOpacity, Image } from 'react-native';
+import DarkModeManager from '../DarkModeManager';
+const _blinkLogoConf = require('../assets/images/blink-white-big.png');
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
@@ -32,6 +34,26 @@ class ConferenceHeader extends React.Component {
             displayName: this.props.callContact ? this.props.callContact.name : this.props.remoteUri,
             callState: this.props.call ? this.props.call.state : null,
             participants: this.props.participants,
+            // Count of other participants (excluding self and the audio
+            // bridge), computed in ConferenceBox from the union of the
+            // Janus webrtc roster and the SIP-side conference-info
+            // roster. Distinct prop from `participants` (which is the
+            // webrtc array, used by the kebab menu for its "Hide
+            // mirror" disabled check) — same JSX element used to ship
+            // two `participants={...}` lines and the array silently
+            // overwrote the count via JSX last-write-wins, making the
+            // "Nobody joined yet" subtitle stick even when SIP-only
+            // participants were already in the room.
+            participantsCount: this.props.participantsCount,
+            // Server-authoritative conference duration anchor in
+            // seconds (computed by webrtcgateway as time since the
+            // videoroom was created — independent of any SIP focus
+            // clock). When non-null on first arrival, shifts the
+            // local startTime back by serverDuration so the running
+            // timer shows "conference has been going N seconds"
+            // rather than "I joined N seconds ago".
+            serverDuration: this.props.serverDuration,
+            serverDurationApplied: false,
             startTime: this.props.callState ? this.props.callState.startTime : null,
             reconnectingCall: this.props.reconnectingCall,
             info: this.props.info,
@@ -175,10 +197,45 @@ class ConferenceHeader extends React.Component {
             }
         }
 
+        // Compute the timer anchor.
+        //
+        // Three cases:
+        //   (a) Server duration already applied → freeze startTime to
+        //       whatever the previous shift produced. Each subsequent
+        //       receiveProps used to blindly reset startTime to
+        //       nextProps.callState.startTime, which is the original
+        //       un-shifted join time — that erased the shift and the
+        //       meter dropped back to 0 (the user reported "starts
+        //       from zero even though server says 728").
+        //   (b) Server duration not yet applied, but a non-zero
+        //       sample is arriving now AND we know our join time:
+        //       shift back by serverDuration*1000 so (now - startTime)
+        //       ≈ serverDuration at the first tick. Gate is >0 (not
+        //       >=0) because a 0 reading from the session-accept
+        //       conferenceDuration event would otherwise satisfy
+        //       the condition with no actual shift, flipping
+        //       serverDurationApplied to true and ignoring every
+        //       later non-zero NOTIFY.
+        //   (c) Otherwise → use the raw join time from props (meter
+        //       starts at 0 and counts up until a real anchor lands).
+        const _liveStartTime = nextProps.callState ? nextProps.callState.startTime : null;
+        let _nextStartTime;
+        let _serverDurationApplied = this.state.serverDurationApplied;
+        if (_serverDurationApplied) {
+            _nextStartTime = this.state.startTime;
+        } else if (typeof nextProps.serverDuration === 'number'
+                && nextProps.serverDuration > 0
+                && _liveStartTime) {
+            _nextStartTime = new Date(new Date(_liveStartTime).getTime() - nextProps.serverDuration * 1000);
+            _serverDurationApplied = true;
+        } else {
+            _nextStartTime = _liveStartTime;
+        }
+
         this.setState({info: nextProps.info,
                        remoteUri: nextProps.remoteUri,
                        displayName: nextProps.callContact ? nextProps.callContact.name : nextProps.remoteUri,
-                       startTime: nextProps.callState ? nextProps.callState.startTime : null,
+                       startTime: _nextStartTime,
                        chatView: nextProps.chatView,
                        audioView: nextProps.audioView,
                        isLandscape: nextProps.isLandscape,
@@ -186,6 +243,9 @@ class ConferenceHeader extends React.Component {
                        audioOnly: nextProps.audioOnly,
                        enableMyVideo: nextProps.enableMyVideo,
                        participants: nextProps.participants,
+                       participantsCount: nextProps.participantsCount,
+                       serverDuration: nextProps.serverDuration,
+                       serverDurationApplied: _serverDurationApplied,
 					   availableAudioDevices: nextProps.availableAudioDevices,
 					   selectedAudioDevice: nextProps.selectedAudioDevice,
 					   insets: nextProps.insets
@@ -260,6 +320,16 @@ class ConferenceHeader extends React.Component {
                 break;
             case 'share':
                 this.props.toggleInviteModal();
+                break;
+            case 'bridge':
+                // Toggle the PSTN bridge tile's visibility in the
+                // participants list. ConferenceBox owns the state
+                // (default hidden) and the bridge tile gating logic;
+                // this handler just forwards the user tap.
+                if (typeof this.props.toggleBridgeVisibility === 'function') {
+                    this.props.toggleBridgeVisibility();
+                }
+                this.setState({menuVisible: false});
                 break;
             case 'myVideo':
                 this.props.toggleMyVideo();
@@ -343,14 +413,23 @@ class ConferenceHeader extends React.Component {
         
         displayName = 'Room ' + displayName;
 
+        // Count of OTHER participants in the room (excluding self and
+        // the audio bridge), passed in as a distinct prop so this
+        // check stays well-typed even though the legacy `participants`
+        // prop on this same component carries the webrtc roster ARRAY
+        // (used elsewhere for the menu's mirror-toggle disabled gate).
+        const otherCount = (typeof this.state.participantsCount === 'number')
+            ? this.state.participantsCount
+            : 0;
+
         if (this.state.reconnectingCall) {
             callDetail = 'Reconnecting call...';
         } else if (this.state.terminated) {
             callDetail = 'Conference ended';
         } else if (this.duration) {
             callDetail = this.duration;
-            if (this.state.participants > 0) {
-                var participants = this.state.participants + 1;
+            if (otherCount > 0) {
+                const participants = otherCount + 1;
                 callDetail = callDetail +  ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
             } else {
                 callDetail = callDetail + ' and nobody joined yet';
@@ -378,8 +457,13 @@ class ConferenceHeader extends React.Component {
 
         let chatTitle = this.state.chatView ? 'Hide chat' : 'Show chat';
 		
+		// Unified Sylk-blue background — same recipe as CallOverlay
+		// and the main app navbar. Slight 0.92 alpha so a hint of the
+		// underlying conference video still bleeds through behind
+		// the header. Brand colour: Pantone Process Uncoated DS 211-3U
+		// = #5476A5 (see DarkModeManager SYLK_BLUE_DEEP).
 		let appBarContainer = {
-			backgroundColor: 'rgba(34,34,34,.7)',
+			backgroundColor: 'rgba(67, 98, 148, 0.92)',
 			height: 60,
 			// Landscape: parent SafeAreaView already pushes us in by
 			// leftInset, AND Paper's outer Appbar wrapper adds its own
@@ -398,13 +482,25 @@ class ConferenceHeader extends React.Component {
 		if (Platform.OS === "ios") {
 			//appBarContainer.marginTop = 0;
 			if (this.state.isLandscape) {
-				// On iOS, the conference is rendered through a container
-				// that already shifts the navbar to device x=0, so we only
-				// need to compensate for Paper's own paddingHorizontal
-				// (one paperPad), not the SafeAreaView's leftInset.
+				// Paper's Appbar.Header is wrapped in an outer root-
+				// layer View that auto-applies paddingHorizontal =
+				// max(left, right). Negative marginLeft = -paperPad
+				// cancels Paper's left padding so the Appbar's left
+				// edge sits flush at x=0 of its parent (Orange).
+				// Width must MATCH the parent's width or Red will
+				// visibly overflow Orange on the right (audio mode)
+				// or stop short of Orange on the right (video mode):
+				//   • Audio view: ConferenceBox sets
+				//     conferenceHeader.width = width - rightInset
+				//     - leftInset (a sized View).
+				//   • Video view: conferenceHeader is an absolute
+				//     overlay with left:0, right:0 filling the
+				//     container (= `width` pixels in iOS landscape).
 				const paperPad = Math.max(leftInset, rightInset);
 				appBarContainer.marginLeft = -paperPad;
-				appBarContainer.width = width;
+				appBarContainer.width = this.props.audioOnly
+					? width - rightInset - leftInset
+					: width;
 			}
         } else {
 			if (Platform.Version < 34) {
@@ -412,9 +508,56 @@ class ConferenceHeader extends React.Component {
 			}
 		}
         
+        // Slim Sylk logo + "Sylk Mobile" brand strip above the
+        // conference header — portrait only. Sits BELOW the OS
+        // status bar (no negative marginTop) — earlier revision had
+        // marginTop:-topInset which put the wordmark behind the
+        // system clock/battery icons.
+        // When the strip is shown, the Appbar's own marginTop:-topInset
+        // is neutralised so it doesn't pull up behind the strip.
+        const _showConfBrandStrip = !this.state.isLandscape;
+        // In-call brand strip is intentionally pinned to the DARK
+        // (Night) palette regardless of the active theme. The
+        // conference surface (audio tiles / video grid) is dark, so a
+        // white Day-theme strip across the top reads as a jarring
+        // bright band above the call. We keep the literals here in
+        // sync with NIGHT_THEME.brandStripBackground / brandStripText
+        // in DarkModeManager.js — if you re-skin Night mode, mirror
+        // the change here. Dimensions (height 34 / 22×22 logo / 14px
+        // text) still match the main NavigationBar strip so the chrome
+        // has the same shape as the rest of the app.
+        const _CALL_STRIP_BG   = '#121212';
+        const _CALL_STRIP_TEXT = '#FFFFFF';
+        const _confBrandStrip = _showConfBrandStrip ? (
+            <View style={{
+                backgroundColor: _CALL_STRIP_BG,
+                height: 34,
+                paddingLeft: 12,
+                paddingRight: 12,
+                flexDirection: 'row',
+                alignItems: 'center',
+                width: Dimensions.get('window').width,
+                zIndex: 1000,
+                elevation: 10,
+            }}>
+                <Image source={_blinkLogoConf}
+                    style={{ width: 22, height: 22, marginRight: 8, marginLeft: leftInset }} />
+                <Text style={{ color: _CALL_STRIP_TEXT, fontSize: 14, fontWeight: '400' }}>Blink</Text>
+            </View>
+        ) : null;
+        const _appBarStyleWithStrip = _showConfBrandStrip
+            ? [appBarContainer, { marginTop: 0 }]
+            : [appBarContainer];
         return (
+          <Fragment>
+            {_confBrandStrip}
 			<Appbar.Header
-			  style={[appBarContainer]}
+			  style={_appBarStyleWithStrip}
+			  /* statusBarHeight={0} when the brand strip is shown:
+			     suppresses Paper's internal safe-area-top padding,
+			     which would otherwise leave a topInset-tall empty
+			     band between the brand strip and the Appbar. */
+			  statusBarHeight={_showConfBrandStrip ? 0 : undefined}
 			  dark={true}
 			>
 			  <Appbar.BackAction onPress={this.goBack} color="white" />
@@ -493,12 +636,76 @@ class ConferenceHeader extends React.Component {
 				    // the kebab-menu twin of this control just
 				    // below. The audio side stays `volume-high`,
 				    // unchanged.
-				    const _fromIcon = this.props.audioOnly ? 'volume-high' : 'video';
-				    const _toIcon = this.props.audioOnly ? 'video' : 'volume-high';
-				    const _a11y = this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view';
+				    // Three-state formation:
+				    //   chat view  → [chat] → [volume-high]  (exit to audio)
+				    //   audio view → [volume-high] → [video] (switch to video)
+				    //   video view → [video] → [volume-high] (switch to audio)
+				    // When in chat the onPress routes through toggleChatFunc
+				    // (which already closes the chat overlay and lands the
+				    // user back on the audio participants view); otherwise
+				    // it falls through to toggleViewMode. This replaces the
+				    // standalone "back to audio" group-icon button that used
+				    // to sit above the chat — the navbar formation is the
+				    // single source of truth for view-switch affordances.
+				    // Chat detection.
+				    //   • Audio-only conference: only audioChatView
+				    //     actually means "chat panel is on screen";
+				    //     chatView is initialised to !videoEnabled
+				    //     (i.e. always TRUE in audio conferences)
+				    //     so it can't be used as a signal here.
+				    //     The earlier `audioChatView || chatView`
+				    //     check made the formation render the
+				    //     chat → audio variant even in the
+				    //     participants view, which is what made the
+				    //     audio → video tap appear dead.
+				    //   • Video conference: chatView is the
+				    //     definitive chat-on-screen flag (chat
+				    //     splits alongside the video tiles).
+				    const _inChat = this.props.audioOnly
+				        ? !!this.props.audioChatView
+				        : !!this.props.chatView;
+				    let _fromIcon;
+				    let _toIcon;
+				    let _a11y;
+				    let _onPress;
+				    if (_inChat) {
+				        _fromIcon = 'chat';
+				        _toIcon = 'volume-high';
+				        _a11y = 'Switch to audio view';
+				        _onPress = () => {
+				            // Diagnostic — tracing why the chat → audio
+				            // formation appeared to do nothing. Logs
+				            // which branch (if any) we take when the
+				            // user taps the formation.
+				            console.log('[ConferenceHeader] chat→audio tap'
+				                + ' audioChatView=' + !!this.props.audioChatView
+				                + ' chatView=' + !!this.props.chatView
+				                + ' hasToggleAudioChatViewFunc=' + (typeof this.props.toggleAudioChatViewFunc === 'function')
+				                + ' hasToggleChatFunc=' + (typeof this.props.toggleChatFunc === 'function')
+				                + ' hasToggleViewMode=' + (typeof this.props.toggleViewMode === 'function'));
+				            if (this.props.audioChatView
+				                    && typeof this.props.toggleAudioChatViewFunc === 'function') {
+				                console.log('[ConferenceHeader] → calling toggleAudioChatViewFunc');
+				                this.props.toggleAudioChatViewFunc();
+				            } else if (typeof this.props.toggleChatFunc === 'function') {
+				                console.log('[ConferenceHeader] → calling toggleChatFunc');
+				                this.props.toggleChatFunc();
+				            } else if (typeof this.props.toggleViewMode === 'function') {
+				                console.log('[ConferenceHeader] → calling toggleViewMode');
+				                this.props.toggleViewMode();
+				            } else {
+				                console.log('[ConferenceHeader] → no handler available');
+				            }
+				        };
+				    } else {
+				        _fromIcon = this.props.audioOnly ? 'volume-high' : 'video';
+				        _toIcon = this.props.audioOnly ? 'video' : 'volume-high';
+				        _a11y = this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view';
+				        _onPress = () => this.props.toggleViewMode();
+				    }
 				    return (
 				      <TouchableOpacity
-				        onPress={() => this.props.toggleViewMode()}
+				        onPress={_onPress}
 				        accessibilityRole="button"
 				        accessibilityLabel={_a11y}
 				        // Match the Appbar.Action visual footprint
@@ -537,6 +744,11 @@ class ConferenceHeader extends React.Component {
 				    );
 				  })()
 				) : null}
+
+                {/* Quick-access "+" invite button removed from the
+                    navbar entirely (per user request). The same
+                    action is still available from the kebab menu's
+                    "Invite participants…" entry below. */}
 
                 <Menu
                     visible={this.state.menuVisible}
@@ -581,7 +793,36 @@ class ConferenceHeader extends React.Component {
                 >
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
                     <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share conference link..." />
-                    {this.state.participants > 1 && !this.state.audioOnly?
+                    {/* PSTN bridge toggle — only shown when a bridge
+                        is actually present in the room (bridgePresent
+                        prop). Title reflects the next action so the
+                        user knows what'll happen on tap: "Show PSTN
+                        bridge" when currently hidden, "Hide PSTN
+                        bridge" when currently shown. Icon mirrors the
+                        bridge avatar used in the participant list. */}
+                    {/* Folded (cover-display) mode also hides this
+                        Show/Hide PSTN bridge toggle per user request —
+                        the bridge controls aren't useful on the cramped
+                        cover screen. */}
+                    {this.props.bridgePresent && !this.props.isFolded ? (
+                        <Menu.Item
+                            onPress={() => this.handleMenu('bridge')}
+                            icon="bridge"
+                            title={this.props.showBridge ? 'Hide PSTN bridge' : 'Show PSTN bridge'}
+                        />
+                    ) : null}
+                    {/* Speaker selection only makes sense with 2+
+                        remote VIDEO participants to choose between.
+                        ConferenceBox passes videoParticipantCount =
+                        count of remote participants with an actual
+                        video track (bridges and audio-only remotes
+                        excluded). Falling back to the total
+                        participants > 2 check when the new prop
+                        isn't wired keeps older parents working. */}
+                    {(this.props.videoParticipantCount != null
+                        ? this.props.videoParticipantCount > 1
+                        : this.state.participants > 2)
+                     && !this.state.audioOnly ?
                     <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
                     : null}
                     {/* Hide / Show mirror — toggles enableMyVideo,
@@ -611,8 +852,17 @@ class ConferenceHeader extends React.Component {
                         have been folded into the Video... picker so
                         every video-tile affordance is under one
                         entry point. */}
-                    <Divider />
-                    {typeof this.props.toggleViewMode === 'function' ? (
+                    {/* Divider above the media-controls group — hidden
+                        in folded mode along with the items it
+                        separates so the menu doesn't show an orphan
+                        rule bracketing nothing. */}
+                    {!this.props.isFolded ? <Divider /> : null}
+                    {/* Switch to video view / Switch to audio view —
+                        hidden in folded mode per user request. The
+                        cover screen has no useful video layout, so
+                        offering the toggle doesn't lead anywhere
+                        meaningful. */}
+                    {!this.props.isFolded && typeof this.props.toggleViewMode === 'function' ? (
                     <Menu.Item
                         onPress={() => this.handleMenu('viewMode')}
                         icon={this.props.audioOnly ? 'video' : 'volume-high'}
@@ -627,8 +877,13 @@ class ConferenceHeader extends React.Component {
                         In AUDIO view there's no bar button to anchor
                         to, so we fall back to the classic nested
                         Paper Menu pattern — devices render as
-                        inline rows inside the kebab. */}
-                    {this.props.audioOnly ? (
+                        inline rows inside the kebab.
+                        Folded mode: hide entirely. The cover screen
+                        has no room for the picker overlay and the
+                        user can change the route from the main
+                        display when needed. */}
+                    {!this.props.isFolded && (
+                    this.props.audioOnly ? (
                         <Menu
                             visible={this.state.audioMenuVisible}
                             onDismiss={() => this.setState({audioMenuVisible: false})}
@@ -662,7 +917,7 @@ class ConferenceHeader extends React.Component {
                             icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
                             title="Audio..."
                         />
-                    )}
+                    ))}
 
                     {/* Video... — same audio-vs-video-view split as
                         Audio... above. In video view, defer to the
@@ -680,7 +935,10 @@ class ConferenceHeader extends React.Component {
                         visual feedback, and the full picker is
                         still one tap away after switching to
                         video view. */}
-                    {this.props.audioOnly ? (
+                    {/* Folded mode: hide Video... entirely. Same
+                        reasoning as the Audio... gate above. */}
+                    {!this.props.isFolded && (
+                    this.props.audioOnly ? (
                         <Menu
                             visible={this.state.videoMenuVisible}
                             onDismiss={() => this.setState({videoMenuVisible: false})}
@@ -734,8 +992,11 @@ class ConferenceHeader extends React.Component {
                             icon="video"
                             title="Video..."
                         />
-                    )}
-                    <Divider />
+                    ))}
+                    {/* Divider just below the media-controls group —
+                        suppressed in folded mode along with the items
+                        above it. */}
+                    {!this.props.isFolded ? <Divider /> : null}
 
                     {/* Extra breathing room above Hangup. Mirrors the
                         CallOverlay layout — the dropdown items are
@@ -745,14 +1006,25 @@ class ConferenceHeader extends React.Component {
                         conference termination, which is unrecoverable.
                         The Divider plus a 24-px spacer push Hangup
                         into its own visual zone at the bottom of
-                        the menu. */}
-                    <Divider />
-                    <View style={{ height: 24 }} />
-                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+                        the menu. Both the Divider and the spacer are
+                        also hidden in folded mode since the Hangup
+                        item itself is hidden — leaving the divider
+                        would bracket nothing. */}
+                    {!this.props.isFolded ? <Divider /> : null}
+                    {!this.props.isFolded ? <View style={{ height: 24 }} /> : null}
+                    {/* Folded mode: hide Hangup from the kebab. On the
+                        cover screen the audio-view bottom bar still
+                        carries the hangup button, so removing the
+                        duplicate from the overflow menu cleans up the
+                        cramped UI per user request. */}
+                    {!this.props.isFolded ? (
+                        <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+                    ) : null}
                 </Menu>
 
 			  </View>
 			</Appbar.Header>
+          </Fragment>
 			);
 		}
 	}
@@ -764,7 +1036,18 @@ ConferenceHeader.propTypes = {
     call: PropTypes.object,
     isTablet: PropTypes.bool,
     isLandscape: PropTypes.bool,
-    participants: PropTypes.number,
+    // Distinct count of OTHER participants (excluding self / bridge),
+    // computed in ConferenceBox from webrtc roster ∪ SIP roster. Used
+    // only for the "N participants" / "nobody joined yet" subtitle.
+    // The legacy `participants` prop on this same component carries
+    // the webrtc-array form and is still used by the menu's
+    // mirror-toggle disabled gate further down.
+    participantsCount: PropTypes.number,
+    // Server-authoritative conference duration anchor in seconds —
+    // shifts the running timer's startTime backwards on first arrival
+    // so the meter shows the true conference age rather than time
+    // since the local user joined.
+    serverDuration: PropTypes.number,
     buttons: PropTypes.object.isRequired,
     reconnectingCall: PropTypes.bool,
     audioOnly: PropTypes.bool,

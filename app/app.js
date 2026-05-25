@@ -34,7 +34,7 @@ import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
 import SoundPlayer from 'react-native-sound-player';
 import OpenPGP from "react-native-fast-openpgp";
-import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams } from './components/CallZrtp';
+import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams, registerZrtpRs1Handlers, setLocalDeviceId } from './components/CallZrtp';
 import ShortcutBadge from 'react-native-shortcut-badge';
 import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
 import {Keyboard} from 'react-native';
@@ -46,6 +46,7 @@ import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import mime from 'react-native-mime-types';
 import { StatusBar } from 'react-native';
 import { LogBox } from 'react-native';
+import Immersive from 'react-native-immersive';
 import RNBlobUtil from 'react-native-blob-util';
 import NetInfo from "@react-native-community/netinfo";
 import { SafeAreaProvider, SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
@@ -261,6 +262,18 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // reapplyVideoEncoderParams so the bump takes effect mid-
         // call without a hang-up + redial.
         videoProfile: VIDEO_PROFILE_DEFAULT_ID,
+        // Active visual theme. 'system' = follow the OS Appearance
+        // setting (default; preserves the historical behaviour);
+        // 'day' = force the light, WhatsApp-styled look; 'night' =
+        // force the dark Sylk look. Read by NavigationBar / ChatBubble
+        // via DarkModeManager.getTheme(); the setter (Preferences →
+        // Theme) writes here AND calls DarkModeManager.setMode() so
+        // the in-memory singleton stays in sync with the persisted
+        // value. Per-device (lives in the device section) because
+        // theme is a screen / form-factor opinion — two phones logged
+        // into the same SIP account can legitimately want different
+        // themes (one in a bright office, one always at night).
+        themeMode: 'system',
     }),
     // ---- Privacy / call-acceptance & messaging behaviour ---------------
     // Moved out of the dedicated SQL columns
@@ -314,6 +327,34 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // Last-used privacy radius for meeting-handshake shares,
         // 0 = "Off" (no privacy radius).
         privacyRadiusMeters: 0,
+    }),
+    // ---- Conference settings published by the server --------------------
+    // This section is NOT a user preference — it mirrors values pulled
+    // from the per-domain server configuration (sylk-config.json's
+    // `conference` block) into the accounts.settings JSON so the
+    // NATIVE push-receipt code can read them via sqlite3 without going
+    // through any JS bridge call at receipt time.
+    //
+    // sipBridge in particular is consulted by
+    // AppDelegate.shouldDisplayMessageFromPayload (iOS) and
+    // MyFirebaseMessagingService (Android) to drop the duplicate
+    // "incoming_session" push that the conference focus SIP-dials in
+    // parallel with the real "incoming_conference_request" push — the
+    // dedupe is what stops the second "Tap to join" CallKit ring from
+    // appearing alongside the conference invite. Native reads it from
+    // the same accounts.settings JSON it already opens for privacy
+    // flags (privacy.dnd, privacy.rejectAnonymous,
+    // privacy.rejectNonContacts) — see AppDelegate.m line 380-422 for
+    // the existing read pattern. SQL is the single source of truth;
+    // no NSUserDefaults / SharedPreferences mirror, no AsyncStorage
+    // cache.
+    //
+    // Written by applySipBridgeDomain whenever initConfiguration
+    // ingests fresh server config. Per-account because each account
+    // is bound to its own server domain (accounts.server) and
+    // different deployments may publish different sipBridge hosts.
+    conference: Object.freeze({
+        sipBridge: null,
     }),
     // ---- Legal-disclaimer acknowledgement flags -------------------------
     // Migrated out of AsyncStorage keys
@@ -524,7 +565,11 @@ import ImportPrivateKeyModal from './components/ImportPrivateKeyModal';
 import RestoreKeyModal from './components/RestoreKeyModal';
 import MeetingRequestModal from './components/MeetingRequestModal';
 import LocationRequestModal from './components/LocationRequestModal';
-import IncomingCallModal from './components/IncomingCallModal';
+import ConferenceRequestModal from './components/ConferenceRequestModal';
+// IncomingCallModal import removed — panel no longer used; the modal
+// was spuriously reappearing on conference WSS reconnect even though
+// Android long ago moved to FCM/CallKeep for incoming-call alerting.
+// import IncomingCallModal from './components/IncomingCallModal';
 import LogsModal from './components/LogsModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
@@ -693,7 +738,17 @@ const RNFS = require('react-native-fs');
 // purge/read/append paths all point at the same per-account file.
 
 import styles from './assets/styles/blink/root.scss';
-const backgroundImage = require('./assets/images/dark_linen.png');
+// Two app-background textures so Day / Night mode each get a linen
+// pattern that matches the surrounding theme. dark_linen.png is the
+// existing dark-on-darker weave used in Night; light_linen.png is its
+// channel-inverted counterpart (generated from the same source so the
+// weave grain lines up exactly), reading as a light-grey-on-lighter
+// pattern that fits the Day palette. ready()/render() picks the right
+// one off DarkModeManager.getTheme().isDark — keeping both imports at
+// module scope so Metro bundles each PNG once and the texture swap is
+// just an object-reference flip on theme change.
+const backgroundImageDark  = require('./assets/images/dark_linen.png');
+const backgroundImageLight = require('./assets/images/light_linen.png');
 
 const logger = new Logger("App");
 
@@ -1087,6 +1142,16 @@ class Sylk extends Component {
 		this.configurations = {};
 
         this._initialState = {
+            // True while the push-accept route gate is active — i.e.
+            // the user tapped Accept on a push notification but the
+            // sylkrtc Call hasn't materialised via WSS yet. Drives the
+            // CallOverlay copy: outgoing-style "Calling X…" is replaced
+            // with the more accurate "Accepting call…" during this
+            // window. Set/cleared by _openPushAcceptGate /
+            // _closePushAcceptGate; null outside that window so the
+            // overlay reverts to its normal pre-call messaging on
+            // outgoing dials.
+            pushAcceptInProgress: false,
             appState: null,
             configurationUrl: 'https://download.ag-projects.com/Sylk/Mobile/config.json',
 		    wsUrl: 'wss://webrtc-gateway.sipthor.net:9999/webrtcgateway/ws',
@@ -1098,16 +1163,17 @@ class Sylk extends Component {
             pstnAccessUrl: 'https://sip2sip.info/help',
             // Conference media — the server's RECOMMENDED video codec,
             // read from the per-domain sylk-config.json's
-            // 'conferenceVideoCodec' field ('VP8' | 'VP9' | 'H264' |
-            // 'AV1'). NULL means the server didn't publish a value.
+            // 'conference.codec' field ('VP8' | 'VP9' | 'H264' |
+            // 'AV1'). Lives inside the conference object below alongside
+            // pstnBridge / sipBridge.
             //
             // The user preference at
             // accountSetting.rtp.conferenceVideoCodec ALWAYS wins when
-            // set — this state value is consulted only as a fallback
+            // set — conference.codec is consulted only as a fallback
             // by _applyConferenceVideoCodec. The server doesn't
             // enforce the codec on the client; it just tells the
             // client what its Janus build was tested with.
-            conferenceVideoCodec: null,
+            conferenceSettings: {codec: null, pstnBridge: null, sipBridge: null},
             enrollmentUrl: 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
             iceServers: [{"urls":"stun:stun.sipthor.net:3478"}],
             serverSettingsUrl: 'https://mdns.sipthor.net/sip_settings.phtml',
@@ -1414,6 +1480,33 @@ class Sylk extends Component {
         this.signOut = false;
         this.signIn = false;
         this.currentRoute = null;
+        // Push-accept route gate.
+        //
+        // Set in callEventHandler when an ACTION_ACCEPT_* push fires
+        // (push_launch_route_first). Holds the route on /call until the
+        // sylkrtc Call arrives via WSS and reaches established/terminated,
+        // OR a 45 s safety timeout expires — whichever happens first.
+        // While the gate is active, changeRoute('/ready'|'/login',
+        // 'start_up') is suppressed; the auto-login flow keeps running
+        // in the background but doesn't steal the screen out from under
+        // AudioCallBox.
+        //
+        // Shape (null when no gate is active):
+        //   { callUUID:    string,
+        //     targetRoute: '/call' | '/conference',  // route held open
+        //     deadlineAt:  number,        // ms-epoch when 45 s expires
+        //     timer:       Timeout|null   // setTimeout handle, cleared on close
+        //   }
+        // targetRoute distinguishes 1:1 sessions ('/call', AudioCallBox /
+        // VideoBox) from conference invites ('/conference', Conference
+        // box) — picked at gate-open from payload.event so we don't
+        // mount the wrong view while waiting for the Call/Conference to
+        // arrive via WSS.
+        // Use this._openPushAcceptGate / this._closePushAcceptGate /
+        // this._isPushAcceptGateActive to mutate / query; don't poke
+        // this._pushAcceptGate directly so the timer lifecycle stays
+        // managed.
+        this._pushAcceptGate = null;
         this.pushtoken = null;
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
@@ -1470,6 +1563,32 @@ class Sylk extends Component {
         this.siblingAnsweredLocationRequestIds = new Set();
         // Per-peer pending request, keyed by sender uri.
         this.pendingLocationRequests = {};
+
+        // ===== Conference-request handshake (in-call "Escalate to
+        // conference" via the avatar "+" panel) =====
+        //
+        // conferenceRequestModal mirrors locationRequestModal in shape:
+        // the receiver-side popup reads from it. `room` is the
+        // conference URI the requester proposed — the accept echo MUST
+        // carry the same value so both sides converge on the same
+        // room. `expiresAt` is the request's deadline in ms (60 s
+        // window by convention).
+        this.state.conferenceRequestModal = {
+            show: false,
+            fromUri: null,
+            requestId: null,
+            expiresAt: null,
+            room: null,
+        };
+        // Ids of incoming conference requests we've already presented
+        // OR replied to. Prevents re-prompting on metadata replay /
+        // socket reconnect.
+        this.handledConferenceRequestIds = new Set();
+        // Outgoing requests we've sent and are waiting on. Keyed by
+        // peer uri so we can match the accept echo from `author`.
+        // Value: { requestId, room, expiresAt, peerUri, callId }.
+        this.pendingOutgoingConferenceRequests = {};
+        this._conferenceRequestModalDismissTimerId = null;
 
         // this.myParticipants — REMOVED. The per-room collected
         // participant list was only ever read by a commented-out
@@ -2825,13 +2944,20 @@ class Sylk extends Component {
 				  type: 'contact',
 				  photo,
 				  label: number.label,
-				  tags: ['contact'],
+				  // Phone-vs-email tag in addition to 'contact'. Used by
+				  // the invite-to-conference picker, which drops email-
+				  // tagged entries (a conference invite cannot be dialled
+				  // to an email). URI-shape sniffing was unreliable —
+				  // some address books surface phones with an '@' suffix
+				  // (e.g. WhatsApp contact entries), which would
+				  // otherwise be misclassified.
+				  tags: ['contact', 'phone'],
 				});
 				if (photo) avatarPhotos[name.trim().toLowerCase()] = photo;
 				seen_uris.set(number_stripped, true);
 			  }
 			});
-		
+
 			contact.emailAddresses.forEach(email => {
 			  let email_stripped = email.email.replace(/\s|\(|\)/g, '');
 			  if (email_stripped && !seen_uris.has(email_stripped)) {
@@ -2842,7 +2968,7 @@ class Sylk extends Component {
 				  type: 'contact',
 				  photo,
 				  label: email.label,
-				  tags: ['contact'],
+				  tags: ['contact', 'email'],
 				});
 				if (photo) avatarPhotos[email_stripped] = photo;
 				seen_uris.set(email_stripped, true);
@@ -3431,19 +3557,49 @@ class Sylk extends Component {
 		 }
 
 		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+			utils.timestampedLog('[proximity] in-call route change',
+				prevState.proximityNear, '->', this.state.proximityNear,
+				'useInCallManger=' + !!this.useInCallManger);
 			if (this.state.proximityNear) {
+				utils.timestampedLog('[proximity] in-call -> EARPIECE + screen OFF');
 				if (this.useInCallManger) {
 					this.speakerphoneOff();
 				} else {
 					this.selectAudioDevice('BUILTIN_EARPIECE');
 				}
+				// Black the screen while the phone is at the ear. iOS is a
+				// no-op inside InCallManager (the OS handles it natively
+				// via UIDevice.proximityMonitoringEnabled), so guarding by
+				// platform isn't strictly necessary — but the try/catch is
+				// because turnScreenOff falls through to a manual brightness
+				// path on devices without PROXIMITY_SCREEN_OFF_WAKE_LOCK
+				// support and that path can throw on stale activities.
+				try { InCallManager.turnScreenOff(); } catch (e) {
+					utils.timestampedLog('[proximity] turnScreenOff failed', e && e.message);
+				}
 			} else {
+				utils.timestampedLog('[proximity] in-call -> SPEAKER + screen ON');
 				if (this.useInCallManger) {
 				   this.speakerphoneOn();
 				} else {
 					this.selectAudioDevice('BUILTIN_SPEAKER');
 				}
+				try { InCallManager.turnScreenOn(); } catch (e) {
+					utils.timestampedLog('[proximity] turnScreenOn failed', e && e.message);
+				}
 			}
+         } else if (prevState.proximityNear !== this.state.proximityNear) {
+			// proximityNear changed but the in-call route branch did not
+			// fire — log why so we can tell whether the gate (enabled /
+			// headset / folded) or the missing activeCall is the cause.
+			utils.timestampedLog('[proximity] in-call route skipped',
+				prevState.proximityNear, '->', this.state.proximityNear,
+				'enabled=' + !!(this.state.accountSetting
+					&& this.state.accountSetting.device
+					&& this.state.accountSetting.device.proximityEnabled),
+				'hasHeadset=' + !!this.state.hasHeadset,
+				'folded=' + !!this.state.isFolded,
+				'inCall=' + (this.activeCall ? true : false));
          }
 
 		 if (prevState.selectedDevice !== this.state.selectedDevice ) {
@@ -5044,6 +5200,86 @@ class Sylk extends Component {
 		}
     }
 
+    // Push-accept route gate — see comment on this._pushAcceptGate in
+    // the constructor for the contract. Opens a 45 s window during
+    // which start_up routes to /ready/login are suppressed so the
+    // freshly-mounted AudioCallBox doesn't get yanked off-screen while
+    // the WSS connection finishes negotiating and the incoming Call
+    // arrives. Idempotent for the same callUUID; a second open with a
+    // new callUUID resets the timer.
+    _openPushAcceptGate(callUUID, targetRoute) {
+        if (!callUUID) return;
+        // Default to /call when the caller doesn't pass a route — keeps
+        // the legacy single-arg signature working for any future call
+        // site that just wants the 1:1 audio/video flow.
+        const _route = (targetRoute === '/conference') ? '/conference' : '/call';
+        if (this._pushAcceptGate && this._pushAcceptGate.callUUID === callUUID) {
+            // Same call — leave the existing deadline alone so a
+            // double-fired push (FCM + CallKeep can both deliver the
+            // same Accept) doesn't extend the timer indefinitely.
+            return;
+        }
+        // Different (or first) callUUID: replace any prior gate.
+        this._closePushAcceptGate('superseded');
+        const PUSH_ACCEPT_GATE_MS = 45000;
+        const deadlineAt = Date.now() + PUSH_ACCEPT_GATE_MS;
+        const timer = setTimeout(() => {
+            // Timer fired without the call/conference ever materialising
+            // / reaching a terminal state. Close the gate and — if we're
+            // still pointing at the route we opened with no backing
+            // Call/Conference object — flow back to /ready so the user
+            // isn't stranded on a blank call screen.
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                'push_accept_gate_expired after',
+                PUSH_ACCEPT_GATE_MS, 'ms — falling back to /ready from',
+                _route);
+            this._closePushAcceptGate('timeout');
+            if (this.currentRoute === _route && !this.state.currentCall) {
+                this.changeRoute('/ready', 'push_accept_gate_timeout');
+            }
+        }, PUSH_ACCEPT_GATE_MS);
+        this._pushAcceptGate = { callUUID, targetRoute: _route, deadlineAt, timer };
+        // Reflect the gate as React state so CallOverlay can swap the
+        // overlay copy from "Calling X…" to "Accepting call…" while the
+        // gate is active. The boolean is the only piece of the gate the
+        // UI cares about — callUUID / deadlineAt / timer stay on the
+        // instance field above where they're managed.
+        if (!this.state.pushAcceptInProgress) {
+            this.setState({ pushAcceptInProgress: true });
+        }
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            'push_accept_gate_opened (45 s window) — /ready/login start_up routes suppressed');
+    }
+
+    _closePushAcceptGate(reason) {
+        if (!this._pushAcceptGate) return;
+        const { callUUID, timer } = this._pushAcceptGate;
+        if (timer) {
+            try { clearTimeout(timer); } catch (e) { /* noop */ }
+        }
+        this._pushAcceptGate = null;
+        // Reset the UI-facing state so CallOverlay drops the
+        // "Accepting call…" copy and reverts to whatever the next render
+        // would otherwise show (typically "Connecting…" once call.state
+        // hits 'incoming', then "Establishing media…" / etc.).
+        if (this.state.pushAcceptInProgress) {
+            this.setState({ pushAcceptInProgress: false });
+        }
+        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+            'push_accept_gate_closed reason=' + reason);
+    }
+
+    _isPushAcceptGateActive() {
+        if (!this._pushAcceptGate) return false;
+        if (Date.now() >= this._pushAcceptGate.deadlineAt) {
+            // Stale gate (timer somehow missed firing) — treat as closed
+            // and let the route through.
+            this._closePushAcceptGate('stale');
+            return false;
+        }
+        return true;
+    }
+
     changeRoute(route, reason) {
         console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('[app] Route', this.currentRoute, '->', route, ':', reason);
@@ -5080,6 +5316,27 @@ class Sylk extends Component {
 		    if (this.currentRoute == '/conference' && reason == 'start_up') {
 		        console.log('Remain in /conference until we receive it');
 				return;
+		    }
+
+		    // Cold-start push-accept gate. The native push flips us to
+		    // /call early (callEventHandler → push_launch_route_first),
+		    // but the App component can be re-created during the launch
+		    // sequence, resetting this.currentRoute to null. The two
+		    // guards above then miss the case where the user has just
+		    // accepted an incoming call and the route is racing back to
+		    // /ready via start_up before the WSS connection has even
+		    // delivered the Call object. Hold the screen on /call until
+		    // either the call materialises and reaches a terminal state
+		    // OR the 45 s safety timeout in _openPushAcceptGate expires.
+		    // Reasons other than start_up (e.g. user_hangup_call,
+		    // push_accept_gate_timeout, phone_permission_denied) are
+		    // explicit intent and still go through.
+		    if (reason == 'start_up' && this._isPushAcceptGateActive()) {
+		        utils.timestampedLog('[call] [ui] call_id='
+		            + this._pushAcceptGate.callUUID,
+		            'push_accept_gate blocking start_up route to', route,
+		            '— remaining on /call until call arrives or 45 s elapse');
+		        return;
 		    }
 
 			this.setState({contactIsSharing: false, totalMessageExceeded: false});
@@ -5144,14 +5401,58 @@ class Sylk extends Component {
             if (this.state.currentCall && reason === 'outgoing_connection_failed' && this.state.currentCall.direction === 'outgoing') {
                 let target_uri = this.state.currentCall.remoteIdentity.uri.toLowerCase();
                 let options = {audio: true, video: true, participants: []}
-                let streams = this.state.currentCall.getLocalStreams();
-                if (streams.length > 0) {
-                    let tracks = streams[0].getVideoTracks();
-                    let mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
-                    if (mediaType === 'audio') {
-                        options.video = false;
+
+                // For conferences, the local stream ALWAYS carries
+                // a video track regardless of the user's audio /
+                // video button choice — the track is just muted
+                // (track.enabled = false) when they pressed Audio.
+                // So `getVideoTracks().length > 0` is a misleading
+                // heuristic: it's always true for a conference,
+                // and the reconnect would silently come back as
+                // video even when the user started audio-only.
+                // Prefer `this.outgoingMedia.video` (the explicit
+                // user-button choice we stashed in callKeepStartCall
+                // / callKeepStartConference) when it's present.
+                // Fall back to the stream-inspection logic for any
+                // path that didn't populate outgoingMedia.
+                if (this.outgoingMedia
+                        && typeof this.outgoingMedia.video === 'boolean') {
+                    options.video = !!this.outgoingMedia.video;
+                    options.audio = this.outgoingMedia.audio !== false;
+                } else {
+                    let streams = this.state.currentCall.getLocalStreams();
+                    if (streams.length > 0) {
+                        let tracks = streams[0].getVideoTracks();
+                        let mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
+                        if (mediaType === 'audio') {
+                            options.video = false;
+                        }
                     }
                 }
+
+                // Forward the skipCountdown intent from the
+                // original start (e.g. conference-request handshake)
+                // so the reconnect doesn't suddenly surface the
+                // camera-preview Start-call gate the user already
+                // bypassed. Together with the reconnect flag below
+                // (read by callKeepStartConference to keep
+                // state.reconnectingCall=true through the
+                // re-establishment), this keeps the reconnect path
+                // silent on UI prompts.
+                if (this.outgoingMedia && this.outgoingMedia.skipCountdown) {
+                    options.skipCountdown = true;
+                }
+                // Mark this start as a reconnect so the downstream
+                // callKeepStartConference / callKeepStartCall keeps
+                // state.reconnectingCall=true through the
+                // re-establishment. Without this flag those methods
+                // would unconditionally setState({reconnectingCall:
+                // false}) and Conference's awaitingUserCallStart
+                // gate would flip true for a video reconnect —
+                // showing the pre-call camera-preview Start-call
+                // countdown bar, which has no business appearing on
+                // a reconnect of a call that was already running.
+                options.reconnect = true;
 
                 this.setState({reconnectingCall: true});
                 console.log('Reconnecting call to', target_uri, 'with options', options);
@@ -5207,14 +5508,12 @@ class Sylk extends Component {
                         this.getLocalMedia(Object.assign({audio: true, video: hasVideo}), '/call');
                     }
                 } else if (reason === 'escalate_to_conference') {
-                    let conf_uri = [];
-                    conf_uri.push(this.state.accountId.split('@')[0]);
-                    this.participantsToInvite.forEach((p) => {
-                        conf_uri.push(p.split('@')[0]);
-                    });
-                    conf_uri.sort();
-
-                    let uri = conf_uri.toString().toLowerCase().replace(/,/g,'-') + '@' + this.state.defaultConferenceDomain;
+                    // Use the same 6-digit numeric room id technique as
+                    // for fresh conferences (utils.generateSillyName).
+                    // Keeps escalated rooms compact and dictation-friendly
+                    // instead of producing a long hyphen-joined URI.
+                    const _room = String(Math.floor(100000 + Math.random() * 900000));
+                    let uri = _room + '@' + this.state.defaultConferenceDomain;
 
                     const options = {audio: this.outgoingMedia ? this.outgoingMedia.audio: true,
                                      video: this.outgoingMedia ? this.outgoingMedia.video: true,
@@ -5269,6 +5568,11 @@ class Sylk extends Component {
 
 	componentWillUnmount() {
 		utils.timestampedLog('[app] will unmount');
+
+		// Cancel any pending push-accept route gate so its setTimeout
+		// callback doesn't fire into an unmounted App and call
+		// setState / changeRoute on a dead instance.
+		this._closePushAcceptGate('app_unmount');
 
 		if (this._liveShareWatchdog) {
 			// Mirrors the BackgroundTimer.setInterval start in
@@ -5345,17 +5649,33 @@ class Sylk extends Component {
 	}
 
 	handleProximity = ({ proximity }) => {
+		// One-line trace of every sensor event together with the gates that
+		// can swallow it. Grep `[proximity] event` in metro.log to see the
+		// raw firing rate; if events stop after call start we know the
+		// listener itself died, otherwise the gate values tell us which
+		// branch is dropping the event.
+		utils.timestampedLog('[proximity] event near=' + proximity,
+			'enabled=' + !!(this.state.accountSetting
+				&& this.state.accountSetting.device
+				&& this.state.accountSetting.device.proximityEnabled),
+			'headset=' + !!this.state.headsetIsPlugged,
+			'audioDev=' + this.state.selectedAudioDevice,
+			'folded=' + !!this.state.isFolded,
+			'inCall=' + (this.activeCall ? true : false),
+			'prevNear=' + !!this.state.proximityNear);
+
         if (!this.state.accountSetting.device.proximityEnabled) {
+            utils.timestampedLog('[proximity] gate: setting disabled');
             return;
         }
 
         if (this.state.headsetIsPlugged) {
-            utils.timestampedLog('[app] Proximity disabled when headset is plugged');
+            utils.timestampedLog('[proximity] gate: headset is plugged');
             return;
         }
 
 		if (this.state.selectedAudioDevice == 'BLUETOOTH_SCO') {
-            utils.timestampedLog('[app] Proximity disabled when BT is plugged');
+            utils.timestampedLog('[proximity] gate: BT SCO active');
             return;
 		}
 
@@ -5364,11 +5684,11 @@ class Sylk extends Component {
 		// routing to earpiece would silence the call, so ignore proximity
 		// events while folded.
 		if (this.state.isFolded) {
-            //utils.timestampedLog('Proximity disabled when device is folded');
+            utils.timestampedLog('[proximity] gate: device folded');
             return;
 		}
 
-        //utils.timestampedLog('proximityNear changed:', proximity);
+		utils.timestampedLog('[proximity] setState proximityNear=' + proximity);
 		this.setState({ proximityNear: proximity});
 	};
   
@@ -5434,6 +5754,10 @@ class Sylk extends Component {
 		//console.log('--- initConfiguration', configurationJson, origin);
 		try {
 			configuration = await JSON.parse(configurationJson);
+
+			/*console.log('[serverConfig] from server:');
+			JSON.stringify(configuration, null, 2).split('\n').forEach(line => console.log('  ' + line));
+			*/
 
 			if (!configuration.wsServer) {
 				console.log('initConfiguration missing wsServer');
@@ -5513,16 +5837,40 @@ class Sylk extends Component {
 				console.log('[pstnRules] from server config =', pstn.rules);
 			}
 
-			// Conference codec — server's RECOMMENDED video codec for
-			// its Janus backend. The user preference at
-			// accountSetting.rtp.conferenceVideoCodec wins;
-			// this value is consulted by _applyConferenceVideoCodec
+			// Conference section — { codec, pstnBridge, sipBridge }.
+			// codec replaces the previous top-level conferenceVideoCodec
+			// key. The user preference at
+			// accountSetting.rtp.conferenceVideoCodec still wins;
+			// conference.codec is consulted by _applyConferenceVideoCodec
 			// only when the user hasn't expressed a preference.
-			if (configuration.conferenceVideoCodec
-			    && typeof configuration.conferenceVideoCodec === 'string') {
-				this.setState({ conferenceVideoCodec: configuration.conferenceVideoCodec });
-				console.log('[conferenceVideoCodec] server recommendation =', configuration.conferenceVideoCodec);
+			if (configuration.conference && typeof configuration.conference === 'object') {
+				this.setState({ conferenceSettings: {
+					codec: typeof configuration.conference.codec === 'string' ? configuration.conference.codec : null,
+					pstnBridge: typeof configuration.conference.pstnBridge === 'string' ? configuration.conference.pstnBridge : null,
+					sipBridge: typeof configuration.conference.sipBridge === 'string' ? configuration.conference.sipBridge : null,
+				}});
+			} else if (configuration.conferenceVideoCodec
+			           && typeof configuration.conferenceVideoCodec === 'string') {
+				this.setState({ conferenceSettings: { codec: configuration.conferenceVideoCodec, pstnBridge: null, sipBridge: null } });
 			}
+
+			// Persist the sipBridge into the active account's
+			// accounts.settings JSON (conference.sipBridge). The
+			// NATIVE push-receipt path (AppDelegate.shouldDisplay-
+			// MessageFromPayload on iOS, MyFirebaseMessagingService on
+			// Android) reads this column via sqlite3 — same pattern
+			// used for privacy.dnd — and uses it to drop the duplicate
+			// "incoming_session" push that the conference focus
+			// SIP-dials in parallel with the real
+			// "incoming_conference_request". Without the dedupe, two
+			// CallKit rings appear ("Conference room…" + "Tap to
+			// join") and tapping the wrong one strands the user on
+			// the connecting screen.
+			const _sipBridge = (configuration.conference && typeof configuration.conference === 'object'
+				&& typeof configuration.conference.sipBridge === 'string')
+					? configuration.conference.sipBridge
+					: null;
+			this.applySipBridgeDomain(_sipBridge, 'initConfiguration');
 
 			return true;
 
@@ -5530,9 +5878,47 @@ class Sylk extends Component {
 			console.log('initConfiguration error', e);
 			return false;
         }
-        
+
     }
-    
+
+    /**
+     * Persist the configured SIP-focus bridge host into the active
+     * account's `accounts.settings` JSON blob under
+     * `conference.sipBridge`. The NATIVE push-receipt code in
+     * AppDelegate.shouldDisplayMessageFromPayload (iOS) and
+     * MyFirebaseMessagingService (Android) opens this same blob via
+     * sqlite3 to read privacy flags (privacy.dnd,
+     * privacy.rejectAnonymous, privacy.rejectNonContacts) — see
+     * AppDelegate.m line 380-422 for the read pattern — and now also
+     * reads conference.sipBridge from it to drop the duplicate
+     * "incoming_session" push that the conference focus SIP-dials in
+     * parallel with the real "incoming_conference_request" push (the
+     * second "Tap to join" CallKit ring).
+     *
+     * SQL is the single source of truth — no NSUserDefaults mirror,
+     * no AsyncStorage cache, no JS-to-native bridge call. Native reads
+     * directly from accounts.settings when a push arrives.
+     *
+     * setAccountSetting is a no-op when state.accountId isn't set
+     * yet (per its own guard); at that stage there's nothing to
+     * dedupe against either, and initConfiguration will be called
+     * again once an account is loaded.
+     */
+    applySipBridgeDomain(domain, origin='unspecified') {
+        const _value = (typeof domain === 'string' && domain.length > 0) ? domain : null;
+        try {
+            if (this.state.accountId) {
+                this.setAccountSetting('conference.sipBridge', _value);
+                console.log('[setSipBridgeDomain] persisted to accounts.settings value=', _value, 'origin=', origin);
+            } else {
+                console.log('[setSipBridgeDomain] no active account yet — skipping SQL persist origin=', origin);
+            }
+        } catch (e) {
+            console.log('[setSipBridgeDomain] SQL persist failed origin=', origin,
+                'value=', _value, 'error=', e && e.message);
+        }
+    }
+
     async getLastCallEvent() {
 		  if (Platform.OS !== 'android') return;
 		
@@ -5590,9 +5976,22 @@ class Sylk extends Component {
 			|| payload.action === 'ACTION_ACCEPT_VIDEO'
 			|| payload.action === 'ACTION_ACCEPT'
 		);
+		// Conference invites (push event = 'incoming_conference_request')
+		// belong to /conference, not /call. The 1:1 audio/video flow uses
+		// /call (AudioCallBox / VideoBox). Without this branch a push-
+		// accepted conference invite would mount the 1:1 call view, find
+		// no Conference object, sit there, then route back to /ready
+		// when the gate timed out — the same dropped-call failure mode
+		// we just fixed, only with the wrong destination. handleFirebase-
+		// PushInteraction already picks the route this way (see line
+		// ~7096); mirror it here so the bridge-event path agrees with
+		// the FCM-tap path.
+		const _isConferenceEvent = (payload.event === 'incoming_conference_request');
+		const _pushAcceptRoute = _isConferenceEvent ? '/conference' : '/call';
 		if (_isAcceptAction) {
 			utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
-				'00 push_launch_route_first — flipping to /call BEFORE backToForeground');
+				'00 push_launch_route_first — flipping to ' + _pushAcceptRoute
+				+ ' (event=' + payload.event + ') BEFORE backToForeground');
 			// Seed remote-party state synchronously so the FIRST render
 			// of AudioCallBox already knows the caller. fromUri is the
 			// authoritative URI from the OS-native payload; if the
@@ -5603,16 +6002,47 @@ class Sylk extends Component {
 			// callContact null and Call.lookupContact will refine the
 			// display name later via the AB-contacts path.
 			const _fromUri = payload.fromUri;
-			const _displayName = payload.displayName
-				|| payload.fromDisplayName
-				|| payload.from_display_name
-				|| (_fromUri && _fromUri.split('@')[0])
+			// Push payload may carry TWO display-name fields:
+			//   • payload.displayName         — locally-resolved label native
+			//                                    code computed for the on-device
+			//                                    notification/Telecom bubble.
+			//                                    Falls back to the URI's local
+			//                                    part for unknown contacts.
+			//   • payload.fromDisplayName     — raw SIP "from_display_name" from
+			//                                    the FCM/APNS payload, untouched.
+			//                                    This is the value the remote
+			//                                    party actually put in the SIP
+			//                                    From header ("My living").
+			// Prefer the raw SIP value when building the on-screen label and
+			// when backfilling the contact below, so a contact that was
+			// auto-created with name = URI local part gets upgraded to the
+			// caller's real display name as soon as they call again.
+			const _pushFromDisplayName = payload.fromDisplayName || payload.from_display_name || null;
+			const _fromUriLocal = (_fromUri && _fromUri.indexOf('@') > -1)
+				? _fromUri.split('@')[0]
+				: _fromUri;
+			const _hasRealName = (n) => !!(n
+				&& n !== _fromUri
+				&& n.toLowerCase() !== (_fromUriLocal || '').toLowerCase());
+			const _displayName = (_hasRealName(payload.displayName) ? payload.displayName : null)
+				|| (_hasRealName(_pushFromDisplayName) ? _pushFromDisplayName : null)
+				|| payload.displayName
+				|| _fromUriLocal
 				|| null;
 			const _seedState = {};
 			if (_fromUri) {
 				_seedState.targetUri = _fromUri;
 				try {
-					const c = this.lookupContact && this.lookupContact(_fromUri);
+					// Spec (user): "when we locate a contact for the sip uri X,
+					// if display name is not set or is equal to the uri, set
+					// the contact display name with the display_name learned
+					// from the push notification". applyPushDisplayName
+					// returns the upgraded contact (or null if no change)
+					// AND synchronously rewires contactIndex so the parallel
+					// render-path lookupContact (~line 29680) sees the new
+					// name without waiting for the async SQL write.
+					const upgraded = this.applyPushDisplayName(_fromUri, _pushFromDisplayName, 'pushDisplayName');
+					const c = upgraded || (this.lookupContact && this.lookupContact(_fromUri));
 					if (c) _seedState.callContact = c;
 				} catch (e) { /* ignore — Call.js refines later */ }
 			}
@@ -5624,7 +6054,18 @@ class Sylk extends Component {
 					+ ' displayName=' + (_displayName || '?')
 					+ ' contact=' + (!!_seedState.callContact));
 			}
-			try { this.changeRoute('/call', 'push_launch_accept'); }
+			// Open the push-accept route gate BEFORE changeRoute so the
+			// auto-login start_up route that fires moments later (and
+			// would otherwise route us back to /ready while the WSS
+			// connection is still being established) is suppressed for
+			// up to 45 s. The gate also self-closes when the matching
+			// call reaches established/terminated — see callStateChanged
+			// and incomingCallFromWebSocket. Pass the target route so
+			// the gate's 45 s safety fallback knows what we were holding
+			// open (it falls back to /ready from EITHER /call or
+			// /conference if the call never materialises).
+			this._openPushAcceptGate(payload.callUUID, _pushAcceptRoute);
+			try { this.changeRoute(_pushAcceptRoute, 'push_launch_accept'); }
 			catch (e) {
 				utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
 					'00 push_launch_route_first threw:', (e && e.message) || e);
@@ -5665,6 +6106,23 @@ class Sylk extends Component {
         utils.timestampedLog('[app] did mount');
 
         this._loaded = true;
+
+        // Wire CallZrtp's rs1 persistence hooks so the protocol's
+        // emitted 'zrtpRs1Update' / 'zrtpRs1Clear' events get persisted
+        // into the matching contact's localProperties.zrtp.rs1_hex via
+        // saveSylkContact. Registered once for the lifetime of the
+        // component — the handlers close over `this`.
+        registerZrtpRs1Handlers(
+            (uri, deviceId, rs1Hex, continuity) => this._persistZrtpRs1(uri, deviceId, rs1Hex, continuity),
+            (uri, deviceId) => this._clearZrtpRs1(uri, deviceId)
+        );
+
+        // Push our local device-id into CallZrtp so it can be advertised
+        // in probe / accept payloads and used to key per-device rs1
+        // storage (multi-device safety).
+        if (this.deviceId) {
+            setLocalDeviceId(this.deviceId);
+        }
 
 		// Live-share connectivity watchdog. Reasoning: a user who has
 		// started a long-running location share (e.g. "until I return")
@@ -5873,8 +6331,15 @@ class Sylk extends Component {
 			  console.log('Message content:', event.content);
 			  console.log('Message contentType:', event.contentType);
 			  */
-			  
-			  this.incomingMessageFromPush(event.id, event.fromUri, event.content, event.contentType);
+
+			  // Native may emit the SIP "From" display name as either
+			  // fromDisplayName (camelCase, matches the JS convention used
+			  // elsewhere on the Android side) or from_display_name (the
+			  // raw key used in FCM data payloads). Accept either so we
+			  // don't lose the name on contact auto-create when the user
+			  // taps the notification for a stranger.
+			  const _tapDisplayName = event.fromDisplayName || event.from_display_name || null;
+			  this.incomingMessageFromPush(event.id, event.fromUri, event.content, event.contentType, _tapDisplayName);
 			});
 
 		   const screenLockEventEmitter = new NativeEventEmitter(ScreenLockModule);
@@ -5965,6 +6430,8 @@ class Sylk extends Component {
         this.getAudioState();
         this.startWatchingNetwork();
         this.proximityListener = Proximity.addListener(this.handleProximity);
+        utils.timestampedLog('[proximity] listener attached',
+            'listener=' + !!this.proximityListener);
         
         //logPermissions();
 	}
@@ -6017,6 +6484,15 @@ class Sylk extends Component {
     }
 
 	audioManagerStop() {
+		// Belt-and-braces: if the proximity sensor blacked the screen mid-call
+		// and the final transition to FAR never made it through (sensor stuck
+		// near while the user hangs up at the ear, listener already torn down,
+		// etc.), the user would be left staring at a dead screen post-call.
+		// Force it back on here. iOS is a no-op.
+		try { InCallManager.turnScreenOn(); } catch (e) {
+			utils.timestampedLog('[proximity] audioManagerStop turnScreenOn failed', e && e.message);
+		}
+
 		if (this.useInCallManger) {
 		    InCallManager.stop();
 			if (this._audioDevicePollInterval) { clearInterval(this._audioDevicePollInterval); this._audioDevicePollInterval = null; }
@@ -6646,13 +7122,29 @@ class Sylk extends Component {
             && notification.action === 'Accept') {
             const _target = (event === 'incoming_conference_request') ? '/conference' : '/call';
             const _fromUri = data['from_uri'];
-            const _displayName = data['from_display_name'] || data['displayName']
-                || (_fromUri && _fromUri.split('@')[0]) || null;
+            // Mirror callEventHandler: prefer the raw SIP "from_display_name"
+            // when it's a real name, fall back to the locally-resolved
+            // displayName, fall back to the URI local part. Also upgrade
+            // the contact name in place when the contact has no real
+            // display name yet.
+            const _pushFromDisplayName = data['from_display_name'] || null;
+            const _fromUriLocal = (_fromUri && _fromUri.indexOf('@') > -1)
+                ? _fromUri.split('@')[0]
+                : _fromUri;
+            const _hasRealName = (n) => !!(n
+                && n !== _fromUri
+                && n.toLowerCase() !== (_fromUriLocal || '').toLowerCase());
+            const _displayName = (_hasRealName(_pushFromDisplayName) ? _pushFromDisplayName : null)
+                || (_hasRealName(data['displayName']) ? data['displayName'] : null)
+                || data['displayName']
+                || _fromUriLocal
+                || null;
             const _seedState = {};
             if (_fromUri) {
                 _seedState.targetUri = _fromUri;
                 try {
-                    const c = this.lookupContact && this.lookupContact(_fromUri);
+                    const upgraded = this.applyPushDisplayName(_fromUri, _pushFromDisplayName, 'fcmDisplayName');
+                    const c = upgraded || (this.lookupContact && this.lookupContact(_fromUri));
                     if (c) _seedState.callContact = c;
                 } catch (e) {}
             }
@@ -6664,6 +7156,17 @@ class Sylk extends Component {
                 '00 fcm_launch_route_first — flipping to ' + _target
                 + ' uri=' + _fromUri + ' displayName=' + (_displayName || '?')
                 + ' contact=' + (!!_seedState.callContact));
+            // Open the push-accept route gate for the FCM-tap path too,
+            // matching the bridge-event path in callEventHandler. The
+            // gate suppresses the auto-login start_up route that would
+            // otherwise yank us back to /ready while WSS is still
+            // negotiating. _target is /conference for conference
+            // invites and /call for 1:1 sessions; the gate self-closes
+            // when the matching Call/Conference reaches a terminal
+            // state, or after the 45 s safety window expires.
+            if (callUUID) {
+                this._openPushAcceptGate(callUUID, _target);
+            }
             try { this.changeRoute(_target, 'fcm_push_accept'); }
             catch (e) { /* swallow — accept call will redo it */ }
         }
@@ -6737,14 +7240,36 @@ class Sylk extends Component {
         } else if (event === 'cancel') {
             utils.timestampedLog('[call] FCM in-app event: cancel call', callUUID);
             this.cancelIncomingCall(callUUID);
-        } else if (event === 'message') {        
-			utils.timestampedLog('[message] FCM in-app event: message from', from);
-  
+        } else if (event === 'message') {
+			// Dump every key/value we got from the FCM data payload before
+			// extracting individual fields. Mirrors the native-side
+			// "[message] [fcm] payload {...}" dump in
+			// MyFirebaseMessagingService — that one shows what the server
+			// sent over the wire; this one shows what landed in JS after
+			// the normalizeMessage hop. Useful for catching either a
+			// server-side missing field (no from_display_name in the
+			// payload at all) or a bridge-side drop (present natively but
+			// gone by the time JS sees it).
+			try {
+				const _keys = Object.keys(notification || {});
+				const _summary = _keys.map((k) => {
+					const v = notification[k];
+					if (v == null) return k + '=null';
+					if (typeof v === 'string') return k + '=' + v;
+					try { return k + '=' + JSON.stringify(v); }
+					catch (_) { return k + '=<unstringifiable>'; }
+				}).join(', ');
+				utils.timestampedLog('[message] FCM payload {' + _summary + '}');
+			} catch (_) { /* logging never blocks delivery */ }
+
+			utils.timestampedLog('[message] FCM in-app event: message from', from,
+				'displayName=', notification['from_display_name'] || '(none)');
+
 			if (this.state.appState != 'active') {
 				utils.timestampedLog('[message] Save pending message to AsyncStorage from', from, '(' + Platform.OS + ')');
 				AsyncStorage.setItem(`incomingMessage`, JSON.stringify(notification));
 			} else {
-				this.incomingMessageFromPush(notification['message_id'], from, notification['content'], notification['content_type']);
+				this.incomingMessageFromPush(notification['message_id'], from, notification['content'], notification['content_type'], notification['from_display_name']);
 			}
         }
     }
@@ -7165,6 +7690,16 @@ class Sylk extends Component {
         this.setState({appState: nextAppState});
 
         if (nextAppState === 'active') {
+            // Re-arm the once-per-foreground orphan reconcile in
+            // updateTotalUnread. Background FCM may have set per-contact
+            // unread prefs (and bumped the launcher badge via setNumber)
+            // for messages JS will later see as already-displayed in the
+            // journal sync. Those entries never flow through changedUris
+            // — the orphan pass is what clears them. Resetting the flag
+            // here means the next updateTotalUnread tick (which fires
+            // from componentDidUpdate as soon as allContacts is touched
+            // by the post-resume journal sync) will perform the sweep.
+            this._orphanReconcileDoneThisForeground = false;
             // Re-evaluate orientation and isTablet on every foreground
             // transition. Why this matters: if the user folded /
             // unfolded the device while the app was in the background
@@ -7510,7 +8045,48 @@ class Sylk extends Component {
                     this.registrationFailureTimer = null;
                 }
                 if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
-                    this.hangupCall(this.state.currentCall.id, 'outgoing_connection_failed');
+                    // Only tear the call down if the *media* plane is
+                    // also unhealthy. The Sylk WSS is a control-plane
+                    // socket; media flows over a separate
+                    // RTCPeerConnection (DTLS/SRTP via Janus) with its
+                    // own ICE/keepalive. We've seen field reports where
+                    // the WSS is killed by sylkrtc's aggressive ping
+                    // watchdog (7 missed 3-s pings ≈ 21 s — see
+                    // node_modules/react-native-sylkrtc/lib/connection.js)
+                    // while video/audio kept flowing perfectly. Hanging
+                    // up in that scenario throws away a healthy call
+                    // and forces a noisy reconnect (which is what was
+                    // surfacing the legacy IncomingCallModal panel and
+                    // the camera-preview Start-call countdown again).
+                    // If the PeerConnection is still connected/completed,
+                    // leave the call alone — sylkrtc will reconnect the
+                    // WSS underneath us and the call survives.
+                    let mediaHealthy = false;
+                    try {
+                        const pc = this.state.currentCall && this.state.currentCall._pc;
+                        if (pc) {
+                            const ice = pc.iceConnectionState;
+                            const conn = pc.connectionState;
+                            // Treat 'connected' / 'completed' as healthy.
+                            // 'checking' / 'new' on a long-lived call usually
+                            // means the PC is in trouble, so don't preserve.
+                            mediaHealthy = (ice === 'connected' || ice === 'completed')
+                                || (conn === 'connected');
+                        }
+                    } catch (e) {
+                        mediaHealthy = false;
+                    }
+
+                    if (mediaHealthy) {
+                        utils.timestampedLog(
+                            '[wss] disconnected but PeerConnection is healthy'
+                            + ' (ice=' + (this.state.currentCall._pc && this.state.currentCall._pc.iceConnectionState) + ','
+                            + ' conn=' + (this.state.currentCall._pc && this.state.currentCall._pc.connectionState) + ')'
+                            + ' — keeping call up, letting sylkrtc reconnect WSS in background'
+                        );
+                    } else {
+                        this.hangupCall(this.state.currentCall.id, 'outgoing_connection_failed');
+                    }
                 }
 
                 if (this.state.incomingCall) {
@@ -7781,7 +8357,7 @@ class Sylk extends Component {
     }
 
 	async getStorageUsage(uri) {
-		console.log('getStorageUsage', uri);
+		//console.log('getStorageUsage', uri);
 	
 		const sizes = await utils.getRemotePartySizes(this.state.accountId, uri);
 		
@@ -8005,6 +8581,20 @@ class Sylk extends Component {
         this._applyVideoProfileId(dev.videoProfile || VIDEO_PROFILE_DEFAULT_ID,
             { skipLiveCallReapply: true });
 
+        // Push the persisted Theme mode into the DarkModeManager
+        // singleton so the navbar / chat bubbles render with the
+        // user's chosen palette from the very first paint after
+        // hydration, instead of starting on the OS-derived default
+        // and re-flowing once the listener fires. setMode is a
+        // no-op when the resolved mode hasn't changed.
+        try {
+            DarkModeManager.setMode(dev.themeMode || 'system');
+            this.setState({ dark: DarkModeManager.isDark() });
+        } catch (e) {
+            // Defensive — a missing/invalid stored value falls back
+            // to 'system' (the in-memory default); never fatal.
+        }
+
         // Dump the full settings dict at startup so the on-device log
         // captures exactly what was loaded from accounts.settings.
         // Printed as a key/value table (one preference per line) for
@@ -8055,8 +8645,11 @@ class Sylk extends Component {
         // [journal] virtual section is read from state.lastSync* —
         // it's runtime state and isn't part of the settings blob
         // being persisted, just shown for visibility.
+        /*
         utils.timestampedLog('[account] SAVE', this.state.accountId,
             formatAccountSettings(props, this._buildJournalDumpSection()));
+            
+        */
         try {
             await this.ExecuteQuery(
                 'UPDATE accounts SET settings = ? WHERE account = ?',
@@ -8218,11 +8811,11 @@ class Sylk extends Component {
      *   1. state.accountSetting.rtp.conferenceVideoCodec — the user's
      *      per-account preference (default 'VP8'). Always wins when
      *      set.
-     *   2. state.conferenceVideoCodec — value the server published in
-     *      sylk-config.json. Used only as a recommended fallback when
-     *      the user hasn't expressed a preference. (Same key name as
-     *      the user pref, but different namespace — top-level state
-     *      vs. accountSetting.rtp.)
+     *   2. state.conference.codec — value the server published in
+     *      sylk-config.json under conference.codec. Used only as a
+     *      recommended fallback when the user hasn't expressed a
+     *      preference. (Same key name as the user pref, but different
+     *      namespace — state.conference.codec vs. accountSetting.rtp.)
      *   3. Hard-coded 'VP8' fallback.
      * Call right before starting/joining a conference.
      */
@@ -8230,7 +8823,7 @@ class Sylk extends Component {
         const userPref = this.state.accountSetting
             && this.state.accountSetting.rtp
             && this.state.accountSetting.rtp.conferenceVideoCodec;
-        const serverRecommend = this.state.conferenceVideoCodec;
+        const serverRecommend = this.state.conferenceSettings && this.state.conferenceSettings.codec;
         const codec = userPref || serverRecommend || 'VP8';
         if (sylkrtc.utils && sylkrtc.utils.setPreferredVideoCodec) {
             sylkrtc.utils.setPreferredVideoCodec(codec);
@@ -8870,9 +9463,23 @@ class Sylk extends Component {
     }
 
 	setProximityChosenDevice() {
+		// This runs at call-state transitions (ringing / proceeding /
+		// early-media / established). The original "proximity set
+		// BUILTIN_*" lines are kept verbatim inside the if-branch so
+		// existing grep aliases still match.
+		utils.timestampedLog('[proximity] setProximityChosenDevice enter',
+			'enabled=' + !!(this.state.accountSetting
+				&& this.state.accountSetting.device
+				&& this.state.accountSetting.device.proximityEnabled),
+			'hasHeadset=' + !!this.state.hasHeadset,
+			'folded=' + !!this.state.isFolded,
+			'near=' + !!this.state.proximityNear,
+			'useInCallManger=' + !!this.useInCallManger);
+
 		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded) {
 			if (this.state.proximityNear) {
 				console.log('proximity set BUILTIN_EARPIECE')
+				utils.timestampedLog('[proximity] setProximityChosenDevice -> EARPIECE');
 				if (this.useInCallManger) {
 					this.speakerphoneOff();
 				} else {
@@ -8880,12 +9487,15 @@ class Sylk extends Component {
 				}
 			} else {
 				console.log('proximity set BUILTIN_SPEAKER')
+				utils.timestampedLog('[proximity] setProximityChosenDevice -> SPEAKER');
 				if (this.useInCallManger) {
 				   this.speakerphoneOn();
 				} else {
 					this.selectAudioDevice('BUILTIN_SPEAKER');
 				}
 			}
+		} else {
+			utils.timestampedLog('[proximity] setProximityChosenDevice gated');
 		}
 	}
 
@@ -8915,6 +9525,21 @@ class Sylk extends Component {
         const connection = this.getConnection();
         utils.timestampedLog('Sylkrtc [call]', callUUID, 'state change:', oldState, '->', newState);
 
+        // Push-accept route gate lifecycle. The gate held /call open
+        // while we waited for the WSS Call to materialise after a
+        // cold-start push accept. Now that the Call is talking to us:
+        //   • 'established' — handshake done, no further need to gate
+        //     route changes (the call owns the screen until hangup).
+        //   • 'terminated'  — the user-visible "lost the call" path. We
+        //     don't make the user wait the rest of the 45 s on a blank
+        //     /call screen; close the gate so the normal terminated-
+        //     route fallback can flip to /ready immediately.
+        if (this._pushAcceptGate
+                && this._pushAcceptGate.callUUID === callUUID
+                && (newState === 'established' || newState === 'terminated')) {
+            this._closePushAcceptGate('call_state_' + newState);
+        }
+
         // Plug the SylkTelecom.CONNECTIONS leak. The map gains an entry per
         // incoming call (in onCreateIncomingConnection) and only loses one
         // when removal is triggered from a Telecom-UI hangup, a lockscreen
@@ -8931,6 +9556,20 @@ class Sylk extends Component {
                 utils.timestampedLog('[telecom] cleanupTelecomConnection failed',
                     callUUID, e && e.message);
             });
+        }
+
+        // Exit Android Immersive mode unconditionally when ANY call
+        // terminates — the per-component cleanup (VideoBox /
+        // ConferenceBox componentWillUnmount) ran late in some paths
+        // and left the user stuck without status bar / navigation
+        // bar after the call ended. Doing it here, at the
+        // call-state-change level, covers every termination route
+        // (in-app hangup, peer hangup, CallKit, OS kill, etc.). The
+        // calls are no-ops if the bars are already showing or if the
+        // native module never armed.
+        if (newState === 'terminated' && Platform.OS === 'android') {
+            try { Immersive.off(); } catch (e) { /* best effort */ }
+            try { StatusBar.setHidden(false, 'fade'); } catch (e) { /* best effort */ }
         }
 
         /*
@@ -9045,8 +9684,35 @@ class Sylk extends Component {
                 this.setState({reconnectingCall: false});
             }
         } else {
+            // Neither incomingCall nor currentCall is in state yet —
+            // this branch is normally hit for an outgoing conference's
+            // very first state-change tick (null -> progress) because
+            // outgoingConference's setState({currentCall: call}) sits
+            // in React's queue and hasn't flushed by the time sylkrtc
+            // emits the first 'stateChanged'. The OLD code set
+            // newCurrentCall = null here, then setState({currentCall:
+            // null}) a few lines below — and because React batches
+            // setStates with last-write-wins, that null clobbered the
+            // call object outgoingConference had just queued. Result:
+            // state.currentCall stayed null for the entire conference,
+            // every subsequent state transition re-entered this same
+            // else branch (still null), and the no_more_calls
+            // scheduler at line 9813 fired on every tick. Five seconds
+            // after the last schedule the timer routed to /ready and
+            // the conference UI vanished — even though the peer
+            // connection and Janus session were healthy (the user
+            // could still hear everyone; nobody could hear the user
+            // because closeLocalMedia killed the mic on the route
+            // change; iOS stayed in the roster because Janus didn't
+            // know JS had walked away). See metro.log 2026-05-24
+            // 11:01:30-35 for the full trace.
+            //
+            // Fix: adopt the incoming `call` as newCurrentCall here
+            // (matching the semantics of the `else if (currentCall)`
+            // branch above). On terminated transitions we still clear
+            // to null, identical to the legacy behaviour.
             newincomingCall = null;
-            newCurrentCall = null;
+            newCurrentCall = newState === 'terminated' ? null : call;
         }
 
         //utils.timestampedLog('---currentCall:', newCurrentCall);
@@ -9243,6 +9909,13 @@ class Sylk extends Component {
 
                 let callSuccesfull = false;
                 let reason = data.reason;
+                // Capture the raw "I was kicked from the conference"
+                // signal before the reason variable goes through SIP-
+                // code mapping / duration overwrite below. Used at
+                // the established-call duration branch to skip the
+                // "Call ended after X" string and keep the more
+                // useful "Disconnected" label.
+                const _wasKicked = (data.reason === 'kicked');
                 let play_busy_tone = !this.isConference(call);
                 let CALLKEEP_REASON;
                 let missed = false;
@@ -9311,6 +9984,13 @@ class Sylk extends Component {
                     // Sofia SIP: What is this!?
                     reason = 'Wrong account or password';
                     CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.FAILED;
+                } else if (reason === 'kicked') {
+                    // Server-driven moderator kick (videoroom-remove
+                    // landed on us). Surface a user-readable string
+                    // instead of the raw token; the CallOverlay
+                    // navbar status renders this directly.
+                    reason = 'Disconnected';
+                    CALLKEEP_REASON = CK_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
                 } else {
                     server_failure = true;
                 }
@@ -9369,6 +10049,19 @@ class Sylk extends Component {
 
                 //this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
 
+                // Conference-request handshake: when this terminated
+                // event corresponds to the 1-1 hangup we issued solely
+                // to escalate into a conference, the busy tone is
+                // misleading ("your call ended" — but we're about to
+                // immediately dial a conference). _transitionCallToConferenceRoom
+                // stashes skipNextHangupTone=true on this instance
+                // right before issuing the hangup; we honour it once
+                // and clear the flag so the next regular hangup
+                // behaves normally.
+                if (this.skipNextHangupTone) {
+                    this.skipNextHangupTone = false;
+                    play_busy_tone = false;
+                }
                 if (play_busy_tone) {
                     //utils.timestampedLog('Play busy tone');
                     InCallManager.stop({busytone: '_BUNDLE_'});
@@ -9394,7 +10087,15 @@ class Sylk extends Component {
 
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
                     this.saveSystemMessage(uri, msg, direction, missed);
-                    reason = "Call ended after " + duration;
+                    // Keep the kick label ("Disconnected") even when
+                    // the call had been established long enough to
+                    // accumulate a duration — the moderator kick is
+                    // more informative than "Call ended after X". The
+                    // chat-history message above still records the
+                    // duration so the log retains the timing detail.
+                    if (!_wasKicked) {
+                        reason = "Call ended after " + duration;
+                    }
                 } else {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
                     this.saveSystemMessage(uri, msg, direction, missed);
@@ -9408,10 +10109,19 @@ class Sylk extends Component {
                     }
                 }
                 
-                if (this.currentRoute !== '/call') {
-                    this._notificationCenter.postSystemNotification(reason);
-                } else {
+                // Propagate the human-friendly reason to the CallOverlay
+                // through state.terminatedReason whenever we're on a
+                // call screen — /call OR /conference. Without the
+                // /conference branch the in-conference navbar would
+                // stay stuck on "Contacting server..." after a server-
+                // driven kick (the call object terminates but the
+                // CallOverlay never learns why). For other routes we
+                // still surface the reason as a system notification,
+                // since there's no in-screen affordance to render it.
+                if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
                     this.setState({terminatedReason: reason});
+                } else {
+                    this._notificationCenter.postSystemNotification(reason);
                 }
 
                 // call.mediaTypes is stamped on the SylkRTC call at
@@ -9453,7 +10163,49 @@ class Sylk extends Component {
 			if (!this.state.reconnectingCall) {
 				if (this.currentRoute !== '/ready') {
 					utils.timestampedLog('[app] Will go to ready in', readyDelay/1000, 'seconds (terminated)', callUUID);
+					// Cancel any prior pending timer first — without
+					// this each callStateChanged tick (progress →
+					// accepted → established for a healthy outgoing
+					// conference) would stack a new timer on top of
+					// the previous one because `this.state.currentCall`
+					// reads stale (the setState a few lines above is
+					// async and hasn't flushed). The race seen in
+					// 2026-05-24 metro.log 10:52:49-10:52:55: three
+					// successive state-change ticks each scheduled a
+					// "Will go to ready in 5 seconds" timer with the
+					// "(terminated)" log line, even though the call
+					// was in fact transitioning UP into established.
+					// Five seconds after the last schedule the timer
+					// fired and routed to /ready — terminating a
+					// conference that was working perfectly.
+					if (this.goToReadyTimer) {
+						clearTimeout(this.goToReadyTimer);
+						this.goToReadyTimer = null;
+					}
 					this.goToReadyTimer = setTimeout(() => {
+						this.goToReadyTimer = null;
+						// Re-check the live state at fire-time, not
+						// scheduling-time. By the time this callback
+						// runs (readyDelay ms later) the parent's
+						// setState({currentCall, incomingCall}) above
+						// has flushed, and an outgoing conference
+						// that progressed through accepted /
+						// established in the interim now has a
+						// currentCall in state. Without this guard
+						// the no_more_calls route change fires
+						// unconditionally and kills the healthy
+						// conference call.
+						if (this.state.currentCall || this.state.incomingCall) {
+							utils.timestampedLog('[app] no_more_calls timer fired but a call is now active — skipping route change');
+							return;
+						}
+						if (this.state.reconnectingCall) {
+							utils.timestampedLog('[app] no_more_calls timer fired during reconnect — skipping route change');
+							return;
+						}
+						if (this.currentRoute === '/ready') {
+							return;
+						}
 						this.changeRoute('/ready', 'no_more_calls');
 					}, readyDelay);
 				}
@@ -9593,6 +10345,22 @@ class Sylk extends Component {
         setTimeout(() => {
             this.setState({inviteContacts: true, selectedContacts: []});
         }, 100);
+        // The invite-to-conference picker merges Sylk + Phonebook into
+        // a single list (no source toggle is shown — the user just
+        // sees every reachable contact). Phonebook entries normally
+        // load lazily when the user taps the Phonebook pill in the
+        // contacts list, but that pill is hidden in invite mode, so
+        // kick the load here. loadAddressBook is idempotent: if AB
+        // is already authorised and loaded it's a no-op; if the OS
+        // permission has never been requested, it triggers the prompt
+        // exactly once. Fire-and-forget — the Sylk side of the
+        // merged list shows immediately, AB entries flow in when the
+        // promise resolves and ReadyBox re-renders on state.contacts.
+        try {
+            this.loadAddressBook();
+        } catch (e) {
+            console.log('inviteToConference loadAddressBook failed', e && e.message);
+        }
     }
 
     handleEnrollment(account) {
@@ -10422,12 +11190,21 @@ class Sylk extends Component {
         // picker without any renegotiation.
         this.outgoingMedia = options;
 
-        this.setState({targetUri: targetUri,
-                       outgoingCallUUID: callUUID,
-                       reconnectingCall: false,
-                       callContact: this.state.selectedContact,
-                       participantsToInvite: participantsToInvite
-                       });
+        // Preserve reconnectingCall=true through a reconnect-driven
+        // start so Conference's awaitingUserCallStart gate stays
+        // false and the camera-preview Start-call countdown bar
+        // doesn't appear mid-reconnect. Fresh starts (no reconnect
+        // flag) clear it as before.
+        const _reconnectStartSetState = {
+            targetUri: targetUri,
+            outgoingCallUUID: callUUID,
+            callContact: this.state.selectedContact,
+            participantsToInvite: participantsToInvite
+        };
+        if (!options.reconnect) {
+            _reconnectStartSetState.reconnectingCall = false;
+        }
+        this.setState(_reconnectStartSetState);
 
         const media = options.video ? 'video' : 'audio';
 
@@ -10528,12 +11305,20 @@ class Sylk extends Component {
         // actual SIP-call boundary in Call.js's start(), so the canon-
         // ical `+40…` URI flows through state and every consumer
         // looks up / creates contacts under the same canonical form.
-        this.setState({targetUri: targetUri,
-                       callContact: this.state.selectedContact,
-                       outgoingCallUUID: callUUID,
-                       reconnectingCall: false,
-                       loading: null
-                       });
+        // Reconnect path preserves reconnectingCall=true so the
+        // call UI gates (countdown bar, awaiting-user-start, etc.)
+        // stay suppressed through the re-establishment. Fresh
+        // outgoing starts clear it.
+        const _startCallSetState = {
+            targetUri: targetUri,
+            callContact: this.state.selectedContact,
+            outgoingCallUUID: callUUID,
+            loading: null
+        };
+        if (!options.reconnect) {
+            _startCallSetState.reconnectingCall = false;
+        }
+        this.setState(_startCallSetState);
 
         // Create / refresh the Sylk contact for this destination
         // RIGHT NOW, with the canonical URI — not at call-end. Two
@@ -10655,10 +11440,43 @@ class Sylk extends Component {
         this.setState({targetUri: targetUri});
 		if (Platform.OS === 'ios') {
 		   console.log('wake up app');
+		   // Open the sylk:// scheme to nudge the app forward. This is
+		   // mostly symbolic on modern iOS — Apple no longer lets an
+		   // app foreground itself via Linking.openURL on its own
+		   // scheme — but it does trip our URL handler which used to
+		   // (and the wakeup-guard in eventFromUrl keeps it safe).
 		   Linking.openURL('sylk://wakeup');
-		   if (this.state.appState === 'background') {
-				this.displayJoinNotification();
-			}
+
+		   // "Tap to join" notifee bubble. Used to fire whenever
+		   // appState was 'background', but that gate was too eager:
+		   // when iOS shows the CallKit incoming-call UI, the app's
+		   // state flips to 'background' even though the user is
+		   // looking right at the call screen. The moment they tap
+		   // Accept, JS resumes and startConference runs here —
+		   // appState is still 'background' at this instant, so the
+		   // bubble was firing even when the app was about to come
+		   // forward on its own a fraction of a second later. The
+		   // user reported seeing the bubble pop up in the foreground
+		   // session.
+		   //
+		   // New approach: defer the bubble by ~1.5s and re-check
+		   // appState then. If iOS has brought us forward by that
+		   // point (the common case for accept-from-CallKit-UI),
+		   // there's nothing to nudge and we skip the notification
+		   // entirely. If we're still backgrounded — e.g. accept was
+		   // delivered from a heads-up banner that doesn't trigger
+		   // foregrounding, or the app was killed and CallKit answer
+		   // launched a fresh process — show the bubble so the user
+		   // has a tap-target to bring the conference UI forward.
+		   setTimeout(() => {
+		       if (this.unmounted) return;
+		       if (this.state.appState === 'background') {
+		           utils.timestampedLog('[conference] still backgrounded after accept — showing Tap to join');
+		           this.displayJoinNotification();
+		       } else {
+		           utils.timestampedLog('[conference] app is foreground after accept — skipping Tap to join bubble');
+		       }
+		   }, 1500);
 		}
 
         // Conference backends (SylkServer + Janus) typically support a
@@ -10938,11 +11756,37 @@ class Sylk extends Component {
             return;
         }
         // Only hold calls that are still ringing. If the call has already
-        // been answered (currentCall === incomingCall), the wss drop is
-        // someone else's problem — the established media path is handled
-        // elsewhere and we don't want to silently swallow a real hangup.
+        // been answered the revival map doesn't help — but we still
+        // shouldn't blindly hang up: the media plane (Janus PeerConnection
+        // with its own ICE keepalive) is independent of the Sylk WSS
+        // control plane, and routinely survives a WSS drop. Same reasoning
+        // as the outgoing-call gate in connectionStateChanged('disconnected')
+        // a few hundred lines up: kill the call only if ICE is also gone.
         const callState = call.state;
         if (callState !== 'incoming' && callState !== 'progress') {
+            let mediaHealthy = false;
+            try {
+                const pc = call && call._pc;
+                if (pc) {
+                    const ice = pc.iceConnectionState;
+                    const conn = pc.connectionState;
+                    mediaHealthy = (ice === 'connected' || ice === 'completed')
+                        || (conn === 'connected');
+                }
+            } catch (e) {
+                mediaHealthy = false;
+            }
+
+            if (mediaHealthy) {
+                utils.timestampedLog(
+                    '[call]', callUUID,
+                    'not held for revival (state=' + callState + ')'
+                    + ' but PeerConnection is healthy — keeping call up,'
+                    + ' letting sylkrtc reconnect WSS in background'
+                );
+                return;
+            }
+
             utils.timestampedLog('[call]', callUUID, 'not held for revival, state is', callState);
             this.hangupCall(callUUID, 'connection_failed');
             return;
@@ -11059,6 +11903,95 @@ class Sylk extends Component {
             this.busyToneInterval = null;
         }
 
+        // Conference-request handshake: direct /call → /conference
+        // transition. We let the normal terminated-call cleanup run
+        // (call.terminate() already happened above; CallKeep endCall
+        // will be invoked inside callStateChanged's 'terminated'
+        // branch; the mic, audio session, peer-connection ICE
+        // sockets, etc. all release naturally), then wait a beat for
+        // the OS/native side to actually free those resources, THEN
+        // dial the conference. Skipping the delay race-conditioned
+        // with the iOS audio session — callKeepStartConference's
+        // getLocalMedia would try to re-grab a mic that the just-
+        // terminated call hadn't fully released yet, the new call
+        // either silently failed or crashed native code.
+        if (reason === 'accepted_conference_request') {
+            const room = this.pendingConferenceJoinRoom;
+            this.pendingConferenceJoinRoom = null;
+
+            // The 6 s "go to /ready" timer that callStateChanged
+            // schedules when the call ends would race our delayed
+            // conference start and could yank the route to /ready
+            // mid-dial. Cancel it now and again right before we
+            // dial.
+            this.resetGoToReadyTimer();
+
+            // Cleanup — same fields the regular hangup whitelist's
+            // changeRoute('/ready', ...) would have setState'd,
+            // minus the route change itself. WITHOUT this clear,
+            // state.currentCall still points at the just-terminated
+            // 1-1 call object when Conference mounts on /conference,
+            // and its canConnect() gate trips on
+            // "Conference: call already in progress" — the conference
+            // dial spins on retry forever and the user sits on
+            // "Calling room…" with no progress. We also have to call
+            // closeLocalMedia() so the 1-1 call's mic stream is
+            // closed before callKeepStartConference's getLocalMedia
+            // tries to grab a fresh one.
+            this.setState({
+                inviteContacts: false,
+                outgoingCallUUID: null,
+                currentCall: null,
+                callContact: null,
+                selectedContact: null,
+                selectedContacts: [],
+                sourceContact: null,
+                incomingCall: null,
+                reconnectingCall: false,
+                muted: false,
+            });
+            this.audioManagerStop();
+            this.closeLocalMedia();
+
+            if (!room) {
+                console.log('[conference-request] hangup with no stashed room — falling back to /ready');
+                this.changeRoute('/ready', 'no_more_calls');
+                return;
+            }
+
+            try {
+                utils.timestampedLog('[conference-request] /call hangup issued — dialing room', room,
+                    'in 1500 ms (waiting for mic/CallKeep release)');
+            } catch (e) { /* noop */ }
+
+            // 1500 ms is enough on iOS for AVAudioSession to release
+            // the previous call's mic + on Android for CallKeep to
+            // settle endCall. Empirically 600 ms was not enough on
+            // iOS — the new conference dial got stuck without
+            // logs (audio session still owned by the just-ended
+            // call). Keep this well under the 6 s "go to /ready"
+            // fallback so the conference always wins the race.
+            if (this._conferenceJoinDelayTimer) {
+                clearTimeout(this._conferenceJoinDelayTimer);
+            }
+            this._conferenceJoinDelayTimer = setTimeout(() => {
+                this._conferenceJoinDelayTimer = null;
+                this.resetGoToReadyTimer();
+                try {
+                    utils.timestampedLog('[conference-request] dialing room now', room);
+                    this.callKeepStartConference(room, {
+                        audio: true,
+                        video: false,
+                        skipCountdown: true,
+                    });
+                } catch (e) {
+                    console.log('[conference-request] callKeepStartConference failed',
+                        e && e.message ? e.message : e);
+                }
+            }, 1500);
+            return;
+        }
+
         if (reason === 'user_cancel_call' ||
             reason === 'user_hangup_call' ||
             reason === 'answer_failed' ||
@@ -11072,7 +12005,7 @@ class Sylk extends Component {
             reason === 'outgoing_connection_failed' ||
             reason === 'user_hangup_local_media'
             ) {
-            
+
             this.setState({inviteContacts: false});
             this.changeRoute('/ready', reason);
             if (reason === 'user_hangup_conference_confirmed') {
@@ -11353,14 +12286,36 @@ class Sylk extends Component {
         const callUUID = notificationContent['session-id'];
         const to = notificationContent['to_uri'];
         const from = notificationContent['from_uri'];
-        let displayName = notificationContent['from_display_name'];
+        const pushDisplayName = notificationContent['from_display_name'];
+        let displayName = pushDisplayName;
         const outgoingMedia = {audio: true, video: notificationContent['media-type'] === 'video'};
         const mediaType = notificationContent['media-type'] || 'audio';
-        
+
+        // Backfill the contact name from the push display name if the
+        // stored name is missing / equals URI / equals URI local part.
+        // Mirrors the Android paths (callEventHandler, FCM tap, WSS) so
+        // a contact auto-created with name = local part gets upgraded
+        // to "My living" as soon as that user calls again on iOS too.
+        if (from && pushDisplayName) {
+            this.applyPushDisplayName(from, pushDisplayName, 'iosPushDisplayName');
+        }
+
         const contact = this.lookupContact(from);
- 
+
+        // Prefer a "real" contact name (not empty, not URI, not URI local
+        // part) over the push value; fall back to the push display name
+        // otherwise. The applyPushDisplayName call just above may have
+        // already promoted the contact name to the push value, in which
+        // case both candidates resolve to the same string.
         if (contact) {
-			displayName = contact.name;
+            const localPart = (from && from.indexOf('@') > -1) ? from.split('@')[0] : from;
+            const isRealName = (n) => !!(n
+                && typeof n === 'string'
+                && n.toLowerCase() !== (from || '').toLowerCase()
+                && n.toLowerCase() !== (localPart || '').toLowerCase());
+            if (isRealName(contact.name)) {
+                displayName = contact.name;
+            }
         }
 
           /*
@@ -11549,13 +12504,28 @@ class Sylk extends Component {
 					to          = url_parts[6];
 					displayName = url_parts[7];
 					mediaType   = url_parts[8] || 'audio';
-	
+
 					if (event !== 'cancel' && from && from.search('@videoconference.') > -1) {
 						event = 'conference';
 						to = from;
 					}
-	
-					this.setState({targetUri: from});
+
+					// Only overwrite targetUri when this URL actually
+					// carries one. sylk://wakeup (and any short URL
+					// that doesn't include a /from segment) parses
+					// with from = undefined, and the previous
+					// unconditional setState wiped state.targetUri to
+					// undefined. That clobber caused Conference.js to
+					// remount with an empty room and loop on "Room
+					// not set yet" when an in-flight conference invite
+					// was being accepted — see the metro.log trace at
+					// 08:23:08 where a sylk://wakeup landed mid-join
+					// (a parallel call termination woke the app via
+					// Linking) and cleared the room URI the /conference
+					// route depended on.
+					if (event !== 'wakeup' && from) {
+						this.setState({targetUri: from});
+					}
                 }
 
             } else if (scheme === 'https:') {
@@ -11760,8 +12730,17 @@ class Sylk extends Component {
 			}
 
 			const payload = JSON.parse(pendingJson);
-			this.incomingMessageFromPush(payload.message_id, payload.from_uri, payload.content, payload.content_type);			
-			await AsyncStorage.removeItem(key);          
+			// Pull the SIP "From" display name from whichever key the
+			// origin path used:
+			//   • from_display_name  — raw FCM/APNS payload key (Android
+			//     FCM stores notification as-is; iOS AppDelegate writes
+			//     the same key into userInfo).
+			//   • display_name       — set by onRemoteNotification (iOS)
+			//     after a local contact-name preference pass. Falling
+			//     back to this preserves the legacy iOS path.
+			const _replayDisplayName = payload.from_display_name || payload.display_name || null;
+			this.incomingMessageFromPush(payload.message_id, payload.from_uri, payload.content, payload.content_type, _replayDisplayName);
+			await AsyncStorage.removeItem(key);
  		}
  
 		if (key.startsWith('incomingCall:')) {
@@ -11798,7 +12777,7 @@ class Sylk extends Component {
 	  }
 	}
 	
-	async incomingMessageFromPush(id, from, content, contentType) {
+	async incomingMessageFromPush(id, from, content, contentType, displayName=null) {
 		if (id === this.deviceId) {
 			return;
 		}
@@ -11817,8 +12796,14 @@ class Sylk extends Component {
 			return;
 		}
 
-		utils.timestampedLog('Incoming [message]', id, 'from', from, 'from push', contentType);
-		
+		if (typeof content === 'string' && content.startsWith('?OTR')) {
+			console.log('-- Incoming push is OTR negotiation, dropping', id);
+			return;
+		}
+
+		utils.timestampedLog('Incoming [message]', id, 'from', from, 'from push', contentType,
+			'displayName=', displayName || '(none)');
+
 		const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
 
 		const messages = this.state.messages;
@@ -11835,6 +12820,42 @@ class Sylk extends Component {
 				if (contact.unread.indexOf(id) > -1) {
 					//console.log('Message is already loaded in unread', id);
 					return;
+				}
+				// Existing contact whose name is empty / equals URI /
+				// equals URI local part — upgrade it from the push's
+				// SIP "From" display name. Mirrors the call-side paths
+				// (iosPushDisplayName / fcmDisplayName / wssDisplayName).
+				// applyPushDisplayName is a no-op when the existing name
+				// is already a real name, or when the push value is just
+				// an echo of the URI.
+				if (from && displayName) {
+					this.applyPushDisplayName(from, displayName, 'messagePushDisplayName');
+				}
+			} else {
+				// First-ever message from this URI on this device. If the
+				// push payload carries a SIP "From" display name that's
+				// actually a name (not just an echo of the URI), capture
+				// it now so the user sees a friendly label in the chat
+				// list immediately — without it, the websocket-side
+				// auto-create in `saveIncomingMessage` lands a contact
+				// with an empty name and the chat list falls back to the
+				// raw URI. The match below uses .toLowerCase() because
+				// the URI is stored lowercased everywhere (see
+				// sanitizeContact) but the display name may not be.
+				const _trimmed = (displayName || '').trim();
+				const _fromLc = (from || '').toLowerCase();
+				if (_trimmed && _trimmed.toLowerCase() !== _fromLc) {
+					const newC = this.newContact(from, _trimmed);
+					if (newC) {
+						utils.timestampedLog('[contacts] auto-create from push:',
+							from, 'name=', _trimmed);
+						// saveSylkContact persists to SQL AND seeds the
+						// in-memory allContacts / contactsIndexes so the
+						// imminent `saveIncomingMessage` call from the
+						// websocket delivery side finds this row and
+						// skips its own empty-name auto-create.
+						this.saveSylkContact(from, newC, 'incomingMessageFromPush:autoCreate');
+					}
 				}
 			}
         }
@@ -11988,6 +13009,60 @@ class Sylk extends Component {
         this.callKeeper.addWebsocketCall(call);
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
+
+        // Drop the duplicate "incoming_session" the conference focus
+        // SIP-dials in parallel with the real "incoming_conference_request"
+        // — same dedupe the native push paths do
+        // (MyFirebaseMessagingService.java line ~987,
+        // AppDelegate.shouldDisplayMessageFromPayload). When the user is
+        // online over [wss], the bridged session arrives here as a regular
+        // incoming call from the configured sipBridge host; without this
+        // check it rings as a second "Tap to join". Source of truth is
+        // conferenceSettings.sipBridge (populated from server config in
+        // initConfiguration). Empty / missing means dedupe is disabled
+        // (safe default — call rings).
+        try {
+            const _sipBridge = this.state.conferenceSettings
+                && typeof this.state.conferenceSettings.sipBridge === 'string'
+                && this.state.conferenceSettings.sipBridge.length > 0
+                    ? this.state.conferenceSettings.sipBridge
+                    : null;
+            if (_sipBridge && typeof from === 'string') {
+                const atIdx = from.indexOf('@');
+                if (atIdx >= 0 && atIdx + 1 < from.length) {
+                    let host = from.substring(atIdx + 1);
+                    const semi = host.indexOf(';');
+                    if (semi >= 0) host = host.substring(0, semi);
+                    if (host.toLowerCase() === _sipBridge.toLowerCase()) {
+                        utils.timestampedLog('[call] Dropping incoming [wss] call', callUUID,
+                            'from sipBridge host', host,
+                            '(duplicate of conferenceInvite)');
+                        this.callKeeper.rejectCall(callUUID);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('sipBridge dedupe check failed:', e && e.message);
+        }
+
+        // Same display-name backfill the push paths do (callEventHandler,
+        // FCM notification tap), only now we sourced the display name
+        // from sylkrtc's parsed SIP From header instead of from the FCM
+        // push payload. Covers the foreground-call case where the user
+        // accepts from the in-app alert and the IncomingCallAction
+        // event never fires — without this, the in-call navbar keeps
+        // showing the stale "URI local part" contact name (the bug the
+        // user reported: bubble showed "My living", call screen still
+        // showed "living233").
+        try {
+            const sipDisplayName = call.remoteIdentity && call.remoteIdentity.displayName;
+            if (sipDisplayName) {
+                this.applyPushDisplayName(from, sipDisplayName, 'wssDisplayName');
+            }
+        } catch (e) {
+            console.log('wss display name backfill failed:', e && e.message);
+        }
 
 		//this._notificationCenter.postSystemNotification("Incoming call from "+ from);
 
@@ -20083,7 +21158,7 @@ class Sylk extends Component {
         if (this.syncStartTimestamp) {
             let diff = (Date.now() - this.syncStartTimestamp)/ 1000;
             this.syncStartTimestamp = null;
-            utils.timestampedLog('[message] Sync [journal] ended after', diff, 'seconds');
+            utils.timestampedLog('Sync [journal] ended after', diff, 'seconds');
 			this.setState({syncConversations: false, syncPercentage: 100, refetchMessagesForUri: null});
             // First-launch sync round-trip is finished — drop the
             // ActivityIndicator in NavigationBar and let the bell come back.
@@ -20582,6 +21657,121 @@ class Sylk extends Component {
     // their PGP key matches the one verified earlier; if the PGP key
     // changes, we drop back to 'unverified' / 'mismatch' so the user
     // re-verifies.
+    // Persist a rotated rs1 (32-byte hex) into contact.localProperties.zrtp.
+    // Called from the CallZrtp event handler attached in componentDidMount.
+    // Idempotent — the same rs1_hex can arrive multiple times (e.g. SAS
+    // Confirm + auto-rotation racing); SQL upsert resolves it.
+    async _persistZrtpRs1(uri, deviceId, rs1Hex, continuity) {
+        if (!uri || typeof rs1Hex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(rs1Hex)) {
+            return;
+        }
+        try {
+            const contact = this.lookupContact(uri);
+            if (!contact) {
+                utils.timestampedLog('[zrtp] _persistZrtpRs1: no contact for', uri);
+                return;
+            }
+            contact.localProperties = contact.localProperties || {};
+            contact.localProperties.zrtp = contact.localProperties.zrtp || {};
+            // Per-device slot when we know the peer's device_id (multi-
+            // device safety — calls to different physical devices behind
+            // the same SIP account no longer overwrite each other's
+            // rs1). Fall back to the legacy single-device slot when we
+            // don't have a device_id (v2 peer interop).
+            if (deviceId) {
+                contact.localProperties.zrtp.devices = contact.localProperties.zrtp.devices || {};
+                contact.localProperties.zrtp.devices[deviceId] = {
+                    rs1_hex: rs1Hex.toLowerCase(),
+                    rotatedAt: Date.now(),
+                };
+            } else {
+                contact.localProperties.zrtp.rs1_hex = rs1Hex.toLowerCase();
+                contact.localProperties.zrtp.rs1RotatedAt = Date.now();
+            }
+            // Mirror onto the stale callContact ref (same trick as
+            // markZrtpVerified — see comment there for context).
+            const sc = this.state.callContact;
+            if (sc && sc.uri === uri && sc !== contact) {
+                sc.localProperties = sc.localProperties || {};
+                sc.localProperties.zrtp = contact.localProperties.zrtp;
+            }
+            await this.saveSylkContact(uri, contact, 'zrtpRs1');
+            utils.timestampedLog('[zrtp] rs1 persisted for', uri,
+                'device=', deviceId || '<none>',
+                'continuity=', continuity || '?');
+        } catch (e) {
+            utils.timestampedLog('[zrtp] _persistZrtpRs1 failed for', uri,
+                ':', (e && e.message) || e);
+        }
+    }
+
+    async _clearZrtpRs1(uri, deviceId) {
+        if (!uri) return;
+        try {
+            const contact = this.lookupContact(uri);
+            if (!contact) return;
+            if (contact.localProperties && contact.localProperties.zrtp) {
+                const z = contact.localProperties.zrtp;
+                if (deviceId && z.devices && z.devices[deviceId]) {
+                    delete z.devices[deviceId];
+                } else {
+                    // No device_id known — clear the legacy single-device
+                    // slot. (Per-device entries for other peer devices
+                    // stay intact.)
+                    delete z.rs1_hex;
+                    delete z.rs1RotatedAt;
+                }
+                const sc = this.state.callContact;
+                if (sc && sc.uri === uri && sc !== contact
+                        && sc.localProperties && sc.localProperties.zrtp) {
+                    const szc = sc.localProperties.zrtp;
+                    if (deviceId && szc.devices && szc.devices[deviceId]) {
+                        delete szc.devices[deviceId];
+                    } else {
+                        delete szc.rs1_hex;
+                        delete szc.rs1RotatedAt;
+                    }
+                }
+                await this.saveSylkContact(uri, contact, 'zrtpRs1Clear');
+                utils.timestampedLog('[zrtp] rs1 cleared for', uri,
+                    'device=', deviceId || '<legacy slot>');
+            }
+        } catch (e) {
+            utils.timestampedLog('[zrtp] _clearZrtpRs1 failed for', uri,
+                ':', (e && e.message) || e);
+        }
+    }
+
+    // Wipe ALL Sylk-ZRTP state (rs1, lastSas, verifiedAt, publicKey) for
+    // this peer so the next call re-bootstraps from continuity=first-time.
+    // Mirrors the SDK-side /zrtp_reset command. Used from the Reset
+    // button in the SAS verification dialog when the user wants to
+    // reproduce the handshake from scratch.
+    async resetContactZrtp(uri) {
+        if (!uri) return;
+        try {
+            const contact = this.lookupContact(uri);
+            if (!contact) {
+                utils.timestampedLog('[zrtp] resetContactZrtp: no contact for', uri);
+                return;
+            }
+            if (contact.localProperties && contact.localProperties.zrtp) {
+                delete contact.localProperties.zrtp;
+            }
+            const sc = this.state.callContact;
+            if (sc && sc.uri === uri && sc.localProperties) {
+                delete sc.localProperties.zrtp;
+            }
+            await this.saveSylkContact(uri, contact, 'zrtpReset');
+            utils.timestampedLog('[zrtp] reset Sylk-ZRTP verification for', uri,
+                '— next call will start in continuity=first-time');
+            this.forceUpdate();
+        } catch (e) {
+            utils.timestampedLog('[zrtp] resetContactZrtp failed for', uri,
+                ':', (e && e.message) || e);
+        }
+    }
+
     async markZrtpVerified(uri, sasChars, sasEmojis) {
         // User-action breadcrumb: this is the moment the user tapped
         // "Verify" in the SAS confirmation dialog (from VideoBox or
@@ -20603,12 +21793,21 @@ class Sylk extends Component {
                 return;
             }
             contact.localProperties = contact.localProperties || {};
-            contact.localProperties.zrtp = {
-                lastSas: sasChars,
-                lastEmojis: sasEmojis,
-                verifiedAt: Date.now(),
-                publicKey: contact.publicKey || null,
-            };
+            // MERGE — don't replace. The zrtp sub-object also holds
+            // rs1_hex / rs1RotatedAt (written by _persistZrtpRs1 on
+            // continuity rotation or SAS-confirm seeding); wiping the
+            // whole object here used to clobber those fields, leaving
+            // the mobile side with no rs1 the next call and the SDK
+            // reporting continuity=one-sided-local.
+            contact.localProperties.zrtp = Object.assign(
+                {},
+                contact.localProperties.zrtp || {},
+                {
+                    lastSas: sasChars,
+                    lastEmojis: sasEmojis,
+                    verifiedAt: Date.now(),
+                    publicKey: contact.publicKey || null,
+                });
 
             // state.callContact is set ONCE at call start (e.g. from
             // selectedContact or lookupContact in render) and is never
@@ -21147,6 +22346,84 @@ class Sylk extends Component {
 		if (metadataContent.action === 'location_request') {
 			if (author) {
 				this._noteIncomingLocationRequest(author, metadataContent);
+			}
+			return;
+		}
+
+		// "Escalate this call to a conference" handshake. Mirrors the
+		// location_request flow: the originator ships a metadata blob
+		// with action='conference_request' + a freshly generated room
+		// URI + a 60 s expires window; the receiver sees a small Yes/No
+		// modal; on Yes the receiver echoes the SAME metadata back with
+		// its own uri as `requester` (and the SAME room) so both sides
+		// can verify they're targeting the same room. Both then tear
+		// down the active 1-1 call and dial the agreed room
+		// independently.
+		//
+		// Differentiation between the original and the accept echo:
+		//   author is the original sender   → metadataContent.requester
+		//     equals author  → this is the *original* request, present
+		//     a modal to the receiver.
+		//   author is the original sender   → metadataContent.requester
+		//     equals the receiver (us / our peer) → this is the *echo*
+		//     accept. The originator handles it by tearing down the
+		//     call and starting the conference.
+		//
+		// Both branches early-return so the message doesn't fall through
+		// to the generic chat-rendering path; conference_request is a
+		// signaling artifact, not a user-visible chat bubble.
+		if (metadataContent.action === 'conference_request') {
+			if (author) {
+				// Distinguish original incoming requests from accept
+				// echoes by the presence of `in_reply_to`. We can't use
+				// `requester` for this: the receiver flips it to its
+				// own uri on the accept, but the original sender also
+				// has `requester === author` (the sender IS the
+				// requester). Both messages would look identical by
+				// that field alone, so the originator would mistakenly
+				// pop the receiver-side modal for its own accept echo.
+				// `in_reply_to` is set ONLY on the accept echo
+				// (referencing the original messageId) and is therefore
+				// an unambiguous discriminator.
+				if (metadataContent.in_reply_to) {
+					// Echo accept: the peer is acknowledging the
+					// request we sent.
+					this._noteAcceptedConferenceRequest(author, metadataContent);
+				} else {
+					// Original incoming request from the peer.
+					this._noteIncomingConferenceRequest(author, metadataContent);
+				}
+			} else {
+				// Outgoing local echo of our own conference_request.
+				// Stash a pending entry so we can match the peer's
+				// accept echo against it later. Without this entry
+				// the accept echo would be silently dropped (the
+				// dedup guard in _noteAcceptedConferenceRequest
+				// won't find a matching pending request).
+				//
+				// On outgoing local echoes `metadataContent.uri`
+				// holds the recipient (we filled it in on send) —
+				// that's the peer uri we need to key the pending
+				// entry by, not our own. The generic uri remap
+				// further down handles the same fix-up for other
+				// metadata paths but runs AFTER this block, so we
+				// read metadataContent.uri directly here.
+				const peerUri = (metadataContent && metadataContent.uri) || uri;
+				this._noteOutgoingConferenceRequest(peerUri, metadataContent);
+			}
+			return;
+		}
+
+		// Receiver-side explicit rejection of an incoming
+		// conference_request. Mirrors the accept-echo shape but with a
+		// distinct action so the originator knows the difference
+		// between "peer declined" (clear the chip immediately) and
+		// "peer hasn't responded yet" (keep waiting up to the expires
+		// window). Carries in_reply_to=originalRequestId so the
+		// originator can match it against a specific pending entry.
+		if (metadataContent.action === 'conference_request_reject') {
+			if (author) {
+				this._noteRejectedConferenceRequest(author, metadataContent);
 			}
 			return;
 		}
@@ -23051,6 +24328,439 @@ class Sylk extends Component {
 	}
 
 
+	// ===== Conference-request handshake (in-call avatar "+" panel) =====
+	//
+	// The originator sends a conference_request metadata blob to the
+	// peer; the peer prompts the user with ConferenceRequestModal; on
+	// accept the peer echoes the same metadata back (with itself as
+	// `requester`) and both sides tear down the active 1-1 call and
+	// dial the agreed conference room independently. Mirrors the shape
+	// of the location_request handshake just above.
+
+	// Outgoing local echo of our own conference_request — record a
+	// pending entry keyed by the peer's uri so the eventual accept
+	// echo from the peer matches up. Auto-expires at the metadata's
+	// `expires` deadline so a never-accepted request doesn't linger.
+	_noteOutgoingConferenceRequest(peerUri, metadataContent) {
+		const requestId = metadataContent && metadataContent.messageId;
+		const room = metadataContent && metadataContent.room;
+		if (!requestId || !room || !peerUri) return;
+		const expiresAt = this._parseExpiresToMs(metadataContent.expires);
+		this.pendingOutgoingConferenceRequests[peerUri] = {
+			requestId,
+			room,
+			expiresAt,
+			peerUri,
+		};
+		try {
+			utils.timestampedLog('[conference-request] SENT →',
+				peerUri, '— request', requestId.slice(0, 8),
+				'room=', room,
+				'expires in', typeof expiresAt === 'number'
+					? Math.max(0, Math.round((expiresAt - Date.now()) / 1000)) + 's'
+					: '(no-expiry)');
+		} catch (e) { /* noop */ }
+		// Self-clear at expiry so a never-acknowledged request
+		// doesn't sit in the pending map forever (next escalation
+		// for the same peer would replace it anyway, but the
+		// explicit cleanup keeps the map tidy for log dumps).
+		if (typeof expiresAt === 'number' && expiresAt > Date.now()) {
+			const delay = expiresAt - Date.now();
+			setTimeout(() => {
+				const cur = this.pendingOutgoingConferenceRequests[peerUri];
+				if (cur && cur.requestId === requestId) {
+					delete this.pendingOutgoingConferenceRequests[peerUri];
+				}
+			}, delay);
+		}
+	}
+
+	// Incoming "please escalate this call" request from a peer. Pops
+	// the ConferenceRequestModal asking the local user to accept or
+	// reject. Silently swallows expired / duplicate requests.
+	_noteIncomingConferenceRequest(fromUri, metadataContent) {
+		const requestId = metadataContent && metadataContent.messageId;
+		if (!requestId) return;
+		const expiresAt = this._parseExpiresToMs(metadataContent.expires);
+		if (this.handledConferenceRequestIds.has(requestId)) return;
+		if (expiresAt == null || Date.now() >= expiresAt) {
+			this.handledConferenceRequestIds.add(requestId);
+			return;
+		}
+		// call_id pairing: the request is scoped to the specific 1-1
+		// call the originator is in. Sibling devices of either party
+		// that aren't on that call shouldn't pop the modal — they
+		// have no way to "leave" the originator's call to join the
+		// conference. Stamp the request as handled (so a later route
+		// change doesn't replay it) and bail out silently.
+		//
+		// IMPORTANT: compare against the SIP Call-ID
+		// (call._callId / call.callId), NOT call.id. call.id is each
+		// side's locally-generated sylkrtc UUID — caller and callee
+		// see different values for the same call so the match would
+		// always fail. The SIP Call-ID is server-assigned and
+		// identical on both sides of the dialogue.
+		const callId = metadataContent.call_id;
+		const activeCall = this.state.currentCall || this.state.incomingCall;
+		const localSipCallId = activeCall
+			&& (activeCall._callId || activeCall.callId || activeCall.id);
+		if (callId && (!activeCall || localSipCallId !== callId)) {
+			console.log('[conference-request] incoming for call_id=', callId,
+				'but local sip Call-ID=', localSipCallId, '— ignoring (sibling device)');
+			this.handledConferenceRequestIds.add(requestId);
+			return;
+		}
+		// Stamp `handled` before showing so a duplicate metadata
+		// delivery (socket reconnect, multi-device replay) doesn't
+		// re-prompt.
+		this.handledConferenceRequestIds.add(requestId);
+		const room = metadataContent.room;
+		if (!room) {
+			console.log('[conference-request] incoming request missing room — ignoring',
+				requestId);
+			return;
+		}
+		try {
+			utils.timestampedLog('[conference-request] RECEIVED ←',
+				fromUri, '— request', requestId.slice(0, 8),
+				'room=', room,
+				'expires in', Math.max(0, Math.round((expiresAt - Date.now()) / 1000)), 's');
+		} catch (e) { /* noop */ }
+
+		this.setState({conferenceRequestModal: {
+			show: true,
+			fromUri,
+			requestId,
+			expiresAt,
+			room,
+		}}, () => {
+			// Confirm the state actually flipped + report which route
+			// owns the modal mount right now. If you see this log but
+			// no panel appears, the most likely cause is that the
+			// active Route doesn't render <ConferenceRequestModal>
+			// (only /ready and /call do).
+			try {
+				utils.timestampedLog('[conference-request] modal state →',
+					'show=', this.state.conferenceRequestModal.show,
+					'route=', this.currentRoute || '(unknown)');
+			} catch (e) { /* noop */ }
+		});
+
+		// Auto-dismiss at the metadata's expires deadline (60 s by
+		// convention). If the user neither accepts nor rejects in time
+		// the modal silently closes — same behaviour as the location
+		// and meeting prompts.
+		if (this._conferenceRequestModalDismissTimerId) {
+			clearTimeout(this._conferenceRequestModalDismissTimerId);
+			this._conferenceRequestModalDismissTimerId = null;
+		}
+		const delay = Math.max(0, expiresAt - Date.now());
+		this._conferenceRequestModalDismissTimerId = setTimeout(() => {
+			this._conferenceRequestModalDismissTimerId = null;
+			const m = this.state.conferenceRequestModal;
+			if (m && m.show && m.requestId === requestId) {
+				this._closeConferenceRequestModal();
+			}
+		}, delay);
+	}
+
+	_closeConferenceRequestModal() {
+		if (this._conferenceRequestModalDismissTimerId) {
+			clearTimeout(this._conferenceRequestModalDismissTimerId);
+			this._conferenceRequestModalDismissTimerId = null;
+		}
+		this.setState({conferenceRequestModal: {
+			show: false, fromUri: null, requestId: null, expiresAt: null, room: null,
+		}});
+	}
+
+	// User tapped "Accept" on the incoming conference-request modal.
+	//
+	// Echoes the same metadata back to the requester with ourselves as
+	// `requester`, then transitions our side into the conference: hang
+	// up the active 1-1 call (if any) and start an outgoing conference
+	// to the agreed room. The peer does the same independently once
+	// it sees our echo (handled in _noteAcceptedConferenceRequest).
+	_acceptConferenceRequest() {
+		const src = this.state.conferenceRequestModal || {};
+		const fromUri = src.fromUri;
+		const requestId = src.requestId;
+		const expiresAt = src.expiresAt;
+		const room = src.room;
+		if (!fromUri || !room) return;
+		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+			console.log('[conference-request] accept: already expired, ignoring',
+				'id=', requestId);
+			return;
+		}
+		try {
+			utils.timestampedLog('[conference-request] ACCEPTED ←',
+				fromUri, '— echoing accept + joining room', room);
+		} catch (e) { /* noop */ }
+
+		// Echo back: same room, same expires, requester now = us. The
+		// originator listens for `requester !== author` to recognise
+		// this as an accept rather than a fresh inbound request.
+		try {
+			const now = new Date();
+			const echoMetadata = {
+				action: 'conference_request',
+				messageId: requestId,
+				timestamp: now,
+				uri: fromUri,
+				room,
+				expires: new Date(expiresAt).toISOString(),
+				requester: this.state.accountId,
+				in_reply_to: requestId,
+			};
+			const echoMessage = {
+				_id: requestId + '-accept',
+				key: requestId + '-accept',
+				createdAt: now,
+				metadata: echoMetadata,
+				text: JSON.stringify(echoMetadata),
+				user: {},
+			};
+			this.sendMessage(fromUri, echoMessage, 'application/sylk-message-metadata');
+		} catch (e) {
+			console.log('[conference-request] accept echo send failed',
+				e && e.message ? e.message : e);
+		}
+
+		// Transition our side into the conference. Tear down the
+		// current 1-1 call (if any) — the conference is a brand new
+		// outgoing leg, not a transfer of the existing media — then
+		// dial the agreed room. A small delay lets the hangup cycle
+		// flush through CallKeep / SylkRTC before we trigger the
+		// fresh outgoing-conference flow.
+		this._transitionCallToConferenceRoom(room, 'accepted-conference-request');
+	}
+
+	// Originator side: peer accepted the conference_request we sent
+	// earlier. Tear down our active 1-1 call and dial the same room
+	// the peer just acknowledged. Idempotent — duplicate accept echoes
+	// (multi-device replicate, socket reconnect) no-op.
+	_noteAcceptedConferenceRequest(fromUri, metadataContent) {
+		const requestId = metadataContent && metadataContent.messageId;
+		if (!requestId) return;
+		const room = metadataContent.room;
+		if (!room) return;
+		// Dedup: pending entry is removed on first handling.
+		const pending = this.pendingOutgoingConferenceRequests
+			&& this.pendingOutgoingConferenceRequests[fromUri];
+		if (!pending || pending.requestId !== requestId) {
+			// Either we never sent this request, or we already
+			// processed the accept. Either way, no further action.
+			return;
+		}
+		delete this.pendingOutgoingConferenceRequests[fromUri];
+		try {
+			utils.timestampedLog('[conference-request] PEER ACCEPTED →',
+				fromUri, '— request', requestId.slice(0, 8),
+				'joining room', room);
+		} catch (e) { /* noop */ }
+		this._transitionCallToConferenceRoom(room, 'peer-accepted-conference-request');
+	}
+
+	// Shared transition: hang up the active 1-1 call and start an
+	// outgoing conference to `room`. Both the accept (receiver) and
+	// the accept-echo (originator) paths land here so the user-visible
+	// behaviour is identical on both sides.
+	//
+	// Implementation note: we DO NOT just hangup + setTimeout +
+	// callKeepStartConference here. The escalate_to_conference flow
+	// already establishes the right pattern — stash the destination,
+	// hang up with a recognised reason, then let the hangup-completion
+	// dispatcher in changeRoute() actually fire the conference call.
+	// That ordering ensures CallKeep / sylkrtc teardown is fully done
+	// (audio session released, ICE closed, mic released) BEFORE the
+	// conference start grabs new media. Doing it via setTimeout
+	// raced the iOS audio session and the conference start sometimes
+	// landed before the teardown had released the mic.
+	_transitionCallToConferenceRoom(room, reason) {
+		if (!room) return;
+		// Stash the agreed room — the dispatch branch we added inside
+		// changeRoute('/ready', reason) reads this and clears it
+		// after firing callKeepStartConference. Surviving multiple
+		// invocations of _transitionCallToConferenceRoom for the same
+		// session is fine; the most recent room wins, which matches
+		// the user's most recent acceptance.
+		this.pendingConferenceJoinRoom = room;
+		// Skip the usual outgoing-conference pre-call gating (camera
+		// preview + 9 s auto-start countdown). The user already
+		// confirmed twice: originator chose "Escalate to conference"
+		// from the avatar panel; accepter tapped Accept on the modal.
+		// A third tap-to-start would be friction, not a safety check.
+		// Read once in the /conference render path then cleared.
+		this.pendingConferenceSkipCountdown = true;
+		// Suppress the busy-tone / hangup-cancel tone that the
+		// terminated-call cleanup normally plays when we're tearing
+		// the 1-1 call down only to immediately dial a conference —
+		// the tone is meant to communicate "your call ended" and is
+		// misleading here. Read once in the call-terminated path
+		// then cleared.
+		this.skipNextHangupTone = true;
+		const activeCall = this.state.currentCall || this.state.incomingCall;
+		if (activeCall) {
+			// The 1-1 call is still alive on this side (typical for
+			// the accepter — they haven't received our own BYE yet
+			// because we ARE about to send it). Tear it down with a
+			// reason that the changeRoute dispatch recognises so the
+			// conference start fires from inside the hangup handler
+			// with audio-only + skipCountdown options.
+			try {
+				this.hangupCall(activeCall.id, 'accepted_conference_request');
+			} catch (e) {
+				console.log('[conference-request] hangup before conference start failed',
+					e && e.message ? e.message : e);
+				// Hangup blew up — fall back to a direct audio-only
+				// start so the user isn't stranded with no call AND
+				// no conference.
+				this.pendingConferenceJoinRoom = null;
+				this.resetGoToReadyTimer();
+				try {
+					this.callKeepStartConference(room, {
+						audio: true, video: false, skipCountdown: true,
+					});
+				} catch (e2) {
+					console.log('[conference-request] direct callKeepStartConference fallback failed',
+						e2 && e2.message ? e2.message : e2);
+				}
+			}
+		} else {
+			// No active call to tear down. The typical originator
+			// path: the peer (B) accepted, B's BYE arrived on this
+			// device (A) first and callStateChanged already cleared
+			// state.currentCall, THEN B's accept-echo metadata
+			// landed and got us here.
+			//
+			// Even though there's no hangupCall to issue, the
+			// just-terminated 1-1 call's mic / audio session /
+			// CallKeep entry are still being released by the
+			// terminated handler that's running concurrently.
+			// Dialing the conference immediately races those
+			// resources and breaks the new outgoing call.
+			// Same 1500 ms delay as the hangup-driven path.
+			//
+			// Cancel any pending "go to /ready in 6 s" timer the
+			// terminated handler scheduled — without this the
+			// timer would fire while we're on /conference and
+			// yank us back to /ready.
+			console.log('[conference-request] no active call, dialing room', room,
+				'in 1500 ms (waiting for mic/CallKeep release), reason=', reason);
+			this.pendingConferenceJoinRoom = null;
+			this.resetGoToReadyTimer();
+
+			// Same cleanup as the hangup short-circuit path. The
+			// 1-1 call's terminated handler already nulled
+			// state.currentCall, but the OTHER fields (callContact,
+			// selectedContact, the local-media stream) are still
+			// holding the 1-1 call's data — without clearing them,
+			// callKeepStartConference's getLocalMedia would race
+			// the still-open mic stream and the Conference
+			// component's canConnect() would trip on stale state.
+			this.setState({
+				inviteContacts: false,
+				outgoingCallUUID: null,
+				callContact: null,
+				selectedContact: null,
+				selectedContacts: [],
+				sourceContact: null,
+				incomingCall: null,
+				reconnectingCall: false,
+				muted: false,
+			});
+			this.audioManagerStop();
+			this.closeLocalMedia();
+
+			if (this._conferenceJoinDelayTimer) {
+				clearTimeout(this._conferenceJoinDelayTimer);
+			}
+			this._conferenceJoinDelayTimer = setTimeout(() => {
+				this._conferenceJoinDelayTimer = null;
+				this.resetGoToReadyTimer();
+				try {
+					utils.timestampedLog('[conference-request] dialing room now', room);
+					this.callKeepStartConference(room, {
+						audio: true, video: false, skipCountdown: true,
+					});
+				} catch (e) {
+					console.log('[conference-request] callKeepStartConference failed',
+						e && e.message ? e.message : e);
+				}
+			}, 1500);
+		}
+	}
+
+	// Receiver-side reject. Ships an explicit
+	// `conference_request_reject` metadata back so the originator's
+	// avatar chip can flip out of "Waiting…" immediately rather than
+	// sit there until the 60 s expires timer wipes it. Modal state
+	// itself is cleared by the modal's own close() callback, which
+	// fires regardless of which button the user tapped.
+	_declineConferenceRequest() {
+		const src = this.state.conferenceRequestModal || {};
+		const fromUri = src.fromUri;
+		const requestId = src.requestId;
+		const room = src.room;
+		if (!fromUri || !requestId) return;
+		try {
+			utils.timestampedLog('[conference-request] REJECTED ←',
+				fromUri, '— request', requestId.slice(0, 8));
+		} catch (e) { /* noop */ }
+		try {
+			const now = new Date();
+			const rejectMetadata = {
+				action: 'conference_request_reject',
+				messageId: requestId + '-reject',
+				timestamp: now,
+				uri: fromUri,
+				room,
+				in_reply_to: requestId,
+			};
+			const rejectMessage = {
+				_id: requestId + '-reject',
+				key: requestId + '-reject',
+				createdAt: now,
+				metadata: rejectMetadata,
+				text: JSON.stringify(rejectMetadata),
+				user: {},
+			};
+			this.sendMessage(fromUri, rejectMessage, 'application/sylk-message-metadata');
+		} catch (e) {
+			console.log('[conference-request] reject send failed',
+				e && e.message ? e.message : e);
+		}
+	}
+
+	// Originator side: peer explicitly rejected our conference_request.
+	// Drop the pending entry and broadcast a DeviceEventEmitter event
+	// so AudioCallBox can flip its chip out of the "Waiting…" state.
+	_noteRejectedConferenceRequest(fromUri, metadataContent) {
+		const requestId = metadataContent && metadataContent.in_reply_to;
+		if (!requestId) return;
+		const pending = this.pendingOutgoingConferenceRequests
+			&& this.pendingOutgoingConferenceRequests[fromUri];
+		if (pending && pending.requestId === requestId) {
+			delete this.pendingOutgoingConferenceRequests[fromUri];
+		}
+		try {
+			utils.timestampedLog('[conference-request] PEER REJECTED →',
+				fromUri, '— request', requestId.slice(0, 8));
+		} catch (e) { /* noop */ }
+		// Notify any mounted AudioCallBox so it can clear the chip's
+		// pending look. AudioCallBox owns the visual state; app.js
+		// doesn't reach into it directly. DeviceEventEmitter is the
+		// same channel other in-call subsystems use (recorder, qos).
+		try {
+			DeviceEventEmitter.emit('conferenceRequestResolved', {
+				requestId,
+				peerUri: fromUri,
+				accepted: false,
+			});
+		} catch (e) { /* noop */ }
+	}
+
 	// Has this meeting session progressed past the acceptance handshake?
 	// Exposed as a prop to NavigationBar so stopLocationSharing can
 	// pick the right vocabulary for its system notes: before acceptance
@@ -24119,6 +25829,7 @@ class Sylk extends Component {
                     || md.meetingArrival === true
                     || md.action === 'location'
                     || md.action === 'location_request'
+                    || md.action === 'conference_request'
                     // One-tap emoji reaction sent through the quick-
                     // reaction bar (ContactsListBox.quickReact). The
                     // emoji is shipped as a normal text/plain reply,
@@ -24506,6 +26217,52 @@ class Sylk extends Component {
 		let uri = message.receiver;
 		const contacts = this.lookupContacts(uri);
 		//console.log('Matched contacts', contacts.length);
+
+		// Auto-create the contact when this device hasn't seen this URI yet.
+		// Multi-device replication path: device A sends a chat to bob@…;
+		// device B receives the outgoing message envelope here. Without
+		// this branch the SQL `messages` row gets written but no contact
+		// is ever materialised, so the conversation stays invisible in the
+		// chat list on device B until the user manually adds bob.
+		// Mirrors `saveIncomingMessage`'s `contacts.length === 0` branch
+		// (around the "newContact(uri)" call further down in this file).
+		// Skips:
+		//   - sylk-message-metadata / sylk-contact-update — control payloads
+		//     handled in their own branches below; they never need a
+		//     contact row of their own and creating one here would be
+		//     spurious.
+		//   - self-routed envelopes (uri === accountId) — e.g. the
+		//     call_recording cross-device sync, which is alice → alice
+		//     on the wire. A self contact already exists from enrollment.
+		if (contacts.length === 0
+				&& uri
+				&& uri !== this.state.accountId
+				&& message.contentType !== 'application/sylk-message-metadata'
+				&& message.contentType !== 'application/sylk-contact-update') {
+			const _autoContact = this.newContact(uri);
+			if (_autoContact) {
+				// `newContact` always *derives* a friendly display name
+				// from the username portion of the URI when no explicit
+				// name is passed (e.g. alexblom@sip2sip.info → "Alexblom").
+				// For sync-replicated contacts we never had a user-provided
+				// name, so the right behaviour is to leave the display
+				// name BLANK — EditContactModal already falls back to
+				// rendering the URI itself when the name is empty. Leaving
+				// the derived value in place makes the modal's "Display
+				// name" field pre-fill with the URI-derived string, which
+				// users then have to manually delete before they can save
+				// a real name.
+				_autoContact.name = '';
+				utils.timestampedLog('[contacts] auto-create from outgoing replication:',
+					uri, 'contentType=', message.contentType);
+				contacts.push(_autoContact);
+				// Persist immediately so the contact survives even if the
+				// per-contentType branches below early-return before the
+				// existing `saveSylkContact` loop runs (e.g. text/html or
+				// image/* paths that filter on PGP wrapping).
+				this.saveSylkContact(uri, _autoContact, 'outgoingMessage:autoCreate');
+			}
+		}
 
         const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
         let content = message.content;
@@ -26641,6 +28398,74 @@ class Sylk extends Component {
 
 	};
 
+	// Centralised "the remote SIP From header just gave us a real display
+	// name — does the locally-stored contact need to learn from that?"
+	//
+	// Spec (from user): "when we locate a contact for the sip uri X, if
+	// display name is not set, or is equal to the uri, set the contact
+	// Display name with the display_name learned from the push
+	// notification". Implementation extends the "URI" check to cover the
+	// URI's local part as well, because newly-auto-created contacts are
+	// stored with `name = localPart` (e.g. living233@sip2sip.info →
+	// "living233"), which is functionally indistinguishable from "no
+	// name set" but isn't bare-empty/null.
+	//
+	// Returns the updated contact (with the new name applied) so the
+	// caller can drop it straight into state.callContact without waiting
+	// for the async SQL write and the next contactIndex rebuild — that's
+	// what makes the in-call navbar pick the right name on the very
+	// first frame of the call screen.
+	//
+	// Also updates contactIndex synchronously so any other code path
+	// running lookupContact in the same tick (e.g. the lookup that runs
+	// from render() in app.js) sees the upgraded contact rather than the
+	// stale one.
+	applyPushDisplayName = (uri, pushDisplayName, origin='pushDisplayName') => {
+		try {
+			if (!uri || !pushDisplayName) return null;
+			const localPart = (uri.indexOf('@') > -1) ? uri.split('@')[0] : uri;
+			const isRealName = (n) => !!(n
+				&& typeof n === 'string'
+				&& n.toLowerCase() !== uri.toLowerCase()
+				&& n.toLowerCase() !== localPart.toLowerCase());
+			if (!isRealName(pushDisplayName)) return null;
+
+			const existing = this.lookupContact && this.lookupContact(uri);
+			if (!existing) return null;
+			if (isRealName(existing.name)) {
+				// Contact already has a real, distinct display name —
+				// don't trample it. The user spec only asked us to
+				// backfill when the stored name is missing or echoes
+				// the URI / local part.
+				return null;
+			}
+
+			const updated = { ...existing, name: pushDisplayName };
+
+			// Synchronous index update so concurrent lookupContact()
+			// callers in this tick see the upgraded name immediately,
+			// without waiting for setState → buildContactIndex. Matches
+			// the pattern in lookupContact(create=true, save=true).
+			if (this.contactIndex) this.contactIndex[uri] = updated;
+			if (this.contactsIndexes && this.contactsIndexes[uri]) {
+				this.contactsIndexes[uri] = this.contactsIndexes[uri].map(
+					(c) => (c && c.id === updated.id) ? updated : c
+				);
+			}
+
+			this.saveSylkContact(uri, updated, origin);
+			utils.timestampedLog('[contact] applyPushDisplayName uri=' + uri
+				+ ' old_name=' + (existing.name || '<empty>')
+				+ ' new_name=' + pushDisplayName
+				+ ' (origin=' + origin + ')');
+
+			return updated;
+		} catch (e) {
+			console.log('applyPushDisplayName failed:', e && e.message);
+			return null;
+		}
+	};
+
 	lookupContacts = (uriString) => {
 	  // returns array of matches
 	  const exact = this.contactsIndexes?.[uriString] || [];
@@ -26816,7 +28641,22 @@ class Sylk extends Component {
 			}
 		}
 		const totalChanged = total_unread !== (this._lastUnreadTotal || 0);
-		if (changedUris.length === 0 && !totalChanged) {
+		// Even when JS-side state hasn't moved, we still need to run the
+		// orphan reconcile below at least once per foreground session.
+		// Otherwise: app gets killed → FCM pushes 3 messages while killed
+		// (unread_chat_* entries written, badge set to 3) → user reopens
+		// app → journal sync delivers those messages already-displayed
+		// (from another device or via FCM's own disposition path) →
+		// JS perContact stays {} → diff is empty → we early-return →
+		// the 3 native entries are never cleared and the launcher badge
+		// stays stuck on 3. The orphan pass below is what unsticks it.
+		const needsOrphanReconcile =
+			Platform.OS === 'android' &&
+			this.state.appState === 'active' &&
+			!this._orphanReconcileDoneThisForeground &&
+			Array.isArray(contacts) &&
+			contacts.length > 0;
+		if (changedUris.length === 0 && !totalChanged && !needsOrphanReconcile) {
 			return;
 		}
 
@@ -26886,6 +28726,55 @@ class Sylk extends Component {
                 } catch (e) {
                     console.log('updateTotalUnread: native reconcile failed',
                         e && e.message ? e.message : e);
+                }
+
+                // Orphan reconcile — runs once per foreground session.
+                // The per-changed-uri loop above only touches contacts JS
+                // either previously knew were unread or now sees as
+                // unread. Contacts that were incremented purely by the
+                // background FCM service (while JS was killed) never
+                // appear in changedUris because they aren't in JS's
+                // _lastUnreadSnapshot AND, by the time JS rehydrates,
+                // those messages are already journal-delivered so JS's
+                // perContact stays empty for them too. We walk
+                // getAllUnread() here and clear any URI native still
+                // counts that JS knows about with zero unread — that's
+                // the only way to drop a launcher-badge value that was
+                // posted while the app was dead. _handleAppStateChange
+                // resets _orphanReconcileDoneThisForeground on every
+                // background → active transition so this runs once per
+                // foreground rather than on every render. We require
+                // contacts.length > 0 so we don't fire mid-cold-start
+                // (before allContacts is hydrated) and mistakenly clear
+                // a contact native correctly knows is unread just
+                // because JS hasn't loaded its row yet.
+                if (needsOrphanReconcile) {
+                    this._orphanReconcileDoneThisForeground = true;
+                    const knownUris = new Set();
+                    for (const c of contacts) {
+                        if (c && c.uri) knownUris.add(c.uri);
+                    }
+                    try {
+                        UnreadModule.getAllUnread().then((nativeMap) => {
+                            const orphans = [];
+                            for (const uri of Object.keys(nativeMap || {})) {
+                                const jsCount = perContact[uri] || 0;
+                                if (jsCount === 0 && knownUris.has(uri)) {
+                                    orphans.push(uri + '=' + nativeMap[uri]);
+                                    UnreadModule.resetUnreadForContact(uri);
+                                }
+                            }
+                            if (orphans.length > 0) {
+                                utils.timestampedLog(
+                                    '[app] orphan native unread cleared:',
+                                    orphans.join(', ')
+                                );
+                            }
+                        }).catch(() => {});
+                    } catch (e) {
+                        console.log('updateTotalUnread: orphan reconcile failed',
+                            e && e.message ? e.message : e);
+                    }
                 }
             } else {
                 console.log('updateTotalUnread: skipping native reconcile (appState =',
@@ -28389,6 +30278,57 @@ class Sylk extends Component {
         }
     }
 
+    /**
+     * Bump a contact's last_message preview to "Conference call" and
+     * timestamp to now. Used when the local user invites someone into
+     * an in-progress conference (ConferenceBox.inviteParticipants) so
+     * the invitee surfaces at the top of the contacts list with a
+     * meaningful preview line, matching the way an outgoing chat
+     * message would. The chat list's sort key is the contact's
+     * timestamp, so the bump is what moves the row up — without it
+     * the invitee would only re-sort if the user happened to send
+     * them a chat message afterwards.
+     *
+     * Mirrors the URI normalisation that addHistoryEntry uses
+     * (bare local-part gets the videoconference. prefix) so the
+     * lookup hits the same row both code paths target. Creates a
+     * fresh contact row when none exists yet (e.g. an invitee who
+     * is not already in the user's contacts) so the bump can land.
+     */
+    updateContactOnConferenceInvite(uri) {
+        if (typeof uri !== 'string') return;
+        uri = uri.trim().toLowerCase();
+        if (!uri) return;
+        if (uri.indexOf('@') === -1) {
+            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        }
+        if (uri.indexOf('@guest.') > -1) {
+            uri = 'anonymous@anonymous.invalid';
+        }
+        if (this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.rejectAnonymous
+            && uri.indexOf('anonymous@') > -1) {
+            return;
+        }
+
+        let contacts = this.lookupContacts(uri);
+        if (!contacts || contacts.length === 0) {
+            contacts = [this.newContact(uri)];
+        }
+        for (const contact of contacts) {
+            contact.timestamp = new Date();
+            contact.lastMessage = 'Conference call';
+            if (!Array.isArray(contact.tags)) {
+                contact.tags = [];
+            }
+            if (contact.tags.indexOf('calls') === -1) {
+                contact.tags.push('calls');
+            }
+            this.saveSylkContact(uri, contact, 'conference invite');
+        }
+    }
+
     updateHistoryEntry(uri, callUUID, duration, mediaType = null) {
         if (uri.indexOf('@') === -1) {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
@@ -28403,14 +30343,34 @@ class Sylk extends Component {
 				contact.lastCallId = callUUID;
 				// Record the media type used on this run so the
 				// contact tile (ContactCard) can render an informed
-				// subtitle next time — "Audio" or "Video" on
-				// conference rooms, instead of the type-agnostic
-				// "Conference" fallback. Only overwrite when the
-				// caller supplied a value, so older code paths that
-				// don't pass mediaType don't wipe a previously
-				// recorded one.
+				// subtitle next time — "Audio Conference" or
+				// "Video Conference" on conference rooms, instead
+				// of the type-agnostic "Conference" fallback. Only
+				// overwrite when the caller supplied a value, so
+				// older code paths that don't pass mediaType don't
+				// wipe a previously recorded one.
 				if (mediaType != null) {
 					contact.lastCallMediaType = mediaType;
+					// Also append to lastCallMedia so the value
+					// survives an app restart. lastCallMediaType is
+					// in-memory only (no SQL column); lastCallMedia
+					// is the SQL-persisted comma-joined list, loaded
+					// back via item.last_call_media.split(','). We
+					// keep the last entry as "most recent run", so
+					// ContactCard's fallback can read it post-
+					// restart and render the right subtitle. Trim
+					// to the last 5 entries so the column doesn't
+					// grow without bound on a contact with many
+					// calls.
+					if (!Array.isArray(contact.lastCallMedia)) {
+						contact.lastCallMedia = contact.lastCallMedia
+							? String(contact.lastCallMedia).split(',').filter(Boolean)
+							: [];
+					}
+					contact.lastCallMedia.push(mediaType);
+					if (contact.lastCallMedia.length > 5) {
+						contact.lastCallMedia = contact.lastCallMedia.slice(-5);
+					}
 				}
 				if (contact.tags.indexOf('calls') === -1) {
 					contact.tags.push('calls');
@@ -28565,12 +30525,21 @@ class Sylk extends Component {
             //loadingLabel = 'Signing out...';
         }
 
+// Pick the linen texture that matches the active theme. The dark
+// weave reads against the Night palette; the channel-inverted light
+// weave (same grain) reads against the Day palette. We resolve
+// straight from DarkModeManager (single source of truth) so the
+// texture flips whenever the theme does.
+const _appBgImage = DarkModeManager.getTheme().isDark
+    ? backgroundImageDark
+    : backgroundImageLight;
+
 return (
   <SafeAreaProvider initialMetrics={initialWindowMetrics}>
     <PaperProvider theme={theme}>
       <Router history={history}>
         <ImageBackground
-          source={backgroundImage}
+          source={_appBgImage}
           style={{ width: '100%', height: '100%' }}
         >
           <View
@@ -28644,19 +30613,18 @@ return (
 				    timer stay in place as harmless no-ops so we can
 				    bring something back later without re-plumbing. */}
 			    
-                    {Platform.OS === 'android' && (
-                      <IncomingCallModal
-                        contact={this.state.incomingContact}
-                        media={this.state.incomingMedia}
-                        CallUUID={this.state.incomingCallUUID}
-                        onAccept={this.callKeepAcceptCall}
-                        onReject={this.callKeepRejectCall}
-                        onHide={this.dismissCall}
-                        orientation={this.state.orientation}
-                        isTablet={this.state.isTablet}
-                        playIncomingRingtone={this.playIncomingRingtone}
-                      />
-                    )}
+                    {/* IncomingCallModal removed: panel is no longer in
+                        use — Android relies on FCM/CallKeep for incoming
+                        call alerting, iOS never rendered this modal,
+                        and on conference reconnect the modal was
+                        spuriously coming up in front of the rejoined
+                        conference. The supporting state
+                        (incomingCallUUID / incomingContact /
+                        incomingMedia) and methods (showAlertPanel,
+                        hideInternalAlertPanel, playIncomingRingtone)
+                        are left in place as dead code for now — they
+                        do no harm because nothing renders them. Sweep
+                        them out in a follow-up pass. */}
 
                     <LogsModal
                       logs={this.state.logs}
@@ -28967,6 +30935,7 @@ return (
                     notificationCenter = {this.notificationCenter}
                     account = {this.state.account}
                     sylkDomain = {this.state.sylkDomain}
+                    conferenceSettings = {this.state.conferenceSettings}
                     accountId = {this.state.accountId}
                     /* Receives the measured Appbar.Header height.
                        Forwarded to ReadyBox (and through to
@@ -29140,6 +31109,18 @@ return (
                     setLocationProximityMeters = {(m) => this.setAccountSetting('location.proximityMeters', m)}
                     locationPrivacyRadiusMeters = {Number(this.state.accountSetting.location.privacyRadiusMeters) || 0}
                     setLocationPrivacyRadiusMeters = {(m) => this.setAccountSetting('location.privacyRadiusMeters', m)}
+                    /* Visual theme — persisted in
+                       accountSetting.device.themeMode like every
+                       other Preferences knob. setThemeMode both
+                       persists the new value AND pushes it into the
+                       DarkModeManager singleton so the navbar / chat
+                       bubbles re-style immediately without waiting
+                       for the next OS appearance event. */
+                    themeMode = {(this.state.accountSetting.device && this.state.accountSetting.device.themeMode) || 'system'}
+                    setThemeMode = {(mode) => {
+                        try { DarkModeManager.setMode(mode); } catch (e) {}
+                        this.setAccountSetting('device.themeMode', mode);
+                    }}
                     buildId = {this.buildId}
                     getTransferedFiles = {this.getTransferedFiles}
                     transferedFiles = {this.state.transferedFiles}
@@ -29148,12 +31129,28 @@ return (
                     toggleSearchContacts = {this.toggleSearchContacts}
                     searchMessages = {this.state.searchMessages}
                     searchContacts = {this.state.searchContacts}
+                    /* Conference-invite contact-selection mode. When
+                       the user has tapped + on a running conference
+                       to invite people, the contacts list goes into
+                       its own select-mode "search-like" UI (with its
+                       own search bar pinned to the contacts list);
+                       in that state the main navbar's search-contacts
+                       icon would only collide with it, so we forward
+                       the flag down and the navbar uses it to hide
+                       the icon. */
+                    inviteContacts = {this.state.inviteContacts}
                     searchString = {this.state.searchString}
                     isLandscape = {this.state.orientation === 'landscape'}
                     serverSettingsUrl = {this.state.serverSettingsUrl}
                     publicUrl = {this.state.publicUrl}
 					insets = {this._insets}
 					call = {this.state.currentCall || this.state.incomingCall}
+					/* Local media stream passed through so the NavBar
+					   can surface "Acquiring mic…" in the subtitle
+					   during the warmup phase, before getUserMedia()
+					   resolves and the sylkrtc Call object's state
+					   transitions to 'accepted'/'established'. */
+					localMedia = {this.state.localMedia}
 					storageUsage = {this.state.storageUsage}
 					syncPercentage = {this.state.syncPercentage}
 					toggleDevMode = {this.toggleDevMode}
@@ -29545,6 +31542,20 @@ return (
                     onDecline={() => this._declineLocationRequest()}
                     close={() => this._closeLocationRequestModal()}
                 />
+
+                {/* Receiver-side prompt for an in-call
+                    "Escalate to conference" request. Mirrors the
+                    location_request modal; on accept the handler
+                    echoes the metadata back to the requester and
+                    transitions both sides into the agreed
+                    conference room. */}
+                <ConferenceRequestModal
+                    show={this.state.conferenceRequestModal.show}
+                    fromUri={this.state.conferenceRequestModal.fromUri}
+                    onAccept={() => this._acceptConferenceRequest()}
+                    onDecline={() => this._declineConferenceRequest()}
+                    close={() => this._closeConferenceRequestModal()}
+                />
             </Fragment>
         );
     }
@@ -29625,6 +31636,7 @@ return (
         const videoMuted = !!this.state.incomingCall;
 
         return (
+            <Fragment>
             <Call
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
@@ -29640,13 +31652,21 @@ return (
                 callContact = {this.state.callContact}
                 call = {call}
                 callState = {callState}
+                /* True while the cold-start push-accept route gate is
+                   active (see _openPushAcceptGate). Tells the overlay
+                   stack we're in the warmup window for an INCOMING
+                   call accept, so it can show "Accepting call…" rather
+                   than the outgoing-dial "Calling X…" wording. */
+                pushAcceptInProgress = {this.state.pushAcceptInProgress}
                 outgoingMediaIsVideo = {!!(this.outgoingMedia && this.outgoingMedia.video)}
                 myKeys = {this.state.keys}
                 markZrtpVerified = {this.markZrtpVerified}
+                resetContactZrtp = {this.resetContactZrtp}
                 connection = {this.state.connection}
                 registrationState = {this.state.registrationState}
                 localMedia = {this.state.localMedia}
                 escalateToConference = {this.escalateToConference}
+                defaultConferenceDomain = {this.state.defaultConferenceDomain}
                 hangupCall = {this.hangupCall}
                 showLogs = {this.showLogs}
                 generatedVideoTrack = {this.state.generatedVideoTrack}
@@ -29697,6 +31717,23 @@ return (
 				saveCallRecording = {this.saveCallRecording}
 				enableAudioRecording = {!!this.state.accountSetting.rtp.enableAudioRecording}
             />
+
+            {/* Receiver-side "Escalate to conference" prompt — must
+                render on the /call route too, because the receiver is
+                by definition in a 1-1 call when the conference_request
+                metadata arrives. Without this mount the modal would
+                only be visible from /ready. The same instance is
+                rendered in ready() as a safety net for the edge case
+                where the request arrives while the user happens to be
+                on the home screen (e.g. a sibling-device race). */}
+            <ConferenceRequestModal
+                show={this.state.conferenceRequestModal.show}
+                fromUri={this.state.conferenceRequestModal.fromUri}
+                onAccept={() => this._acceptConferenceRequest()}
+                onDecline={() => this._declineConferenceRequest()}
+                close={() => this._closeConferenceRequestModal()}
+            />
+            </Fragment>
         )
     }
 
@@ -29740,6 +31777,17 @@ return (
                 localMedia = {this.state.localMedia}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
+                /* Read-and-clear: when the /conference route lands
+                   here because of the conference_request handshake,
+                   pendingConferenceSkipCountdown=true tells Conference
+                   to bypass the camera-preview Start-call gate. We
+                   clear it the same render tick so subsequent regular
+                   conference dials still get the normal countdown. */
+                skipCountdown = {(() => {
+                    const v = !!this.pendingConferenceSkipCountdown;
+                    if (v) this.pendingConferenceSkipCountdown = false;
+                    return v;
+                })()}
                 callContact = {this.state.callContact}
                 allContacts = {this.state.allContacts}
                 lookupContact = {this.lookupContact}
@@ -29747,6 +31795,7 @@ return (
                 registrationState = {this.state.registrationState}
                 currentCall = {this.state.currentCall}
                 saveParticipant = {this.saveParticipant}
+                updateContactOnConferenceInvite = {this.updateContactOnConferenceInvite}
                 saveConferenceMessage = {this.saveConferenceMessage}
                 updateConferenceMessage = {this.updateConferenceMessage}
                 deleteConferenceMessage = {this.deleteConferenceMessage}
@@ -29764,6 +31813,11 @@ return (
                 proposedMedia = {this.outgoingMedia}
                 isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
+                /* Cover-display (folded) flag plumbed into Conference
+                   so the audio-conference layout can drop wide chrome
+                   (AudioSpeedometer, the account-plus invite button)
+                   that doesn't fit the cramped folded geometry. */
+                isFolded = {this.state.isFolded}
                 muted = {this.state.muted}
                 defaultDomain = {this.state.defaultDomain}
                 fileSharingUrl = {this.state.fileSharingUrl}
@@ -29792,6 +31846,8 @@ return (
 				enableFullScreen = {this.enableFullScreen}
 				disableFullScreen = {this.disableFullScreen}
 				sylkDomain = {this.state.sylkDomain}
+				conferenceSettings = {this.state.conferenceSettings}
+				pstnRules = {this.state.pstnRules}
             />
         )
     }
@@ -30049,6 +32105,13 @@ return (
         // case is stale state surviving for one re-signin which the
         // next sign-in's hydrate will replace anyway.
         this._wipeLocationStateForLogout(accountIdBeforeReset);
+
+        // (Used to clear a cached SIP-bridge dedupe domain in
+        // NSUserDefaults / SharedPreferences on logout. The value
+        // now lives in the per-account accounts.settings JSON,
+        // which is no longer queried after sign-out because the
+        // account row is no longer the "active" one — no cleanup
+        // step needed.)
 
         this.resetState();
 

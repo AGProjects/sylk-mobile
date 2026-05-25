@@ -3,6 +3,7 @@ import { View, TouchableOpacity, Text, Image } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import utils from '../utils';
+import DarkModeManager from '../DarkModeManager';
 
 const ChatBubble = memo(
   ({
@@ -122,8 +123,25 @@ const ChatBubble = memo(
     const groupedWithNext = !!(nextMessage
         && _sameSide(currentMessage, nextMessage)
         && _sameDay(currentMessage, nextMessage));
-    let leftColor = 'green';
-    let rightColor = '#fff';
+    // Pull bubble colours from the active theme so flipping Day/Night
+    // re-styles the chat surface. Day theme: incoming = white,
+    // outgoing = light Sylk-blue (#D6EAF5). Night theme: incoming =
+    // 'green', outgoing = '#fff' (legacy look preserved).
+    const theme = DarkModeManager.getTheme();
+    let leftColor = theme.bubbleIncoming;
+    let rightColor = theme.bubbleOutgoing;
+    // Text colours that ride with the bubble background. The body
+    // text inside a text bubble actually flows through
+    // CustomMessageText (which has its own theme-aware lookup); the
+    // values here drive the FALLBACK text gifted-chat renders for
+    // image / video / audio / location bubbles (captions + the
+    // inline timestamp at the bottom of every bubble). Without
+    // theme-awareness the left-side time stamp painted white-on-white
+    // in Day mode — that was the "timestamp still white" complaint.
+    const leftBodyTextColor  = theme.bubbleIncomingText;
+    const rightBodyTextColor = theme.bubbleOutgoingText;
+    const leftTimeTextColor  = theme.isDark ? '#FFFFFF' : '#667781';
+    const rightTimeTextColor = '#667781';
 
     if (currentMessage.failed) {
       rightColor = 'red';
@@ -492,8 +510,8 @@ const ChatBubble = memo(
           // Previously this was `isPreview ? … : undefined`, which
           // explicitly stomped bubbleProps' value with undefined.
           {...(isPreview ? { bottomContainerStyle: { left: previewContainer, right: previewContainer } } : {})}
-          textProps={{ style: { color: position === 'left' ? '#000' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
     } else if (currentMessage.video) {
@@ -501,8 +519,8 @@ const ChatBubble = memo(
         <Bubble
           {...bubbleProps}
           wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
-          textProps={{ style: { color: position === 'left' ? '#fff' : '#fff' } }}
-          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
     } else if (currentMessage.audio) {
@@ -516,8 +534,8 @@ const ChatBubble = memo(
           // is left intact — that's the reliable way to open the menu
           // from an audio bubble.
           onPress={() => {}}
-          textProps={{ style: { color: position === 'left' ? '#fff' : '#fff' } }}
-          textStyle={{ left: { color: '#000' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
           wrapperStyle={{
             left: {
               ...leftWrapper,
@@ -557,8 +575,8 @@ const ChatBubble = memo(
 			  },
 			  }}
       
-          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
     } else if (currentMessage.contentType === 'application/sylk-live-location') {
@@ -594,8 +612,8 @@ const ChatBubble = memo(
               ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0}
               : {},
           }}
-          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
     } else {
@@ -615,8 +633,8 @@ const ChatBubble = memo(
 		  ? { borderWidth: 0, borderColor: 'orange', borderRadius: 0}
 		  : {},
 	  }}
-          textProps={{ style: { color: position === 'left' ? '#fff' : '#000' } }}
-          textStyle={{ left: { color: '#fff' }, right: { color: '#000' } }}
+          textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
+          textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
     }
@@ -728,6 +746,24 @@ const ChatBubble = memo(
 		//console.log(`[Bubble ${id}] RERENDER → fullSize changed`);
 		locTrace(false, 'fullSize changed');
 		return false;
+	  }
+
+	  // ==== Grouped-image selection ====
+	  // The grouped-image bubble (the one whose _id is the head of an
+	  // imageGroups entry) hosts the ThumbnailGrid with selectable
+	  // tiles. When the user taps a tile, ContactsListBox updates
+	  // state.selectedImages, which is now plumbed in as
+	  // selectedImages — but this comparator otherwise ignores it,
+	  // so the bubble would short-circuit re-render and the
+	  // ThumbnailGrid would stay mounted with stale selectedIds /
+	  // checkbox state. Re-render only for bubbles that actually
+	  // render a grid (id is a key of imageGroups). Text bubbles
+	  // don't care about selectedImages and stay cached.
+	  if (next.imageGroups && id in next.imageGroups) {
+		if (prev.selectedImages !== next.selectedImages) {
+		  locTrace(false, 'selectedImages changed for grouped bubble');
+		  return false;
+		}
 	  }
 
 	  // ==== Lazy live-location render ====

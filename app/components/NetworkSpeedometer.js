@@ -335,6 +335,22 @@ export default class NetworkSpeedometer extends React.Component {
     }
 
     _onStats(stats) {
+        // Wrap the body in a try/catch — react-native's EventEmitter
+        // silently swallows listener exceptions. The same
+        // codecOf(undefined) crash that froze the audio-view dial on
+        // iOS conference would freeze this video-view dial too. The
+        // crash is fixed (codecOf returns '' for falsy rtp) but the
+        // safety net stays so any future regression surfaces in the
+        // log instead of mysteriously leaving the dial at zero.
+        try {
+            this._onStatsImpl(stats);
+        } catch (err) {
+            console.log('[NetworkSpeedometer] _onStats threw: ' +
+                        (err && err.message ? err.message : String(err)));
+        }
+    }
+
+    _onStatsImpl(stats) {
         const cs = _getCallState(this.props.call);
         if (!cs) return;
         const { audio, video, connection } = stats.data || {};
@@ -416,11 +432,27 @@ export default class NetworkSpeedometer extends React.Component {
         const sDown = cs.history.reduce((a, b) => a + b.down, 0) / N;
 
         // Each PC has its own transport, so rtt is reported per-event in
-        // a conference. Prefer a fresh non-zero value, otherwise hold the
-        // previous snapshot to avoid flickering to 0 between events.
-        const rtt = connection?.currentRoundTripTime
-            ? connection.currentRoundTripTime * 1000
-            : (cs.snapshot.rtt || 0);
+        // a conference. Three-tier RTT source so iOS (which often
+        // leaves currentRoundTripTime undefined / 0 on the
+        // candidate-pair report) still gets a number:
+        //   1) connection.currentRoundTripTime (Android, Chrome) —
+        //      preferred, reflects the most recent STUN probe.
+        //   2) totalRoundTripTime / responsesReceived (iOS) — average
+        //      RTT over every STUN response so far. Same seconds
+        //      unit; ×1000 for ms.
+        //   3) hold the previous snapshot so a tick with no RTT
+        //      doesn't flicker to 0 between events.
+        let rtt;
+        if (connection?.currentRoundTripTime) {
+            rtt = connection.currentRoundTripTime * 1000;
+        } else if (connection
+                   && typeof connection.totalRoundTripTime === 'number'
+                   && typeof connection.responsesReceived === 'number'
+                   && connection.responsesReceived > 0) {
+            rtt = (connection.totalRoundTripTime / connection.responsesReceived) * 1000;
+        } else {
+            rtt = cs.snapshot.rtt || 0;
+        }
 
         // Use video loss when present (typically the more interesting
         // direction); fall back to audio loss otherwise.
@@ -436,8 +468,19 @@ export default class NetworkSpeedometer extends React.Component {
         // Extract codec mimeType. sylkrtc parseStats puts mimeType
         // directly on inbound/outbound rtp records when available
         // (M124 stats include 'codec' rows referenced by codecId).
-        const codecOf = (rtp) =>
-            (rtp && (rtp.mimeType || rtp.codec || '')).toString();
+        // codecOf used to be:
+        //   (rtp && (rtp.mimeType || rtp.codec || '')).toString()
+        // which throws "Cannot read property 'toString' of undefined"
+        // when rtp is undefined — `undefined && (...)` evaluates to
+        // `undefined`, then `.toString()` blows up. iOS conference's
+        // subscriber PCs deliver audioIn/audioOut/videoIn/videoOut as
+        // undefined (vs Android giving them as `{}`), so the silent
+        // listener crash here was leaving the dial blank. The same
+        // bug + fix applies in AudioSpeedometer.codecOf.
+        const codecOf = (rtp) => {
+            if (!rtp) return '';
+            return (rtp.mimeType || rtp.codec || '').toString();
+        };
         const videoCodec = codecOf(videoIn) || codecOf(videoOut) || cs.snapshot.videoCodec;
         const audioCodec = codecOf(audioIn) || codecOf(audioOut) || cs.snapshot.audioCodec;
 

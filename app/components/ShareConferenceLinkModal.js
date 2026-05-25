@@ -10,17 +10,29 @@ import QRCode from 'react-native-qrcode-svg';
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
 
-const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCenter, sylkDomain, conferenceRoom }) => {
+const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCenter, sylkDomain, conferenceRoom, conferenceSettings }) => {
+
+  const bulletLines = () => {
+    const lines = ['• Web: ' + conferenceUrl];
+    if (conferenceSettings && conferenceSettings.pstnBridge) {
+      lines.push('• PSTN number: ' + conferenceSettings.pstnBridge);
+    }
+    if (conferenceSettings && conferenceSettings.sipBridge && conferenceRoom) {
+      lines.push('• SIP audio: ' + conferenceRoom + '@' + conferenceSettings.sipBridge);
+    }
+    return lines.join('\n');
+  };
 
   const handleClipboardButton = () => {
-    utils.copyToClipboard(conferenceUrl);
+    utils.copyToClipboard(bulletLines());
     notificationCenter().postSystemNotification('Call me', { body: 'Web address copied to the clipboard' });
     close();
   };
 
   const handleEmailButton = () => {
-    const emailMessage = `You can join the conference using a Web browser at ${conferenceUrl} ` +
-      'or by using Sylk client freely downloadable from http://sylkserver.com';
+    const emailMessage = 'You can join the conference using one of these:\n\n' +
+      bulletLines() +
+      '\n\nThe Sylk client is freely downloadable from http://sylkserver.com';
 	const subject = encodeURIComponent('Join conference, maybe?');
 	const body = encodeURIComponent(emailMessage);
 	const mailtoUrl = `mailto:?subject=${subject}&body=${body}`;
@@ -32,7 +44,7 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
   const handleShareButton = () => {
     const options = {
         subject: 'Join conference, maybe?',
-        message: 'You can join my conference at ' + conferenceUrl
+        message: 'You can join my conference using one of these:\n\n' + bulletLines()
     };
 
     Share.open(options)
@@ -77,6 +89,22 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
 				</Text>
               </View>
 
+              {conferenceSettings && conferenceSettings.pstnBridge ? (
+                <View style={styles.buttonRow}>
+                  <Text style={styles.shareText}>
+                    PSTN number: {conferenceSettings.pstnBridge}
+                  </Text>
+                </View>
+              ) : null}
+
+              {conferenceSettings && conferenceSettings.sipBridge && conferenceRoom ? (
+                <View style={styles.buttonRow}>
+                  <Text style={styles.shareText}>
+                    SIP audio: {conferenceRoom}@{conferenceSettings.sipBridge}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={[styles.chipsContainer, styles.iconContainer]}>
 				<QRCode
 				  value={sylkUrl}
@@ -113,6 +141,7 @@ ShareConferenceLinkModal.propTypes = {
   notificationCenter: PropTypes.func.isRequired,
   sylkDomain: PropTypes.string,
   conferenceRoom: PropTypes.string,
+  conferenceSettings: PropTypes.object,
 };
 
 export default ShareConferenceLinkModal;

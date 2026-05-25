@@ -1,0 +1,7 @@
+ * UI improvements
+ * Improve logging and fetch native logs
+ * Added ringtone to DND bypassers
+ * Added share to thumbnail grid selection
+ * Added delete to thumbnail grid selections
+ * Fix filtering by category
+ * Fix downloading and decrypting files

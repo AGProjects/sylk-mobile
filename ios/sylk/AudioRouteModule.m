@@ -30,6 +30,16 @@
   AVAudioSessionMode _origMode;
   BOOL _started;
   NSDictionary *_lastKnownBtDevice; // cached so BT stays in the list while earpiece is active
+  // State saved by prepareForRecording so restoreAfterRecording can
+  // put the session back exactly the way it was. Distinct from
+  // _origCategory/_origOptions/_origMode (which are owned by the
+  // start/stop call-lifecycle) so a voice memo recorded *during* a
+  // call doesn't trample the call's saved restore state.
+  NSString *_preRecordCategory;
+  AVAudioSessionCategoryOptions _preRecordOptions;
+  AVAudioSessionMode _preRecordMode;
+  BOOL _preRecordWasActive;
+  BOOL _preRecordSaved;
 }
 
 RCT_EXPORT_MODULE(AudioRouteModule);
@@ -795,6 +805,164 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
     self->_started = NO;
 
     // Emit event so RN refreshes device list
+    [self sendReactNativeEvent];
+
+    resolve(@(YES));
+  });
+}
+
+/**
+ * prepareForRecording
+ *
+ * Called from JS immediately before audioRecorderPlayer.startRecorder().
+ * Why this exists: this module's -init configures the shared
+ * AVAudioSession for VOIP — PlayAndRecord category + VoiceChat mode —
+ * which engages the voice-processing IO unit. Once VPIO owns the
+ * input route, AVAudioRecorder.record() returns NO with a nil NSError
+ * (the underlying input unit is busy), which react-native-audio-
+ * recorder-player surfaces as the static string
+ * "Error occured during initiating recorder" — see ReadyBox.js
+ * onStartRecord for the JS-side counterpart.
+ *
+ * We can't just leave VoiceChat alone forever (we still want it for
+ * calls), so we snapshot the current category/options/mode and
+ * deactivate the session with NotifyOthersOnDeactivation so the input
+ * route fully releases. The recorder lib then re-runs setCategory +
+ * setActive itself with mode:.default, and record() succeeds because
+ * the route is now uncontested.
+ *
+ * restoreAfterRecording() rolls everything back so any subsequent
+ * call comes up in VoIP mode as before. We keep the saved state in
+ * _preRecord* (separate from the start/stop call-lifecycle's _orig*)
+ * so a voice memo recorded *during* a call doesn't clobber the
+ * call's restore state.
+ */
+RCT_EXPORT_METHOD(prepareForRecording:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [SylkLogger log:@"[audio] prepareForRecording called"];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+
+    // Snapshot pre-record state so restoreAfterRecording can rebuild it.
+    self->_preRecordCategory = session.category ?: @"";
+    self->_preRecordOptions = session.categoryOptions;
+    self->_preRecordMode = session.mode;
+    // We can't directly read "is the session active right now", but
+    // _started tracks our own VOIP activation; treat that as the
+    // best proxy for "should we re-activate on restore".
+    self->_preRecordWasActive = self->_started;
+    self->_preRecordSaved = YES;
+
+    [SylkLogger log:@"[audio] prepareForRecording: snapshot category=%@ options=%lu mode=%@ wasActive=%d",
+        self->_preRecordCategory,
+        (unsigned long)self->_preRecordOptions,
+        self->_preRecordMode,
+        self->_preRecordWasActive];
+
+    // Deactivate with NotifyOthersOnDeactivation. This is the bit
+    // that releases the voice-processing IO unit; without it the
+    // input route stays bound to VPIO even after the recorder lib
+    // setCategory's to mode:.default, and record() returns NO.
+    NSError *err = nil;
+    BOOL deact = [session setActive:NO
+                        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                              error:&err];
+    if (!deact) {
+      // Don't reject — this happens routinely when the session
+      // wasn't active to begin with (e.g. no call in progress) and
+      // it's not a hard failure. Log it and let the recorder lib
+      // proceed; its own setActive:YES will bring the session back
+      // up in the right mode.
+      [SylkLogger log:@"[audio] prepareForRecording: setActive:NO returned NO (likely benign): %@", err];
+    } else {
+      [SylkLogger log:@"[audio] prepareForRecording: session deactivated"];
+    }
+
+    resolve(@(YES));
+  });
+}
+
+/**
+ * restoreAfterRecording
+ *
+ * Paired with prepareForRecording. Re-applies the snapshotted
+ * category / options / mode so VOIP routing comes back exactly how it
+ * was. If the session was active before the recording (i.e. a call
+ * was in progress, _started==YES), we also re-activate. If not, we
+ * leave the session inactive — there's no caller to listen to.
+ *
+ * Safe to call without a matching prepareForRecording (it just
+ * no-ops with a log line). Always resolves with @YES so JS doesn't
+ * have to deal with rejection on the cleanup path.
+ */
+RCT_EXPORT_METHOD(restoreAfterRecording:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [SylkLogger log:@"[audio] restoreAfterRecording called preRecordSaved=%d", self->_preRecordSaved];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!self->_preRecordSaved) {
+      [SylkLogger log:@"[audio] restoreAfterRecording: nothing to restore"];
+      resolve(@(YES));
+      return;
+    }
+
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    NSError *err = nil;
+
+    // Restore category + options. Fall back to PlayAndRecord +
+    // AllowBluetooth if the snapshot is empty (defensive — should
+    // never happen because -init always sets a category).
+    NSString *categoryToRestore = (self->_preRecordCategory.length > 0)
+        ? self->_preRecordCategory
+        : AVAudioSessionCategoryPlayAndRecord;
+    AVAudioSessionCategoryOptions optionsToRestore = (self->_preRecordCategory.length > 0)
+        ? self->_preRecordOptions
+        : AVAudioSessionCategoryOptionAllowBluetooth;
+
+    BOOL catOk = [session setCategory:categoryToRestore
+                          withOptions:optionsToRestore
+                                error:&err];
+    if (!catOk) {
+      [SylkLogger log:@"[audio] restoreAfterRecording: setCategory failed: %@", err];
+    } else {
+      [SylkLogger log:@"[audio] restoreAfterRecording: category restored to %@", categoryToRestore];
+    }
+
+    // Restore mode. We always want a mode set — fall back to
+    // VoiceChat since that matches -init's configuration.
+    AVAudioSessionMode modeToRestore = (self->_preRecordMode.length > 0)
+        ? self->_preRecordMode
+        : AVAudioSessionModeVoiceChat;
+    NSError *modeErr = nil;
+    BOOL modeOk = [session setMode:modeToRestore error:&modeErr];
+    if (!modeOk) {
+      [SylkLogger log:@"[audio] restoreAfterRecording: setMode failed: %@", modeErr];
+    } else {
+      [SylkLogger log:@"[audio] restoreAfterRecording: mode restored to %@", modeToRestore];
+    }
+
+    // Re-activate only if we were active before (i.e. a call was
+    // in progress). Otherwise leave the session inactive — the
+    // next call will activate it via -start.
+    if (self->_preRecordWasActive) {
+      NSError *actErr = nil;
+      BOOL act = [session setActive:YES error:&actErr];
+      if (!act) {
+        [SylkLogger log:@"[audio] restoreAfterRecording: setActive:YES failed: %@", actErr];
+      } else {
+        [SylkLogger log:@"[audio] restoreAfterRecording: session re-activated"];
+      }
+    } else {
+      [SylkLogger log:@"[audio] restoreAfterRecording: session was idle pre-record, leaving inactive"];
+    }
+
+    // Clear snapshot so a future stray restoreAfterRecording without
+    // a paired prepareForRecording is a no-op.
+    self->_preRecordSaved = NO;
+
+    // Emit so any RN-side device list refreshes (route may have
+    // shifted while the session was inactive).
     [self sendReactNativeEvent];
 
     resolve(@(YES));

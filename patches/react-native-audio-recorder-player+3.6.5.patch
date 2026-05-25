@@ -1,0 +1,89 @@
+diff --git a/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift b/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
+--- a/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
++++ b/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
+@@ -243,26 +243,60 @@
+         }
+ 
+         func startRecording() {
+-            let settings = [
++            // Build settings dict. Only include LPCM-specific keys when
++            // actually recording LPCM — including them for compressed
++            // formats (AAC, etc.) causes AVAudioRecorder validation to
++            // fail on iOS 26+, where prepareToRecord/record() return
++            // false with no NSError (surfaced as the static reject string
++            // "Error occured during initiating recorder").
++            //
++            // The upstream code also has a bug worth flagging while
++            // we're in here: `AVLinearPCMBitDepthKey: avLPCMBitDepth ??
++            // AVLinearPCMBitDepthKey.count` falls back to the *length of
++            // the constant string* (= 22), which is not a valid bit
++            // depth. We replace it with a sensible default of 16.
++            var settings: [String : Any] = [
+                 AVSampleRateKey: sampleRate!,
+                 AVFormatIDKey: avFormat,
+                 AVNumberOfChannelsKey: numberOfChannel!,
+                 AVEncoderAudioQualityKey: audioQuality!,
+-                AVLinearPCMBitDepthKey: avLPCMBitDepth ?? AVLinearPCMBitDepthKey.count,
+-                AVLinearPCMIsBigEndianKey: avLPCMIsBigEndian ?? true,
+-                AVLinearPCMIsFloatKey: avLPCMIsFloatKey ?? false,
+-                AVLinearPCMIsNonInterleaved: avLPCMIsNonInterleaved ?? false,
+-                 AVEncoderBitRateKey: bitRate!
+-            ] as [String : Any]
++                AVEncoderBitRateKey: bitRate!,
++            ]
++            if avFormat == kAudioFormatLinearPCM {
++                settings[AVLinearPCMBitDepthKey] = avLPCMBitDepth ?? 16
++                settings[AVLinearPCMIsBigEndianKey] = avLPCMIsBigEndian ?? false
++                settings[AVLinearPCMIsFloatKey] = avLPCMIsFloatKey ?? false
++                settings[AVLinearPCMIsNonInterleaved] = avLPCMIsNonInterleaved ?? false
++            }
+ 
+             do {
++                // Log the actual settings dict we're about to feed
++                // AVAudioRecorder so the metro/console log shows what
++                // was passed if prepareToRecord/record() refuses it.
++                NSLog("[RNAudioRecorderPlayer] startRecording settings=%@ url=%@",
++                    settings as NSDictionary, audioFileURL?.absoluteString ?? "<nil>")
++
+                 audioRecorder = try AVAudioRecorder(url: audioFileURL!, settings: settings)
+ 
+                 if (audioRecorder != nil) {
+-                    audioRecorder.prepareToRecord()
++                    // Upstream ignores prepareToRecord's return value
++                    // and only checks record(). On iOS 26 prepareToRecord
++                    // can return false (because of a bad settings dict,
++                    // a sandbox path issue, or an active interruption)
++                    // while record() then also returns false — but with
++                    // nothing in the log to distinguish them. Check
++                    // prepareToRecord explicitly so the JS-side knows
++                    // which step failed.
++                    let prepared = audioRecorder.prepareToRecord()
++                    NSLog("[RNAudioRecorderPlayer] prepareToRecord -> %d", prepared)
++                    if !prepared {
++                        reject("RNAudioPlayerRecorder", "prepareToRecord returned false", nil)
++                        return
++                    }
+                     audioRecorder.delegate = self
+                     audioRecorder.isMeteringEnabled = _meteringEnabled
+                     let isRecordStarted = audioRecorder.record()
++                    NSLog("[RNAudioRecorderPlayer] record() -> %d", isRecordStarted)
+ 
+                     if !isRecordStarted {
+                         reject("RNAudioPlayerRecorder", "Error occured during initiating recorder", nil)
+@@ -276,8 +310,14 @@
+                 }
+ 
+                 reject("RNAudioPlayerRecorder", "Error occured during initiating recorder", nil)
+-            } catch {
+-                reject("RNAudioPlayerRecorder", "Error occured during recording", nil)
++            } catch let error as NSError {
++                // Pass the real NSError through so JS sees the actual
++                // failure reason instead of a static string with nil
++                // userInfo. Upstream swallowed it.
++                NSLog("[RNAudioRecorderPlayer] AVAudioRecorder init/record threw: %@", error)
++                reject("RNAudioPlayerRecorder",
++                    "Error occured during recording: \(error.localizedDescription)",
++                    error)
+             }
+         }
+ 

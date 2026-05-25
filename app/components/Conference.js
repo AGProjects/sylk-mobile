@@ -9,6 +9,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import ConferenceBox from './ConferenceBox';
 import LocalMedia from './LocalMedia';
 import utils from '../utils';
+import { applyVideoEncoderParamsToPc } from './CallZrtp';
 
 const DEBUG = debug('blinkrtc:Conference');
 //debug.enable('*');
@@ -70,7 +71,17 @@ class Conference extends React.Component {
 			  // flag is irrelevant — there's no preview to gate
 			  // through, mediaPlaying still calls
 			  // startCallWhenReady immediately.
-			  userStartedCall: false,
+			  // Initialise true when the parent passed
+			  // skipCountdown — e.g. an "Escalate to conference"
+			  // handshake just landed us on /conference. The user
+			  // already confirmed intent twice in that flow (the
+			  // originator picked it from the avatar panel; the
+			  // accepter tapped Accept on the modal) so the
+			  // camera-preview Start-call gate would be needless
+			  // friction. mediaPlaying's userStartedCall check
+			  // then short-circuits straight to
+			  // startCallWhenReady.
+			  userStartedCall: !!props.skipCountdown,
         }
               
         if (this.props.connection) {
@@ -172,11 +183,34 @@ class Conference extends React.Component {
         }
 
         if (nextProps.callUUID !== null && this.state.callUUID !== nextProps.callUUID) {
-            this.setState({callUUID: nextProps.callUUID,
-                           reconnectingCall: true,
-                           currentCall: null});
+            // Pre-existing branch: when callUUID prop changes, treat
+            // it as a reconnect and re-run startCallWhenReady. That's
+            // appropriate when there is no active call object — e.g.
+            // a reconnect after a transient failure — but it is NOT
+            // appropriate when the call is already healthy. In the
+            // outgoing-conference path, app.js sets state.outgoingCall-
+            // UUID to the sylkrtc-assigned call.id once the conference
+            // join completes; that prop change re-enters this branch
+            // and the unguarded reset clears state.currentCall, which
+            // (a) unmounts ConferenceBox, (b) fires a fresh
+            // startCallWhenReady whose canConnect() now misses
+            // currentCall and may also see stale localMedia, and
+            // (c) at waitInterval-1 seconds calls hangupCall(timeout)
+            // — cutting the live conference. Skip the reset when we
+            // already have a currentCall whose id matches the new
+            // callUUID (i.e. this prop change is just app.js
+            // catching up to the call we already started).
+            const _activeMatches = this.state.currentCall
+                && this.state.currentCall.id === nextProps.callUUID;
+            if (_activeMatches) {
+                this.setState({callUUID: nextProps.callUUID});
+            } else {
+                this.setState({callUUID: nextProps.callUUID,
+                               reconnectingCall: true,
+                               currentCall: null});
 
-            this.startCallWhenReady();
+                this.startCallWhenReady();
+            }
         }
 		
         this.setState({myInvitedParties: nextProps.myInvitedParties,
@@ -274,6 +308,30 @@ class Conference extends React.Component {
         let diff = 0;
 
         while (this.waitCounter < this.waitInterval) {
+            // Bail if THIS Conference instance has been unmounted —
+            // without it, when React unmounts/remounts Conference (e.g.
+            // app.js's setState({outgoingCallUUID: ...}) triggering a
+            // prop change that componentWillReceiveProps interprets as
+            // "new call UUID, reset", or the conference component
+            // simply going out of the rendered tree and coming back)
+            // the OLD instance's async loop keeps running. Its
+            // this.state.localMedia and this.state.currentCall are
+            // frozen at the unmount-time values (typically null, since
+            // app.js's getLocalMedia setState may not have propagated
+            // before the remount). canConnect() returns false forever,
+            // and worse, when waitCounter eventually hits
+            // waitInterval-1 the loop fires hangupCall(timeout) on
+            // this.state.callUUID — which can be the UUID of the NEW
+            // instance's healthy, established conference call. Result:
+            // the conference is silently cut after ~90 seconds even
+            // though the user is mid-meeting. componentWillUnmount
+            // already sets this.ended = true; we just need to read it
+            // here.
+            if (this.ended) {
+                console.log('Conference: startCallWhenReady bailing (component unmounted)');
+                return;
+            }
+
             if (this.userHangup) {
                 this.props.hangupCall(this.state.callUUID, 'user_cancelled_conference');
                 return;
@@ -352,12 +410,102 @@ class Conference extends React.Component {
 		let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
 
 		if (confCall) {
-			this.props.startRingback();
 			this.setState({currentCall: confCall});
 			confCall.on('stateChanged', this.callStateChanged);
-			setTimeout(() => {
-				this.props.stopRingback();
-			}, 2000);
+
+			// Apply the configured video encoder caps (maxBitrate /
+			// maxFramerate / scaleResolutionDownBy) to the conference
+			// publisher PC's video sender once the session is up.
+			// Without this, the conference path never gets the same
+			// RTCRtpSender.setParameters({encodings:[{maxBitrate}]})
+			// treatment that 1-to-1 Calls receive via the ZRTP
+			// handshake's _applyVideoBitrate. The result was the
+			// encoder running at libwebrtc's default (~1.5–2 Mbps for
+			// 480p) instead of the configured cap (800 kbps for the
+			// '480p' profile). Hooked on stateChanged so we wait for
+			// the PC to actually have senders.
+			confCall.on('stateChanged', (oldState, newState) => {
+				if (newState === 'accepted' || newState === 'established') {
+					// Defer one tick so any sender setup that runs
+					// inside sylkrtc's own 'accepted' handler
+					// finishes first.
+					setTimeout(() => {
+						applyVideoEncoderParamsToPc(confCall._pc, 'conference-join');
+					}, 0);
+				}
+			});
+
+			// Early cache for the SIP conference-info snapshot. sylkrtc
+			// emits `sipConferenceParticipants` the moment the SIP-side
+			// videoroom focus replies with a `conference-participants`
+			// NOTIFY — and that reply lands during the join handshake,
+			// BEFORE ConferenceBox mounts and attaches its own listener
+			// in componentDidMount. Without this early cache the first
+			// snapshot is dropped on the floor: ConferenceBox sees no
+			// SIP participants until a later delta arrives (someone
+			// joining mid-call), even though the navbar count — which
+			// is derived from confCall.participants — already shows
+			// them. We attach a tiny listener here that mirrors every
+			// snapshot onto confCall._sipParticipants. ConferenceBox's
+			// initial state seeds from that same field, so by the time
+			// it mounts the snapshot is already waiting.
+			//
+			// The listener stays attached for the life of the call so
+			// the cache also stays fresh across ConferenceBox
+			// remounts (e.g. navigating to the contacts tab and back).
+			confCall._sipParticipants = confCall._sipParticipants || [];
+			confCall.on('sipConferenceParticipants', (participants, duration) => {
+				const _list = Array.isArray(participants) ? participants : [];
+				confCall._sipParticipants = _list;
+				if (typeof duration === 'number') {
+					confCall._sipConferenceDuration = duration;
+					// First-touch capture of the conference-duration
+					// anchor (seconds since the videoroom was created
+					// on the webrtcgateway). ConferenceBox's
+					// constructor seeds state.conferenceDurationAtJoin
+					// from this exact field, so populating it here —
+					// at conference-create time, BEFORE ConferenceBox
+					// mounts — guarantees the navbar's elapsed-time
+					// meter starts at the right offset even when the
+					// first NOTIFY lands during the join handshake.
+					//
+					// Treat 0 as "no anchor yet" — the
+					// conferenceDuration event fires on session-accept
+					// with duration=0 when the gateway hasn't yet
+					// computed the room age. If we locked that in,
+					// later sipConferenceParticipants events carrying
+					// the REAL duration would be ignored
+					// (ConferenceHeader.serverDurationApplied flips
+					// once and stays). So we hold off until a
+					// non-zero value arrives.
+					if (duration > 0
+						&& (typeof confCall._conferenceDurationAtJoin !== 'number'
+							|| confCall._conferenceDurationAtJoin === 0)) {
+						confCall._conferenceDurationAtJoin = duration;
+						console.log('[Conference] initial conference duration from server (via sipConferenceParticipants) =',
+									duration, 'seconds');
+					}
+				}
+			});
+
+			// The webrtcgateway also stamps a `conferenceDuration` event
+			// on session-accept for the case where the SIP-side
+			// NOTIFY hasn't fired yet (e.g. a brand-new room with
+			// only this user). Mirror onto the same call-object
+			// field so the seed path is identical. Same "skip 0,
+			// wait for non-zero" rule applies — see the
+			// sipConferenceParticipants block above for why.
+			confCall.on('conferenceDuration', (duration) => {
+				if (typeof duration === 'number' && duration > 0
+					&& (typeof confCall._conferenceDurationAtJoin !== 'number'
+						|| confCall._conferenceDurationAtJoin === 0)) {
+					confCall._conferenceDurationAtJoin = duration;
+					console.log('[Conference] initial conference duration from server (via conferenceDuration) =',
+								duration, 'seconds');
+				} else if (typeof duration === 'number' && duration === 0) {
+					console.log('[Conference] conferenceDuration event with 0 — ignored, waiting for non-zero anchor');
+				}
+			});
 		}
 
     }
@@ -486,6 +634,7 @@ class Conference extends React.Component {
                         account = {this.props.account}
                         hangup = {this.hangup}
                         saveParticipant = {this.saveParticipant}
+                        updateContactOnConferenceInvite = {this.props.updateContactOnConferenceInvite}
                         saveConferenceMessage = {this.props.saveConferenceMessage}
                         updateConferenceMessage = {this.props.updateConferenceMessage}
                         deleteConferenceMessage = {this.props.deleteConferenceMessage}
@@ -499,6 +648,12 @@ class Conference extends React.Component {
                         toggleSpeakerPhone = {this.props.toggleSpeakerPhone}
                         isLandscape = {this.state.isLandscape}
                         isTablet = {this.props.isTablet}
+                        /* Folded (cover-display) flag — ConferenceBox
+                           uses this to hide the AudioSpeedometer and
+                           the account-plus invite button in the audio
+                           conference layout. See ConferenceBox render
+                           gates for both. */
+                        isFolded = {this.props.isFolded}
                         muted = {this.props.muted}
                         defaultDomain = {this.props.defaultDomain}
                         inFocus = {this.props.inFocus}
@@ -525,6 +680,8 @@ class Conference extends React.Component {
 						enableFullScreen = {this.props.enableFullScreen}
 						disableFullScreen = {this.props.disableFullScreen}
 						sylkDomain = {this.props.sylkDomain}
+						conferenceSettings = {this.props.conferenceSettings}
+						pstnRules = {this.props.pstnRules}
                    />
                 );
             } else {
@@ -622,6 +779,7 @@ Conference.propTypes = {
     registrationState       : PropTypes.string,
     hangupCall              : PropTypes.func,
     saveParticipant         : PropTypes.func,
+    updateContactOnConferenceInvite : PropTypes.func,
     updateConferenceMessage : PropTypes.func,
     deleteConferenceMessage : PropTypes.func,
     saveConferenceMessage   : PropTypes.func,
@@ -638,8 +796,10 @@ Conference.propTypes = {
     proposedMedia           : PropTypes.object,
     isLandscape             : PropTypes.bool,
     isTablet                : PropTypes.bool,
+    isFolded                : PropTypes.bool,
     muted                   : PropTypes.bool,
     defaultDomain           : PropTypes.string,
+    pstnRules               : PropTypes.object,
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
     toggleFavorite          : PropTypes.func,
@@ -669,7 +829,13 @@ Conference.propTypes = {
     publicUrl               : PropTypes.string,
 	enableFullScreen        : PropTypes.func,
 	disableFullScreen       : PropTypes.func,
-	sylkDomain              : PropTypes.string
+	sylkDomain              : PropTypes.string,
+	// True when this conference was started via the
+	// conference-request handshake (user-initiated escalation from a
+	// 1-1 call). Bypasses the outgoing-video camera-preview Start-call
+	// gate so the user doesn't have to tap a third confirmation —
+	// see userStartedCall initialiser in the constructor.
+	skipCountdown           : PropTypes.bool
 };
 
 

@@ -1,8 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Modal, View, Pressable, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import { Modal, View, Pressable, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Button, Text, TextInput, Chip, Surface } from 'react-native-paper';
 import { Platform } from 'react-native';
 import PropTypes from 'prop-types';
+
+import PlatformToggle from './PlatformToggle';
+
+// 6-digit numeric room name used for the optional "people can call in
+// from a phone number" path. When the dial-in checkbox is on, the room
+// name itself doubles as the dial-in code that PSTN callers enter on
+// their phone keypad — that's why the field switches to numeric. The
+// auto-generated value is exactly 6 digits; the user is free to type a
+// different number provided it is at least 4 digits long.
+const random6DigitRoom = () =>
+  String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+
+// Minimum length the user is allowed to type when overriding the
+// auto-generated dial-in room number. 3 or fewer digits are too easy
+// to collide on and not worth defending — anything ≥ 4 is accepted.
+const PSTN_ROOM_MIN_DIGITS = 4;
+const PSTN_ROOM_MAX_DIGITS = 16;
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -59,42 +76,75 @@ const ConferenceModal = ({
   defaultDomain,
   defaultConferenceDomain,
 }) => {
-  // Pre-fill the room field with a fancy random name when there is
-  // no caller-supplied propTargetUri. The user can either tap
-  // Audio / Video straight away (room exists by virtue of being
-  // joined) or tap the × on the right of the field to clear it
-  // and type their own name. When a propTargetUri IS supplied (the
-  // modal is being opened from a saved-room shortcut or chat
-  // header) it wins — we never overwrite an explicit caller value.
+  // Initial room field value. When a propTargetUri is supplied
+  // (saved-room shortcut, chat header), we honour it. Otherwise
+  // we pre-fill a freshly minted 6-digit dial-in number so the
+  // user can tap Audio/Video straight away.
   const initialTargetUri = propTargetUri
     ? propTargetUri.split('@')[0]
-    : fancyRandomRoom();
+    : random6DigitRoom();
   const [targetUri, setTargetUri] = useState(initialTargetUri);
+  // "Pristine" flag — true when the field still holds the
+  // auto-generated suggestion and the user hasn't touched it yet.
+  // While pristine, we render the digits in a muted grey so the
+  // pre-fill reads as a suggestion rather than as something the
+  // user has typed. The first edit / clear flips this off and
+  // the text snaps back to normal weight.
+  const [pristineRoom, setPristineRoom] = useState(!propTargetUri);
   const [participants, setParticipants] = useState([]);
   const [domain, setDomain] = useState(defaultDomain);
+  // PSTN dial-in toggle. When the box is ticked, the SAME room field
+  // becomes the dial-in code — phone callers will enter the room
+  // number on their keypad to join. Auto-generated rooms are exactly
+  // 6 digits, the user may override with any number of 4–16 digits.
+  // Toggling OFF restores whatever fancy-word room name was in the
+  // field before, so a quick tick-untick doesn't lose the user's
+  // original choice.
+  // Default ON per user request — most conferences are created
+  // expecting phone callers to join, so we surface a numeric room
+  // straight away and let the user untick if they want a word-shaped
+  // room name instead.
+  const [pstnEnabled, setPstnEnabled] = useState(true);
+  const savedWordRoomRef = useRef(null);
 
   useEffect(() => {
     // Re-sync when propTargetUri arrives or changes. If it lands
-    // empty, mint a fresh fancy random name so the user always
-    // has something useful in the field — typing immediately
-    // replaces it via setTargetUri.
-    setTargetUri(propTargetUri ? propTargetUri.split('@')[0] : fancyRandomRoom());
+    // empty, mint a fresh 6-digit suggestion and mark the field
+    // pristine (rendered greyed-out until the user edits). A
+    // propTargetUri change is treated as an explicit caller value,
+    // so the field is NOT pristine in that case.
+    if (propTargetUri) {
+      setTargetUri(propTargetUri.split('@')[0]);
+      setPristineRoom(false);
+    } else {
+      setTargetUri(random6DigitRoom());
+      setPristineRoom(true);
+    }
   }, [propTargetUri]);
 
   // Re-seed the field every time the modal becomes visible. The
   // component stays mounted across show toggles (the `if (!show)
   // return null` guard is just a render bail-out — useState
-  // values persist), so without this effect, tapping the clear-×
-  // and then closing the modal leaves an empty field for the
-  // next open. The user reported exactly that: "X removed the
-  // fancy names forever". On every false → true edge of `show`
-  // we mint a fresh fancyRandomRoom() — unless a propTargetUri
-  // is being passed in, in which case it still wins.
+  // values persist), so without this effect, closing and re-opening
+  // would keep the previous open's text. On every false → true edge
+  // of `show` we mint a fresh suggested 6-digit room into the
+  // PLACEHOLDER (not the value) — unless a propTargetUri is being
+  // passed in, in which case that explicit caller value still wins.
   const prevShowRef = useRef(false);
   useEffect(() => {
     if (show && !prevShowRef.current) {
-      // false → true edge
-      setTargetUri(propTargetUri ? propTargetUri.split('@')[0] : fancyRandomRoom());
+      // false → true edge: mint a fresh suggested room into the
+      // value, mark pristine so it renders greyed-out, and reset
+      // PSTN dial-in to "on" (the per-user default).
+      if (propTargetUri) {
+        setTargetUri(propTargetUri.split('@')[0]);
+        setPristineRoom(false);
+      } else {
+        setTargetUri(random6DigitRoom());
+        setPristineRoom(true);
+      }
+      setPstnEnabled(true);
+      savedWordRoomRef.current = null;
     }
     prevShowRef.current = show;
     // propTargetUri is read inside but not added to deps on
@@ -103,6 +153,45 @@ const ConferenceModal = ({
     // detection, so listening just on `show` keeps it cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show]);
+
+  // PSTN-toggle side effect: ticking the box swaps the room field
+  // out for a 6-digit number (phone callers will enter this on their
+  // keypad), unticking restores whatever was previously in the
+  // field. We hold the pre-swap value in a ref so a quick mistake
+  // tap-off doesn't lose the user's original fancy-word room. The
+  // restore is skipped if the user has since edited the digits to
+  // something non-empty — we trust their last explicit edit.
+  useEffect(() => {
+    if (pstnEnabled) {
+      // Remember the room name we're about to overwrite so untick
+      // can restore it. Only stash on the off → on edge, never
+      // on subsequent renders.
+      if (savedWordRoomRef.current === null) {
+        savedWordRoomRef.current = targetUri;
+      }
+      // Replace with a fresh 6-digit room — unless what's already
+      // in the field is already a usable numeric room (≥4 digits,
+      // digits-only). Lets a user paste a number, tick the box,
+      // and keep what they typed.
+      const allDigits = /^[0-9]+$/.test(targetUri);
+      if (!allDigits || targetUri.length < PSTN_ROOM_MIN_DIGITS) {
+        setTargetUri(random6DigitRoom());
+      }
+    } else {
+      // Unticking restores the saved fancy-word room. If the user
+      // edited the digits to anything non-empty (≠ pristine random
+      // value), we still restore — the dial-in flow is over, the
+      // saved name was the user's last "word-shaped" choice.
+      if (savedWordRoomRef.current !== null) {
+        setTargetUri(savedWordRoomRef.current);
+      }
+      savedWordRoomRef.current = null;
+    }
+    // targetUri is intentionally NOT in deps — this effect runs only
+    // on the boolean toggle. Adding targetUri would make it re-fire
+    // on every keystroke and re-overwrite the user's typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pstnEnabled]);
 
 	useEffect(() => {
 	  setDomain(defaultDomain);
@@ -157,15 +246,38 @@ const ConferenceModal = ({
     setParticipants((prev) => prev.filter((p) => p !== uriToRemove));
   };
 
+  // True when the dial-in box is ticked AND the room name is a valid
+  // numeric room (digits only, 4–16 chars). Used to gate the join
+  // buttons and the validation warning under the field. The field
+  // is pre-filled with a valid 6-digit suggestion on open, so this
+  // is true straight away unless the user edits to something
+  // invalid.
+  const pstnRoomValid =
+    !pstnEnabled
+    || (/^[0-9]+$/.test(targetUri)
+        && targetUri.length >= PSTN_ROOM_MIN_DIGITS
+        && targetUri.length <= PSTN_ROOM_MAX_DIGITS);
+
   const joinConference = (withVideo) => {
     if (!targetUri) return;
+    if (!pstnRoomValid) return;
 
     const uri = `${targetUri.replace(/[\s@()]/g, '')}@${defaultConferenceDomain}`.toLowerCase();
     const fullParticipants = participants.map((p) =>
       p.includes('@') ? p : `${p}@${defaultDomain}`
     );
-    
-    const options = { audio: true, video: withVideo, participants: fullParticipants, domain: defaultDomain }; 
+
+    const options = {
+      audio: true,
+      video: withVideo,
+      participants: fullParticipants,
+      domain: defaultDomain,
+      // PSTN dial-in flag. The room number itself is the dial-in
+      // code; downstream consumers (startConference, Conference.start)
+      // can read pstn===true and use the local-part of the conference
+      // URI as the code that will be configured on the SIP bridge.
+      pstn: !!pstnEnabled,
+    };
 
     handleConferenceCall(uri, options);
   };
@@ -174,6 +286,8 @@ const ConferenceModal = ({
   const close = () => {
     setTargetUri(propTargetUri ? propTargetUri.split('@')[0] : '');
     setParticipants([]);
+    setPstnEnabled(false);
+    savedWordRoomRef.current = null;
     handleConferenceCall(null);
   };
 
@@ -234,27 +348,64 @@ const ConferenceModal = ({
                       mode="flat"
                       autoCapitalize="none"
                       autoCorrect={false}
-                      label="Enter the room you wish to join"
-                      placeholder="room"
+                      // Label and keyboard mode reflect the dial-in
+                      // toggle. With dial-in ON, the same field is
+                      // the numeric room code phone callers will
+                      // enter on their keypad — number-pad keyboard,
+                      // 16-digit cap, non-digit input is stripped.
+                      label={pstnEnabled
+                        ? `Enter dial-in room number (${PSTN_ROOM_MIN_DIGITS}–${PSTN_ROOM_MAX_DIGITS} digits)`
+                        : 'Enter the room you wish to join'}
+                      placeholder={pstnEnabled ? '123456' : 'room'}
+                      keyboardType={pstnEnabled ? 'number-pad' : 'default'}
+                      maxLength={pstnEnabled ? PSTN_ROOM_MAX_DIGITS : undefined}
                       value={targetUri}
-                      onChangeText={setTargetUri}
+                      // While the field still holds the auto-
+                      // generated suggestion, render the digits in
+                      // a muted grey so they read as "suggested"
+                      // rather than as "typed". As soon as the user
+                      // edits anything (including clearing), the
+                      // text snaps back to normal weight.
+                      style={pristineRoom ? { color: '#9aa0a6' } : null}
+                      contentStyle={pristineRoom ? { color: '#9aa0a6' } : null}
+                      onChangeText={(text) => {
+                        // First edit flips the field out of pristine
+                        // mode so the muted style above stops applying.
+                        if (pristineRoom) setPristineRoom(false);
+                        if (pstnEnabled) {
+                          // Strip any non-digit so paste-of-garbage
+                          // ("(021) 345-6") becomes "021345" and the
+                          // field always renders a valid dial-in code.
+                          setTargetUri(text.replace(/[^0-9]/g, ''));
+                        } else {
+                          setTargetUri(text);
+                        }
+                      }}
                       // Trailing × clears the field so the user can
-                      // overwrite the fancy random pre-fill with
-                      // their own room name. Tap the icon → field
-                      // empties → on-screen keyboard stays up so
-                      // they can start typing right away. Only
-                      // surfaced when there is something to clear
-                      // (Paper v5 still renders the slot whether
-                      // we pass an icon or not, but giving null
-                      // when empty avoids a no-op tap target).
+                      // overwrite the random pre-fill with their own
+                      // room name. With PSTN on we keep the same
+                      // affordance — clearing lets them type a fresh
+                      // number from scratch.
                       right={targetUri ? (
                         <TextInput.Icon
                           icon="close"
-                          onPress={() => setTargetUri('')}
+                          onPress={() => {
+                            setTargetUri('');
+                            // Tapping × counts as user interaction,
+                            // so we leave pristine mode. Without
+                            // this, re-typing after a clear would
+                            // still render as muted suggestion text.
+                            setPristineRoom(false);
+                          }}
                           accessibilityLabel="Clear room name"
                         />
                       ) : null}
                     />
+                    {pstnEnabled && targetUri.length > 0 && !pstnRoomValid ? (
+                      <Text style={[styles.body, { color: 'orange', marginTop: 2 }]}>
+                        Room must be {PSTN_ROOM_MIN_DIGITS}–{PSTN_ROOM_MAX_DIGITS} digits
+                      </Text>
+                    ) : null}
                     {/* Sylk Domain input was an experiment — hidden for now.
                         The conference URI is composed from defaultConferenceDomain
                         and the `domain` state is still tracked internally so any
@@ -264,6 +415,52 @@ const ConferenceModal = ({
                   ) : (
                     <Text style={styles.subtitle}>{targetUri}</Text>
                   )}
+
+                  {/* PSTN dial-in option. When ticked, the room field
+                      above swaps to a numeric keypad and the room
+                      number itself doubles as the dial-in code phone
+                      callers will enter to join. Toggling off
+                      restores the previous (word-shaped) room name.
+
+                      Uses the shared PlatformToggle — same sliding
+                      pill used by the account / preferences panels,
+                      so the look is consistent with the rest of the
+                      app and a future restyle of the toggle pill
+                      lands here for free.
+
+                      Hidden when the modal is being opened for an
+                      EXISTING conference contact (selectedContact
+                      is already a conference): the dial-in routing
+                      is a property of how the room was originally
+                      provisioned on the server; we can't flip it
+                      after the fact from this modal, and showing
+                      the toggle in a disabled / no-op state would
+                      mislead the user into thinking they're
+                      changing the room. Same rule the navbar uses
+                      to mark a contact as a conference — either the
+                      explicit `conference` flag or the 'conference'
+                      tag. */}
+                  {(() => {
+                    const _selTags = (selectedContact && Array.isArray(selectedContact.tags))
+                        ? selectedContact.tags : [];
+                    const _isExistingConference = !!(selectedContact
+                        && (selectedContact.conference
+                            || _selTags.indexOf('conference') > -1));
+                    if (_isExistingConference) return null;
+                    return (
+                      <PlatformToggle
+                        value={pstnEnabled}
+                        onValueChange={setPstnEnabled}
+                        label="Allow calling from telephones"
+                        // Center the toggle row horizontally inside the
+                        // modal so the label + pill cluster sits in the
+                        // middle of the surface, matching the other
+                        // centered chrome (room name field, participant
+                        // chips). marginTop preserved.
+                        style={{ marginTop: 8, alignSelf: 'center' }}
+                      />
+                    );
+                  })()}
 
                   {participants.length > 0 && (
                     <View>
@@ -312,14 +509,16 @@ const ConferenceModal = ({
                 </ScrollView>
 
                   <Text style={containerStyles.note}>
-                    Others can be invited once the conference starts
+                    You can invite people once the conference starts
                   </Text>
 
-                {/* Buttons */}
+                {/* Buttons. Disabled when there's no room name, or
+                    when the dial-in box is ticked but the room number
+                    isn't a valid numeric dial-in code (4–16 digits). */}
                 <View style={styles.buttonRow}>
                   <Button
                     mode="contained"
-                    disabled={!targetUri}
+                    disabled={!targetUri || !pstnRoomValid}
                     style={styles.button}
                     icon="speaker"
                     onPress={() => joinConference(false)}
@@ -328,7 +527,7 @@ const ConferenceModal = ({
                   </Button>
                   <Button
                     mode="contained"
-                    disabled={!targetUri}
+                    disabled={!targetUri || !pstnRoomValid}
                     style={styles.button}
                     icon="video"
                     onPress={() => joinConference(true)}

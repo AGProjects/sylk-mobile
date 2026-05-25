@@ -1,5 +1,7 @@
-import React from 'react';
-import { View, Text } from 'react-native';
+import React, { Fragment } from 'react';
+import { View, Text, Image } from 'react-native';
+import DarkModeManager from '../DarkModeManager';
+const _blinkLogo = require('../assets/images/blink-white-big.png');
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import moment from 'moment';
@@ -90,8 +92,21 @@ class CallOverlay extends React.Component {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
 
+        // Did this cWRP pass swap the call object for a fresh one?
+        // We track this so the GENERIC setState at the bottom doesn't
+        // overwrite the per-call carry-overs we just reset (chiefly
+        // terminatedReason: the parent's app.js often still has the
+        // PREVIOUS call's terminatedReason in state when the new
+        // call's props land here — its own setState to clear it races
+        // with the new-call setState — and the generic setState below
+        // used to clobber our null-reset with that stale value, so
+        // the new call's first paint flashed "Call ended after X" or
+        // a leftover SIP reason).
+        let _callJustSwitched = false;
+
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
            console.log('Next call:', nextProps.call?.id);
+           _callJustSwitched = true;
 
             if (this.state.call !== null) {
 			   console.log('Previous call', this.state.call?.id);
@@ -128,9 +143,10 @@ class CallOverlay extends React.Component {
             //                       /  state.terminatedReason strings
             //   * state.terminatedReason — propagated down from props
             //                       on every render until the parent
-            //                       clears it; we still latch the new
-            //                       call's state below so the stale
-            //                       reason can't leak through.
+            //                       clears it; the _callJustSwitched
+            //                       latch above keeps the generic
+            //                       setState below from re-introducing
+            //                       it on this same tick.
             // Clear them all in the same tick the new call lands so
             // the render BEFORE the new call's first stateChanged
             // event shows "Starting call..." / "Connecting..." instead
@@ -151,11 +167,6 @@ class CallOverlay extends React.Component {
                 // stateChanged listener (just attached above) will
                 // refine this as soon as the actual state event fires.
                 callState: nextProps.call.state || null,
-                // Reset the parent-supplied terminated reason; the new
-                // call hasn't accumulated one yet. The block below this
-                // if() reassigns terminatedReason from nextProps but
-                // setState merges left-to-right, so any non-null parent
-                // reason still wins — that's correct.
                 terminatedReason: null,
                 // Reset startTime to whatever the parent's callState
                 // has for this fresh call (likely null until established).
@@ -171,18 +182,30 @@ class CallOverlay extends React.Component {
 			this.setState({aspectRatio: nextProps.aspectRatio});
         }
 
-        this.setState({remoteDisplayName: nextProps.remoteDisplayName,
-                       remoteUri: nextProps.remoteUri,
-                       media: nextProps.media,
-                       localMedia: nextProps.localMedia,
-                       startTime: nextProps.callState ? nextProps.callState.startTime : null,
-                       terminatedReason: nextProps.terminatedReason,
-                       isLandscape: nextProps.isLandscape,
-                       enableMyVideo: nextProps.enableMyVideo,
-						availableAudioDevices: nextProps.availableAudioDevices,
-						selectedAudioDevice: nextProps.selectedAudioDevice,
-						insets: nextProps.insets
-                       });
+        // Build the generic-props mirror. When this cWRP pass swapped
+        // the call object we deliberately drop terminatedReason from
+        // the payload so the just-applied null reset above doesn't
+        // get clobbered by the previous call's (still-set) parent
+        // reason. Same logic for callState — the new call's identity
+        // is now in state.call, and we'd rather keep the freshly
+        // seeded nextProps.call.state from the reset block than mirror
+        // any stale parent-side value.
+        const _genericUpdate = {
+            remoteDisplayName: nextProps.remoteDisplayName,
+            remoteUri: nextProps.remoteUri,
+            media: nextProps.media,
+            localMedia: nextProps.localMedia,
+            startTime: nextProps.callState ? nextProps.callState.startTime : null,
+            isLandscape: nextProps.isLandscape,
+            enableMyVideo: nextProps.enableMyVideo,
+            availableAudioDevices: nextProps.availableAudioDevices,
+            selectedAudioDevice: nextProps.selectedAudioDevice,
+            insets: nextProps.insets
+        };
+        if (!_callJustSwitched) {
+            _genericUpdate.terminatedReason = nextProps.terminatedReason;
+        }
+        this.setState(_genericUpdate);
 				// Only log when the audio device values actually changed
 				if (nextProps.availableAudioDevices !== this.state.availableAudioDevices ||
 					nextProps.selectedAudioDevice !== this.state.selectedAudioDevice) {
@@ -392,6 +415,16 @@ class CallOverlay extends React.Component {
                         callDetail = 'Call ended after ' + this.finalDuration;
                     } else if (this.state.terminatedReason) {
                         callDetail = this.state.terminatedReason;
+                    } else if (this.props.pushAcceptInProgress) {
+                        // Cold-start push accept: we're in the
+                        // _openPushAcceptGate window waiting for the
+                        // sylkrtc Call to arrive via WSS. The
+                        // displayName-based "Calling X…" branch below
+                        // reads as an outbound dial; surface the
+                        // incoming-accept semantics instead so the
+                        // user knows their tap on the push notification
+                        // is being honoured.
+                        callDetail = 'Accepting call…';
                     } else if (displayName) {
                         // Outbound dial whose Call object hasn't
                         // materialised yet, but the parent has already
@@ -443,8 +476,15 @@ class CallOverlay extends React.Component {
 			let myAspectRatio = this.state.aspectRatio == 'cover' ? 'Contain': 'Cover';
 			myAspectRatio = 'Toggle aspect ratio';
 			
+			// Unified Sylk-blue background matching the main app navbar.
+			// Kept slightly translucent (alpha 0.92) so a hint of the
+			// underlying video / audio screen still bleeds through —
+			// CallOverlay sits ON TOP of the call's media surface and
+			// fully-opaque would feel detached. The Sylk blue is the
+			// brand-spec Pantone Process Uncoated DS 211-3U =
+			// #5476A5 (see DarkModeManager SYLK_BLUE_DEEP).
 			let appBarContainer = {
-				backgroundColor: 'rgba(34,34,34,.7)',
+				backgroundColor: 'rgba(67, 98, 148, 0.92)',
 				height: 60,
 				// Restore the bleed-up so the appbar background merges
 				// with the video container behind it (same look as
@@ -730,11 +770,63 @@ class CallOverlay extends React.Component {
                     <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
                 </Menu>
-                
+
 				</Appbar.Header>
 			);
         }
-        return header;
+        // Wrap the Appbar with a slim Sylk logo + "Sylk Mobile"
+        // brand strip above it — same shape as the main
+        // NavigationBar. Sits BELOW the OS status bar (no negative
+        // marginTop), and we neutralise the Appbar's own
+        // marginTop:-topInset below so the Appbar doesn't pull up
+        // behind the strip. Hidden in landscape to reclaim vertical
+        // pixels on the call surface.
+        if (!header) return null;
+        if (this.state.isLandscape) return header;
+        const _stripLeftInset = this.state.insets.left || 0;
+        // In-call brand strip is intentionally pinned to the DARK
+        // (Night) palette regardless of the active theme. The call
+        // surface itself (audio/video) is dark, so a white Day-theme
+        // strip across the top reads as a jarring bright band above
+        // the call. We keep the literals here in sync with
+        // NIGHT_THEME.brandStripBackground / brandStripText in
+        // DarkModeManager.js — if you re-skin Night mode, mirror the
+        // change here. Other dimensions (height 34 / 22×22 logo / 14px
+        // text) still match the main NavigationBar strip so the in-
+        // call chrome has the same shape as the rest of the app.
+        const _CALL_STRIP_BG   = '#121212';
+        const _CALL_STRIP_TEXT = '#FFFFFF';
+        const _stripStyle = {
+            backgroundColor: _CALL_STRIP_BG,
+            height: 34,
+            paddingLeft: 12,
+            paddingRight: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            // No negative marginTop — the strip must sit UNDER the
+            // OS status bar, not overlap it.
+            width: Dimensions.get('window').width,
+            zIndex: 1000,
+            elevation: 10,
+        };
+        return (
+            <Fragment>
+                <View style={_stripStyle}>
+                    <Image source={_blinkLogo} style={{ width: 22, height: 22, marginRight: 8, marginLeft: _stripLeftInset }} />
+                    <Text style={{ color: _CALL_STRIP_TEXT, fontSize: 14, fontWeight: '400' }}>Blink</Text>
+                </View>
+                {React.cloneElement(header, {
+                    // statusBarHeight={0} suppresses Paper's internal
+                    // safe-area-top padding which would otherwise
+                    // leave a topInset-tall empty band between the
+                    // brand strip and the Appbar's actual content.
+                    // The brand strip already lives in that region,
+                    // so the Appbar needs no further offset.
+                    style: [header.props.style, { marginTop: 0 }],
+                    statusBarHeight: 0,
+                })}
+            </Fragment>
+        );
     }
 }
 
@@ -743,6 +835,7 @@ CallOverlay.propTypes = {
     remoteUri: PropTypes.string,
     localMedia: PropTypes.object,
     remoteDisplayName: PropTypes.string,
+    pushAcceptInProgress: PropTypes.bool,
     call: PropTypes.object,
     connection: PropTypes.object,
     reconnectingCall: PropTypes.bool,

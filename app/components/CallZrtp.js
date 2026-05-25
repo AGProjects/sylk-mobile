@@ -1,6 +1,6 @@
 // CallZrtp.js
 //
-// Per-call ZRTP-style E2EE handshake state machine — SIMULATION ONLY.
+// Per-call ZRTP-style E2EE handshake state machine
 // Sends a PGP-wrapped X25519 key-exchange over the in-dialog session-message
 // channel (sylkrtc Call.sendMessage) and logs every step. Does NOT install
 // any keys on RTCRtpSender yet; that's a later step once the native bridge
@@ -16,10 +16,21 @@
 import 'react-native-get-random-values';      // polyfills crypto.getRandomValues so tweetnacl can seed itself
 import nacl from 'tweetnacl';
 import CryptoJS from 'crypto-js';
+import OpenPGP from 'react-native-fast-openpgp';   // v3 signed-handshake: detached PGP sign + verify
 import utils from '../utils';                  // timestampedLog() for [call] [zrtp] lines that should also reach the in-app Show Logs viewer
 
 export const ZRTP_CONTENT_TYPE = 'application/sylk-zrtp-negotiation';
-const VERSION = 1;
+// Highest wire version we speak.
+//   v1 — original protocol (no continuity, no signatures).
+//   v2 — adds rs_id_hex to probe/accept for RFC 6189-style continuity.
+//   v3 — adds detached PGP signatures on probe/accept payloads.
+// Older peers stay interoperable; negotiated version is min-pinned per
+// session, so a v3 mobile talking to a v1 peer behaves like v1.
+const VERSION = 3;
+const LOCAL_SUITES = ['AES-128-GCM'];
+// SHA-256(rs1)[:8] hex-encoded = 16 hex chars.
+const RS_ID_HEX_LEN = 16;
+const RS_BYTES = 32;
 
 // SIP header advertising that the caller supports the Sylk-flavoured
 // ZRTP-over-in-dialog-MESSAGE negotiation, with the suite list. Caller
@@ -92,11 +103,6 @@ export function peerSupportsZrtpFromHeaders(headers) {
     return parseZrtpCapability(value);
 }
 
-// Diagnostic switch — set to true to short-circuit the install steps and
-// run the handshake in "logging only" mode (keys derived, SAS shown, but
-// no FrameEncryptor / FrameDecryptor is attached to the peer connection).
-// Useful for isolating broken-video issues from the encryption layer.
-const ZRTP_INSTALL_DISABLED = false;
 
 // Video sender bitrate cap (kbps). Set once at app boot via
 // setVideoMaxBitrateKbps(). Null = leave WebRTC's congestion control on
@@ -207,14 +213,29 @@ export function getEncryptionMode() {
 // Defaulted to 'account' to match current production behaviour.
 // Flip via setZrtpMessageTransport('call') from anywhere in JS;
 // applies to subsequent ZRTP sends, no need to restart the call.
-const ZRTP_TRANSPORTS = ['account', 'call'];
+const ZRTP_TRANSPORTS = ['call'];
 const ZRTP_TRANSPORT_DEFAULT = 'call';
 let _zrtpMessageTransport = ZRTP_TRANSPORT_DEFAULT;
 
+// Local device identifier — a stable per-install UUID, used to key rs1
+// in storage as (peer_aor, peer_device_id). app.js pulls it from
+// react-native-device-info's getUniqueId() and pushes it down once via
+// setLocalDeviceId at boot. Without it the protocol behaves like v2
+// (AOR-only keying); with it the multi-device collapse problem is fixed
+// (different devices behind the same account no longer overwrite each
+// other's rs1).
+let _localDeviceId = null;
+
+export function setLocalDeviceId(id) {
+    if (typeof id === 'string' && id.length > 0) {
+        _localDeviceId = id;
+    }
+}
+
 export function setZrtpMessageTransport(mode) {
     if (ZRTP_TRANSPORTS.indexOf(mode) === -1) {
-        utils.timestampedLog('[zrtp] setZrtpMessageTransport: invalid mode', mode,
-            '— ignoring (recognized:', ZRTP_TRANSPORTS.join('/'), ')');
+        utils.timestampedLog('[zrtp] setZrtpMessageTransport: rejected mode', mode,
+            '— only', ZRTP_TRANSPORTS.join('/'), 'is supported');
         return;
     }
     _zrtpMessageTransport = mode;
@@ -250,7 +271,58 @@ const fromHex = (s) => {
     return out;
 };
 
+const _isDev = () =>
+    (typeof __DEV__ !== 'undefined' && __DEV__);
+
+const _hexForLog = (bytes) => _isDev() ? toHex(bytes) : '<redacted>';
+
+const _keyPrefixForLog = (hexKey) =>
+    _isDev() ? (hexKey ? hexKey.slice(0, 8) : '?') : '<redacted>';
+
+// Constant-time string compare. Returns false on null/length mismatch (the
+// length-leak is unavoidable in JS without rewriting in WASM); for equal
+// lengths it XORs every char and runs to the end so timing doesn't reveal
+// the prefix-match length. Used for security-relevant string equality
+// (stored PGP key fingerprint, SAS).
+// Format an encryptedKinds array into a short human-readable suffix used
+// by the pill label. Returns 'audio', 'video', 'audio and video', or ''
+// (the empty string when nothing is encrypted yet).
+export function formatEncryptedKindsLabel(kinds) {
+    if (!Array.isArray(kinds) || kinds.length === 0) return '';
+    const hasA = kinds.indexOf('audio') !== -1;
+    const hasV = kinds.indexOf('video') !== -1;
+    if (hasA && hasV) return 'audio and video';
+    if (hasA) return 'audio';
+    if (hasV) return 'video';
+    return '';
+}
+
+// Format a timestamp (ms since epoch) as "YYYY-MM-DD HH:MM" in local time.
+// Used by the SAS verification dialog and mismatch alarm so the displayed
+// time is unambiguous and short regardless of locale.
+export function formatVerifiedTimestamp(ms) {
+    if (!ms) return '';
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+        + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+export function constantTimeStringEqual(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+        diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return diff === 0;
+}
+
 // ----- HKDF-SHA256(IKM, salt, info, L) using crypto-js -------------------
+// TODO(hardening #21): swap to @noble/hashes or react-native-quick-crypto
+// (both constant-time and audited). Neither is currently a project dep —
+// adding one is a Phase 2 task; keep CryptoJS for now.
 
 function hkdf(ikm, salt, infoStr, length) {
     const ikmWA = CryptoJS.enc.Hex.parse(toHex(ikm));
@@ -259,6 +331,68 @@ function hkdf(ikm, salt, infoStr, length) {
     const infoWA = CryptoJS.enc.Utf8.parse(infoStr).concat(CryptoJS.enc.Hex.parse('01'));
     const t1 = CryptoJS.HmacSHA256(infoWA, prk);                         // expand (single block)
     return fromHex(t1.toString(CryptoJS.enc.Hex).substring(0, length * 2));
+}
+
+// SHA-256 of the given bytes, returning the first 8 bytes hex-encoded.
+// This is the rs_id sent on the wire — a public commitment to which rs1
+// each side holds, without exposing rs1 itself.
+function rsIdHexOf(rs1Bytes) {
+    if (!rs1Bytes || rs1Bytes.length !== RS_BYTES) return null;
+    const wa = CryptoJS.enc.Hex.parse(toHex(rs1Bytes));
+    const digestHex = CryptoJS.SHA256(wa).toString(CryptoJS.enc.Hex);
+    return digestHex.substring(0, RS_ID_HEX_LEN);
+}
+
+// ----- v3 PGP signed handshake ------------------------------------------
+//
+// Canonical JSON: byte-identical with python3-sipsimple's
+// _canonical_json_bytes. Sorted keys at every depth, no whitespace, the
+// 'sig' field itself is excluded (the sig signs what it's stored alongside,
+// not itself). Both sides sign / verify against the same string of bytes.
+
+function canonicalJson(obj) {
+    if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+    if (Array.isArray(obj)) {
+        return '[' + obj.map(canonicalJson).join(',') + ']';
+    }
+    const keys = Object.keys(obj).sort();
+    const parts = keys.map(k => JSON.stringify(k) + ':' + canonicalJson(obj[k]));
+    return '{' + parts.join(',') + '}';
+}
+
+function stripSig(payload) {
+    const out = {};
+    for (const k of Object.keys(payload)) {
+        if (k !== 'sig') out[k] = payload[k];
+    }
+    return out;
+}
+
+// Detached-sign the canonical JSON of `payload` (sans 'sig') with the
+// armored private key. Returns the armored signature string on success,
+// or null on any failure / when keys are missing.
+async function signPayload(privateKeyArmored, payload) {
+    if (!privateKeyArmored) return null;
+    try {
+        const body = canonicalJson(stripSig(payload));
+        return await OpenPGP.sign(body, privateKeyArmored, '');
+    } catch (e) {
+        console.log('[zrtp] PGP sign failed:', (e && e.message) || e);
+        return null;
+    }
+}
+
+// Verify a detached armored signature against the canonical JSON of the
+// payload (sans 'sig'). Returns true iff verification succeeded.
+async function verifyPayload(publicKeyArmored, payload, sigArmored) {
+    if (!publicKeyArmored || !sigArmored) return false;
+    try {
+        const body = canonicalJson(stripSig(payload));
+        return await OpenPGP.verify(sigArmored, body, publicKeyArmored);
+    } catch (e) {
+        console.log('[zrtp] PGP verify failed:', (e && e.message) || e);
+        return false;
+    }
 }
 
 // ----- one handshake instance, per call ---------------------------------
@@ -284,8 +418,57 @@ class ZrtpSession {
         // Two-phase install guards — see _installReceivers / _installSenders.
         this._receiversInstalled = false;
         this._sendersInstalled = false;
+        // Per-kind tracking — which media kinds ('audio' / 'video') ended up
+        // wrapped in FrameEncryptor / FrameDecryptor. Drives the pill label.
+        this._installedSenderKinds = new Set();
+        this._installedReceiverKinds = new Set();
         // Video bitrate cap is applied once per session.
         this._videoBitrateApplied = false;
+        // ---- v2 retained-secret continuity -----------------------------
+        // Negotiated wire version (1 or 2). Pinned to peer's version on
+        // first incoming payload. v1 means no rs1 mix.
+        this.negotiatedVersion = VERSION;
+        // Stash the full localProperties.zrtp record on the session so
+        // we can re-look-up rs1 by composite key (peer_aor, peer_device_id)
+        // after we learn the peer's device_id from their first payload.
+        this._contactZrtpRecord = (contact && contact.localProperties
+                                   && contact.localProperties.zrtp) || null;
+        // Initial localRs1 from the LEGACY single-device slot — used as
+        // the outgoing probe's rs_id_hex (best guess; peer_device_id is
+        // not yet known at probe-send time). On receive we re-resolve
+        // via _resolveLocalRs1ForPeerDevice() and switch to the composite
+        // per-device slot.
+        const legacyHex = this._contactZrtpRecord && this._contactZrtpRecord.rs1_hex;
+        this.localRs1 = (typeof legacyHex === 'string'
+                         && /^[0-9a-fA-F]{64}$/.test(legacyHex))
+                        ? fromHex(legacyHex)
+                        : null;
+        this.localRsIdHex = this.localRs1 ? rsIdHexOf(this.localRs1) : null;
+        // rs_id seen on the wire from the peer (set in handleIncoming
+        // before _deriveAndLog runs).
+        this.peerRsIdHex = null;
+        // One of: 'first-time', 'verified', 'mismatch', 'one-sided-local',
+        // 'one-sided-peer'. See _deriveAndLog for the decision matrix.
+        this.continuityState = 'first-time';
+        // True iff _deriveAndLog actually mixed rs1 into HKDF. Drives
+        // automatic post-call rotation.
+        this._mixedRs1 = false;
+        // ---- v3 PGP signed handshake ----------------------------------
+        // myKeys is { public, private } (PGP armored) for the local
+        // account. contact.publicKey is the peer's PGP public key. Both
+        // are already cached by app.js for chat encryption, so v3 sign /
+        // verify costs zero extra key management.
+        this.localPrivKey = (myKeys && myKeys.private) || null;
+        this.peerPubKey = (contact && contact.publicKey) || null;
+        // ---- v3 device-id keying --------------------------------------
+        // Our local device id (pushed in at boot via setLocalDeviceId).
+        // The peer's device id is learned from their first probe/accept
+        // payload and stored on this.peerDeviceId. rs1 storage is then
+        // keyed by composite (peer_aor, peer_device_id) so multiple
+        // devices behind the same SIP AOR don't overwrite each other's
+        // continuity secrets.
+        this.localDeviceId = _localDeviceId;
+        this.peerDeviceId = null;
         this._log('created — local ephem pub (hex prefix):',
             toHex(this.ephemeral.publicKey).slice(0, 16) + '… call_id=', this.callId);
     }
@@ -302,8 +485,32 @@ class ZrtpSession {
         //   - this.localId    : the JS-side per-session UUID, useful to
         //                       disambiguate when the same SIP Call-ID
         //                       hosts re-INVITE/upgrade ZRTP sessions.
+        if (this._isLogRateLimited()) return;
         console.log('[call] [zrtp] call_id=' + this.callId,
                     this.localId, this.role, ...args);
+    }
+
+    _isLogRateLimited() {
+        const MAX_PER_WINDOW = 30;      // lines
+        const WINDOW_MS      = 1000;    // per 1s
+        const now = Date.now();
+        if (!this._logWindowStart || (now - this._logWindowStart) > WINDOW_MS) {
+            if (this._logSuppressedInWindow > 0) {
+                console.log('[call] [zrtp] call_id=' + this.callId,
+                    this.localId, this.role,
+                    '[rate-limit] suppressed', this._logSuppressedInWindow,
+                    'lines in last', WINDOW_MS, 'ms');
+            }
+            this._logWindowStart = now;
+            this._logCountInWindow = 0;
+            this._logSuppressedInWindow = 0;
+        }
+        if (this._logCountInWindow >= MAX_PER_WINDOW) {
+            this._logSuppressedInWindow++;
+            return true;
+        }
+        this._logCountInWindow++;
+        return false;
     }
 
     // Single point of dispatch for an outgoing ZRTP envelope. Picks
@@ -522,13 +729,9 @@ class ZrtpSession {
             if (this._destroyed) return;
             const pc = this.call && this.call._pc;
             if (!pc || typeof pc.getStats !== 'function') {
-                if (__tickCount <= 4 || __tickCount % 20 === 0) {
-                    this._log('[poller debug] tick=' + __tickCount + ' no pc/getStats');
-                }
                 return;
             }
             let aggDelta = 0;
-            const perStream = [];
             try {
                 const stats = await pc.getStats();
                 stats.forEach((report) => {
@@ -539,27 +742,9 @@ class ZrtpSession {
                     const d = Math.max(0, cur - prev);
                     this._lastPacketsReceived.set(id, cur);
                     aggDelta += d;
-                    perStream.push(
-                        (report.kind || '?')
-                        + ' pkts=' + cur
-                        + '(Δ' + d + ')'
-                    );
                 });
             } catch (e) {
-                if (__tickCount <= 4 || __tickCount % 20 === 0) {
-                    this._log('[poller debug] tick=' + __tickCount
-                              + ' getStats failed: ' + ((e && e.message) || String(e)));
-                }
                 return;
-            }
-            // Per-tick summary: fire on first 4 ticks, then every 5 s
-            // (every 10 ticks at 500 ms each).
-            if (__tickCount <= 4 || __tickCount % 10 === 0) {
-                this._log('[poller debug] tick=' + __tickCount
-                          + ' state=' + this.state
-                          + ' sendersInstalled=' + !!this._sendersInstalled
-                          + ' aggDelta=' + aggDelta
-                          + ' streams=[' + perStream.join(' | ') + ']');
             }
             if (aggDelta > 0 && this._sendersInstalled) {
                 this._noActivityTicks = 0;
@@ -569,6 +754,18 @@ class ZrtpSession {
                     this._log('inbound media flowing (Δpkts=' + aggDelta +
                               ') -> key-active');
                     this._setState('key-active');
+                    // Auto-rotate rs1 only when this call's _deriveAndLog
+                    // actually mixed the existing rs1 into HKDF (i.e. the
+                    // peer proved they held the same secret). Other states
+                    // (first-time, mismatch, one-sided-*) require an
+                    // explicit user SAS Confirm before any rs1 is written.
+                    if (this._mixedRs1 && !this._rotated) {
+                        this._rotated = true;
+                        const next = this._deriveNextRs1();
+                        if (next) {
+                            this._emitRs1Update(next);
+                        }
+                    }
                 }
             } else if (this.state === 'key-active') {
                 this._noActivityTicks++;
@@ -634,6 +831,13 @@ class ZrtpSession {
             ephem_pub_hex: toHex(this.ephemeral.publicKey),
             suites: ['AES-128-GCM'],
         };
+        if (this.localRsIdHex) {
+            payload.rs_id_hex = this.localRsIdHex;
+        }
+        if (this.localDeviceId) {
+            payload.device_id = this.localDeviceId;
+        }
+        await this._maybeSign(payload);
         this._log('SEND probe (transport=' + _zrtpMessageTransport + '):', payload);
 
         // Plain JSON on the wire — the handshake payload (ephemeral
@@ -668,15 +872,61 @@ class ZrtpSession {
 
         this._log('RECV:', payload);
 
-        if (payload.v !== VERSION) {
-            this._log('version mismatch — got', payload.v, 'expected', VERSION);
+        if (typeof payload.v !== 'number' || payload.v < 1 || payload.v > VERSION) {
+            this._log('unsupported wire version', payload.v, '— expected 1..' + VERSION);
             return;
         }
+        // Pin negotiated version to the minimum of ours and peer's so a
+        // v1 peer keeps v1 derivation semantics (no rs1 mix).
+        this.negotiatedVersion = Math.min(payload.v, VERSION);
         // Account-messages may be forked to other devices of the recipient.
         // Each device only acts on the handshake when its active call's SIP
         // Call-ID matches the payload's; otherwise drop silently.
-        if (payload.call_id && payload.call_id !== this.callId) {
-            this._log('call_id mismatch — payload', payload.call_id, 'ours', this.callId, '— ignoring');
+        if (!payload.call_id || payload.call_id !== this.callId) {
+            this._log('call_id missing or mismatched — payload',
+                JSON.stringify(payload.call_id), 'ours', this.callId, '— rejecting');
+            return;
+        }
+        // Stash peer's device_id BEFORE we touch rs1 — if present, the
+        // localRs1 slot we should compare against is the per-device one,
+        // not the legacy AOR-only slot we read at construction time.
+        if (payload.type === 'probe' || payload.type === 'accept') {
+            if (typeof payload.device_id === 'string' && payload.device_id) {
+                this.peerDeviceId = payload.device_id;
+                this._resolveLocalRs1ForPeerDevice();
+            }
+        }
+        // Stash peer's rs_id (if any) BEFORE _deriveAndLog runs. Only on
+        // probe and accept; the other types don't carry it.
+        if ((payload.type === 'probe' || payload.type === 'accept')
+                && this.negotiatedVersion >= 2) {
+            const rid = payload.rs_id_hex;
+            if (typeof rid === 'string' && rid.length === RS_ID_HEX_LEN
+                    && /^[0-9a-fA-F]+$/.test(rid)) {
+                this.peerRsIdHex = rid.toLowerCase();
+            } else {
+                this.peerRsIdHex = null;
+            }
+        }
+
+        if (payload.type === 'probe' || payload.type === 'accept') {
+            if (Array.isArray(payload.suites) && payload.suites.length > 0) {
+                const overlap = payload.suites.filter(s => LOCAL_SUITES.indexOf(s) !== -1);
+                if (overlap.length === 0) {
+                    this._log('suite negotiation failed — peer offered '
+                        + JSON.stringify(payload.suites)
+                        + ', local supports ' + JSON.stringify(LOCAL_SUITES)
+                        + ' — rejecting');
+                    this._setState('failed');
+                    return;
+                }
+            }
+        }
+
+        // v3 signature verification on probe/accept/recv_ready/sender_ready.
+        // A failed verification transitions the session to 'failed' and
+        // stops processing this payload.
+        if (!(await this._verifyOrReject(payload))) {
             return;
         }
 
@@ -693,19 +943,49 @@ class ZrtpSession {
     // Callee receives caller's probe: derive keys, install recv_dec, reply
     // with accept (which carries our ephemeral pub so the caller can derive).
     async _handleProbe(payload) {
+        if (this.role !== 'callee') {
+            this._log('probe ignored — caller role does not accept probes');
+            return;
+        }
+        if (this.state !== 'idle') {
+            this._log('probe ignored — state=' + this.state + ' (already past handshake start)');
+            return;
+        }
         if (!payload.ephem_pub_hex) { this._log('probe missing ephem_pub_hex'); return; }
+        if (typeof payload.ephem_pub_hex !== 'string'
+                || !/^[0-9a-fA-F]{64}$/.test(payload.ephem_pub_hex)) {
+            this._log('probe ephem_pub_hex has wrong length/format: '
+                + (payload.ephem_pub_hex && payload.ephem_pub_hex.length)
+                + ' chars — rejecting');
+            this._setState('failed');
+            return;
+        }
         this.peerEphemPub = fromHex(payload.ephem_pub_hex);
+        if (this.peerEphemPub.length !== 32) {
+            this._log('probe peer ephem pub decoded to '
+                + this.peerEphemPub.length + ' bytes — rejecting');
+            this._setState('failed');
+            return;
+        }
+        this._setState('probing');
         this._deriveAndLog();
 
         // Phase A on this side: install recv_dec only.
         await this._installReceivers();
 
         const accept = {
-            v: VERSION,
+            v: this.negotiatedVersion,
             type: 'accept',
             call_id: this.callId,
             ephem_pub_hex: toHex(this.ephemeral.publicKey),
         };
+        if (this.negotiatedVersion >= 2 && this.localRsIdHex) {
+            accept.rs_id_hex = this.localRsIdHex;
+        }
+        if (this.localDeviceId) {
+            accept.device_id = this.localDeviceId;
+        }
+        await this._maybeSign(accept);
         this._log('SEND accept:', accept);
         await this._sendSigned(accept, 'accept');
     }
@@ -713,14 +993,40 @@ class ZrtpSession {
     // Caller receives callee's accept: derive keys, install recv_dec, then
     // signal recv_ready so callee knows it can install sender_enc safely.
     async _handleAccept(payload) {
+        if (this.role !== 'caller') {
+            this._log('accept ignored — callee role does not accept accepts');
+            return;
+        }
+        if (this.state !== 'probing') {
+            this._log('accept ignored — state=' + this.state + ' (expected probing)');
+            return;
+        }
+        if (this.peerEphemPub) {
+            this._log('accept ignored — peer ephem pub already set (duplicate accept?)');
+            return;
+        }
         if (!payload.ephem_pub_hex) { this._log('accept missing ephem_pub_hex'); return; }
+        if (typeof payload.ephem_pub_hex !== 'string'
+                || !/^[0-9a-fA-F]{64}$/.test(payload.ephem_pub_hex)) {
+            this._log('accept ephem_pub_hex has wrong length/format: '
+                + (payload.ephem_pub_hex && payload.ephem_pub_hex.length)
+                + ' chars — rejecting');
+            this._setState('failed');
+            return;
+        }
         this.peerEphemPub = fromHex(payload.ephem_pub_hex);
+        if (this.peerEphemPub.length !== 32) {
+            this._log('accept peer ephem pub decoded to '
+                + this.peerEphemPub.length + ' bytes — rejecting');
+            this._setState('failed');
+            return;
+        }
         this._deriveAndLog();
 
         // Phase A: install recv_dec.
         await this._installReceivers();
 
-        const recvReady = { v: VERSION, type: 'recv_ready', call_id: this.callId };
+        const recvReady = { v: this.negotiatedVersion, type: 'recv_ready', call_id: this.callId };
         this._log('SEND recv_ready');
         await this._sendSigned(recvReady, 'recv_ready');
     }
@@ -728,6 +1034,14 @@ class ZrtpSession {
     // recv_ready arrived — peer has its decryptor in place. We can safely
     // install sender_enc on this side. After install, signal sender_ready.
     async _handleRecvReady(/*payload*/) {
+        if (this.state === 'key-active' || this.state === 'failed') {
+            this._log('recv_ready ignored — state=' + this.state);
+            return;
+        }
+        if (!this.derivedKeys) {
+            this._log('recv_ready ignored — no derived keys yet (handshake out of order)');
+            return;
+        }
         if (this._sendersInstalled) {
             this._log('recv_ready: senders already installed — ignoring');
             return;
@@ -739,7 +1053,7 @@ class ZrtpSession {
 
         await this._installSenders();
 
-        const senderReady = { v: VERSION, type: 'sender_ready', call_id: this.callId };
+        const senderReady = { v: this.negotiatedVersion, type: 'sender_ready', call_id: this.callId };
         this._log('SEND sender_ready');
         await this._sendSigned(senderReady, 'sender_ready');
 
@@ -755,6 +1069,14 @@ class ZrtpSession {
     // sender_ready arrived — peer has installed sender_enc. We may not
     // yet have installed our own sender_enc on this side (caller path).
     async _handleSenderReady(/*payload*/) {
+        if (this.state === 'key-active' || this.state === 'failed') {
+            this._log('sender_ready ignored — state=' + this.state);
+            return;
+        }
+        if (!this.derivedKeys) {
+            this._log('sender_ready ignored — no derived keys yet (handshake out of order)');
+            return;
+        }
         await this._installSenders();
         this._setState('key-agreed');
         this._log('state -> key-agreed');
@@ -1041,6 +1363,54 @@ class ZrtpSession {
         });
     }
 
+    // Strict-mode H264 video drop. When encryptionMode is
+    // 'zrtp_mandatory' and the negotiated video codec is H264 (which we
+    // cannot end-to-end encrypt because of STAP-A multi-NAL packetisation),
+    // refuse the video media entirely: stop the local video sender,
+    // disable the remote video receiver, and emit 'zrtpStrictH264VideoDrop'
+    // so the UI suppresses camera-enable prompts and the local preview.
+    // Audio installs normally. Idempotent — guarded by _strictH264Dropped.
+    _maybeStrictDropH264Video(skipVideoForH264) {
+        if (!skipVideoForH264) return;
+        if (_encryptionMode !== 'zrtp_mandatory') return;
+        if (this._strictH264Dropped) return;
+        this._strictH264Dropped = true;
+        this._log('STRICT mode + H264 video — dropping video media entirely');
+        try { this.call._zrtpStrictNoVideo = true; } catch (e) {}
+        const pc = this.call && this.call._pc;
+        if (pc) {
+            try {
+                const senders = (typeof pc.getSenders === 'function') ? pc.getSenders() : [];
+                for (const s of senders) {
+                    if (s && s.track && s.track.kind === 'video') {
+                        try { s.replaceTrack(null); } catch (e) {}
+                        try { if (s.track.stop) s.track.stop(); } catch (e) {}
+                    }
+                }
+            } catch (e) {
+                this._log('strict-H264 sender drop threw:', (e && e.message) || e);
+            }
+            try {
+                const receivers = (typeof pc.getReceivers === 'function') ? pc.getReceivers() : [];
+                for (const r of receivers) {
+                    if (r && r.track && r.track.kind === 'video') {
+                        try { if (r.track.stop) r.track.stop(); } catch (e) {}
+                    }
+                }
+            } catch (e) {
+                this._log('strict-H264 receiver drop threw:', (e && e.message) || e);
+            }
+        }
+        try {
+            this.call.emit('zrtpStrictH264VideoDrop', {
+                reason: 'strict-mode-no-h264',
+                detail: 'zRTP strict mode does not allow unencrypted H264 video',
+            });
+        } catch (e) {
+            this._log('zrtpStrictH264VideoDrop emit threw:', (e && e.message) || e);
+        }
+    }
+
     // Phase A — install FrameDecryptor on every receiver. Safe to call as
     // soon as keys are derived: the C++ decryptor is permissive — it passes
     // through any bytes that don't decrypt, so peer plaintext frames still
@@ -1052,11 +1422,6 @@ class ZrtpSession {
                   + ' role=' + this.role);
         if (this._receiversInstalled) {
             this._log('_installReceivers: already installed — skipping');
-            return;
-        }
-        if (ZRTP_INSTALL_DISABLED) {
-            this._log('_installReceivers: ZRTP_INSTALL_DISABLED — skipping');
-            this._receiversInstalled = true;
             return;
         }
         const k = this._directionKeys();
@@ -1164,12 +1529,20 @@ class ZrtpSession {
         const audioCodec = this._negotiatedAudioCodec();
         const videoPrefix = ZrtpSession.unencryptedVideoPrefixForCodec(videoCodec);
         const skipVideoForH264 = _shouldSkipVideoZrtpForCodec(this.call);
+        // Strict-mode + H264 video: refuse the video media entirely. We
+        // can't E2E-encrypt H264 with our fixed-prefix scheme, and
+        // 'zrtp_mandatory' means the user wants encryption-or-nothing.
+        // Drop the video sender / receiver and tell the UI to suppress
+        // camera prompts. Audio still gets E2E installed normally.
+        this._maybeStrictDropH264Video(skipVideoForH264);
         this._log('PHASE A install receivers; role=' + this.role +
-                  ' recv.key=' + k.recvKey.slice(0, 8) + '… '
+                  ' recv.key=' + _keyPrefixForLog(k.recvKey) + '… '
                   + 'videoCodec=' + videoCodec + ' videoPrefix=' + videoPrefix
                   + ' audioCodec=' + (audioCodec || '?')
                   + (skipVideoForH264 ? ' (video receivers will be SKIPPED — H264 STAP-A limit)' : ''));
         const receivers = pc.getReceivers();
+        let installSuccesses = 0;
+        let installFailures = 0;
         for (const r of receivers) {
             if (!r.track) continue;
             // Honest per-track codec for logging — the previous code
@@ -1203,6 +1576,8 @@ class ZrtpSession {
                 // to work but was actually flowing unencrypted.
                 const perTrackPrefix = r.track.kind === 'audio' ? 0 : videoPrefix;
                 await r.setMediaDecryption(k.recvKey, k.recvSalt, k.keyId, perTrackPrefix);
+                installSuccesses++;
+                this._installedReceiverKinds.add(r.track.kind);
                 this._log('[' + r.track.kind + '] receiver decryption installed (codec=' + trackCodec + ', prefix=' + perTrackPrefix + ')');
                 // Applog proof: the native call returned without throwing,
                 // which means react-native-webrtc bound the FrameDecryptor
@@ -1215,16 +1590,24 @@ class ZrtpSession {
                 utils.timestampedLog('[call] [zrtp] call_id=' + this.callId,
                     r.track.kind, 'receiver SRTP DECRYPTION ACTIVE',
                     'with peer', this.peerUri,
-                    'key prefix=' + (k.recvKey ? k.recvKey.slice(0, 8) : '?') + '…',
+                    'key prefix=' + _keyPrefixForLog(k.recvKey) + '…',
                     'codec=', trackCodec);
             } catch (e) {
+                installFailures++;
                 this._log('[' + r.track.kind + '] receiver install failed:', (e && e.message) || e);
                 utils.timestampedLog('[call] [zrtp] call_id=' + this.callId,
                     r.track.kind, 'receiver SRTP install FAILED with peer',
                     this.peerUri, '— error:', (e && e.message) || String(e));
             }
         }
-        this._receiversInstalled = true;
+        if (installSuccesses > 0) {
+            this._receiversInstalled = true;
+        } else if (installFailures > 0) {
+            this._log('_installReceivers: ALL installs failed — _receiversInstalled=false');
+            this._setState('failed');
+        } else {
+            this._log('_installReceivers: no tracks to install on — _receiversInstalled=false');
+        }
     }
 
     // Phase B — install FrameEncryptor on every sender. Only called after
@@ -1298,11 +1681,59 @@ class ZrtpSession {
                         params.encodings[0].scaleResolutionDownBy = scale;
                     }
 
-                    await s.setParameters(params);
-                    this._log('[video] sender encoder params set:',
-                              'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
-                              'maxFramerate=', _videoTargetFramerate,
-                              'scaleResolutionDownBy=', params.encodings[0].scaleResolutionDownBy);
+                    // Re-fetch encoder params immediately before
+                    // setParameters and merge our 3 fields onto the
+                    // fresh snapshot. The original code captured
+                    // `params` once at the top of this block, did the
+                    // (potentially slow) track.getSettings() probe in
+                    // between, and only then called setParameters —
+                    // long enough for VideoBox._onEnableCamera's
+                    // setParameters({active:true}) to race with us and
+                    // get clobbered, leaving encodings inactive even
+                    // after the user pressed Enable Camera. We saw
+                    // this in metro.log for
+                    // call_id=2b1d8d02-2474-06db-6b46-5c5c19e07cd8
+                    // (2026-05-19 08:00:48..08:01:01): outbound-rtp
+                    // stats stayed at frames=0/0/0 for the whole call.
+                    //
+                    // We only own the 3 encoder fields below; the
+                    // active flag and anything else on the encoding
+                    // belong to the rest of the call (VideoBox's
+                    // camera-enable modal flow) and must NOT be
+                    // overwritten with our stale snapshot.
+                    try {
+                        const fresh = s.getParameters();
+                        if (fresh && Array.isArray(fresh.encodings) && fresh.encodings.length > 0) {
+                            const ours = params.encodings[0];
+                            fresh.encodings.forEach((e) => {
+                                if (ours.maxBitrate !== undefined) e.maxBitrate = ours.maxBitrate;
+                                if (ours.maxFramerate !== undefined) e.maxFramerate = ours.maxFramerate;
+                                if (ours.scaleResolutionDownBy !== undefined) {
+                                    e.scaleResolutionDownBy = ours.scaleResolutionDownBy;
+                                }
+                            });
+                            await s.setParameters(fresh);
+                            this._log('[video] sender encoder params set (merged onto fresh snapshot):',
+                                      'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
+                                      'maxFramerate=', _videoTargetFramerate,
+                                      'scaleResolutionDownBy=', ours.scaleResolutionDownBy,
+                                      'active=', fresh.encodings.map(e => e.active !== false).join(','));
+                        } else {
+                            await s.setParameters(params);
+                            this._log('[video] sender encoder params set (no fresh snapshot):',
+                                      'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
+                                      'maxFramerate=', _videoTargetFramerate,
+                                      'scaleResolutionDownBy=', params.encodings[0].scaleResolutionDownBy);
+                        }
+                    } catch (mergeErr) {
+                        this._log('[video] fresh-snapshot merge failed, falling back to staged params:',
+                                  (mergeErr && mergeErr.message) || mergeErr);
+                        await s.setParameters(params);
+                        this._log('[video] sender encoder params set (fallback path):',
+                                  'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
+                                  'maxFramerate=', _videoTargetFramerate,
+                                  'scaleResolutionDownBy=', params.encodings[0].scaleResolutionDownBy);
+                    }
                 } catch (e) {
                     this._log('[video] setParameters failed:', (e && e.message) || e);
                 }
@@ -1317,11 +1748,6 @@ class ZrtpSession {
         await this._applyVideoBitrate();
 
         if (this._sendersInstalled) return;
-        if (ZRTP_INSTALL_DISABLED) {
-            this._log('_installSenders: ZRTP_INSTALL_DISABLED — skipping');
-            this._sendersInstalled = true;
-            return;
-        }
         const k = this._directionKeys();
         if (!k) { this._log('_installSenders: no derived keys yet'); return; }
         const pc = this.call._pc;
@@ -1333,7 +1759,7 @@ class ZrtpSession {
         const videoPrefix = ZrtpSession.unencryptedVideoPrefixForCodec(videoCodec);
         const skipVideoForH264 = _shouldSkipVideoZrtpForCodec(this.call);
         this._log('PHASE B install senders; role=' + this.role +
-                  ' send.key=' + k.sendKey.slice(0, 8) + '… '
+                  ' send.key=' + _keyPrefixForLog(k.sendKey) + '… '
                   + 'videoCodec=' + videoCodec + ' videoPrefix=' + videoPrefix
                   + ' audioCodec=' + (audioCodec || '?')
                   + (skipVideoForH264 ? ' (video senders will be SKIPPED — H264 STAP-A limit)' : ''));
@@ -1363,6 +1789,7 @@ class ZrtpSession {
                 const perTrackPrefix = s.track.kind === 'audio' ? 0 : videoPrefix;
                 await s.setMediaEncryption(k.sendKey, k.sendSalt, k.keyId, perTrackPrefix);
                 installSuccesses++;
+                this._installedSenderKinds.add(s.track.kind);
                 this._log('[' + s.track.kind + '] sender encryption installed (codec=' + trackCodec + ', prefix=' + perTrackPrefix + ')');
                 // Applog proof: the native call returned without throwing,
                 // which means react-native-webrtc bound the FrameEncryptor
@@ -1377,7 +1804,7 @@ class ZrtpSession {
                 utils.timestampedLog('[call] [zrtp] call_id=' + this.callId,
                     s.track.kind, 'sender SRTP ENCRYPTION ACTIVE',
                     'with peer', this.peerUri,
-                    'key prefix=' + (k.sendKey ? k.sendKey.slice(0, 8) : '?') + '…',
+                    'key prefix=' + _keyPrefixForLog(k.sendKey) + '…',
                     'codec=', trackCodec);
             } catch (e) {
                 installFailures++;
@@ -1387,31 +1814,215 @@ class ZrtpSession {
                     this.peerUri, '— error:', (e && e.message) || String(e));
             }
         }
-        // _sendersInstalled now reflects whether AT LEAST ONE sender's
-        // setMediaEncryption resolved without throwing. Previously this
-        // flipped to true unconditionally — which let the pill light up
-        // even when every install threw. Subsequent re-invocations of
-        // _installSenders short-circuit on _sendersInstalled, so we only
-        // refuse the retry once we know SOME install succeeded; otherwise
-        // _handleRecvReady will keep retrying on each handshake step.
         if (installSuccesses > 0) {
             this._sendersInstalled = true;
         } else if (installFailures > 0) {
-            this._log('_installSenders: ALL installs failed — leaving _sendersInstalled=false so a retry can happen');
+            this._log('_installSenders: ALL installs failed — _sendersInstalled=false');
+            this._setState('failed');
         } else {
-            // No tracks to install on (shouldn't happen for an audio/video
-            // call but harmless if it does). Treat as success-by-vacuity.
-            this._sendersInstalled = true;
+            this._log('_installSenders: no tracks to install on — _sendersInstalled=false (NOT lighting pill)');
         }
+    }
+
+    // v3 — sign the outgoing payload in-place with our PGP private key
+    // when v3 is negotiated and we hold a key. No-op on v < 3 or when
+    // no private key is available.
+    async _maybeSign(payload) {
+        if (this.negotiatedVersion < 3 || !this.localPrivKey) return;
+        const sig = await signPayload(this.localPrivKey, payload);
+        if (sig) {
+            payload.sig = sig;
+        }
+    }
+
+    // v3 — verify an incoming probe/accept payload's signature against
+    // the peer's PGP public key.
+    //   v < 3                              → always accept (peer agreed
+    //                                       to no-sig semantics).
+    //   v >= 3 + no peer key plumbed in    → accept with warning (rollout
+    //                                       phase; can't verify).
+    //   v >= 3 + peer key + no sig present → accept with warning (likely
+    //                                       downgrade-strip).
+    //   v >= 3 + peer key + sig + verify   → return verifier's verdict;
+    //                                       on FALSE, transition to
+    //                                       'failed' and stop processing.
+    async _verifyOrReject(payload) {
+        if (this.negotiatedVersion < 3) return true;
+        const sig = (payload && payload.sig) || null;
+        if (!this.peerPubKey) {
+            if (sig) {
+                this._log('peer sent v3 sig but no peer PGP key cached — accepting anyway');
+            }
+            return true;
+        }
+        if (!sig) {
+            this._log('v3 negotiated and peer key cached but payload has no sig — likely downgrade-strip; accepting but channel is NOT signed-handshake protected');
+            return true;
+        }
+        const ok = await verifyPayload(this.peerPubKey, payload, sig);
+        if (!ok) {
+            this._log('v3 signature verification FAILED — rejecting payload');
+            this._setState('failed');
+            return false;
+        }
+        this._log('v3 signature verified');
+        return true;
+    }
+
+    // Re-resolve localRs1 from the composite per-device slot
+    // (contact.localProperties.zrtp.devices[peer_device_id]) once
+    // peer_device_id is known. Called from handleIncoming on the first
+    // probe/accept that carries it. When the composite slot is empty
+    // (no prior call with THIS specific peer device), drop the legacy
+    // single-device rs1 — that slot belongs to a different peer device
+    // and using it here would produce a spurious 'mismatch' continuity
+    // state in the multi-device case.
+    _resolveLocalRs1ForPeerDevice() {
+        if (!this.peerDeviceId) return;
+        const devices = this._contactZrtpRecord && this._contactZrtpRecord.devices;
+        const slot = devices && devices[this.peerDeviceId];
+        const hex = slot && slot.rs1_hex;
+        if (typeof hex === 'string' && /^[0-9a-fA-F]{64}$/.test(hex)) {
+            this.localRs1 = fromHex(hex);
+            this.localRsIdHex = rsIdHexOf(this.localRs1);
+            return;
+        }
+        this.localRs1 = null;
+        this.localRsIdHex = null;
+    }
+
+    // Derive the next per-peer retained secret (rs1) using the same
+    // formula as python3-sipsimple. Both sides compute identical bytes
+    // from identical inputs, so post-call rotation stays in lockstep.
+    //
+    // The salt chain is gated on this call's continuityState: only when
+    // both sides proved they held the same rs1 ('verified') do we mix
+    // local rs1 forward. After mismatch / first-time / one-sided the
+    // two sides held DIFFERENT local rs1 (or none), so mixing them
+    // would diverge them again — instead we re-bootstrap from zero
+    // salt so both sides converge on the same fresh next_rs1.
+    _deriveNextRs1() {
+        if (!this.sharedSecret) return null;
+        const salt = (this.continuityState === 'verified' && this.localRs1)
+            ? this.localRs1
+            : new Uint8Array(32);
+        try {
+            return hkdf(this.sharedSecret, salt, 'sylk-zrtp/v2/next-rs1', RS_BYTES);
+        } catch (e) {
+            this._log('next_rs1 derivation failed:', (e && e.message) || e);
+            return null;
+        }
+    }
+
+    // Emit a zrtpRs1Update event on the Call object carrying the new rs1
+    // (32 bytes hex) and the peer URI. app.js listens on the Call and
+    // persists this into contact.localProperties.zrtp.rs1_hex via
+    // saveSylkContact.
+    _emitRs1Update(rs1Bytes) {
+        const hex = toHex(rs1Bytes);
+        try {
+            this.call.emit('zrtpRs1Update', {
+                uri: this.peerUri,
+                device_id: this.peerDeviceId || null,
+                rs1_hex: hex,
+                continuity: this.continuityState,
+            });
+        } catch (e) {
+            this._log('zrtpRs1Update emit threw:', (e && e.message) || e);
+        }
+        // Track locally so subsequent code paths in this same session can
+        // see the rotated value without waiting for the round-trip back
+        // through props/state.
+        this.localRs1 = rs1Bytes;
+        this.localRsIdHex = rsIdHexOf(rs1Bytes);
+    }
+
+    // Called by app.js when the user has compared the SAS and tapped
+    // Confirm in the SAS dialog. Seeds (or refreshes) rs1 regardless of
+    // the current continuity state — this is the user's explicit
+    // statement that "this is the right peer".
+    //
+    // Also flips continuityState to 'verified' so the UI pill stops
+    // showing 'mismatch'/'first-time' immediately. Without this the
+    // session-level continuity decision would stay frozen at whatever
+    // _deriveAndLog computed at handshake time, and _zrtpVerificationStatus
+    // would keep returning 'mismatch' until the next call.
+    confirmSasAndSeedRs1() {
+        const next = this._deriveNextRs1();
+        if (!next) return null;
+        this._emitRs1Update(next);
+        this._rotated = true;
+        this.continuityState = 'verified';
+        return toHex(next);
+    }
+
+    // Forget the stored rs1 for this peer. Used when the user taps
+    // Continue past the mismatch alarm — we drop our binding and the
+    // call proceeds without continuity until the user re-verifies SAS.
+    clearRs1() {
+        this.localRs1 = null;
+        this.localRsIdHex = null;
+        try {
+            this.call.emit('zrtpRs1Clear', {
+                uri: this.peerUri,
+                device_id: this.peerDeviceId || null,
+            });
+        } catch (e) {
+            this._log('zrtpRs1Clear emit threw:', (e && e.message) || e);
+        }
+    }
+
+    // Media kinds ('audio' / 'video') that are end-to-end encrypted in
+    // BOTH directions on this session. Used by the UI pill to say
+    // "zRTP audio", "zRTP video", or "zRTP audio and video".
+    get encryptedKinds() {
+        const out = [];
+        for (const kind of ['audio', 'video']) {
+            if (this._installedSenderKinds.has(kind)
+                    && this._installedReceiverKinds.has(kind)) {
+                out.push(kind);
+            }
+        }
+        return out;
     }
 
     _deriveAndLog() {
         // X25519 ECDH
         this.sharedSecret = nacl.scalarMult(this.ephemeral.secretKey, this.peerEphemPub);
-        this._log('ECDH shared secret hex:', toHex(this.sharedSecret));
+        this._log('ECDH shared secret hex:', _hexForLog(this.sharedSecret));
+
+        // Decide continuity state and pick HKDF salt accordingly.
+        // See docs/encryption/zrtp/Readme.md for the policy table.
+        let salt = new Uint8Array(32); // RFC 5869: zero-salt when no salt available
+        const localId = this.localRsIdHex;
+        const peerId = this.peerRsIdHex;
+        if (this.negotiatedVersion < 2 || !this.localRs1) {
+            if (peerId && !this.localRs1) {
+                this.continuityState = 'one-sided-peer';
+            } else if (localId && !peerId) {
+                this.continuityState = 'one-sided-local';
+            } else {
+                this.continuityState = 'first-time';
+            }
+            this._mixedRs1 = false;
+        } else if (!peerId) {
+            this.continuityState = 'one-sided-local';
+            this._mixedRs1 = false;
+        } else if (peerId === localId) {
+            this.continuityState = 'verified';
+            salt = this.localRs1;
+            this._mixedRs1 = true;
+        } else {
+            // Both sides hold an rs1 but they differ — reinstall or MitM.
+            // Derive with zero salt so the call still proceeds, but do NOT
+            // rotate the stored secret automatically; the app surfaces the
+            // mismatch alarm and the user decides.
+            this.continuityState = 'mismatch';
+            this._mixedRs1 = false;
+        }
+        this._log('continuity=', this.continuityState, 'mixed_rs1=', this._mixedRs1);
 
         // HKDF-SHA256 — derive 4 outputs labeled by direction (caller↔callee)
-        const salt = new Uint8Array(32); // RFC 5869: zero-salt when no salt available
         const k_c2e = hkdf(this.sharedSecret, salt, 'sylk-e2ee/v1/audio-caller-to-callee', 16);
         const k_e2c = hkdf(this.sharedSecret, salt, 'sylk-e2ee/v1/audio-callee-to-caller', 16);
         const s_c2e = hkdf(this.sharedSecret, salt, 'sylk-e2ee/v1/audio-caller-to-callee-salt', 8);
@@ -1424,10 +2035,14 @@ class ZrtpSession {
             audioCalleeToCallerSalt: toHex(s_e2c),
         };
 
-        this._log('HKDF caller->callee key  =', this.derivedKeys.audioCallerToCallee);
-        this._log('HKDF callee->caller key  =', this.derivedKeys.audioCalleeToCaller);
-        this._log('HKDF caller->callee salt =', this.derivedKeys.audioCallerToCalleeSalt);
-        this._log('HKDF callee->caller salt =', this.derivedKeys.audioCalleeToCallerSalt);
+        if (_isDev()) {
+            this._log('HKDF caller->callee key  =', this.derivedKeys.audioCallerToCallee);
+            this._log('HKDF callee->caller key  =', this.derivedKeys.audioCalleeToCaller);
+            this._log('HKDF caller->callee salt =', this.derivedKeys.audioCallerToCalleeSalt);
+            this._log('HKDF callee->caller salt =', this.derivedKeys.audioCalleeToCallerSalt);
+        } else {
+            this._log('HKDF keys/salts derived (redacted in release build)');
+        }
 
         // SAS — derive 8 bytes; first 4 → chars, next 4 → emojis. Both
         // endpoints derive identical SAS from the same shared secret.
@@ -1458,7 +2073,7 @@ class ZrtpSession {
                 && this.contact.localProperties.zrtp;
             const currentKey = this.contact && this.contact.publicKey;
             if (stored && stored.publicKey) {
-                verification = (currentKey && stored.publicKey === currentKey)
+                verification = (currentKey && constantTimeStringEqual(stored.publicKey, currentKey))
                     ? 'verified'
                     : 'mismatch';
             }
@@ -1478,6 +2093,46 @@ class ZrtpSession {
 // ----- registry keyed by sylkrtc Call's local id -------------------------
 
 const sessions = new Map();
+
+// Persistence callbacks injected by app.js at boot. The session emits
+// 'zrtpRs1Update' / 'zrtpRs1Clear' on the Call when rs1 needs to be
+// persisted or forgotten; the listeners attached inside startZrtpForCall
+// and dispatchIncomingZrtp fan those out to these module-level hooks so
+// the storage logic stays in app.js (where saveSylkContact lives) without
+// CallZrtp.js needing to import it.
+let _rs1PersistFn = null;
+let _rs1PersistClearFn = null;
+
+export function registerZrtpRs1Handlers(persistFn, clearFn) {
+    _rs1PersistFn = typeof persistFn === 'function' ? persistFn : null;
+    _rs1PersistClearFn = typeof clearFn === 'function' ? clearFn : null;
+}
+
+function _attachRs1Listeners(call) {
+    if (!call || typeof call.on !== 'function') return;
+    try {
+        call.on('zrtpRs1Update', (info) => {
+            try {
+                if (_rs1PersistFn && info && info.uri && info.rs1_hex) {
+                    _rs1PersistFn(info.uri, info.device_id, info.rs1_hex, info.continuity);
+                }
+            } catch (e) {
+                console.log('[zrtp] zrtpRs1Update handler threw:', (e && e.message) || e);
+            }
+        });
+        call.on('zrtpRs1Clear', (info) => {
+            try {
+                if (_rs1PersistClearFn && info && info.uri) {
+                    _rs1PersistClearFn(info.uri, info.device_id);
+                }
+            } catch (e) {
+                console.log('[zrtp] zrtpRs1Clear handler threw:', (e && e.message) || e);
+            }
+        });
+    } catch (e) {
+        console.log('[zrtp] _attachRs1Listeners failed:', (e && e.message) || e);
+    }
+}
 
 const _idOf = (call) => call._id || call.id;
 
@@ -1649,6 +2304,53 @@ function _emitMandatoryFailedDelayed(call, reasonCode, detail) {
 //
 // The session's own _setState path is monkey-patched so the timer can
 // be cancelled the moment state transitions to 'key-agreed' (success).
+function _attachOptionalDowngradeWarning(call, id, session) {
+    if (_encryptionMode !== 'zrtp_optional') return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+        if (cancelled) return;
+        const st = session.state;
+        if (st === 'key-agreed' || st === 'key-active') return;
+        const cid = _callIdOf(call);
+        utils.timestampedLog('[call] [zrtp] call_id=' + cid,
+                  'OPTIONAL mode: handshake did not reach key-agreed within '
+                  + ZRTP_MANDATORY_TIMEOUT_MS + 'ms (state=' + st + ')'
+                  + ' — emitting zrtpDowngradeWarning');
+        try {
+            call.emit('zrtpDowngradeWarning',
+                      { reason: 'timeout',
+                        detail: 'handshake did not complete in '
+                                + ZRTP_MANDATORY_TIMEOUT_MS + 'ms',
+                        state: st });
+        } catch (e) {
+            console.log('[call] [zrtp] call_id=' + cid,
+                        'zrtpDowngradeWarning emit threw (' +
+                        ((e && e.message) || e) + ')');
+        }
+    }, ZRTP_MANDATORY_TIMEOUT_MS);
+
+    const onState = (oldS, newS) => {
+        if (newS === 'terminated') {
+            cancelled = true;
+            clearTimeout(timer);
+            try { call.removeListener('stateChanged', onState); } catch (e) {}
+        }
+    };
+    call.on('stateChanged', onState);
+
+    const origSetState = session._setState
+        ? session._setState.bind(session) : null;
+    if (origSetState) {
+        session._setState = (newS) => {
+            origSetState(newS);
+            if (newS === 'key-agreed' || newS === 'key-active') {
+                cancelled = true;
+                clearTimeout(timer);
+            }
+        };
+    }
+}
+
 function _attachMandatoryTimeout(call, id, session) {
     if (_encryptionMode !== 'zrtp_mandatory') return;
     let cancelled = false;
@@ -1743,7 +2445,9 @@ export function startZrtpForCall(call, account, contact, myKeys) {
     const s = new ZrtpSession({ call, account, contact, myKeys, role: 'caller' });
     sessions.set(id, s);
     _attachCleanup(call, id, s);
+    _attachRs1Listeners(call);
     _attachMandatoryTimeout(call, id, s);
+    _attachOptionalDowngradeWarning(call, id, s);
     s.startProbe();
     return s;
 }
@@ -1792,7 +2496,9 @@ export function dispatchIncomingZrtp(call, account, contact, myKeys, content) {
         s = new ZrtpSession({ call, account, contact, myKeys, role: 'callee' });
         sessions.set(id, s);
         _attachCleanup(call, id, s);
+        _attachRs1Listeners(call);
         _attachMandatoryTimeout(call, id, s);
+        _attachOptionalDowngradeWarning(call, id, s);
     }
     s.handleIncoming(content);
 }
@@ -1838,6 +2544,115 @@ export function reapplyVideoEncoderParams(call) {
             utils.timestampedLog('[call] [zrtp] call_id=' + _callIdOf(call),
                 'reapplyVideoEncoderParams threw:', (e && e.message) || e);
         } catch (_) {}
+    }
+}
+
+/**
+ * Apply the video encoder caps (maxBitrate / maxFramerate /
+ * scaleResolutionDownBy) directly to a peer connection's video
+ * senders, WITHOUT requiring a ZrtpSession to exist.
+ *
+ * Background: _applyVideoBitrate() lives on ZrtpSession and is the
+ * only place that calls RTCRtpSender.setParameters({encodings:
+ * [{maxBitrate}]}). For 1-to-1 calls the ZRTP handshake (and its
+ * one-shot encoder apply) runs whenever the peer has a PGP key.
+ * Conferences don't HAVE a peer-to-peer ZRTP session — the call
+ * target is a room, not a person — so startZrtpForCall returns
+ * null and the encoder caps never get pushed. The result: the
+ * publisher PC runs at libwebrtc's default (~1.5–2 Mbps for 480p)
+ * instead of the configured VIDEO_PROFILE.maxBitrateKbps (800 kbps
+ * for 480p).
+ *
+ * This helper is the conference-friendly version. It reads the
+ * SAME module-level _videoMaxBitrateKbps / _videoTargetWidth /
+ * _videoTargetHeight / _videoTargetFramerate that
+ * _applyVideoBitrate uses, so a single setVideoMaxBitrateKbps()
+ * call at app boot caps both paths. The fresh-snapshot merge logic
+ * is duplicated here (rather than refactored) to avoid disturbing
+ * the well-tested ZrtpSession version on the way to a fix.
+ *
+ * `label` is a short string used in log lines so the call site is
+ * identifiable in metro.log (e.g. 'conference-join',
+ * 'conference-resolution-change').
+ */
+export async function applyVideoEncoderParamsToPc(pc, label) {
+    if (!pc || typeof pc.getSenders !== 'function') return;
+    if (_videoMaxBitrateKbps === null
+        && _videoTargetWidth === null
+        && _videoTargetHeight === null
+        && _videoTargetFramerate === null) return;
+    const tag = '[video] [' + (label || 'conference') + ']';
+    for (const s of pc.getSenders()) {
+        if (!s.track || s.track.kind !== 'video') continue;
+        try {
+            const params = s.getParameters();
+            if (!params.encodings || params.encodings.length === 0) {
+                params.encodings = [{}];
+            }
+            if (_videoMaxBitrateKbps !== null) {
+                params.encodings[0].maxBitrate = _videoMaxBitrateKbps * 1000;
+            }
+            if (_videoTargetFramerate !== null) {
+                params.encodings[0].maxFramerate = _videoTargetFramerate;
+            }
+            // Compute scaleResolutionDownBy from actual track size so
+            // a camera that overshot our hint (1088x1088 on some
+            // Android cameras) still ends up scaled down to the
+            // target resolution. Same approach as ZrtpSession's
+            // _applyVideoBitrate.
+            if (_videoTargetWidth !== null && _videoTargetHeight !== null) {
+                let scale = 1.0;
+                try {
+                    const settings = (typeof s.track.getSettings === 'function')
+                        ? s.track.getSettings() : null;
+                    const tw = settings && settings.width  ? settings.width  : null;
+                    const th = settings && settings.height ? settings.height : null;
+                    if (tw && th) {
+                        const sx = tw / _videoTargetWidth;
+                        const sy = th / _videoTargetHeight;
+                        scale = Math.max(1.0, Math.max(sx, sy));
+                    }
+                } catch (sizeErr) { /* best effort */ }
+                if (scale < 1.0) scale = 1.0;
+                params.encodings[0].scaleResolutionDownBy = scale;
+            }
+
+            // Re-fetch encoder params right before setParameters and
+            // MERGE our 3 fields onto each encoding (rather than
+            // overwriting the whole array). WebRTC's setParameters
+            // requires the complete encodings array — passing a
+            // partial object resets every other field (including
+            // `active`, `rid`, the simulcast layers, etc.) on the
+            // wire. The merge keeps anything else the call may have
+            // set (camera-enable's active:true flag, etc.) intact.
+            try {
+                const fresh = s.getParameters();
+                if (fresh && Array.isArray(fresh.encodings) && fresh.encodings.length > 0) {
+                    const ours = params.encodings[0];
+                    fresh.encodings.forEach((e) => {
+                        if (ours.maxBitrate !== undefined) e.maxBitrate = ours.maxBitrate;
+                        if (ours.maxFramerate !== undefined) e.maxFramerate = ours.maxFramerate;
+                        if (ours.scaleResolutionDownBy !== undefined) {
+                            e.scaleResolutionDownBy = ours.scaleResolutionDownBy;
+                        }
+                    });
+                    await s.setParameters(fresh);
+                } else {
+                    await s.setParameters(params);
+                }
+                utils.timestampedLog(tag, 'sender encoder params set:',
+                          'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
+                          'maxFramerate=', _videoTargetFramerate,
+                          'scaleResolutionDownBy=', params.encodings[0].scaleResolutionDownBy);
+            } catch (mergeErr) {
+                try { await s.setParameters(params); } catch (_) {}
+                utils.timestampedLog(tag, 'merge path threw, fallback applied:',
+                          (mergeErr && mergeErr.message) || mergeErr);
+            }
+        } catch (e) {
+            utils.timestampedLog(tag, 'setParameters failed:',
+                      (e && e.message) || e);
+        }
     }
 }
 

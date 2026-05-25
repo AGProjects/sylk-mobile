@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {useState, Component, Fragment} from 'react';
-import { Clipboard, Platform, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Switch, PanResponder} from 'react-native';
+import { Alert, Clipboard, Platform, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Switch, PanResponder} from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -10,7 +10,7 @@ import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
 import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu } from 'react-native-paper';
-import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView} from 'react-native';
+import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -36,12 +36,18 @@ import ConferenceDrawerSpeakerSelectionWrapper from './ConferenceDrawerSpeakerSe
 import SpeakerSelectionModal from './SpeakerSelectionModal';
 import ConferenceHeader from './ConferenceHeader';
 import NetworkSpeedometer from './NetworkSpeedometer';
+import AudioSpeedometer from './AudioSpeedometer';
 import ConferenceCarousel from './ConferenceCarousel';
 import ConferenceParticipant from './ConferenceParticipant';
 import ConferenceMatrixParticipant from './ConferenceMatrixParticipant';
 import ConferenceParticipantSelf from './ConferenceParticipantSelf';
 import ConferenceAudioParticipantList from './ConferenceAudioParticipantList';
 import ConferenceAudioParticipant from './ConferenceAudioParticipant';
+// Day / night palette resolver — used to swap the per-participant
+// muted-mic icon between salmon (dark mode) and dark grey (day mode).
+// Pulled in as a peer of the other audio-tile imports above so the
+// theming choice lives next to the components it styles.
+import DarkModeManager from '../DarkModeManager';
 
 // QoS instrumentation — see qos/qos-stats.js and qos/README.md.
 // Gated on __DEV__ so production builds skip the bridge cost entirely.
@@ -51,6 +57,8 @@ import {
 } from '../../qos/qos-stats';
 const startQosLogging = __DEV__ ? _startQosLogging : () => {};
 const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
+
+import { applyVideoEncoderParamsToPc } from './CallZrtp';
 // Note: `ContactsListBox` does NOT export `renderBubble` as a named
 // symbol — it lives as a class method on the component. The old
 // `import { renderBubble } from './ContactsListBox'` line was
@@ -60,6 +68,7 @@ const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
 // this component now handles the wrapping; no import needed.
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
 import UpgradeVideoModal from './UpgradeVideoModal';
+import StartCameraPreviewModal from './StartCameraPreviewModal';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 import InCallManager from 'react-native-incall-manager';
 
@@ -147,12 +156,79 @@ const SOLO_SELF_FULLSCREEN = true;
 const PARTICIPANT_STALL_MS = 20000;
 
 
+// Tiny opacity-pulse wrapper used to draw attention to muted-state
+// mute icons (per-participant inline mics + the local action-bar
+// mute button). `active=true` runs an infinite ping-pong fade
+// (1.0 → 0.35 → 1.0) on the wrapper; `active=false` snaps back to
+// fully opaque and stops the loop. native-driver opacity keeps the
+// animation off the JS thread so the rest of the conference UI
+// stays smooth.
+class PulsingView extends Component {
+    constructor(props) {
+        super(props);
+        this._opacity = new Animated.Value(props.active ? 1 : 1);
+        this._loop = null;
+    }
+    componentDidMount() {
+        if (this.props.active) this._startLoop();
+    }
+    componentDidUpdate(prevProps) {
+        if (this.props.active && !prevProps.active) {
+            this._startLoop();
+        } else if (!this.props.active && prevProps.active) {
+            this._stopLoop();
+        }
+    }
+    componentWillUnmount() {
+        this._stopLoop();
+    }
+    _startLoop() {
+        this._stopLoop();
+        this._loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(this._opacity, {
+                    toValue: 0.35,
+                    duration: 600,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(this._opacity, {
+                    toValue: 1,
+                    duration: 600,
+                    useNativeDriver: true,
+                }),
+            ])
+        );
+        this._loop.start();
+    }
+    _stopLoop() {
+        if (this._loop) {
+            this._loop.stop();
+            this._loop = null;
+        }
+        this._opacity.setValue(1);
+    }
+    render() {
+        return (
+            <Animated.View style={[this.props.style, {opacity: this._opacity}]}>
+                {this.props.children}
+            </Animated.View>
+        );
+    }
+}
+
+
 class ConferenceBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
-        
+
         this.prevValues = {};
+        // Native Animated.Value driving the participants-area collapse on
+        // keyboard show. 1.0 = visible at full bounded height, 0.0 = fully
+        // collapsed. Animating this instead of setStating keyboardVisible
+        // avoids re-rendering ConferenceBox, so GiftedChat's TextInput
+        // keeps focus and the keyboard doesn't fold back.
+        this._participantsVisibility = new Animated.Value(1);
 
         this.downloadRequests = {};
 
@@ -186,6 +262,27 @@ class ConferenceBox extends Component {
         // detector, not any rendered output.
         this._autoEscalatedToVideo = false;
 
+        // Latch for the user-initiated audio→video toggle's first-
+        // time "Start your camera?" prompt. Once the user has been
+        // asked (whether they accepted or cancelled), subsequent
+        // toggles bypass the prompt and just flip the camera /
+        // view mode immediately. Independent of
+        // _autoEscalatedToVideo because the two prompts have
+        // different triggers and we only want each path to ask at
+        // most once.
+        this._cameraStartPromptShown = false;
+
+        // True after the user has explicitly tapped Stop video (or
+        // Mute Camera) during this conference session. Distinct
+        // from videoMutedbyUser which is also true when the user
+        // simply pressed the Audio button at call start —
+        // _userExplicitlyStoppedVideo is set ONLY by an explicit
+        // mid-call stop and gates the audio→video toggle's auto-
+        // resume so the camera doesn't silently come back on when
+        // the user flips views. Cleared by Start video (explicit
+        // resume) so the next stop cycle re-arms it correctly.
+        this._userExplicitlyStoppedVideo = false;
+
         // Per-participant VU-meter audio levels (0..1). Keyed by
         // participant id for remote participants and by the literal
         // string 'myself' for the local microphone. Same map shape
@@ -210,7 +307,21 @@ class ConferenceBox extends Component {
         if (this.props.call) {
             let giftedChatMessage;
             let direction;
-            duration = Math.floor((new Date() - this.props.callState.startTime) / 1000);
+            // Guarded — same pattern the self-tile path at line ~6542
+            // uses. props.callState comes from app.js's callsState[call.id]
+            // dict, which is populated when the call transitions to
+            // 'accepted' / 'established' (see callStateChanged in app.js
+            // ~9420-9481). On the first ConferenceBox render after a
+            // newly-accepted conference invite there's a brief window
+            // where the parent's callsState setState hasn't flushed yet
+            // even though Conference.js has already flipped its own
+            // local callState to 'established' and triggered our render
+            // — in that window props.callState is undefined and this
+            // constructor would otherwise crash trying to read
+            // .startTime. Fall back to 0 duration; the next render
+            // tick will have the populated object.
+            const _startTime = this.props.callState && this.props.callState.startTime;
+            duration = _startTime ? Math.floor((new Date() - _startTime) / 1000) : 0;
 
             this.props.call.messages.forEach((sylkMessage) => {
                 if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
@@ -288,6 +399,51 @@ class ConferenceBox extends Component {
             cameraFacing: 'front',
             messages: this.props.messages,
             participants: participants,
+            audioChatView: false,
+            // Local raised-hand status — derived in onRaisedHands by
+            // checking the server-sent list against the local URI.
+            // The button onPress (toggleRaisedHand) calls
+            // Conference.toggleHand and lets the round-trip update
+            // flip this rather than flipping it optimistically.
+            raisedHand: false,
+            // Bridge tile visibility. Default false (bridge hidden
+            // from the participant list because most users don't
+            // want to see it). When true, the bridge tile appears
+            // among the SIP audio participants. Toggled from the
+            // ConferenceHeader kebab menu when a bridge is detected
+            // in the room.
+            showBridge: false,
+            // Snapshot of participant.id values currently with a
+            // raised hand. Replaced wholesale every time a
+            // `raisedHands` event arrives (the payload is the full
+            // list). Tile renderers read from this set to decide
+            // whether to show the yellow hand badge.
+            raisedHandsByPid: new Set(),
+            // Seed sipParticipants from the long-lived call object so
+            // navigating to the contact list and back doesn't lose the
+            // SIP-side roster between ConferenceBox remounts. The call
+            // is owned by Conference.js / app.js and persists across
+            // routes while the conference is alive; we cache the last
+            // snapshot we received on it.
+            sipParticipants: (props.call && Array.isArray(props.call._sipParticipants)) ? props.call._sipParticipants : [],
+            // Server-authoritative conference duration captured once on
+            // join (seconds). Used by ConferenceHeader to seed its
+            // running meter to "conference has been going N seconds" —
+            // independent of when this user joined. Restored from the
+            // long-lived call object across ConferenceBox remounts the
+            // same way sipParticipants is.
+            conferenceDurationAtJoin: (props.call && typeof props.call._conferenceDurationAtJoin === 'number')
+                ? props.call._conferenceDurationAtJoin
+                : null,
+            // Per-participant live audio levels keyed by participant_id.
+            // Re-populated every audio_level_notify_period (default
+            // ~250ms) from the sipConferenceAudioLevels event. Tiles
+            // look up their own participant_id in this map and render
+            // a VU bar from `.rx_peak` (mean of µ-law averages is too
+            // smooth to drive a meter usefully — peak is bursty enough
+            // to track speech).
+            sipAudioLevels: {},
+            sipAudioLevelsTs: null,
             showInviteModal: false,
             showDrawer: false,
             keyboardHeight: 0,
@@ -396,6 +552,14 @@ class ConferenceBox extends Component {
 			// video to this call").
 			cameraPromptVisible: false,
 			cameraPromptRemoteUri: '',
+			// Drives the StartCameraPreviewModal — the full-screen
+			// preview + "Enable your camera?" panel we show on the
+			// first audio→video toggle of the session. Decoupled
+			// from cameraPromptVisible (the UpgradeVideoModal's
+			// auto-escalate prompt) so a remote-driven escalate
+			// and a user-driven toggle don't fight for the same
+			// surface.
+			cameraStartPreviewVisible: false,
 			// Free-drag position for the audio-view self-PIP
 			// (renders only when state.videoEnabled). null = use
 			// the default bottom-right placement; once the user
@@ -543,12 +707,28 @@ class ConferenceBox extends Component {
             );
         });
 
-        this.invitedParticipants = new Map();
+        // Persist the invited-participants map on the long-lived call
+        // object so it survives ConferenceBox remounts (e.g. when the
+        // user navigates to the contact picker via the + button and
+        // returns). A fresh `new Map()` per mount would silently drop
+        // previously-failed invite tiles the user hasn't dismissed.
+        if (props.call) {
+            if (!props.call._invitedParticipants) {
+                props.call._invitedParticipants = new Map();
+            }
+            this.invitedParticipants = props.call._invitedParticipants;
+        } else {
+            this.invitedParticipants = new Map();
+        }
+        // Per-URI 60s "no-update" timers. Restart for any URIs still
+        // in 'Invited'/'progress' state on mount so a navigate-away and
+        // back doesn't extend the original 60s window.
+        this._inviteTimers = new Map();
         //console.log('Initial call duration', duration);
 
         props.initialParticipants.forEach((uri) => {
             const existing_participants = participants.filter(p => p.identity._uri === uri);
-            if (existing_participants.length === 0) {
+            if (existing_participants.length === 0 && !this.invitedParticipants.has(uri)) {
                 this.invitedParticipants.set(uri, {timestamp: Date.now(), status: duration < 10 ? 'Invited' : 'No answer'})
                 this.lookupContact(uri);
             }
@@ -589,6 +769,32 @@ class ConferenceBox extends Component {
 			//console.log('width', width);
 			//console.log('height', height);
 	     }
+
+	     // Auto-lower hand when the raise-hand button is no longer
+	     // visible. The button is gated by `_showRaiseHand` in render
+	     // — (_webrtcTotal + _sipRealCount) > 2 — so when the room
+	     // shrinks to ≤2 attendees the gate flips off and the
+	     // affordance disappears. If we'd left the hand RAISED on the
+	     // conference focus, the user can no longer see / interact
+	     // with the lower-hand affordance, and the server state stays
+	     // stuck (raised hand badge still shows on remote tiles).
+	     // Detect the moment state.raisedHand is true while the gate
+	     // is closed and fire a single toggleHand to lower it. The
+	     // round-trip will clear state.raisedHand via the usual
+	     // onRaisedHands path, so this only fires once per stuck
+	     // condition (re-entry would see raisedHand=false and skip).
+	     const _roomCount = ((this.state.participants ? this.state.participants.length : 0) + 1)
+	         + ((this.state.sipParticipants || []).filter((sp) => sp && sp.type === 'sip').length);
+	     const _raiseHandVisible = _roomCount > 2;
+	     if (!_raiseHandVisible && this.state.raisedHand && this.props.call
+	             && typeof this.props.call.toggleHand === 'function') {
+	         console.log('[ConferenceBox] [conference] auto-lowering hand: raise-hand UI hidden (roomCount=' + _roomCount + ')');
+	         try {
+	             this.props.call.toggleHand();
+	         } catch (e) {
+	             console.log('[ConferenceBox] [conference] auto-lower hand toggleHand threw: ' + (e && e.message));
+	         }
+	     }
 	}
 
     componentDidMount() {
@@ -601,6 +807,17 @@ class ConferenceBox extends Component {
         // FLAG_KEEP_SCREEN_ON on the activity window. Safe to call
         // regardless of whether InCallManager.start() has run.
         try { InCallManager.setKeepScreenOn(true); } catch (e) { /* best effort */ }
+
+        // Re-arm the 45s "no-update" timer for any persisted invited
+        // entries that haven't seen a final status yet.
+        try {
+            for (const [uri, entry] of this.invitedParticipants.entries()) {
+                if (!entry) continue;
+                const s = String(entry.status || '');
+                const isFinal = /^[2-6]\d\d\b/.test(s) || s === 'Accepted';
+                if (!isFinal) this._scheduleInviteTimeout(uri);
+            }
+        } catch (e) { /* best effort */ }
 
         // [qos] — start the QoS sampler against the conference's own
         // PeerConnection. Mirrors the AudioCallBox integration; emits
@@ -630,6 +847,223 @@ class ConferenceBox extends Component {
         this.props.call.on('fileSharing', this.onFileSharing);
         this.props.call.on('composingIndication', this.composingIndicationReceived);
         this.props.call.on('message', this.messageReceived);
+
+        // Server-driven room-state events. raisedHands carries the
+        // FULL list of participants with hands up (snapshot, not
+        // delta) — see sylkrtc API.md. muteAudio fires on every
+        // attendee when any participant invokes
+        // muteAudioParticipants; we treat it as a request to mute
+        // the local mic.
+        this.props.call.on('raisedHands', this.onRaisedHands);
+        this.props.call.on('muteAudio', this.onMuteAudio);
+        // Per-participant mute request from the gateway — another
+        // attendee invoked muteParticipant() targeting our session.
+        // Flip the local mic to match `event.muted` so the recipient's
+        // mic state reflects what the moderator asked for, then the
+        // existing onMuteAudio plumbing takes care of broadcasting the
+        // state change for the rest of the UI.
+        this.props.call.on('muteRequest', this.onMuteRequest);
+
+        // Seed the raised-hands set from whatever snapshot the
+        // conference already holds (Conference.raisedHands getter).
+        // Without this, hands raised BEFORE we joined would only
+        // surface on the next toggle event.
+        if (typeof this.props.call.raisedHands !== 'undefined') {
+            try {
+                const _seedList = this.props.call.raisedHands;
+                this.onRaisedHands(Array.isArray(_seedList) ? _seedList : []);
+            } catch (e) { /* best effort */ }
+        }
+
+        this.props.call.on('sipConferenceParticipants', (participants, duration) => {
+            // Verbose JSON dump silenced — was useful while pinning
+            // down the muted-state serialization issue, now too
+            // chatty per NOTIFY. Re-enable by uncommenting the
+            // JSON.stringify line if a future shape question comes up.
+            // console.log('[ConferenceBox] sipConferenceParticipants duration=' + duration + ':\n' +
+            //             JSON.stringify(participants, null, 2));
+            const _list = Array.isArray(participants) ? participants : [];
+            // Cache on the call object so a subsequent ConferenceBox
+            // remount can seed state.sipParticipants from it instead
+            // of starting empty. Conference.js also attaches its own
+            // early-bound cache listener (so the FIRST snapshot —
+            // which often arrives before ConferenceBox mounts — isn't
+            // lost on the floor). This assignment just keeps the same
+            // cache fresh on every later delta.
+            if (this.props.call) {
+                this.props.call._sipParticipants = _list;
+            }
+            const _update = {sipParticipants: _list};
+            // Server-authoritative conference duration anchor (seconds
+            // since the videoroom was created on the webrtcgateway).
+            // Stored once on first NON-ZERO arrival — the running
+            // counter in ConferenceHeader is driven by local elapsed
+            // time from that anchor; we don't keep ratcheting it
+            // from each NOTIFY to avoid jitter.
+            //
+            // A 0 reading from the session-accept conferenceDuration
+            // event (fires when the gateway hasn't yet computed the
+            // room age) used to lock the anchor at 0 and cause
+            // ConferenceHeader.serverDurationApplied to flip
+            // permanently, ignoring every later non-zero value. We
+            // now wait for the first duration > 0.
+            const _haveRealAnchor = typeof this.state.conferenceDurationAtJoin === 'number'
+                                    && this.state.conferenceDurationAtJoin > 0;
+            if (typeof duration === 'number' && duration > 0 && !_haveRealAnchor) {
+                _update.conferenceDurationAtJoin = duration;
+                if (this.props.call) {
+                    this.props.call._conferenceDurationAtJoin = duration;
+                }
+                // Surface the very first non-zero duration sample
+                // from the server so the operator can confirm the
+                // anchor matches the focus's clock at startup.
+                console.log('[ConferenceBox] conference duration anchor (from server, first sample): '
+                    + duration + 's');
+            }
+            this.setState(_update);
+        });
+
+        // Diagnostic — show what the server told us about the
+        // running conference duration at the moment ConferenceBox
+        // mounted. Three possible sources, in order of preference:
+        //   • state.conferenceDurationAtJoin  → seeded by the
+        //     constructor from props.call._conferenceDurationAtJoin
+        //     (which Conference.js's early cache populated before
+        //     this component mounted)
+        //   • props.call._conferenceDurationAtJoin → same cache,
+        //     read directly in case the constructor missed it
+        //   • null → no anchor has arrived yet; the navbar meter
+        //     will start at 00:00 until the first
+        //     sipConferenceParticipants / conferenceDuration event
+        //     fires.
+        const _stateDur = this.state.conferenceDurationAtJoin;
+        const _cacheDur = this.props.call && this.props.call._conferenceDurationAtJoin;
+        console.log('[ConferenceBox] mount: initial server conference duration anchor: state=' +
+                    (_stateDur == null ? 'null' : _stateDur + 's') +
+                    ' cache=' +
+                    (typeof _cacheDur === 'number' ? _cacheDur + 's' : 'null'));
+
+        // Race-window backfill for the duration anchor — same logic
+        // as the sipParticipants backfill below. If the
+        // `conferenceDuration` / `sipConferenceParticipants` event
+        // landed in the cache between constructor and mount, lift
+        // it into state so the header meter picks up immediately.
+        if (this.state.conferenceDurationAtJoin == null
+            && typeof _cacheDur === 'number') {
+            console.log('[ConferenceBox] backfilling conferenceDurationAtJoin from cache at mount =',
+                        _cacheDur, 's');
+            this.setState({conferenceDurationAtJoin: _cacheDur});
+        }
+
+        // Race-window backfill: the constructor seeded
+        // state.sipParticipants from props.call._sipParticipants, but a
+        // snapshot landing in the cache BETWEEN constructor and
+        // componentDidMount would miss that seed. Re-read the cache
+        // here, and push to state if it's non-empty and state is
+        // still empty. The listener attached above handles every
+        // future delta.
+        if (this.props.call
+            && Array.isArray(this.props.call._sipParticipants)
+            && this.props.call._sipParticipants.length > 0
+            && this.state.sipParticipants.length === 0) {
+            console.log('[ConferenceBox] backfilling sipParticipants from cache at mount, count=' +
+                        this.props.call._sipParticipants.length);
+            this.setState({sipParticipants: this.props.call._sipParticipants});
+        }
+
+        // The webrtcgateway also stamps the initial session-accept
+        // event with the gateway-side conference duration. Catch that
+        // path too so the meter is correct from the very first frame
+        // even if no SIP conference-info NOTIFY has landed yet (e.g.
+        // a brand-new room with only this user in it).
+        this.props.call.on('conferenceDuration', (duration) => {
+            console.log('[ConferenceBox] conferenceDuration anchor=', duration);
+            // Skip 0 — see the matching comment on the
+            // sipConferenceParticipants handler above. The
+            // session-accept event fires with 0 when the gateway
+            // hasn't computed the room age yet; locking that in
+            // would cause ConferenceHeader to ignore the real
+            // duration when it arrives later via the SIP NOTIFY.
+            const _haveRealAnchor = typeof this.state.conferenceDurationAtJoin === 'number'
+                                    && this.state.conferenceDurationAtJoin > 0;
+            if (typeof duration === 'number' && duration > 0 && !_haveRealAnchor) {
+                if (this.props.call) {
+                    this.props.call._conferenceDurationAtJoin = duration;
+                }
+                this.setState({conferenceDurationAtJoin: duration});
+            }
+        });
+
+        // Real-time per-participant audio levels (mean+peak), pushed by
+        // the webrtcgateway every audio_level_notify_period (default
+        // 250ms). Indexed by participant_id so a tile component renders
+        // the matching VU bar in one O(1) lookup. We replace the whole
+        // map on every event — the snapshot already carries every
+        // participant in the room, so a diff would add no value.
+        this.props.call.on('sipConferenceAudioLevels', ({levels, ts}) => {
+            const map = {};
+            for (const entry of (levels || [])) {
+                if (!entry || !entry.participant_id) continue;
+                map[entry.participant_id] = {
+                    tx: entry.tx || 0,
+                    rx: entry.rx || 0,
+                    tx_peak: entry.tx_peak || 0,
+                    rx_peak: entry.rx_peak || 0,
+                };
+            }
+            this.setState({sipAudioLevels: map, sipAudioLevelsTs: ts || null});
+        });
+
+        this.props.call.on('inviteStatus', (status) => {
+            const _state = status && status.state;
+            const _participant = status && status.participant;
+            const _code = status && status.code;
+            const _reason = status && status.reason;
+            console.log('[ConferenceBox] [conference] inviteStatus event participant=' + _participant +
+                        ' state=' + _state + ' code=' + _code + ' reason=' + (_reason || ''));
+            if (_state === 'progress') {
+                console.log('[ConferenceBox] [conference] PROGRESS  ' + _participant + ' -> ' + _code + ' ' + (_reason || ''));
+            } else if (_state === 'success') {
+                console.log('[ConferenceBox] [conference] SUCCESS   ' + _participant + ' -> ' + _code + ' ' + (_reason || ''));
+            } else if (_state === 'failed') {
+                console.log('[ConferenceBox] [conference] FAILED    ' + _participant + ' -> ' + _code + ' ' + (_reason || ''));
+            }
+            if (!status || !_participant) return;
+            const _normalize = (u) => {
+                if (!u) return u;
+                if (u.indexOf('sip:') === 0) return u.slice(4);
+                if (u.indexOf('sips:') === 0) return u.slice(5);
+                return u;
+            };
+            const target = _normalize(_participant).split(';')[0];
+            let matchedKeys = 0;
+            for (const key of Array.from(this.invitedParticipants.keys())) {
+                if (_normalize(key).split(';')[0] !== target) continue;
+                matchedKeys++;
+                const existing = this.invitedParticipants.get(key) || {};
+                let label;
+                if (_state === 'failed') {
+                    label = (_code ? _code + ' ' : '') + (_reason || 'Failed');
+                } else if (_state === 'success') {
+                    label = 'Accepted';
+                } else if (_state === 'progress') {
+                    label = (_code ? _code + ' ' : '') + (_reason || 'Progress');
+                } else {
+                    label = _state || 'Unknown';
+                }
+                this.invitedParticipants.set(key, Object.assign({}, existing, {status: label}));
+                // A real status update arrived — cancel the 60s
+                // "no-update" timeout. The tile now stays in whatever
+                // status the server reported until removed.
+                this._cancelInviteTimeout(key);
+                console.log('[ConferenceBox] [conference] tile updated key=' + key + ' status=' + label);
+            }
+            if (matchedKeys === 0) {
+                console.log('[ConferenceBox] [conference] no invitedParticipants entry matched aor=' + target +
+                            ' (current keys=' + Array.from(this.invitedParticipants.keys()).join(',') + ')');
+            }
+            this.forceUpdate();
+        });
 
         this.fullScreenTimer();
 
@@ -685,6 +1119,17 @@ class ConferenceBox extends Component {
 	}
 
     componentWillUnmount() {
+        // Cancel all 60s "no-update" invite timers. The persisted
+        // invitedParticipants map outlives ConferenceBox, but the
+        // setTimeout handles are instance-scoped and would otherwise
+        // fire on a torn-down component.
+        if (this._inviteTimers) {
+            for (const tid of this._inviteTimers.values()) {
+                try { clearTimeout(tid); } catch (e) {}
+            }
+            this._inviteTimers.clear();
+        }
+
         // Release the keep-screen-on we asserted at mount so the
         // OS idle timer resumes once the conference UI is torn
         // down. Counterpart to the setKeepScreenOn(true) in
@@ -1586,10 +2031,67 @@ class ConferenceBox extends Component {
     };
 
     removeInvitedParticipant(uri) {
+        console.log('[ConferenceBox] [conference] removeInvitedParticipant uri=' + uri +
+                    ' present=' + this.invitedParticipants.has(uri));
         if (this.invitedParticipants.has(uri) > 0) {
+            const entry = this.invitedParticipants.get(uri);
             this.invitedParticipants.delete(uri);
+            this._cancelInviteTimeout(uri);
+            console.log('[ConferenceBox] [conference] invite tile removed for ' + uri +
+                        ' (was status=' + (entry && entry.status) + ')');
             this.forceUpdate();
+        } else {
+            console.log('[ConferenceBox] [conference] removeInvitedParticipant: no entry for ' + uri);
         }
+    }
+
+    // Kick an already-joined participant out of the conference. Opens
+    // a confirmation dialog first — the kick is irreversible (the
+    // kicked party gets BYE'd / Janus-kicked and would have to rejoin
+    // manually), so a fat-finger guard is warranted. Tapping Cancel
+    // is a no-op; tapping Remove proceeds with _kickParticipantNow.
+    kickParticipant(uri, displayName) {
+        if (!uri) return;
+        const _label = (displayName && String(displayName).trim()) || uri;
+        Alert.alert(
+            'Remove from conference?',
+            _label + ' will be disconnected from the conference.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Remove',
+                    style: 'destructive',
+                    onPress: () => this._kickParticipantNow(uri),
+                },
+            ],
+            { cancelable: true }
+        );
+    }
+
+    // Actual kick — runs only after the user confirms in the dialog
+    // above. Sends a videoroom-remove request to the webrtcgateway,
+    // which fans out per participant type (SIP → REFER ;method=BYE
+    // to the conference focus; WebRTC → Janus videoroom kick). Posts
+    // a system message in the chat so the room sees who was removed.
+    // The participant disappears from the participants list on the
+    // next NOTIFY / publisher-leaving event — no client-side cache
+    // munging needed.
+    _kickParticipantNow(uri) {
+        if (!uri) return;
+        console.log('[ConferenceBox] [conference] kickParticipant uri=' + uri);
+        if (!this.props.call || typeof this.props.call.removeParticipants !== 'function') {
+            console.log('[ConferenceBox] [conference] kickParticipant: call.removeParticipants not available');
+            return;
+        }
+        try {
+            this.props.call.removeParticipants([uri]);
+        } catch (e) {
+            console.log('[ConferenceBox] [conference] kickParticipant: removeParticipants threw: ' + (e && e.message));
+            return;
+        }
+        try {
+            this.postChatSystemMessage(uri + ' was removed', false);
+        } catch (e) { /* non-fatal */ }
     }
 
     updateParticipantsStatus() {
@@ -1599,18 +2101,59 @@ class ConferenceBox extends Component {
             participants_uris.push(p.identity._uri);
         });
 
+        // SIP participants come through sipConferenceParticipants (RFC 4575
+        // conference-info), not through state.participants — include their
+        // AORs in the membership set used to drop entries from
+        // invitedParticipants once the invitee actually joins. Without this
+        // an invited SIP URI sticks in the Map forever (and the tile keeps
+        // rendering) because the AOR never matches the full sip:URI key.
+        if (Array.isArray(this.state.sipParticipants)) {
+            this.state.sipParticipants.forEach((sp) => {
+                if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
+                const _spUri = sp.uri || '';
+                if (!_spUri) return;
+                participants_uris.push(_spUri);
+                // Also push the bare AOR (sip:user@host -> user@host)
+                // since invitedParticipants keys may be stored either
+                // with or without the URI scheme depending on caller.
+                let _aor = _spUri;
+                if (_aor.indexOf('sip:') === 0) _aor = _aor.slice(4);
+                else if (_aor.indexOf('sips:') === 0) _aor = _aor.slice(5);
+                _aor = _aor.split(';')[0];
+                if (_aor && _aor !== _spUri) participants_uris.push(_aor);
+            });
+        }
+
         this.getConnectionStats();
 
         const invitedParties = Array.from(this.invitedParticipants.keys());
         //console.log('Invited participants', invitedParties);
         //console.log('Current participants', participants_uris);
 
+        // Membership test that tolerates either "sip:user@host" or the
+        // bare "user@host" form on either side of the comparison. The
+        // previous `indexOf(_uri) > 0` was doubly broken: `> 0` skipped
+        // index 0 (so the first-listed joiner was never cleaned up), and
+        // it required exact-string equality which fails when one side
+        // has the sip: scheme and the other doesn't.
+        const _normAor = (u) => {
+            if (!u) return '';
+            let s = String(u);
+            if (s.indexOf('sip:') === 0) s = s.slice(4);
+            else if (s.indexOf('sips:') === 0) s = s.slice(5);
+            return s.split(';')[0];
+        };
+        const _participantAorSet = new Set(participants_uris.map(_normAor).filter(Boolean));
+        const _isInRoom = (uri) => _participantAorSet.has(_normAor(uri));
+
         let p;
         let interval;
 
         invitedParties.forEach((_uri) => {
-            if (participants_uris.indexOf(_uri) > 0) {
+            if (_isInRoom(_uri)) {
                 this.invitedParticipants.delete(_uri);
+                this._cancelInviteTimeout && this._cancelInviteTimeout(_uri);
+                return;
             }
 
             p = this.invitedParticipants.get(_uri);
@@ -1619,29 +2162,33 @@ class ConferenceBox extends Component {
             }
 
             interval = Math.floor((Date.now() - p.timestamp) / 1000);
-            if (p.status == 'No answer' && interval >= 15) {
-                //this.invitedParticipants.delete(_uri);
-                //console.log('Update status', _uri, p.status);
-                p.status = 'reinvite';
-                interval = 0;
-            }
+            // 45-second invite window — matches the
+            // _scheduleInviteTimeout default further below. Earlier
+            // this was 60s and was lowered per user request; the
+            // countdown shown on the tile must match the actual
+            // timeout or the user sees the tile go from "Waiting
+            // ...15" straight to "408 No answer" with no clear
+            // reason why.
+            const remaining = 45 - interval;
 
-            if (p.status.indexOf('Invited') > -1 && interval > 5) {
-                //console.log('Update status', _uri, p.status);
-                p.status = 'Wait .';
-            }
+            // If a server-side status update already arrived
+            // (success, failure 3xx/4xx/5xx/6xx, 'Accepted', or the
+            // final '408 No answer' we set on timeout), don't touch
+            // the entry anymore.
+            const _isFinal = /^[2-6]\d\d\b/.test(String(p.status || '')) || p.status === 'Accepted';
+            if (_isFinal) return;
 
-            if (p.status.indexOf('.') > -1) {
-                if (interval > 10) {
-                    //console.log('Update status', _uri, p.status);
-                    p.status = 'No answer';
-                    this.postChatSystemMessage(_uri + ' did not answer', false);
-                } else {
-                    //console.log('Update status', _uri, p.status);
-                    p.status = p.status + '.';
-                }
+            if (remaining <= 0) {
+                p.status = '408 No answer';
+                p.remaining = 0;
+                this.postChatSystemMessage(_uri + ' did not answer', false);
+            } else {
+                // Keep top status as 'Invited' so the failure regex
+                // doesn't trigger early; expose remaining seconds for
+                // the tile to render "Waiting ...XX" in its bottom slot.
+                p.status = 'Invited';
+                p.remaining = remaining;
             }
-
         });
 
         this.forceUpdate();
@@ -1674,11 +2221,61 @@ class ConferenceBox extends Component {
         }
     }
 
+    _scheduleInviteTimeout(uri, totalMs = 45000) {
+        if (!this._inviteTimers) this._inviteTimers = new Map();
+        // Cancel any pre-existing timer for this URI before scheduling a new one.
+        if (this._inviteTimers.has(uri)) {
+            clearTimeout(this._inviteTimers.get(uri));
+            this._inviteTimers.delete(uri);
+        }
+        const entry = this.invitedParticipants.get(uri);
+        if (!entry) return;
+        const elapsed = Date.now() - (entry.timestamp || Date.now());
+        const remaining = totalMs - elapsed;
+        const _fire = () => {
+            if (!this.invitedParticipants) return;
+            const e2 = this.invitedParticipants.get(uri);
+            if (!e2) return;
+            // Only mark as timed-out if no status update arrived in the meantime.
+            // Final-state strings ('Accepted', '4xx Reason', etc.) leave it alone.
+            const s = String(e2.status || '');
+            const isFinal = /^[2-6]\d\d\b/.test(s) || s === 'Accepted';
+            if (isFinal) return;
+            this.invitedParticipants.set(uri, Object.assign({}, e2, {status: '408 No answer'}));
+            console.log('[ConferenceBox] [conference] invite timed out for ' + uri);
+            this.forceUpdate();
+        };
+        if (remaining <= 0) {
+            _fire();
+            return;
+        }
+        const tid = setTimeout(_fire, remaining);
+        this._inviteTimers.set(uri, tid);
+    }
+
+    _cancelInviteTimeout(uri) {
+        if (!this._inviteTimers) return;
+        if (this._inviteTimers.has(uri)) {
+            clearTimeout(this._inviteTimers.get(uri));
+            this._inviteTimers.delete(uri);
+        }
+    }
+
     _keyboardDidShow(e) {
+       // In audio-only view, do NOT change layout in response to the
+       // keyboard. Even a one-shot Animated.setValue triggers a layout
+       // pass that the Android IME interprets as keyboard interaction,
+       // leading to oscillation. The system's adjustResize + KAV
+       // behavior='height' together handle the chat composer; the
+       // participants area stays visible (just bounded at 50% of screen
+       // via its static maxHeight). Acceptable trade-off: less screen
+       // real estate when typing, but the keyboard stays up reliably.
+       if (this.audioOnlyView) return;
        this.setState({keyboardVisible: true, keyboardHeight: e.endCoordinates.height});
     }
 
     _keyboardDidHide() {
+        if (this.audioOnlyView) return;
         this.setState({keyboardVisible: false, keyboardHeight: 0});
     }
 
@@ -1706,6 +2303,10 @@ class ConferenceBox extends Component {
 
     messageReceived(sylkMessage) {
         //console.log('Conference got message', sylkMessage);
+
+        if (typeof sylkMessage.content === 'string' && sylkMessage.content.startsWith('?OTR')) {
+            return;
+        }
 
         if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
             return;
@@ -2422,6 +3023,18 @@ class ConferenceBox extends Component {
         } else {
             this.props.call.scaleLocalTrack(stream, 1);
         }
+        // sylkrtc's scaleLocalTrack calls setParameters with a fresh
+        // encodings array containing only { scaleResolutionDownBy }.
+        // WebRTC's setParameters takes the WHOLE encodings array (no
+        // partial updates) so the call WIPES our maxBitrate cap. Re-
+        // apply the cap right after so the encoder doesn't quietly
+        // drift back to libwebrtc's default (~1.5–2 Mbps for 480p).
+        // The setParameters inside scaleLocalTrack resolves on a
+        // promise so we defer one tick to let it land first.
+        setTimeout(() => {
+            applyVideoEncoderParamsToPc(this.props.call && this.props.call._pc,
+                                        'conference-changeResolution');
+        }, 0);
     }
 
     selectVideo(item) {
@@ -2511,6 +3124,7 @@ class ConferenceBox extends Component {
         console.log('[conference] [grid] === participants after',
             reason, '(viewMode=' + this.state.viewMode + ') ===');
         console.log('[conference] [grid]', `1/${total}`, myUri,
+            'type:webrtc',
             'audio:' + myAudio, 'video:' + myVideo,
             'stalled:N',
             'self');
@@ -2528,8 +3142,26 @@ class ConferenceBox extends Component {
                 }
             } catch (e) { /* best effort */ }
             const uri = (p.identity && p.identity._uri) || '(unknown)';
+            const dn = (p.identity && p.identity._displayName) || '';
+            // Classify the participant by URI + display-name. Same
+            // rules as the rest of the grid plumbing:
+            //   • bridge — display name contains "bridge" or URI is
+            //     under @conference. (PSTN gateway endpoint, audio
+            //     only).
+            //   • sip — looks like a plain SIP/PSTN user (no
+            //     @sip2sip / @sylk style suffix would also fit,
+            //     here we infer "sip" when there's no video track
+            //     at all and it's not a bridge).
+            //   • webrtc — has video, native Sylk-style endpoint.
+            let pType = 'webrtc';
+            if (/bridge/i.test(dn) || uri.indexOf('@conference.') > -1) {
+                pType = 'bridge';
+            } else if (video === 0) {
+                pType = 'sip';
+            }
             const isStalled = stalled.has(p.id) ? 'Y' : 'N';
             console.log('[conference] [grid]', `${i + 2}/${total}`, uri,
+                'type:' + pType,
                 'audio:' + audio, 'video:' + video,
                 'stalled:' + isStalled);
             if (!stalled.has(p.id)) {
@@ -2743,7 +3375,45 @@ class ConferenceBox extends Component {
             loss: undefined,
             stalled: false,
         });
+        // Bridge filter — the PSTN gateway leg surfaces in
+        // state.participants like any other WebRTC publisher, but
+        // it's not a "user" the operator should see traffic for
+        // (its bandwidth represents the aggregated phone-side
+        // audio, which is misleading in a per-participant breakdown).
+        // Match the same heuristic the audio-view tile builder uses:
+        // display name contains "bridge" OR the URI is rooted in the
+        // @conference. subdomain. AOR cross-check against the
+        // sipParticipants list (bridge entries) catches the cases
+        // where the display name is missing.
+        const _bridgeAorPre = (uri) => {
+            if (!uri) return '';
+            let s = uri;
+            if (s.indexOf('sip:') === 0) s = s.slice(4);
+            else if (s.indexOf('sips:') === 0) s = s.slice(5);
+            return s.split(';')[0];
+        };
+        const _sipBridgeAors = new Set();
+        if (Array.isArray(this.state.sipParticipants)) {
+            this.state.sipParticipants.forEach((sp) => {
+                if (sp && sp.type === 'bridge') {
+                    const a = _bridgeAorPre(sp.uri || '');
+                    if (a) _sipBridgeAors.add(a);
+                }
+            });
+        }
+        const _isBridge = (pp) => {
+            if (!pp || !pp.identity) return false;
+            const _dn = pp.identity._displayName || '';
+            if (/bridge/i.test(_dn)) return true;
+            const _uri = pp.identity._uri || '';
+            if (_uri.indexOf('@conference.') > -1) return true;
+            const _aor = _bridgeAorPre(_uri);
+            if (_aor && _sipBridgeAors.has(_aor)) return true;
+            return false;
+        };
+
         remote.forEach((p) => {
+            if (_isBridge(p)) return; // skip PSTN gateway leg
             const bw = this.videoBandwidth ? this.videoBandwidth.get(p.id) : undefined;
             const rtt = this.latency ? this.latency.get(p.id) : undefined;
             // packetLoss Map holds the aggregate loss percentage
@@ -2991,6 +3661,69 @@ class ConferenceBox extends Component {
         this.setState({cameraPromptVisible: false, cameraPromptRemoteUri: ''});
     };
 
+    /** Accept handler for the first-time audio→video toggle preview
+     *  (StartCameraPreviewModal). Camera track was already enabled
+     *  in toggleViewMode before we opened the preview, so the user
+     *  is already broadcasting; we just need to hide the preview
+     *  and complete the view-mode flip. The latch
+     *  _cameraStartPromptShown was set when the preview opened, so
+     *  this re-entry into toggleViewMode skips the prompt and
+     *  proceeds straight to the audio→video transition. */
+    onCameraStartPreviewAccept = () => {
+        this.setState({cameraStartPreviewVisible: false}, () => {
+            if (this.state.viewMode === 'audio') {
+                this.toggleViewMode();
+            }
+        });
+    };
+
+    /** Cancel handler for the same preview. User backed out — we
+     *  need to undo the camera track enable we did in
+     *  toggleViewMode (so remote participants stop seeing our
+     *  frames) and stay in audio view. The _cameraStartPromptShown
+     *  latch stays set; the user can switch via the kebab again
+     *  later without re-prompting (mirrors the auto-escalate
+     *  latch behaviour). */
+    onCameraStartPreviewCancel = () => {
+        // Hide the camera-preview AND drop the self-PIP. Muting the
+        // track via _muteVideo() sets track.enabled=false, which
+        // stops outbound frames going to peers — but locally the
+        // RTCView in the self-PIP keeps showing live camera capture
+        // (react-native-webrtc preserves local preview regardless of
+        // enabled). Setting enableMyVideo:false hides the PIP
+        // entirely so the user doesn't see themselves in their own
+        // tile after backing out of the audio→video upgrade.
+        // Don't force viewMode back to audio — the user may already
+        // be in video view watching OTHER participants' video; Cancel
+        // here just means "I'm not enabling MY camera", not "leave
+        // video view". Let the view stay where it is.
+        // Also clear _cameraStartPromptShown so a SUBSEQUENT
+        // audio→video toggle (e.g. user changes their mind) re-shows
+        // the preview prompt. Without this, the latch sticks and the
+        // next toggle silently enables the camera.
+        this._cameraStartPromptShown = false;
+        this.setState({
+            cameraStartPreviewVisible: false,
+            enableMyVideo: false,
+            videoMuted: true,
+        }, () => {
+            try {
+                this._muteVideo && this._muteVideo();
+            } catch (e) {
+                // _muteVideo is the symmetric helper; if absent for
+                // any reason, fall back to flipping the track
+                // ourselves so we don't leave the camera live.
+                try {
+                    const localStream = this.props.call && this.props.call.getLocalStreams()[0];
+                    if (localStream && localStream.getVideoTracks().length > 0) {
+                        const track = localStream.getVideoTracks()[0];
+                        track.enabled = false;
+                    }
+                } catch (e2) { /* best effort */ }
+            }
+        });
+    };
+
     toggleViewMode() {
         const nextMode = this.state.viewMode === 'audio' ? 'video' : 'audio';
 
@@ -3028,8 +3761,87 @@ class ConferenceBox extends Component {
             // Audio button at start AND never visited video view,
             // enableMyVideo stays false per the constructor — this
             // path doesn't fire.)
-            this.setState({viewMode: nextMode, callOverlayVisible: true, enableMyVideo: true}, () => {
+            // Only auto-restore the self-PIP (enableMyVideo:true) if
+            // the user actually has the camera live. After Cancel-ing
+            // the audio→video preview the user explicitly said they
+            // don't want their camera on; a force-enable here would
+            // pop the PIP back up the moment they re-entered audio
+            // view, contradicting the Cancel. Track `videoMuted` —
+            // if it's true the camera is off (Cancel or Stop-video)
+            // and the PIP should stay hidden until the user re-arms
+            // video explicitly.
+            const _autoShowPip = !this.state.videoMuted;
+            this.setState({
+                viewMode: nextMode,
+                callOverlayVisible: true,
+                enableMyVideo: _autoShowPip ? true : this.state.enableMyVideo,
+            }, () => {
                 this._dumpParticipantRoster('view → audio');
+            });
+            return;
+        }
+
+        // If the user explicitly stopped video earlier in this
+        // session (Stop video / Mute Camera kebab item), DO NOT
+        // touch the camera track on a view switch. The user has
+        // already expressed a preference — flipping back to video
+        // view should just change the LAYOUT, not silently turn
+        // their camera back on. They re-arm video manually via the
+        // "Start video" item in the Video... kebab submenu, which
+        // clears _userExplicitlyStoppedVideo.
+        //
+        // Same gate also suppresses the first-time preview prompt
+        // — the user has already seen and committed to a video
+        // state by virtue of having stopped it, so re-prompting
+        // them would be noise.
+        if (this._userExplicitlyStoppedVideo) {
+            this.setState({
+                viewMode: nextMode,
+                enableMyVideo: true,
+            }, () => {
+                this._dumpParticipantRoster('view → video (camera stays off, user-stopped)');
+            });
+            return;
+        }
+
+        // First-time confirmation gate for the audio→video toggle.
+        // Surface a full-screen camera preview overlay (same visual
+        // shape as the audio call's "Enable your camera?" upgrade
+        // prompt in Call.js) instead of just flipping the track.
+        // The preview wants real frames, so we enable the video
+        // track here BEFORE showing — on Cancel we re-disable it
+        // and stay in audio view; on Start the toggle proceeds.
+        // Once shown (regardless of which button the user picks),
+        // the per-session latch suppresses re-prompting on later
+        // toggles. Skipped when the auto-escalate prompt already
+        // ran this session.
+        // First-time preview modal removed — the user reported that
+        // the audio→video tap required two clicks (the first showed
+        // the preview modal + logged "Resume camera", the second
+        // actually committed the view switch). Flipping the camera
+        // track AND the view in one step makes the formation a true
+        // single-tap action. Re-introduce a preview modal here
+        // (gated on _cameraStartPromptShown) if the confirmation UX
+        // is needed back.
+        if (this.state.videoMuted) {
+            this._cameraStartPromptShown = true;
+            try {
+                const localStream = this.props.call && this.props.call.getLocalStreams()[0];
+                if (localStream && localStream.getVideoTracks().length > 0) {
+                    const track = localStream.getVideoTracks()[0];
+                    if (track.enabled !== true) {
+                        console.log('Resume camera');
+                        track.enabled = true;
+                    }
+                }
+            } catch (e) { /* best effort */ }
+            this.setState({
+                videoMuted: false,
+                viewMode: nextMode,
+                enableMyVideo: true,
+                callOverlayVisible: true,
+            }, () => {
+                this._dumpParticipantRoster('view → video (one-tap, no preview)');
             });
             return;
         }
@@ -3242,6 +4054,19 @@ class ConferenceBox extends Component {
         this.setState({audioView: !this.state.audioView});
     }
 
+    // Flip the audio-conference chat overlay on/off — used by the
+    // navbar's chat → audio two-icon formation in ConferenceHeader.
+    // audioChatView=true shows the GiftedChat column below the navbar
+    // and hides the participants list; false flips it back. Separate
+    // from toggleAudioParticipants (which controls the audio↔video
+    // layout mode at a higher level) — the two were getting confused
+    // because the navbar formation onPress used to call toggleAudio
+    // Participants and that toggled audioView instead of the chat
+    // overlay, so tapping chat→audio appeared to do nothing.
+    toggleAudioChatView() {
+        this.setState({audioChatView: !this.state.audioChatView});
+    }
+
     toggleCamera(event) {
         // Same callable-from-multiple-paths pattern as muteVideo —
         // the picker / audio-mode PIP overlay call this without an
@@ -3290,10 +4115,18 @@ class ConferenceBox extends Component {
     // at the top. The user can drag it anywhere afterwards;
     // pipPosition state then takes over.
     _getDefaultPipPosition() {
-        const { width, height } = Dimensions.get('window');
+        // Default position: TOP-RIGHT, just under the navbar.
+        // Walked back from "right-edge, vertically centered" — the
+        // PIP now starts where most users expect it to (out of the
+        // way at the top-right) and can be dragged anywhere from
+        // there. topOffset accounts for the safe-area inset plus
+        // the conference navbar (60 dp) plus a small breathing gap.
+        const { width } = Dimensions.get('window');
+        const topInset = (this.state.insets && this.state.insets.top) || 0;
+        const topOffset = topInset + conferenceHeaderHeight + 8;
         return {
             x: Math.max(0, width - this._PIP_W - 16),
-            y: Math.max(0, Math.round((height - this._PIP_H) / 2)),
+            y: Math.max(0, topOffset),
         };
     }
 
@@ -3392,6 +4225,10 @@ class ConferenceBox extends Component {
                     }
                     this.setState(next);
                     this._resumeVideo();
+                    // Explicit Start video — clear the
+                    // "user-explicitly-stopped" latch so future
+                    // audio→video view toggles can auto-resume.
+                    this._userExplicitlyStoppedVideo = false;
                 }
             }] : [{
                 key: 'mute',
@@ -3513,20 +4350,19 @@ class ConferenceBox extends Component {
                         }} />
                     </TouchableWithoutFeedback>
                 )}
-                {/* Trigger button. Rendered WITHOUT the
-                    TouchableHighlight + styles.roundshape wrapper
-                    used elsewhere in the conference action bar —
-                    that 48x48 wrapper combined with the buttonClass
-                    `paddingTop: 5` shifted the IconButton glyph
-                    visibly down within the wrapper bounds, and
-                    when we centered the muted-X overlay against
-                    the wrapper it landed slightly above the glyph
-                    rather than on it. Letting the inner relative
-                    View size itself directly to the IconButton (as
-                    VideoBox does for the same picker) puts the
-                    glyph at the geometric center of the relative
-                    View, which is where the X overlay anchors. */}
-                <View style={{position: 'relative'}}>
+                {/* Trigger button. Wrapped in the same styles.
+                    roundshape (48x48) the audio device picker
+                    uses, so the two buttons have identical
+                    horizontal margins in the floating call bar
+                    (the user reported "different margin left of
+                    audio dev compared to video dev button" before
+                    this — the video trigger was inheriting the
+                    IconButton's intrinsic width while the audio
+                    one was pinned to 48 dp by roundshape). The
+                    relative-positioned inner wrapper is preserved
+                    so the muted-X overlay anchors against the
+                    icon glyph's geometric center.  */}
+                <View style={[styles.roundshape, {position: 'relative'}]}>
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
@@ -3565,10 +4401,16 @@ class ConferenceBox extends Component {
                 {this.state.videoPickerVisible && (
                     <View style={{
                         position: 'absolute',
-                        top: '100%',
+                        // Opens UPWARD now that the video conference
+                        // call-bar sits at the bottom of the screen.
+                        // bottom:'100%' pins the panel's bottom edge
+                        // to the trigger's top edge; marginBottom
+                        // adds the same 8 px gap the old downward
+                        // (top:'100%' + marginTop:8) layout used.
+                        bottom: '100%',
                         left: 0,
                         width: panelWidth,
-                        marginTop: 8,
+                        marginBottom: 8,
                         zIndex: 100,
                         elevation: 10,
                         backgroundColor: 'rgba(34,34,34,0.92)',
@@ -3636,9 +4478,18 @@ class ConferenceBox extends Component {
         if (this.state.videoMuted) {
             this._resumeVideo();
             this.setState({videoMutedbyUser: false});
+            // Explicit Start video tap clears the
+            // "user-explicitly-stopped" latch — subsequent view
+            // toggles can auto-resume again if applicable.
+            this._userExplicitlyStoppedVideo = false;
         } else {
             this.setState({videoMutedbyUser: true});
             this._muteVideo();
+            // Explicit Stop video tap: arm the latch so the next
+            // audio→video view toggle does NOT auto-resume the
+            // camera. The user has to come back through the
+            // explicit Start video kebab item.
+            this._userExplicitlyStoppedVideo = true;
         }
     }
 
@@ -3708,14 +4559,24 @@ class ConferenceBox extends Component {
 
         if (this.state.participants.length > 0 && !this.state.chatView) {
             this.overlayTimer = setTimeout(() => {
-                if (!this.state.chatView) {
-					this.setState({callOverlayVisible: false});
-					StatusBar.setHidden(true, 'fade');   // hide
-					if (Platform.OS === 'android') {
-						Immersive.on();
-						this.props.enableFullScreen();
-					}
-				}
+                // Re-check the live-call gate AT FIRE TIME (not just
+                // when the timer was set up). The user reported Android
+                // entering Immersive while still contacting the
+                // server — the original check only required
+                // participants.length > 0, which is also true during
+                // the establishing phase. Add an explicit
+                // conferenceStarted gate so Immersive only kicks in
+                // once the conference is actually live AND we're not
+                // in the audio-only view.
+                if (this.state.chatView) return;
+                if (this.audioOnlyView) return;
+                if (!this.conferenceStarted) return;
+                this.setState({callOverlayVisible: false});
+                StatusBar.setHidden(true, 'fade');   // hide
+                if (Platform.OS === 'android') {
+                    Immersive.on();
+                    this.props.enableFullScreen();
+                }
             }, 15000);
         }
     }
@@ -3762,6 +4623,202 @@ class ConferenceBox extends Component {
         this.setState({showInviteModal: !this.state.showInviteModal});
     }
 
+    // Flip the bridge-tile visibility. The bridge is the PSTN
+    // gateway; it's a real WebRTC publisher contributing to the
+    // download bandwidth but most users don't want to see it as a
+    // separate roster row. Hidden by default; the kebab menu exposes
+    // this toggle when a bridge IS present.
+    toggleBridgeVisibility() {
+        this.setState({showBridge: !this.state.showBridge});
+    }
+
+    // Raise/lower the local participant's hand via sylkrtc's
+    // Conference.toggleHand RPC. The server broadcasts a
+    // `raisedHands` event back to every attendee (including us), and
+    // onRaisedHands below reconciles state.raisedHand /
+    // state.raisedHandsByPid from that list. We deliberately do NOT
+    // flip state.raisedHand optimistically here — letting the server
+    // round-trip drive the badge keeps every client in agreement and
+    // avoids a flicker if the toggle is rejected.
+    toggleRaisedHand() {
+        if (!this.props.call || typeof this.props.call.toggleHand !== 'function') {
+            console.log('[ConferenceBox] [conference] toggleHand not available on call');
+            return;
+        }
+        console.log('[ConferenceBox] [conference] toggleHand requested');
+        this.props.call.toggleHand();
+    }
+
+    // Mute everyone in the room except the local user. The action is
+    // destructive (every other attendee's audio is cut at once), so
+    // the button presents a confirmation dialog first; the actual
+    // signalling only fires when the user taps "Mute all" in the
+    // prompt. The sylkrtc method is Conference.muteAudioParticipants
+    // (see API.md) — every participant then receives a `muteAudio`
+    // event from the server.
+    muteAllParticipants() {
+        Alert.alert(
+            'Mute all participants',
+            'Are you sure you want to mute all participants?',
+            [
+                {text: 'Cancel', style: 'cancel'},
+                {
+                    text: 'Mute all',
+                    style: 'destructive',
+                    onPress: () => this._doMuteAllParticipants(),
+                },
+            ],
+            {cancelable: true},
+        );
+    }
+
+    // Confirmed branch of muteAllParticipants — runs only after the
+    // user accepts the prompt above.
+    _doMuteAllParticipants() {
+        if (!this.props.call || typeof this.props.call.muteAudioParticipants !== 'function') {
+            console.log('[ConferenceBox] [conference] muteAudioParticipants not available on call');
+            return;
+        }
+        // Arm the local-suppression latch BEFORE firing the RPC. The
+        // server broadcasts a muteAudio event back to every
+        // participant including us; without this latch the local
+        // user would self-mute on their own "Mute all" tap. The
+        // latch is cleared either by the first incoming muteAudio
+        // event after we set it (in onMuteAudio), or by a 5s
+        // timeout safety net in case the event never lands.
+        this._suppressNextMuteAudio = true;
+        if (this._suppressMuteAudioTimer) clearTimeout(this._suppressMuteAudioTimer);
+        this._suppressMuteAudioTimer = setTimeout(() => {
+            console.log('[ConferenceBox] [conference] mute-all latch timeout — clearing without consuming');
+            this._suppressNextMuteAudio = false;
+            this._suppressMuteAudioTimer = null;
+        }, 5000);
+        console.log('[ConferenceBox] [conference] mute-all: latch armed, sending muteAudioParticipants RPC');
+        this.props.call.muteAudioParticipants();
+    }
+
+    // Server-pushed raised-hands snapshot. sylkrtc emits this with
+    // a payload of `{raisedHands: [Participant, ...]}` (see
+    // conference.js line 823: `this.emit('raisedHands',
+    // {raisedHands: this._raisedHands})`), and the `raisedHands`
+    // GETTER returns just the array. We accept BOTH shapes so the
+    // mount-time seed (passes the array directly) and the live event
+    // (passes the wrapping object) both work.
+    //
+    // The snapshot is the FULL list of participants currently with a
+    // raised hand, so we replace state wholesale every time rather
+    // than diffing — anyone NOT in the list has either lowered their
+    // hand or left the room.
+    //
+    // The snapshot is stored two ways:
+    //   • state.raisedHandsByPid — Set of participant ids, consumed
+    //     by the tile render loop so it can pass raisedHand to each
+    //     ConferenceAudioParticipant element.
+    //   • state.raisedHand — derived boolean for the LOCAL user,
+    //     used by the top action-bar toggle and the self-tile badge.
+    //     Set by comparing each participant's URI against the call's
+    //     localIdentity.
+    onRaisedHands(payload) {
+        let _list = [];
+        if (Array.isArray(payload)) {
+            _list = payload;
+        } else if (payload && Array.isArray(payload.raisedHands)) {
+            _list = payload.raisedHands;
+        }
+        const byPid = new Set();
+        let myHandUp = false;
+        // Match the local user ONLY by session id (call.id), not by
+        // URI. URI matching was a fallback but failed badly with
+        // multi-device sign-in: two devices on the same SIP account
+        // share a URI, so lowering on device A while device B kept
+        // its hand raised left myHandUp stuck at true on device A
+        // (URI of B's entry matched local URI). Session id is unique
+        // per device — each one toggles independently.
+        const _localId = this.props.call ? this.props.call.id : null;
+        _list.forEach((p) => {
+            if (p && p.id) byPid.add(p.id);
+            if (_localId && p && p.id === _localId) {
+                myHandUp = true;
+            }
+        });
+        console.log('[ConferenceBox] onRaisedHands localId=' + _localId
+            + ' incoming_count=' + _list.length
+            + ' incoming_ids=' + JSON.stringify(Array.from(byPid))
+            + ' myHandUp=' + myHandUp);
+        this.setState({raisedHandsByPid: byPid, raisedHand: myHandUp});
+    }
+
+    // Server-pushed mute-audio request. sylkrtc emits this with
+    // `{originator: identity}` whenever ANY participant (including
+    // ourselves) triggers muteAudioParticipants. We don't need the
+    // originator for the action — every recipient just mutes their
+    // own mic.
+    //
+    // Calls this.props.toggleMute directly rather than going through
+    // this.muteAudio: muteAudio's first line is event.preventDefault()
+    // because it's wired straight to an IconButton onPress, so
+    // calling it without an event crashes with "Cannot read property
+    // 'preventDefault' of undefined". Going around it keeps
+    // state.audioMuted / the bottom action-bar icon / the actual
+    // track mute all in sync via the same toggleMute prop the UI
+    // uses.
+    onMuteAudio(payload) {
+        const _origUri = (payload && payload.originator &&
+            (payload.originator._uri || payload.originator.uri)) || '?';
+        console.log('[ConferenceBox] [conference] onMuteAudio fired:' +
+                    ' originator=' + _origUri +
+                    ' latch=' + (!!this._suppressNextMuteAudio));
+        // Local-suppression latch — armed in _doMuteAllParticipants
+        // right before we call call.muteAudioParticipants(). The
+        // server then broadcasts muteAudio to everyone INCLUDING us;
+        // without this latch the local user would self-mute on their
+        // own "Mute all" tap.
+        if (this._suppressNextMuteAudio) {
+            this._suppressNextMuteAudio = false;
+            if (this._suppressMuteAudioTimer) {
+                clearTimeout(this._suppressMuteAudioTimer);
+                this._suppressMuteAudioTimer = null;
+            }
+            console.log('[ConferenceBox] [conference] muteAudio suppressed — we initiated this mute-all');
+            return;
+        }
+        if (this.state.audioMuted) {
+            console.log('[ConferenceBox] [conference] onMuteAudio: already muted, no-op');
+            return;
+        }
+        if (this.props.call && typeof this.props.toggleMute === 'function') {
+            console.log('[ConferenceBox] [conference] onMuteAudio: muting local mic');
+            this.props.toggleMute(this.props.call.id, true);
+        }
+    }
+
+    // Server-pushed per-participant mute request. Fired by sylkrtc when
+    // the gateway sends a `mute-request` event addressed at THIS WS
+    // session — another attendee invoked muteParticipant(myPid, muted)
+    // and the gateway routed the WebRTC branch (locally-owned session)
+    // to us. We flip the local mic to match payload.muted via the same
+    // toggleMute prop used by the bottom action bar, so state.audioMuted,
+    // the toolbar icon, and the actual audio track all move together.
+    // Idempotent — if the local mic already matches the requested state
+    // we no-op (avoids redundant track-mute churn when several
+    // moderators tap the same button in quick succession).
+    onMuteRequest(payload) {
+        const _muted = !!(payload && payload.muted);
+        const _origUri = (payload && payload.originator &&
+            (payload.originator._uri || payload.originator.uri)) || '?';
+        console.log('[ConferenceBox] [conference] onMuteRequest fired:' +
+                    ' originator=' + _origUri +
+                    ' muted=' + _muted);
+        if (!!this.state.audioMuted === _muted) {
+            console.log('[ConferenceBox] [conference] onMuteRequest: already at requested state, no-op');
+            return;
+        }
+        if (this.props.call && typeof this.props.toggleMute === 'function') {
+            console.log('[ConferenceBox] [conference] onMuteRequest: setting local mic muted=' + _muted);
+            this.props.toggleMute(this.props.call.id, _muted);
+        }
+    }
+
     toggleDrawer() {
         this.setState({callOverlayVisible: true, showDrawer: !this.state.showDrawer, showFiles: false, showSpeakerSelection: false});
         clearTimeout(this.overlayTimer);
@@ -3778,21 +4835,100 @@ class ConferenceBox extends Component {
     }
 
     inviteParticipants(uris=[]) {
+        console.log('[ConferenceBox] [conference] inviteParticipants called with uris=' + JSON.stringify(uris));
         if (uris.length === 0) {
+            console.log('[ConferenceBox] [conference] inviteParticipants: no URIs, returning');
             return;
         }
-        //console.log('inviteParticipants', uris);
-        this.props.call.inviteParticipants(uris);
-        uris.forEach((uri) => {
+        // Normalise phone-number invitees by appending the local
+        // SIP domain. The AB Phonebook entries arrive here as bare
+        // numbers (e.g. "+1234567890") because that's what the OS
+        // address book stores; the conference focus expects every
+        // invitee to be a SIP URI of the form "user@domain", and
+        // its SIP bridge dials the user-part as a number on the
+        // PSTN side. Anything that already has an '@' is left as-is.
+        const _defaultDomain = (this.props.defaultDomain
+            || (this.props.call && this.props.call.account
+                && typeof this.props.call.account.id === 'string'
+                && this.props.call.account.id.split('@')[1])
+            || '').trim().toLowerCase();
+        // PSTN dialing rule: mirror what Call.js does at the
+        // SIP-call boundary (~line 877) for 1-to-1 outgoing calls.
+        // When the server-config `pstn.rules.replacePlus` is set
+        // (typically '00') and the invitee's local part begins with
+        // '+', rewrite the leading '+' to that prefix BEFORE handing
+        // the URI to the conference focus. The focus's SIP bridge
+        // dials the local part as a number on the PSTN side and most
+        // PSTN gateways want the international-access prefix form
+        // (e.g. 00 in most of Europe) rather than a literal '+'.
+        // Without this, "+40…@sylk.link" reaches the gateway as
+        // "+40…" and is rejected / misrouted, while the 1-to-1 dial
+        // path for the same number works fine because Call.js
+        // already applies the rewrite. Same rule, same place in the
+        // pipeline.
+        const _pstnRules = this.props.pstnRules;
+        const _applyReplacePlus = (localPart) => {
+            if (!_pstnRules || typeof _pstnRules.replacePlus !== 'string') {
+                return localPart;
+            }
+            if (!localPart.startsWith('+')) {
+                return localPart;
+            }
+            const rewritten = _pstnRules.replacePlus + localPart.substring(1);
+            console.log('[ConferenceBox] [conference] [pstn] replacePlus rule applied:',
+                localPart, '→', rewritten);
+            return rewritten;
+        };
+
+        const _normalisedUris = uris.map((u) => {
+            if (typeof u !== 'string') return u;
+            const _u = u.replace(/ /g, '');
+            if (!_u) return _u;
+            if (_u.indexOf('@') !== -1) {
+                // URI already has a domain — still rewrite the local
+                // part if it starts with '+', so an invitee picked
+                // from contacts as "+40…@sylk.link" gets the same
+                // gateway-friendly form a fresh dial-out would.
+                const atIdx = _u.indexOf('@');
+                const localPart = _u.substring(0, atIdx);
+                const domainPart = _u.substring(atIdx);
+                return _applyReplacePlus(localPart) + domainPart;
+            }
+            // No domain → assume it's a phone number / dial-out
+            // candidate. Append the local SIP domain so the conference
+            // focus's SIP bridge can route it.
+            const localRewritten = _applyReplacePlus(_u);
+            if (_defaultDomain) {
+                return localRewritten + '@' + _defaultDomain;
+            }
+            return localRewritten;
+        });
+        console.log('[ConferenceBox] [conference] inviteParticipants: forwarding ' + _normalisedUris.length + ' URI(s) to call.inviteParticipants (normalised='
+            + JSON.stringify(_normalisedUris) + ')');
+        this.props.call.inviteParticipants(_normalisedUris);
+        _normalisedUris.forEach((uri) => {
+            if (typeof uri !== 'string') return;
             uri = uri.replace(/ /g, '');
             if (this.props.call.localIdentity._uri === uri) {
+                console.log('[ConferenceBox] [conference] inviteParticipants: skipping self uri=' + uri);
                 return;
             }
-
+            console.log('[ConferenceBox] [conference] invite started for ' + uri);
             this.postChatSystemMessage(uri + ' was invited', false);
             this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
             this.props.saveParticipant(this.props.call.id, this.state.remoteUri, uri);
             this.lookupContact(uri);
+            this._scheduleInviteTimeout(uri);
+            // Bump the invitee's row in the contacts list: bump
+            // timestamp to now and overwrite last_message preview to
+            // "Conference call" so the row floats to the top with a
+            // meaningful subtitle. Same row-update path saveSylkContact
+            // uses, so the UI re-sort is automatic. Wired in via
+            // app.js → Conference → ConferenceBox (see
+            // updateContactOnConferenceInvite at app.js ~29923).
+            if (typeof this.props.updateContactOnConferenceInvite === 'function') {
+                this.props.updateContactOnConferenceInvite(uri);
+            }
         });
 
         this.props.finishInvite();
@@ -4029,9 +5165,14 @@ class ConferenceBox extends Component {
 			);
 		}
 
-		// Variant 3: WhatsApp-style floating icon buttons stacked BELOW the main
-		// button (below because the conference button bar sits at the top of
-		// the screen, not at the bottom like in audio/video call screens).
+		// Variant 3: WhatsApp-style floating icon buttons stacked ABOVE the main
+		// button. Previously the picker opened DOWNWARD (top:'100%') because
+		// the conference button bar sat at the top of the screen. With the
+		// audio-view action bar now pinned to the bottom (mirroring
+		// AudioCallBox.portraitButtonContainer), opening downward would push
+		// the picker off-screen / behind the keyboard. Switched to
+		// bottom:'100%' so the choices stack upward into the body area
+		// instead.
 		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
 			const otherDevices = devices.filter(d => d !== this.state.selectedAudioDevice);
 			return (
@@ -4065,16 +5206,22 @@ class ConferenceBox extends Component {
 					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
-							top: '100%',
+							// Anchor the floating list ABOVE the
+							// trigger: bottom:'100%' pins the list's
+							// bottom edge to the trigger's top edge,
+							// and marginBottom adds the same 4px gap
+							// the old downward variant used between
+							// the trigger and the first floating row.
+							bottom: '100%',
 							left: 0,
 							right: 0,
 							alignItems: 'center',
-							marginTop: 4,
+							marginBottom: 4,
 							zIndex: 100,
 							elevation: 10,
 						}}>
 							{otherDevices.map(device => (
-								<TouchableHighlight key={device} style={[styles.roundshape, {marginTop: 6}]}>
+								<TouchableHighlight key={device} style={[styles.roundshape, {marginBottom: 6}]}>
 									<IconButton
 										size={buttonSize}
 										style={buttonClass}
@@ -4165,18 +5312,106 @@ class ConferenceBox extends Component {
         
         let unselectItem = {id: 'none', publisherId: null, identity: {uri: 'none', displayName: 'No speaker'}};
 
-        // populate speaker selection list only with participants that have video
+        // Populate the speaker-selection list with ONLY valid video
+        // participants. A valid participant is:
+        //   • NOT a bridge (PSTN gateway endpoint — display-name
+        //     contains "bridge" or URI sits under @conference.).
+        //     Bridges carry only audio so they can never be a
+        //     speaker tile.
+        //   • Has a real video track on their first stream (the
+        //     previous code only checked streams.length > 0, which
+        //     let audio-only participants leak into the picker).
         let speakerSelectionParticipants = [];
         this.state.participants.forEach((p) => {
-            if (p.streams && p.streams.length > 0) {
-//                if (p.streams[0].getVideoTracks().length > 0) {
-  //                  let track = p.streams[0].getVideoTracks()[0];
-                    speakerSelectionParticipants.push(p);
-//                }
+            const _dn = (p.identity && p.identity._displayName) || '';
+            const _uri = (p.identity && p.identity._uri) || '';
+            if (/bridge/i.test(_dn) || _uri.indexOf('@conference.') > -1) {
+                return;
             }
+            if (!p.streams || p.streams.length === 0) {
+                return;
+            }
+            const tracks = p.streams[0].getVideoTracks
+                ? p.streams[0].getVideoTracks()
+                : [];
+            if (!tracks || tracks.length === 0) {
+                return;
+            }
+            speakerSelectionParticipants.push(p);
         });
 
-        //console.log('Number of possible speakers with video enabled', speakerSelectionParticipants.length);
+        // Real REMOTE video-participant count, captured BEFORE we
+        // push myself + the synthetic "unselect" item. The gates
+        // that decide whether to show the Speaker-layout button /
+        // kebab item use this to ignore the synthetic entries —
+        // otherwise the picker would surface even in a 1:1 video
+        // call (myself + unselect = 2 items) where there's nothing
+        // to pick between.
+        const _remoteVideoSpeakerCount = speakerSelectionParticipants.length;
+        // Log the count only when it changes — render() fires
+        // dozens of times during a call, and a per-render log just
+        // floods Metro with identical lines. _lastLoggedVideoCount
+        // / _lastLoggedTotalCount are instance fields (initialized
+        // lazily; undefined on first render so the first log
+        // always fires).
+        // _totalParticipants is the Janus-side roster size used as the
+        // floor for the header subtitle ("you + N others"). state.
+        // participants includes the PSTN bridge as a regular WebRTC
+        // publisher, but the bridge is plumbing, not a person — count
+        // it would inflate the user-visible total by 1 in any room
+        // that has SIP callers. Filter it out the same way the audio
+        // tile builder does (display name matches /bridge/i OR URI is
+        // rooted in the @conference. subdomain).
+        const _isBridgeForOverlay = (pp) => {
+            if (!pp || !pp.identity) return false;
+            const _dn = pp.identity._displayName || '';
+            if (/bridge/i.test(_dn)) return true;
+            const _uri = pp.identity._uri || '';
+            return _uri.indexOf('@conference.') > -1;
+        };
+        const _totalParticipants = this.state.participants.filter((p) => !_isBridgeForOverlay(p)).length;
+        if (this._lastLoggedVideoCount !== _remoteVideoSpeakerCount
+            || this._lastLoggedTotalCount !== _totalParticipants) {
+            console.log('[conference] video participants (remote, excluding bridges/audio-only):',
+                _remoteVideoSpeakerCount,
+                'total participants in state (excluding bridge):', _totalParticipants);
+            this._lastLoggedVideoCount = _remoteVideoSpeakerCount;
+            this._lastLoggedTotalCount = _totalParticipants;
+        }
+
+        // Count of OTHER participants for the ConferenceHeader subtitle.
+        // state.participants is the Janus-side webrtc roster (excludes
+        // self by construction); state.sipParticipants is the union of
+        // webrtc + sip + bridge tagged by type (includes self, includes
+        // the audio bridge). When the SIP-side conference-info NOTIFY
+        // has landed, use it as the authoritative count (excluding the
+        // bridge and self) — that's the only way a SIP-only participant
+        // who was in the room before we joined gets counted. Fall back
+        // to the Janus count until the first NOTIFY arrives.
+        let _selfUri = null;
+        try {
+            _selfUri = this.props.call
+                && this.props.call.localIdentity
+                && this.props.call.localIdentity._uri;
+        } catch (e) { /* best effort */ }
+        const _stripScheme = (u) => (u || '').toString().replace(/^sips?:/, '');
+        const _selfBare = _stripScheme(_selfUri);
+        const _sipRoster = Array.isArray(this.state.sipParticipants)
+            ? this.state.sipParticipants
+            : [];
+        let _otherSipCount = 0;
+        for (const p of _sipRoster) {
+            if (!p) continue;
+            if ((p.type || '') === 'bridge') continue;
+            const _puri = _stripScheme(p.uri);
+            if (_selfBare && _puri === _selfBare) continue;
+            _otherSipCount += 1;
+        }
+        // Defensive max — a transient SIP-roster glitch must not make
+        // the count smaller than what Janus directly observes.
+        const _otherParticipantsCount = _sipRoster.length > 0
+            ? Math.max(_otherSipCount, _totalParticipants)
+            : _totalParticipants;
 
         let myself = {id: this.props.call.id, publisherId: this.props.call.id, identity: this.props.call.localIdentity};
 
@@ -4244,22 +5479,11 @@ class ConferenceBox extends Component {
             );
        }
 
-     if (_useAudioLayout) {
-       floatingButtons.push(
-          <View style={styles.hangupButtonAudioContainer} key="leave">
-          <TouchableHighlight style={styles.roundshape}>
-            <IconButton
-                size={25}
-                style={[buttonClass, styles.hangupButton]}
-                title="Leave conference"
-                onPress={this.hangup}
-                icon="phone-hangup"
-                key="hangupButton"
-            />
-            </TouchableHighlight>
-          </View>
-       );
-       }
+     // NOTE: the audio-view hangup button was previously pushed FIRST
+     // (leftmost) here. Moved to AFTER the Mute / Invite pushes below
+     // (~line 4890) per user request — "Move Hangup button more to
+     // the right". With the centered floating row, pushing it last
+     // puts it on the rightmost slot of the visible button group.
 
        if (_useAudioLayout && !this.state.isLandscape) {
             /*
@@ -4282,6 +5506,7 @@ class ConferenceBox extends Component {
 
         floatingButtons.push(
               <View style={styles.buttonContainer} key="Mute">
+                <PulsingView active={!!this.state.audioMuted}>
                   <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
@@ -4291,9 +5516,46 @@ class ConferenceBox extends Component {
                 icon={muteButtonIcon}
                 key="muteAudioButton"
             />
+                  </TouchableHighlight>
+                </PulsingView>
+              </View>
+        );
+
+        floatingButtons.push(
+              <View style={styles.buttonContainer} key="InviteParticipants">
+                  <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={this.state.videoEnabled ? 25 : 25}
+                style={buttonClass}
+                title="Invite participants"
+                onPress={this.toggleInviteModal}
+                icon="account-plus"
+                key="inviteParticipantsButton"
+            />
                 </TouchableHighlight>
               </View>
         );
+
+       // Audio-view hangup, pushed LAST so it lands on the right end
+       // of the centered floating button row. Extra marginLeft visually
+       // separates the destructive action from the Mute / Invite group
+       // to its left so the user can't tap-and-end by mistake.
+       if (_useAudioLayout) {
+         floatingButtons.push(
+            <View style={[styles.hangupButtonAudioContainer, {marginLeft: 24, marginRight: 0}]} key="leave">
+            <TouchableHighlight style={styles.roundshape}>
+              <IconButton
+                  size={25}
+                  style={[buttonClass, styles.hangupButton]}
+                  title="Leave conference"
+                  onPress={this.hangup}
+                  icon="phone-hangup"
+                  key="hangupButton"
+              />
+              </TouchableHighlight>
+            </View>
+         );
+         }
 
         // Speaker layout — dual-person icon opens the
         // SpeakerSelectionModal (Grid / 1-Speaker / 2-Speaker tabs).
@@ -4301,7 +5563,12 @@ class ConferenceBox extends Component {
         // but a single tap from the floating action bar. Only shown
         // in video layout (no matrix to pin against in audio view)
         // and only when there's at least one remote candidate.
-        if (_useVideoLayout && speakerSelectionParticipants.length > 1) {
+        // Speaker-layout button: only worth showing when there are
+        // at least 2 remote video candidates to choose between. The
+        // previous `speakerSelectionParticipants.length > 1` check
+        // was fooled by the synthetic myself + unselect entries
+        // pushed onto the list.
+        if (_useVideoLayout && _remoteVideoSpeakerCount > 1) {
             floatingButtons.push(
               <View style={styles.buttonContainer} key="speakers">
                 <TouchableHighlight style={styles.roundshape}>
@@ -4464,7 +5731,375 @@ class ConferenceBox extends Component {
             sessionButtons = [];
             buttons.additional = [];
 
+            // Audio-view control buttons — chat/participants toggle,
+            // audio device picker, mute, hangup. In portrait they
+            // render as a horizontal bar pinned to the bottom of the
+            // conferenceContainer (audioViewActionBar uses
+            // marginTop:'auto' to absorb the slack above), matching
+            // the screen position of AudioCallBox.portraitButtonContainer.
+            // Button glyphs are sized to match the regular AudioCallBox
+            // (size 34 for phone, 40 for tablet) so the two views feel
+            // like the same control bar. In landscape vertical space
+            // is tight, so we hand them off to ConferenceHeader via
+            // buttons.bottom (the same inline-in-navbar slot the
+            // video conference path already uses) and skip the
+            // in-body bar entirely.
+            const audioBarButtonSize = this.props.isTablet ? 40 : 34;
+            const audioChatToggleButton = (
+                <TouchableHighlight style={styles.roundshape} key="bar-chat-wrap">
+                    <IconButton
+                        size={audioBarButtonSize}
+                        style={buttonClass}
+                        title={this.state.audioChatView ? "Show participants" : "Show chat"}
+                        onPress={() => this.setState({audioChatView: !this.state.audioChatView})}
+                        icon={this.state.audioChatView ? "account-group" : "message-text"}
+                        key="bar-chat"
+                    />
+                </TouchableHighlight>
+            );
+            const audioDevicePickerButton = this.renderAudioDevicePicker(audioBarButtonSize, buttonClass);
+            const audioMuteButton = (
+                <TouchableHighlight style={styles.roundshape} key="bar-mute-wrap">
+                    <IconButton
+                        size={audioBarButtonSize}
+                        style={buttonClass}
+                        title="Mute/unmute audio"
+                        onPress={this.muteAudio}
+                        icon={muteButtonIcon}
+                        key="bar-mute"
+                    />
+                </TouchableHighlight>
+            );
+            const audioHangupButton = (
+                <TouchableHighlight style={styles.roundshape} key="bar-hangup-wrap">
+                    <IconButton
+                        size={audioBarButtonSize}
+                        style={[buttonClass, styles.hangupButton]}
+                        title="Leave conference"
+                        onPress={this.hangup}
+                        icon="phone-hangup"
+                        key="bar-hangup"
+                    />
+                </TouchableHighlight>
+            );
+
+            // Portrait action bar layout: each button sits in its own
+            // flex:1/maxWidth:72 slot — same rhythm as
+            // AudioCallBox.portraitButtonContainer so the four buttons
+            // are evenly spaced across the bar's content width. The
+            // previous layout grouped the audio picker + mute together
+            // and pushed hangup over with a wide marginLeft, which
+            // bunched the controls toward the centre and left uneven
+            // gaps. Flat layout matches the regular audio call.
+            //
+            // Suppressed in the chat view (state.audioChatView) — the
+            // user asked to hide the bottom bar while typing so the
+            // keyboard isn't crowded by call controls. A small
+            // back-to-audio button is rendered above the chat instead
+            // (see the chatBackToAudioButton block further down).
+            // Folded (cover-display) audio conference: drop the entire
+            // action bar lower than its baseline. styles.audio
+            // ViewActionBar pins to `bottom: 50` (matching the rest of
+            // the app's floating bars). History on this offset:
+            //   50 → 30 (user "lower 20 px")
+            //   30 → 25 (user "lower 5 px")
+            //   25 → 15 (user "lower 10 px")
+            //   15 → 10 (user "5 px more")
+            // Net: bar sits 10 px from the screen bottom in folded.
+            const _audioActionBarFoldedOverride = this.props.isFolded
+                ? { bottom: 10 }
+                : null;
+            var audioViewActionBar = (this.state.isLandscape || this.state.audioChatView) ? null : (
+                <View style={[styles.audioViewActionBar, _audioActionBarFoldedOverride]}>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioChatToggleButton}
+                    </View>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioDevicePickerButton}
+                    </View>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioMuteButton}
+                    </View>
+                    {/* Hangup slot picks up an extra marginLeft so the
+                        destructive button sits visibly to the right of
+                        the safe controls — matches AudioCallBox's
+                        hangupMarginLeft (30) so the two views share
+                        the same "stray-tap protection" gap. */}
+                    <View style={[styles.audioViewActionBarButton, {marginLeft: 30}]}>
+                        {audioHangupButton}
+                    </View>
+                </View>
+            );
+
+            // Top-of-list action bar — three buttons rendered ABOVE
+            // the participant list in the audio view:
+            //   • Raise hand   → toggles state.raisedHand, which
+            //                    drives the amber hand badge on the
+            //                    self tile (and eventually the
+            //                    broadcast to other clients).
+            //   • Mute all     → asks the room to mute every other
+            //                    attendee (placeholder for the
+            //                    sylkrtc/videoroom mute-all RPC).
+            //   • Add          → opens the invite-participants flow.
+            //                    Moved here from the self tile's
+            //                    extraButtons cluster so all "room
+            //                    operator" affordances sit in the
+            //                    same row.
+            // Hidden in the chat view to avoid crowding the keyboard;
+            // also hidden in landscape where the navbar already
+            // carries the equivalent affordances. The icons reuse
+            // audioBarButtonSize so they match the bottom action bar
+            // visually.
+            // Raise / lower toggle. State communicated via icon style:
+            //   • not raised → plain OUTLINED hand in dark grey, so the
+            //                  glyph reads as a quiet "tap to raise"
+            //                  affordance against the white button.
+            //   • raised     → STACKED hand: yellow filled underneath +
+            //                  black outline on top, so the icon looks
+            //                  like a vivid yellow hand with a clean
+            //                  black border. Matches the per-tile
+            //                  avatar overlay's stacked style.
+            // The stacked variant is passed to IconButton's icon prop
+            // as a render function — IconButton accepts (size, color)
+            // → node — which lets us render two MCI icons at the same
+            // origin (the outline absolutely-positioned on top of the
+            // filled).
+            const raiseHandFunc = ({size}) => (
+                <View style={{width: size, height: size, position: 'relative'}}>
+                    <Icon name="hand-back-right" size={size} color="#FFEB3B" />
+                    {/* Outline at the same size as the filled hand,
+                        solid black. Earlier we tried scaling the
+                        outline down to thin the strokes, but at any
+                        scale below 1 the outline drifted INSIDE the
+                        yellow palm instead of hugging its edge, which
+                        looked worse than just leaving the outline at
+                        full thickness. MaterialCommunityIcons doesn't
+                        expose a stroke-width knob, so this is as thin
+                        as the outline will get while still aligning
+                        with the palm silhouette. */}
+                    <Icon
+                        name="hand-back-right-outline"
+                        size={size}
+                        color="#000"
+                        style={{position: 'absolute', top: 0, left: 0}}
+                    />
+                </View>
+            );
+            const raiseHandIcon = this.state.raisedHand
+                ? raiseHandFunc
+                : 'hand-back-right-outline';
+            // Colour only used by the not-raised branch (the function
+            // form ignores IconButton's iconColor since it renders its
+            // own icons with explicit colours).
+            const raiseHandColor = '#222';
+            // Hide the Raise hand toggle for small meetings — with
+            // fewer than 3 WebRTC participants (self + ≥2 remotes)
+            // the affordance has no audience to signal to. Counted
+            // here from this.state.participants (remote WebRTC,
+            // sylkrtc-managed) filtered to exclude bridge-looking
+            // entries, plus 1 for the local user.
+            const _webrtcRemoteCount = (this.state.participants || []).filter((p) => {
+                if (!p || !p.identity) return false;
+                const _dn = p.identity._displayName || '';
+                if (/bridge/i.test(_dn)) return false;
+                const _uri = p.identity._uri || '';
+                if (_uri.indexOf('@conference.') > -1) return false;
+                return true;
+            }).length;
+            const _webrtcTotal = _webrtcRemoteCount + 1; // +1 for self
+            // Mute all + Raise hand gate — bridges are NOT real
+            // participants; SIP callers are (Mute all reaches them
+            // via the room-wide RPC, raised hands travel through the
+            // same conference-info plumbing). Hide both affordances
+            // when there's only you + 1 other person, because a
+            // raised hand or mute-all is meaningless in a 1-on-1.
+            const _sipRealCountForBar = (this.state.sipParticipants || [])
+                .filter((sp) => sp && sp.type === 'sip').length;
+            const _showMuteAll = (_webrtcTotal + _sipRealCountForBar) > 2;
+            // Show the raise-hand button under the SAME criterion as
+            // Mute all — both are room-scale affordances that only
+            // make sense with 2+ other attendees to address.
+            const _showRaiseHand = (_webrtcTotal + _sipRealCountForBar) > 2;
+            // Folded (cover-display) audio conference: hide the
+            // top action bar entirely. In folded mode the invite
+            // button is already hidden (separate gate above),
+            // mute-all is hidden when ≤ 2 participants, and the
+            // remaining raise-hand button isn't worth dedicating a
+            // bar row to on the cramped cover display. Suppressing
+            // the whole bar also gives a clean "navbar → first
+            // participant" geometry so the 10 px gap requested by
+            // the user lands predictably.
+            var audioListTopActionBar = (this.state.audioChatView || this.state.isLandscape || this.props.isFolded) ? null : (
+                <View style={styles.audioListTopActionBar}>
+                    {_showRaiseHand ? (
+                    <View style={styles.audioListTopActionBarButton}>
+                        <TouchableHighlight style={styles.roundshape} key="top-raisehand-wrap">
+                            <IconButton
+                                size={audioBarButtonSize}
+                                style={buttonClass}
+                                // White when not raised, yellow when
+                                // raised — visible state toggle right
+                                // on the button glyph. raiseHandColor
+                                // is computed just above based on
+                                // state.raisedHand. Both iconColor
+                                // (paper v5) and color (legacy alias)
+                                // are set so the tint applies whether
+                                // the installed minor honours the new
+                                // or legacy name.
+                                iconColor={raiseHandColor}
+                                color={raiseHandColor}
+                                title={this.state.raisedHand ? 'Lower hand' : 'Raise hand'}
+                                onPress={this.toggleRaisedHand}
+                                icon={raiseHandIcon}
+                                key="top-raisehand"
+                            />
+                        </TouchableHighlight>
+                    </View>
+                    ) : null}
+                    {/* "Mute all" rendered as the standard round
+                        microphone-off icon button with a small "All"
+                        badge overlaid on the corner — mirrors the
+                        avatar SIP badge style so the action reads as
+                        "mute, but for everyone". Same shape as the
+                        adjacent round icon buttons so the row sits
+                        as a uniform set. Hidden when there are 2 or
+                        fewer real participants — same gate as the
+                        per-tile kick button. */}
+                    {_showMuteAll ? (
+                    <View style={styles.audioListTopActionBarButton}>
+                        <View style={{position: 'relative'}}>
+                            <TouchableHighlight style={styles.roundshape} key="top-muteall-wrap">
+                                <IconButton
+                                    size={audioBarButtonSize}
+                                    style={buttonClass}
+                                    title="Mute all participants"
+                                    onPress={this.muteAllParticipants}
+                                    icon="microphone-off"
+                                    color="#e57373"
+                                    iconColor="#e57373"
+                                    key="top-muteall"
+                                />
+                            </TouchableHighlight>
+                            <View style={styles.muteAllBadge} pointerEvents="none">
+                                <Text style={styles.muteAllBadgeText}>All</Text>
+                            </View>
+                        </View>
+                    </View>
+                    ) : null}
+                    {/* Add-participant button is hidden in folded
+                        (cover-display) mode per user request: the
+                        cover screen doesn't have room for the full
+                        invite flow, and the user can re-open the
+                        conference on the main display to add people. */}
+                    {!this.props.isFolded ? (
+                    <View style={styles.audioListTopActionBarButton}>
+                        <TouchableHighlight style={styles.roundshape} key="top-invite-wrap">
+                            <IconButton
+                                size={audioBarButtonSize}
+                                style={buttonClass}
+                                title="Invite participants"
+                                onPress={() => {
+                                    if (typeof this.props.inviteToConferenceFunc === 'function') {
+                                        this.props.inviteToConferenceFunc();
+                                    } else {
+                                        this.toggleInviteModal();
+                                    }
+                                }}
+                                icon="account-plus"
+                                key="top-invite"
+                            />
+                        </TouchableHighlight>
+                    </View>
+                    ) : null}
+                </View>
+            );
+
+            // Standalone "back to audio" affordance removed — the
+            // chat→audio transition now lives on the ConferenceHeader
+            // navbar two-icon formation. No spacer needed; the chat
+            // sits directly under the navbar.
+            var chatBackToAudioButton = null;
+
+            if (this.state.isLandscape) {
+                // ConferenceHeader renders buttons.bottom inline in
+                // the navbar's right-aligned cluster when landscape.
+                // Order matches the portrait action bar so the muscle
+                // memory carries over: chat-toggle, audio picker,
+                // mute, hangup.
+                buttons.bottom = [
+                    audioChatToggleButton,
+                    audioDevicePickerButton,
+                    audioMuteButton,
+                    audioHangupButton,
+                ];
+            }
+
+            // selfTileButtons used to carry the "Invite participants"
+            // (account-plus) button as an extra on the local user's
+            // tile. The button has since moved to the new
+            // audioListTopActionBar above the participant list (next
+            // to Raise hand and Mute all), so the self tile no longer
+            // owns any extra buttons. Kept as an empty array so the
+            // ConferenceAudioParticipant call site stays the same.
+            var selfTileButtons = [];
+
+            // Kick-button gate: show the per-tile kick-out affordance
+            // whenever there is at least one OTHER participant in the
+            // room (total > 1, i.e. self + ≥1 other). Previously
+            // hidden until > 2 on the theory that a 1-on-1 should be
+            // ended with your own hangup button, but the affordance
+            // is useful even with one other party — e.g. an invitee
+            // joined the wrong room or you want to drop them without
+            // hanging up the whole conference. With just yourself in
+            // the room (total = 1) there's no one to kick, so the
+            // button stays hidden. Total = 1 (self) + remote WebRTC
+            // (excluding bridges) + SIP. The per-tile MUTE indicator
+            // is left in place regardless of this gate — it's status
+            // info, not an action.
+            const _isBridgeForCount = (pp) => {
+                if (!pp || !pp.identity) return false;
+                const _dn = pp.identity._displayName || '';
+                if (/bridge/i.test(_dn)) return true;
+                const _uri = pp.identity._uri || '';
+                return _uri.indexOf('@conference.') > -1;
+            };
+            const _remoteWebrtcCount = (this.state.participants || [])
+                .filter((pp) => !_isBridgeForCount(pp)).length;
+            const _sipCount = (this.state.sipParticipants || [])
+                .filter((sp) => sp && sp.type === 'sip').length;
+            const _totalParticipants = 1 + _remoteWebrtcCount + _sipCount;
+            const _showKickButton = _totalParticipants > 1;
+
+            const _sipAorPre = (uri) => {
+                if (!uri) return '';
+                let s = uri;
+                if (s.indexOf('sip:') === 0) s = s.slice(4);
+                else if (s.indexOf('sips:') === 0) s = s.slice(5);
+                return s.split(';')[0];
+            };
+            const bridgeAors = new Set();
+            this.state.sipParticipants.forEach((sp) => {
+                if (sp && sp.type === 'bridge') {
+                    const a = _sipAorPre(sp.uri || '');
+                    if (a) bridgeAors.add(a);
+                }
+            });
+            const bridgeWebRtcByAor = new Map();
+
+            const _looksLikeBridge = (pp) => {
+                if (!pp || !pp.identity) return false;
+                const _dn = pp.identity._displayName || '';
+                if (/bridge/i.test(_dn)) return true;
+                const _uri = pp.identity._uri || '';
+                if (_uri.indexOf('@conference.') > -1) return true;
+                return false;
+            };
             this.state.participants.forEach((p) => {
+                const _pAor = _sipAorPre(p.identity._uri);
+                if ((_pAor && bridgeAors.has(_pAor)) || _looksLikeBridge(p)) {
+                    if (_pAor) bridgeWebRtcByAor.set(_pAor, p);
+                    return;
+                }
                 _contact = this.foundContacts.get(p.identity._uri);
                 // Normalize the displayed name the same way the rest
                 // of the app does (contact list / nav bar). If the SIP
@@ -4505,6 +6140,120 @@ class ConferenceBox extends Component {
                 //console.log(this.latency);
                 //console.log(this.packetLoss);
 
+                // Per-tile hangup button. Sends REFER ;method=BYE for
+                // this participant via the webrtcgateway, which BYEs
+                // their call leg in the focus. Skipped on the local
+                // ("myself") tile — self-kick wouldn't go through
+                // the same focus path and is handled by the main
+                // hangup button — and on bridge tiles further below.
+                const _pUri = p.identity && p.identity._uri;
+                const _pDn = (_identity && _identity.displayName) || _pUri;
+                // Per-participant mute indicator. Sits to the LEFT of
+                // the kick button (so the destructive action stays on
+                // the right edge) and reflects the muted prop —
+                // microphone-off in salmon when muted, microphone in
+                // white when not. No onPress: sylkrtc has no
+                // per-participant mute RPC (only the room-wide
+                // muteAudioParticipants), so this is purely a status
+                // display. If a future API lands, wire it into the
+                // onPress here without changing the layout.
+                const _isPMuted = !!(p.audioMuted || p.muted);
+                // Mute indicator: only rendered when the participant
+                // IS muted, otherwise the slot is empty. Showing a
+                // "microphone" glyph in white when not muted produced
+                // an invisible icon on the semi-white button — the
+                // user saw "an empty white circle" and couldn't tell
+                // what it represented. With the indicator gated on
+                // the muted state, an absent icon means "not muted"
+                // and the user reads only the kick button (if shown)
+                // on the tile.
+                // Inline mute indicator that sits next to the VU
+                // meter (passed as `inlineMuteButton`, not via the
+                // `extraButtons` slot anymore — see ConferenceAudio
+                // Participant for the description-row layout). Size
+                // shrunk to 19 (~75% of the original 25 used by kick)
+                // so the glyph reads as a status badge alongside the
+                // meter cells without dominating the row. Salmon on
+                // the dark tile background — no pill wrapper here.
+                // Still only rendered when the participant is muted
+                // for WebRTC (read-only status; no per-participant
+                // mute RPC on the WebRTC branch).
+                // Day-vs-night mic colour. The salmon (#e57373) used to
+                // call out the muted state reads well on the dark tile
+                // background but disappears into the light linen Day
+                // tile. In Day mode we drop to a dark grey so the icon
+                // still reads as muted-status against the lighter
+                // backplate. Night mode keeps the original salmon.
+                const _isDarkMicTheme = DarkModeManager.getTheme().isDark;
+                const _mutedMicColor = _isDarkMicTheme ? '#e57373' : '#444444';
+                const _webrtcMuteIndicator = (_isPMuted && _pUri && _pUri !== (this.props.call && this.props.call.localIdentity._uri)) ? (
+                    <PulsingView key={`webrtc-mute-${_pUri}`} active={true}>
+                        <IconButton
+                            size={28}
+                            style={{margin: 0, marginHorizontal: -6, padding: 0}}
+                            icon="microphone-off"
+                            color={_mutedMicColor}
+                            iconColor={_mutedMicColor}
+                        />
+                    </PulsingView>
+                ) : null;
+                // "Self" was previously detected by URI match, but
+                // joining the same account from two devices gives
+                // both tiles the same URI — neither could be kicked
+                // because both looked like self. Switching to
+                // participant-id comparison: only the actual local
+                // session (call.id) is excluded, every OTHER
+                // publisher — including sibling devices on the same
+                // account — gets the kick affordance.
+                const _localUriCmp = this.props.call && this.props.call.localIdentity
+                    ? this.props.call.localIdentity._uri : null;
+                const _isNonSelf = !!p && p.id !== (this.props.call && this.props.call.id);
+                // Same-account-different-session: same URI but a
+                // different participant id. This is "another device
+                // logged into my account is also in the room". The
+                // user always wants to kick those, regardless of
+                // the > 1-participant gate that hides the kick
+                // button when self is alone in the room.
+                const _isSameAccountSibling = _isNonSelf
+                    && !!_pUri && !!_localUriCmp
+                    && _pUri === _localUriCmp;
+                // Close-X kick glyph in a small dark circle. The circle
+                // makes the affordance read as a discrete "remove"
+                // chip rather than a stray glyph floating on the
+                // tile chrome. TouchableOpacity + raw Icon (instead
+                // of react-native-paper's IconButton) so the
+                // wrapping View can be sized exactly to the
+                // circle's bounds — IconButton has internal padding
+                // that would inflate the chip. hitSlop expands the
+                // tap target without growing the visual.
+                const _webrtcKickItem = (
+                    <TouchableOpacity
+                        key={`webrtc-kick-${_pUri}`}
+                        style={styles.kickCircle}
+                        onPress={() => this.kickParticipant(_pUri, _pDn)}
+                        hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                    >
+                        <Icon name="close" size={11} color="#ffffff" />
+                    </TouchableOpacity>
+                );
+                // Kick is gated by _showKickButton (total participants
+                // > 2) OR by the same-account-sibling case where the
+                // user always wants the affordance to disconnect
+                // another device on their account in a 1-on-1.
+                // Passed in as `kickButton` (NOT extraButtons) so it
+                // renders as the floating top-right close-X overlay
+                // on the tile — see ConferenceAudioParticipant.
+                const _kickAllowed = _showKickButton || _isSameAccountSibling;
+                const _webrtcKickButton = _isNonSelf && _kickAllowed
+                    ? _webrtcKickItem
+                    : null;
+
+                // Per-participant total bandwidth (kbps), audio +
+                // video for this PC. Rendered as a small prefix on
+                // the latency line of the tile.
+                const _pAudioBw = (this.audioBandwidth && this.audioBandwidth.get(p.id)) || 0;
+                const _pVideoBw = (this.videoBandwidth && this.videoBandwidth.get(p.id)) || 0;
+                const _pBwKbps = Math.round(_pAudioBw + _pVideoBw);
                 audioParticipants.push(
                     <ConferenceAudioParticipant
                         key={p.id}
@@ -4512,6 +6261,7 @@ class ConferenceBox extends Component {
                         identity={_identity}
                         latency={this.latency.has(p.id) ? this.latency.get(p.id) : null}
                         loss={this.packetLoss.has(p.id) && duration > 10 ? this.packetLoss.get(p.id) : 0}
+                        bandwidth={_pBwKbps}
                         // VU-meter level (0..1) maintained by the
                         // ~5 Hz _sampleConferenceAudioLevels sampler.
                         // The remote participant's inbound-rtp audio
@@ -4521,21 +6271,482 @@ class ConferenceBox extends Component {
                         audioLevel={this.audioLevels.get(p.id) || 0}
                         timestamp={p.timestamp}
                         isLocal={false}
+                        // Per-participant status flags. Mute still
+                        // reads from the participant object (set by
+                        // the server-pushed muteAudio handler / a
+                        // future per-participant audioMuted field).
+                        // Raised hand comes from state.raisedHandsByPid
+                        // — populated by the `raisedHands` event
+                        // handler from the sylkrtc Conference.toggleHand
+                        // round trip — so the badge stays in sync with
+                        // the server snapshot.
+                        muted={!!(p.audioMuted || p.muted)}
+                        raisedHand={this.state.raisedHandsByPid.has(p.id)}
                         status={status}
+                        inlineMuteButton={_webrtcMuteIndicator}
+                        kickButton={_webrtcKickButton}
                     />
                 );
             });
 
+            const _sipAor = _sipAorPre;
+            // First-seen timestamps per SIP-participant AOR, cached on
+            // the long-lived call object so durations survive remounts
+            // (e.g. navigating to contacts and back). Each tile renders
+            // mm:ss / hh:mm:ss since the first NOTIFY that listed it.
+            if (this.props.call && !this.props.call._sipParticipantSeenAt) {
+                this.props.call._sipParticipantSeenAt = new Map();
+            }
+            const _sipSeenAt = (this.props.call && this.props.call._sipParticipantSeenAt) || new Map();
+            const _formatDuration = (sinceMs) => {
+                const secs = Math.max(0, Math.floor((Date.now() - sinceMs) / 1000));
+                return secs >= 3600
+                    ? moment.duration(secs * 1000).format('hh:mm:ss', {trim: false})
+                    : moment.duration(secs * 1000).format('mm:ss', {trim: false});
+            };
+            var sipAudioParticipants = [];
+            var sipBridgeTiles = [];
+            var sipParticipantTiles = [];
+            // Bridge audio level + bandwidth captured as we walk the
+            // bridge tiles. The bridge is a mix of every SIP
+            // participant's audio, so when there's exactly ONE SIP
+            // participant the bridge and that participant are
+            // effectively the same signal — surfacing the bridge
+            // level AND its bandwidth on the SIP tile (with the
+            // bridge tile itself hidden) is more readable than
+            // showing both. Tracks the highest non-zero values seen.
+            let _bridgeAudioLevel = 0;
+            let _bridgeBandwidth = 0;
+            // RTT + loss of the bridge's WebRTC participant. With
+            // exactly one SIP caller behind the bridge, the bridge's
+            // connection quality IS that caller's effective quality
+            // (the SIP tile has no PC of its own, so without this
+            // transfer its latency/loss columns would be empty). Set
+            // to null/0 sentinels so the clone-with logic below can
+            // tell when a real value was observed.
+            let _bridgeLatency = null;
+            let _bridgeLoss = 0;
+            // First pass: stamp any URIs not yet seen with "now" so the
+            // duration counter starts from this NOTIFY for new arrivals.
+            this.state.sipParticipants.forEach((sp) => {
+                if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
+                const _aorTmp = _sipAor(sp.uri || '');
+                if (!_aorTmp) return;
+                if (!_sipSeenAt.has(_aorTmp)) _sipSeenAt.set(_aorTmp, Date.now());
+            });
+            this.state.sipParticipants.forEach((sp) => {
+                if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
+                const _sipUri = sp.uri || '';
+                const _aor = _sipAor(_sipUri);
+                if (!_aor) return;
+                const isBridge = sp.type === 'bridge';
+                if (!isBridge && (participants_uris.indexOf(_aor) > -1 || participants_uris.indexOf(_sipUri) > -1)) {
+                    return;
+                }
+                let _sipDisplayName = (sp.display_name && String(sp.display_name).trim()) || toTitleCase((_aor || _sipUri).split('@')[0]);
+                if (isBridge) {
+                    const _pstn = this.props.conferenceSettings && this.props.conferenceSettings.pstnBridge;
+                    if (_pstn) {
+                        _sipDisplayName = _sipDisplayName + ' ' + _pstn;
+                    }
+                }
+                const _sipIdentity = {
+                    uri: _aor || _sipUri,
+                    key: _sipUri,
+                    displayName: _sipDisplayName,
+                    photo: null,
+                };
+                let tile;
+                const _sipDurationStr = _sipSeenAt.has(_aor) ? _formatDuration(_sipSeenAt.get(_aor)) : '';
+                if (isBridge) {
+                    const webrtcP = bridgeWebRtcByAor.get(_aor);
+                    if (webrtcP) {
+                        let bDuration = 0;
+                        if (webrtcP.timestamp) {
+                            bDuration = Math.floor(new Date() - webrtcP.timestamp) / 1000;
+                        }
+                        const _thisBridgeLevel = this.audioLevels.get(webrtcP.id) || 0;
+                        if (_thisBridgeLevel > _bridgeAudioLevel) _bridgeAudioLevel = _thisBridgeLevel;
+                        const _bAudioBw = (this.audioBandwidth && this.audioBandwidth.get(webrtcP.id)) || 0;
+                        const _bVideoBw = (this.videoBandwidth && this.videoBandwidth.get(webrtcP.id)) || 0;
+                        const _bBwTotal = Math.round(_bAudioBw + _bVideoBw);
+                        if (_bBwTotal > _bridgeBandwidth) _bridgeBandwidth = _bBwTotal;
+                        const _bLat = this.latency.has(webrtcP.id) ? this.latency.get(webrtcP.id) : null;
+                        const _bLossVal = (this.packetLoss.has(webrtcP.id) && bDuration > 10) ? this.packetLoss.get(webrtcP.id) : 0;
+                        if (typeof _bLat === 'number' && _bLat > 0) _bridgeLatency = _bLat;
+                        if (_bLossVal > _bridgeLoss) _bridgeLoss = _bLossVal;
+                        tile = (
+                            <ConferenceAudioParticipant
+                                key={'bridge:' + _sipUri}
+                                participant={webrtcP}
+                                identity={_sipIdentity}
+                                isLocal={false}
+                                status={_sipDurationStr}
+                                bottomLabel="SIP"
+                                isBridge={true}
+                                latency={this.latency.has(webrtcP.id) ? this.latency.get(webrtcP.id) : null}
+                                loss={this.packetLoss.has(webrtcP.id) && bDuration > 10 ? this.packetLoss.get(webrtcP.id) : 0}
+                                bandwidth={_bBwTotal}
+                                audioLevel={_thisBridgeLevel}
+                                timestamp={webrtcP.timestamp}
+                            />
+                        );
+                    } else {
+                        tile = (
+                            <ConferenceAudioParticipant
+                                key={'bridge:' + _sipUri}
+                                identity={_sipIdentity}
+                                isLocal={false}
+                                status={_sipDurationStr}
+                                bottomLabel="SIP"
+                                isBridge={true}
+                                noAudioMetrics={true}
+                                audioLevel={0}
+                            />
+                        );
+                    }
+                } else {
+                    // SIP participant tile gets a hangup button. Tapping
+                    // it sends videoroom-remove → REFER ;method=BYE for
+                    // this participant. The bridge tile (above) is
+                    // intentionally excluded — kicking the bridge would
+                    // unplug the PSTN side of the room, not what the
+                    // user usually wants from a per-tile control. To
+                    // tear the bridge down, all WebRTC users must leave
+                    // (the server-side auto-kick handles that case).
+                    const _sipKickUri = _sipUri;
+                    const _sipKickDn = _sipDisplayName;
+                    // Endpoint list, hoisted to the top of this branch so
+                    // both the mute-button setup below AND the audio-level
+                    // join below can reuse it without re-declaring. Was
+                    // previously declared only inside the audio-level
+                    // block lower down; the mute button needs it earlier
+                    // and re-declaring `const _spEndpoints` in the same
+                    // lexical block would also conflict with the lower
+                    // declaration once both exist.
+                    const _spEndpoints = Array.isArray(sp.endpoints) ? sp.endpoints : [];
+                    // Mute state lives on the ENDPOINT element of the
+                    // RFC 4575 conference-info payload, not on the
+                    // participant. Tolerant of multiple representations
+                    // — sipsimple's BooleanProperty has shipped as a
+                    // bare JS boolean in some payloads and as the
+                    // string "true" / "True" in others, and the user
+                    // confirmed the icon stays on the unmuted state
+                    // even when the server logs muted=True. Accept any
+                    // of: bool true, integer 1, string "true"/"1"
+                    // (case-insensitive). False / missing fields stay
+                    // unmuted.
+                    const _truthyMuted = (_m) => {
+                        if (_m === true || _m === 1) return true;
+                        if (typeof _m === 'string') {
+                            const _s = _m.trim().toLowerCase();
+                            return _s === 'true' || _s === '1' || _s === 'yes';
+                        }
+                        return false;
+                    };
+                    const _isSipMuted = _spEndpoints.some(
+                        (_ep) => _ep && _truthyMuted(_ep.muted));
+                    // Pick the first endpoint's participant_id as the
+                    // mute target. The conference focus assigns a
+                    // stable per-session participant_id to every
+                    // endpoint behind the bridge; in practice a SIP
+                    // caller has exactly one endpoint so endpoints[0]
+                    // is unambiguous. With multiple endpoints we still
+                    // pick the first — same compromise used everywhere
+                    // else in this loop (audio-level join key, mute
+                    // indicator state).
+                    let _sipMutePid = null;
+                    for (const _ep of _spEndpoints) {
+                        if (_ep && _ep.participant_id) {
+                            _sipMutePid = _ep.participant_id;
+                            break;
+                        }
+                    }
+                    // Explicit, ALWAYS-visible clickable mute toggle for
+                    // SIP-bridge participants. Microphone-off (salmon)
+                    // when the focus reports the participant as muted,
+                    // microphone (white) when not — both states are
+                    // tappable. onPress fires the new sylkrtc
+                    // muteParticipant() RPC with the inverted state,
+                    // which the webrtcgateway routes to the conference
+                    // focus's admin HTTP API (POST /rooms/<uri>/
+                    // participants/<pid>/mute with {"muted": bool})
+                    // because SIP-side participants have no local WS
+                    // session to dispatch to. Suppressed only when we
+                    // never learned a participant_id for this entry
+                    // (the focus didn't publish one yet) — the RPC
+                    // requires that field server-side.
+                    // Inline mute toggle that sits next to the VU
+                    // meter (passed as `inlineMuteButton` below — no
+                    // pill wrapper here so the icon sits flush in the
+                    // description row). Size 19 (~75% of the kick
+                    // button's 25). Always rendered when we have a
+                    // participant_id; clicking flips the muted state
+                    // via the sylkrtc muteParticipant() RPC, which the
+                    // gateway routes to the conference focus as a
+                    // REFER ;method=MUTE / UNMUTE for SIP targets.
+                    // White on the dark tile background for unmuted;
+                    // salmon for muted so the destructive affordance
+                    // stays obvious.
+                    // Day-vs-night mic colour, mirroring the WebRTC
+                    // mute indicator above. Muted picks dark grey on
+                    // the light Day tile (instead of salmon, which
+                    // gets lost on linen); unmuted picks dark grey
+                    // there too (the previous solid white was
+                    // invisible against the lighter backplate). Night
+                    // mode keeps the legacy salmon/white pair.
+                    const _isDarkSipMicTheme = DarkModeManager.getTheme().isDark;
+                    const _sipMutedColor   = _isDarkSipMicTheme ? '#e57373' : '#444444';
+                    const _sipUnmutedColor = _isDarkSipMicTheme ? '#ffffff' : '#444444';
+                    const _sipMuteIndicator = _sipMutePid ? (
+                        <PulsingView key={`sip-mute-${_sipKickUri}`} active={_isSipMuted}>
+                            <IconButton
+                                size={28}
+                                style={{margin: 0, marginHorizontal: -6, padding: 0}}
+                                icon={_isSipMuted ? 'microphone-off' : 'microphone'}
+                                color={_isSipMuted ? _sipMutedColor : _sipUnmutedColor}
+                                iconColor={_isSipMuted ? _sipMutedColor : _sipUnmutedColor}
+                                onPress={() => {
+                                    if (this.props.call
+                                            && typeof this.props.call.muteParticipant === 'function') {
+                                        console.log('[ConferenceBox] muteParticipant pid=' + _sipMutePid +
+                                                    ' muted=' + (!_isSipMuted));
+                                        this.props.call.muteParticipant(_sipMutePid, !_isSipMuted);
+                                    } else {
+                                        console.log('[ConferenceBox] muteParticipant not available on call');
+                                    }
+                                }}
+                            />
+                        </PulsingView>
+                    ) : null;
+                    // Close-X kick glyph in a small dark circle —
+                    // identical treatment to the webrtc kick above.
+                    // See that block for the rationale (Touchable
+                    // Opacity + raw Icon to avoid IconButton's
+                    // internal padding inflating the chip).
+                    const _sipKickItem = (
+                        <TouchableOpacity
+                            key={`sip-kick-${_sipKickUri}`}
+                            style={styles.kickCircle}
+                            onPress={() => this.kickParticipant(_sipKickUri, _sipKickDn)}
+                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                        >
+                            <Icon name="close" size={11} color="#ffffff" />
+                        </TouchableOpacity>
+                    );
+                    // Kick still gated by _showKickButton (total > 2).
+                    // Passed in as `kickButton` (not extraButtons).
+                    const _sipKickButton = _showKickButton ? _sipKickItem : null;
+
+                    // Per-SIP-participant VU meter level.
+                    // sipConferenceAudioLevels (every ~250ms from the
+                    // webrtcgateway, populated into state.sipAudioLevels
+                    // — see the handler at line ~900) carries an entry
+                    // per participant_id with {tx, rx, tx_peak, rx_peak}
+                    // on the Janus 0..127 audio-bridge scale. Each SIP
+                    // participant `sp` carries one or more `endpoints`,
+                    // each with its own participant_id; in practice a
+                    // SIP caller has one endpoint so endpoints[0].
+                    // participant_id is the join key. We take the
+                    // strongest rx_peak across endpoints (the SIP
+                    // caller's voice level, as heard by the gateway),
+                    // normalise on 127 and apply the same sqrt boost
+                    // _sampleConferenceAudioLevels uses for WebRTC
+                    // peers so the meter response matches the rest of
+                    // the room. Quiet rooms produce 0; meter stays
+                    // dark until someone speaks. Pre-fix this tile
+                    // rendered with noAudioMetrics=true and no VU,
+                    // leaving SIP callers' tiles permanently dead
+                    // even though their audio levels were already
+                    // arriving on the wire.
+                    let _sipLevel = 0;
+                    const _sipAudioLevels = this.state.sipAudioLevels || {};
+                    // _spEndpoints is hoisted above (alongside the mute
+                    // button setup) so we can reuse it here without
+                    // re-declaring.
+                    for (const _ep of _spEndpoints) {
+                        const _pid = _ep && _ep.participant_id;
+                        if (!_pid) continue;
+                        const _entry = _sipAudioLevels[_pid];
+                        if (!_entry) continue;
+                        const _peak = Math.max(_entry.rx_peak || 0, _entry.rx || 0);
+                        if (_peak > _sipLevel) _sipLevel = _peak;
+                    }
+                    _sipLevel = Math.min(1, Math.sqrt(_sipLevel / 127));
+
+                    tile = (
+                        <ConferenceAudioParticipant
+                            key={'sip:' + _sipUri}
+                            identity={_sipIdentity}
+                            isLocal={false}
+                            status={_sipDurationStr}
+                            bottomLabel="SIP"
+                            // noAudioMetrics suppresses the "Waiting for
+                            // audio…" placeholder when there's no PC to
+                            // measure. We now feed audioLevel from the
+                            // sipConferenceAudioLevels stream, so the
+                            // VU meter has real data — leave the
+                            // placeholder off and let the meter draw.
+                            noAudioMetrics={false}
+                            audioLevel={_sipLevel}
+                            // SIP participants get the same per-tile
+                            // badge wiring as WebRTC participants. The
+                            // sip-conference-info payload (see the
+                            // sipConferenceParticipants event handler)
+                            // exposes muted/raisedHand on each ENDPOINT
+                            // (not on the participant itself — earlier
+                            // `!!sp.muted` was always false and the
+                            // mute badge never appeared). _isSipMuted
+                            // above already does the .some() walk over
+                            // endpoints; reuse it. raisedHand stays a
+                            // best-effort .some() too for symmetry.
+                            muted={_isSipMuted}
+                            raisedHand={_spEndpoints.some((_ep) => _ep && _truthyMuted(_ep.raisedHand))}
+                            inlineMuteButton={_sipMuteIndicator}
+                            kickButton={_sipKickButton}
+                        />
+                    );
+                }
+                if (isBridge) {
+                    sipBridgeTiles.push(tile);
+                } else {
+                    sipParticipantTiles.push(tile);
+                }
+                participants_uris.push(_aor);
+            });
+            bridgeWebRtcByAor.forEach((webrtcP, aor) => {
+                if (!aor || participants_uris.indexOf(aor) > -1) return;
+                const _dn = (webrtcP.identity && webrtcP.identity._displayName) || aor.split('@')[0];
+                const _bridgeIdentity = {
+                    uri: aor,
+                    key: aor,
+                    displayName: _dn,
+                    photo: null,
+                };
+                let bDuration = 0;
+                let bStatus = '';
+                if (webrtcP.timestamp) {
+                    bDuration = Math.floor(new Date() - webrtcP.timestamp) / 1000;
+                    bStatus = bDuration > 3600
+                        ? moment.duration(new Date() - webrtcP.timestamp).format('hh:mm:ss', {trim: false})
+                        : moment.duration(new Date() - webrtcP.timestamp).format('mm:ss', {trim: false});
+                }
+                if (!_sipSeenAt.has(aor)) _sipSeenAt.set(aor, Date.now());
+                const _thisBridgeLevel = this.audioLevels.get(webrtcP.id) || 0;
+                if (_thisBridgeLevel > _bridgeAudioLevel) _bridgeAudioLevel = _thisBridgeLevel;
+                const _bridgeAudioBw = (this.audioBandwidth && this.audioBandwidth.get(webrtcP.id)) || 0;
+                const _bridgeVideoBw = (this.videoBandwidth && this.videoBandwidth.get(webrtcP.id)) || 0;
+                const _bridgeBwTotal = Math.round(_bridgeAudioBw + _bridgeVideoBw);
+                if (_bridgeBwTotal > _bridgeBandwidth) _bridgeBandwidth = _bridgeBwTotal;
+                const _b2Lat = this.latency.has(webrtcP.id) ? this.latency.get(webrtcP.id) : null;
+                const _b2LossVal = (this.packetLoss.has(webrtcP.id) && bDuration > 10) ? this.packetLoss.get(webrtcP.id) : 0;
+                if (typeof _b2Lat === 'number' && _b2Lat > 0) _bridgeLatency = _b2Lat;
+                if (_b2LossVal > _bridgeLoss) _bridgeLoss = _b2LossVal;
+                sipBridgeTiles.push(
+                    <ConferenceAudioParticipant
+                        key={'bridge-detected:' + aor}
+                        participant={webrtcP}
+                        identity={_bridgeIdentity}
+                        isLocal={false}
+                        status={_formatDuration(_sipSeenAt.get(aor))}
+                        bottomLabel="SIP"
+                        isBridge={true}
+                        latency={this.latency.has(webrtcP.id) ? this.latency.get(webrtcP.id) : null}
+                        loss={this.packetLoss.has(webrtcP.id) && bDuration > 10 ? this.packetLoss.get(webrtcP.id) : 0}
+                        bandwidth={_bridgeBwTotal}
+                        audioLevel={_thisBridgeLevel}
+                        timestamp={webrtcP.timestamp}
+                    />
+                );
+                participants_uris.push(aor);
+            });
+
+            // Bridge tile visibility is a user-controlled toggle
+            // (state.showBridge), exposed in the ConferenceHeader
+            // kebab menu when a bridge is detected. Default hidden —
+            // the bridge is plumbing, not a user.
+            const _bridgePresent = sipBridgeTiles.length > 0;
+            if (!this.state.showBridge) {
+                sipBridgeTiles = [];
+                // When the bridge is hidden AND there's exactly ONE
+                // SIP participant behind it, transfer the bridge's
+                // bandwidth / RTT / loss onto that SIP tile so its
+                // corner labels aren't dead. The SIP tile itself has
+                // no PC of its own to measure, so these are the only
+                // honest numbers we can show for that single caller.
+                //
+                // We used to also clone _bridgeAudioLevel here. That
+                // was a half-truth — the bridge's audioLevel reflects
+                // the MIXED audio of everyone routed through the
+                // bridge, not the specific SIP caller's voice level.
+                // It read fine with exactly one SIP caller (because
+                // the mix IS that caller) but became misleading the
+                // moment a second SIP caller joined. Now that the SIP
+                // tile is fed by the per-participant
+                // sipConferenceAudioLevels stream (see the SIP tile
+                // build above), the bridge-VU clone is no longer
+                // needed — each SIP tile lights up with its own
+                // voice level, regardless of how many other SIP
+                // callers are in the room.
+                if (sipParticipantTiles.length === 1) {
+                    const _clonedProps = {};
+                    if (_bridgeBandwidth > 0)  _clonedProps.bandwidth  = _bridgeBandwidth;
+                    if (typeof _bridgeLatency === 'number' && _bridgeLatency > 0) {
+                        _clonedProps.latency = _bridgeLatency;
+                    }
+                    if (_bridgeLoss > 0) _clonedProps.loss = _bridgeLoss;
+                    if (Object.keys(_clonedProps).length > 0) {
+                        sipParticipantTiles[0] = React.cloneElement(sipParticipantTiles[0], _clonedProps);
+                    }
+                }
+            }
+            sipAudioParticipants = sipBridgeTiles.concat(sipParticipantTiles);
+            // Stash for the ConferenceHeader prop pass below.
+            this._bridgePresent = _bridgePresent;
+
             const invitedParties = Array.from(this.invitedParticipants.keys());
             let alreadyInvitedParticipants = []
             let p;
+            var invitedTiles = [];
 
+            // Same normalisation as updateParticipantsStatus(): match
+            // invited URIs against everyone currently in the room
+            // (webrtc participants + SIP participants), tolerating the
+            // sip: scheme being present on one side and not the other.
+            // Also skip an invited entry if we ever saw this AOR in the
+            // room — that means the invitee actually joined; if the
+            // tile still appears here it's only because the entry
+            // wasn't pruned (e.g. on a subsequent leave). Drop them
+            // outright so a "left after joining" doesn't resurrect the
+            // invited tile.
+            const _renderNormAor = (u) => {
+                if (!u) return '';
+                let s = String(u);
+                if (s.indexOf('sip:') === 0) s = s.slice(4);
+                else if (s.indexOf('sips:') === 0) s = s.slice(5);
+                return s.split(';')[0];
+            };
+            const _renderRoomAors = new Set();
+            participants_uris.forEach((u) => { const a = _renderNormAor(u); if (a) _renderRoomAors.add(a); });
+            (this.state.sipParticipants || []).forEach((sp) => {
+                if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
+                const a = _renderNormAor(sp.uri || '');
+                if (a) _renderRoomAors.add(a);
+            });
             invitedParties.forEach((_uri) => {
-                if (participants_uris.indexOf(_uri) > 0) {
+                if (_renderRoomAors.has(_renderNormAor(_uri))) {
+                    // Currently in the room — no invited tile needed.
+                    // Also prune the map so a later leave doesn't bring
+                    // it back as a stale "Waiting…" tile.
+                    this.invitedParticipants.delete(_uri);
+                    this._cancelInviteTimeout && this._cancelInviteTimeout(_uri);
                     return;
                 }
 
                 p = this.invitedParticipants.get(_uri);
+                if (!p) {
+                    return;
+                }
                 _contact = this.foundContacts.get(_uri);
                 // Same normalization as the joined-participants
                 // branch above — foundContacts is title-cased by
@@ -4560,70 +6771,109 @@ class ConferenceBox extends Component {
                 let invite_uris = [];
                 invite_uris.push(_uri);
 
-                if (p.status === 'reinvite') {
-                    // Match the "myself" row's button layout for the
-                    // audio conference: the leftmost button uses
-                    // `hangupButtonAudioContainer` (marginRight: 20)
-                    // so it lines up with this same slot on the
-                    // first row. Without the matching marginRight,
-                    // the delete icon sat ~17 px to the right of
-                    // where the hangup sits on the myself row,
-                    // breaking the vertical column the user expects
-                    // when scanning the participant list.
-                    //
-                    // Keys are unique per-button + per-uri because
-                    // the array is rendered as JSX children via
-                    // {this.props.extraButtons} in ConferenceAudio
-                    // Participant's right slot — React warns when
-                    // any sibling in that list lacks a key, and the
-                    // _uri suffix keeps keys distinct when several
-                    // invited-not-yet-joined rows render together.
-                    extraButtons.push(
-                      <View style={styles.hangupButtonAudioContainer} key={`invitee-delete-${_uri}`}>
+                const _isInviteFailure = /^[3-6]\d\d\b/.test(String(p.status || ''));
+
+                // Failed / reinvite tile gets a refresh button in the
+                // right-slot extraButtons cluster (so the retry stays
+                // next to the duration area) and the close-X chip in
+                // the top-right kickButton overlay (replaces the old
+                // trash icon — same visual as a per-participant kick).
+                // For failed-invite tiles we also suppress the
+                // mediaContainer so the right slot only carries the
+                // retry button; the status text is already shown in
+                // the VU-meter slot via progressText.
+                let _inviteKickButton = null;
+                if (p.status === 'reinvite' || _isInviteFailure) {
+                    extraButtons = [
+                      <View style={[styles.buttonContainer, {marginRight: 20}]} key={`invitee-reinvite-${_uri}`}>
                         <TouchableHighlight style={styles.roundshape}>
                         <IconButton
                             size={25}
                             style={buttonClass}
-                            icon={'delete'}
-                            onPress={() => this.removeInvitedParticipant(_uri)}
-                        />
-                        </TouchableHighlight>
-                      </View>
-                    );
-                    extraButtons.push(
-                      <View style={styles.buttonContainer} key={`invitee-phone-${_uri}`}>
-                        <TouchableHighlight style={styles.roundshape}>
-                        <IconButton
-                            size={25}
-                            style={buttonClass}
-                            icon={'phone'}
+                            icon={'refresh'}
                             onPress={() => this.inviteParticipants(invite_uris)}
                         />
                         </TouchableHighlight>
                       </View>
+                    ];
+                    _inviteKickButton = (
+                        <TouchableOpacity
+                            key={`invitee-delete-${_uri}`}
+                            style={styles.kickCircle}
+                            onPress={() => this.removeInvitedParticipant(_uri)}
+                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                        >
+                            <Icon name="close" size={11} color="#ffffff" />
+                        </TouchableOpacity>
                     );
                 }
-
-                audioParticipants.push(
+                // Combined progress/result text for the 3rd-line slot
+                // (where the VU meter normally lives). During the
+                // 45-second invite window this is "Waiting ...NN";
+                // after the window expires or a final status lands,
+                // it's the status text itself (e.g. "408 No answer",
+                // "Accepted"). Single label across both phases keeps
+                // the tile visually stable.
+                let _progressText = '';
+                if (!_isInviteFailure && typeof p.remaining === 'number' && p.remaining > 0) {
+                    _progressText = 'Waiting ...' + p.remaining;
+                } else if (typeof p.status === 'string' && p.status.length > 0) {
+                    _progressText = p.status;
+                }
+                invitedTiles.push(
                     <ConferenceAudioParticipant
                         key={_uri}
                         identity={_identity}
                         isLocal={false}
                         status={p.status}
                         extraButtons={extraButtons}
+                        kickButton={_inviteKickButton}
+                        noAudioMetrics={_isInviteFailure}
+                        suppressMediaContainer={_isInviteFailure}
+                        progressText={_progressText}
                     />
                 );
             });
             
             audioParticipants.sort((a, b) => (a.timestamp < b.timestamp) ? 1 : -1)
             _contact = this.foundContacts.get(this.props.call.localIdentity._uri);
+            const _localDn = (_contact && _contact.displayName)
+                ? _contact.displayName
+                : (this.props.call.localIdentity._displayName
+                    || toTitleCase(this.props.call.localIdentity._uri.split('@')[0]));
+            const _localPhoto = _contact ? _contact.photo : null;
             _identity = {uri: this.props.call.localIdentity._uri,
-                         displayName: _contact.displayName,
-                         photo: _contact.photo
+                         displayName: _localDn,
+                         photo: _localPhoto
                         };
 
             participants_uris.push(this.props.call.localIdentity._uri);
 
+            // Self-tile duration. Mirrors the format the remote
+            // participant tiles use (mm:ss / hh:mm:ss via moment so
+            // long calls roll into the hours column). Sourced from
+            // props.callState.startTime — the same conference-start
+            // timestamp the top-of-component duration calc uses.
+            // Falls back to an empty status if startTime isn't yet
+            // available (the call is still establishing).
+            let _selfStatus = '';
+            const _selfStart = this.props.callState && this.props.callState.startTime;
+            if (_selfStart) {
+                const _selfElapsedMs = new Date() - _selfStart;
+                const _selfElapsedSec = Math.floor(_selfElapsedMs / 1000);
+                _selfStatus = _selfElapsedSec > 3600
+                    ? moment.duration(_selfElapsedMs).format('hh:mm:ss', {trim: false})
+                    : moment.duration(_selfElapsedMs).format('mm:ss', {trim: false});
+            }
+
+            // Self upload bandwidth (kbps). bandwidthUpload is in
+            // kbps already (see getConnectionStats's
+            // `Math.floor(diff / sampleInterval * 8 / 1000)`).
+            // Shown in the tile's bottom-right corner with an ↑
+            // arrow (the isLocal flag flips the arrow direction
+            // inside ConferenceAudioParticipant — remote tiles use ↓
+            // since their bandwidth represents what WE receive).
+            const _selfBwKbps = Math.round(this.bandwidthUpload || 0);
             audioParticipants.splice(0, 0,
                 <ConferenceAudioParticipant
                     key="myself"
@@ -4636,7 +6886,25 @@ class ConferenceBox extends Component {
                     // Same map the remote participants read from,
                     // bucketed under the literal 'myself' key.
                     audioLevel={this.audioLevels.get('myself') || 0}
-                    extraButtons={floatingButtons}
+                    // Conference running time, formatted the same way
+                    // as remote participant tiles. Sits in the tile's
+                    // top-right text slot so the user can read total
+                    // elapsed time at a glance without leaving the
+                    // audio view.
+                    status={_selfStatus}
+                    // Upload speed — what THIS user is publishing.
+                    // Same prop the remote tiles use for download
+                    // speed; isLocal=true flips the arrow direction
+                    // (↑ vs ↓) in the tile renderer.
+                    bandwidth={_selfBwKbps}
+                    // Raised-hand badge mirrors state.raisedHand — the
+                    // same flag the "Raise hand" button in the top
+                    // action bar toggles. ConferenceAudioParticipant
+                    // suppresses the muted badge for isLocal but does
+                    // render raisedHand, so the user sees a visible
+                    // indicator that their own hand is up.
+                    raisedHand={!!this.state.raisedHand}
+                    extraButtons={selfTileButtons}
                 />
             );
 
@@ -4648,32 +6916,52 @@ class ConferenceBox extends Component {
 
 			// Audio-view list sizing.
 			//
-			// The list is a FlatList (see ConferenceAudioParticipantList)
-			// — scrollable by default. The container around it gets
-			// a fixed height so the chat panel beneath knows how
-			// much flex space it has. Cap that height to fit 5
+			// The list is rendered inline by ConferenceAudioParticipantList
+			// (a plain View — see the comment in that file for why it's
+			// no longer a FlatList). Scrolling is handled by the outer
+			// ScrollView that also wraps the SIP / invited tile groups
+			// below. The container around it gets a fixed height so the
+			// chat panel that swaps in via the action-bar toggle knows
+			// how much flex space it has. Cap that height to fit 5
 			// participants (60 px card + ~10 px VU-row = 70 px per
-			// row) so a busy room scrolls instead of letting the
-			// list shove the chat off-screen, and SHRINK to the
-			// actual count when fewer than 5 participants are
-			// present so we don't reserve dead space.
+			// row) so a busy room scrolls instead of letting the list
+			// shove the chat off-screen, and SHRINK to the actual
+			// count when fewer than 5 participants are present so we
+			// don't reserve dead space.
 			//
 			// audioParticipants already includes the "myself" row
 			// (spliced at index 0 a few lines above) so its length
-			// is the total rows the FlatList renders.
+			// is the total rows the list renders.
 			//
-			// Keyboard visible: clamp further so the FlatList doesn't
+			// Keyboard visible: clamp further so the list doesn't
 			// crowd the composer.
-			const AUDIO_ROW_HEIGHT = 70;
+			// Tile metrics — keep in sync with ConferenceAudioParticipant
+			// styles.card height (78) + tileWrapper marginVertical
+			// (2 + 2) + tileWrapper borderWidth (1 + 1) = 84 per tile.
+			// One extra pixel for sub-pixel rounding so the bottom
+			// border is never clipped.
+			const AUDIO_ROW_HEIGHT = 86;
 			const AUDIO_MAX_ROWS = 5;
+			// Landscape lays the tiles out as a 2-column grid
+			// (ConferenceAudioParticipantList wraps each tile in a
+			// 50%-width cell when isLandscape is true). That halves
+			// the row count for any given participant count, so the
+			// height reservation halves with it — without this, the
+			// container would still reserve 5 single-column rows and
+			// push the SIP / invited groups off-screen.
+			const _tilesPerRow = this.state.isLandscape ? 2 : 1;
 			const _visibleRows = Math.min(
-				Math.max(audioParticipants.length, 1),
+				Math.ceil(Math.max(audioParticipants.length, 1) / _tilesPerRow),
 				AUDIO_MAX_ROWS
 			);
-			let audioHeight = _visibleRows * AUDIO_ROW_HEIGHT + 6;
-			if (this.state.keyboardVisible) {
-				audioHeight = Math.min(audioHeight, 150);
-			}
+			// mediaContainer holds ONLY the webrtc participant tiles
+			// now — SIP / invited groups render as separate siblings
+			// below and self-size. So audioHeight is just enough for
+			// the visible webrtc rows; scrolling kicks in past
+			// AUDIO_MAX_ROWS via the outer ScrollView.
+			let audioHeight = _visibleRows * AUDIO_ROW_HEIGHT;
+			const _audioHeightCeiling = Math.max(150, Math.floor(height * 0.55));
+			audioHeight = Math.min(audioHeight, _audioHeightCeiling);
 			const marginTop = Platform.OS === 'ios' ? topInset : 0;
 			
 			debugBorderWidth = 0;
@@ -4688,40 +6976,90 @@ class ConferenceBox extends Component {
   		    conferenceHeader = {
 			  height: conferenceHeaderHeight,
 	          borderWidth: debugBorderWidth,
-			  borderColor: 'yellow'
+			  borderColor: 'yellow',
+			  // zIndex + elevation so the navbar stays on top of
+			  // the chat / participants column rendered as a flex
+			  // sibling below it. Without this the chat's bounds
+			  // (KAV-wrapped, with marginTop:40) still painted
+			  // over the navbar's lower edge and ate the first
+			  // taps on the chat→audio / audio→video formation.
+			  // zIndex alone isn't enough on Android — elevation
+			  // also has to be set so the native view hierarchy
+			  // actually layers the navbar above the chat.
+			  zIndex: 2000,
+			  elevation: 10,
 		    };
 
-            if (Platform.OS === 'ios' ) { 
+            if (Platform.OS === 'ios' ) {
                 if (this.state.isLandscape) {
 					conferenceHeader.width = width - rightInset - leftInset;
-					//container.width = width - topInset;
                 }
             }
 
+			// conferenceContainer is always a column: action bar on
+			// top, then either the participant list or the chat
+			// underneath (picked by the audioChatView toggle).
+			// Making it always-column avoids the previous bug where
+			// flexDirection:'row' in landscape turned the horizontal
+			// audioViewActionBar into a narrow vertical strip wedged
+			// to the left of the body.
+			//
+			// Folded (cover-display) audio conference: paddingTop
+			// clears the absolutely-positioned ConferenceHeader
+			// (height 60). With audioListTopActionBar suppressed in
+			// folded (see the gate above), the first in-flow child
+			// is participantsListColumn whose own marginTop:10 then
+			// supplies the gap below the navbar. History on this:
+			//   paddingTop:60 + marginTop:10  (gap = 10 below navbar)
+			//   → user said too low
+			//   paddingTop:55                  (gap =  5)
+			//   → user said "lift 5 more"
+			//   paddingTop:50                  (gap =  0, tile meets
+			//                                   navbar bottom)
+			//   → user said "lift 5 more" again
+			//   paddingTop:45                  (gap = -5, tile slides
+			//                                   behind the navbar)
+			//   → user said "more"
+			//   paddingTop:40                  (gap = -10)
+			//   → user said "more"
+			//   paddingTop:35                  (gap = -15)
+			//   → user said "lift 5 px more"
+			//   paddingTop:30                  (gap = -20, top 20 px
+			//                                   of the list now sits
+			//                                   behind the navbar).
 			conferenceContainer = {
 			  flex: 1,
-			  flexDirection: this.state.isLandscape ? 'row' : 'column',
-			  alignContent: this.state.isLandscape ? 'flex-end' : 'flex-start',
-			  justifyContent: this.state.isLandscape ? 'flex-start' : 'flex-start',
+			  flexDirection: 'column',
+			  alignContent: 'flex-start',
+			  justifyContent: 'flex-start',
 	          borderWidth: debugBorderWidth,
-			  borderColor: 'blue'
+			  borderColor: 'blue',
+			  paddingTop: this.props.isFolded ? 30 : 0,
 			};
-						
+
+			// Participant list container — same dimensions in both
+			// orientations now that landscape uses the same toggle
+			// behavior as portrait. The previous 50%/100% landscape
+			// values were left over from a half-implemented
+			// side-by-side layout and rendered nothing legible.
 		    mediaContainer = {
-			  width: this.state.isLandscape ? '50%' : '100%',
-			  height: this.state.isLandscape ? '100%' : audioHeight,
+			  width: '100%',
+			  height: audioHeight,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'green'
 			};
-			
+
+			// Chat container — gray hairline border removed (the
+			// rgba(255,255,255,0.18) top edge was reading as a
+			// visible line above the chat). marginTop 40 keeps
+			// the chat positioned correctly below the navbar.
 			chatContainer = {
-			  flex: this.state.isLandscape ? 0 : 1,
-			  borderColor: 'gray',
-			  width: this.state.isLandscape ? '50%' : '100%',
-	          borderWidth: debugBorderWidth,
-			  borderColor: 'gray'
+			  flex: 1,
+			  width: '100%',
+			  marginTop: 40,
+			  overflow: 'hidden',
 			};
-			
+
 			const insets = this.state.insets;
 
 			if (debugBorderWidth) {
@@ -4764,6 +7102,7 @@ class ConferenceBox extends Component {
 					conferenceUrl={conferenceUrl}
                     conferenceRoom={conferenceRoom}
                     sylkDomain={this.props.sylkDomain}
+                    conferenceSettings={this.props.conferenceSettings}
 
 				/>
 
@@ -4775,8 +7114,16 @@ class ConferenceBox extends Component {
 						callContact={this.props.callContact}
 						isTablet={this.props.isTablet}
 						isLandscape={this.state.isLandscape}
+						/* Folded (cover-display) flag — ConferenceHeader
+						   uses it to hide the Audio... / Video... /
+						   Hangup / Show PSTN bridge kebab items that
+						   don't fit / don't apply on the cramped cover
+						   screen. */
+						isFolded={this.props.isFolded}
 						call={this.state.call}
-						participants={this.state.participants.length}
+						participantsCount={_otherParticipantsCount}
+						serverDuration={this.state.conferenceDurationAtJoin}
+						videoParticipantCount={_remoteVideoSpeakerCount}
 						reconnectingCall={this.state.reconnectingCall}
 						buttons={buttons}
 						audioOnly={this.audioOnlyView}
@@ -4786,6 +7133,9 @@ class ConferenceBox extends Component {
 						info={this.state.info}
 						goBackFunc={this.props.goBackFunc}
 						toggleInviteModal={this.toggleInviteModal}
+						bridgePresent={!!this._bridgePresent}
+						showBridge={this.state.showBridge}
+						toggleBridgeVisibility={this.toggleBridgeVisibility}
 						inviteToConferenceFunc={this.props.inviteToConferenceFunc}
 						callState={this.props.callState}
 						toggleAudioParticipantsFunc={this.toggleAudioParticipants}
@@ -4793,6 +7143,8 @@ class ConferenceBox extends Component {
 						hangUpFunc={this.hangup}
 						audioView={this.state.audioView}
 						chatView={this.state.chatView}
+						audioChatView={this.state.audioChatView}
+						toggleAudioChatViewFunc={this.toggleAudioChatView}
 						toggleDrawer={this.toggleDrawer}
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
 						enableMyVideo={this.state.enableMyVideo}
@@ -4876,66 +7228,294 @@ class ConferenceBox extends Component {
 				<View style={conferenceContainer}>
 					{this.props.isLandscape ? null : this.renderAudioDeviceButtons()}
 
-					<View style={mediaContainer}>
-                    { true && (
-						<ConferenceAudioParticipantList >
-							{audioParticipants}
-						</ConferenceAudioParticipantList>
-					) }
-					</View>
+					{/* audioViewActionBar moved BELOW the body — see
+					    the matching block right above the closing
+					    </View> of conferenceContainer. The bar now
+					    pins to the bottom of the column via
+					    marginTop:'auto', matching the screen position
+					    of AudioCallBox.portraitButtonContainer. */}
 
-				{Platform.OS === 'android'?	
-					<KeyboardAvoidingView
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
-					  style={chatContainer}
-					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-					  keyboardVerticalOffset={conferenceHeaderHeight + topInset} // adjust if you have a header
-					>
-					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  messages={renderMessages}
-					  isTyping={this.state.isTyping}
-					  onLongPress={this.onLongMessagePress}
-					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
-					  renderBubble={this.renderBubble}
-					  renderMessageImage={this.renderMessageImage}
-					  renderMessageVideo={this.renderMessageVideo}
-					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
-					  scrollToBottom
-					  lockStyle={styles.lock}
-					  inverted={true}
-					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-					  infiniteScroll
-					/>
-				   </KeyboardAvoidingView>
-				 :
+					{/* Audio-view body. The action-bar toggle picks
+					    between the participant list and the chat in
+					    both portrait and landscape.
 
-				 <View style={chatContainer}>
-					<GiftedChat
-					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
-					  messages={renderMessages}
-					  isTyping={this.state.isTyping}
-					  onLongPress={this.onLongMessagePress}
-					  onSend={this.onSendMessage}
-					  renderCustomView={this.renderCustomView}
-					  renderSend={this.renderSend}
-					  renderBubble={this.renderBubble}
-					  renderMessageImage={this.renderMessageImage}
-					  renderMessageVideo={this.renderMessageVideo}
-					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-					  alwaysShowSend={true}
-					  scrollToBottom
-					  lockStyle={styles.lock}
-					  inverted={true}
-					  timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-					  infiniteScroll
-					/>
-					</View>
-				 }
+					    Layout note: the AudioSpeedometer used to live
+					    ABOVE the participant list as a sibling block.
+					    User requested a two-column arrangement instead
+					    — speedometer in the LEFT column, participants in
+					    the RIGHT column. The block below builds that
+					    side-by-side row, and the speedometer column is
+					    only rendered while the call is flowing
+					    (established/accepted) so it doesn't show stale
+					    zeros during ringing. In landscape the action
+					    bar is reorganised into the navbar, but the
+					    side-by-side layout still applies. */}
+					{/* PORTRAIT speedometer — above the participants list,
+					    centered. Rendered as a sibling of the column
+					    wrapper below (NOT inside it) because the wrapper
+					    has overflow:'hidden' for ScrollView clipping,
+					    which would also clip a child speedometer with
+					    a negative top margin. Only shows once the call
+					    is flowing so the dial doesn't sit on zeros
+					    during ringing, and only in the participants
+					    tab so it doesn't appear over the chat. */}
+					{!this.state.isLandscape
+					 && !this.state.audioChatView
+					 && !this.props.isFolded
+					 && this.state.call
+					 && (this.state.call.state === 'established'
+					     || this.state.call.state === 'accepted') ? (
+						<View style={{
+							alignItems: 'center',
+							// Speedometer sits 30 px below the conference
+							// overlay navbar per user request. Same value
+							// on both platforms — the previous platform-
+							// gated negative margin (Android -20 / iOS 0)
+							// pulled the dial up into the appbar; flat
+							// +30 keeps a comfortable gap below the
+							// navbar on both.
+							// Folded (cover-display) mode hides this
+							// block entirely (the !this.props.isFolded
+							// gate above) — the dial doesn't fit the
+							// narrow cover screen and the user asked
+							// for it gone there.
+							marginTop: 30,
+							paddingBottom: 6,
+							zIndex: 2,
+						}}>
+							<AudioSpeedometer
+								call={this.state.call}
+								isFolded={false}
+							/>
+						</View>
+					) : null}
 
+					{(() => {
+					// Audio-view body.
+					//
+					// Portrait: single-column participant list (the
+					//   speedometer sibling block above sits over it).
+					// Landscape: exact 50/50 split per user request.
+					//   LEFT half  → AudioSpeedometer, centered both
+					//                axes. flex:1 so it grows with the
+					//                screen width.
+					//   RIGHT half → participants stacked VERTICALLY
+					//                (single column of tiles), not the
+					//                two-column landscape grid — the
+					//                row half-width is already narrow,
+					//                so forcing one-tile-per-row keeps
+					//                each tile readable.
+					//                Achieved by passing
+					//                isLandscape={false} to
+					//                ConferenceAudioParticipantList,
+					//                which suppresses the 2-column wrap.
+					//   Speedometer column only renders once the call
+					//   is actually flowing (established/accepted);
+					//   before then the row collapses to participants-
+					//   only so the user doesn't stare at a zeros dial
+					//   during ringing.
+					// Folded (cover-display) audio conference: drop the
+					// speedometer entirely — the cover screen doesn't
+					// have room for it in either orientation, and the
+					// dial duplicated information already shown in the
+					// navbar speedometer for the user's main call.
+					const speedometerLive = !this.props.isFolded
+						&& this.state.call
+						&& (this.state.call.state === 'established'
+						    || this.state.call.state === 'accepted');
+
+					// Force vertical stacking in BOTH orientations:
+					//   • Portrait was already isLandscape={false} →
+					//     unchanged behaviour.
+					//   • Landscape used to pass isLandscape={true},
+					//     which triggers ConferenceAudioParticipantList's
+					//     2-column wrap. With the speedometer eating the
+					//     left half of the screen, the right half is too
+					//     narrow for a 2-column grid, so override to
+					//     false and stack tiles top-to-bottom in that
+					//     half.
+					const _listIsLandscape = false;
+
+					// Folded (cover-display) audio conference: nudge the
+					// participant list 10 px down from the chrome above
+					// per user request. Other form factors keep the
+					// natural baseline so the layout doesn't shift on
+					// phones / tablets. The temporary red debug border
+					// previously here has been removed once the layout
+					// was confirmed visually.
+					const _listMarginTop = this.props.isFolded ? 10 : 0;
+					const participantsListColumn = (
+						<View style={{flex: 1, overflow: 'hidden', marginTop: _listMarginTop}}>
+							<ScrollView>
+								<View style={mediaContainer}>
+									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
+										{audioParticipants}
+									</ConferenceAudioParticipantList>
+								</View>
+								{/* SIP & invited tiles also go through
+								    ConferenceAudioParticipantList so
+								    the (portrait-grid / landscape-stack)
+								    rule above applies uniformly. */}
+								<View style={sipAudioParticipants && sipAudioParticipants.length > 0 ? styles.sipParticipantsGroup : null}>
+									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
+										{sipAudioParticipants}
+									</ConferenceAudioParticipantList>
+								</View>
+								<View style={invitedTiles && invitedTiles.length > 0 ? styles.invitedParticipantsGroup : null}>
+									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
+										{invitedTiles}
+									</ConferenceAudioParticipantList>
+								</View>
+							</ScrollView>
+						</View>
+					);
+
+					// LANDSCAPE: 50/50 row. flex:1 on BOTH children
+					// gives an exact half-half split — the
+					// AudioSpeedometer is centered in its half, the
+					// list scrolls vertically in the other.
+					// PORTRAIT: just hand the list column through —
+					// no wrapper, no speedometer.
+					// FOLDED (cover display): skip the 50/50 split
+					// even in landscape so the participants get the
+					// full width — with the speedometer hidden, the
+					// left half would otherwise be a permanently empty
+					// column eating the narrow cover screen.
+					const participantsColumn = (this.state.isLandscape && !this.props.isFolded) ? (
+						<View style={{flex: 1, flexDirection: 'row'}}>
+							<View style={{flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4}}>
+								{speedometerLive ? (
+									// transform translateY:-50 lifts the
+									// dial 50 px from its center-justified
+									// resting position. History on this
+									// knob: -10 → -100 → -50 ("less 50px"
+									// from -100). Translate is a pure
+									// paint shift, so the surrounding
+									// flexbox row math is undisturbed —
+									// the right column's participant list
+									// stays in place. Landscape only.
+									<View style={{transform: [{translateY: -50}]}}>
+										<AudioSpeedometer
+											call={this.state.call}
+											isFolded={false}
+										/>
+									</View>
+								) : null}
+							</View>
+							{participantsListColumn}
+						</View>
+					) : participantsListColumn;
+
+					// Original KAV config restored — behavior='height'
+					// on Android (so the input bar lifts above the
+					// keyboard) and keyboardVerticalOffset set to
+					// the navbar + status-bar inset distance. The
+					// chat's vertical positioning relative to the
+					// navbar is now controlled by the negative
+					// marginTop on chatContainer above, not by
+					// fighting the KAV config.
+					const chatColumn = (Platform.OS === 'android'
+						? (
+							<KeyboardAvoidingView
+								key={this.state.isLandscape ? 'landscape' : 'portrait'}
+								style={chatContainer}
+								behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+								keyboardVerticalOffset={conferenceHeaderHeight + topInset}
+							>
+								<GiftedChat
+									key={this.state.isLandscape ? 'landscape' : 'portrait'}
+									messages={renderMessages}
+									isTyping={this.state.isTyping}
+									onLongPress={this.onLongMessagePress}
+									onSend={this.onSendMessage}
+									renderCustomView={this.renderCustomView}
+									renderSend={this.renderSend}
+									renderBubble={this.renderBubble}
+									renderMessageImage={this.renderMessageImage}
+									renderMessageVideo={this.renderMessageVideo}
+									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
+									alwaysShowSend={true}
+									scrollToBottom
+									lockStyle={styles.lock}
+									inverted={true}
+									timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
+									infiniteScroll
+								/>
+							</KeyboardAvoidingView>
+						)
+						: (
+							// iOS path. Wrapped in KAV with
+							// behavior='padding' so the input bar
+							// lifts above the soft keyboard. The
+							// keyboardVerticalOffset is set to the
+							// bottom safe-area inset so the
+							// padding-bottom KAV applies when the
+							// keyboard rises equals
+							// (keyboard_height - bottomInset). That
+							// closes the ~34 dp gap the user saw
+							// between the input bar and the keyboard
+							// on iPhones with a home indicator —
+							// without the offset, GiftedChat's
+							// default safe-area handling left the
+							// input bar bottomInset above the
+							// keyboard top.
+							<KeyboardAvoidingView
+								key={this.state.isLandscape ? 'landscape' : 'portrait'}
+								style={chatContainer}
+								behavior="padding"
+								keyboardVerticalOffset={bottomInset}
+							>
+								<GiftedChat
+									key={this.state.isLandscape ? 'landscape' : 'portrait'}
+									messages={renderMessages}
+									isTyping={this.state.isTyping}
+									onLongPress={this.onLongMessagePress}
+									onSend={this.onSendMessage}
+									renderCustomView={this.renderCustomView}
+									renderSend={this.renderSend}
+									renderBubble={this.renderBubble}
+									renderMessageImage={this.renderMessageImage}
+									renderMessageVideo={this.renderMessageVideo}
+									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
+									alwaysShowSend={true}
+									scrollToBottom
+									lockStyle={styles.lock}
+									inverted={true}
+									timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
+									infiniteScroll
+								/>
+							</KeyboardAvoidingView>
+						)
+					);
+
+					// Same toggle behavior in both orientations:
+					// exactly one of {participants, chat} is on
+					// screen, picked by the audioChatView state which
+					// the action-bar toggle button flips.
+					// While the chat is on screen, the bottom action
+					// bar is suppressed (see audioViewActionBar above)
+					// and chatBackToAudioButton — a single round
+					// button — is rendered just above the chat as the
+					// only call-control affordance in that view.
+					return (
+						<Fragment>
+							{!this.state.audioChatView ? audioListTopActionBar : null}
+							{!this.state.audioChatView ? participantsColumn : null}
+							{this.state.audioChatView ? chatBackToAudioButton : null}
+							{this.state.audioChatView ? chatColumn : null}
+						</Fragment>
+					);
+				})()}
+
+				{/* Action bar pinned to the bottom of the audio-view
+				    column. Its marginTop:'auto' eats any extra
+				    vertical space above it so the buttons sit at the
+				    same screen position as AudioCallBox's portrait
+				    button row. Landscape suppresses this (the buttons
+				    are folded into the ConferenceHeader via
+				    buttons.bottom instead), so audioViewActionBar is
+				    null in that orientation. */}
+				{audioViewActionBar}
 				</View>
 
 				{/* Floating self-PIP for audio view, only when the
@@ -5237,7 +7817,16 @@ class ConferenceBox extends Component {
 				// (non-stalled) count so the grid recalculates around
 				// remotes whose video has gone silent.
 				const visibleCount = this.visibleParticipants.length;
-				if (visibleCount === 1 || visibleCount === 3) {
+				// Only include "myself" in the matrix when the user
+				// actually wants their video shown. Without these
+				// gates the user could still appear as a tile after
+				// Cancel-ing the camera-start preview (enableMyVideo:
+				// false, videoMuted: true) — the gates mirror what
+				// the floating PIP getter `showMyself` already
+				// applies so the two surfaces are consistent.
+				if ((visibleCount === 1 || visibleCount === 3)
+				    && this.state.enableMyVideo
+				    && !this.state.videoMuted) {
 					videos.push(
 						<ConferenceParticipantSelf
 						  key="myself2"
@@ -5249,11 +7838,29 @@ class ConferenceBox extends Component {
 						  generatedVideoTrack={this.props.generatedVideoTrack}
 						  cameraFacing={this.state.cameraFacing}
 						  big={true}
+						  fullScreen={this.fullScreen}
 						/>
 					);
 				}
 
 				this.state.participants.forEach((p, idx) => {
+					// Bridge participants (PSTN gateway endpoints)
+					// only carry audio — there's no video track to
+					// render, so a video tile for them is just a
+					// black square or worse, a stretched avatar. Skip
+					// them from the matrix AND the side participant
+					// list AND the drawer (we early-return after the
+					// gate). Audio view still shows them via the
+					// dedicated SIP / bridge participant group in the
+					// audioOnlyView branch. Detection mirrors the
+					// audio path's _looksLikeBridge: display-name
+					// contains "bridge" OR URI sits under the
+					// conference domain.
+					const _bridgeDn = (p.identity && p.identity._displayName) || '';
+					const _bridgeUri = (p.identity && p.identity._uri) || '';
+					if (/bridge/i.test(_bridgeDn) || _bridgeUri.indexOf('@conference.') > -1) {
+						return;
+					}
 					// We still want stalled participants to show in the
 					// drawer below, so we don't early-return — instead
 					// each tile push is gated.
@@ -5396,7 +8003,16 @@ class ConferenceBox extends Component {
 
 		buttonsContainer = {
 			position: 'absolute',
-			top: conferenceHeader.height,
+			// Floating call-bar moved from `top: conferenceHeader.height`
+			// (just under the navbar) to `bottom: 50` so it matches
+			// every other surface's bar height — the audio-conference
+			// action bar (audioViewActionBar uses bottom:50), the 1:1
+			// AudioCall and VideoCall portrait button containers, and
+			// the LocalMedia / pre-call bars all sit at bottom:50.
+			// The video conference is now consistent with the rest;
+			// the user no longer has to look in a different place
+			// when switching between call modes.
+			bottom: 50,
 			height: conferenceHeaderHeight,
 			left: 0,
 			right: 0,
@@ -5482,9 +8098,7 @@ class ConferenceBox extends Component {
 					// left or right. marginLeft: -leftInset cancels
 					// the native iOS left-notch offset so content
 					// reaches x=0, and width: width carries it all
-					// the way to the right device edge (the parent
-					// SafeAreaView's right padding is allowed to
-					// overflow — no visual clipping).
+					// the way to the right device edge.
 					container = {
 						width: width,
 						height: height,
@@ -5700,6 +8314,9 @@ class ConferenceBox extends Component {
                     show={this.state.showInviteModal && !this.state.reconnectingCall}
                     close={this.toggleInviteModal}
                     conferenceUrl={conferenceUrl}
+                    conferenceRoom={conferenceRoom}
+                    sylkDomain={this.props.sylkDomain}
+                    conferenceSettings={this.props.conferenceSettings}
                 />
                     
  				{!this.fullScreen || this.state.chatView ?
@@ -5711,8 +8328,14 @@ class ConferenceBox extends Component {
 						callContact={this.props.callContact}
 						isTablet={this.props.isTablet}
 						isLandscape={this.state.isLandscape}
+						/* Same folded-mode kebab-item gate as the
+						   audio-only render path above — see that
+						   block for the rationale. */
+						isFolded={this.props.isFolded}
 						call={this.state.call}
-						participants={this.state.participants.length}
+						participantsCount={_otherParticipantsCount}
+						serverDuration={this.state.conferenceDurationAtJoin}
+						videoParticipantCount={_remoteVideoSpeakerCount}
 						reconnectingCall={this.state.reconnectingCall}
 						buttons={buttons}
 						audioOnly={this.audioOnlyView}
@@ -5722,6 +8345,9 @@ class ConferenceBox extends Component {
 						info={this.state.info}
 						goBackFunc={this.props.goBackFunc}
 						toggleInviteModal={this.toggleInviteModal}
+						bridgePresent={!!this._bridgePresent}
+						showBridge={this.state.showBridge}
+						toggleBridgeVisibility={this.toggleBridgeVisibility}
 						inviteToConferenceFunc={this.props.inviteToConferenceFunc}
 						callState={this.props.callState}
 						toggleAudioParticipantsFunc={this.toggleAudioParticipants}
@@ -5729,6 +8355,8 @@ class ConferenceBox extends Component {
 						hangUpFunc={this.hangup}
 						audioView={this.state.audioView}
 						chatView={this.state.chatView}
+						audioChatView={this.state.audioChatView}
+						toggleAudioChatViewFunc={this.toggleAudioChatView}
 						toggleDrawer={this.toggleDrawer}
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
 						enableMyVideo={this.state.enableMyVideo}
@@ -5886,11 +8514,29 @@ class ConferenceBox extends Component {
 					<TouchableWithoutFeedback onPress={this.toggleFullScreen}>
 						<View style={[mediaContainer]}>
 							<View style={[videoGridContainer, gridLayoutContainer]}>
-								{videos.slice(0, 4).map((video, index) => (
-									<View key={index} style={this.getVideoLayout().item}>
-										{video}
+								{videos.length === 0 ? (
+									<View style={{
+										flex: 1,
+										width: '100%',
+										justifyContent: 'center',
+										alignItems: 'center',
+										padding: 24,
+									}}>
+										<Text style={{
+											color: 'white',
+											fontSize: 18,
+											textAlign: 'center',
+										}}>
+											No video participants
+										</Text>
 									</View>
-								))}
+								) : (
+									videos.slice(0, 4).map((video, index) => (
+										<View key={index} style={this.getVideoLayout().item}>
+											{video}
+										</View>
+									))
+								)}
 							</View>
 						</View>
 					</TouchableWithoutFeedback>
@@ -5982,19 +8628,38 @@ class ConferenceBox extends Component {
 			  <View
 				style={myselfContainer}
 			  >
+				{(() => {
+				  // Resolve the PIP position for the non-solo branch:
+				  // honour the dragged pipPosition when it's a valid
+				  // on-screen rect, otherwise fall back to the default
+				  // top-right-under-navbar placement. Re-clamps on every
+				  // render so an orientation change doesn't strand the
+				  // PIP off-screen. Same logic the audio-view PIP uses.
+				  const _winDims = Dimensions.get('window');
+				  const _saved = this.state.pipPosition;
+				  const _valid = _saved
+				      && _saved.x >= 0
+				      && _saved.y >= 0
+				      && _saved.x + this._PIP_W <= _winDims.width
+				      && _saved.y + this._PIP_H <= _winDims.height;
+				  const _videoPipPos = _valid ? _saved : this._getDefaultPipPosition();
+				  const _isSoloFullscreen = SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0;
+				  return (
 				<View
 				  // In solo-fullscreen the self-video covers the whole parent,
 				  // which would otherwise intercept taps and hide the floating
 				  // control bar that lives behind it in tree order. We set
 				  // pointerEvents="none" so taps fall through to the button bar
 				  // (and header), keeping the controls tappable and persistent.
-				  pointerEvents={
-					SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0
-					  ? 'none'
-					  : 'auto'
-				  }
+				  pointerEvents={_isSoloFullscreen ? 'none' : 'auto'}
+				  // Drag handlers wired to the existing _pipPanResponder
+				  // (shared with the audio-view PIP). PanResponder claims
+				  // the gesture only after a ~5 px move, so quick taps
+				  // still reach overlays inside the PIP wrapper without
+				  // immediately initiating a drag.
+				  {...(!_isSoloFullscreen ? this._pipPanResponder.panHandlers : {})}
 				  style={
-					SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0
+					_isSoloFullscreen
 					  ? {
 						  // Fill the entire parent edge-to-edge. Parent
 						  // (myselfContainer) is already extended past the
@@ -6011,25 +8676,13 @@ class ConferenceBox extends Component {
 						  position: 'absolute',
 						  width: 120,
 						  height: 160,
-						  ...corner,
+						  left: _videoPipPos.x,
+						  top: _videoPipPos.y,
 						}
 				  }
 				>
-				  <TouchableOpacity
+				  <View
 					style={{ flex: 1 }}
-					onPress={() => {
-					  // When alone, we intentionally keep the UI chrome (header
-					  // and button bar) always visible, so taps on the self
-					  // video should NOT toggle fullscreen or cycle corners —
-					  // just absorb the tap.
-					  if (SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0) {
-						return;
-					  }
-					  const cornerOrder = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'];
-					  const currentIndex = cornerOrder.indexOf(this.state.myVideoCorner);
-					  const nextIndex = (currentIndex + 1) % cornerOrder.length;
-					  this.setState({ myVideoCorner: cornerOrder[nextIndex] });
-					}}
 				  >
 					{/* Key includes viewMode + enableMyVideo so the
 				    component fully remounts whenever the parent
@@ -6054,22 +8707,20 @@ class ConferenceBox extends Component {
 					  generatedVideoTrack={this.props.generatedVideoTrack}
 					  cameraFacing={this.state.cameraFacing}
 					  big={SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0}
+					  fullScreen={this.fullScreen}
 					  aspectRatio={this.state.aspectRatio}
 					/>
-				  </TouchableOpacity>
+				  </View>
 				  {/* Close (×) button overlaying the top-right of
 				      the mirror PIP. Tap → enableMyVideo=false →
 				      showMyself returns false → PIP is suppressed
 				      on the next render. Bring it back via the
-				      kebab's "Show mirror" item. Wrapped in a
-				      TouchableOpacity that doesn't propagate the
-				      tap (the outer TouchableOpacity above handles
-				      corner-cycle taps; without stopPropagation a
-				      tap on the X would BOTH close and cycle).
-				      Only rendered when self is actually in the
-				      floating PIP (showMyself=true); when self is
-				      in the matrix as a regular tile the close
-				      button wouldn't apply. */}
+				      kebab's "Show mirror" item. The outer wrapper
+				      View handles drag via PanResponder (which only
+				      claims the gesture after ~5 px of movement, so
+				      a quick tap on the X reaches this handler
+				      first). Only rendered when self is actually in
+				      the floating PIP (showMyself=true). */}
 				  {this.showMyself ? (
 				    <TouchableOpacity
 				      onPress={() => this.setState({enableMyVideo: false})}
@@ -6093,6 +8744,8 @@ class ConferenceBox extends Component {
 				    </TouchableOpacity>
 				  ) : null}
 				</View>
+				  );
+				})()}
 
 			  </View>
 
@@ -6145,6 +8798,19 @@ class ConferenceBox extends Component {
 			    Accept → toggleViewMode (which resumes the
 			    camera). Cancel → stay audio-only; latch
 			    prevents re-prompting. */}
+			{/* First-time audio→video toggle preview. Same look as
+			    Call.js's mid-call audio→video upgrade prompt:
+			    local-camera preview in the upper portion + an
+			    "Enable your camera?" action panel at the bottom
+			    with Cancel / Enable camera buttons. Fires once per
+			    conference session. */}
+			<StartCameraPreviewModal
+				visible={this.state.cameraStartPreviewVisible}
+				localStream={this.props.call && this.props.call.getLocalStreams ? this.props.call.getLocalStreams()[0] : null}
+				onStart={this.onCameraStartPreviewAccept}
+				onCancel={this.onCameraStartPreviewCancel}
+			/>
+
 			<UpgradeVideoModal
 				visible={this.state.cameraPromptVisible}
 				direction="incoming"
@@ -6170,6 +8836,7 @@ ConferenceBox.propTypes = {
     connection          : PropTypes.object,
     hangup              : PropTypes.func,
     saveParticipant     : PropTypes.func,
+    updateContactOnConferenceInvite : PropTypes.func,
     saveConferenceMessage: PropTypes.func,
     updateConferenceMessage : PropTypes.func,
     deleteConferenceMessage : PropTypes.func,
@@ -6184,6 +8851,7 @@ ConferenceBox.propTypes = {
     isTablet            : PropTypes.bool,
     muted               : PropTypes.bool,
     defaultDomain       : PropTypes.string,
+    pstnRules           : PropTypes.object,
     inFocus             : PropTypes.bool,
     reconnectingCall    : PropTypes.bool,
     audioOnly           : PropTypes.bool,

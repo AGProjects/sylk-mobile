@@ -2,11 +2,35 @@ import React from 'react';
 import { View, StyleSheet, Linking } from 'react-native';
 import ParsedText from 'react-native-parsed-text';
 import Icon from 'react-native-vector-icons/FontAwesome';
+import DarkModeManager from '../DarkModeManager';
+
 export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) => {
   if (!currentMessage || !currentMessage.text) return null;
 
   const isIncoming = currentMessage.direction === 'incoming';
-  const linkStyle = isIncoming ? styles.incomingLinkText : styles.linkText;
+
+  // Pull text + link colours from the active theme so they read
+  // correctly against the bubble colour ChatBubble paints.
+  //
+  // Night theme:
+  //   incoming bubble = green   → incoming text = white (legacy)
+  //   outgoing bubble = white   → outgoing text = black
+  // Day theme (WhatsApp-styled):
+  //   incoming bubble = white   → incoming text = dark (#111B21)
+  //   outgoing bubble = #DCF8C6 → outgoing text = dark (#111B21)
+  //
+  // Without this lookup the incoming bubble in Day mode painted
+  // white-on-white and the body was invisible.
+  const theme = DarkModeManager.getTheme();
+  const incomingTextColor = theme.bubbleIncomingText;
+  const outgoingTextColor = theme.bubbleOutgoingText;
+  const incomingLinkColor = theme.isDark ? '#FFFFFF' : '#1E88E5';
+  const outgoingLinkColor = '#1E88E5';
+
+  const linkStyle = {
+    color: isIncoming ? incomingLinkColor : outgoingLinkColor,
+    textDecorationLine: 'underline',
+  };
 
   return (
     <View
@@ -30,7 +54,7 @@ export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) =
 		  <ParsedText
 			style={[
 			  styles.messageText,
-			  isIncoming && styles.incomingText, // 👈 conditional
+			  { color: isIncoming ? incomingTextColor : outgoingTextColor },
 			]}
 			parse={[
 			  {
@@ -64,22 +88,11 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
 
+  // Base text style. Colour is no longer baked in here — it's
+  // computed per-render from the active theme + message direction
+  // (see incomingTextColor / outgoingTextColor above) so flipping
+  // Day/Night doesn't leave white-on-white bubbles behind.
   messageText: {
-    color: '#000',
-  },
-
-  incomingText: {
-    color: '#fff',
-  },
-
-  linkText: {
-    color: '#1E88E5',
-    textDecorationLine: 'underline',
-  },
-
-  incomingLinkText: {
-    color: 'white',
-    textDecorationLine: 'underline',
   },
 
   hashtag: {
@@ -89,4 +102,3 @@ const styles = StyleSheet.create({
     marginRight: 5,
   },
 });
-

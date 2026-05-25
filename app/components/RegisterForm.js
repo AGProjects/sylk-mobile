@@ -1,15 +1,28 @@
 import React, { Component } from 'react';
-import { View, Text, Linking, Keyboard, ScrollView } from 'react-native';
+import {
+    View,
+    Text,
+    Linking,
+    Keyboard,
+    ScrollView,
+    FlatList,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+} from 'react-native';
 import PropTypes from 'prop-types';
 import ipaddr from 'ipaddr.js';
 import autoBind from 'auto-bind';
 
-import { Button, TextInput, Title, Subheading, IconButton } from 'react-native-paper';
+import { Button, TextInput, Title, Subheading, IconButton, Surface, Divider } from 'react-native-paper';
 import EnrollmentModal from './EnrollmentModal';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
 import storage from '../storage';
 import { StyleSheet } from 'react-native';
+import containerStyles from '../assets/styles/ContainerStyles';
 
 const styles = StyleSheet.create({
   landscapeContainer: {
@@ -133,13 +146,109 @@ const styles = StyleSheet.create({
     color: 'green',
   },
 
+	// Mirrors the accountList style in SwitchAccountModal: cap with
+	// maxHeight so anything past ~5 rows scrolls. The cap is the
+	// precondition for the pan gesture to engage — without it the
+	// ScrollView sizes to content and there is nothing to scroll.
 	serverList: {
-		maxHeight: 240, // ~3 buttons
+		maxHeight: 240,
 		marginTop: 10,
+		width: 300,
+		alignSelf: 'center',
+		paddingHorizontal: 6,
 	},
-	
+
 	serverItem: {
 		marginVertical: 5,
+	},
+
+	// Plain TouchableOpacity row styles, used in place of
+	// react-native-paper's <Button>. The Button uses a
+	// TouchableRipple/Pressable that recognises press-in instantly and
+	// was winning the pan gesture from the parent ScrollView — the user
+	// saw a scrollbar but the list wouldn't drag. TouchableOpacity does
+	// not greedily capture pan gestures, so the ScrollView reliably
+	// scrolls while taps still register normally.
+	serverRow: {
+		paddingVertical: 12,
+		paddingHorizontal: 16,
+		marginVertical: 5,
+		borderRadius: 4,
+		borderWidth: 1,
+		borderColor: 'rgba(255,255,255,0.6)',
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
+
+	serverRowSelected: {
+		backgroundColor: '#6200ee',
+		borderColor: '#6200ee',
+	},
+
+	serverRowText: {
+		color: 'white',
+		fontSize: 14,
+	},
+
+	serverRowTextSelected: {
+		color: 'white',
+		fontWeight: '600',
+	},
+
+	// --- Picker Modal styles -------------------------------------------
+	// Inside the Surface (white card on dark overlay), so text is dark.
+	pickerTitle: {
+		fontSize: 18,
+		fontWeight: '600',
+		textAlign: 'center',
+		paddingHorizontal: 20,
+		paddingTop: 14,
+		paddingBottom: 10,
+		color: '#222',
+	},
+
+	pickerScroll: {
+		// Mirrors accountList in SwitchAccountModal — capped height so
+		// anything past ~5 rows scrolls.
+		maxHeight: 240,
+		paddingHorizontal: 12,
+		paddingTop: 6,
+		paddingBottom: 6,
+	},
+
+	// Mirrors SwitchAccountModal.accountRow: flexDirection row so the
+	// Text gets the bulk of the row's width and the Button sits on the
+	// right. The Text has no touch handler → drags on the Text fall
+	// through to the ScrollView, which is why the modal scrolls
+	// without getting stuck.
+	pickerRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'space-between',
+		paddingVertical: 8,
+		paddingHorizontal: 4,
+	},
+
+	pickerRowText: {
+		flex: 1,
+		fontSize: 15,
+		marginRight: 12,
+		color: '#222',
+	},
+
+	pickerRowTextSelected: {
+		color: '#3700b3',
+		fontWeight: '600',
+	},
+
+	pickerSelectButton: {
+		minWidth: 90,
+	},
+
+	pickerButtonRow: {
+		flexDirection: 'row',
+		justifyContent: 'center',
+		paddingVertical: 12,
 	},
 });
 
@@ -178,6 +287,11 @@ class RegisterForm extends Component {
             passwordVisible: false,
             registering: false,   // login in progress
             remember: false,
+            // Drives the server-picker Modal. Inline picker scrolling was
+            // unreliable in this layout; the SwitchAccountModal pattern
+            // (Modal + Surface + ScrollView) is what actually scrolls, so
+            // we use it for the list of known Sylk servers.
+            showServerListModal: false,
             showEnrollmentModal: false,
             enrollmentUrl: props.enrollmentUrl,
             showServer: false,
@@ -354,14 +468,26 @@ class RegisterForm extends Component {
 			newSylkDomain: domain,
 			wsUrl: '',
 			domainChecked: true,
-			showServer: false // optional: go back to login view
+			showServer: false, // optional: go back to login view
+			// Always dismiss the picker Modal on selection — the inline
+			// "showServer" view is what the user returns to (briefly)
+			// before the actual server-change settles.
+			showServerListModal: false,
 		});
 
 		setTimeout(() => {
 		    this.handleServerChange(true);
 		}, 10);
 
-	};                 
+	};
+
+	openServerListModal = () => {
+		this.setState({ showServerListModal: true });
+	};
+
+	closeServerListModal = () => {
+		this.setState({ showServerListModal: false });
+	};
 
 	async handleServerChange(force=false) {
 	    console.log('---- handleServerChange', this.state.sylkDomain, '->', this.state.newSylkDomain, this.state.domainChecked);
@@ -643,7 +769,7 @@ class RegisterForm extends Component {
 	   if (this.props.showQRCodeScanner) {
         return (
             <View style={containerClass}>
-				<Title style={styles.title}>Sylk</Title>
+				<Title style={styles.title}>Blink</Title>
                 <Subheading style={styles.subtitle}>Scan domain...</Subheading>
 				<QRCodeScanner
 					onRead={this.QRCodeRead}
@@ -674,7 +800,7 @@ class RegisterForm extends Component {
 
         return (
             <View style={containerClass}>
-                <Title style={styles.title}>Sylk</Title>
+                <Title style={styles.title}>Blink</Title>
                 <Subheading style={styles.subtitle}>{subtitle}</Subheading>
 
                {!this.state.showServer ?
@@ -863,22 +989,21 @@ class RegisterForm extends Component {
                 :null}
 
 				{this.state.showServer && sortedServers.length > 0 && sylkServers.indexOf(this.state.newSylkDomain) > -1? (
-					<ScrollView style={styles.serverList} nestedScrollEnabled>
-						{sortedServers.map((domain, index) => {
-							const isSelected = domain === this.state.newSylkDomain;
-				
-							return (
-								<Button
-									key={index}
-									mode={isSelected ? "contained" : "outlined"}
-									style={styles.serverItem}
-									onPress={() => this.selectSylkServer(domain)}
-								>
-									{domain}
-								</Button>
-							);
-						})}
-					</ScrollView>
+					// Trigger for the Modal-based picker. Inline scrolling
+					// in this layout didn't work; tapping this button opens
+					// a Modal (rendered at the bottom of the component)
+					// that follows the working SwitchAccountModal pattern.
+					<View style={styles.buttonRow}>
+						<Button
+							style={styles.serverButton}
+							icon="format-list-bulleted"
+							mode="outlined"
+							onPress={this.openServerListModal}
+							accessibilityLabel="Show list of known Sylk servers"
+						>
+							{`Show servers (${sortedServers.length})`}
+						</Button>
+					</View>
 				) : null}
 
 				{this.state.showServer ? (
@@ -892,7 +1017,89 @@ class RegisterForm extends Component {
                 <Text style={styles.wsUrl}>
                     {this.state.wsUrlVisible && false ? this.state.wsUrl : ''}
                 </Text>
-                
+
+                {/* Server-picker Modal — mirrors SwitchAccountModal so
+                    scrolling is identical to the other working modal
+                    pickers in the app: Modal overlay → centered Surface
+                    "card" → ScrollView with maxHeight inside the card.
+                    The Surface's bounded layout is what makes the
+                    inner ScrollView's maxHeight actually clamp and the
+                    pan gesture engage. */}
+                <Modal
+                    visible={this.state.showServerListModal}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={this.closeServerListModal}
+                >
+                    <TouchableWithoutFeedback onPress={this.closeServerListModal}>
+                        <View style={containerStyles.overlay}>
+                            <KeyboardAvoidingView
+                                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                                keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
+                            >
+                                <TouchableWithoutFeedback onPress={() => {}}>
+                                    <Surface style={containerStyles.modalSurface}>
+                                        <Text style={styles.pickerTitle}>
+                                            Choose a Sylk server
+                                        </Text>
+                                        <Divider />
+                                        <ScrollView
+                                            style={styles.pickerScroll}
+                                            keyboardShouldPersistTaps="handled"
+                                        >
+                                            {sortedServers.map((domain) => {
+                                                const isSelected = domain === this.state.newSylkDomain;
+                                                return (
+                                                    // Row mirrors SwitchAccountModal's accountRow:
+                                                    // a non-touchable <View> with a <Text> taking
+                                                    // flex:1 (no touch handler — drags here go
+                                                    // straight to the ScrollView) plus a small
+                                                    // compact Button on the right that fires
+                                                    // selection. This is the structural reason
+                                                    // SwitchAccountModal's list scrolls smoothly
+                                                    // and the previous TouchableOpacity-wrapped
+                                                    // rows scrolled once and got stuck.
+                                                    <View key={domain} style={styles.pickerRow}>
+                                                        <Text
+                                                            style={[
+                                                                styles.pickerRowText,
+                                                                isSelected ? styles.pickerRowTextSelected : null,
+                                                            ]}
+                                                            numberOfLines={1}
+                                                            ellipsizeMode="middle"
+                                                        >
+                                                            {domain}
+                                                        </Text>
+                                                        <Button
+                                                            mode={isSelected ? 'contained' : 'outlined'}
+                                                            compact
+                                                            style={styles.pickerSelectButton}
+                                                            accessibilityLabel={`Use ${domain}`}
+                                                            onPress={() => this.selectSylkServer(domain)}
+                                                        >
+                                                            {isSelected ? 'Current' : 'Use'}
+                                                        </Button>
+                                                    </View>
+                                                );
+                                            })}
+                                        </ScrollView>
+                                        <Divider />
+                                        <View style={styles.pickerButtonRow}>
+                                            <Button
+                                                mode="outlined"
+                                                onPress={this.closeServerListModal}
+                                                accessibilityLabel="Cancel"
+                                            >
+                                                Cancel
+                                            </Button>
+                                        </View>
+                                    </Surface>
+                                </TouchableWithoutFeedback>
+                            </KeyboardAvoidingView>
+                        </View>
+                    </TouchableWithoutFeedback>
+                </Modal>
+
                 <EnrollmentModal
                     enrollmentUrl={this.state.enrollmentUrl}
                     show={this.state.showEnrollmentModal}

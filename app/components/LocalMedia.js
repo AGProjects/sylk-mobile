@@ -9,6 +9,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import CallOverlay from './CallOverlay';
 import styles from '../assets/styles/LocalMediaStyles';
 import * as utils from '../utils';
+import DarkModeManager from '../DarkModeManager';
 
 
 class LocalMedia extends Component {
@@ -682,10 +683,20 @@ class LocalMedia extends Component {
                                 sits just above the camera/audio-device
                                 picker bar at the bottom of the cover
                                 display, leaving room for the picker row
-                                + safe-area below. */}
+                                + safe-area below.
+
+                                Non-folded: bottom:150 puts the Start
+                                button right above the camera / audio-
+                                device picker bar (which itself sits
+                                near the bottom edge), so the action
+                                clusters with the other controls rather
+                                than floating high near the preview. */}
                             <View style={{
                                 position: 'absolute',
-                                bottom: this.props.isFolded ? 130 : 310,
+                                // bottom:190 (non-folded) leaves a
+                                // comfortable gap above the camera /
+                                // audio-device picker bar.
+                                bottom: this.props.isFolded ? 130 : 190,
                                 left: 0,
                                 right: 0,
                                 alignItems: 'center',
@@ -693,17 +704,7 @@ class LocalMedia extends Component {
                                 elevation: 30,
                             }}>
                                 <View>
-                                    <Button
-                                        mode="contained"
-                                        onPress={() => {
-                                            this._cancelAutoStartTimer();
-                                            if (this.props.confirmStartCall) {
-                                                this.props.confirmStartCall();
-                                            }
-                                        }}
-                                    >
-                                        Start video call
-                                    </Button>
+                                    {/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
                                     {/* Countdown progress bar — hidden
                                         entirely when the auto-start
                                         timer is suppressed (the mid-call
@@ -761,7 +762,19 @@ class LocalMedia extends Component {
                                 tapping Start. */}
                             <View style={[
                                     buttonContainerClass,
-                                    { bottom: buttonContainerClass.bottom + bottomInset, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                                    // Bottom value pulled from the
+                                    // stylesheet (50 dp) without the
+                                    // bottomInset addition — the
+                                    // audio call's portrait bar
+                                    // doesn't add bottomInset either,
+                                    // so adding it here made
+                                    // LocalMedia's bar sit visibly
+                                    // higher on iOS (bottomInset ≈ 34
+                                    // for the home indicator). Drop
+                                    // the +bottomInset so both bars
+                                    // pin at the same 50 dp from the
+                                    // screen edge.
+                                    { bottom: buttonContainerClass.bottom, flexDirection: 'row', zIndex: 2000, elevation: 30 },
                                   ]}>
                                 {this.state.mediaType == 'video'
                                     ? this.renderVideoPicker(buttonSize, previewButtonClass)
@@ -782,10 +795,19 @@ class LocalMedia extends Component {
                     ) : (
                         // Normal pre-call / in-progress bar: pickers + the
                         // red hangup IconButton, all on a single horizontal
-                        // row.
+                        // row. Bottom value matches the countdown branch
+                        // above (and the active-call ConferenceBox audio
+                        // bar) at `buttonContainerClass.bottom` flat —
+                        // adding `+ bottomInset` here previously pushed
+                        // this intermediate-screen bar visibly higher
+                        // than the post-connect bar on iOS (the home-
+                        // indicator inset is ~34 dp and the
+                        // ConferenceBox audio bar doesn't add it), so
+                        // the speaker / hangup icons appeared to jump
+                        // downward the moment the call connected.
                         <View style={[
                                 buttonContainerClass,
-                                { bottom: buttonContainerClass.bottom + bottomInset, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                                { bottom: buttonContainerClass.bottom, flexDirection: 'row', zIndex: 2000, elevation: 30 },
                               ]}>
                             {this.state.mediaType == 'video'
                                 ? this.renderVideoPicker(buttonSize, previewButtonClass)
@@ -827,7 +849,22 @@ class LocalMedia extends Component {
                                  mirror={this.state.mirror}
                                  />
                     ) : (
-                        <View style={[styles.video, videoStyle, {backgroundColor: '#111'}]} />
+                        // Audio-only pre-call backdrop. Used to be a
+                        // flat near-black (#111) which made the
+                        // "calling out" screen feel black on the new
+                        // Day-mode light linen background. We pin
+                        // a theme.background tone in light mode so
+                        // the linen reads through naturally; Night
+                        // keeps the existing dark surface.
+                        <View style={[
+                            styles.video,
+                            videoStyle,
+                            {
+                                backgroundColor: DarkModeManager.getTheme().isDark
+                                    ? '#111'
+                                    : DarkModeManager.getTheme().background,
+                            },
+                        ]} />
                     )}
                 </View>
             </Fragment>

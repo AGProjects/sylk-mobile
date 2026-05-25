@@ -114,7 +114,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                     >
                                         {/* WHAT — name the data being collected. */}
                                         <Text style={[styles.body, { marginTop: 8 }]}>
-                                            Sylk reads your device's precise GPS location only when you
+                                            Blink reads your device's precise GPS location only when you
                                             tap "Share location" or accept a "Meet me" request from a
                                             contact. No location data is collected at any other time.
                                         </Text>
@@ -126,7 +126,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                         <Text style={[styles.body, { marginTop: 12 }]}>
                                             Your location is sent only to the contact you select for that
                                             specific share. It is encrypted end-to-end between your device
-                                            and theirs. Sylk's server retains the encrypted message in
+                                            and theirs. Blink's server retains the encrypted message in
                                             your account journal so the recipient can receive it after a
                                             reconnect, but the server cannot decrypt it; the journal entry
                                             is automatically purged once the share's expiration date is
@@ -137,12 +137,12 @@ class LocationPrivacyDisclosureModal extends Component {
                                             be called out explicitly when an app
                                             requests ACCESS_BACKGROUND_LOCATION
                                             (we do, on Android, to keep ticks
-                                            flowing while Sylk is off-screen). */}
+                                            flowing while Blink is off-screen). */}
                                         <Text style={[styles.body, { marginTop: 12 }]}>
-                                            While a sharing session is active, Sylk continues to send
+                                            While a sharing session is active, Blink continues to send
                                             location updates to your chosen contact even when the app is
                                             in the background, so the user can use other applications
-                                            than Sylk during this time. Sharing stops automatically when the
+                                            than Blink during this time. Sharing stops automatically when the
                                             session ends or when you tap the location icon to stop it.
                                         </Text>
 
@@ -152,11 +152,11 @@ class LocationPrivacyDisclosureModal extends Component {
                                         <Text style={[styles.body, { marginTop: 12 }]}>
                                             On your device, location data is removed when a "Meet me"
                                             session ends, and kept for at most 7 days for timed shares
-                                            before automatic deletion. On Sylk's server, the encrypted
+                                            before automatic deletion. On Blink's server, the encrypted
                                             journal entry is automatically purged once the share's
                                             expiration date is reached — the server never holds an
                                             unexpired share past its own deadline, and never holds it in
-                                            a form Sylk can read. If no expiration date is given, a
+                                            a form Blink can read. If no expiration date is given, a
                                             7-day expiration is enforced.
                                         </Text>
 
@@ -177,7 +177,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                         <Text style={[styles.body, { marginTop: 12, fontSize: 11, opacity: 0.7 }]}>
                                             {this.props.showOptOut
                                                 ? 'You have already agreed. Tap Opt out below to withdraw your consent; the policy will reappear before your next share.'
-                                                : 'Tapping "I agree" will ask Android for permission to access your device location. Full details are in Sylk\'s Privacy Policy.'}
+                                                : 'Tapping "I agree" will ask Android for permission to access your device location. Full details are in Blink\'s Privacy Policy.'}
                                         </Text>
                                         {/* Direct, tappable pointer to the
                                             sip2sip server's full privacy
@@ -203,7 +203,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                                 Linking.openURL('https://sip2sip.info/privacy/').catch(() => {});
                                             }}
                                             accessibilityRole="link"
-                                            accessibilityLabel="Open Sylk server privacy policy in browser"
+                                            accessibilityLabel="Open Blink server privacy policy in browser"
                                         >
                                             Server privacy policy
                                         </Text>

@@ -18,21 +18,36 @@
 import React from 'react';
 import { View } from 'react-native';
 import { Text } from 'react-native-paper';
+import DarkModeManager from '../DarkModeManager';
 
 const SEGMENTS = 20;
 
 export default function VuMeter({ level, label, width = '60%', cellHeight = 8 }) {
     const lit = Math.min(SEGMENTS, Math.round((level || 0) * SEGMENTS));
+    // Theme-aware unlit-segment colour. The static rgba(255,255,255,0.18)
+    // was tuned for a dark surface and disappeared against the new
+    // light Day-mode surfaces — the user reported "white dots barely
+    // visible". Pick the channel-flipped variant for Day so the
+    // unlit slots read as faint dark dots against the light bg
+    // instead. Lit colours (green / yellow / red) keep their accent
+    // strokes — they read at high contrast either way.
+    const _vuTheme = DarkModeManager.getTheme();
+    const _unlit = _vuTheme.isDark
+        ? 'rgba(255,255,255,0.18)'
+        : 'rgba(0,0,0,0.22)';
+    const _labelColor = _vuTheme.isDark
+        ? 'rgba(255,255,255,0.7)'
+        : 'rgba(0,0,0,0.7)';
     const cells = [];
     for (let i = 0; i < SEGMENTS; i++) {
         const isLit = i < lit;
         let color;
         if (i < SEGMENTS * 0.6) {
-            color = isLit ? 'rgba(0, 200, 90, 0.95)'  : 'rgba(255,255,255,0.18)';
+            color = isLit ? 'rgba(0, 200, 90, 0.95)'  : _unlit;
         } else if (i < SEGMENTS * 0.85) {
-            color = isLit ? 'rgba(230, 180, 0, 0.95)' : 'rgba(255,255,255,0.18)';
+            color = isLit ? 'rgba(230, 180, 0, 0.95)' : _unlit;
         } else {
-            color = isLit ? 'rgba(220, 30, 30, 0.95)' : 'rgba(255,255,255,0.18)';
+            color = isLit ? 'rgba(220, 30, 30, 0.95)' : _unlit;
         }
         cells.push(
             <View key={'vu-cell-' + i} style={{
@@ -64,7 +79,7 @@ export default function VuMeter({ level, label, width = '60%', cellHeight = 8 })
             </View>
             {label ? (
                 <Text style={{
-                    color: 'rgba(255,255,255,0.7)',
+                    color: _labelColor,
                     fontSize: 10,
                     marginTop: 2,
                     letterSpacing: 0.5,

@@ -1,0 +1,3 @@
+Added dark and light themes
+Fixes for incoming calls
+UI improvements

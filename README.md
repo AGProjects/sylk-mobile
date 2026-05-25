@@ -36,20 +36,30 @@ Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 ## Features
 
 * 1-to-1 audio and video calls
-* Messaging and file transfers
-* Synchronization between multiple devices 
-* Multiparty conferencing
+* Support for classic teplephony features
+* Messaging and file transfers in real-time and offline
+* Synchronization between multiple devices
+* Advanced messaging features (edit, delete, rections)
+* Location shharing and tracking
+* Multiparty conferencing for all media
 * Support for landscape and portrait modes
-* Interoperable with SIP clients
-* Receive calls from the web
+* End-to-end enryption for all media (zRTP and PGP)
+* Interoperable with web browsers
+* Interoperable with SIP end points for all media (messeging and file ransfers using MSRP protocol)
 
-Messages are encrypted end-to-end using methods described in RFC 9580.
 
+## Encryption
+
+* DTLS-SRTP for audio/video by default
+* zRTP end-to-end encryption using insertable-streams over WebRTC-SFU
+* OpenPGP for messaging and file transfers
+* Interoperability with classic SIP clients (Blink for Linux, Mac and Windows)
 
 ## Credits
 
 ### Funding partners
 
+* AG Projects customers
 * NGI Assure Fund, https://nlnet.nl/assure
 * NGI0 PET Fund, a fund established by NLnet with financial support from the European Commission's Next Generation Internet programme, under the aegis of DG Communications Networks, Content and Technology under grant agreement [No 825310](https://nlnet.nl/project/SylkMobile/)
 * NGI eSSIF-Lab program, in collaboration with [Bloqzone](https://bloqzone.com) [ADDING SSI TO INTERNET COMMS USING SYLK SUITE](https://www.ngi.eu/funded_solution/essi_ioc_44/)
@@ -57,12 +67,9 @@ Messages are encrypted end-to-end using methods described in RFC 9580.
 
 ### People
 
-* Adrian Georgescu - Project lead, maintenace and support
+* Adrian Georgescu - Project lead
 * Tijmen de Mes - API, Conference, Chat and desktop features
-
-### Previous contributions
-
-* Alexander Blom - Support for Self Sovereign Identity (SSI)
+* Alexander Blom - Self Sovereign Identity (SSI)
 * Saúl Ibarra Corretgé - Inception architect / original idea
 * Dan Jenkins - WebRTC and React Native mechanic
 * Michiel Leenaars - Liaison with NLnet Foundation

@@ -27,7 +27,7 @@ const Sessions = StyleSheet.create({
   },
 
   hangupButton: {
-    backgroundColor: 'rgba(169, 68, 66, 0.5)',
+    backgroundColor: '#E53935',
   },
 
   whiteButton: {
@@ -35,15 +35,16 @@ const Sessions = StyleSheet.create({
   },
 
   greenButton: {
-    backgroundColor: 'rgba(109, 170, 99, 0.9)', // #6DAA63 + 0.9
+    backgroundColor: '#25D366', // #6DAA63 + 0.9
   },
 
   disabledGreenButton: {
     backgroundColor: 'rgba(57, 89, 54, 0.9)', // #395936 + 0.9
   },
 
+  // WhatsApp-style hang-up red (Material Red 600, fully opaque).
   hangupButton: {
-    backgroundColor: 'rgba(169, 68, 66, 0.8)', // #a94442 + 0.8
+    backgroundColor: '#E53935',
   },
 
   whiteButtoniOS: {
@@ -53,7 +54,7 @@ const Sessions = StyleSheet.create({
 
   greenButtoniOS: {
     paddingTop: 0,
-    backgroundColor: 'rgba(109, 170, 99, 0.9)',
+    backgroundColor: '#25D366',
   },
 
   disabledGreenButtoniOS: {
@@ -63,7 +64,7 @@ const Sessions = StyleSheet.create({
 
   hangupButtoniOS: {
     paddingTop: 0,
-    backgroundColor: 'rgba(169, 68, 66, 0.8)',
+    backgroundColor: '#E53935',
   },
 });
 

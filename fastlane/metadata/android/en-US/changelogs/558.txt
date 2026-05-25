@@ -1,0 +1,8 @@
+ZRTP encryption fixes
+Video improvements
+Speed up transition to Audio callbox
+Do not mangle Display Name of contacts if set
+Added Help menu to calls
+Fix exit immersive mode on Android
+Fix setting preffered codec 
+Don't use countdown timer when reconnect call

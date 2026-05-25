@@ -133,7 +133,34 @@ class Call extends Component {
                 remoteUri = this.props.call.remoteIdentity.uri;
             }
             callState = this.props.call.state;
-            remoteDisplayName = this.props.callContact?.name || this.props.call?.remoteIdentity?.displayName || this.props.call?.remoteIdentity.uri;
+            // pickRealName: returns the first candidate that's a "real" display
+            // name — i.e. not empty, not equal to the URI, not equal to the
+            // URI's local part. Auto-created contacts are stored with
+            // `name = localPart` (e.g. "living233"), which has the same
+            // information value as no name at all; preferring the SIP From
+            // header's display name in that case shows "My living" on the
+            // call screen instead of the URI fragment. Matches the spec
+            // applied in app.js's applyPushDisplayName.
+            const _localPart = (remoteUri && remoteUri.indexOf('@') > -1)
+                ? remoteUri.split('@')[0]
+                : remoteUri;
+            const _isRealName = (n) => !!(n
+                && typeof n === 'string'
+                && n.toLowerCase() !== (remoteUri || '').toLowerCase()
+                && n.toLowerCase() !== (_localPart || '').toLowerCase());
+            const _pickRealName = (...candidates) => {
+                for (const c of candidates) { if (_isRealName(c)) return c; }
+                // Fall back to the first non-empty so we still render
+                // *something* if nothing is "real" — keeps the previous
+                // behaviour at the bottom of the chain.
+                for (const c of candidates) { if (c) return c; }
+                return null;
+            };
+            remoteDisplayName = _pickRealName(
+                this.props.callContact?.name,
+                this.props.call?.remoteIdentity?.displayName,
+                this.props.call?.remoteIdentity?.uri
+            );
             callUUID = this.props.call.id;
         } else {
             remoteUri = this.props.targetUri;
@@ -544,8 +571,23 @@ class Call extends Component {
         let remoteUri = this.state.remoteUri;
         let remoteDisplayName = this.state.remoteDisplayName || '';
 
-        if (this.props.callContact && this.props.callContact.name != this.state.remoteUri) {
-            // Sylk contacts
+        // Same "URI local part counts as no name" guard as the constructor.
+        // Without it, a contact whose stored name is the URI local part
+        // (auto-created contacts) wins over a SIP-side display name we
+        // actually want to show. Inline rather than extracted because
+        // lookupContact lives on the class and we want a self-contained
+        // local closure (no `this` binding gymnastics).
+        const _localPart = (remoteUri && remoteUri.indexOf('@') > -1)
+            ? remoteUri.split('@')[0]
+            : remoteUri;
+        const _isRealContactName = (n) => !!(n
+            && typeof n === 'string'
+            && n.toLowerCase() !== (remoteUri || '').toLowerCase()
+            && n.toLowerCase() !== (_localPart || '').toLowerCase());
+
+        if (this.props.callContact && _isRealContactName(this.props.callContact.name)) {
+            // Sylk contacts — only when the stored name is a real display
+            // name, not when it's just the URI local part.
             remoteDisplayName = this.props.callContact.name;
         } else if (this.props.ABContacts) {
             // AB contacts
@@ -1030,6 +1072,31 @@ class Call extends Component {
             return;
         }
         this.setState({ upgradePromptMode: null, upgradePromptStream: null });
+
+        // The user has just confirmed video on the upgrade prompt
+        // panel. Mark the call so VideoBox's own "Enable your
+        // camera?" modal does NOT pop again when VideoBox mounts
+        // post-renegotiation. Without these flags the user would
+        // have to confirm video TWICE on the side that initiated
+        // the upgrade:
+        //   1. Confirm Video on this upgrade prompt (commits the
+        //      session-update / addVideo).
+        //   2. Confirm Video again on the VideoBox modal that fires
+        //      because props.videoMuted is still true (app.js
+        //      derives it from state.incomingCall which is not
+        //      cleared on accept) AND direction==='incoming' AND
+        //      _sylkCameraPromptHandled is still false.
+        // Worse, VideoBox's constructor would also re-disable the
+        // freshly-attached video track (it sees videoMuted=true and
+        // !_sylkInitialVideoMuteApplied) and mute the wire we just
+        // committed. Setting both flags here keeps the
+        // user's "yes, send video" choice from this panel
+        // authoritative through the VideoBox mount.
+        try {
+            call._sylkCameraPromptHandled = true;
+            call._sylkInitialVideoMuteApplied = true;
+        } catch (e) { /* call is a plain object; flag set is best-effort */ }
+
         try {
             if (mode === 'outgoing') {
                 call.addVideo({ localStream: stream });
@@ -1103,8 +1170,14 @@ class Call extends Component {
                         accountId={this.state.accountId}
                         connection = {this.state.connection}
                         localMedia = {this.state.localMedia}
+                        /* Forwarded to CallOverlay so the warmup line
+                           reads "Accepting call…" instead of "Calling
+                           X…" during the cold-start push-accept
+                           window. See _openPushAcceptGate in app.js. */
+                        pushAcceptInProgress = {this.props.pushAcceptInProgress}
                         mediaPlaying = {this.mediaPlaying}
                         escalateToConference = {this.props.escalateToConference}
+                        defaultConferenceDomain = {this.props.defaultConferenceDomain}
                         callKeepSendDtmf = {this.props.callKeepSendDtmf}
                         toggleMute = {this.props.toggleMute}
                         speakerPhoneEnabled = {this.state.speakerPhoneEnabled}
@@ -1147,13 +1220,20 @@ class Call extends Component {
                         // doesn't restart). The user can still see the
                         // regular reconnecting bar on the normal
                         // in-call layout.
-                        awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall}
+                        // Also gate on call.state !== 'terminated' so
+                        // the countdown / Start-call button doesn't
+                        // reappear on the post-hangup render of the
+                        // pre-call preview surface (the user reported
+                        // seeing "Start call" + countdown after a
+                        // video call ended).
+                        awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall && (!this.state.call || this.state.call.state !== 'terminated')}
                         availableAudioDevices = {this.state.availableAudioDevices}
                         selectedAudioDevice = {this.state.selectedAudioDevice}
                         selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
                         markZrtpVerified = {this.props.markZrtpVerified}
+                        resetContactZrtp = {this.props.resetContactZrtp}
                         shareLocationFromCall = {this.props.shareLocationFromCall}
                         requestLocationFromCall = {this.props.requestLocationFromCall}
                         saveCallRecording = {this.props.saveCallRecording}
@@ -1182,6 +1262,7 @@ class Call extends Component {
                             hangupCall = {this.hangupCall}
                             call = {this.state.call}
                             markZrtpVerified = {this.props.markZrtpVerified}
+                        resetContactZrtp = {this.props.resetContactZrtp}
                             accountId={this.state.accountId}
                             connection = {this.state.connection}
                             localMedia = {this.state.localMedia}
@@ -1262,7 +1343,10 @@ class Call extends Component {
 								// awaiting-confirm UI and the 4-second
 								// auto-start countdown — the user
 								// already confirmed once.
-								awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.audioOnly && !this.state.userStartedCall && !this.state.reconnectingCall}
+								// Also gate on call not being terminated so
+								// the countdown / Start button doesn't pop
+								// back up after a hangup.
+								awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.audioOnly && !this.state.userStartedCall && !this.state.reconnectingCall && (!this.state.call || this.state.call.state !== 'terminated')}
 								confirmStartCall = {this.confirmStartCall}
 							/>
                         );
@@ -1289,6 +1373,11 @@ class Call extends Component {
                     call = {this.state.call}
                     accountId = {this.state.accountId}
                     connection = {this.state.connection}
+                    /* See the matching prop on the audio-only branch
+                       above — forwarded into the CallOverlay so the
+                       warmup copy reads "Accepting call…" instead of
+                       "Calling X…" while the push-accept gate is up. */
+                    pushAcceptInProgress = {this.props.pushAcceptInProgress}
                     mediaPlaying = {this.mediaPlaying}
                     escalateToConference = {this.props.escalateToConference}
                     callKeepSendDtmf = {this.props.callKeepSendDtmf}
@@ -1311,13 +1400,15 @@ class Call extends Component {
                     userStartedCall = {this.state.userStartedCall}
                     // !reconnectingCall: see the matching note on
                     // the VideoBox awaitingUserCallStart prop above.
-                    awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall}
+                    // Also gate on call not being terminated.
+                    awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall && (!this.state.call || this.state.call.state !== 'terminated')}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
                     markZrtpVerified = {this.props.markZrtpVerified}
+                        resetContactZrtp = {this.props.resetContactZrtp}
                     shareLocationFromCall = {this.props.shareLocationFromCall}
                     requestLocationFromCall = {this.props.requestLocationFromCall}
                     saveCallRecording = {this.props.saveCallRecording}
@@ -1499,7 +1590,11 @@ Call.propTypes = {
 	// between route→/call and getLocalMedia returning the video stream,
 	// which otherwise flashes a misleading "audio call without video"
 	// view for ~200 ms before LocalMedia takes over.
-	outgoingMediaIsVideo    : PropTypes.bool
+	outgoingMediaIsVideo    : PropTypes.bool,
+	// Default sylk conference domain (e.g. videoconference.sip2sip.info)
+	// forwarded to AudioCallBox so it can compose the room URI sent in
+	// conference_request metadata on escalation.
+	defaultConferenceDomain : PropTypes.string
 };
 
 

@@ -2405,6 +2405,33 @@ index 0000000..641c5f2
 +}
 +
 +@end
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+index e7f52a1..295335f 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+@@ -181,6 +181,22 @@ - (void)applyConstraints:(NSDictionary *)constraints error:(NSError **)outError
+     }
+ 
+     if (self.running && hasChanged) {
++        // The underlying RTCCameraVideoCapturer on iOS 13+ runs on an
++        // AVCaptureMultiCamSession. Calling startCaptureWithDevice: a
++        // second time while the previous capture is still wired up will
++        // try to add a new connection from the new input to the same
++        // AVCaptureVideoDataOutput and crash with:
++        //   *** -[AVCaptureMultiCamSession addConnection:] ... cannot
++        //   be added because AVCaptureVideoDataOutput only accepts one
++        //   connection of this media type at a time, and it is already
++        //   connected
++        // This is exactly the path the JS-side _switchCamera() takes
++        // (LocalMedia preview camera picker → applyConstraints with the
++        // flipped facingMode), so any front↔back toggle while the
++        // pre-call "confirm video" modal is up tripped it. Tear the
++        // capture down fully before restarting so the old connection /
++        // input are removed first.
++        [self stopCapture];
+         [self startCapture];
+     }
+ }
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h
 new file mode 100644
 index 0000000..ad044aa

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Sylk</string>
+	<string>Blink</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -86,9 +86,9 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Location is used to share your live location with contacts in a chat.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Location is used to keep sharing live location with a contact while Sylk is in the background, until you stop the share or it expires.</string>
+	<string>Location is used to keep sharing live location with a contact while Blink is in the background, until you stop the share or it expires.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Location is used to keep sharing your location with a contact while Sylk is in the background, until you stop the share or it expires.</string>
+	<string>Location is used to keep sharing your location with a contact while Blink is in the background, until you stop the share or it expires.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Microphone is used for audio calls</string>
 	<key>NSPhotoLibraryUsageDescription</key>
