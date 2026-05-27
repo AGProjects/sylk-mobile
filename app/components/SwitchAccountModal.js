@@ -7,8 +7,7 @@ import {
     Text,
     Modal,
     ScrollView,
-    TouchableWithoutFeedback,
-    KeyboardAvoidingView,
+    Pressable,
     StyleSheet,
 } from 'react-native';
 import { Button, Surface, Divider } from 'react-native-paper';
@@ -169,108 +168,149 @@ class SwitchAccountModal extends Component {
                 animationType="fade"
                 onRequestClose={this.handleCancel}
             >
-                <TouchableWithoutFeedback onPress={this.handleCancel}>
-                    <View style={containerStyles.overlay}>
-                        <KeyboardAvoidingView
-                            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                            keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
-                        >
-                            <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
-                                    {/* No title here on purpose — the
-                                        "You are signed in as <id>"
-                                        body line and the destructive
-                                        Sign out button below carry the
-                                        intent without a redundant
-                                        header. */}
-                                    <Text style={styles.body}>
-                                        You are signed in as
-                                    </Text>
-                                    <Text style={styles.currentAccount}>
-                                        {accountId}
-                                    </Text>
+                <View style={containerStyles.overlay}>
+                    {/* Backdrop dismiss — same pattern PreferencesModal /
+                        EditContactModal use. A Pressable that absolute-
+                        fills the overlay, rendered BEFORE the Surface in
+                        JSX so the Surface ends up on top in z-order. Tap
+                        outside the Surface → this Pressable receives the
+                        touch → onPress fires → modal closes. Tap on the
+                        Surface → Surface (above) absorbs the touch; the
+                        Pressable underneath sees nothing.
 
-                                    {hasOthers ? (
-                                        <View>
-                                            <Divider style={styles.divider} />
-                                            <Text style={styles.sectionLabel}>
-                                                Switch to another account
-                                            </Text>
-                                            <ScrollView
-                                                style={styles.accountList}
-                                                keyboardShouldPersistTaps="handled"
+                        The reason this is structured as a sibling-
+                        backdrop rather than wrapping the Surface in a
+                        TouchableWithoutFeedback / Pressable is that any
+                        tap-handler wrapping the Surface ends up in a
+                        responder fight with the inner ScrollView (the
+                        "Switch to another account" list) on Android.
+                        The wrapper would claim the responder on touch
+                        start, the ScrollView would try to take it back on
+                        move, and on Android that hand-off was failing —
+                        the user saw the list but swipes did nothing.
+                        Decoupling backdrop from card means there is no
+                        wrapper to negotiate with: ScrollView is the only
+                        responder candidate for vertical pans inside the
+                        card, so it always wins. See the matching
+                        comment in PreferencesModal.js for the longer
+                        write-up. */}
+                    <Pressable
+                        style={StyleSheet.absoluteFillObject}
+                        onPress={this.handleCancel}
+                        accessibilityLabel="Close"
+                    />
+                    <Surface style={containerStyles.modalSurface}>
+                        {/* No title here on purpose — the
+                            "You are signed in as <id>" body
+                            line and the destructive Sign out
+                            button below carry the intent
+                            without a redundant header. */}
+                        <Text style={styles.body}>
+                            You are signed in as
+                        </Text>
+                        <Text style={styles.currentAccount}>
+                            {accountId}
+                        </Text>
+
+                        {hasOthers ? (
+                            <View>
+                                <Divider style={styles.divider} />
+                                <Text style={styles.sectionLabel}>
+                                    Switch to another account
+                                </Text>
+                                <ScrollView
+                                    style={styles.accountList}
+                                    contentContainerStyle={{ paddingBottom: 4 }}
+                                    keyboardShouldPersistTaps="handled"
+                                    nestedScrollEnabled={true}
+                                    showsVerticalScrollIndicator={true}
+                                    overScrollMode={Platform.OS === 'android' ? 'always' : undefined}
+                                    // Same Android gesture-path
+                                    // tightening as PreferencesModal:
+                                    //   removeClippedSubviews={false}
+                                    //     keeps rows mounted so a fast
+                                    //     scroll doesn't get dropped
+                                    //     mid-pan by a freshly mounted
+                                    //     touchable claiming responder.
+                                    //   directionalLockEnabled={true}
+                                    //     once the pan is vertical,
+                                    //     ignore sideways thumb wobble.
+                                    //   scrollEventThrottle /
+                                    //   decelerationRate
+                                    //     keep the feel snappy.
+                                    removeClippedSubviews={false}
+                                    directionalLockEnabled={true}
+                                    scrollEventThrottle={16}
+                                    decelerationRate="normal"
+                                >
+                                    {others.map((id) => (
+                                        <View key={id} style={styles.accountRow}>
+                                            <Text
+                                                style={styles.accountText}
+                                                numberOfLines={1}
+                                                ellipsizeMode="middle"
                                             >
-                                                {others.map((id) => (
-                                                    <View key={id} style={styles.accountRow}>
-                                                        <Text
-                                                            style={styles.accountText}
-                                                            numberOfLines={1}
-                                                            ellipsizeMode="middle"
-                                                        >
-                                                            {id}
-                                                        </Text>
-                                                        <Button
-                                                            mode="contained"
-                                                            icon="account-switch"
-                                                            compact
-                                                            style={styles.switchButton}
-                                                            accessibilityLabel={`Switch to ${id}`}
-                                                            onPress={() =>
-                                                                this.handleSwitch(
-                                                                    id,
-                                                                    passwords[id]
-                                                                )
-                                                            }
-                                                        >
-                                                            Switch
-                                                        </Button>
-                                                    </View>
-                                                ))}
-                                            </ScrollView>
-                                            <Divider style={styles.divider} />
+                                                {id}
+                                            </Text>
+                                            <Button
+                                                mode="contained"
+                                                icon="account-switch"
+                                                compact
+                                                style={styles.switchButton}
+                                                accessibilityLabel={`Switch to ${id}`}
+                                                onPress={() =>
+                                                    this.handleSwitch(
+                                                        id,
+                                                        passwords[id]
+                                                    )
+                                                }
+                                            >
+                                                Switch
+                                            </Button>
                                         </View>
-                                    ) : null}
+                                    ))}
+                                </ScrollView>
+                                <Divider style={styles.divider} />
+                            </View>
+                        ) : null}
 
-                                    {/* Reachability caveat — surfaced
-                                        right above the destructive
-                                        button so it reads in context
-                                        of the decision the user is
-                                        about to make. The two
-                                        consequences (no calls, no
-                                        push) are the ones most users
-                                        forget about until they miss
-                                        a call. */}
-                                    <Text style={styles.signOutNote}>
-                                        If you sign out you will not be reachable on this device. Push notifications will be silenced too.
-                                    </Text>
+                        {/* Reachability caveat — surfaced
+                            right above the destructive
+                            button so it reads in context
+                            of the decision the user is
+                            about to make. The two
+                            consequences (no calls, no
+                            push) are the ones most users
+                            forget about until they miss
+                            a call. */}
+                        <Text style={styles.signOutNote}>
+                            If you sign out you will not be reachable on this device. Push notifications will be silenced too.
+                        </Text>
 
-                                    <View style={styles.buttonRow}>
-                                        <Button
-                                            mode="outlined"
-                                            style={styles.button}
-                                            onPress={this.handleCancel}
-                                            accessibilityLabel="Cancel"
-                                        >
-                                            Cancel
-                                        </Button>
-                                        <Button
-                                            mode="contained"
-                                            style={[
-                                                styles.button,
-                                                { backgroundColor: '#c62828' },
-                                            ]}
-                                            icon="logout"
-                                            onPress={this.handleLogout}
-                                            accessibilityLabel="Sign out"
-                                        >
-                                            Sign out
-                                        </Button>
-                                    </View>
-                                </Surface>
-                            </TouchableWithoutFeedback>
-                        </KeyboardAvoidingView>
-                    </View>
-                </TouchableWithoutFeedback>
+                        <View style={styles.buttonRow}>
+                            <Button
+                                mode="outlined"
+                                style={styles.button}
+                                onPress={this.handleCancel}
+                                accessibilityLabel="Cancel"
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                mode="contained"
+                                style={[
+                                    styles.button,
+                                    { backgroundColor: '#c62828' },
+                                ]}
+                                icon="logout"
+                                onPress={this.handleLogout}
+                                accessibilityLabel="Sign out"
+                            >
+                                Sign out
+                            </Button>
+                        </View>
+                    </Surface>
+                </View>
             </Modal>
         );
     }

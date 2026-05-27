@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Modal, View, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { Modal, View, Image, ActivityIndicator, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
 import { Text, Button, Surface, TextInput, Switch, Checkbox, Divider } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import PropTypes from 'prop-types';
 import utils from '../utils';
+import { validateCallerId, validateSipPassword, isPlaceholderCallerId } from '../accountInfo';
 import UserIcon from './UserIcon';
 import PlatformToggle from './PlatformToggle';
 import {Gravatar, GravatarApi} from 'react-native-gravatar';
@@ -61,6 +62,59 @@ const EditContactModal = ({
   preferredAudioCodec,
   enableAudioRecording,
   encryptionMode,
+  // Myself-only: the user's own mobile phone number. Captured
+  // automatically on the first PSTN dial via READ_PHONE_NUMBERS
+  // (see App.ensurePstnCallerIdCaptured) and editable here so the
+  // user can correct or override what was read from the SIM. Used
+  // as Caller ID on outgoing PSTN calls and quoted to billing on
+  // top-up payments. Saved via setMyPhoneNumber on close so an
+  // empty edit still persists (allows clearing the field).
+  myPhoneNumber,
+  setMyPhoneNumber,
+  // Optional Android helper: when the user taps the empty Mobile
+  // number field, this is called to (a) prompt READ_PHONE_NUMBERS
+  // and (b) return the SIM-read value. We pre-fill the input with
+  // the result so the user can review and tap Save (or edit /
+  // clear). Returns '' on iOS, on permission denial, or when the
+  // SIM has no MSISDN — in which case we leave the field empty.
+  readDevicePhoneNumber,
+  // Myself-only: opens the PaymentInfoModal in the 'credit'
+  // template. Bound to the "Add credit" button rendered next to
+  // the PSTN credit row, so the user can review the bank-transfer
+  // details from inside My Account without first having to trigger
+  // a failed PSTN dial. We dismiss this modal before invoking so
+  // the two Modals don't try to stack (RN doesn't reliably show a
+  // Modal on top of another Modal — silently fails on iOS).
+  openPaymentInfoModal,
+  // Server-side snapshot (mobile number, PSTN balance, currency,
+  // prepaid flag, today's debit/credit). Null until the first
+  // successful fetch. We display the balance + currency under the
+  // Email field on the "My account" view. The mobile number from
+  // the server can differ from myPhoneNumber (which is the SIM /
+  // device-side capture); we show both, server value labelled.
+  accountInfo,
+  accountInfoError,
+  refreshAccountInfo,
+  // True when the active server published an accountInfoUrl in
+  // sylk-config.json. When false the server-info section (PSTN
+  // credit / caller-Id / refresh icon) is suppressed entirely —
+  // there's nothing to refresh against.
+  accountInfoAvailable,
+  openSetCallerIdModal,
+  // Optional: write the PSTN caller-Id back to the server. If not
+  // provided, the field is shown read-only.
+  setServerCallerId,
+  // Optional: mirror the Email field back to the SIP account record
+  // on Save. Round-trips through App.setServerEmail → POST
+  // sylk_settings.phtml action=set_email.
+  setServerEmail,
+  // Optional: change the SIP account password on the server (and
+  // mirror locally). Field is pre-filled with currentPassword and
+  // read-only until the user taps the in-field "Change" affix; on
+  // Save we only push if the value actually differs from the
+  // original. Surfaced only on the myself view.
+  changeSipPassword,
+  currentPassword,
 }) => {
   // Strip the account's default @domain off an E.164 phone-number URI
   // for editing — users dialing or pasting a number expect to see
@@ -82,6 +136,52 @@ const EditContactModal = ({
   const [displayName, setDisplayName] = useState(propDisplayName || '');
   const [organization, setOrganization] = useState(propOrg || '');
   const [email, setEmail] = useState(propEmail || '');
+  // Pre-filled with the current SIP password and read-only by
+  // default; the in-field "Change" affix flips passwordEditable to
+  // true so the user can edit it. On Save we only push when the
+  // value differs from currentPassword — opening the modal and
+  // saving without touching the field is a no-op.
+  const [newPassword, setNewPassword] = useState(currentPassword || '');
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState(null);
+  const [passwordEditable, setPasswordEditable] = useState(false);
+  // Caret position the field should adopt on pencil-tap. null =
+  // uncontrolled (RN places the caret on tap). Setting to
+  // {start: N, end: N} when entering edit mode puts the caret at the
+  // end of the pre-filled current password. Cleared to null after
+  // the first onSelectionChange so the user can move the caret
+  // freely once they're editing.
+  const [passwordSelection, setPasswordSelection] = useState(null);
+  // Ref to the password TextInput so we can programmatically focus
+  // it on pencil-tap. We keep the underlying TextInput permanently
+  // editable={true} and gate "read-only" purely visually via an
+  // absolute-positioned Pressable overlay that swallows taps until
+  // the user taps the pencil. This is necessary because RN ignores
+  // focus() on a non-editable TextInput, AND switching editable
+  // from false→true in a setState-then-focus dance breaks the user
+  // gesture chain (focus() outside the immediate gesture is
+  // suppressed by both iOS and Android keyboard heuristics).
+  const passwordInputRef = useRef(null);
+  // Inline error for the Mobile-number / PSTN caller-Id field.
+  // Mirrors the server-side validation rule (digits only, 7–15 long,
+  // leading '+' or '00') so the user gets the rejection before the
+  // round-trip. Cleared whenever the user edits the field.
+  const [mobileError, setMobileError] = useState(null);
+  // Inline error for the Email field. Same shape as mobileError —
+  // checked on every keystroke (via utils.isEmailAddress) so the
+  // user sees the rejection before Save. Empty string is allowed
+  // (it clears the server-side field).
+  const [emailError, setEmailError] = useState(null);
+  // Myself-only mobile-number field. Local edit buffer; committed
+  // to per-account settings via setMyPhoneNumber on save.
+  const [mobileNumber, setMobileNumber] = useState(myPhoneNumber || '');
+  // One-shot guard for the focus-time SIM lookup. Without it, a
+  // user who focuses the empty field, deletes the auto-filled
+  // number, then refocuses would re-trigger the permission /
+  // SIM-read flow and the deletion would silently undo itself.
+  // Lives in a ref because it must NOT trigger a re-render — it
+  // only gates an event handler.
+  const mobileLookupAttempted = useRef(false);
   const [confirm, setConfirm] = useState(false);
   const [tags, setTags] = useState([]);
   const [tagsText, setTagsText] = useState('');
@@ -135,6 +235,17 @@ const EditContactModal = ({
       setDisplayName(propDisplayName || '');
       setOrganization(propOrg || '');
       setEmail(propEmail || '');
+      setNewPassword(currentPassword || '');
+      setShowPassword(false);
+      setPasswordError(null);
+      setPasswordEditable(false);
+      setPasswordSelection(null);
+      setMobileError(null);
+      setEmailError(null);
+      setMobileNumber(myPhoneNumber || '');
+      // Fresh modal session — let the focus-time SIM lookup fire
+      // exactly once again (gated on the field being empty).
+      mobileLookupAttempted.current = false;
       setConfirm(false);
       let initialTags = selectedContact?.tags || [];
       initialTags = [...new Set(initialTags.map(t => t.trim().toLowerCase()))];
@@ -162,7 +273,17 @@ const EditContactModal = ({
           : null
       );
     }
-  }, [show, propUri, propDisplayName, propOrg, propEmail, selectedContact]);
+  }, [show, propUri, propDisplayName, propOrg, propEmail, selectedContact, myPhoneNumber, currentPassword]);
+
+  // accountInfo is fetched once on app start (App.loadAccount) and
+  // again whenever the user taps the refresh icon next to the info
+  // box below. We DELIBERATELY do not refresh on modal open — the
+  // values are stable enough that an automatic round-trip on every
+  // open felt wasteful (especially since the modal is also used for
+  // contact edits where the endpoint isn't even hit). The on-screen
+  // value is whatever the last fetch produced; the refresh button
+  // gives the user explicit control when they want it current.
+  const [accountInfoLoading, setAccountInfoLoading] = useState(false);
 
 	useEffect(() => {
 	  setTagsText(tags.join(', '));
@@ -262,7 +383,29 @@ const getTotalPrettyStorage = (entity) => {
   return entry?.prettySize || null;
 };
 
-  const handleSave = () => {
+  // "Add credit" button next to PSTN credit. Closes this modal
+  // first, then opens the PaymentInfoModal on the next event-loop
+  // tick (after the fade-out animation begins) so we never have two
+  // Modal components mounted/visible at the same time — RN's iOS
+  // bridge silently no-ops the second Modal when both are mounted,
+  // and Android can render the second backdrop on top of the first.
+  const handleOpenPaymentInfo = () => {
+    if (typeof openPaymentInfoModal !== 'function') return;
+    close();
+    setTimeout(() => {
+      try { openPaymentInfoModal(); } catch (e) { /* never propagate */ }
+    }, 250);
+  };
+
+  const handleOpenSetCallerId = () => {
+    if (typeof openSetCallerIdModal !== 'function') return;
+    close();
+    setTimeout(() => {
+      try { openSetCallerIdModal(); } catch (e) { /* never propagate */ }
+    }, 250);
+  };
+
+  const handleSave = async () => {
     const contact = {
       uri: uri.trim().toLowerCase(),
       displayName: displayName.trim(),
@@ -287,6 +430,88 @@ const getTotalPrettyStorage = (entity) => {
       },
     };
     saveContactByUser(contact, selectedContact);
+
+    // Myself-only: validate-then-persist the mobile number. The
+    // inline error shown next to the field is set/cleared on every
+    // keystroke; we re-run the check here to defend against a stale
+    // value being submitted (e.g. paste, autofill bypassing
+    // onChangeText). Empty is allowed; anything else must match
+    // /^(\+|00)\d{7,15}$/. On failure we surface the error and
+    // bail out of the save instead of close()ing.
+    if (myself && typeof setMyPhoneNumber === 'function') {
+      const trimmed = (mobileNumber || '').trim();
+      const merr = validateCallerId(trimmed);
+      if (merr) {
+        setMobileError(merr);
+        return;
+      }
+      if (trimmed !== (myPhoneNumber || '')) {
+        setMyPhoneNumber(trimmed);
+
+        // Mirror the value to the server-side PSTN caller-Id setting
+        // (sylk_account_settings.phtml ?action=set_caller_id) so the
+        // SIP proxy uses the same number on outgoing PSTN calls.
+        // Fire-and-forget on the UI level: errors are logged but
+        // never block the modal close, otherwise a transient network
+        // hiccup would trap the user inside the dialog. The local
+        // setting is the source of truth for the next session — the
+        // next refreshAccountInfo() reconciliation will pull whatever
+        // the server actually stored.
+        if (typeof setServerCallerId === 'function') {
+          setServerCallerId(trimmed).catch((e) => {
+            console.log('setServerCallerId failed:', e && e.message);
+          });
+        }
+      }
+    }
+
+    // Myself-only: push the email field to the SIP account record on
+    // the server. We send it whenever the email value has changed
+    // from what was originally loaded (server wins on the next
+    // refreshAccountInfo, so we only need to push deltas the user
+    // actually typed). Re-validate here so a stale value (paste,
+    // autofill bypassing onChangeText) can't slip through — on
+    // failure we surface the error and bail out of close().
+    if (myself && typeof setServerEmail === 'function') {
+      const trimmed = (email || '').trim();
+      const original = (propEmail || '').trim();
+      if (trimmed && !utils.isEmailAddress(trimmed)) {
+        setEmailError('Invalid email address');
+        return;
+      }
+      if (trimmed !== original) {
+        setServerEmail(trimmed).catch((e) => {
+          console.log('setServerEmail failed:', e && e.message);
+        });
+      }
+    }
+
+    // Myself-only: if the user opened the password field for editing
+    // AND actually changed the value, push the new one to the
+    // server. The field is pre-filled with the current password and
+    // read-only until "Change" is tapped, so the common path
+    // (modal opens, user saves other edits, modal closes) never
+    // touches the password endpoint. We await this one because:
+    //   • a successful change rewrites state.password locally, and
+    //     downstream consumers should see the new value before any
+    //     other save-side work fires.
+    //   • a failure should be visible — the modal stays open with
+    //     the typed value and an inline error so the user can fix
+    //     and retry.
+    if (myself
+        && passwordEditable
+        && typeof changeSipPassword === 'function'
+        && (newPassword || '') !== (currentPassword || '')
+        && (newPassword || '').length > 0) {
+      try {
+        await changeSipPassword(newPassword);
+        setPasswordEditable(false);
+      } catch (e) {
+        setPasswordError((e && e.message) || 'Password change failed');
+        return;
+      }
+    }
+
     close();
   };
 
@@ -360,7 +585,7 @@ const getTotalPrettyStorage = (entity) => {
   // scrollMaxHeight against (viewport - keyboardHeight) made the
   // modal float oddly mid-screen with lots of empty space above.
   const surfaceMaxHeight = Math.round(viewportH * 0.85);
-  let title = myself ? "My account" : 'Edit Contact';
+  let title = myself ? "My Blink account" : 'Edit Contact';
   
   if (publicKey) {
 	  title = 'Public key';
@@ -492,7 +717,18 @@ const getTotalPrettyStorage = (entity) => {
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
             style={{ maxHeight: surfaceMaxHeight, alignSelf: 'center', width: '100%' }}
           >
-   		    <Surface style={[containerStyles.modalSurface, { maxHeight: surfaceMaxHeight, overflow: 'hidden' }]}>
+   		    <Surface style={[containerStyles.modalSurface, { maxHeight: surfaceMaxHeight }]}>
+				{/* react-native-paper warns when overflow:hidden is
+				    set on Surface itself (it clips the shadow). Per
+				    its docs the fix is to wrap the children in a
+				    View that carries the overflow style. NOTE: do
+				    NOT add `flex: 1` here — the Surface uses
+				    maxHeight (no explicit height), so a flexing
+				    child collapses to 0 dp and the modal renders as
+				    a thin line. Matching borderRadius keeps the
+				    rounded-corner clipping that motivated the
+				    original overflow:hidden. */}
+				<View style={{ overflow: 'hidden', borderRadius: 10 }}>
 				{selectedContact ? (
 				  <View
 					style={{
@@ -519,7 +755,29 @@ const getTotalPrettyStorage = (entity) => {
 
 
             {/* Modal content start */}
-				<Text style={containerStyles.title}>{title}</Text>
+				{/* Title row with the Blink logo on the left. The
+				    logo is only shown on the My-account view —
+				    regular contact edits and the Public-key view
+				    keep the original centered title. blink-grey
+				    renders cleanly on both light and dark themes
+				    so we don't need to pick per-theme. */}
+				{myself && !publicKey ? (
+				  <View style={{
+				    flexDirection: 'row',
+				    alignItems: 'center',
+				    justifyContent: 'flex-start',
+				    marginLeft: 20,
+				    marginBottom: 8,
+				  }}>
+				    <Image
+				      source={require('../assets/images/blink-48.png')}
+				      style={{ width: 32, height: 32, marginRight: 10, resizeMode: 'contain' }}
+				    />
+				    <Text style={containerStyles.title}>{title}</Text>
+				  </View>
+				) : (
+				  <Text style={containerStyles.title}>{title}</Text>
+				)}
 
                 {publicKey ? (
                   <>
@@ -739,6 +997,74 @@ const getTotalPrettyStorage = (entity) => {
                           autoCapitalize="words"
                         />
                       )}
+                      {/* Myself-only Mobile number field. Populated
+                          from accountSetting.account.myPhoneNumber
+                          (auto-captured off the SIM on first PSTN
+                          dial via READ_PHONE_NUMBERS) and editable
+                          so the user can correct, override, or fill
+                          it in manually (iOS — Apple never exposes
+                          the SIM number to apps — and edge-case
+                          Androids where getPhoneNumber() returned
+                          nothing). Persisted on Save via
+                          setMyPhoneNumber. phone-pad keyboard, no
+                          autocapitalize, autofill turned off so the
+                          OS doesn't try to inject a contact card. */}
+                      {myself && (
+                        <TextInput
+                          mode="flat"
+                          label="Mobile number"
+                          // Validate as the user types — same rule as
+                          // App.setServerCallerId (digits only, 7–15
+                          // long, leading '+' or '00'). Clearing the
+                          // field is allowed. The error is shown
+                          // inline just below; Save is gated on it.
+                          onChangeText={(t) => {
+                            setMobileNumber(t);
+                            setMobileError(validateCallerId(t));
+                          }}
+                          error={!!mobileError}
+                          value={mobileNumber}
+                          keyboardType="phone-pad"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          autoComplete="off"
+                          importantForAutofill="no"
+                          textContentType="telephoneNumber"
+                          // Focus-time SIM lookup: when the user
+                          // taps an empty Mobile number field on
+                          // Android, prompt READ_PHONE_NUMBERS and
+                          // pre-fill the input with the SIM-read
+                          // number. Gated so it fires at most once
+                          // per modal session — a user who clears
+                          // the auto-filled number doesn't have it
+                          // silently re-injected on the next focus.
+                          // iOS / denial / no-MSISDN return '' from
+                          // the helper, in which case the field
+                          // stays empty and the user can type
+                          // their number manually.
+                          onFocus={async () => {
+                            if (mobileLookupAttempted.current) return;
+                            if ((mobileNumber || '').length > 0) return;
+                            if (typeof readDevicePhoneNumber !== 'function') return;
+                            mobileLookupAttempted.current = true;
+                            try {
+                              const num = await readDevicePhoneNumber();
+                              if (num && (mobileNumber || '').length === 0) {
+                                setMobileNumber(num);
+                              }
+                            } catch (e) {
+                              // Helper already logs — never let a
+                              // permission / read failure raise
+                              // out of the focus handler.
+                            }
+                          }}
+                        />
+                      )}
+                      {myself && mobileError ? (
+                        <Text style={{ fontSize: 12, color: '#b22', marginTop: 2, paddingHorizontal: 4 }}>
+                          {mobileError}
+                        </Text>
+                      ) : null}
                       <TextInput
                         mode="flat"
                         label="Email"
@@ -773,9 +1099,376 @@ const getTotalPrettyStorage = (entity) => {
                         autoComplete="off"
                         importantForAutofill="no"
                         textContentType="none"
-                        onChangeText={setEmail}
+                        // Live validation. Empty is allowed; anything
+                        // else has to match utils.isEmailAddress —
+                        // the same helper the contact-save sanitizer
+                        // uses. Inline error is shown below; Save is
+                        // gated on it.
+                        onChangeText={(t) => {
+                          setEmail(t);
+                          const v = (t || '').trim();
+                          setEmailError(
+                            v && !utils.isEmailAddress(v)
+                              ? 'Invalid email address'
+                              : null
+                          );
+                        }}
+                        error={!!emailError}
                         value={email}
                       />
+                      {emailError ? (
+                        <Text style={{ fontSize: 12, color: '#b22', marginTop: 2, paddingHorizontal: 4 }}>
+                          {emailError}
+                        </Text>
+                      ) : null}
+
+                    {/* ── Change-password field ─────────────────────
+                        Myself-only. Empty by default; non-empty value
+                        is committed on Save via App.changeSipPassword
+                        (which talks to sylk_account_settings.phtml
+                        and then rewrites the local accounts row).
+                        Hidden behind a show/hide eye icon since we're
+                        capturing a secret. The trailing inline error
+                        is populated from handleSave's catch arm so
+                        the user sees "Password must be at least 6
+                        characters" / "Password change is disabled"
+                        without having to scroll or guess. */}
+                    {myself && typeof changeSipPassword === 'function' && (
+                      <View style={{ position: 'relative' }}>
+                        <TextInput
+                          ref={passwordInputRef}
+                          mode="flat"
+                          label={
+                            <Text style={{ fontSize: 12 }}>
+                              {passwordEditable ? 'New password' : 'Password'}
+                            </Text>
+                          }
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          autoComplete="off"
+                          importantForAutofill="no"
+                          textContentType={passwordEditable ? 'newPassword' : 'password'}
+                          // Masked by default; in edit mode we
+                          // un-mask so the user can see what they're
+                          // editing. Eye on the right toggles back
+                          // to masked at any time.
+                          secureTextEntry={!showPassword}
+                          // Read-only by default. Tapping the pencil
+                          // (left) flips it writable, un-masks the
+                          // field, and focuses the input with the
+                          // caret at the end of the current value.
+                          // Eye stays on the right in both modes.
+                          // Always editable underneath; an absolute
+                          // Pressable overlay rendered after this
+                          // TextInput (see below) catches taps in
+                          // read-only mode and routes them through
+                          // the same pencil flow. This keeps
+                          // focus() callable from a real user
+                          // gesture, which is the only way iOS /
+                          // Android reliably bring up the keyboard.
+                          editable={true}
+                          selection={passwordSelection}
+                          onSelectionChange={() => {
+                            // Release the controlled selection
+                            // after the caret-to-end placement has
+                            // taken effect so subsequent taps /
+                            // drags can move the caret freely.
+                            if (passwordSelection !== null) {
+                                setPasswordSelection(null);
+                            }
+                          }}
+                          left={!passwordEditable ? (
+                            <TextInput.Icon
+                              icon="pencil-outline"
+                              onPress={() => {
+                                // Tap pencil → enter edit mode,
+                                // KEEP the pre-filled password, but
+                                // park the caret at the end so the
+                                // user can append / backspace from
+                                // there. focus() runs synchronously
+                                // inside the gesture so the keyboard
+                                // pops up. Save is gated on
+                                // (newPassword !== currentPassword
+                                // && passes validateSipPassword), so
+                                // saving without editing is a no-op.
+                                setPasswordError(null);
+                                const end = (newPassword || '').length;
+                                setPasswordSelection({ start: end, end });
+                                setPasswordEditable(true);
+                                if (passwordInputRef.current
+                                    && typeof passwordInputRef.current.focus === 'function') {
+                                    try { passwordInputRef.current.focus(); } catch (_) {}
+                                }
+                              }}
+                            />
+                          ) : null}
+                          right={
+                            <TextInput.Icon
+                              icon={showPassword ? 'eye-off' : 'eye'}
+                              onPress={() => setShowPassword(v => !v)}
+                            />
+                          }
+                          value={newPassword}
+                          onChangeText={(t) => {
+                            setNewPassword(t);
+                            // Empty is allowed (no-op on Save); any
+                            // non-empty value is checked against the
+                            // strength rule (≥6 chars, upper+lower
+                            // +digit) so the user sees the rejection
+                            // before they hit Save.
+                            setPasswordError(
+                              t.length === 0 ? null : validateSipPassword(t)
+                            );
+                          }}
+                        />
+                        {/* Tap-blocker overlay. Sits ON TOP of the
+                            TextInput when in read-only mode and
+                            swallows taps in the text area itself.
+                            Left and right edges are inset by ~48dp
+                            each so the pencil (left affix) and eye
+                            (right affix) icons remain tappable.
+                            Tapping anywhere in the middle is
+                            equivalent to tapping the pencil — same
+                            empty-the-field-and-focus flow. */}
+                        {!passwordEditable && (
+                          <Pressable
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 48,
+                              right: 48,
+                              bottom: 0,
+                              zIndex: 1,
+                            }}
+                            onPress={() => {
+                              // Same flow as pencil: keep the
+                              // pre-filled value, park the caret at
+                              // the end, focus inside the gesture.
+                              setPasswordError(null);
+                              const end = (newPassword || '').length;
+                              setPasswordSelection({ start: end, end });
+                              setPasswordEditable(true);
+                              if (passwordInputRef.current
+                                  && typeof passwordInputRef.current.focus === 'function') {
+                                  try { passwordInputRef.current.focus(); } catch (_) {}
+                              }
+                            }}
+                          />
+                        )}
+                        {passwordError ? (
+                          <Text style={{ fontSize: 12, color: '#b22', marginTop: 2, paddingHorizontal: 4 }}>
+                            {passwordError}
+                          </Text>
+                        ) : passwordEditable && (newPassword || '').length === 0 ? (
+                          // Small helper line that acts as a low-key
+                          // placeholder describing the strength rule
+                          // while the field is empty. Hidden once
+                          // the user starts typing — at that point
+                          // passwordError carries either null (valid)
+                          // or the specific rule that's failing, so
+                          // the hint is no longer needed.
+                          <Text style={{ fontSize: 11, opacity: 0.55, marginTop: 2, paddingHorizontal: 4 }}>
+                            Min 6 chars · upper · lower · number
+                          </Text>
+                        ) : null}
+                      </View>
+                    )}
+
+                    {/* ── Server-side account snapshot ──────────────
+                        Read-only line under the Email field on the
+                        My Account view. Sourced from cdrtool's
+                        account_info.phtml via HTTP Digest using the
+                        SIP credentials (see app/accountInfo.js).
+                        Refreshed when the modal opens by the
+                        useEffect above. We render:
+                          • PSTN credit + currency (if prepaid)
+                          • Server-stored mobile number (if any)
+                          • An error / loading hint instead, so the
+                            user knows whether the value they see is
+                            current or stale.
+                        Hidden on the edit-contact view since the
+                        endpoint is per-logged-in-user. */}
+                    {/* The whole server-info block (rows + refresh
+                        icon) is suppressed when:
+                          • the active server hasn't published an
+                            accountInfoUrl in sylk-config.json —
+                            nothing to refresh against, no orphan
+                            refresh button.
+                          • PSTN is unusable (explicitly disabled
+                            server-side, or prepaid with no credit).
+                        Loading / error states render in the
+                        accountInfoAvailable branch so the user sees
+                        the spinner and the refresh button while a
+                        fetch is in flight. */}
+                    {myself && accountInfoAvailable && !(accountInfo && accountInfo.pstn && (
+                        accountInfo.pstn.enabled === false
+                        || (accountInfo.pstn.prepaid
+                            && typeof accountInfo.pstn.balance === 'number'
+                            && accountInfo.pstn.balance <= 0)
+                    )) && (
+                      <View style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        marginTop: 8,
+                        marginBottom: 4,
+                        paddingHorizontal: 4,
+                      }}>
+                        {/* Left: the actual snapshot lines. Flex=1
+                            so it takes all remaining width and the
+                            refresh icon on the right stays anchored. */}
+                        <View style={{ flex: 1 }}>
+                          {accountInfoLoading && !accountInfo ? (
+                            <Text style={{ fontSize: 12, opacity: 0.6 }}>
+                              Loading account info…
+                            </Text>
+                          ) : accountInfo ? (
+                            <>
+                              {/* PSTN rows are hidden entirely when
+                                  PSTN is disabled server-side
+                                  (pstn.enabled === false). The values
+                                  are still in state — they're just
+                                  irrelevant when the user can't place
+                                  PSTN calls at all. */}
+                              {/* Prepaid: show balance + "Add
+                                  credit". Postpaid: show a single
+                                  "Postpaid account" line so the user
+                                  can see at a glance which billing
+                                  model the SIP account is on
+                                  (replaces the credit row entirely).
+                                  Either way we only render when PSTN
+                                  is enabled. */}
+                              {accountInfo.pstn
+                                && accountInfo.pstn.enabled !== false
+                                && accountInfo.pstn.prepaid === false ? (
+                                <Text style={{ fontSize: 13, opacity: 0.75 }}>
+                                  Postpaid account
+                                </Text>
+                              ) : null}
+                              {accountInfo.pstn
+                                && accountInfo.pstn.enabled !== false
+                                && accountInfo.pstn.prepaid === true
+                                && accountInfo.pstn.balance !== null
+                                && accountInfo.pstn.balance !== undefined && (
+                                // PSTN credit line + inline "Add
+                                // credit" affordance. Same row, label
+                                // on the left, compact text-mode
+                                // button on the right. The button
+                                // hands off to handleOpenPaymentInfo
+                                // below, which closes this modal
+                                // first and then opens the
+                                // PaymentInfoModal — RN can't reliably
+                                // stack two Modals, so dismiss-then-
+                                // open avoids the "second modal
+                                // doesn't appear on iOS" trap.
+                                <View style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                }}>
+                                  <Text style={{ fontSize: 13, opacity: 0.75 }}>
+                                    PSTN credit: {Number(accountInfo.pstn.balance).toFixed(2)} {accountInfo.pstn.currency || ''}
+                                  </Text>
+                                  {typeof openPaymentInfoModal === 'function' ? (
+                                    <Button
+                                      mode="text"
+                                      compact
+                                      uppercase={false}
+                                      onPress={handleOpenPaymentInfo}
+                                      style={{ marginLeft: 4, marginVertical: -6 }}
+                                      labelStyle={{ fontSize: 13 }}
+                                    >
+                                      Add credit
+                                    </Button>
+                                  ) : null}
+                                </View>
+                              )}
+                              {accountInfo.pstn
+                                && accountInfo.pstn.enabled !== false
+                                && accountInfo.pstn.caller_id
+                                && !isPlaceholderCallerId(accountInfo.pstn.caller_id) ? (
+                                <View style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                }}>
+                                  <Text style={{ fontSize: 13, opacity: 0.75 }}>
+                                    PSTN caller Id: {accountInfo.pstn.caller_id}
+                                  </Text>
+                                  {typeof openSetCallerIdModal === 'function' ? (
+                                    <Button
+                                      mode="text"
+                                      compact
+                                      uppercase={false}
+                                      onPress={handleOpenSetCallerId}
+                                      style={{ marginLeft: 4, marginVertical: -6 }}
+                                      labelStyle={{ fontSize: 13 }}
+                                    >
+                                      Change
+                                    </Button>
+                                  ) : null}
+                                </View>
+                              ) : null}
+                            </>
+                          ) : accountInfoError ? (
+                            // Error envelope. Constrained to the same
+                            // ~2-row height the success branch
+                            // occupies, with an inner ScrollView so a
+                            // long server payload / stack trace
+                            // doesn't expand the modal. nestedScroll
+                            // lets the inner scroller work even when
+                            // the outer modal ScrollView is bouncing.
+                            <View style={{
+                              maxHeight: 36,
+                              borderWidth: 1,
+                              borderColor: '#f1c2c2',
+                              borderRadius: 4,
+                              backgroundColor: '#fdf6f6',
+                            }}>
+                              <ScrollView
+                                nestedScrollEnabled
+                                showsVerticalScrollIndicator
+                                contentContainerStyle={{ paddingHorizontal: 6, paddingVertical: 2 }}
+                              >
+                                <Text style={{ fontSize: 11, color: '#b22', lineHeight: 14 }}>
+                                  {accountInfoError}
+                                </Text>
+                              </ScrollView>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        {/* Right: tappable refresh icon. While a
+                            refresh is in flight we swap to an
+                            ActivityIndicator so the user gets visual
+                            feedback. Disabled when no refresh
+                            helper is wired (defensive — the prop is
+                            always supplied from App today). hitSlop
+                            keeps the tap target generous without
+                            growing the visible icon. */}
+                        {typeof refreshAccountInfo === 'function' && (
+                          accountInfoLoading ? (
+                            <ActivityIndicator
+                              size="small"
+                              style={{ marginLeft: 8, width: 24, height: 24 }}
+                            />
+                          ) : (
+                            <TouchableOpacity
+                              onPress={() => {
+                                setAccountInfoLoading(true);
+                                refreshAccountInfo()
+                                  .catch(() => { /* surfaced via accountInfoError */ })
+                                  .finally(() => { setAccountInfoLoading(false); });
+                              }}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              style={{ marginLeft: 8, padding: 2 }}
+                              accessibilityLabel="Refresh account info"
+                            >
+                              <Icon name="refresh" size={20} color="#555" />
+                            </TouchableOpacity>
+                          )
+                        )}
+                      </View>
+                    )}
 
                     {/* Visual breathing room between the last text-
                         input row (Email) and the toggle / chip block
@@ -1329,18 +2022,14 @@ const getTotalPrettyStorage = (entity) => {
                       </Button>
                     </View>
 
-                    {(myself && deleteAccountUrl) ? (
-                      <Text
-                        onPress={() => Linking.openURL(deleteAccountUrl)}
-                        style={[styles.link, { paddingBottom: 10 }]}
-                      >
-                        Delete account on server...
-                      </Text>
-                    ) : (
+                    {/* "Delete account on server…" used to live here.
+                        Moved into DeleteAccountModal so the local and
+                        server-side delete actions sit together. */}
+                    {!(myself && deleteAccountUrl) ? (
                       selectedContact?.prettyStorage && !keyboardVisible && (
                         <Text style={styles.small}>Storage usage: {selectedContact.prettyStorage}</Text>
                       )
-                    )}
+                    ) : null}
 
                     {/*
                         Small "Delete account" link pinned to the bottom-right.
@@ -1352,18 +2041,57 @@ const getTotalPrettyStorage = (entity) => {
                         for a two-step confirmation before firing the real
                         destructive action via app.deleteAccount().
                     */}
-                    {myself && openDeleteAccount && !keyboardVisible && (
-                      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingTop: 4, paddingBottom: 10, paddingRight: 10 }}>
-                        <Text
-                          onPress={openDeleteAccount}
-                          accessibilityRole="button"
-                          accessibilityLabel="Delete account"
-                          style={{ fontSize: 12, color: '#c62828', textDecorationLine: 'underline' }}
-                        >
-                          Delete account
-                        </Text>
-                      </View>
-                    )}
+                    {myself && openDeleteAccount && !keyboardVisible && (() => {
+                      // Bottom row: Server label on the left,
+                      // "Delete account" link on the right. Server
+                      // prefers the thor_node (specific cluster
+                      // member) and falls back to sip_proxy; falsy
+                      // when neither is set so the left slot becomes
+                      // an empty spacer and the link still pins to
+                      // the right.
+                      const srv = (accountInfo && accountInfo.server) || {};
+                      const thor  = (srv.thor_node && String(srv.thor_node).trim()) || '';
+                      const proxy = (srv.sip_proxy && String(srv.sip_proxy).trim()) || '';
+                      // thor_node wins when present (it's the
+                      // specific cluster member); fall back to the
+                      // proxy. Labels differ so the user can tell
+                      // which kind of server they're looking at.
+                      let serverPrefix = '';
+                      let serverValue  = '';
+                      if (thor) {
+                          serverPrefix = 'SIP Thor node';
+                          serverValue  = thor;
+                      } else if (proxy) {
+                          serverPrefix = 'SIP Proxy server';
+                          serverValue  = proxy;
+                      }
+                      return (
+                        <View style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          paddingTop: 4,
+                          paddingBottom: 10,
+                          paddingHorizontal: 10,
+                        }}>
+                          {serverValue ? (
+                            <Text style={{ fontSize: 11, opacity: 0.55, flexShrink: 1, marginRight: 8 }} numberOfLines={1}>
+                              {serverPrefix}: {serverValue}
+                            </Text>
+                          ) : (
+                            <View />
+                          )}
+                          <Text
+                            onPress={openDeleteAccount}
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete account"
+                            style={{ fontSize: 12, color: '#c62828', textDecorationLine: 'underline' }}
+                          >
+                            Delete account
+                          </Text>
+                        </View>
+                      );
+                    })()}
 
                     {!myself && false && !keyboardVisible && (
                     <View style={{ flexDirection: 'row', marginTop: 8 }}>
@@ -1378,8 +2106,10 @@ const getTotalPrettyStorage = (entity) => {
                         <Text style={styles.small}> | Storage usage: {totalUsage}</Text>
                       </View>
                     )}
+
                   </>
                 )}
+                </View>
               </Surface>
           </KeyboardAvoidingView>
         </View>
@@ -1409,6 +2139,18 @@ EditContactModal.propTypes = {
   storageUsage: PropTypes.array,
   deleteAccountUrl: PropTypes.string,
   openDeleteAccount: PropTypes.func,
+  myPhoneNumber: PropTypes.string,
+  setMyPhoneNumber: PropTypes.func,
+  readDevicePhoneNumber: PropTypes.func,
+  openPaymentInfoModal: PropTypes.func,
+  accountInfo: PropTypes.object,
+  accountInfoError: PropTypes.string,
+  refreshAccountInfo: PropTypes.func,
+  accountInfoAvailable: PropTypes.bool,
+  openSetCallerIdModal: PropTypes.func,
+  setServerCallerId: PropTypes.func,
+  changeSipPassword: PropTypes.func,
+  setServerEmail: PropTypes.func,
 };
 
 export default EditContactModal;

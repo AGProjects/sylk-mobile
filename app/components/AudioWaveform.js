@@ -70,6 +70,12 @@ export default function AudioWaveform({
     gap = 1,
     channel = null,         // null = stereo mirror, 'l' = local only, 'r' = remote only
     label = null,           // optional caption rendered under the strip
+    // Caption colour for the "Remote" / "Local" label below each strip.
+    // Defaults to the legacy white-on-dark tone for callers that haven't
+    // opted in to theming yet (keeps old call sites on dark surfaces
+    // looking identical). The audio bubble passes a dark tint in Day
+    // mode so the captions stay readable on the white bubble.
+    labelColor = 'rgba(255,255,255,0.55)',
     playedColor = DEFAULT_PLAYED,
     unplayedColor = DEFAULT_UNPLAYED,
 }) {
@@ -154,7 +160,7 @@ export default function AudioWaveform({
                 </View>
                 {label ? (
                     <Text style={{
-                        color: 'rgba(255,255,255,0.55)',
+                        color: labelColor,
                         fontSize: 9,
                         marginTop: 1,
                         letterSpacing: 0.4,

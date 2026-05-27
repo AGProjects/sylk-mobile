@@ -721,9 +721,22 @@ class ZrtpSession {
         // below human "I'd notice this is broken" tolerance.
         const DEAD_MS = 60000;
         const DEAD_TICKS = DEAD_MS / POLL_MS;
+        // Stuck-at-key-agreed diagnostic. If, STUCK_DIAG_MS after the
+        // poller started, we are still at 'key-agreed' AND have never
+        // observed inbound RTP AND our senders are installed, the pill
+        // will not light and the user will hear silence — emit a single
+        // explanatory log line so support can grep for it instead of
+        // staring at the same trailing "state -> key-agreed" we've been
+        // shipping for months. The threshold sits above realistic media-
+        // start latency (~500ms for SIP-over-Janus) but well below human
+        // patience (~5s).
+        const STUCK_DIAG_MS = 5000;
+        const STUCK_DIAG_TICKS = STUCK_DIAG_MS / POLL_MS;
         let __consecutiveZeroDelta = 0;
         let __everSawActivity = false;
         let __tickCount = 0;
+        let __stuckDiagFired = false;
+        let __getStatsErrorLogged = false;
         const tick = async () => {
             __tickCount++;
             if (this._destroyed) return;
@@ -744,6 +757,17 @@ class ZrtpSession {
                     aggDelta += d;
                 });
             } catch (e) {
+                // Don't spam the log on every poll if getStats is
+                // chronically failing (would have masked the stuck-at-
+                // key-agreed condition before this patch). Log once with
+                // a marker so support knows the poller is degraded.
+                if (!__getStatsErrorLogged) {
+                    __getStatsErrorLogged = true;
+                    this._log('activity poller: pc.getStats() threw — '
+                              + 'pill cannot light until this clears '
+                              + '(will not log again this session): '
+                              + ((e && e.message) || String(e)));
+                }
                 return;
             }
             if (aggDelta > 0 && this._sendersInstalled) {
@@ -779,6 +803,115 @@ class ZrtpSession {
                 // key-agreed (or earlier): count zero-delta ticks for
                 // the auto-stop safety net.
                 __consecutiveZeroDelta++;
+            }
+            // Stuck-at-key-agreed diagnostic. Fires exactly once. Catches
+            // the failure mode where both sides reach key-agreed but the
+            // peer never actually sends encoded media — typically because
+            // the peer aborted FrameEncryptor install (e.g. v3 verify
+            // failed on their side with no peer_pub_key plumbed, or the
+            // bridge tore the audio stream down). In that case the mobile
+            // sits at key-agreed indefinitely, the pill never lights, and
+            // any "decrypted" audio is noise. Before this diagnostic the
+            // only signal was the absence of a "-> key-active" log line,
+            // which is easy to miss; now there is a single greppable line
+            // that names the likely cause.
+            if (!__stuckDiagFired
+                    && this.state === 'key-agreed'
+                    && this._sendersInstalled
+                    && !__everSawActivity
+                    && __tickCount >= STUCK_DIAG_TICKS) {
+                __stuckDiagFired = true;
+                this._log('DIAGNOSTIC: ' + STUCK_DIAG_MS + 'ms past key-agreed'
+                          + ' with no inbound RTP — pill will stay OFF and audio'
+                          + ' will be silent. Likely causes: (a) peer never sent'
+                          + ' media; (b) peer aborted FrameEncryptor install'
+                          + ' (check peer log for v3 verify failure / missing'
+                          + ' "media now end-to-end encrypted" line); (c) Janus'
+                          + ' / sylk-server bridge dropped the audio stream;'
+                          + ' (d) DTLS-SRTP unwrap failing on the Janus→mobile'
+                          + ' leg (packets arrive on the wire but never reach'
+                          + ' the inbound-rtp accounting layer).'
+                          + ' role=' + this.role
+                          + ' _sendersInstalled=' + this._sendersInstalled
+                          + ' encryptedKinds=[' + this.encryptedKinds.join(',') + ']'
+                          + ' negotiatedVersion=' + this.negotiatedVersion
+                          + ' continuity=' + this.continuityState);
+                // Snapshot pc.getStats so the next time this fires, the log
+                // line above is followed by enough media-plane state to
+                // distinguish (a)/(b) from (c)/(d):
+                //   - "no inbound-rtp reports at all" → the PC never even saw
+                //     an SSRC; Janus isn't forwarding for this call, or DTLS
+                //     never finished, or candidate-pair selection failed.
+                //     transport.bytesReceived will confirm: zero == nothing
+                //     on the wire, non-zero == bytes flowed but couldn't be
+                //     RTP-parsed (DTLS-SRTP key mismatch is the textbook
+                //     cause of "bytes received but zero RTP packets").
+                //   - "inbound-rtp report exists but packetsReceived=0" →
+                //     report was created (so an SSRC was at least announced
+                //     via SDP) but no packet has ever decoded successfully —
+                //     same DTLS-SRTP suspicion, just a different code path
+                //     created the report stub.
+                //   - "inbound-rtp report exists, packetsReceived>0, but our
+                //     delta is still 0" → packets ARE arriving, the poller's
+                //     baseline accidentally captured them and is stuck at the
+                //     ceiling; that's a poller bug.
+                // We do this as a self-invoking IIFE so the await doesn't
+                // block the outer poller tick's control flow.
+                (async () => {
+                    try {
+                        const snap = await pc.getStats();
+                        let inboundCount = 0;
+                        let transportBytesReceived = 0;
+                        let iceState = (this.call && this.call._pc
+                                        && this.call._pc.iceConnectionState) || '?';
+                        let selectedPairId = null;
+                        const inboundLines = [];
+                        const pairLines = [];
+                        snap.forEach((r) => {
+                            if (!r) return;
+                            if (r.type === 'inbound-rtp') {
+                                inboundCount++;
+                                inboundLines.push(
+                                    '{kind=' + (r.kind || r.mediaType || '?')
+                                    + ' ssrc=' + (r.ssrc != null ? r.ssrc : '?')
+                                    + ' packetsReceived=' + (r.packetsReceived || 0)
+                                    + ' bytesReceived=' + (r.bytesReceived || 0)
+                                    + ' jitter=' + (r.jitter != null ? r.jitter : '?')
+                                    + ' codec=' + (r.codecId || '?') + '}');
+                            } else if (r.type === 'transport') {
+                                transportBytesReceived += Number(r.bytesReceived || 0);
+                                if (r.selectedCandidatePairId) {
+                                    selectedPairId = r.selectedCandidatePairId;
+                                }
+                            } else if (r.type === 'candidate-pair') {
+                                pairLines.push(
+                                    '{id=' + r.id
+                                    + ' state=' + (r.state || '?')
+                                    + ' nominated=' + (r.nominated ? 'yes' : 'no')
+                                    + ' bytesReceived=' + (r.bytesReceived || 0)
+                                    + ' bytesSent=' + (r.bytesSent || 0) + '}');
+                            }
+                        });
+                        this._log('DIAGNOSTIC stats: iceConnectionState=' + iceState
+                                  + ' inbound-rtp.count=' + inboundCount
+                                  + ' transport.bytesReceived=' + transportBytesReceived
+                                  + ' selectedCandidatePairId=' + (selectedPairId || '<none>'));
+                        if (inboundLines.length === 0) {
+                            this._log('DIAGNOSTIC stats: NO inbound-rtp reports — '
+                                      + 'PC never observed an SSRC for this call');
+                        } else {
+                            for (const line of inboundLines) {
+                                this._log('DIAGNOSTIC stats: inbound-rtp ' + line);
+                            }
+                        }
+                        for (const line of pairLines) {
+                            this._log('DIAGNOSTIC stats: candidate-pair ' + line);
+                        }
+                    } catch (e) {
+                        this._log('DIAGNOSTIC stats: getStats snapshot failed: '
+                                  + ((e && e.message) || String(e)));
+                    }
+                })();
             }
             // Safety-net stop. If we previously saw real media (so the
             // call was actually live) and we've now had DEAD_MS of zero
@@ -2289,67 +2422,27 @@ function _emitMandatoryFailedDelayed(call, reasonCode, detail) {
     }, ZRTP_MANDATORY_TIMEOUT_MS);
 }
 
-// In MANDATORY mode the call must reach key-agreed within
-// ZRTP_MANDATORY_TIMEOUT_MS. If it doesn't, we DON'T terminate the call
-// directly — instead we emit a 'zrtpMandatoryFailed' event on the
-// sylkrtc Call object. The UI catches it (Call.js / AudioCallBox /
-// VideoBox) and shows a confirmation modal letting the user choose:
+// REMOVED: _attachOptionalDowngradeWarning
 //
-//   • End call    — they actually want mandatory enforcement
-//   • Continue    — they accept the call continuing without E2E
+// Previously, in OPTIONAL mode we emitted a 'zrtpDowngradeWarning' event
+// when the handshake didn't reach key-agreed within
+// ZRTP_MANDATORY_TIMEOUT_MS, which AudioCallBox / VideoBox surfaced as
+// the "End-to-end encryption was attempted but did not activate" banner.
 //
-// This avoids the abrupt-disconnect-with-no-explanation experience.
+// That contradicted the OPTIONAL-mode contract documented in the
+// Preferences screen ("falls back to DTLS if negotiation fails") — the
+// user-visible promise is a SILENT fallback. The banner also duplicated
+// existing UX surface for the case the user actually wants signalled:
+// MANDATORY mode failure already shows a dedicated end-or-continue
+// modal via _attachMandatoryTimeout → 'zrtpMandatoryFailed' →
+// AudioCallBox.zrtpMandatoryFailed.
 //
-// In OPTIONAL mode this helper is a no-op.
-//
-// The session's own _setState path is monkey-patched so the timer can
-// be cancelled the moment state transitions to 'key-agreed' (success).
-function _attachOptionalDowngradeWarning(call, id, session) {
-    if (_encryptionMode !== 'zrtp_optional') return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-        if (cancelled) return;
-        const st = session.state;
-        if (st === 'key-agreed' || st === 'key-active') return;
-        const cid = _callIdOf(call);
-        utils.timestampedLog('[call] [zrtp] call_id=' + cid,
-                  'OPTIONAL mode: handshake did not reach key-agreed within '
-                  + ZRTP_MANDATORY_TIMEOUT_MS + 'ms (state=' + st + ')'
-                  + ' — emitting zrtpDowngradeWarning');
-        try {
-            call.emit('zrtpDowngradeWarning',
-                      { reason: 'timeout',
-                        detail: 'handshake did not complete in '
-                                + ZRTP_MANDATORY_TIMEOUT_MS + 'ms',
-                        state: st });
-        } catch (e) {
-            console.log('[call] [zrtp] call_id=' + cid,
-                        'zrtpDowngradeWarning emit threw (' +
-                        ((e && e.message) || e) + ')');
-        }
-    }, ZRTP_MANDATORY_TIMEOUT_MS);
-
-    const onState = (oldS, newS) => {
-        if (newS === 'terminated') {
-            cancelled = true;
-            clearTimeout(timer);
-            try { call.removeListener('stateChanged', onState); } catch (e) {}
-        }
-    };
-    call.on('stateChanged', onState);
-
-    const origSetState = session._setState
-        ? session._setState.bind(session) : null;
-    if (origSetState) {
-        session._setState = (newS) => {
-            origSetState(newS);
-            if (newS === 'key-agreed' || newS === 'key-active') {
-                cancelled = true;
-                clearTimeout(timer);
-            }
-        };
-    }
-}
+// Optional-mode failure is therefore now silent. If you ever need a
+// soft warning in optional mode again, re-introduce a helper here and
+// re-wire it at the two call sites (sender path after startProbe(),
+// callee path in dispatchIncomingZrtp). The banner UI itself lives in
+// AudioCallBox.js (zrtpDowngradeBannerVisible) and VideoBox.js and is
+// retained as dead code in case it gets reused.
 
 function _attachMandatoryTimeout(call, id, session) {
     if (_encryptionMode !== 'zrtp_mandatory') return;
@@ -2447,7 +2540,10 @@ export function startZrtpForCall(call, account, contact, myKeys) {
     _attachCleanup(call, id, s);
     _attachRs1Listeners(call);
     _attachMandatoryTimeout(call, id, s);
-    _attachOptionalDowngradeWarning(call, id, s);
+    // OPTIONAL-mode downgrade banner intentionally not attached — see the
+    // removal note where _attachOptionalDowngradeWarning used to live.
+    // Optional mode silently falls back to DTLS, matching the contract
+    // promised by the Preferences screen.
     s.startProbe();
     return s;
 }
@@ -2498,7 +2594,9 @@ export function dispatchIncomingZrtp(call, account, contact, myKeys, content) {
         _attachCleanup(call, id, s);
         _attachRs1Listeners(call);
         _attachMandatoryTimeout(call, id, s);
-        _attachOptionalDowngradeWarning(call, id, s);
+        // OPTIONAL-mode downgrade banner intentionally not attached —
+        // see the removal note where _attachOptionalDowngradeWarning
+        // used to live.
     }
     s.handleIncoming(content);
 }

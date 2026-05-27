@@ -328,9 +328,26 @@ class ContactCard extends Component {
 	  // '+40xxxx'. Also keys on the 'tel' tag so contacts saved before
 	  // utils.isPhoneNumber existed (or with edge-case formats) still
 	  // strip cleanly. Email/SIP user URIs keep their full form.
-	  const isTelContact =
-	    utils.isPhoneNumber(contact.uri) ||
-	    (Array.isArray(contact.tags) && contact.tags.indexOf('tel') > -1);
+	  //
+	  // Conference URIs (rooms hosted on the account's configured
+	  // conference bridge, e.g. someroom@videoconference.sip2sip.info)
+	  // are NEVER telephone contacts, even when the room name starts
+	  // with a leading 0 and may legitimately have been tagged 'tel'
+	  // by an older build that ran isPhoneNumber on the bare local
+	  // part. We compare the URI's domain against the account's
+	  // configured defaultConferenceDomain (passed in as a prop) —
+	  // substring heuristics like 'conference.' aren't reliable
+	  // because vanity domains can include that word without being
+	  // a Sylk conference bridge.
+	  const _confDomain = (this.props.defaultConferenceDomain || '').toLowerCase();
+	  const _uriDomain = (typeof contact.uri === 'string' && contact.uri.indexOf('@') > -1)
+	    ? contact.uri.split('@')[1].toLowerCase()
+	    : '';
+	  const _isConferenceUri = !!_confDomain && _uriDomain === _confDomain;
+	  const isTelContact = !_isConferenceUri && (
+	    utils.isPhoneNumber(contact.uri, _confDomain) ||
+	    (Array.isArray(contact.tags) && contact.tags.indexOf('tel') > -1)
+	  );
 	  let subtitle = isTelContact ? contact.uri.split('@')[0] : contact.uri;
 	
 	  if (uri.indexOf('@guest.') > -1) {

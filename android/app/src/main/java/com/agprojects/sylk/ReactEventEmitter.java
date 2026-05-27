@@ -81,4 +81,69 @@ public class ReactEventEmitter {
           .emit("IncomingCallAction", payload);
     }
 
+    /**
+     * Wake-the-app-early signal fired from MyFirebaseMessagingService the
+     * moment an incoming_session or incoming_conference_request FCM push
+     * is recognised. Carries the minimal info JS needs to start prep
+     * work (WSS reconnect / handleRegistration kick) BEFORE the user
+     * presses Accept.
+     *
+     * Without this, on Android the JS thread doesn't process the FCM
+     * data push until the user taps Accept (~3 s gap visible in
+     * metro.log as "FCM in-app event: incoming call" lagging behind
+     * the native "[fcm]incoming_session" line). During that gap, the
+     * OS may have suspended the WSS connection, and the device's
+     * acceptCall then arrives at sylk-server AFTER sylk-server has
+     * already sent 480 Temporarily Unavailable to the caller in
+     * response to the WebSocket close it saw on its side.
+     *
+     * The fix: ping JS immediately on FCM arrival. JS handler runs
+     * scheduleBackToForeground / handleRegistration, the WSS
+     * reconnect overlaps the ringing window, and by the time the user
+     * taps Accept the device is registered and the acceptCall reaches
+     * sylk-server before the gateway times out / tears down.
+     *
+     * If RN isn't running at all (truly cold process), nothing is
+     * emitted — the existing ACTION_ACCEPT path still wakes the
+     * activity on tap. This event is a pure latency optimisation, not
+     * a correctness requirement.
+     */
+    public static synchronized void sendCallPrepEvent(
+            String callUUID,
+            String fromUri,
+            String toUri,
+            String event,
+            ReactApplication app
+    ) {
+        try {
+            ReactInstanceManager rim =
+                app.getReactNativeHost().getReactInstanceManager();
+            ReactContext rc = rim.getCurrentReactContext();
+
+            // No fallback to setLastEvent / drained pull: the prep
+            // event is opportunistic. If RN isn't ready, JS will
+            // wake up via the normal accept path and do its work
+            // then (it'll just be slower for this one call). We
+            // don't want a stored prep payload bleeding into a
+            // future cold start.
+            if (rc == null || !CallEventModule.isRNready()) {
+                SylkLogger.d("[bridge] [event] RN not ready → prep event dropped (callId=" + callUUID + ")");
+                return;
+            }
+
+            WritableMap payload = Arguments.createMap();
+            payload.putString("callUUID", callUUID);
+            if (fromUri != null) payload.putString("fromUri", fromUri);
+            if (toUri != null)   payload.putString("toUri", toUri);
+            if (event != null)   payload.putString("event", event);
+
+            SylkLogger.d("[bridge] [event] prep emit callId=" + callUUID
+                    + " from=" + fromUri + " event=" + event);
+            rc.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+              .emit("IncomingCallPrep", payload);
+        } catch (Exception e) {
+            SylkLogger.e("[bridge] [event] Error sending RN prep event", e);
+        }
+    }
+
 }

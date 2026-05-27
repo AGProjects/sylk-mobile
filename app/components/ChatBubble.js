@@ -524,6 +524,19 @@ const ChatBubble = memo(
         />
       );
     } else if (currentMessage.audio) {
+      // The audio bubble's inner content (renderMessageAudio) is
+      // painted in white by default: white duration label, white slider
+      // track/knob, on a Sylk-blue play-button circle. A fully-
+      // transparent wrapper works in Night mode because the chat
+      // surface behind it is dark — white-on-dark reads fine. In Day
+      // mode we want a WHITE bubble background, but white-on-white
+      // would obviously hide the label + slider, so renderMessageAudio
+      // is also flipped to draw those in dark when theme.isDark is
+      // false (see ContactsListBox.renderMessageAudio). The border
+      // becomes a light grey hairline in Day so the white pill has
+      // some visible edge against the chat surface.
+      const audioBubbleBg     = theme.isDark ? 'transparent' : '#FFFFFF';
+      const audioBubbleBorder = theme.isDark ? 'white'       : 'rgba(0,0,0,0.12)';
       content = (
         <Bubble
           {...bubbleProps}
@@ -539,16 +552,16 @@ const ChatBubble = memo(
           wrapperStyle={{
             left: {
               ...leftWrapper,
-              backgroundColor: 'transparent',
-              borderColor: 'white',
+              backgroundColor: audioBubbleBg,
+              borderColor: audioBubbleBorder,
               borderWidth: 0.5,
               alignSelf: 'stretch',
               marginRight: 24,
             },
             right: {
               ...rightWrapper,
-              backgroundColor: 'transparent',
-              borderColor: 'white',
+              backgroundColor: audioBubbleBg,
+              borderColor: audioBubbleBorder,
               borderWidth: 0.5,
               alignSelf: 'stretch',
               marginLeft: 24,

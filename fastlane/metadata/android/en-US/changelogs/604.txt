@@ -1,0 +1,6 @@
+Added PSTN integration
+Added PSTN conferencing
+Added VUmeters for all audio participants
+UI fixes
+Improve account management
+ 

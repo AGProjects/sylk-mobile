@@ -1200,10 +1200,27 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, function(m) { return map[m]; });
 }
 
-function isPhoneNumber(uri) {
+function isPhoneNumber(uri, conferenceDomain) {
     let username = uri;
+    let domain = '';
     if (uri.indexOf('@') > -1) {
-        username = uri.split('@')[0].trim();
+        const _parts = uri.split('@');
+        username = _parts[0].trim();
+        domain = (_parts[1] || '').trim().toLowerCase();
+    }
+    // Conference URIs are NEVER phone numbers, even when the room
+    // name is all digits or starts with a leading 0. We can ONLY
+    // know it's a conference if the caller tells us which domain
+    // the account's conference bridge lives on — substrings like
+    // 'conference.' aren't a reliable signal (e.g. a vanity domain
+    // like conference.example.com is not necessarily a Sylk
+    // conference bridge). When the caller passes the account's
+    // configured `defaultConferenceDomain` here, we compare the
+    // URI's domain to it (case-insensitively) and short-circuit
+    // to false. Callers that don't have the domain handy just
+    // omit it and we fall back to the legacy regex.
+    if (conferenceDomain && domain && domain === String(conferenceDomain).toLowerCase()) {
+        return false;
     }
     return username.match(/^(\+|0)([\d|\-\(\)]+)$/);
 }

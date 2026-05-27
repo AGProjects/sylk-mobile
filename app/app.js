@@ -314,6 +314,17 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // row (localProperties.autoanswer) and are unaffected. Migrated
         // out of AsyncStorage 'autoAnswerMode'.
         autoAnswerMode: false,
+        // User's own mobile phone number, used as Caller ID when
+        // calling PSTN destinations. Captured on the first PSTN dial
+        // (callKeepStartCall asks for READ_PHONE_NUMBERS, reads the
+        // SIM number via react-native-device-info's getPhoneNumber(),
+        // and persists it here through setAccountSetting). Empty
+        // string = "not yet captured / user declined / no SIM" — in
+        // which case we fall back to the device-info value held in
+        // state.myPhoneNumber. Per-account because the same physical
+        // device can be used by two accounts with different billing
+        // numbers; per-account storage lets each pick its own.
+        myPhoneNumber: '',
     }),
     // ---- Live-location feature knobs ------------------------------------
     location: Object.freeze({
@@ -555,6 +566,7 @@ setVideoEncoderTarget(VIDEO_PROFILE.width, VIDEO_PROFILE.height, VIDEO_PROFILE.f
 })();
 import InCallManager from 'react-native-incall-manager';
 import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
+import SetCallerIdModal from './components/SetCallerIdModal';
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
 import Call from './components/Call';
@@ -588,6 +600,17 @@ import momenttz from 'moment-timezone';
 import utils from './utils';
 import storage from './storage';
 import { registerApp as registerAccountSettingsApp } from './accountSettingsAccess';
+import {
+    getAccountInfo,
+    setCallerId,
+    setSipPassword,
+    setServerEmail as apiSetServerEmail,
+    requestDeleteAccount,
+    cancelDeleteAccount,
+    validateCallerId,
+    validateSipPassword,
+    isPlaceholderCallerId,
+} from './accountInfo';
 import { readAcknowledged as readLocationDisclosure } from './locationDisclosure';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
@@ -615,7 +638,7 @@ if (Platform.OS === 'android') {
   platform = `iOS ${Platform.Version}`;
 }
 
-const USER_AGENT = `Sylk (${getBrand()} ${getModel()} on ${platform})`;
+const USER_AGENT = `Blink (${getBrand()} ${getModel()} on ${platform})`;
 //const USER_AGENT_LOG = `${getBrand()} ${getModel()} ${platform}`;
 const USER_AGENT_LOG = `${getModel()} ${platform}`;
   
@@ -1161,6 +1184,13 @@ class Sylk extends Component {
             publicUrl: 'https://webrtc.sipthor.net',
             defaultConferenceDomain: 'videoconference.sip2sip.info',
             pstnAccessUrl: 'https://sip2sip.info/help',
+            // Free-form array of payment-account records published by
+            // the server under pstn.payment_accounts. Each entry is
+            // an object of arbitrary key/value pairs (e.g. owner /
+            // IBAN / SWIFT / type) rendered dynamically as a table
+            // inside PaymentInfoModal. Empty by default until the
+            // first sylk-config.json fetch.
+            pstnPaymentAccounts: [],
             // Conference media — the server's RECOMMENDED video codec,
             // read from the per-domain sylk-config.json's
             // 'conference.codec' field ('VP8' | 'VP9' | 'H264' |
@@ -1177,6 +1207,23 @@ class Sylk extends Component {
             enrollmentUrl: 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
             iceServers: [{"urls":"stun:stun.sipthor.net:3478"}],
             serverSettingsUrl: 'https://mdns.sipthor.net/sip_settings.phtml',
+            // Populated by refreshAccountInfo() — null until the first
+            // successful fetch. Shape: see app/accountInfo.js JSDoc.
+            accountInfo: null,
+            accountInfoError: null,
+            // Opened by the pre-flight PSTN gate in callKeepStartCall
+            // when pstn.caller_id is missing. The modal lets the user
+            // enter a number (Android auto-detects from SIM) and
+            // writes it BOTH to server-side rpid and to the local
+            // accountSetting.account.myPhoneNumber.
+            showSetCallerIdModal: false,
+            // 3-digit SIP status code from the most recent failed
+            // REGISTER (e.g. "403", "401", "408"). Null while
+            // registered / fresh. Rendered as a small badge on the
+            // bell so the user can see at a glance WHY the bell is
+            // orange. Cleared when registrationState transitions to
+            // 'registered' and on logout/reset.
+            registerErrorCode: null,
             fileTransferUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filetransfer',
             fileSharingUrl: 'https://webrtc-gateway.sipthor.net:9999/webrtcgateway/filesharing',
 			// No hard-coded default test numbers. Test numbers are populated
@@ -1315,6 +1362,16 @@ class Sylk extends Component {
             decryptingMessages: {},
             purgeMessages: [],
             showCallMeMaybeModal: false,
+            // Backs PaymentInfoModal — opened from the kebab "Donate…"
+            // menu item AND auto-opened from the 'Payment required'
+            // PSTN terminated path so the bank transfer details are
+            // surfaced inline instead of only dropped as a system
+            // message link in the chat history.
+            showPaymentInfoModal: false,
+            // 'donate' (kebab) or 'credit' (PSTN error). Drives the
+            // copy at the top of the modal — same bank details,
+            // different framing per entry point.
+            paymentInfoReason: 'donate',
             enrollment: false,
             contacts: [],
             isTyping: false,
@@ -1700,8 +1757,8 @@ class Sylk extends Component {
         }
 
         this.sqlTableVersions = {'messages': 16,
-                                 'contacts': 12,
-                                 'accounts': 20
+                                 'contacts': 13,
+                                 'accounts': 21
                                  }
                                    
         this.db = null;
@@ -1987,6 +2044,114 @@ class Sylk extends Component {
         }
 
         return true;
+    }
+
+    /**
+     * On-demand SIM-number read for the My Account modal's Mobile
+     * number field. Triggered when the user taps the empty field —
+     * we ask for READ_PHONE_NUMBERS, read the SIM, and return the
+     * value so EditContactModal can pre-fill its input. We do NOT
+     * persist here: the user still has to tap Save (which routes
+     * back through setMyAccountPhoneNumber → setAccountSetting), so
+     * a focus that ends in cancel doesn't accidentally commit a
+     * value the user never wanted on file.
+     *
+     * Returns '' on iOS (Apple doesn't expose the device number),
+     * on permission denial, or when the SIM has no MSISDN.
+     */
+    async readDevicePhoneNumber() {
+        if (Platform.OS !== 'android') return '';
+        try {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (!phoneAllowed) return '';
+            const num = await getPhoneNumber();
+            if (num && typeof num === 'string'
+                && num !== 'unknown' && num !== '') {
+                return num;
+            }
+            return '';
+        } catch (e) {
+            console.log('[my-account] readDevicePhoneNumber failed:', e && e.message);
+            return '';
+        }
+    }
+
+    /**
+     * Caller-ID precondition for PSTN dials and conference invites.
+     *
+     * Order of operations matters here — Caller-ID FIRST, credit
+     * check second:
+     *   1. Skip if the target(s) aren't PSTN (SIP-only invitees /
+     *      SIP-only dial → no Caller ID needed at all).
+     *   2. If a number is already on file (auto-captured earlier
+     *      or hand-entered in My Account), proceed — the server-
+     *      side credit check is the gate from here on, and a
+     *      'Payment required' termination surfaces the
+     *      PaymentInfoModal via callStateChanged.
+     *   3. Otherwise, try the one-shot SIM auto-capture on Android
+     *      (READ_PHONE_NUMBERS + getPhoneNumber). On success we
+     *      persist to per-account settings and proceed.
+     *   4. If we still have no Caller ID at this point (iOS, user
+     *      declined the permission, SIM with no MSISDN, eSIM, …),
+     *      BLOCK the call and tell the user to set their Mobile
+     *      number in My Account. The carrier won't bridge PSTN
+     *      without a presentable Caller ID and there's no point
+     *      sending an INVITE only to be billed for a fail at the
+     *      gateway.
+     *
+     * Returns true if the call should proceed, false to block it.
+     * Pass either a single URI string or an array of URIs (the
+     * conference invite case forwards multiple at once).
+     */
+    async ensurePstnCallerIdCaptured(uriOrUris) {
+        // 1. PSTN gate ----------------------------------------------------
+        const list = Array.isArray(uriOrUris) ? uriOrUris : [uriOrUris];
+        const _isPstn = (uri) => {
+            if (!uri || typeof uri !== 'string') return false;
+            const local = uri.indexOf('@') > -1 ? uri.split('@')[0] : uri;
+            return !!utils.isPhoneNumber(local);
+        };
+        if (!list.some(_isPstn)) return true;
+
+        // 2. Already on file? ---------------------------------------------
+        const _storedMyNumber = (this.state.accountSetting
+            && this.state.accountSetting.account
+            && this.state.accountSetting.account.myPhoneNumber) || '';
+        if (_storedMyNumber) return true;
+
+        // 3. Try one-shot SIM auto-capture (Android only) -----------------
+        if (Platform.OS === 'android') {
+            const phoneAllowed = await this.requestPhonePermission();
+            if (phoneAllowed) {
+                try {
+                    const num = await getPhoneNumber();
+                    if (num && typeof num === 'string'
+                        && num !== 'unknown' && num !== '') {
+                        this.setState({myPhoneNumber: num});
+                        this.setAccountSetting('account.myPhoneNumber', num);
+                        utils.timestampedLog('[pstn] captured device phone number for Caller ID');
+                        return true;
+                    }
+                } catch (e) {
+                    console.log('[pstn] getPhoneNumber failed:', e && e.message);
+                }
+            }
+            // Fall through to the no-Caller-ID block below if the
+            // permission was denied or the SIM had nothing usable
+            // — the friendly "set it in My Account" prompt covers
+            // both paths uniformly.
+        }
+
+        // 4. Still no Caller ID — block the call --------------------------
+        // iOS users always land here on the first PSTN attempt (no
+        // SIM API), as do Android users who denied the permission
+        // or whose SIM didn't expose an MSISDN.
+        //
+        // Snackbar removed: the caller (callKeepStartCall) now opens
+        // SetCallerIdModal in this branch, which captures the number
+        // interactively. A snackbar AND a modal at the same time
+        // was double signalling.
+        return false;
     }
 
 	async requestDndPermission() {
@@ -2278,6 +2443,64 @@ class Sylk extends Component {
 		}
 
 		const json = await response.json();
+		// Dump the raw downloaded JSON before any client-side
+		// post-processing. Lets us see exactly what the server
+		// published — and in particular which keys are missing.
+		try {
+			console.log('[config] downloaded JSON for', domain, '(from', url + '):',
+				JSON.stringify(json));
+		} catch (e) {
+			console.log('[config] downloaded JSON for', domain, 'unstringifiable:', e && e.message);
+		}
+
+		// Tabular per-key comparison of cached vs freshly-downloaded
+		// config. Helps spot drift (e.g. nested fields like
+		// pstn.payment_accounts that aren't visible in a top-level
+		// configKeys list). Renders as a fixed-width ASCII table in
+		// the log: KEY | CACHED | SERVER | STATUS. Both values are
+		// JSON-stringified and truncated; the STATUS column shows
+		// "match", "diff", "added" (server only), or "removed"
+		// (cached only). Client-side stamps (configurationUrl,
+		// sylkDomain) injected by initConfiguration after download
+		// are flagged "+client" so they don't read as "drift".
+		try {
+			const _cached = (this.configurations && this.configurations[domain])
+				? this.configurations[domain] : null;
+			const _server = json || {};
+			const _clientAdds = new Set(['configurationUrl', 'sylkDomain']);
+			const _keys = Array.from(new Set([
+				...Object.keys(_cached || {}),
+				...Object.keys(_server || {}),
+			])).sort();
+			const _stringify = (v) => {
+				if (v === undefined) return '∅';
+				const s = JSON.stringify(v);
+				return (s == null) ? '∅' : s;
+			};
+			const lines = [];
+			for (const k of _keys) {
+				const inCached = _cached && Object.prototype.hasOwnProperty.call(_cached, k);
+				const inServer = Object.prototype.hasOwnProperty.call(_server, k);
+				const sameVal = inCached && inServer
+					&& JSON.stringify(_cached[k]) === JSON.stringify(_server[k]);
+				let status;
+				if (_clientAdds.has(k) && inCached && !inServer) status = '+client';
+				else if (inCached && !inServer)                  status = 'removed';
+				else if (!inCached && inServer)                  status = 'added';
+				else if (sameVal)                                status = 'match';
+				else                                             status = 'diff';
+				lines.push(k + '  [' + status + ']');
+				if (sameVal) {
+					lines.push('    value:  ' + _stringify(_cached[k]));
+				} else {
+					lines.push('    cached: ' + _stringify(inCached ? _cached[k] : undefined));
+					lines.push('    server: ' + _stringify(inServer ? _server[k] : undefined));
+				}
+			}
+			console.log('[config] cached vs server for', domain, '\n' + lines.join('\n'));
+		} catch (e) {
+			console.log('[config] cached-vs-server diff failed:', e && e.message);
+		}
 		if (!json || !json.wsServer) {
 		    this.setState({SylkServerDiscoveryResult: 'noWsServer',
 			                SylkServerDiscovery: false,
@@ -2670,7 +2893,10 @@ class Sylk extends Component {
 
             this.savePrivateKey(keys);
 
-            this.showCallMeModal();
+            // Disabled: don't show the "Call me, maybe?" share-your-address
+            // modal automatically at first start after enrollment. The user
+            // can still open it manually from the navbar menu.
+            //this.showCallMeModal();
 
         }).catch((error) => {
             console.log("[pgp] keys generation error:", error);
@@ -3021,6 +3247,18 @@ class Sylk extends Component {
             let idx;
             let formatted_date;
             let updated;
+            // The contacts table should have at most ONE row with
+            // uri === accountId (the "myself" contact). When duplicates
+            // sneak in (older code paths, sync edge cases), the loop
+            // below would let every match overwrite state.displayName,
+            // so the FINAL value depended on iteration order — the
+            // older row would clobber the newer one and the display
+            // name would silently change after every reload. The
+            // query orders by `timestamp desc` so the first matching
+            // row is the freshest; this flag locks the myself-update
+            // to that first row and logs a warning for any extras so
+            // the user can clean them up.
+            let _myselfApplied = false;
             //console.log(rows.length, 'SQL contacts rows');
 
             if (rows.length > 0) {
@@ -3087,14 +3325,68 @@ class Sylk extends Component {
                     }
 
                     if (contact.uri === this.state.accountId) {
-                        displayName = (contact.name && contact.name !== 'Myself') ? contact.name : '';
-                    
-                        this.setState({displayName: displayName, organization: contact.organization});
-                        
-                        if (email && !contact.email) {
-                            contact.email = email;
+                        if (_myselfApplied) {
+                            // Duplicate myself-contact — log it AND
+                            // delete it from SQL. The duplicate
+                            // carries a different contact_id but the
+                            // same (account, uri) pair; nothing in
+                            // the rest of the app references the
+                            // older id, and keeping the row around
+                            // just lets it re-leak through the next
+                            // load loop / cascade.
+                            console.log(
+                                '[account] [load] duplicate myself contact — deleting:',
+                                JSON.stringify({
+                                    uri:   contact.uri,
+                                    name:  contact.name,
+                                    contact_id: contact.id,
+                                    timestamp: contact.timestamp,
+                                })
+                            );
+                            this.ExecuteQuery(
+                                'DELETE FROM contacts WHERE account = ? AND uri = ? AND contact_id = ?',
+                                [this.state.accountId, contact.uri, contact.id]
+                            ).catch((err) => {
+                                console.log('[account] [load] duplicate myself contact delete failed:',
+                                    err && err.message);
+                            });
                         } else {
-                            this.setState({email: contact.email});
+                            // Filter "Myself" and "<uri>" sentinel
+                            // values too — historically some auto-
+                            // create paths stored the URI itself as
+                            // the contact name, which then leaked
+                            // back as the displayName field on the
+                            // My Account modal and got saved again
+                            // verbatim. Treat both as empty so the
+                            // modal opens blank and the user types
+                            // a real name on first save.
+                            const _rawName = (contact.name || '').trim();
+                            const _isUriEcho = _rawName !== ''
+                                && _rawName.toLowerCase() === (contact.uri || '').toLowerCase();
+                            displayName = (_rawName && _rawName !== 'Myself' && !_isUriEcho)
+                                ? _rawName : '';
+
+                            console.log('[account] [load] displayName from myself contact:',
+                                JSON.stringify({
+                                    uri:   contact.uri,
+                                    name:  contact.name,
+                                    resolvedDisplayName: displayName,
+                                    previousStateDisplayName: this.state.displayName,
+                                    contactSource: contact.src || null,
+                                    droppedAs: _isUriEcho ? 'uri-echo'
+                                                : _rawName === 'Myself' ? 'sentinel-Myself'
+                                                : null,
+                                })
+                            );
+
+                            this.setState({displayName: displayName, organization: contact.organization});
+
+                            if (email && !contact.email) {
+                                contact.email = email;
+                            } else {
+                                this.setState({email: contact.email});
+                            }
+                            _myselfApplied = true;
                         }
                     }
 
@@ -3183,6 +3475,23 @@ class Sylk extends Component {
             }
 
 			this.setState({contactsLoaded: true});
+
+            // Replay any call-history snapshot that arrived from the
+            // server before contacts had loaded (refreshAccountInfo
+            // typically wins the race against loadSylkContacts on
+            // app start). Without this, processServerCallHistory
+            // would tally every entry as "no-contact" because
+            // contactIndex was empty when the snapshot landed.
+            if (this._pendingCallHistory) {
+                const _pending = this._pendingCallHistory;
+                this._pendingCallHistory = null;
+                console.log('[history] contacts loaded — replaying deferred call_history');
+                // Defer one tick so the setState({contactsLoaded:true})
+                // above flushes and contactIndex is rebuilt.
+                setTimeout(() => {
+                    if (!this.unmounted) this.processServerCallHistory(_pending);
+                }, 0);
+            }
 
             this.refreshNavigationItems();
 
@@ -4040,9 +4349,18 @@ class Sylk extends Component {
                                      last_message TEXT, 
                                      last_message_id TEXT, 
                                      unread_messages TEXT, 
-                                     last_call_media TEXT, 
-                                     last_call_duration INTEGER default 0, 
-                                     last_call_id TEXT, 
+                                     last_call_media TEXT,
+                                     last_call_duration INTEGER default 0,
+                                     last_call_id TEXT,
+                                     -- Unix-seconds timestamp of the
+                                     -- most recent call (any direction,
+                                     -- any outcome) involving this URI.
+                                     -- NULL until the first call ends.
+                                     -- Drives the Calls category filter
+                                     -- (replaces the older "calls" tag
+                                     -- check, which missed never-tagged
+                                     -- rows).
+                                     last_call_timestamp INTEGER,
                                      properties TEXT, 
                                      local_properties TEXT, 
                                      remote_properties TEXT, 
@@ -4090,6 +4408,7 @@ class Sylk extends Component {
 			server TEXT,
 			last_active_timestamp TEXT NOT NULL default '',
 			app_state TEXT,
+			server_call_history TEXT,
 			settings TEXT
 		  )
 		`;
@@ -4266,6 +4585,15 @@ class Sylk extends Component {
                                                 12: [{query: 'alter table contacts add remote_id TEXT', params: []},
 													 {query: 'alter table contacts add remote_properties TEXT', params: []}
                                                     ],
+                                                // v13: per-contact "most recent call" timestamp.
+                                                //   Stamped from updateHistoryEntry whenever a
+                                                //   call to / from this URI ends, fan-out style
+                                                //   across every row matching the URI. Replaces
+                                                //   the old `tags includes 'calls'` filter for
+                                                //   the bottom-bar Calls category — that filter
+                                                //   missed rows whose tag list was never updated
+                                                //   (rejected on connect, fast-cancelled, etc.).
+                                                13: [{query: 'alter table contacts add column last_call_timestamp INTEGER', params: []}],
                                                 },
                                    'accounts': {3: [{query: 'alter table accounts add column dnd TEXT', params: []}],
 												4: [{query: 'alter table accounts add column reject_anonymous TEXT', params: []}],
@@ -4308,6 +4636,7 @@ class Sylk extends Component {
 												// longer mentions verified, so fresh installs on
 												// any SQLite version skip the column entirely.
 												20: [{query: 'alter table accounts drop column verified', params: []}],
+												21: [{query: 'alter table accounts add column server_call_history TEXT', params: []}],
                                                }
                                    };
 
@@ -4398,6 +4727,15 @@ class Sylk extends Component {
             // — the sole failure mode that matters here is "column already
             // exists", which is exactly the success state.
             this.ensureColumn('accounts', 'read_receipts', 'TEXT');
+            // Per-contact "most recent call" timestamp (v13). The
+            // version-table migration adds this on the v12→v13 step;
+            // ensureColumn runs unconditionally on every boot as a
+            // safety net for installs whose migration was skipped
+            // (versions row bumped but ALTER swallowed). Without it
+            // the saveSylkContact INSERT/UPDATE fails with "table
+            // contacts has no column named last_call_timestamp" on
+            // every contact write.
+            this.ensureColumn('contacts', 'last_call_timestamp', 'INTEGER');
             // Per-account JSON blob holding app state that used to live
             // in AsyncStorage under global keys (location share state,
             // meeting-request handshake markers). The blob is a single
@@ -5200,6 +5538,37 @@ class Sylk extends Component {
 		}
     }
 
+    // UI-side "is the device folded?" gate used by render() when plumbing
+    // isFolded down into Call / Conference / NavigationBar / ReadyBox.
+    //
+    // The raw hinge-sensor signal (this.state.isFolded) is null until the
+    // first native AudioRouteModule event arrives — typically a few hundred
+    // ms after onHostResume(). On a cold-start push wake while the device is
+    // folded, that delay was producing exactly the bug the user reported:
+    // the audio-call component would mount with isFolded === null (falsy),
+    // render at full-size phone dimensions, and only switch to the compact
+    // cover-display layout once the hinge sample landed and triggered a
+    // re-render — too late, the user already saw oversized buttons on the
+    // ~4" cover screen.
+    //
+    // When the sensor has confirmed a value we honour it. While it's still
+    // null we fall back to a dimensions heuristic on Android: the Razr-style
+    // cover display has a short side of ~420dp vs. ~880dp for the inner
+    // display, and the 450dp threshold is already used by the
+    // effectiveIsTablet calculation above for the same purpose. iOS doesn't
+    // have a hinge sensor at all (isFolded stays null forever there) so we
+    // gate the fallback on Android — without that gate, regular iPhones
+    // (390–430dp short side) would all be treated as "folded" and rendered
+    // in the compact cover-display layout.
+    _uiIsFolded() {
+        if (this.state.isFolded === true)  return true;
+        if (this.state.isFolded === false) return false;
+        if (Platform.OS !== 'android')     return false;
+        const w = this.state.Width_Layout  || Dimensions.get('window').width  || 0;
+        const h = this.state.Height_Layout || Dimensions.get('window').height || 0;
+        return Math.min(w, h) > 0 && Math.min(w, h) < 450;
+    }
+
     // Push-accept route gate — see comment on this._pushAcceptGate in
     // the constructor for the contract. Opens a 45 s window during
     // which start_up routes to /ready/login are suppressed so the
@@ -5244,8 +5613,30 @@ class Sylk extends Component {
         // gate is active. The boolean is the only piece of the gate the
         // UI cares about — callUUID / deadlineAt / timer stay on the
         // instance field above where they're managed.
+        //
+        // DEFERRED on purpose. In React Native, setState invoked from a
+        // bridge callback (DeviceEventEmitter → callEventHandler →
+        // _openPushAcceptGate) is NOT batched the way React event-
+        // handler setState is — every setState triggers a synchronous
+        // re-render of the calling component. On the cold-start push
+        // path the App component is enormous and that synchronous
+        // render was costing ~3 s of dead JS-thread time between
+        // "push_launch_route_first" and "push_accept_gate_opened" in
+        // metro.log (visible as a 3 s gap between two adjacent
+        // timestampedLog calls that have only this setState between
+        // them). The boolean is purely cosmetic — it drives
+        // CallOverlay's "Accepting call…" copy, and CallOverlay isn't
+        // even on screen yet because /call hasn't been committed. So
+        // defer the setState to a microtask: the gate's behavioural
+        // contract (the field on `this` that _isPushAcceptGateActive
+        // reads) is satisfied synchronously, and the UI label catches
+        // up a frame later without blocking the route flip.
         if (!this.state.pushAcceptInProgress) {
-            this.setState({ pushAcceptInProgress: true });
+            Promise.resolve().then(() => {
+                if (this._pushAcceptGate && !this.state.pushAcceptInProgress) {
+                    this.setState({ pushAcceptInProgress: true });
+                }
+            });
         }
         utils.timestampedLog('[call] [ui] call_id=' + callUUID,
             'push_accept_gate_opened (45 s window) — /ready/login start_up routes suppressed');
@@ -5382,12 +5773,20 @@ class Sylk extends Component {
         }
 
         if (route === '/conference') {
-           this.backToForeground();
+           // Deferred so React commits the route flip first; see
+           // scheduleBackToForeground comment for why the synchronous
+           // form was costing ~2 s before AudioCallBox / Conference
+           // mounted on the background-push path.
+           this.scheduleBackToForeground('changeRoute:/conference');
            this.setState({inviteContacts: false});
         }
 
         if (route === '/call') {
-           this.backToForeground();
+           // Deferred so React commits the route flip first; see
+           // scheduleBackToForeground comment for why the synchronous
+           // form was costing ~2 s before AudioCallBox mounted on the
+           // background-push path.
+           this.scheduleBackToForeground('changeRoute:/call');
         }
 
         if (route === '/ready' && reason !== 'back to home') {
@@ -5700,6 +6099,1044 @@ class Sylk extends Component {
         return this.unmounted;
     }
 
+    // -------------------------------------------------------------------
+    // Server-side account info (mobile number, PSTN balance, currency).
+    //
+    // Reads from / writes to cdrtool's account_info.phtml, authenticated
+    // with the user's SIP credentials over HTTP Digest. Implemented in
+    // app/accountInfo.js. Result is cached on state.accountInfo so any
+    // UI can render it; freshness is the caller's responsibility (call
+    // refreshAccountInfo() on app focus or before the payment modal).
+    //
+    // Returns null if there are no usable credentials yet, the parsed
+    // info object on success, or throws on auth/network failures so the
+    // caller can show an error.
+    // -------------------------------------------------------------------
+    async refreshAccountInfo(options) {
+        const force = !!(options && options.force);
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            return null;
+        }
+        if (this.startedByPush) {
+            this._accountInfoPostponed = true;
+            console.log('[account] [server] refreshAccountInfo postponed — startedByPush=true');
+            return null;
+        }
+        // Auto triggers (loadAccount, registrationStateChanged,
+        // initConfiguration end, post-call resumed, etc.) only run
+        // ONCE per session. The cache check in
+        // processServerCallHistory used to skip the work but the
+        // HTTP fetch still went out three times at startup. Now we
+        // skip the round-trip entirely after the first success.
+        // Manual triggers (refresh icon in My Account, pull-to-
+        // refresh on the contacts list, setServerCallerId/email/
+        // password refresh-after-write) pass {force: true} to
+        // bypass. resetState clears _accountInfoFetchedThisSession
+        // on logout / account switch so the new identity gets a
+        // fresh fetch.
+        if (!force && this._accountInfoFetchedThisSession) {
+            console.log('[account] [server] refreshAccountInfo skipped — already fetched this session');
+            return this.state.accountInfo;
+        }
+        if (this._accountInfoInFlight) {
+            console.log('[account] [server] refreshAccountInfo skipped — already in flight');
+            return this.state.accountInfo;
+        }
+        this._accountInfoInFlight = true;
+        try {
+            const info = await getAccountInfo({ account, password, url });
+            try {
+                console.log('[account] [server] snapshot received',
+                    JSON.stringify({
+                        account:      info && info.account,
+                        email:        info && info.email,
+                        owner:        info && info.owner,
+                        allow_delete: info && info.allow_delete,
+                        groups:       info && info.groups,
+                        pstn:         info && info.pstn,
+                    })
+                );
+            } catch (e) {
+                console.log('[account] [server] snapshot dump failed:', e && e.message);
+            }
+            if (!this.unmounted) {
+                this.setState({ accountInfo: info, accountInfoError: null });
+            }
+            // Reconcile pending writes against the fresh snapshot.
+            // If the server already shows our queued value (because
+            // a previous retry won the race, or another device made
+            // the same change), drop the pending entry so we stop
+            // retrying. Anything still stale stays queued for the
+            // next 60 s tick.
+            try {
+                const pending = (this.state.accountSetting
+                    && this.state.accountSetting.pendingServerSettings) || {};
+                if (pending.email
+                        && info && typeof info.email === 'string'
+                        && info.email.trim() === (pending.email.value || '').trim()) {
+                    await this._clearPendingServerSetting('email');
+                }
+                if (pending.caller_id
+                        && info && info.pstn
+                        && typeof info.pstn.caller_id === 'string') {
+                    // Server stores the rewritten "00…" form; compare
+                    // against that AND the raw value (to be robust if
+                    // the user typed in the "00…" form to begin with).
+                    const srv = info.pstn.caller_id.trim();
+                    const want = (pending.caller_id.value || '').trim();
+                    const wantRewritten = want.startsWith('+')
+                        && this.state.pstnRules
+                        && typeof this.state.pstnRules.replacePlus === 'string'
+                            ? this.state.pstnRules.replacePlus + want.substring(1)
+                            : want;
+                    if (srv === want || srv === wantRewritten) {
+                        await this._clearPendingServerSetting('caller_id');
+                    }
+                }
+            } catch (e) {
+                console.log('[sync] snapshot-reconcile failed:', e && e.message);
+            }
+            // If anything is still pending after this snapshot, make
+            // sure the timer is running. (It auto-starts on queue, but
+            // a cold app launch that hydrates pending entries from SQL
+            // wouldn't go through the queue path — kick it here too.)
+            if (!this.serverSettingsSynced) {
+                this._startReconciliationTimer();
+            }
+            // Server email wins. If the snapshot includes an email,
+            // overwrite the local state.email and mirror the value
+            // onto the myself contact record so the next render of
+            // any UI binding (My Account header, Gravatar lookup,
+            // payment receipt "From:") uses the authoritative value.
+            // We don't gate on "local empty" — even if a stale local
+            // value exists, the server is the source of truth here.
+            try {
+                const srvEmail = (info && typeof info.email === 'string') ? info.email.trim() : '';
+                if (!this.unmounted && srvEmail !== (this.state.email || '')) {
+                    this.setState({ email: srvEmail });
+                    const myContact = this.lookupContact && this.lookupContact(account);
+                    if (myContact && srvEmail !== (myContact.email || '')) {
+                        myContact.email = srvEmail;
+                        if (typeof this.saveSylkContact === 'function') {
+                            this.saveSylkContact(account, myContact, 'server-sync');
+                        }
+                    }
+                }
+            } catch (e) {
+                console.log('refreshAccountInfo: failed to sync server email:', e && e.message);
+            }
+            // Persist the entire server-side pstn block into
+            // accountSettings.serverPstnSettings so:
+            //   • it survives app restarts (loaded from SQL),
+            //   • any consumer (payment-required modal, header
+            //     badges, dialer gating, settings sheet) can read a
+            //     recent value without forcing a fresh digest fetch,
+            //   • we cache the whole shape rather than individual
+            //     scalars — that way adding a new field server-side
+            //     doesn't require touching this caching path.
+            //
+            // Keys mirror the wire structure verbatim (caller_id,
+            // balance, currency, prepaid, enabled, today) plus a
+            // `timestamp` we set here so consumers can decide
+            // whether the cached value is fresh enough. Fire-and-
+            // forget; setAccountSetting persists to the per-account
+            // SQL row asynchronously.
+            try {
+                const pstn = (info && info.pstn) || {};
+                this.setAccountSetting('serverPstnSettings.caller_id', pstn.caller_id || null);
+                this.setAccountSetting('serverPstnSettings.balance',
+                    (typeof pstn.balance === 'number') ? pstn.balance : null);
+                this.setAccountSetting('serverPstnSettings.currency', pstn.currency || null);
+                this.setAccountSetting('serverPstnSettings.prepaid', !!pstn.prepaid);
+                this.setAccountSetting('serverPstnSettings.enabled', !!pstn.enabled);
+                this.setAccountSetting('serverPstnSettings.today', pstn.today || null);
+                this.setAccountSetting('serverPstnSettings.timestamp', Date.now());
+            } catch (e) {
+                console.log('refreshAccountInfo: failed to cache serverPstnSettings:', e && e.message);
+            }
+            // Server call history piggy-backs on the same snapshot —
+            // sylk_settings.phtml returns call_history alongside the
+            // account-info fields, so the standalone DigestAuthRequest
+            // to the legacy serverCallHistoryUrl is no longer needed.
+            // Process it here, ONCE per snapshot fetch.
+            try {
+                if (info && info.call_history) {
+                    this.processServerCallHistory(info.call_history);
+                }
+            } catch (e) {
+                console.log('refreshAccountInfo: failed to process call_history:', e && e.message);
+            }
+            if (this._accountInfoRetryTimer) {
+                clearTimeout(this._accountInfoRetryTimer);
+                this._accountInfoRetryTimer = null;
+            }
+            this._accountInfoFetchedThisSession = true;
+            this._accountInfoInFlight = false;
+            return info;
+        } catch (err) {
+            console.log('refreshAccountInfo failed:', err.message);
+            this._accountInfoInFlight = false;
+            // Surface HTTP status codes from the API fetch on the
+            // NavigationBar bell's error-code badge — same channel
+            // as a SIP REGISTER failure. A 401 here means the SIP
+            // password no longer authenticates against the proxy's
+            // HA1 (typical after the account has been deleted on
+            // the server but REGISTER hasn't returned its own
+            // SIP-level error yet); other 4xx/5xx are generally
+            // server / network failures the user should see.
+            // accountInfo.js throws either "Digest authentication
+            // rejected — bad SIP password?" (for 401) or
+            // "account_info <METHOD> failed: <status> <body>"
+            // (anything else). Pull the 3-digit code out of either.
+            let _apiErrCode = null;
+            if (typeof err.message === 'string') {
+                if (err.message.indexOf('Digest authentication rejected') > -1) {
+                    _apiErrCode = '401';
+                } else {
+                    const m = err.message.match(/\b(\d{3})\b/);
+                    if (m) _apiErrCode = m[1];
+                }
+            }
+            if (!this.unmounted) {
+                const nextState = { accountInfoError: err.message };
+                if (_apiErrCode) {
+                    nextState.registerErrorCode = _apiErrCode;
+                }
+                this.setState(nextState);
+            }
+            // Retry every 60 seconds on failure (typically no
+            // connectivity / DNS hiccup / server cold start). The
+            // timer is cleared in the success branch above, on
+            // logout via resetState (clears serverSettingsUrl which
+            // short-circuits refreshAccountInfo), and on unmount.
+            // Single timer reference so concurrent failures don't
+            // pile up multiple retries.
+            if (!this.unmounted) {
+                if (this._accountInfoRetryTimer) {
+                    clearTimeout(this._accountInfoRetryTimer);
+                }
+                this._accountInfoRetryTimer = setTimeout(() => {
+                    this._accountInfoRetryTimer = null;
+                    if (!this.unmounted) {
+                        // Force-bypass the once-per-session gate —
+                        // we failed last time, so the flag (if any)
+                        // shouldn't have been set. Belt-and-braces.
+                        this.refreshAccountInfo({ force: true }).catch(() => {});
+                    }
+                }, 60 * 1000);
+            }
+            throw err;
+        }
+    }
+
+    /**
+     * Take the call_history block from a sylk_settings.phtml snapshot
+     * and feed it through the same dedupe / URI-normalisation /
+     * timezone-rehydration logic that the legacy
+     * ContactsListBox.getServerHistory used to apply, then commit
+     * the result via saveHistory. This is the ONLY path through
+     * which server call history reaches local SQL — the standalone
+     * DigestAuthRequest to serverCallHistoryUrl is decommissioned.
+     */
+    processServerCallHistory(data) {
+        if (!data || typeof data !== 'object') {
+            console.log('[history] processServerCallHistory: empty / not-an-object input');
+            return;
+        }
+        const recvCount = Array.isArray(data.received) ? data.received.length : 0;
+        const placCount = Array.isArray(data.placed)   ? data.placed.length   : 0;
+        console.log('[history] processServerCallHistory: input received=' + recvCount
+            + ' placed=' + placCount);
+
+        // Skip identical snapshots. Comparator is the sorted set of
+        // sessionIds across placed + received — robust to bytes
+        // drift (entry reordering, startTime offset, the 14-day
+        // sliding window shifting forward by a second). Only an
+        // actual NEW or REMOVED call changes the set, which is when
+        // we need to re-run saveHistory anyway. Cached form is the
+        // same sorted-sessionId string, persisted to SQL.
+        const collectIds = (block) => {
+            const out = [];
+            const push = (arr) => {
+                if (!Array.isArray(arr)) return;
+                for (const e of arr) {
+                    if (e && typeof e.sessionId === 'string' && e.sessionId.length > 0) {
+                        out.push(e.sessionId);
+                    }
+                }
+            };
+            push(block && block.placed);
+            push(block && block.received);
+            return out;
+        };
+        const sortedIds = collectIds(data);
+        sortedIds.sort();
+        const serialized = sortedIds.join(',');
+        if (this._serverCallHistoryCache === serialized) {
+            console.log('[history] processServerCallHistory: same sessionId set as cache ('
+                + sortedIds.length + ' ids), skipping');
+            return;
+        }
+        // Only the sessionIds that are NEW vs the cached set need
+        // to flow through saveHistory. Everything else is a known
+        // entry the local SQL row already reflects.
+        const cachedIds = new Set(
+            (this._serverCallHistoryCache || '').split(',').filter(Boolean)
+        );
+        const newIds = new Set(sortedIds.filter(id => !cachedIds.has(id)));
+        console.log('[history] processServerCallHistory: '
+            + sortedIds.length + ' total / '
+            + cachedIds.size + ' cached / '
+            + newIds.size + ' new sessionId(s)');
+
+        // The contact index is built from state.allContacts, which
+        // loadSylkContacts populates. refreshAccountInfo (which
+        // calls us) runs at app start and may win the race against
+        // loadSylkContacts, leaving contactIndex empty. saveHistory
+        // is contact-only — if we processed now, every entry would
+        // be tallied "no-contact" and discarded even though the
+        // contacts exist in SQL. Defer the work until contacts have
+        // loaded; the loadSylkContacts hook below replays whatever
+        // we stash here.
+        if (!this.state.contactsLoaded
+            || !this.contactIndex
+            || Object.keys(this.contactIndex).length === 0) {
+            console.log('[history] processServerCallHistory: contacts not yet loaded — deferring');
+            this._pendingCallHistory = data;
+            return;
+        }
+        this._pendingCallHistory = null;
+
+        let history = [];
+        if (Array.isArray(data.received)) {
+            data.received.forEach(e => { e.direction = 'incoming'; });
+            history = history.concat(data.received);
+        }
+        if (Array.isArray(data.placed)) {
+            data.placed.forEach(e => { e.direction = 'outgoing'; });
+            history = history.concat(data.placed);
+        }
+        if (history.length === 0) {
+            console.log('[history] processServerCallHistory: nothing to process');
+            return;
+        }
+
+        history.sort((a, b) => (a.startTime < b.startTime) ? 1 : -1);
+
+        const known = [];
+        const myDisplayName = this.state.displayName || '';
+        let droppedConference = 0;
+        let droppedDuplicate  = 0;
+        let missedTagged      = 0;
+        let renamedSelf       = 0;
+        const sampleKept = [];
+
+        history = history.filter((elem) => {
+            elem.conference = false;
+            elem.id = uuid.v4();
+            if (!elem.tags) elem.tags = [];
+
+            // Skip entries whose sessionId is already in our cache —
+            // they're already represented in local SQL, no need to
+            // walk through the rest of the pipeline.
+            if (elem.sessionId && cachedIds.has(elem.sessionId)) {
+                return false;
+            }
+
+            if (!elem.remoteParty
+                || elem.remoteParty.indexOf('@conference.') > -1) {
+                droppedConference++;
+                return false;
+            }
+
+            elem.uri = elem.remoteParty.toLowerCase();
+            const uri_els = elem.uri.split('@');
+            let username = uri_els[0];
+
+            if (elem.uri.indexOf('@guest.') > -1) {
+                if (!elem.displayName) {
+                    elem.uri = 'guest@' + elem.uri.split('@')[1];
+                } else {
+                    elem.uri = elem.displayName.toLowerCase().replace(/\s|\-|\(|\)/g, '')
+                        + '@' + elem.uri.split('@')[1];
+                }
+            }
+
+            if (utils.isPhoneNumber(elem.uri)) {
+                username = username.replace(/\s|\-|\(|\)/g, '').replace(/^00/, '+');
+                elem.uri = username;
+            }
+
+            if (known.indexOf(elem.uri) > -1) {
+                droppedDuplicate++;
+                return false;
+            }
+            known.push(elem.uri);
+
+            elem.name = elem.displayName || elem.uri;
+
+            if (elem.remoteParty.indexOf('@videoconference.') > -1) {
+                elem.conference = true;
+                elem.media = ['audio', 'video', 'chat'];
+            }
+
+            if (elem.uri === this.state.accountId) {
+                elem.name = myDisplayName || 'Myself';
+                renamedSelf++;
+            }
+
+            if (!elem.media || !Array.isArray(elem.media)) {
+                elem.media = ['audio'];
+            }
+
+            if (elem.timezone !== undefined) {
+                const startLocal = momenttz.tz(elem.startTime, elem.timezone).toDate();
+                elem.startTime = startLocal;
+                elem.timestamp = startLocal;
+                elem.stopTime  = momenttz.tz(elem.stopTime, elem.timezone).toDate();
+            }
+
+            if (elem.direction === 'incoming' && elem.duration === 0) {
+                elem.tags.push('missed');
+                missedTagged++;
+            }
+
+            if (sampleKept.length < 5) {
+                sampleKept.push({
+                    uri:      elem.uri,
+                    name:     elem.name,
+                    dir:      elem.direction,
+                    dur:      elem.duration,
+                    tags:     elem.tags,
+                });
+            }
+            return true;
+        });
+
+        const summary = [
+            '[history] processServerCallHistory:',
+            '  kept             = ' + history.length,
+            '  droppedConference= ' + droppedConference,
+            '  droppedDuplicate = ' + droppedDuplicate,
+            '  missedTagged     = ' + missedTagged,
+            '  renamedSelf      = ' + renamedSelf,
+            '  sample (first ' + sampleKept.length + '):',
+        ];
+        sampleKept.forEach((s) => {
+            summary.push('    - ' + s.dir.padEnd(8) + ' ' + s.uri
+                + (s.name && s.name !== s.uri ? '  "' + s.name + '"' : '')
+                + '  dur=' + s.dur + 's'
+                + (s.tags && s.tags.length ? '  tags=[' + s.tags.join(',') + ']' : '')
+            );
+        });
+        console.log(summary.join('\n'));
+
+        if (history.length === 0) {
+            console.log('[history] processServerCallHistory: all entries filtered out, nothing to save');
+            return;
+        }
+
+        if (typeof this.saveHistory === 'function') {
+            console.log('[history] processServerCallHistory: calling saveHistory with', history.length, 'entries');
+            this.saveHistory(history);
+        } else {
+            console.log('[history] processServerCallHistory: saveHistory not available');
+        }
+
+        // Persist the (raw) snapshot serialization for next-launch
+        // dedupe. We store the SAME `serialized` we just compared
+        // against the in-memory cache; on next launch loadAccount
+        // hydrates this.\_serverCallHistoryCache from the column so
+        // a restart-then-replay doesn't reprocess identical data.
+        if (serialized !== null && serialized !== undefined) {
+            this._serverCallHistoryCache = serialized;
+            if (this.state.accountId) {
+                this.ExecuteQuery(
+                    'update accounts set server_call_history = ? where account = ?',
+                    [serialized, this.state.accountId]
+                ).then((res) => {
+                    console.log('[history] persisted sessionId set to SQL,',
+                        sortedIds.length, 'ids,',
+                        serialized.length, 'bytes (rowsAffected=' + (res && res.rowsAffected) + ')');
+                }).catch((err) => {
+                    console.log('[history] persisting server_call_history failed:', err && err.message);
+                });
+            }
+        }
+    }
+
+    /**
+     * Request server-side deletion of this SIP account. Routes
+     * through sylk_account_settings.phtml ?action=request_delete_account,
+     * which triggers the same flow as the "Identity → Delete account"
+     * button on the legacy web UI: the server emails a confirmation
+     * link to the user's address; clicking it within 2 days finalizes
+     * the removal.
+     *
+     * Returns { ok: true, email: "..." } on success. The caller is
+     * responsible for surfacing the email address so the user knows
+     * where to look.
+     */
+    async requestServerDeleteAccount() {
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            throw new Error('No SIP credentials available');
+        }
+        // Capture who/what is making the request so the server can
+        // surface it in the confirmation email. The user sees this
+        // table and decides whether the request came from a device
+        // they actually own. Wrap each lookup individually — a
+        // single DeviceInfo getter throwing on an unusual platform
+        // mustn't take down the whole delete flow.
+        const requesterEntity = {};
+        try { requesterEntity.user_agent   = USER_AGENT; } catch (e) {}
+        try { requesterEntity.platform     = Platform.OS; } catch (e) {}
+        try { requesterEntity.os_version   = String(Platform.Version || ''); } catch (e) {}
+        try { requesterEntity.device_brand = DeviceInfo.getBrand(); } catch (e) {}
+        try { requesterEntity.device_model = DeviceInfo.getModel(); } catch (e) {}
+        try { requesterEntity.app_version  = DeviceInfo.getVersion(); } catch (e) {}
+        // Client-side request ID + timestamp. Persisted server-side
+        // (account_delete_request_info Preference) alongside the
+        // server-minted ID, so when support needs to correlate a
+        // user's report ("I clicked the delete button at 09:55
+        // from my phone") with what landed in the email, both
+        // sides of the round-trip are recorded. The UUID is purely
+        // a correlation handle — security is enforced via the
+        // server's own delete_id in the confirmation link.
+        const clientRequestId = uuid.v4();
+        const clientTimestamp = new Date().toISOString();
+        utils.timestampedLog('[delete-account] requesterEntity =',
+            JSON.stringify(requesterEntity),
+            '| clientRequestId =', clientRequestId,
+            '| clientTimestamp =', clientTimestamp);
+        const result = await requestDeleteAccount({
+            account, password, url,
+            requesterEntity,
+            clientRequestId,
+            clientTimestamp,
+        });
+
+        // Stash the request record on the per-account settings row
+        // so we can track pending deletions across app restarts. The
+        // user might close the app before the confirmation email
+        // arrives; the next time they open My Account we can read
+        // accountSetting.deleteRequest and show a "Delete requested
+        // <timestamp>, awaiting email confirmation" indicator.
+        //
+        // Persisting via setAccountSetting routes through the
+        // accounts.settings SQL column. The record is keyed by
+        // client_request_id so support can match a user report
+        // ("I tapped delete this morning at 09:55") to both:
+        //   • the on-device row, and
+        //   • the server-side Preference (account_delete_request_info)
+        //   via the matching client_request_id.
+        //
+        // We log the server-minted ID prominently — it's the handle
+        // shown in the confirmation email and the one syslog uses
+        // on the server side, so being able to grep metro logs for
+        // it is what makes a support investigation tractable.
+        const emailSentTo = (result && result.email) || null;
+        // server_request_id is intentionally not returned by the
+        // API — it's the secret email-link token, knowledge of
+        // which proves access to the confirmation inbox. We work
+        // exclusively with client_request_id on this side.
+        utils.timestampedLog('[delete-account] OK',
+            '| client_request_id =', clientRequestId,
+            '| timestamp =',         clientTimestamp,
+            '| email_sent_to =',     emailSentTo);
+        try {
+            await this.setAccountSetting('deleteRequest.record', {
+                client_request_id: clientRequestId,
+                client_timestamp:  clientTimestamp,
+                email_sent_to:     emailSentTo,
+                requester_entity:  requesterEntity,
+            });
+        } catch (e) {
+            console.log('[delete-account] persist deleteRequest failed:',
+                (e && e.message) || e);
+        }
+
+        // Synthesize state.accountInfo.delete_request locally so
+        // the DeleteAccountModal's pending banner appears
+        // immediately — without waiting for the snapshot refresh
+        // below to round-trip. Computes an expire_date 2 days
+        // out. The full canonical record (server-side IP) lands
+        // when refreshAccountInfo completes.
+        if (!this.unmounted) {
+            const synthesizedExpireDate = (() => {
+                if (!clientTimestamp) return null;
+                const t = new Date(clientTimestamp).getTime();
+                if (!isFinite(t)) return null;
+                return new Date(t + 2 * 24 * 60 * 60 * 1000).toISOString();
+            })();
+            const synthesizedDeleteRequest = {
+                client_request_id: clientRequestId,
+                client_timestamp:  clientTimestamp,
+                sip_account:       account,
+                requester_entity:  requesterEntity,
+            };
+            if (synthesizedExpireDate) {
+                synthesizedDeleteRequest.expire_date = synthesizedExpireDate;
+            }
+            const nextInfo = {
+                ...(this.state.accountInfo || {}),
+                delete_request: synthesizedDeleteRequest,
+            };
+            utils.timestampedLog('[delete-account] synthesized accountInfo.delete_request',
+                '— modal will reflect pending state immediately');
+            this.setState({ accountInfo: nextInfo });
+        }
+
+        // Refresh so the canonical fields (server-side IP,
+        // expire_date format, etc.) overwrite our locally-
+        // synthesized values. Fire-and-forget — the synthesized
+        // state above already covers the user-visible UI.
+        this.refreshAccountInfo({ force: true }).catch(() => {});
+
+        // Self-message audit trail. Send a non-encrypted SIP
+        // MESSAGE to our own AOR with the full requester payload
+        // as the body. Every device registered to this account
+        // receives it via the proxy's fork-to-all-contacts logic,
+        // giving them a cross-device record of the delete request
+        // without polling the snapshot. The message ID is set to
+        // the same client_request_id UUID so:
+        //   • The journal-replay path can deduplicate against the
+        //     local audit row keyed on the same UUID.
+        //   • Support / debug can grep one ID across both metro
+        //     logs (request flow) AND chat history (self message).
+        //
+        // Content type is application/sylk-account-delete-request
+        // — a custom type so the receiving side can route the
+        // message to a dedicated handler instead of rendering it
+        // as plain chat. Devices that don't recognise the type
+        // ignore it gracefully.
+        if (this.state.account
+                && this.state.account.id
+                && typeof this.state.account.sendMessage === 'function'
+                && this.canSend && this.canSend()) {
+            try {
+                const selfBody = JSON.stringify({
+                    client_request_id: clientRequestId,
+                    client_timestamp:  clientTimestamp,
+                    sip_account:       account,
+                    requester_entity:  requesterEntity,
+                    email_sent_to:     emailSentTo,
+                });
+                const tsDate = (() => {
+                    if (!clientTimestamp) return new Date();
+                    const t = new Date(clientTimestamp);
+                    return isNaN(t.getTime()) ? new Date() : t;
+                })();
+                const selfUri = this.state.account.id;
+                utils.timestampedLog('[delete-account] sending self-message',
+                    '| id =', clientRequestId,
+                    '| contentType = application/sylk-account-delete-request',
+                    '| len =', selfBody.length);
+                // No local SQL persistence — this is a wire-only
+                // audit message for the server (and journal-replay
+                // delivery to other devices). The server uses it
+                // as a final sanity check before tearing down
+                // storage for this account; locally we don't need
+                // to keep a row. The stateChanged listener gives
+                // us visibility past the error-only callback so
+                // the log shows pending → accepted as proof of
+                // wire transmission.
+                this.state.account.sendMessage(
+                    selfUri,
+                    selfBody,
+                    'application/sylk-account-delete-request',
+                    { id: clientRequestId, timestamp: tsDate },
+                    (err) => {
+                        if (err) {
+                            console.log('[delete-account] self-message send failed:',
+                                err && err.toString ? err.toString() : err);
+                        }
+                    }
+                );
+            } catch (e) {
+                console.log('[delete-account] self-message exception:',
+                    (e && e.message) || e);
+            }
+        } else {
+            console.log('[delete-account] self-message skipped — account/sendMessage unavailable');
+        }
+
+        return result;
+    }
+
+    /**
+     * Cancel a pending server-side account-deletion request. Drops
+     * the on-server preferences (so the previously emailed link
+     * stops validating), then clears the local audit row in
+     * accountSetting.deleteRequest. Re-fetches the snapshot so the
+     * in-memory accountInfo.delete_request flips back to null.
+     */
+    async abortServerDeleteAccount() {
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            throw new Error('No SIP credentials available');
+        }
+        // Pull client_request_id from the snapshot first (server's
+        // truth for the currently-pending request, regardless of
+        // which client originally issued it), fall back to the
+        // local cache only when no snapshot has landed yet. The
+        // server doesn't expose server_request_id to clients
+        // (that's the secret email URL token), so we don't carry
+        // it on this side.
+        const snapRec = (this.state.accountInfo
+            && this.state.accountInfo.delete_request) || null;
+        const localRec = (this.state.accountSetting
+            && this.state.accountSetting.deleteRequest
+            && this.state.accountSetting.deleteRequest.record) || null;
+        const clientRequestId =
+               (snapRec  && snapRec.client_request_id)
+            || (localRec && localRec.client_request_id)
+            || null;
+        utils.timestampedLog('[delete-account] aborting pending request for', account,
+            '| client_request_id =', clientRequestId || '(none)');
+        const result = await cancelDeleteAccount({
+            account, password, url,
+            clientRequestId,
+        });
+        utils.timestampedLog('[delete-account] abort OK',
+            '| changed =', result && result.changed,
+            '| full response:', JSON.stringify(result || {}));
+
+        // Remote-delete the original sylk-account-delete-request
+        // message — same primitive used to delete any other chat
+        // message remotely. The message ID matches client_request_id
+        // (set explicitly when we sent it), so this propagates a
+        // `removeMessage` to every device registered to the same
+        // AOR, scrubbing the audit row from each device's chat
+        // history. Local + remote in one call (remote=true is the
+        // default).
+        if (clientRequestId
+                && this.state.accountId
+                && typeof this.deleteMessage === 'function') {
+            utils.timestampedLog('[delete-account] removing self-message',
+                '| id =', clientRequestId, '| uri =', this.state.accountId);
+            this.deleteMessage(clientRequestId, this.state.accountId, true).catch((e) => {
+                console.log('[delete-account] self-message remove failed:',
+                    (e && e.message) || e);
+            });
+        }
+
+        // Drop the on-device audit row — the request is gone, no
+        // point keeping a stale handle. Failure here doesn't undo
+        // the server-side cancel; just log.
+        try {
+            await this.setAccountSetting('deleteRequest.record', null);
+        } catch (e) {
+            console.log('[delete-account] clear deleteRequest failed:',
+                (e && e.message) || e);
+        }
+        // Refresh so accountInfo.delete_request flips to null.
+        this.refreshAccountInfo({ force: true }).catch(() => {});
+        return result;
+    }
+
+    // ── Pending-server-settings sync queue ────────────────────────
+    //
+    // When a write to sylk_settings.phtml fails (network down,
+    // 5xx, auth blip), the user's intent is recorded in
+    // accountSetting.pendingServerSettings instead of being
+    // silently dropped. A background timer (started by
+    // _startReconciliationTimer, kicked on every snapshot success
+    // too) retries the pending entries until they land. A snapshot
+    // that already shows the pending value clears the entry — that
+    // covers the case where another device pushed the same change.
+    //
+    // Shape:
+    //   accountSetting.pendingServerSettings = {
+    //     email:     {value: 'foo@bar', queuedAt: 17xx, lastError: '...'},
+    //     caller_id: {value: '0031…',    queuedAt: 17xx, lastError: '...'},
+    //   }
+    //
+    // The serverSettingsSynced computed flag is exposed to the UI
+    // (NavigationBar / EditContactModal) so we can render a small
+    // "not synced — will retry" badge next to the My Account icon.
+
+    get serverSettingsSynced() {
+        const p = this.state.accountSetting
+            && this.state.accountSetting.pendingServerSettings;
+        if (!p || typeof p !== 'object') return true;
+        return Object.keys(p).length === 0;
+    }
+
+    async _queuePendingServerSetting(key, value, error) {
+        const cur = (this.state.accountSetting
+            && this.state.accountSetting.pendingServerSettings) || {};
+        const next = { ...cur };
+        next[key] = {
+            value: value,
+            queuedAt: Date.now(),
+            lastError: (error && (error.message || String(error))) || null,
+        };
+        utils.timestampedLog('[sync] queued pending', key, '=',
+            JSON.stringify(value), '— reason:', next[key].lastError || '(no error)');
+        await this.setAccountSetting('pendingServerSettings.' + key, next[key]);
+        this._startReconciliationTimer();
+    }
+
+    async _clearPendingServerSetting(key) {
+        const cur = (this.state.accountSetting
+            && this.state.accountSetting.pendingServerSettings) || {};
+        if (!(key in cur)) return;
+        utils.timestampedLog('[sync] cleared pending', key);
+        await this.setAccountSetting('pendingServerSettings.' + key, null);
+        // Stop the timer once everything has drained — restarts the
+        // next time _queuePendingServerSetting fires.
+        if (this.serverSettingsSynced) {
+            this._stopReconciliationTimer();
+        }
+    }
+
+    _startReconciliationTimer() {
+        if (this._reconciliationTimer) return;
+        // 60 s cadence — same as the refreshAccountInfo retry timer.
+        // The reconcile path is cheap when there's nothing to do
+        // (early-out at the top of _reconcilePendingServerSettings).
+        this._reconciliationTimer = setInterval(() => {
+            this._reconcilePendingServerSettings().catch((e) => {
+                console.log('[sync] reconciliation error:', e && e.message);
+            });
+        }, 60 * 1000);
+        utils.timestampedLog('[sync] reconciliation timer started (60s)');
+    }
+
+    _stopReconciliationTimer() {
+        if (!this._reconciliationTimer) return;
+        clearInterval(this._reconciliationTimer);
+        this._reconciliationTimer = null;
+        utils.timestampedLog('[sync] reconciliation timer stopped');
+    }
+
+    /**
+     * Walk accountSetting.pendingServerSettings and re-attempt each
+     * write. On success the entry is cleared; on failure the entry
+     * stays (queuedAt is preserved so we can age it out / surface
+     * "stuck for N minutes" in the UI later if needed). Snapshot is
+     * refreshed once at the end if anything actually landed.
+     */
+    async _reconcilePendingServerSettings() {
+        const pending = (this.state.accountSetting
+            && this.state.accountSetting.pendingServerSettings) || {};
+        const keys = Object.keys(pending);
+        if (keys.length === 0) {
+            this._stopReconciliationTimer();
+            return;
+        }
+        if (!this.state.serverSettingsUrl
+                || !this.state.accountId
+                || !this.state.password) {
+            // No way to talk to the server right now (logged out,
+            // serverSettingsUrl not learned yet). Keep the entries —
+            // the timer will pick them up after re-login / next config
+            // download.
+            return;
+        }
+        utils.timestampedLog('[sync] reconciling', keys.length,
+            'pending entries:', JSON.stringify(keys));
+        let anyLanded = false;
+        for (const key of keys) {
+            const entry = pending[key];
+            if (!entry) continue;
+            try {
+                if (key === 'email') {
+                    await this._pushServerEmail(entry.value);
+                } else if (key === 'caller_id') {
+                    await this._pushServerCallerId(entry.value);
+                } else {
+                    utils.timestampedLog('[sync] unknown pending key', key,
+                        '— dropping');
+                    await this._clearPendingServerSetting(key);
+                    continue;
+                }
+                await this._clearPendingServerSetting(key);
+                anyLanded = true;
+            } catch (e) {
+                utils.timestampedLog('[sync] retry failed for', key, '—',
+                    (e && e.message) || e, '— will retry in 60s');
+                // Update lastError so UI can show the latest reason.
+                await this._queuePendingServerSetting(key, entry.value, e);
+            }
+        }
+        if (anyLanded) {
+            this.refreshAccountInfo({ force: true }).catch(() => {});
+        }
+    }
+
+    /**
+     * Low-level POST for the email field — does NOT touch local state
+     * or the queue. Used both by setServerEmail (the user-initiated
+     * path) and by the reconciler. Throws on any failure so the
+     * caller decides what to do with the queue.
+     */
+    async _pushServerEmail(email) {
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            throw new Error('No SIP credentials available');
+        }
+        const trimmed = (email || '').trim();
+        if (trimmed && !utils.isEmailAddress(trimmed)) {
+            throw new Error('Invalid email address');
+        }
+        const result = await apiSetServerEmail({
+            account, password, url, email: trimmed
+        });
+        const persisted = (result && typeof result.email === 'string')
+            ? result.email : trimmed;
+        if (!this.unmounted) {
+            this.setState({ email: persisted });
+        }
+        return result;
+    }
+
+    /**
+     * Low-level POST for caller_id — same split as _pushServerEmail.
+     * Applies pstnRules.replacePlus before sending so the wire form
+     * matches what the SIP proxy expects.
+     */
+    async _pushServerCallerId(callerId) {
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            throw new Error('No SIP credentials available');
+        }
+        const trimmed = (callerId || '').trim();
+        const err = validateCallerId(trimmed);
+        if (err) {
+            throw new Error(err);
+        }
+        let toSend = trimmed;
+        const rules = this.state.pstnRules;
+        if (toSend.startsWith('+')
+                && rules && typeof rules.replacePlus === 'string') {
+            toSend = rules.replacePlus + toSend.substring(1);
+        }
+        return await setCallerId({
+            account, password, url, callerId: toSend
+        });
+    }
+
+    /**
+     * Push the email field to the SIP account record on the server.
+     * After success the local state.email is updated to match (the
+     * value the server normalized may differ from what we sent).
+     */
+    async setServerEmail(email) {
+        // Validate locally first so we never queue garbage that will
+        // fail forever — keep rejecting bad addresses inline.
+        const trimmed = (email || '').trim();
+        if (trimmed && !utils.isEmailAddress(trimmed)) {
+            throw new Error('Invalid email address');
+        }
+        try {
+            const result = await this._pushServerEmail(trimmed);
+            await this._clearPendingServerSetting('email');
+            this.refreshAccountInfo({ force: true }).catch(() => {});
+            return result;
+        } catch (e) {
+            // Network / 5xx / auth blip — queue for the reconciler
+            // and surface the failure to the UI so the caller can
+            // show a toast / inline error. The retry timer keeps
+            // poking every 60 s until it lands.
+            await this._queuePendingServerSetting('email', trimmed, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Change the SIP account password on the server, then update the
+     * local cached copy so the next REGISTER uses the new one. Throws
+     * on failure (server validation, deny-password-change group, SOAP
+     * error, etc.). On success the SQL row in `accounts` is rewritten
+     * via updateSqlAccount and state.password / state.accountPasswords
+     * are updated so consumers see the new value immediately.
+     *
+     * The currently-open SIP connection is NOT torn down here — most
+     * registrars accept the previously-issued REGISTER until its
+     * expiry, so reconnect / re-register at the user's next natural
+     * trigger (network change, app foreground, manual sign-out & in)
+     * will pick up the new password. If you want an immediate
+     * re-register, call this and then respawnConnection('password-changed').
+     */
+    async changeSipPassword(newPassword) {
+        const account     = this.state.accountId;
+        const oldPassword = this.state.password;
+        const url         = this.state.serverSettingsUrl;
+        if (!account || !oldPassword || !url) {
+            throw new Error('No SIP credentials available');
+        }
+        // Mirror server-side validation so the UI gets a useful
+        // error before the round-trip — the server will reject with
+        // the same rule (length + upper + lower + digit) if we send
+        // it. validateSipPassword returns null on success or the
+        // human-readable error string.
+        const pwErr = validateSipPassword(newPassword);
+        if (pwErr) {
+            throw new Error(pwErr);
+        }
+        // Will throw on auth failure / deny / SOAP error. We rely on
+        // setSipPassword's own error mapping.
+        await setSipPassword({ account, password: oldPassword, url, newPassword });
+
+        // Server accepted the change. Mirror locally so:
+        //   • state.password is correct for any in-flight reconnect.
+        //   • the per-account password cache used by the sign-out
+        //     "Switch to…" dialog has the new value.
+        //   • the SQL row (which RegisterForm reads on cold start) is
+        //     up to date.
+        const nextPasswords = { ...(this.state.accountPasswords || {}) };
+        nextPasswords[account] = newPassword;
+        if (!this.unmounted) {
+            this.setState({ password: newPassword, accountPasswords: nextPasswords });
+        }
+        try {
+            await this.updateSqlAccount(account, 1, newPassword);
+        } catch (e) {
+            console.log('changeSipPassword: SQL update failed:', e && e.message);
+        }
+        // Toast confirmation. Routes through the existing
+        // NotificationCenter snackbar (same channel used by mic /
+        // camera permission alerts) so the success is visible AFTER
+        // the modal closes — the modal's own close() races with
+        // setState and a snackbar mounted inside it would unmount
+        // before it could finish showing. 5-second auto-dismiss is
+        // applied inside postSystemNotification.
+        if (this._notificationCenter) {
+            this._notificationCenter.postSystemNotification('Password successfully changed');
+        }
+        return { ok: true };
+    }
+
+    async setServerCallerId(callerId) {
+        const trimmed = (callerId || '').trim();
+        const err = validateCallerId(trimmed);
+        if (err) {
+            throw new Error(err);
+        }
+        try {
+            const result = await this._pushServerCallerId(trimmed);
+            await this._clearPendingServerSetting('caller_id');
+            await this.refreshAccountInfo({ force: true }).catch(() => {});
+            return result;
+        } catch (e) {
+            await this._queuePendingServerSetting('caller_id', trimmed, e);
+            throw e;
+        }
+    }
+
     backPressed() {
         console.log('Back button pressed in route', this.currentRoute);
 
@@ -5798,7 +7235,14 @@ class Sylk extends Component {
 			               iceServers: configuration.iceServers,
 			               fileSharingUrl: server + '/filesharing',
 			               fileTransferUrl: server + '/filetransfer',
-			               serverSettingsUrl: configuration.serverSettingsUrl,
+			               // serverSettingsUrl now serves DOUBLE DUTY:
+			               // both the JSON endpoint the digest API
+			               // helpers hit (refreshAccountInfo et al)
+			               // AND the URL the menu's "Server settings"
+			               // item opens. Servers should publish this
+			               // pointing at sylk_settings.phtml (the
+			               // JSON-and-HTML endpoint).
+			               serverSettingsUrl: configuration.serverSettingsUrl || '',
 			               passwordRecoveryUrl: configuration.passwordRecoveryUrl,
 			               deleteAccountUrl: configuration.deleteAccountUrl,
 			               callHistoryUrl: callHistoryUrl,
@@ -5819,10 +7263,15 @@ class Sylk extends Component {
 			// 'pstn' object, e.g.
 			//   "pstn": {
 			//       "webUrl": "https://sip2sip.info/help",
-			//       "rules":  {"replacePlus": "00"}
+			//       "rules":  {"replacePlus": "00"},
+			//       "payment_accounts": [
+			//           {"owner": "AG Projects", "IBAN": "…",
+			//            "SWIFT": "…", "type": "Bank transfer"}
+			//       ]
 			//   }
-			// pstn.webUrl  -> state.pstnAccessUrl  (null if absent)
-			// pstn.rules   -> state.pstnRules      (kept at default if absent)
+			// pstn.webUrl           -> state.pstnAccessUrl       (null if absent)
+			// pstn.rules            -> state.pstnRules           (kept at default if absent)
+			// pstn.payment_accounts -> state.pstnPaymentAccounts ([] if absent)
 			const pstn = (configuration.pstn && typeof configuration.pstn === 'object')
 			             ? configuration.pstn
 			             : null;
@@ -5835,6 +7284,25 @@ class Sylk extends Component {
 			if (pstn && pstn.rules && typeof pstn.rules === 'object') {
 				this.setState({ pstnRules: pstn.rules });
 				console.log('[pstnRules] from server config =', pstn.rules);
+			}
+
+			// Payment accounts — array of free-form key/value records
+			// rendered as a table inside PaymentInfoModal. The keys are
+			// NOT a fixed schema: each account is iterated dynamically,
+			// so a deployment can publish {owner, IBAN, SWIFT, type}
+			// today and add e.g. {beneficiary, bank, BIC, reference}
+			// tomorrow without a mobile-app release. Defensive type
+			// check + per-entry object filter so a typo'd config (e.g.
+			// a stringified blob, or null entries) doesn't crash the
+			// modal's render.
+			if (pstn && Array.isArray(pstn.payment_accounts)) {
+				const cleaned = pstn.payment_accounts.filter(
+					(a) => a && typeof a === 'object' && !Array.isArray(a)
+				);
+				this.setState({ pstnPaymentAccounts: cleaned });
+				console.log('[pstnPaymentAccounts] from server config: ' + cleaned.length + ' entry/entries');
+			} else {
+				this.setState({ pstnPaymentAccounts: [] });
 			}
 
 			// Conference section — { codec, pstnBridge, sipBridge }.
@@ -5871,6 +7339,24 @@ class Sylk extends Component {
 					? configuration.conference.sipBridge
 					: null;
 			this.applySipBridgeDomain(_sipBridge, 'initConfiguration');
+
+			// Now that serverSettingsUrl is in state, kick a snapshot
+			// fetch. resetState clears serverSettingsUrl on logout/
+			// switch so the loadAccount-triggered refreshAccountInfo
+			// runs against an empty URL and bails. The new server's
+			// downloadSylkConfiguration → initConfiguration runs
+			// LATER (async DNS / HTTP), and without this call nothing
+			// re-fires the refresh — the My Account section would
+			// stay empty until the next register cycle. We defer to
+			// the next tick so the setState above has flushed and
+			// refreshAccountInfo reads the just-set serverSettingsUrl.
+			setTimeout(() => {
+				if (this.state.accountId
+				    && this.state.password
+				    && this.state.serverSettingsUrl) {
+					this.refreshAccountInfo().catch(() => {});
+				}
+			}, 0);
 
 			return true;
 
@@ -5921,8 +7407,18 @@ class Sylk extends Component {
 
     async getLastCallEvent() {
 		  if (Platform.OS !== 'android') return;
-		
+
 		  DeviceEventEmitter.addListener('IncomingCallAction', (event) => { this.callEventHandler(event); } );
+
+		  // Native FCM-arrival wake. MyFirebaseMessagingService.onMessageReceived
+		  // emits 'IncomingCallPrep' the moment an incoming_session /
+		  // incoming_conference_request push is recognised — BEFORE the
+		  // user taps Accept, BEFORE the native Telecom panel is shown.
+		  // The point is to wake the JS thread early so we can run the
+		  // WSS reconnect / re-registration during the ringing window
+		  // instead of after Accept. See callPrepEventHandler for the
+		  // actual work.
+		  DeviceEventEmitter.addListener('IncomingCallPrep', (event) => { this.callPrepEventHandler(event); } );
 
 		  CallEventModule.markRNready();
 		  // markRNready should emit pending events too
@@ -5939,6 +7435,91 @@ class Sylk extends Component {
 			console.warn('Failed to pull pending call event', e);
 		  }
 		}
+
+	// Wake-on-FCM-arrival handler. Fires as soon as
+	// MyFirebaseMessagingService.onMessageReceived recognises an
+	// incoming_session / incoming_conference_request push — typically
+	// 2-5 s BEFORE the user taps Accept.
+	//
+	// The whole point is to nudge the JS thread early so the WSS
+	// reconnect (if WSS is dead due to OS background suspension)
+	// happens during the ringing window, not after Accept. Without
+	// this, the sequence on a backgrounded Android was:
+	//
+	//   T+0     FCM arrives natively (WSS may still be alive, dies soon)
+	//   T+2-5s  User taps Accept → JS finally wakes → notices WSS dead
+	//   T+2-5s  WSS reconnect starts
+	//   T+4-7s  WSS re-registered, acceptCall sent → but sylk-server
+	//           already responded 480 to the SIP caller because the
+	//           WSS close on its side made the contact unreachable.
+	//
+	// With this handler running at T+0, the WSS reconnect overlaps
+	// ringing, and by Accept-time the WSS is alive and acceptCall
+	// reaches sylk-server while the SIP dialog is still up.
+	//
+	// Idempotent: dedupes per callUUID (a single FCM push can be
+	// re-delivered by Google in pathological cases). The actual heavy
+	// work — scheduleBackToForeground — is itself deduped, so even if
+	// dedupe here misses, it collapses one tick later.
+	callPrepEventHandler(event) {
+		if (!event || !event.callUUID) {
+			console.warn('callPrepEventHandler: invalid payload', event);
+			return;
+		}
+		if (!this._handledPrepCalls) {
+			this._handledPrepCalls = new Set();
+		}
+		if (this._handledPrepCalls.has(event.callUUID)) {
+			return;
+		}
+		this._handledPrepCalls.add(event.callUUID);
+		// Clear from the dedupe set after 5 min — long enough to absorb
+		// any redeliveries, short enough that the Set doesn't grow.
+		setTimeout(() => this._handledPrepCalls.delete(event.callUUID), 5 * 60 * 1000);
+
+		utils.timestampedLog('[call] [ui] call_id=' + event.callUUID,
+			'00 fcm_prep_received from=' + event.fromUri
+			+ ' event=' + event.event
+			+ ' wss_state=' + (this.state.connection ? this.state.connection.state : 'null')
+			+ ' regState=' + this.state.registrationState);
+
+		// IMPORTANT: do NOT call backToForeground / scheduleBackToForeground
+		// here. We want the app to stay where it is (typically backgrounded
+		// or locked) until the user explicitly taps Answer. Bringing the
+		// activity to foreground on every FCM push — even before the user
+		// reacts to the notification — is the behaviour WhatsApp/Telegram
+		// avoid: their app only foregrounds on Answer, not on Ring.
+		//
+		// What the prep event SHOULD do here is the minimum needed to
+		// shorten the post-Accept latency without disturbing the user:
+		// nudge the WSS into reconnecting during the ringing window so
+		// it's alive by the time Answer is tapped. handleRegistration
+		// achieves that without touching CallKit/Activity state.
+		//
+		// Skip the kick entirely when state is already healthy (WSS
+		// ready AND account registered) — there's nothing to do, and
+		// avoiding the no-op call removes a redundant Promise tick on
+		// the hot path.
+		const connectionReady = !!(this.state.connection && this.state.connection.state === 'ready');
+		const accountRegistered = this.state.registrationState === 'registered';
+		if (connectionReady && accountRegistered) {
+			return;
+		}
+		// Defer to a microtask so this handler returns immediately and
+		// any other bridge events queued behind us can interleave —
+		// handleRegistration may do non-trivial work (DNS lookup,
+		// connectToSylkServer, etc.).
+		Promise.resolve().then(() => {
+			try {
+				if (this.state.accountId && this.state.accountVerified) {
+					this.handleRegistration(this.state.accountId, this.state.password, 'fcm_prep');
+				}
+			} catch (e) {
+				utils.timestampedLog('[call] [ui] call_id=' + event.callUUID,
+					'00 fcm_prep handleRegistration threw:', (e && e.message) || e);
+			}
+		});
+	}
 
 	callEventHandler(payload) {
 		if (!payload || !payload.callUUID) {
@@ -5992,15 +7573,29 @@ class Sylk extends Component {
 			utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
 				'00 push_launch_route_first — flipping to ' + _pushAcceptRoute
 				+ ' (event=' + payload.event + ') BEFORE backToForeground');
-			// Seed remote-party state synchronously so the FIRST render
-			// of AudioCallBox already knows the caller. fromUri is the
-			// authoritative URI from the OS-native payload; if the
-			// native side also supplied a display name (some builds do
-			// via payload.displayName / payload.fromDisplayName), we
-			// keep that. Contact lookup is best-effort — if no Sylk
-			// contact entry exists for this URI we just leave
-			// callContact null and Call.lookupContact will refine the
-			// display name later via the AB-contacts path.
+			// ROUTE-FIRST ORDER. Previously this block ran the contact-
+			// seeding work (applyPushDisplayName → saveSylkContact SQL
+			// write, lookupContact, setState) BEFORE changeRoute. On a
+			// cold-start push the seeding cost was ~3 s of blocked JS
+			// thread between the user pressing Accept and AudioCallBox
+			// mounting — visible in metro.log as a 3 s gap between
+			// "00 push_launch_route_first" and "push_accept_gate_opened".
+			// The seed values aren't worth that delay: AudioCallBox is
+			// happy to render "Connecting…" for one tick and Call.js
+			// fills in the real party info as soon as the WSS Call
+			// object arrives. So now we:
+			//   1. Open the push-accept gate (synchronous, cheap — just
+			//      sets this._pushAcceptGate so any racing start_up
+			//      route to /ready is suppressed).
+			//   2. changeRoute('/call') immediately — AudioCallBox
+			//      mounts in the very next render commit.
+			//   3. Defer the contact seeding (lookupContact, SQL write,
+			//      seed setState) to a microtask, so it lands on the
+			//      following render tick and refines the on-screen label
+			//      without blocking the route flip.
+			// Step 1 and 2 still run in the same synchronous chunk, so
+			// no other JS task can interleave between them — the gate
+			// is always set before any setState the route flip queues.
 			const _fromUri = payload.fromUri;
 			// Push payload may carry TWO display-name fields:
 			//   • payload.displayName         — locally-resolved label native
@@ -6029,54 +7624,82 @@ class Sylk extends Component {
 				|| payload.displayName
 				|| _fromUriLocal
 				|| null;
-			const _seedState = {};
-			if (_fromUri) {
-				_seedState.targetUri = _fromUri;
-				try {
-					// Spec (user): "when we locate a contact for the sip uri X,
-					// if display name is not set or is equal to the uri, set
-					// the contact display name with the display_name learned
-					// from the push notification". applyPushDisplayName
-					// returns the upgraded contact (or null if no change)
-					// AND synchronously rewires contactIndex so the parallel
-					// render-path lookupContact (~line 29680) sees the new
-					// name without waiting for the async SQL write.
-					const upgraded = this.applyPushDisplayName(_fromUri, _pushFromDisplayName, 'pushDisplayName');
-					const c = upgraded || (this.lookupContact && this.lookupContact(_fromUri));
-					if (c) _seedState.callContact = c;
-				} catch (e) { /* ignore — Call.js refines later */ }
-			}
-			if (_displayName) _seedState.remoteDisplayName = _displayName;
-			if (Object.keys(_seedState).length > 0) {
-				this.setState(_seedState);
-				utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
-					'00 push_launch_seeded_party uri=' + _fromUri
-					+ ' displayName=' + (_displayName || '?')
-					+ ' contact=' + (!!_seedState.callContact));
-			}
-			// Open the push-accept route gate BEFORE changeRoute so the
-			// auto-login start_up route that fires moments later (and
-			// would otherwise route us back to /ready while the WSS
-			// connection is still being established) is suppressed for
-			// up to 45 s. The gate also self-closes when the matching
-			// call reaches established/terminated — see callStateChanged
-			// and incomingCallFromWebSocket. Pass the target route so
-			// the gate's 45 s safety fallback knows what we were holding
-			// open (it falls back to /ready from EITHER /call or
-			// /conference if the call never materialises).
+
+			// STEP 1+2: gate, then route flip. Both synchronous, no
+			// interleaving possible.
 			this._openPushAcceptGate(payload.callUUID, _pushAcceptRoute);
 			try { this.changeRoute(_pushAcceptRoute, 'push_launch_accept'); }
 			catch (e) {
 				utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
 					'00 push_launch_route_first threw:', (e && e.message) || e);
 			}
+
+			// STEP 3: deferred contact seeding. Runs on the microtask
+			// queue, so React has already committed the /call route
+			// flip and AudioCallBox is mounting. The seed setState here
+			// will trigger a follow-up render that fills in the caller
+			// name + avatar a frame or two later — invisible to the
+			// user vs. the 3 s blocking version we used to do.
+			Promise.resolve().then(() => {
+				try {
+					const _seedState = {};
+					if (_fromUri) {
+						_seedState.targetUri = _fromUri;
+						try {
+							// Spec (user): "when we locate a contact for the sip uri X,
+							// if display name is not set or is equal to the uri, set
+							// the contact display name with the display_name learned
+							// from the push notification". applyPushDisplayName
+							// returns the upgraded contact (or null if no change)
+							// AND synchronously rewires contactIndex so the parallel
+							// render-path lookupContact (~line 29680) sees the new
+							// name without waiting for the async SQL write.
+							const upgraded = this.applyPushDisplayName(_fromUri, _pushFromDisplayName, 'pushDisplayName');
+							const c = upgraded || (this.lookupContact && this.lookupContact(_fromUri));
+							if (c) _seedState.callContact = c;
+						} catch (e) { /* ignore — Call.js refines later */ }
+					}
+					if (_displayName) _seedState.remoteDisplayName = _displayName;
+					if (Object.keys(_seedState).length > 0) {
+						this.setState(_seedState);
+						utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+							'00 push_launch_seeded_party (deferred) uri=' + _fromUri
+							+ ' displayName=' + (_displayName || '?')
+							+ ' contact=' + (!!_seedState.callContact));
+					}
+				} catch (e) {
+					utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+						'00 push_launch_seed_deferred threw:', (e && e.message) || e);
+				}
+			});
 		}
 
-	    this.backToForeground();
+	    // Only schedule a foreground bring-up for ACCEPT actions.
+	    //
+	    // The REJECT path should NOT pull the app to the front: the
+	    // user just dismissed the call from a background notification,
+	    // and dragging the app onto their screen for that is the exact
+	    // behaviour WhatsApp/Telegram avoid. History/contact metadata
+	    // updates that happen on REJECT can run on the JS thread
+	    // perfectly well in the background — no Activity needed.
+	    //
+	    // For ACCEPT, changeRoute('/call') above already scheduled the
+	    // foreground via the same helper (dedupes), so the call here
+	    // is redundant but harmless. Kept inside the accept branch
+	    // anyway so if the changeRoute path ever stops doing it, the
+	    // accept still works.
+	    const _isAccept = (
+	        payload.action === 'ACTION_ACCEPT_AUDIO'
+	        || payload.action === 'ACTION_ACCEPT_VIDEO'
+	        || payload.action === 'ACTION_ACCEPT'
+	    );
+	    if (_isAccept) {
+	        this.scheduleBackToForeground('callEventHandler:accept');
+	    }
 		this.handledCalls.add(payload.callUUID);
 		this.phoneWasLocked = payload.phoneLocked;
 		if (payload.action === 'ACTION_ACCEPT_VIDEO') {
-			console.log('accept video');		
+			console.log('accept video');
 		} else {
 			console.log('payload.action', payload.action);
 		}
@@ -8187,9 +9810,25 @@ class Sylk extends Component {
             }
         }
 
+        // Extract the leading SIP status code (e.g. "403", "401",
+        // "408") from the reason string so the NavigationBar bell
+        // can render it as a small badge. The Sofia SIP-derived
+        // codes arrive as "403 This domain is not served here" or
+        // similar; numeric-only payloads (like our remapped 408)
+        // come through as a number. Anything we can't parse becomes
+        // null and the badge stays hidden.
+        let _registerErrorCode = null;
+        if (typeof reason === 'number' && Number.isFinite(reason)) {
+            _registerErrorCode = String(reason);
+        } else if (typeof reason === 'string') {
+            const m = reason.match(/\b(\d{3})\b/);
+            if (m) _registerErrorCode = m[1];
+        }
+
         utils.timestampedLog('[account] [register] error: ' + reason, 'on [wss]', connection);
         this.setState({
             registrationState: 'failed',
+            registerErrorCode: _registerErrorCode,
             status      : {
                 msg   : 'Sign In failed: ' + reason,
                 level : 'danger'
@@ -8316,12 +9955,22 @@ class Sylk extends Component {
             this.setState({accountVerified: true,
                            enrollment: false,
                            registrationKeepalive: true,
-                           registrationState: 'registered'
+                           registrationState: 'registered',
+                           // Clear any leftover SIP error code badge
+                           // from a previous failed register attempt.
+                           registerErrorCode: null,
                            });
 
             this.saveSqlAccount(this.state.account.id, 1, this.state.password);
 
             this.updateLoading(null, 'registered');
+
+            // Fetch mobile number + PSTN balance from the cdrtool JSON
+            // endpoint so any UI (credit modal, settings sheet, header
+            // badge) has a fresh snapshot. Fire-and-forget — failures
+            // are logged inside the helper and surfaced via
+            // state.accountInfoError.
+            this.refreshAccountInfo().catch(() => {});
 
 			setTimeout(() => {
 				this.requestNotificationsPermission();
@@ -8979,6 +10628,28 @@ class Sylk extends Component {
 			await this.ExecuteQuery("delete from accounts where account = ''", []);
 		}
 
+		// Self-heal for the single-active-account invariant. Older builds
+		// of updateSqlAccount/saveSqlAccount did not clear OTHER rows when
+		// flipping a row to active=1, so existing DBs may already contain
+		// two (or more) rows with active=1. Without this, loadAccounts'
+		// auto-login loop can race those rows and register the wrong
+		// account on the next launch. Keep the most-recently-active row
+		// at active=1 and clear the rest.
+		const multiActiveCheck = await this.ExecuteQuery(
+			"SELECT count(*) as n FROM accounts WHERE active = 1 OR active = '1'", []
+		);
+		if (multiActiveCheck.rows.item(0).n > 1) {
+			console.log('[loadAccounts] self-heal: multiple active=1 rows found, keeping most recent');
+			await this.ExecuteQuery(
+				"update accounts set active = 0 where account != ("
+				+ "select account from accounts "
+				+ "where active = 1 OR active = '1' "
+				+ "order by last_active_timestamp DESC limit 1"
+				+ ")",
+				[]
+			);
+		}
+
         let init_active_account = false;
         let account;
         let password;
@@ -8995,39 +10666,48 @@ class Sylk extends Component {
 				// 	'passwordLen=', (item.password ? String(item.password).length : 0),
 				// 	'last_active_timestamp=', item.last_active_timestamp);
 
-				if (item.active == "1" || item.active == 1) {
+				// Defense in depth: only honour the first active=1 row.
+				// The query is ordered by last_active_timestamp DESC, so
+				// that's the most-recently-active identity. Without this
+				// guard, a stale active=1 row left over from before the
+				// updateSqlAccount fix would race with the current one —
+				// the closure-shared `account`/`password` vars get
+				// clobbered by later iterations and the WRONG account
+				// gets registered (see metro.log "Auto login ag@sylk.link"
+				// after signing in as support@sylk.link).
+				if ((item.active == "1" || item.active == 1) && !init_active_account) {
 					if (typeof item.password !== 'string' || item.password.length === 0) {
 						// Empty stored password would crash sylkrtc.addAccount on
 						// iOS at startup with an unhandled JS exception. Skip the
 						// auto-login and force the user back to /login so they
 						// can re-enter their credentials.
 						console.log('Auto login skipped: stored password is empty for', item.account);
-						continue;
-					}
-					init_active_account = true;
-					if (this.state.accountId != item.account && !this.signOut) {
-						console.log('Auto login', item.account);
-						// Point the on-device log file at this account
-						// before any subsequent timestampedLog call, so
-						// boot-time diagnostics already land in the
-						// correct per-account file.
-						utils.setLogAccount(item.account);
-						this.setState({accountVerified: true, accountId: item.account});
-						account = item.account;
-						password = item.password;
-						// Apply per-account settings (preferred codecs,
-						// encryption mode, DTMF mode, location knobs,
-						// audio-recording toggle) from accounts.settings
-						// so they're in effect by the time the first
-						// call is placed. Defaults from
-						// ACCOUNT_SETTINGS_DEFAULTS are applied for any
-						// missing keys (everything, on first launch
-						// after the SQL migration — there is no
-						// carry-over from the previous AsyncStorage
-						// stores).
-						this._applyAccountSettings(item.account);
-						this.changeRoute('/ready', 'start_up');
-						setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
+					} else {
+						init_active_account = true;
+						if (this.state.accountId != item.account && !this.signOut) {
+							console.log('Auto login', item.account);
+							// Point the on-device log file at this account
+							// before any subsequent timestampedLog call, so
+							// boot-time diagnostics already land in the
+							// correct per-account file.
+							utils.setLogAccount(item.account);
+							this.setState({accountVerified: true, accountId: item.account});
+							account = item.account;
+							password = item.password;
+							// Apply per-account settings (preferred codecs,
+							// encryption mode, DTMF mode, location knobs,
+							// audio-recording toggle) from accounts.settings
+							// so they're in effect by the time the first
+							// call is placed. Defaults from
+							// ACCOUNT_SETTINGS_DEFAULTS are applied for any
+							// missing keys (everything, on first launch
+							// after the SQL migration — there is no
+							// carry-over from the previous AsyncStorage
+							// stores).
+							this._applyAccountSettings(item.account);
+							this.changeRoute('/ready', 'start_up');
+							setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
+						}
 					}
 				}
 
@@ -9184,7 +10864,93 @@ class Sylk extends Component {
 				               keyStatus: {...keyStatus},
 				               });
 
+				// Hydrate the in-memory call_history dedupe cache so
+				// the next refreshAccountInfo this session can skip
+				// processing identical data. We just store the raw
+				// serialization — comparison is byte-equality in
+				// processServerCallHistory.
+				if (typeof data.server_call_history === 'string'
+				    && data.server_call_history.length > 0) {
+				    this._serverCallHistoryCache = data.server_call_history;
+				    console.log('[history] hydrated server_call_history cache from SQL,',
+				        data.server_call_history.length, 'bytes');
+				} else {
+				    this._serverCallHistoryCache = null;
+				}
+
 				setTimeout(() => {this.checkPendingActions()}, 10);
+
+				// Trace the in-state display name as soon as the SQL
+				// row is loaded — paired with the load-time log above
+				// in the contacts loop, this gives a before/after pair
+				// per cold start so any subsequent rewrite is easy to
+				// spot. The loop fires per contact, this fires once
+				// per account load.
+				console.log('[account] [load] account row loaded:',
+					JSON.stringify({
+						accountId:        this.state.accountId,
+						stateDisplayName: this.state.displayName,
+						stateEmail:       this.state.email,
+					})
+				);
+
+				// Dump the server config the app is currently working
+				// against. Three sources, in order of preference:
+				//   1. state.sylkDomain → this.configurations[domain]
+				//      (the per-domain cache populated by
+				//      downloadSylkConfiguration / initWithCachedDomain).
+				//   2. state.configurationJson (the most recently
+				//      applied config, written by initConfiguration).
+				//   3. Just the URL-bearing state slots we know about
+				//      (defensive — covers a partial init).
+				// We log the source separately so it's obvious which
+				// of the three actually fed the in-state values.
+				try {
+					const _domain = this.state.sylkDomain;
+					const _cached = (this.configurations && _domain) ? this.configurations[_domain] : null;
+					let _configJson = null;
+					if (this.state.configurationJson) {
+						try { _configJson = JSON.parse(this.state.configurationJson); }
+						catch (_) { /* not JSON, ignore */ }
+					}
+					const _picked = _cached || _configJson || null;
+					const _source = _cached
+						? 'configurations[' + _domain + ']'
+						: (_configJson ? 'state.configurationJson' : 'state slots only');
+					console.log('[account] [load] server config dump (source=' + _source + '):',
+						JSON.stringify({
+							sylkDomain:        this.state.sylkDomain,
+							wsUrl:             this.state.wsUrl,
+							serverSettingsUrl: this.state.serverSettingsUrl,
+							passwordRecoveryUrl: this.state.passwordRecoveryUrl,
+							deleteAccountUrl:  this.state.deleteAccountUrl,
+							configurationUrl:  this.state.configurationUrl,
+							configKeys:        _picked ? Object.keys(_picked).sort() : null,
+							hasServerSettingsUrlInConfig: !!(_picked && _picked.serverSettingsUrl),
+							serverSettingsUrlInConfig: _picked ? (_picked.serverSettingsUrl || null) : null,
+						})
+					);
+				} catch (e) {
+					console.log('[account] [load] server config dump failed:', e && e.message);
+				}
+
+				// App-start refresh of the server-side account
+				// snapshot (email, PSTN credit, caller_id). We fire
+				// this here — as soon as the SQL row confirms we
+				// have account+password loaded — rather than waiting
+				// for SIP REGISTER to complete. The endpoint is
+				// independent of SIP registration (HTTP Digest using
+				// the same credentials), so we don't need the SIP
+				// socket. The post-register refresh in
+				// registrationStateChanged still fires and acts as
+				// a fallback for the case where loadAccount races
+				// against an unset serverSettingsUrl. Fire-and-forget;
+				// errors are logged inside refreshAccountInfo.
+				if (this.state.accountId
+				    && this.state.password
+				    && this.state.serverSettingsUrl) {
+					this.refreshAccountInfo().catch(() => {});
+				}
 
 			} else {
 				console.log('No account found in database');
@@ -9197,6 +10963,17 @@ class Sylk extends Component {
     
     async saveSqlAccount(account, active, password) {
 		let timestamp = new Date();
+
+        // Defensive: refuse to persist an empty accountId. Was
+        // happening on logout where the caller passed
+        // this.state.accountId AFTER resetState had cleared it,
+        // inserting a junk "account=''" row each time. Caller is
+        // responsible for capturing the accountId before
+        // resetState if it needs to be marked inactive after.
+        if (!account || (typeof account === 'string' && account.length === 0)) {
+            console.log('saveSqlAccount: refusing to persist empty accountId (active=' + active + ')');
+            return;
+        }
 
         // NOTE: password should never be empty by the time we get here;
         // if it is, that is a bug in the caller (don't hide it by returning).
@@ -9213,6 +10990,14 @@ class Sylk extends Component {
 			await this.ExecuteQuery("update accounts set active = 0", []);
             params = [active, account, this.state.sylkDomain];
             query = "INSERT INTO accounts (active, account, server) VALUES (?, ?, ?)"
+        } else {
+            // Single-active-account invariant: same rationale as
+            // updateSqlAccount — make sure no other row stays active=1
+            // when this row is being created/promoted to active.
+            await this.ExecuteQuery(
+                "update accounts set active = 0 where account != ?",
+                [account]
+            );
         }
 
 		await this.ExecuteQuery(query, params).then((result) => {
@@ -9233,6 +11018,16 @@ class Sylk extends Component {
         if (active == 0 || active == "0") {
             params = [active, this.state.sylkDomain, account];
             query = "update accounts set active = ?, server = ? where account = ?"
+        } else {
+            // Single-active-account invariant: clear active on every other
+            // row before flipping this one to 1. Without this, two accounts
+            // can end up with active=1 simultaneously (e.g. when the
+            // 'registered' handler for a previous identity fires again
+            // after a switch), and the next loadAccounts() will race them.
+            await this.ExecuteQuery(
+                "update accounts set active = 0 where account != ?",
+                [account]
+            );
         }
 
 		await this.ExecuteQuery(query, params).then((result) => {
@@ -9240,6 +11035,30 @@ class Sylk extends Component {
 			if (result.rowsAffected) {
 				this.loadAccounts();
 			}
+			// Post-update snapshot of the account-identity fields the
+			// user typically wants to verify (display name, email,
+			// PSTN caller-Id / mobile number). state.accountInfo is
+			// the most recent server snapshot (from refreshAccountInfo
+			// or a setServerCallerId / setServerEmail / changeSipPassword
+			// success); state.displayName and state.myPhoneNumber are
+			// the runtime values bound to the UI. Logging both makes
+			// it obvious when a SQL update has propagated to React
+			// state and when it hasn't.
+			const info = this.state.accountInfo || {};
+			const pstn = info.pstn || {};
+			console.log('[account] [update] post-update identity:',
+				JSON.stringify({
+					account:                account,
+					active:                 active,
+					stateDisplayName:       this.state.displayName,
+					stateEmail:             this.state.email,
+					stateMyPhoneNumber:     this.state.myPhoneNumber,
+					accountInfoEmail:       info.email,
+					accountInfoCallerId:    pstn.caller_id,
+					accountInfoBalance:     pstn.balance,
+					accountInfoCurrency:    pstn.currency,
+				})
+			);
 		}).catch((error) => {
 			console.log('SQL updateSqlAccount error:', error);
 		});
@@ -9247,12 +11066,12 @@ class Sylk extends Component {
         
     async showAlertPanel(data, source) {
         if (Platform.OS === 'android') {
-            const phoneAllowed = await this.requestPhonePermission();
-            if (!phoneAllowed) {
-                this._notificationCenter.postSystemNotification('Phone permission denied');
-                this.changeRoute('/ready', 'phone_permission_denied');
-                return;
-            }
+            // Incoming call: we don't need to read the user's own
+            // SIM number here (it would only be useful as outgoing
+            // Caller ID, and this is an incoming path). The
+            // READ_PHONE_NUMBERS prompt is now confined to the
+            // outgoing PSTN dial in callKeepStartCall so we don't
+            // ask for it on every incoming call.
             console.log('Alert panel is now handled by FCM notification');
             return;
         }
@@ -10001,6 +11820,66 @@ class Sylk extends Component {
 
 				this.addHistoryEntry(uri, callUUID, direction);
 
+                // Foreground missed-call badge. When an incoming 1-1
+                // call ends without ever being accepted/established,
+                // the user missed it. Bump the contact's unread badge
+                // and the global missedCalls counter immediately —
+                // without waiting for refreshAccountInfo to fetch the
+                // next server snapshot. We key the entry on the SIP
+                // Call-ID (call._callId / call.callId), which is the
+                // identifier the server's call_history will later
+                // report as item.sessionId — so when saveHistory eventually
+                // processes that same call it'll find the value already
+                // in contact.unread and state.missedCalls and skip the
+                // duplicate push (both dedupe via indexOf === -1). Skip
+                // conferences (they have their own roster logic above)
+                // and skip calls that reached accepted/established
+                // (those weren't missed). startedByPush wakes are not
+                // excluded — if the user never accepted, it's still a
+                // missed call from their perspective.
+                if (direction === 'incoming'
+                        && !this.isConference(call)
+                        && oldState !== 'accepted'
+                        && oldState !== 'established') {
+                    const _sipCallId = call._callId || call.callId || callUUID;
+                    const _missedContact = this.lookupContact(uri);
+                    if (_missedContact) {
+                        if (!Array.isArray(_missedContact.unread)) {
+                            _missedContact.unread = [];
+                        }
+                        if (!Array.isArray(_missedContact.tags)) {
+                            _missedContact.tags = [];
+                        }
+                        let _missedChanged = false;
+                        if (_missedContact.unread.indexOf(_sipCallId) === -1) {
+                            _missedContact.unread.push(_sipCallId);
+                            _missedChanged = true;
+                        }
+                        if (_missedContact.tags.indexOf('missed') === -1) {
+                            _missedContact.tags.push('missed');
+                            _missedChanged = true;
+                        }
+                        const _mc = Array.isArray(this.state.missedCalls)
+                            ? this.state.missedCalls.slice()
+                            : [];
+                        if (_mc.indexOf(_sipCallId) === -1) {
+                            _mc.push(_sipCallId);
+                            this.setState({missedCalls: _mc});
+                            _missedChanged = true;
+                        }
+                        if (_missedChanged) {
+                            utils.timestampedLog('[call] foreground missed call from',
+                                uri, '— bumping unread badge (Call-ID',
+                                _sipCallId + ', oldState=' + oldState + ')');
+                            this.saveSylkContact(uri, _missedContact, 'missedCallForeground');
+                        }
+                    } else {
+                        utils.timestampedLog('[call] foreground missed call from',
+                            uri, '— no Sylk contact in roster, badge skipped',
+                            '(oldState=' + oldState + ')');
+                    }
+                }
+
                 // Persist the unique roster of this conference run into
                 // the room contact, merged with whatever was saved from
                 // previous runs. The flow:
@@ -10100,12 +11979,33 @@ class Sylk extends Component {
                     msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
                     this.saveSystemMessage(uri, msg, direction, missed);
 
-                    if (typeof reason === 'string' && reason.indexOf('Payment required') > -1 && this.state.pstnAccessUrl) {
+                    if (typeof reason === 'string' && reason.indexOf('Payment required') > -1) {
 						show_payment_message = true;
+						// Surface the bank-transfer details inline.
+						// Slight delay so the call-ended UI has time
+						// to settle before the modal slides over it
+						// — without it the modal can appear behind
+						// the still-dismissing CallOverlay on slower
+						// devices.
 						setTimeout(() => {
-							msg = "Visit " + this.state.pstnAccessUrl + " for how to call PSTN numbers";
-							this.saveSystemMessage(uri, msg, 'incoming', missed, false);
-						}, 2000);
+							if (!this.state.showPaymentInfoModal) {
+								this.setState({
+									showPaymentInfoModal: true,
+									paymentInfoReason: 'credit',
+								});
+							}
+						}, 800);
+
+						// Keep the legacy chat breadcrumb too — the
+						// modal is dismissible, the system message
+						// stays in history so the user can revisit
+						// the link later.
+						if (this.state.pstnAccessUrl) {
+							setTimeout(() => {
+								msg = "Visit " + this.state.pstnAccessUrl + " for how to call PSTN numbers";
+								this.saveSystemMessage(uri, msg, 'incoming', missed, false);
+							}, 2000);
+						}
                     }
                 }
                 
@@ -10459,17 +12359,35 @@ class Sylk extends Component {
 
         const oldDomain = this.state.sylkDomain;
         // Resolve the target Sylk server. Source of truth is the
-        // server column on the local accounts table, surfaced as
-        // state.accounts[accountId]. Fall back to the @-suffix of
-        // the account URI only when that lookup fails — most setups
-        // have identity-domain == sylk-server, but the two can differ
-        // (e.g. a vanity SIP domain hosted on a shared Sylk server).
+        // @-suffix of the SIP account URI — that's the canonical
+        // domain hosting the account. The SQL `server` column
+        // (state.accounts[accountId]) is a CACHE that can be stale
+        // (e.g. an account registered earlier under a different
+        // wsUrl gets saved with whatever sylkDomain was active at
+        // the time; switching back later would see the stale value
+        // and incorrectly take the same-server fast path).
+        //
+        // We only fall back to the SQL cache when the accountId
+        // is unparseable (no '@') — a malformed input is the only
+        // case where the SQL hint is more useful than nothing.
         const accountsMap = this.state.accounts || {};
-        let targetDomain = accountsMap[accountId];
-        if (!targetDomain && typeof accountId === 'string' && accountId.includes('@')) {
+        let targetDomain;
+        if (typeof accountId === 'string' && accountId.includes('@')) {
             targetDomain = accountId.split('@')[1];
+        } else {
+            targetDomain = accountsMap[accountId];
         }
 
+        // Same-server check. We compare the SIP domain to the active
+        // sylkDomain. When they match, the WSS connection can be
+        // reused and we just re-REGISTER. When they DIFFER, we MUST
+        // close the current connection (the new account lives on a
+        // different server that almost certainly has a different
+        // wsUrl) and discover/connect to the new one via
+        // lookupSylkServer further down. Reusing a connection
+        // across domains was the source of the recent "403 This
+        // domain is not served here" symptom — the registrar on
+        // the old WSS legitimately rejected the new account.
         const sameServer = !!targetDomain && targetDomain === oldDomain;
 
         console.log('[switch] switchAccount accountId=', accountId,
@@ -10503,6 +12421,15 @@ class Sylk extends Component {
         // on the new connection completes the sign-in by way of the
         // (accountVerified || signIn) guard inside
         // connectionStateChanged.
+        //
+        // Clear serverSettingsUrl right here — for a cross-server
+        // switch the digest endpoint MAY differ between servers.
+        // The new server's downloadSylkConfiguration will refill
+        // it. resetState deliberately preserves the URL so the
+        // same-server path can reuse it; we're the only branch
+        // that needs the wipe.
+        this.setState({ serverSettingsUrl: '' });
+
         setTimeout(() => {
             console.log('[switch] cross-server path: rearming signIn, targetDomain=', targetDomain);
 
@@ -10565,6 +12492,37 @@ class Sylk extends Component {
             '| account=', this.state.account ? this.state.account.id : 'null',
             '| registrationState=', this.state.registrationState);
 
+        // FAST-PATH BAIL CHECKS — must run before any setState below.
+        //
+        // backToForeground (called from changeRoute('/call') and from
+        // the push-accept path) invokes handleRegistration on every
+        // foregrounding even when we're already registered with the
+        // same account. The work below — setState({accountId, password}),
+        // replayPersistedNativeLogs, _hydrateMeetingHandshakeState — is
+        // only meaningful when we're actually (re)registering. Worse,
+        // setState here runs in the bridge-callback context (not a
+        // React synthetic event), so it ISN'T batched: each call
+        // triggers an immediate synchronous re-render of the App
+        // component, which is enormous. On the push-accept path that
+        // re-render was costing ~2 s between
+        // "handleRegistration" entry and "bail: already registered" in
+        // metro.log, which is ~2 s of unnecessary delay between the
+        // route flip and AudioCallBox mounting. Bailing FIRST when
+        // there's nothing to do skips that render entirely.
+        //
+        // The wsUrl bail is also moved up for the same reason — no
+        // point hydrating handshake state or seeding setState when
+        // we can't proceed with registration anyway.
+        if (!this.state.wsUrl) {
+            console.log('[signin] bail: no wsUrl yet');
+            return;
+        }
+
+        if (this.state.account !== null && this.state.registrationState === 'registered') {
+            console.log('[signin] bail: already registered with account', this.state.account.id);
+            return;
+        }
+
         // Re-point the on-device log file at the (possibly new)
         // account before any timestampedLog call below tries to
         // append. Idempotent — reuses the previous value when the
@@ -10595,16 +12553,6 @@ class Sylk extends Component {
         // when a meeting request bubble is rendered or accepted, which
         // can't happen until well after this resolves).
         this._hydrateMeetingHandshakeState(accountId);
-
-        if (!this.state.wsUrl) {
-			console.log('[signin] bail: no wsUrl yet');
-			return;
-        }
-
-        if (this.state.account !== null && this.state.registrationState === 'registered' ) {
-            console.log('[signin] bail: already registered with account', this.state.account.id);
-            return;
-        }
 
         if (this.state.connection === null) {
 			console.log('[signin] path A: connection is null, connectToSylkServer()');
@@ -10832,7 +12780,27 @@ class Sylk extends Component {
 
                 account.register();
 
+				// Capture the account this request was issued for.
+				// checkIfKeyExists is async — its callback can land
+				// AFTER the user has switched accounts (e.g. delete
+				// android55 → sign in as ag), and without this guard
+				// the response for the previous identity overwrites
+				// keyStatus.serverPublicKey on the new identity. We
+				// then compare the new account's local key against
+				// the previous account's server-side key and fire
+				// the misleading "keys are different" modal — which
+				// is exactly the symptom we saw at 14:36:31 in
+				// metro.log (local key = ag@sylk.link, "server" key
+				// = android55@sylk.link's blob arriving late).
+				const _requestAccountId = options.account;
 				account.checkIfKeyExists((serverKey) => {
+					if (this.state.accountId !== _requestAccountId) {
+						console.log('[pgp] discarding stale checkIfKeyExists callback for',
+							_requestAccountId,
+							'(current accountId is',
+							this.state.accountId || '(none)', ')');
+						return;
+					}
 					let keyStatus = this.state.keyStatus;
 					keyStatus.existsOnServer = false;
 
@@ -10867,6 +12835,8 @@ class Sylk extends Component {
                     // key exists in both places
                     if (this.state.keys.public !== keyStatus.serverPublicKey) {
                         utils.timestampedLog('[account] [pgp] keys are different');
+                        console.log('[pgp] local public key:\n' + this.state.keys.public);
+                        console.log('[pgp] server public key:\n' + keyStatus.serverPublicKey);
                         this.setState({keyDifferentOnServer: true, showImportPrivateKeyModal: true});
                     }
                 } else {
@@ -11294,6 +13264,135 @@ class Sylk extends Component {
             targetUri = targetUri + '@' + this.state.defaultDomain;
         }
 
+        // ─── Pre-flight PSTN gate ────────────────────────────────
+        // For 1-to-1 PSTN dials, consult the server-side account
+        // snapshot we cached via refreshAccountInfo and refuse the
+        // call upfront when:
+        //   • pstn.enabled is false   (no "free-pstn" group / engine
+        //     disallowed) — the SIP proxy would refuse anyway, but
+        //     we'd waste the ringing UI, a CallKit slot, and any
+        //     PSTN-permission prompt on the way.
+        //   • the account is prepaid AND balance <= 0 — credit must
+        //     be loaded before the call can connect.
+        // In both cases we open the existing PaymentInfoModal with
+        // reason='credit' so the user sees how to top up.
+        //
+        // We only run this gate when:
+        //   1. The target is a phone number (utils.isPhoneNumber on
+        //      the local part — same detector used by
+        //      ensurePstnCallerIdCaptured).
+        //   2. It's not a conference start.
+        //   3. The server publishes a settings page (serverSettingsUrl
+        //      is set) AND we already have a snapshot (accountInfo).
+        //      If we don't have a snapshot yet, fall through and
+        //      let the existing post-call "Payment required" branch
+        //      handle it — better to attempt the call than to block
+        //      it on stale / missing state.
+        try {
+            const _localPart = targetUri.indexOf('@') > -1
+                ? targetUri.split('@')[0] : targetUri;
+            const isPstn = utils.isPhoneNumber(_localPart);
+            if (isPstn
+                && !options.conference
+                && this.state.serverSettingsUrl
+                && this.state.accountInfo
+                && this.state.accountInfo.pstn) {
+                const pstn = this.state.accountInfo.pstn;
+
+                // Gate order matters. Caller-Id is a hard prerequisite
+                // for ALL PSTN calls — without an rpid the SIP proxy
+                // can't present a sane From: number and many carriers
+                // reject the call outright. So the SetCallerIdModal
+                // prompt comes BEFORE the credit / payment prompt:
+                // even a user with zero credit who is about to top up
+                // needs to fix their Caller-Id first (otherwise the
+                // first call after they buy credit fails for an
+                // unrelated reason and they get confused).
+                //
+                // Ordering:
+                //   1. pstn.enabled === false → PaymentInfoModal
+                //      (the account isn't allowed to dial PSTN at
+                //      all — no point asking for a Caller-Id).
+                //   2. caller_id missing / sentinel  → SetCallerIdModal
+                //   3. prepaid && balance <= 0       → PaymentInfoModal
+                if (pstn.enabled === false) {
+                    utils.timestampedLog('[pstn-gate] blocking outgoing call to',
+                                         targetUri, 'reason=', 'pstn-disabled',
+                                         'pstn=', JSON.stringify(pstn));
+                    if (!this.state.showPaymentInfoModal) {
+                        this.setState({
+                            showPaymentInfoModal: true,
+                            paymentInfoReason: 'credit',
+                        });
+                    }
+                    return;
+                }
+
+                // Caller-Id gate. The SIP proxy presents pstn.caller_id
+                // as the From: number on outgoing PSTN calls; without
+                // it the gateway typically returns the call with a
+                // generic identity (or rejects it outright on some
+                // carriers). Surface a native Alert that points the
+                // user back to the My Blink account modal where the
+                // Mobile number field commits via setServerCallerId.
+                // We treat any non-string / whitespace-only value as
+                // unset; trim before evaluating so leading-spaces
+                // don't sneak past as "valid". Also treat the sentinel
+                // "+19999999999" / "0019999999999" placeholder (see
+                // isPlaceholderCallerId in accountInfo.js) as unset —
+                // it means "no Caller-Id set" operationally and we
+                // want the same SetCallerIdModal prompt.
+                const callerIdRaw = typeof pstn.caller_id === 'string'
+                    ? pstn.caller_id.trim() : '';
+                const callerId = isPlaceholderCallerId(callerIdRaw) ? '' : callerIdRaw;
+                if (callerId === '') {
+                    const _localPhone = (this.state.accountSetting
+                        && this.state.accountSetting.account
+                        && this.state.accountSetting.account.myPhoneNumber) || '';
+                    utils.timestampedLog('[pstn-gate] blocking outgoing call to',
+                                         targetUri, 'reason=', 'no-caller-id',
+                                         '— opening SetCallerIdModal',
+                                         '| pstn.caller_id (server)=',
+                                         JSON.stringify(pstn && pstn.caller_id),
+                                         '| local mobile number=',
+                                         JSON.stringify(_localPhone || this.state.myPhoneNumber || ''));
+                    // Open the dedicated set-caller-Id modal instead
+                    // of a native Alert. The modal lets the user type
+                    // (or auto-detect on Android) the number and
+                    // commits to BOTH server-side rpid and the local
+                    // account cache.
+                    if (!this.state.showSetCallerIdModal) {
+                        this.setState({ showSetCallerIdModal: true });
+                    }
+                    return;
+                }
+
+                // Credit / balance gate — runs LAST. Comes after the
+                // Caller-Id gate above so that a user with both
+                // problems gets prompted for the Caller-Id first
+                // (cheap to fix, prerequisite for any future call),
+                // then for credit on the next attempt.
+                if (pstn.prepaid &&
+                    (typeof pstn.balance !== 'number' || pstn.balance <= 0)) {
+                    utils.timestampedLog('[pstn-gate] blocking outgoing call to',
+                                         targetUri, 'reason=', 'no-credit',
+                                         'pstn=', JSON.stringify(pstn));
+                    if (!this.state.showPaymentInfoModal) {
+                        this.setState({
+                            showPaymentInfoModal: true,
+                            paymentInfoReason: 'credit',
+                        });
+                    }
+                    return;
+                }
+            }
+        } catch (e) {
+            // Never let a pre-flight check error swallow the call —
+            // if the gate logic throws we proceed and rely on the
+            // post-call server response to surface the issue.
+            console.log('[pstn-gate] pre-flight check failed:', e && e.message);
+        }
+
         // NB: the pstnRules.replacePlus rewrite USED to live here (it
         // turned `+40…` into `0040…` before stuffing the URI into
         // state.targetUri). That was wrong — every downstream path
@@ -11348,16 +13447,36 @@ class Sylk extends Component {
             this.changeRoute('/call', 'callKeepStartCall');
         }
 
-        if (Platform.OS === 'android') {
-            const phoneAllowed = await this.requestPhonePermission();
-            if (!phoneAllowed) {
-                this._notificationCenter.postSystemNotification('Phone permission denied');
+        // Only PSTN-bound dials trigger the READ_PHONE_NUMBERS prompt
+        // — see ensurePstnCallerIdCaptured for the rationale. Conference
+        // invites flow through ConferenceBox.inviteParticipants and
+        // call the same helper via the inviteToConferencePstnGate prop.
+        if (!options.conference) {
+            const ok = await this.ensurePstnCallerIdCaptured(targetUri);
+            if (!ok) {
+                // No locally-cached Caller-Id AND auto-capture failed
+                // (iOS, permission denied, SIM with no MSISDN, eSIM,
+                // …). Previously we just routed back to /ready and
+                // the call silently vanished after a vague snackbar.
+                // Now we open the dedicated SetCallerIdModal so the
+                // user can type the number manually (or accept the
+                // Android SIM auto-fill if available). The call is
+                // still aborted — the user re-initiates after Save.
+                const _localPhone = (this.state.accountSetting
+                    && this.state.accountSetting.account
+                    && this.state.accountSetting.account.myPhoneNumber) || '';
+                const _serverCallerId = (this.state.accountInfo
+                    && this.state.accountInfo.pstn
+                    && this.state.accountInfo.pstn.caller_id) || '';
+                utils.timestampedLog(
+                    '[pstn] ensurePstnCallerIdCaptured failed — opening SetCallerIdModal',
+                    '| pstn.caller_id (server)=', JSON.stringify(_serverCallerId),
+                    '| local mobile number=', JSON.stringify(_localPhone || this.state.myPhoneNumber || '')
+                );
                 this.changeRoute('/ready', 'phone_permission_denied');
-
-                setTimeout(() => {
-                    this.openAppSettings('Phone permission must be allowed');
-                }, 2000);
-
+                if (!this.state.showSetCallerIdModal) {
+                    this.setState({ showSetCallerIdModal: true });
+                }
                 return;
             }
         }
@@ -11436,7 +13555,10 @@ class Sylk extends Component {
 
     startConference(targetUri, options={audio: true, video: true, participants: []}) {
         utils.timestampedLog('New outgoing conference [call] to room', targetUri, options);
-        this.backToForeground();
+        // Deferred — see scheduleBackToForeground comment. Other code
+        // paths in the conference-start flow (changeRoute('/conference'))
+        // also schedule this; the dedupe collapses them to one call.
+        this.scheduleBackToForeground('startConference');
         this.setState({targetUri: targetUri});
 		if (Platform.OS === 'ios') {
 		   console.log('wake up app');
@@ -11589,20 +13711,20 @@ class Sylk extends Component {
 			}
         }
 
-        this.backToForeground();
+        // Deferred — see scheduleBackToForeground comment. The
+        // changeRoute('/call') a few lines above already scheduled
+        // this, so on the push-accept path it's a dedupe-noop. Kept
+        // here so the in-app accept path (which enters this function
+        // directly without changeRoute) still wakes the app.
+        this.scheduleBackToForeground('callKeepAcceptCall:post-route');
         utils.timestampedLog('[call] [ui] call_id=' + callUUID,
             '06 foreground_resumed');
 
-        if (Platform.OS === 'android') {
-            const phoneAllowed = await this.requestPhonePermission();
-            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
-                '07 phone_permission resolved allowed=' + phoneAllowed);
-            if (!phoneAllowed) {
-                this._notificationCenter.postSystemNotification('Phone permission denied');
-                this.changeRoute('/ready', 'phone_permission_denied');
-                return;
-            }
-        }
+        // Incoming-call accept path: no SIM-number read here.
+        // READ_PHONE_NUMBERS is for outgoing PSTN Caller ID only —
+        // accepting an incoming call doesn't depend on our own
+        // mobile number, so we skip the prompt entirely. Mic / camera
+        // permissions still resolve below as before.
 
         const micAllowed = await this.requestMicPermission('callKeepAcceptCall');
         utils.timestampedLog('[call] [ui] call_id=' + callUUID,
@@ -11701,7 +13823,10 @@ class Sylk extends Component {
         this.hideInternalAlertPanel('accept');
         utils.timestampedLog('[call] [ui] call_id=' + callUUID,
             '02 alert_hidden');
-        this.backToForeground();
+        // Deferred + deduped — see scheduleBackToForeground comment.
+        // changeRoute('/call', 'accept_call_early_route') above already
+        // scheduled this; the helper collapses the duplicate.
+        this.scheduleBackToForeground('acceptCall:post-route');
         utils.timestampedLog('[call] [ui] call_id=' + callUUID,
             '03 foreground_resumed');
         this.resetGoToReadyTimer();
@@ -12216,6 +14341,22 @@ class Sylk extends Component {
         this.setState({showCallMeMaybeModal: !this.state.showCallMeMaybeModal});
     }
 
+    togglePaymentInfoModal(reason) {
+        // Single handler reused by:
+        //   * NavigationBar's "Donate…" menu item — reason='donate'
+        //   * the 'Payment required' branch — reason='credit'
+        //   * the modal's close button — no argument (just flips)
+        // When opening, we also set the framing reason so the modal
+        // shows the right intro. On close we leave paymentInfoReason
+        // alone — it's only read while the modal is visible.
+        const opening = !this.state.showPaymentInfoModal;
+        const next = {showPaymentInfoModal: opening};
+        if (opening && (reason === 'donate' || reason === 'credit')) {
+            next.paymentInfoReason = reason;
+        }
+        this.setState(next);
+    }
+
     toggleQRCodeScanner() {
         utils.timestampedLog('[app] Toggle QR code scanner');
         this.setState({showQRCodeScanner: !this.state.showQRCodeScanner});
@@ -12376,6 +14517,51 @@ class Sylk extends Component {
         PushNotification.popInitialNotification((notification) => {
             if (notification) {
                 console.log('Initial push notification', notification);
+            }
+        });
+    }
+
+    // Deferred + deduped wrapper around backToForeground.
+    //
+    // The synchronous form was the dominant source of the
+    // "stuck on /ready for 2-3 s after pressing Accept" issue on the
+    // background-call path: changeRoute('/call') called it inline (its
+    // defensive branch for ensuring foreground), AND callEventHandler
+    // called it again at the end of the same tick. Each call cascaded
+    // into handleRegistration → setState → processRegistration →
+    // sylkrtc.removeAccount + addAccount, all running synchronously in
+    // bridge-callback context (unbatched, every setState triggers a
+    // full App re-render). That synchronous chain blocked React from
+    // committing the route flip, so AudioCallBox didn't mount until
+    // ~2 s after Route /ready -> /call.
+    //
+    // This helper does two things:
+    //   1. Defers the actual backToForeground() to a microtask so the
+    //      route flip (history.push + React commit) lands FIRST, and
+    //      AudioCallBox mounts immediately. The WSS reconnect / re-
+    //      registration kicks in a fraction of a frame later, well
+    //      inside the 45 s call-accept window.
+    //   2. Dedupes calls within the same tick so the changeRoute path
+    //      and the callEventHandler tail can both call this safely.
+    //      Only the first call schedules the microtask; subsequent
+    //      calls in the same tick collapse to a no-op.
+    //
+    // Pending state flag (_backToForegroundPending) is reset INSIDE
+    // the microtask just before backToForeground() runs, so any later
+    // tick's call (e.g. a fresh user interaction seconds later) will
+    // legitimately re-arm and re-fire.
+    scheduleBackToForeground(origin) {
+        if (this._backToForegroundPending) {
+            //console.log('scheduleBackToForeground dedupe:', origin);
+            return;
+        }
+        this._backToForegroundPending = true;
+        Promise.resolve().then(() => {
+            this._backToForegroundPending = false;
+            try {
+                this.backToForeground();
+            } catch (e) {
+                console.log('scheduleBackToForeground threw:', (e && e.message) || e);
             }
         });
     }
@@ -12947,13 +15133,10 @@ class Sylk extends Component {
             return;
         }
 
-        if (Platform.OS === 'android') {
-			const phoneAllowed = await this.requestPhonePermission();
-			if (!phoneAllowed) {
-				console.log('PhonePermission not allowed');
-				return;
-			}
-        }
+        // Incoming push: same reasoning as showAlertPanel /
+        // callKeepAcceptCall — no need to read the SIM number on
+        // every incoming call. The PSTN Caller-ID prompt is
+        // restricted to outgoing PSTN dials in callKeepStartCall.
 
         //this.backToForeground();
 
@@ -12995,14 +15178,8 @@ class Sylk extends Component {
             this.timeoutIncomingTimer = null;
         }
 
-        if (Platform.OS === 'android') {
-            const phoneAllowed = await this.requestPhonePermission();
-            if (!phoneAllowed) {
-                this._notificationCenter.postSystemNotification('Phone permission denied');
-                this.changeRoute('/ready', 'phone_permission_denied');
-                return;
-            }
-        }
+        // Incoming via websocket: no SIM-number read here either.
+        // READ_PHONE_NUMBERS stays scoped to outgoing PSTN dials.
 
 		//this._notificationCenter.postSystemNotification("Incoming call...");
 
@@ -13159,39 +15336,111 @@ class Sylk extends Component {
                 });
         }
 
-        // Prewarm is DISABLED.
+        // Mic prewarm — Android, audio-only, gated.
         //
-        // The original idea was to open getUserMedia during ringing
-        // so AudioRecord / AVAudioSession were already in RECORDING
-        // state when the user pressed Accept, saving ~1-2 s on the
-        // press-Accept critical path on Android.
+        // History: the original prewarm was disabled because it broke
+        // iOS video accepts (AVCaptureMultiCamSession crash when
+        // sylkrtc.answer() reopened the same camera) and Android
+        // video accepts (audio session re-init wiped the camera
+        // preview). The author's note recommended:
+        //   "If a focused Android-only audio-call optimisation is
+        //    needed later, it should be gated specifically to that
+        //    case (Platform.OS === 'android' AND mediaType is audio)
+        //    and live behind a flag so it can be turned off quickly
+        //    when it regresses."
         //
-        // In practice it kept breaking the video-call accept flow:
+        // This is exactly that. We open getUserMedia({audio: true})
+        // during the ringing window, ONLY when:
+        //   * the device is Android (iOS audio session re-init is
+        //     unsafe regardless of mediaType),
+        //   * the incoming call advertises audio-only (no video
+        //     track in mediaTypes — prewarming the mic for a video
+        //     call would re-introduce the camera/audio re-init bug),
+        //   * the feature flag PREWARM_MIC_RING_ANDROID_AUDIO is
+        //     true (constant below — flip to false to disable).
         //
-        //   * Camera prewarm → iOS AVCaptureMultiCamSession crash
-        //     when sylkrtc's call.answer() tries to attach a second
-        //     AVCaptureVideoDataOutput to the same physical camera.
-        //   * Audio-only prewarm interferes with the audio session
-        //     setup on the press-Accept code path of a video call,
-        //     leaving the local thumbnail white and the camera not
-        //     starting cleanly.
+        // When the user presses Accept, getLocalMedia's prewarm
+        // fast path (line ~11046) hands the already-warm stream
+        // straight to AudioCallBox. Saves ~1 s of AudioRecord
+        // warmup, which is the dominant remaining cost on the
+        // background-push accept path — it's what was making
+        // call.answer() arrive at ~4 s instead of ~3 s in the
+        // failed 04924c12 call.
         //
-        // Net: trade 1-2 s of Android mic warmup for a reliable
-        // accept flow on iOS video calls. If a focused
-        // Android-only audio-call optimisation is needed later, it
-        // should be gated specifically to that case (Platform.OS
-        // === 'android' AND mediaType is audio) and live behind a
-        // flag so it can be turned off quickly when it regresses.
+        // Cleanup happens in:
+        //   * the next incomingCallFromWebSocket (close + restart),
+        //   * rejectCall (user dismissed),
+        //   * callStateChanged when state==='terminated' for the
+        //     same callUUID (auto-cancel before user reacted).
+        const PREWARM_MIC_RING_ANDROID_AUDIO = true;
+
+        // Same-UUID guard: when WSS drops mid-ring and reconnects,
+        // the server re-delivers the SAME call on the new WSS and
+        // this function fires again with the same callUUID. The warm
+        // stream we acquired during the first delivery is still valid
+        // and still has the same caller — closing it + restarting the
+        // prewarm just races getLocalMedia (which fires immediately
+        // after the queued sylkAcceptCall), causing the fast path in
+        // getLocalMedia to miss the cached stream and fall back to a
+        // fresh getUserMedia. Defeats the whole point of prewarming.
         //
-        // The _prewarmedMicStream / _prewarmedMicCallUUID fields
-        // and the matching fast-path in getLocalMedia remain in
-        // place (harmless when nothing ever populates them), so
-        // a future re-enable is a single block-uncomment.
-        try {
-            this._closePrewarmedMicStream('prewarm_disabled');
-        } catch (e) {
+        // Only close + restart when this is a genuinely DIFFERENT call
+        // (or when there was no prior prewarm at all).
+        const _alreadyWarmedForThisCall = (
+            this._prewarmedMicCallUUID === callUUID
+            && !!this._prewarmedMicStream
+        );
+        if (_alreadyWarmedForThisCall) {
             utils.timestampedLog('[call] [ui] call_id=' + callUUID,
-                '00 prewarm_disabled_close_threw:', (e && e.message) || String(e));
+                '00 prewarm_mic_kept (same-uuid re-delivery on reconnected WSS)');
+        } else {
+            try {
+                this._closePrewarmedMicStream('new_ringing_call');
+            } catch (e) {
+                utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                    '00 prewarm_close_prior_threw:', (e && e.message) || String(e));
+            }
+        }
+        const _wantPrewarm = (
+            PREWARM_MIC_RING_ANDROID_AUDIO
+            && Platform.OS === 'android'
+            && mediaTypes
+            && mediaTypes.audio === true
+            && !mediaTypes.video
+            && !_alreadyWarmedForThisCall
+        );
+        if (_wantPrewarm) {
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                '00 prewarm_mic_started (Android audio-only ringing)');
+            // Track the UUID we're warming for so a late getUserMedia
+            // resolution that arrives AFTER the call is cancelled
+            // doesn't get stashed against a stale callUUID.
+            const _expectedCallUUID = callUUID;
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then((stream) => {
+                    // If a later ringing call superseded us OR the
+                    // call was cancelled/answered before the mic
+                    // resolved, just close the stream — the fast
+                    // path won't pick it up.
+                    if (this._prewarmedMicCallUUID
+                            && this._prewarmedMicCallUUID !== _expectedCallUUID) {
+                        utils.timestampedLog('[call] [ui] call_id=' + _expectedCallUUID,
+                            '00 prewarm_mic_late_arrival — superseded, closing');
+                        try { stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+                        return;
+                    }
+                    // Stash. The getLocalMedia fast path (line ~11046)
+                    // picks this up on press-Accept.
+                    this._prewarmedMicStream = stream;
+                    this._prewarmedMicCallUUID = _expectedCallUUID;
+                    utils.timestampedLog('[call] [ui] call_id=' + _expectedCallUUID,
+                        '00 prewarm_mic_ok — stream cached for fast-path accept');
+                })
+                .catch((err) => {
+                    utils.timestampedLog('[call] [ui] call_id=' + _expectedCallUUID,
+                        '00 prewarm_mic_failed — accept will warm mic from scratch:',
+                        (err && err.message) || String(err));
+                });
         }
 
         call.on('stateChanged', this.callStateChanged);
@@ -13272,28 +15521,16 @@ class Sylk extends Component {
     }
 
     updateServerHistory(from) {
-        //console.log('updateServerHistory by', from);
-        //this.contactsCount();
-
-        if (this.state.serverHistoryUpdatedBy === 'registered' && from === 'syncConversations') {
-            // Avoid double query at start
-            return;
-        }
-
-        if (this.state.serverHistoryUpdatedBy === 'syncConversations' && from === 'registered') {
-            // Avoid double query at start
-            return;
-        }
-
-        this.setState({serverHistoryUpdatedBy: from})
-
-        if (!this.state.contactsLoaded) {
-            return;
-        }
-
-        if (this.currentRoute === '/ready') {
-            this.setState({refreshHistory: !this.state.refreshHistory});
-        }
+        // DECOMMISSIONED. Server call history is now delivered as
+        // the call_history field of the sylk_settings.phtml
+        // snapshot fetched by refreshAccountInfo at startup (with a
+        // 60s retry on failure). The legacy
+        // serverCallHistoryUrl + DigestAuthRequest path has been
+        // removed. All previous callers (connectionStateChanged
+        // 'ready', registrationStateChanged 'registered',
+        // onMissedCall, end-of-syncConversations) still call this
+        // function; it's now a no-op so they don't fire spurious
+        // fetches.
     }
 
     startPreview() {
@@ -13587,11 +15824,19 @@ class Sylk extends Component {
 			  conference || 0,
 			  contact.lastCallId || '',
 			  contact.lastCallDuration || 0,
+			  // last_call_timestamp (v13). Coerce Date/number to int
+			  // seconds; null when never called so the Calls filter
+			  // treats this row as "no calls".
+			  (contact.lastCallTimestamp instanceof Date)
+			    ? Math.floor(contact.lastCallTimestamp.getTime() / 1000)
+			    : (typeof contact.lastCallTimestamp === 'number'
+			        ? Math.floor(contact.lastCallTimestamp)
+			        : null),
 			  properties,
 			  localProperties
 			];
 
-        await this.ExecuteQuery("INSERT INTO contacts (contact_id, remote_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, properties, local_properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        await this.ExecuteQuery("INSERT INTO contacts (contact_id, remote_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, last_call_timestamp, properties, local_properties) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL inserted contact', contact.id, uri, 'by', origin);
 
@@ -13650,16 +15895,68 @@ class Sylk extends Component {
         let properties = contact.properties ? JSON.stringify(contact.properties) : {};
         let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : {};
 
-        let params = [contact.uri, uris, contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration, properties, localProperties, contact.id, this.state.accountId];
+        // last_call_timestamp (v13) — Unix-seconds of the most recent
+        // call involving this URI. Persisted via this column so the
+        // Calls category filter and the contact tile subtitle can
+        // read it after a restart. Coerce to int if the runtime
+        // field is a Date; pass through null when nothing is set so
+        // the SQL value stays NULL (filter logic treats null as
+        // "never called").
+        // last_call_timestamp is a sticky column: once set, ONLY a
+        // real call event should change it. Other save paths
+        // (getMessages, saveHistory, editContact, addHistoryEntry
+        // for paths that don't carry the timestamp on the in-memory
+        // object) historically run with contact.lastCallTimestamp =
+        // null/undefined and would wipe the value via a vanilla
+        // UPDATE. When the runtime value isn't a usable timestamp,
+        // build the UPDATE WITHOUT touching the column so the SQL
+        // value is preserved. Only the "real" branch (Date / number)
+        // includes the column in the SET list with the new value.
+        let lastCallTimestamp = null;
+        let hasLastCallTimestamp = false;
+        if (contact.lastCallTimestamp instanceof Date) {
+            lastCallTimestamp = Math.floor(contact.lastCallTimestamp.getTime() / 1000);
+            hasLastCallTimestamp = true;
+        } else if (typeof contact.lastCallTimestamp === 'number'
+                   && Number.isFinite(contact.lastCallTimestamp)) {
+            lastCallTimestamp = Math.floor(contact.lastCallTimestamp);
+            hasLastCallTimestamp = true;
+        }
+        // Verbose per-save trace removed once the sticky logic was
+        // confirmed working — it was firing 4-5 times per call end
+        // and the JSON.stringify was crossing the RN bridge on each
+        // call. Re-enable locally if you need to debug a specific
+        // origin again.
 
-        await this.ExecuteQuery("UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?", params).then((result) => {
+        const baseParams = [contact.uri, uris, contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
+        const tailParams = [properties, localProperties, contact.id, this.state.accountId];
+        const params = hasLastCallTimestamp
+            ? [...baseParams, lastCallTimestamp, ...tailParams]
+            : [...baseParams, ...tailParams];
+        const updateSql = hasLastCallTimestamp
+            ? "UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, last_call_timestamp = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?"
+            : "UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?";
+
+        await this.ExecuteQuery(updateSql, params).then((result) => {
             if (result.rowsAffected === 1) {
 				console.log('SQL updated contact', contact.id, uri, 'by', origin);
 
 				this.setState(prevState => {
-					const updatedContacts = prevState.allContacts.map(c =>
-						c.id === contact.id ? { ...c, ...contact } : c
-					);
+					const updatedContacts = prevState.allContacts.map(c => {
+						if (c.id !== contact.id) return c;
+						// Sticky last_call_timestamp on the in-memory
+						// row too — mirror the SQL behaviour. If this
+						// save didn't carry a real Date / number,
+						// preserve whatever was already in state so
+						// follow-up saves (getMessages, saveHistory,
+						// editContact) don't blank out the stamp the
+						// Calls filter reads from.
+						const merged = { ...c, ...contact };
+						if (!hasLastCallTimestamp && c.lastCallTimestamp != null) {
+							merged.lastCallTimestamp = c.lastCallTimestamp;
+						}
+						return merged;
+					});
 					return { allContacts: updatedContacts };
 				});
     
@@ -13992,12 +16289,35 @@ class Sylk extends Component {
 
     resetStartedByPush(from) {
         this.startedByPush = false;
+        // If we postponed an account-info refresh because of the
+        // incoming-call wake-up, fire it now that the call is
+        // over. The work runs out of the call's critical path.
+        if (this._accountInfoPostponed) {
+            this._accountInfoPostponed = false;
+            console.log('[account] [server] firing postponed refreshAccountInfo (from=' + from + ')');
+            setTimeout(() => {
+                if (!this.unmounted) {
+                    this.refreshAccountInfo().catch(() => {});
+                }
+            }, 0);
+        }
     }
 
     async savePublicKey(uri, key) {
         console.log('[pgp] [message] savePublicKey enter uri=', uri,
             'keyLen=', key ? key.length : 0,
             'rejectNonContacts=', !!this.state.accountSetting.privacy.rejectNonContacts);
+        // Drop journal-replay items that arrive while the account
+        // is being torn down (local delete in progress, or between
+        // sign-out and sign-in). accountId is empty in that
+        // window; without this guard the late-arriving key gets
+        // autocreated as a "contact" on whatever account loads
+        // next — exactly the cross-account leak we saw when
+        // android55 was deleted moments before ag signed in.
+        if (!this.state.accountId) {
+            console.log('[pgp] [message] savePublicKey skip: no active accountId (account transition in progress?)', uri);
+            return;
+        }
         if (uri === this.state.accountId) {
             console.log('[pgp] [message] savePublicKey skip: uri matches own accountId', uri);
             return;
@@ -28526,6 +30846,12 @@ class Sylk extends Component {
                           tags: [],
                           prettyStorage: null,
                           lastCallMedia: [],
+                          // last_call_timestamp (v13). Null until a
+                          // call to / from this URI ends; set by
+                          // updateHistoryEntry. The Calls category
+                          // filter shows only rows where this is
+                          // non-null.
+                          lastCallTimestamp: null,
                           participants: [],
                           messagesMetadata: {},
                           timestamp: current_datetime,
@@ -28548,6 +30874,16 @@ class Sylk extends Component {
 			contact.lastCallId = item.last_call_id;
 			contact.lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
 			contact.lastCallDuration = item.last_call_duration;
+			// last_call_timestamp (v13). SQL value is unix-seconds
+			// (INTEGER); rehydrate to a Date for in-memory use so
+			// ContactCard / filters can compare via getTime() like
+			// any other timestamp. Null when no call has ever been
+			// recorded for this row — the Calls category filter
+			// treats null as "no calls" and hides the row.
+			contact.lastCallTimestamp = (item.last_call_timestamp != null
+			    && Number.isFinite(item.last_call_timestamp))
+			    ? new Date(item.last_call_timestamp * 1000)
+			    : null;
 			contact.messagesMetadata = {}
 			contact.lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
 			contact.lastMessage = item.last_message === '' ? null : item.last_message;
@@ -28790,8 +31126,6 @@ class Sylk extends Component {
 		console.log('saveContactByUser by user', contactObject);
 
 		let uri = contactObject.uri;
-		let action = originalContact ? 'editContact' : 'addContact';
-		let contact;
 
         // Always append @defaultDomain when the URI is bare — phone
         // numbers included. Keeps the stored URI in the same shape the
@@ -28803,15 +31137,46 @@ class Sylk extends Component {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
+        // Myself-row dedup. When the user opens the My Account modal
+        // there's no selectedContact in scope, so the caller hands us
+        // originalContact=null. The OLD path then minted a fresh
+        // newContact() — different UUID every save — and SQL INSERTed
+        // a duplicate myself row each time. Look up the existing row
+        // by URI when uri matches accountId; only fall back to
+        // newContact() when there really is no prior row (true first
+        // save after enrollment).
+        let fallbackExisting = null;
+        if (!originalContact && uri === this.state.accountId) {
+            fallbackExisting = (this.state.allContacts || [])
+                .find((c) => c && c.uri === uri) || null;
+            if (fallbackExisting) {
+                console.log('[saveContactByUser] myself row exists — updating',
+                    fallbackExisting.id, 'instead of inserting a new one');
+            }
+        }
+		let action = (originalContact || fallbackExisting) ? 'editContact' : 'addContact';
+		let contact;
+
         if (originalContact) {
             // update old contact
 			contact = {...originalContact};
+		} else if (fallbackExisting) {
+			contact = {...fallbackExisting};
 		} else {
 			contact = this.newContact(uri);
 		}
 
         contact.uri = uri;
-        contact.name = contactObject.displayName;
+        // Refuse to store the URI itself as the contact name. Save
+        // paths used to land here with displayName = uri whenever
+        // the modal pre-filled from a contact whose name was already
+        // the URI echo. Store '' instead so the next load doesn't
+        // re-seed the same bad value, and the user can type a real
+        // name without first clearing the field.
+        contact.name = (
+            typeof contactObject.displayName === 'string'
+            && contactObject.displayName.trim().toLowerCase() === uri.toLowerCase()
+        ) ? '' : contactObject.displayName;
         contact.organization = contactObject.organization;
         contact.email = contactObject.email;
         contact.timestamp = new Date();
@@ -28885,6 +31250,95 @@ class Sylk extends Component {
         }
 
         this.saveSylkContact(uri, contact, action);
+
+        // Cascade display-name change across the address book whenever
+        // the user edits their OWN contact card (uri === accountId).
+        // Duplicate rows can exist for the same URI (different
+        // contact_id PK part — e.g. one minted from the address book
+        // and another auto-created on the first call), and without this
+        // cascade only the row the modal happened to open would get the
+        // new name. The others would keep showing the stale label in
+        // history, search, and the conversations list.
+        //
+        // Trigger conditions broadened from the original
+        // (originalContact required): we now run whenever the URI is
+        // ours AND the typed value differs from EITHER the original
+        // contact's name OR the current state.displayName. The latter
+        // covers the first-time setup case (no originalContact yet)
+        // and the case where someone deletes the myself row out of
+        // band and re-enters the modal.
+        if (uri === this.state.accountId
+                && contactObject.displayName !== undefined) {
+            const previousName = (originalContact && originalContact.name)
+                || this.state.displayName || '';
+            if (contactObject.displayName !== previousName) {
+                this._cascadeOwnDisplayName(uri, contact.id, contactObject.displayName);
+            }
+            // Reflect the new value in runtime state so any UI bound
+            // to state.displayName (NavigationBar header, call screen
+            // identity, push tokens, etc.) re-renders immediately
+            // without waiting for the next contacts reload.
+            if (contactObject.displayName !== this.state.displayName) {
+                this.setState({ displayName: contactObject.displayName || '' });
+                console.log('[account] [edit] state.displayName ->',
+                    JSON.stringify(contactObject.displayName || ''));
+            }
+        }
+    }
+
+    /**
+     * Propagate a new display name across every contact row whose URI
+     * matches our own accountId, excluding the row that was just saved
+     * by saveContactByUser (skipContactId). Updates BOTH the SQL store
+     * and the in-memory state.allContacts list so the UI reflects the
+     * change immediately without waiting for a contacts reload.
+     */
+    async _cascadeOwnDisplayName(uri, skipContactId, newName) {
+        if (!uri || !this.state.accountId) {
+            return;
+        }
+
+        try {
+            const accountId = this.state.accountId;
+            const unixTime = Math.floor(Date.now() / 1000);
+
+            // SQL fan-out: every duplicate row for our own URI gets the
+            // new name. Bump timestamp so a future merge-by-recency
+            // doesn't pick a stale row's older label.
+            const result = await this.ExecuteQuery(
+                "UPDATE contacts SET name = ?, timestamp = ? "
+                + "WHERE account = ? AND uri = ? AND contact_id != ?",
+                [newName || '', unixTime, accountId, uri, skipContactId || '']
+            );
+
+            const affected = (result && result.rowsAffected) || 0;
+            if (affected > 0) {
+                console.log('[contact] cascade own displayName ->', newName,
+                    'rowsAffected=', affected, 'uri=', uri);
+            }
+
+            // Mirror the change in the in-memory list so any open
+            // ContactsListBox / chat header re-renders with the new
+            // name without us having to round-trip through
+            // loadSylkContacts.
+            this.setState(prevState => {
+                if (!prevState.allContacts || prevState.allContacts.length === 0) {
+                    return null;
+                }
+                let changed = false;
+                const updated = prevState.allContacts.map(c => {
+                    if (c.uri === uri && c.id !== skipContactId && c.name !== newName) {
+                        changed = true;
+                        return { ...c, name: newName || '' };
+                    }
+                    return c;
+                });
+                return changed ? { allContacts: updated } : null;
+            });
+        } catch (e) {
+            console.log('[contact] cascade own displayName failed:',
+                e && e.message ? e.message : e);
+        }
     }
 
     async replicateContact(contact) {
@@ -30211,8 +32665,15 @@ class Sylk extends Component {
 			// of just "+40xxxx", and tag it 'tel' so other code paths
 			// can branch on "this is a telephone number, not a SIP user"
 			// (e.g. disable chat/forwarding, route to a phone icon, etc.).
+			//
+			// Pass the FULL uri (and the account's configured conference
+			// domain) to isPhoneNumber so a conference room name that
+			// happens to start with 0 — e.g. `089577@videoconference.<your-domain>`
+			// — is NOT mis-tagged 'tel'. Previously we passed only the
+			// bare local part, which dropped the domain context and let
+			// the regex flag any leading-zero room name as PSTN.
 			const username = uri.split('@')[0];
-			if (utils.isPhoneNumber(username)) {
+			if (utils.isPhoneNumber(uri, this.state.defaultConferenceDomain)) {
 				if (newContact.tags.indexOf('tel') === -1) {
 					newContact.tags.push('tel');
 				}
@@ -30335,6 +32796,18 @@ class Sylk extends Component {
         }
 
 		let contacts = this.lookupContacts(uri);
+		// Fan-out the call-end timestamp across EVERY row matching
+		// this URI, regardless of whether the per-row lastCallId
+		// matches. The Calls category filter reads this column to
+		// decide which contacts to surface, so duplicates and
+		// AB-imported aliases that share the same URI need to see
+		// the same stamp — otherwise the filter would silently drop
+		// the rows whose lastCallId never matched.
+		const _nowSec = Math.floor(Date.now() / 1000);
+		const _nowDate = new Date(_nowSec * 1000);
+		for (const contact of contacts) {
+			contact.lastCallTimestamp = _nowDate;
+		}
 		for (const contact of contacts) {
 			if (contact.lastCallId === callUUID) {
 				console.log('updateHistoryEntry', uri, callUUID, duration, mediaType);
@@ -30376,6 +32849,15 @@ class Sylk extends Component {
 					contact.tags.push('calls');
 				}
 				this.saveSylkContact(uri, contact, 'updateHistoryEntry');
+			} else {
+				// Fan-out row — same URI, different lastCallId.
+				// Persist the new last_call_timestamp set above so
+				// the Calls category filter / contact tile picks it
+				// up after a restart. We don't touch direction /
+				// duration / media on this branch — those describe
+				// the row's OWN most-recent call, which this one
+				// didn't participate in.
+				this.saveSylkContact(uri, contact, 'updateHistoryEntry:fanout');
 			}
         }
     }
@@ -30683,6 +33165,35 @@ return (
                     </Switch>
 
                     <NotificationCenter ref={this.notificationCenterRef} />
+
+                    {/* Set-caller-Id modal — opened by the PSTN pre-flight
+                        gate in callKeepStartCall when pstn.caller_id is
+                        missing. The modal captures the user's mobile
+                        number (auto-detected from SIM on Android), then
+                        on Save writes BOTH server-side rpid (via
+                        setServerCallerId → action=set_caller_id on
+                        sylk_settings.phtml) AND the local
+                        accountSetting.account.myPhoneNumber. */}
+                    <SetCallerIdModal
+                        show={this.state.showSetCallerIdModal}
+                        close={() => this.setState({ showSetCallerIdModal: false })}
+                        setServerCallerId={this.setServerCallerId}
+                        setMyAccountPhoneNumber={(num) => {
+                            const trimmed = (num || '').trim();
+                            if (trimmed !== '' && validateCallerId(trimmed) !== null) {
+                                return;
+                            }
+                            this.setState({ myPhoneNumber: trimmed });
+                            this.setAccountSetting('account.myPhoneNumber', trimmed);
+                        }}
+                        readDevicePhoneNumber={this.readDevicePhoneNumber}
+                        serverCallerId={
+                            (this.state.accountInfo
+                             && this.state.accountInfo.pstn
+                             && this.state.accountInfo.pstn.caller_id)
+                            || ''
+                        }
+                    />
                   </SafeAreaView>
                 );
               }}
@@ -30722,12 +33233,29 @@ return (
         let contact;
         let must_save = false;
 
+        // Per-entry outcome counters + per-entry log so the user can
+        // see what saveHistory did with each call_history row:
+        //   blocked            — URI in blockedUris
+        //   reject-non-contact — privacy filter (incoming, no contact)
+        //   reject-anonymous   — privacy filter (incoming, guest/anon)
+        //   no-contact         — no Sylk contact exists for this URI
+        //                        (history is contact-only — won't insert)
+        //   same-call          — same sessionId as the contact's
+        //                        lastCallId, nothing to change
+        //   updated            — contact row will be re-saved (newer
+        //                        timestamp / different sessionId /
+        //                        missed-count bump / displayName fill)
+        const tally = {
+            blocked: 0, rejectNonContact: 0, rejectAnonymous: 0,
+            noContact: 0, sameCall: 0, updated: 0,
+        };
+
         history.forEach((item) => {
             uri = item.uri;
-            //console.log('saveHistory', uri);
-
             must_save = false;
             if (this.state.blockedUris.indexOf(uri) > -1) {
+                console.log('[history] [save] skip', uri, '— blocked');
+                tally.blocked++;
                 return;
             }
 
@@ -30735,24 +33263,35 @@ return (
 
 			if (this.state.accountSetting.privacy.rejectNonContacts && item.direction == 'incoming') {
 				if (!contact && !item.duration) {
-					//console.log('Skip server history entry from unknown address', uri);                
+					console.log('[history] [save] skip', uri, '— rejectNonContacts (incoming, no contact, duration=0)');
+					tally.rejectNonContact++;
 					return;
 				}
 			}
 
 			if (this.state.accountSetting.privacy.rejectAnonymous && item.direction == 'incoming') {
 				if (uri.indexOf('@guest') > -1) {
+					console.log('[history] [save] skip', uri, '— rejectAnonymous (guest)');
+					tally.rejectAnonymous++;
 					return;
 				}
-		
+
 				if (uri.indexOf('anonymous') > -1) {
+					console.log('[history] [save] skip', uri, '— rejectAnonymous (anonymous)');
+					tally.rejectAnonymous++;
 					return;
 				}
 			}
 
             if (!contact) {
+                console.log('[history] [save] skip', uri, '— no Sylk contact (history is contact-only)');
+                tally.noContact++;
 				return;
             }
+
+            const _prevTs = contact.timestamp;
+            const _prevLastCallId = contact.lastCallId;
+            const _prevName = contact.name;
 
             if (item.timestamp > contact.timestamp) {
                 contact.timestamp = item.timestamp;
@@ -30760,6 +33299,8 @@ return (
 
             } else {
                 if (contact.lastCallId === item.sessionId) {
+                    console.log('[history] [save] skip', uri, '— same sessionId as last call, no change');
+                    tally.sameCall++;
                     return;
                 } else {
                     must_save = true;
@@ -30767,28 +33308,43 @@ return (
             }
 
             tags = contact.tags;
-
-            if (tags.indexOf('missed') > - 1) {
-                tags.push('missed');
-                //console.log('Increment unread count for', uri);
-                contact.unread.push(item.sessionId);
-                if (missedCalls.indexOf(item.sessionId) === -1) {
-                    missedCalls.push(item.sessionId);
+            let missedBumped = false;
+            // Read MISSED from the INCOMING server entry's tags, not
+            // the contact's existing tags. processServerCallHistory
+            // tags item.tags with 'missed' when direction=incoming
+            // && duration=0. When that fires:
+            //   • Add 'missed' to the contact's tags (so the contact
+            //     surfaces in the missed-call category filter).
+            //   • Push the sessionId into contact.unread so the
+            //     unread-message badge on the contact tile reflects
+            //     the new missed call.
+            //   • Track it in state.missedCalls (the global counter).
+            const itemIsMissed = Array.isArray(item.tags)
+                && item.tags.indexOf('missed') > -1;
+            if (itemIsMissed) {
+                if (tags.indexOf('missed') === -1) {
+                    tags.push('missed');
+                }
+                if (!Array.isArray(contact.unread)) contact.unread = [];
+                if (contact.unread.indexOf(item.sessionId) === -1) {
+                    contact.unread.push(item.sessionId);
                     must_save = true;
                 }
-            } else {
-                idx = tags.indexOf('missed');
-                if (idx > -1) {
-                    tags.splice(idx, 1);
+                if (missedCalls.indexOf(item.sessionId) === -1) {
+                    missedCalls.push(item.sessionId);
+                    missedBumped = true;
+                    must_save = true;
                 }
             }
-            
+
             if (tags.indexOf('calls') === -1) {
 				tags.push('calls');
             }
 
+            let nameFilled = false;
             if (item.displayName && !contact.name) {
                 contact.name = item.displayName;
+                nameFilled = true;
                 must_save = true;
             }
 
@@ -30797,6 +33353,24 @@ return (
             contact.lastCallDuration = item.duration;
             contact.lastCallMedia = item.media;
             contact.conference = item.conference;
+            // Bump the lastCallTimestamp from the server's call
+            // record so the Calls category filter (which gates on
+            // lastCallTimestamp != null) lights up this contact even
+            // when the user hasn't placed/received a call on THIS
+            // device. Only advance forward — if a more recent local
+            // call already stamped the row, keep that.
+            const _itemTs = (item.timestamp instanceof Date)
+                ? item.timestamp
+                : (item.timestamp ? new Date(item.timestamp) : null);
+            if (_itemTs && !isNaN(_itemTs.getTime())) {
+                const _prev = (contact.lastCallTimestamp instanceof Date)
+                    ? contact.lastCallTimestamp
+                    : (contact.lastCallTimestamp ? new Date(contact.lastCallTimestamp) : null);
+                if (!_prev || isNaN(_prev.getTime()) || _itemTs.getTime() > _prev.getTime()) {
+                    contact.lastCallTimestamp = _itemTs;
+                    must_save = true;
+                }
+            }
 
             if (tags !== contact.tags) {
                 must_save = true;
@@ -30806,10 +33380,23 @@ return (
             i = i + 1;
 
             if (must_save) {
+                tally.updated++;
+                console.log('[history] [save] update', uri,
+                    JSON.stringify({
+                        sessionId:    item.sessionId,
+                        direction:    item.direction,
+                        duration:     item.duration,
+                        prevLastCallId: _prevLastCallId,
+                        tsBumped:     contact.timestamp !== _prevTs,
+                        missedBumped: missedBumped,
+                        nameFilled:   nameFilled,
+                    })
+                );
                 this.saveSylkContact(uri, contact, 'saveHistory');
             }
          });
 
+         console.log('[history] [save] done — tally:', JSON.stringify(tally));
          this.setState({missedCalls: missedCalls});
     }
 
@@ -31018,9 +33605,22 @@ return (
                     goBackToCallFunc = {this.goBackToCall}
                     connection = {this.state.connection}
                     registrationState = {this.state.registrationState}
+                    /* 3-digit SIP code from the most recent failed
+                       REGISTER (e.g. "403", "401"). NavigationBar
+                       renders this as a small badge bottom-left of
+                       the bell so the user can tell WHY the bell is
+                       orange. Null while registered / on a clean
+                       start. */
+                    registerErrorCode = {this.state.registerErrorCode}
                     orientation = {this.state.orientation}
                     isTablet = {this.state.isTablet}
-                    isFolded = {this.state.isFolded}
+                    /* See _uiIsFolded(): falls back to a dimensions
+                       heuristic on Android while the hinge sensor's
+                       first sample is still in flight, so a cold-start
+                       push wake on a folded device renders the cover-
+                       display layout on the very first frame instead
+                       of flashing the full-size phone UI. */
+                    isFolded = {this._uiIsFolded()}
                     displayName = {this.state.displayName}
                     /* Fall back to the local part of the account
                        URI when the user hasn't set a display name.
@@ -31035,6 +33635,87 @@ return (
                         || ((this.state.accountId || '').split('@')[0])
                         || ''}
                     myPhoneNumber = {this.state.myPhoneNumber}
+                    /* My Account modal — editable Mobile number.
+                       Source of truth: accountSetting.account.myPhoneNumber
+                       (per-account, survives launches, used as PSTN
+                       Caller ID). Falls back to state.myPhoneNumber
+                       (the runtime SIM read) so the field is
+                       pre-populated on first open even before the
+                       user has triggered the auto-capture path. */
+                    myAccountPhoneNumber = {
+                        (this.state.accountSetting
+                         && this.state.accountSetting.account
+                         && this.state.accountSetting.account.myPhoneNumber)
+                        || this.state.myPhoneNumber
+                        || ''
+                    }
+                    /* On-demand SIM read for the Mobile-number field's
+                       focus handler. Called only when the field is
+                       empty; pre-fills (does not commit) the input.
+                       See App.readDevicePhoneNumber. */
+                    readDevicePhoneNumber = {this.readDevicePhoneNumber}
+                    /* Server-side account snapshot (mobile number, PSTN
+                       balance, currency). Cached on state.accountInfo;
+                       null until the first successful fetch. The My
+                       Account modal calls refreshAccountInfo() when it
+                       opens so the values are current. The setter is
+                       exposed so the modal can write the mobile number
+                       back to the server in one round-trip. */
+                    accountInfo = {this.state.accountInfo}
+                    accountInfoError = {this.state.accountInfoError}
+                    refreshAccountInfo = {() => this.refreshAccountInfo({ force: true })}
+                    setServerCallerId = {this.setServerCallerId}
+                    /* True when a settings endpoint has been
+                       published by the server's sylk-config.json.
+                       The modal uses this to hide the server-info
+                       section entirely when there's nothing to
+                       refresh against — prevents an orphan refresh
+                       icon on accounts whose server doesn't expose
+                       sylk_settings.phtml. */
+                    accountInfoAvailable = {!!this.state.serverSettingsUrl}
+                    /* Opens the SetCallerIdModal from inside the My
+                       Account modal. The "Change" button next to the
+                       PSTN caller Id row uses this. */
+                    openSetCallerIdModal = {() => this.setState({ showSetCallerIdModal: true })}
+                    /* Change the SIP password on the server. The
+                       modal's New password field is pre-filled with
+                       this current value and only commits when the
+                       user actually edits it. */
+                    changeSipPassword = {this.changeSipPassword}
+                    /* Current SIP password — used to pre-fill the
+                       New password field so the user sees what's in
+                       effect today rather than an empty box. The
+                       field is secureTextEntry by default, eye icon
+                       reveals on demand. */
+                    currentPassword = {this.state.password}
+                    /* Push the modal's Email field back to the SIP
+                       account record. refreshAccountInfo() pulls the
+                       server value back (server wins on conflict). */
+                    setServerEmail = {this.setServerEmail}
+                    setMyAccountPhoneNumber = {(num) => {
+                        // Persist to per-account settings AND mirror
+                        // into runtime state so downstream consumers
+                        // (the live Caller-ID props on Call /
+                        // ConferenceBox / ReadyBox) see the new value
+                        // without waiting on a settings re-load.
+                        //
+                        // Reject anything that doesn't pass
+                        // validateCallerId (digits only, 7-15, leading
+                        // '+' or '00'). On iOS the SIM read isn't
+                        // available and other paths have historically
+                        // written 'unknown' or empty here; we'd
+                        // rather drop a bad value than save it and
+                        // present it as Caller-Id later. Empty value
+                        // IS a valid input — it clears the field on
+                        // both sides.
+                        const trimmed = (num || '').trim();
+                        if (trimmed !== '' && validateCallerId(trimmed) !== null) {
+                            console.log('[my-account] refusing to store invalid phone number:', trimmed);
+                            return;
+                        }
+                        this.setState({myPhoneNumber: trimmed});
+                        this.setAccountSetting('account.myPhoneNumber', trimmed);
+                    }}
                     organization = {this.state.organization}
                     selectedContact = {this.state.selectedContact}
                     allContacts = {this.state.allContacts}
@@ -31066,6 +33747,32 @@ return (
                     firstSyncPending = {this.state.firstSyncPending}
                     showCallMeMaybeModal = {this.state.showCallMeMaybeModal}
                     toggleCallMeMaybeModal = {this.toggleCallMeMaybeModal}
+                    /* PaymentInfoModal — opened from the kebab
+                       "Donate…" item AND auto-opened by the
+                       Payment-required PSTN branch. State lives on
+                       App so both entry points share one toggle.
+                       paymentInfoReason picks the template:
+                         'donate' (default, kebab) vs
+                         'credit'           (PSTN error).
+                       paymentAccounts is the server-published table
+                       (pstn.payment_accounts from sylk-config.json),
+                       rendered dynamically inside the modal. */
+                    showPaymentInfoModal = {this.state.showPaymentInfoModal}
+                    paymentInfoReason = {this.state.paymentInfoReason}
+                    paymentAccounts = {this.state.pstnPaymentAccounts}
+                    togglePaymentInfoModal = {this.togglePaymentInfoModal}
+                    /* Bound "open in 'credit' mode" helper used by
+                       EditContactModal's Add-credit button. We pass
+                       the explicit reason here so the modal pops up
+                       in the Payment-required template regardless of
+                       what the last reason was (e.g. previously
+                       opened from Donate via the kebab). */
+                    openPaymentInfoModalCredit = {() => {
+                        this.setState({
+                            showPaymentInfoModal: true,
+                            paymentInfoReason: 'credit',
+                        });
+                    }}
                     showConferenceModalFunc = {this.showConferenceModal}
                     showExportPrivateKeyModal = {this.state.showExportPrivateKeyModal}
                     showExportPrivateKeyModalFunc = {this.showExportPrivateKeyModal}
@@ -31159,6 +33866,19 @@ return (
  					autoAnswerMode = {!!this.state.accountSetting.account.autoAnswerMode}
  					hasAutoAnswerContacts = {this.state.hasAutoAnswerContacts}
  					deleteAccountUrl = {this.state.deleteAccountUrl}
+ 					// In-app trigger for the server-side
+ 					// "request account deletion" primitive — see
+ 					// App.requestServerDeleteAccount.
+ 					requestServerDeleteAccount = {this.requestServerDeleteAccount}
+ 					// Cancel a pending request, clearing the
+ 					// previously-emailed link's validity.
+ 					abortServerDeleteAccount = {this.abortServerDeleteAccount}
+ 					// Flag from the latest server snapshot — true
+ 					// when the in-app flow is permitted (email set,
+ 					// balance clean, not in deny-account-delete).
+ 					allowServerDelete = {
+ 					    !!(this.state.accountInfo && this.state.accountInfo.allow_delete)
+ 					}
                     // Destructive: wipes the active account's messages /
                     // contacts / keys / files from the device and returns
                     // the user to /login. The confirmation dialog lives
@@ -31219,7 +33939,14 @@ return (
                     account = {this.state.account}
                     password = {this.state.password}
                     callHistoryUrl = {this.state.callHistoryUrl}
+                    refreshAccountInfo = {() => this.refreshAccountInfo({ force: true })}
                     fontScale = {this.state.fontScale}
+                    /* Forward the per-domain conference configuration
+                       (codec / pstnBridge / sipBridge). ConferenceModal
+                       reads pstnBridge so it can show the PSTN
+                       access-number below the "Allow calling from
+                       telephones" toggle when the bridge is defined. */
+                    conferenceSettings = {this.state.conferenceSettings}
                     /* Measured Appbar.Header height, plumbed through
                        to ContactsListBox so its KeyboardAvoidingView
                        uses an exact chrome height for
@@ -31311,7 +34038,9 @@ return (
                                  && this.state.accountSetting.privacy.dnd)}
                     toggleDnd = {this.toggleDnd}
                     isTablet = {this.state.isTablet}
-                    isFolded = {this.state.isFolded}
+                    /* See _uiIsFolded() comment above the NavigationBar
+                       prop — same dimensions-fallback rationale. */
+                    isFolded = {this._uiIsFolded()}
                     isLandscape = {this.state.orientation === 'landscape'}
                     refreshHistory = {this.state.refreshHistory}
                     refreshFavorites = {this.state.refreshFavorites}
@@ -31649,6 +34378,12 @@ return (
                    polluting state.targetUri (which stays at the
                    canonical `+40…` for history / contact lookup). */
                 pstnRules = {this.state.pstnRules}
+                /* PSTN Caller-ID capture helper — flows down through
+                   Conference → ConferenceBox so that inviting a phone
+                   number into an in-progress conference triggers the
+                   same one-shot READ_PHONE_NUMBERS prompt as a
+                   1-to-1 PSTN dial. See App.ensurePstnCallerIdCaptured. */
+                ensurePstnCallerIdCaptured = {this.ensurePstnCallerIdCaptured}
                 callContact = {this.state.callContact}
                 call = {call}
                 callState = {callState}
@@ -31682,7 +34417,15 @@ return (
                 intercomDtmfTone = {this.intercomDtmfTone}
 				isLandscape = {this.state.orientation === 'landscape'}
                 isTablet = {this.state.isTablet}
-                isFolded = {this.state.isFolded}
+                /* CRITICAL on the push-wake path: the AudioCallBox
+                   mounts before the hinge sensor's first sample lands,
+                   so reading raw state.isFolded here used to mean the
+                   call UI rendered at full phone size on the Razr cover
+                   display until the sensor caught up. _uiIsFolded()
+                   falls back to a dimensions heuristic during that
+                   window so the cover-display compact layout is in
+                   place on the very first frame. */
+                isFolded = {this._uiIsFolded()}
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
                 goBackFunc={this.goBackToHomeFromCall}
@@ -31816,8 +34559,11 @@ return (
                 /* Cover-display (folded) flag plumbed into Conference
                    so the audio-conference layout can drop wide chrome
                    (AudioSpeedometer, the account-plus invite button)
-                   that doesn't fit the cramped folded geometry. */
-                isFolded = {this.state.isFolded}
+                   that doesn't fit the cramped folded geometry. Uses
+                   _uiIsFolded() so the very first frame after a cold-
+                   start push wake into a folded device already uses
+                   the compact layout — see comment on _uiIsFolded(). */
+                isFolded = {this._uiIsFolded()}
                 muted = {this.state.muted}
                 defaultDomain = {this.state.defaultDomain}
                 fileSharingUrl = {this.state.fileSharingUrl}
@@ -31848,6 +34594,11 @@ return (
 				sylkDomain = {this.state.sylkDomain}
 				conferenceSettings = {this.state.conferenceSettings}
 				pstnRules = {this.state.pstnRules}
+				/* Same PSTN Caller-ID capture helper as the other
+				   Call render site above — kept in lock-step so
+				   the second branch (incoming/Conference-only)
+				   has the prop ready for ConferenceBox too. */
+				ensurePstnCallerIdCaptured = {this.ensurePstnCallerIdCaptured}
             />
         )
     }
@@ -32012,9 +34763,22 @@ return (
         this.contactsIndexes = {};
         this.cdu_counter = 1;
 
-        // Kill any pending registration-failure / retry timer so it cannot
-        // fire ~10s later and ghost-re-register the account we just logged
-        // out of.
+        // Reset the once-per-session gate on refreshAccountInfo so
+        // the next account (post-switch / re-login) gets a fresh
+        // snapshot fetch. Without this the new identity would
+        // inherit the previous account's "already fetched" lockout
+        // and skip its own data load.
+        this._accountInfoFetchedThisSession = false;
+
+        // Stop the pending-settings reconciliation timer. It'll
+        // restart the next time a write fails (via
+        // _queuePendingServerSetting) or the next snapshot finds an
+        // already-queued entry from SQL. The accountSetting.pendingServerSettings
+        // itself is per-account and stays in the SQL row — so when
+        // the user signs back in, refreshAccountInfo's reconcile pass
+        // picks them up again.
+        this._stopReconciliationTimer();
+
         if (this.registrationFailureTimer) {
             console.log('[logout] clearing registrationFailureTimer');
             clearTimeout(this.registrationFailureTimer);
@@ -32048,6 +34812,25 @@ return (
                        allContacts: [],
                        purgeMessages: [],
                        updateContacts: {},
+                       // Server-side cache:
+                       //   • accountInfo / accountInfoError — clear
+                       //     unconditionally; they belong to the
+                       //     account we're logging out of.
+                       //   • serverSettingsUrl — DO NOT clear here.
+                       //     For a same-server switch the URL stays
+                       //     valid (same host, same endpoint) and
+                       //     clearing it would skip the loadAccount-
+                       //     triggered refresh on the new identity.
+                       //     The cross-server path of switchAccount
+                       //     clears serverSettingsUrl explicitly
+                       //     BEFORE calling lookupSylkServer (since
+                       //     the new server may publish a different
+                       //     URL), and initConfiguration re-fires
+                       //     refreshAccountInfo when the new URL
+                       //     lands.
+                       accountInfo: null,
+                       accountInfoError: null,
+                       registerErrorCode: null,
                        });
 
         console.log('[logout] resetState END (setState queued, this.state not yet flushed)');
@@ -32115,10 +34898,22 @@ return (
 
         this.resetState();
 
-		console.log('[logout] calling saveSqlAccount with this.state.accountId=',
-			JSON.stringify(this.state.accountId),
-			'(note: setState from resetState may or may not have flushed yet)');
-		this.saveSqlAccount(this.state.accountId, 0);
+		// Use accountIdBeforeReset (captured at line 33521 above)
+		// rather than this.state.accountId here — resetState has
+		// already setState({accountId: ''}) by this point on every
+		// device we've tested, so reading state.accountId would mark
+		// the SQL row with an empty account and insert a junk
+		// "account=''" row into the accounts table. The capture is
+		// what we actually need: the identity we are signing OUT
+		// from, not the (already-cleared) live state.
+		console.log('[logout] calling saveSqlAccount for accountIdBeforeReset=',
+			JSON.stringify(accountIdBeforeReset),
+			'(state.accountId is', JSON.stringify(this.state.accountId), 'after resetState)');
+		if (accountIdBeforeReset) {
+			this.saveSqlAccount(accountIdBeforeReset, 0);
+		} else {
+			console.log('[logout] skipping saveSqlAccount: no accountIdBeforeReset captured');
+		}
 
         // Stop appending to the per-account log; subsequent
         // diagnostics from the signed-out state go to the generic

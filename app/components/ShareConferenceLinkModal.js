@@ -15,7 +15,20 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
   const bulletLines = () => {
     const lines = ['• Web: ' + conferenceUrl];
     if (conferenceSettings && conferenceSettings.pstnBridge) {
-      lines.push('• PSTN number: ' + conferenceSettings.pstnBridge);
+      // Renamed from "PSTN number" to "PSTN access number" to match
+      // the label used on the Join Conference panel, where the same
+      // number is shown under the "Allow calling from telephones"
+      // toggle. Two different labels for the same value confused
+      // users into thinking they were two different numbers.
+      lines.push('• PSTN access number: ' + conferenceSettings.pstnBridge);
+      // The dial-in code (room number) sits immediately under the
+      // PSTN access number — PSTN callers dial the access number
+      // first, then enter the room number on their keypad to land
+      // in the right conference, so the two pieces of information
+      // are only useful together.
+      if (conferenceRoom) {
+        lines.push('• Room number: ' + conferenceRoom);
+      }
     }
     if (conferenceSettings && conferenceSettings.sipBridge && conferenceRoom) {
       lines.push('• SIP audio: ' + conferenceRoom + '@' + conferenceSettings.sipBridge);
@@ -92,7 +105,21 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
               {conferenceSettings && conferenceSettings.pstnBridge ? (
                 <View style={styles.buttonRow}>
                   <Text style={styles.shareText}>
-                    PSTN number: {conferenceSettings.pstnBridge}
+                    PSTN access number: {conferenceSettings.pstnBridge}
+                  </Text>
+                </View>
+              ) : null}
+
+              {/* Room number sits directly after the PSTN access
+                  number — PSTN callers dial the access number first,
+                  then enter the room number on their keypad to land
+                  in the right conference. Without the room number
+                  the PSTN line on its own is useless, so we only
+                  show this row when both are available. */}
+              {conferenceSettings && conferenceSettings.pstnBridge && conferenceRoom ? (
+                <View style={styles.buttonRow}>
+                  <Text style={styles.shareText}>
+                    Room number: {conferenceRoom}
                   </Text>
                 </View>
               ) : null}

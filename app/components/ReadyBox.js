@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter, NativeModules} from 'react-native';
+import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter, NativeModules, AppState} from 'react-native';
 // SylkAudioRouteModule's prepareForRecording / restoreAfterRecording
 // helpers — see the native side in ios/sylk/AudioRouteModule.m for
 // rationale. On iOS this module configures AVAudioSession for VOIP
@@ -130,6 +130,23 @@ class ReadyBox extends Component {
 			// true an inline DTMFPad is rendered below the search bar
 			// and each key press appends a digit to the search field.
 			showAbDialpad: false,
+			// Cached microphone-permission state, refreshed on mount
+			// and on AppState foreground transitions. Three values:
+			//   null  — not yet checked (initial render); leave the
+			//           mic button visible so we don't flash it out
+			//           for the common already-granted case.
+			//   true  — recording is allowed; mic button stays.
+			//   false — recording is NOT allowed (denied / blocked /
+			//           unavailable); showAudioRecordButton hides
+			//           the button so the user can't tap into an
+			//           opaque prepareToRecord failure or a
+			//           re-prompt loop.
+			// We don't trigger a permission PROMPT here — only a
+			// read. The prompt still fires lazily on actual record
+			// intent via requestMicPermission. This way a user who
+			// granted mic access ages ago doesn't get re-asked just
+			// for opening a chat.
+			micPermissionGranted: null,
         };
 
         this.ended = false;
@@ -273,6 +290,19 @@ class ReadyBox extends Component {
                 } catch (e) { /* swallow — never block call handling */ }
             }
         );
+
+        // Populate the cached mic-permission state so
+        // showAudioRecordButton can hide the mic when recording isn't
+        // possible. Re-checked on every foreground transition because
+        // the user can flip the permission in the OS Settings app
+        // while Sylk is backgrounded and we want the bar to reflect
+        // the new state the next time they look at it.
+        this._refreshMicPermission();
+        this._appStateSub = AppState.addEventListener('change', (next) => {
+            if (next === 'active') {
+                this._refreshMicPermission();
+            }
+        });
     }
 
     componentWillUnmount() {
@@ -282,6 +312,48 @@ class ReadyBox extends Component {
         if (this.callStartingListener) {
             this.callStartingListener.remove();
             this.callStartingListener = null;
+        }
+        if (this._appStateSub) {
+            // RN 0.65+: addEventListener returns a subscription with
+            // .remove(); the older AppState.removeEventListener API
+            // is gone. Guard for both shapes anyway.
+            if (typeof this._appStateSub.remove === 'function') {
+                this._appStateSub.remove();
+            }
+            this._appStateSub = null;
+        }
+    }
+
+    // Read-only permission probe — does NOT trigger the OS prompt.
+    // Drives state.micPermissionGranted, which showAudioRecordButton
+    // consults to hide the mic when recording isn't possible. The
+    // actual prompt still fires on first record intent via
+    // this.props.requestMicPermission (see recordAudio at line ~2284),
+    // so the user is only asked once they've expressed intent.
+    async _refreshMicPermission() {
+        if (this.ended) return;
+        try {
+            const perm = Platform.OS === 'ios'
+                ? RNP_PERMISSIONS.IOS.MICROPHONE
+                : (Platform.OS === 'android' ? RNP_PERMISSIONS.ANDROID.RECORD_AUDIO : null);
+            if (!perm) return;
+            const result = await checkPermission(perm);
+            if (this.ended) return;
+            // GRANTED + LIMITED both allow recording (LIMITED is an
+            // iOS-only partial-access result, but recording is fine
+            // under it). Everything else — DENIED, BLOCKED,
+            // UNAVAILABLE — means recording can't proceed, so hide.
+            const granted = (result === RNP_RESULTS.GRANTED || result === RNP_RESULTS.LIMITED);
+            if (this.state.micPermissionGranted !== granted) {
+                this.setState({ micPermissionGranted: granted });
+            }
+        } catch (e) {
+            // checkPermission throwing is rare but possible on some
+            // OS versions / permission denials. Don't lock the user
+            // out of the mic because of an introspection failure —
+            // leave the cached value alone (null on first run keeps
+            // the button visible; an existing true/false stays).
+            console.log('[mic-perm] check failed', e && e.message);
         }
     }
 
@@ -598,6 +670,15 @@ class ReadyBox extends Component {
     }
 
    get showCategoryBar() {
+	   // Folded (cover-display) mode: suppress the filter / sort bar
+	   // entirely. The cover screen has very little vertical room and
+	   // the bar's content (filter chips, sort toggles, Sylk/AB source
+	   // pills) is secondary to the contact list / messages it sits
+	   // above. The user can still operate everything from the main
+	   // display when needed.
+	   if (this.props.isFolded) {
+		   return false;
+	   }
 	   if (this.props.selectedContact) {
 		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
@@ -694,6 +775,27 @@ class ReadyBox extends Component {
             return false;
         }
 
+        // Audio-only conference rooms (@conference, distinct from
+        // @videoconference which is matched above) don't accept inbound
+        // file transfers, so a recorded voice memo can't be delivered.
+        // Hide the mic instead of rendering it greyed-out — the user
+        // shouldn't see an affordance for an action that has no path
+        // to actually completing.
+        if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@conference') > -1) {
+            return false;
+        }
+
+        // `test`-tagged contacts are local-only stubs used for QA /
+        // first-run scaffolding; file transfers (and therefore voice
+        // memo delivery) are disabled for them. Same rationale as the
+        // conference-room block above: hide the mic rather than show
+        // a permanently-disabled button.
+        if (this.props.selectedContact
+                && Array.isArray(this.props.selectedContact.tags)
+                && this.props.selectedContact.tags.indexOf('test') > -1) {
+            return false;
+        }
+
         if (this.props.selectedContact) {
 			const els = this.props.selectedContact.uri.split('@');
 			const username = els[0];
@@ -710,6 +812,21 @@ class ReadyBox extends Component {
         }
 
         if (this.state.playRecording) {
+            return false;
+        }
+
+        // Cached microphone-permission gate. populated by
+        // _refreshMicPermission() on mount, on app foreground, and
+        // whenever the selected contact changes. When the OS has
+        // denied / blocked / not-yet-granted mic access, recording
+        // can't physically happen — the recorder lib's
+        // prepareToRecord call would fail — so hide the button
+        // entirely rather than letting the user tap it and hit a
+        // permission prompt or an opaque "Error occured during
+        // initiating recorder" failure. `null` (initial, not yet
+        // checked) keeps the button visible so we don't flash it
+        // out for the common already-granted case.
+        if (this.state.micPermissionGranted === false) {
             return false;
         }
 
@@ -995,7 +1112,43 @@ class ReadyBox extends Component {
         this.handleSearch(current.slice(0, -1));
     }
 
+    // The main-interface search now unifies Sylk + Phonebook.
+    // Phonebook entries used to be loaded only when the user
+    // explicitly tapped the (now-hidden) Phonebook pill; with the
+    // pill gone we lazily kick loadAddressBook the first time the
+    // user signals search intent — either by tapping the search
+    // field (URIInput.onSearchFocus, the preferred trigger so the
+    // OS permission dialog appears the moment they "click search")
+    // or as a safety net when they actually start typing
+    // (handleSearch, in case some platform skips the click event).
+    // This preserves the "only on explicit user intent" stance for
+    // the OS contacts-permission prompt: we don't ask just for
+    // opening the app. loadAddressBook is idempotent on the host
+    // side — already-granted + already-loaded is a no-op, and not-
+    // yet-granted re-prompts the OS once.
+    kickUnifiedSearchAddressBookLoad() {
+        if (this._unifiedSearchAbLoadKicked) return;
+        if (this.state.searchMessages) return;
+        if (this.props.shareToContacts) return;
+        if (this.props.inviteContacts) return;
+        if (typeof this.props.loadAddressBook !== 'function') return;
+
+        this._unifiedSearchAbLoadKicked = true;
+        try {
+            this.props.loadAddressBook();
+        } catch (e) {
+            // Swallow — the Sylk side of the merged result renders
+            // immediately regardless, and a failure here just means
+            // the AB pile stays empty for this search.
+            console.log('unified search loadAddressBook failed', e && e.message);
+        }
+    }
+
     handleSearch(inputText, contact) {
+        if (inputText && inputText.length > 0) {
+            this.kickUnifiedSearchAddressBookLoad();
+        }
+
         if (this.state.searchMessages) {
             if (!inputText) {
                 // Empty input in search-messages mode = the user
@@ -1319,8 +1472,15 @@ class ReadyBox extends Component {
             return true;
         }
 
-        let username = uri.split('@')[0];
-        let isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
+        // Route through utils.isPhoneNumber with the account's
+        // configured conference-bridge domain so that conference rooms
+        // whose names start with a leading 0 (e.g. `089577@<your-
+        // videoconference-domain>`) are NOT treated as PSTN numbers
+        // here. The previous inline regex looked only at the local
+        // part, which mis-classified those rooms as phone numbers
+        // and disabled the Video Call button — making it impossible
+        // to start the video room from the selected contact.
+        const isPhoneNumber = utils.isPhoneNumber(uri, this.props.defaultConferenceDomain);
 
         if (isPhoneNumber) {
             return true;
@@ -2231,6 +2391,13 @@ class ReadyBox extends Component {
 
         const micAllowed = await this.props.requestMicPermission('recordAudio');
 
+        // Re-probe the cached permission flag now that the user has
+        // either granted or denied at the OS prompt. Without this the
+        // mic button would stay visible until the next foreground
+        // transition for a user who just tapped Deny — they'd see a
+        // tappable button that silently does nothing.
+        this._refreshMicPermission();
+
         if (!micAllowed) {
             return;
         }
@@ -2825,23 +2992,13 @@ class ReadyBox extends Component {
 		  file => typeof file.mimeType === 'string' && file.mimeType.startsWith('image/')
 		);
 
-        let fileTransfersDisabled = false;
-
-        if (this.props.selectedContact) {
-            fileTransfersDisabled = false;
-
-            if (this.props.selectedContact.tags.indexOf('test') > -1) {
-                fileTransfersDisabled = true;
-            }
-
-            if (this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
-                fileTransfersDisabled = true;
-            }
-
-            if (this.props.selectedContact.uri.indexOf('@conference') > -1) {
-                fileTransfersDisabled = true;
-            }
-        }
+        // The legacy `fileTransfersDisabled` flag — true for contacts
+        // tagged `test`, for `@videoconference` URIs, and for
+        // `@conference` URIs — used to greying-out the mic button in
+        // the call-buttons row. Those four cases are now handled
+        // inside showAudioRecordButton (which HIDES the button for
+        // each of them) so the disabled-but-visible state is gone.
+        // The flag is no longer computed because nothing else read it.
 
         // Permanent warning when we know the account has no local private
         // key. The ImportPrivateKeyModal offers restore/generate options on
@@ -2917,6 +3074,18 @@ class ReadyBox extends Component {
                         // contacts-list branch falls back to the historical
                         // single FlatList rendering of `categoryItems`.
                         this.props.selectedContact ?
+                        // Contacts-list "order type" / sort row used to
+                        // render here (the second branch of the
+                        // selectedContact ternary). It has been hidden
+                        // per user request to reduce the chrome stacked
+                        // above the list — search alone is enough for
+                        // navigating the unified Sylk + Phonebook
+                        // corpus. The selected-contact branch (filter
+                        // chips + sort toggles for the chat view) is
+                        // still rendered. JSX for the hidden branch is
+                        // preserved further down (gated by `false`)
+                        // so the categoryItems pill code path can be
+                        // re-enabled quickly if we change our mind.
                         <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
                             <View style={{ flex: 1, minWidth: 0 }}>
                                 <FlatList
@@ -2987,18 +3156,34 @@ class ReadyBox extends Component {
                             </View>
                         </View>
                         :
+                        // Hidden per user request — the contacts-list
+                        // view no longer renders the source pills +
+                        // order/sort toggles row above the list. JSX
+                        // for the row is preserved (wrapped in a
+                        // `false && (...)` guard) so the layout can
+                        // be re-enabled quickly if we change our
+                        // mind. The chat-view branch (above) still
+                        // shows its filter + sort bar; that's where
+                        // ordering is meaningful.
+                        false && (
                         <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
                             {/* LEFT side of the Contacts-list nav row:
                                 Sylk / AddressBook source pills. Drive
                                 ContactsListBox's search corpus via
                                 state.contactSource.
 
-                                Hidden in share/invite modes — the
-                                share path is Sylk-only, and the invite
-                                picker merges Sylk + Phonebook into a
-                                single list so the toggle isn't
-                                meaningful. */}
-                            {!this.props.shareToContacts && !this.props.inviteContacts ? (
+                                The main interface now unifies the
+                                Sylk + Phonebook search into a single
+                                list (matching the invite-to-conference
+                                behaviour), so the source picker is
+                                hidden across all modes — share is
+                                still Sylk-only and invite still merges
+                                both, but the user no longer has to
+                                pick a corpus before searching. The
+                                JSX is kept (gated by `false`) so the
+                                pill code path can be re-enabled
+                                quickly if we change our mind. */}
+                            {false && !this.props.shareToContacts && !this.props.inviteContacts ? (
                                 <View style={[readyBoxPillStyles.pillGroup, readyBoxPillStyles.pillGroupLeading]}>
                                     {/* Stacked icon-button + caption layout
                                         mirroring the sort-order chips on the
@@ -3126,6 +3311,7 @@ class ReadyBox extends Component {
                                 </View>
                             ) : null}
                         </View>
+                        )
                     : null}
 
                     {false ?
@@ -3185,20 +3371,50 @@ class ReadyBox extends Component {
                                 inviteContacts={this.props.inviteContacts}
                                 searchMessages={this.state.searchMessages}
                                 contactSource={this.state.contactSource}
+                                /* Tapping the search field kicks the
+                                   address-book load (and the OS
+                                   contacts-permission prompt on first
+                                   use) so the unified Sylk + Phonebook
+                                   search has the AB pile ready by the
+                                   time the user starts typing. The
+                                   helper short-circuits in share /
+                                   invite / search-messages modes
+                                   where the pile is not used. */
+                                onSearchFocus={this.kickUnifiedSearchAddressBookLoad}
+                                /* Folded + search-contacts: the
+                                   navbar is hidden (see NavigationBar
+                                   render gate) so URIInput becomes
+                                   the only place to surface the
+                                   "exit search" affordance. Wire the
+                                   close-X to the existing
+                                   toggleSearchContacts handler the
+                                   navbar normally uses. */
+                                onCloseSearch={
+                                    (this.props.isFolded
+                                        && this.state.searchContacts
+                                        && typeof this.props.toggleSearchContacts === 'function')
+                                        ? this.props.toggleSearchContacts
+                                        : undefined
+                                }
                                 // Dialpad toggle — rendered as an
                                 // overlay flush against the right
                                 // edge of the Searchbar. The × clear
                                 // icon sits immediately to its left.
-                                // Only relevant in AddressBook mode
-                                // while not in share/invite/message-
-                                // search workflows. The backspace
-                                // that used to live inside the search
-                                // bar moved into the dialpad's new
-                                // 4th column (DTMFPad extraColumn
-                                // prop, top-to-bottom: backspace, -, _).
+                                // Previously gated on AB-source mode;
+                                // the source picker is now hidden and
+                                // the main interface runs a unified
+                                // Sylk + Phonebook search, so the
+                                // dialpad is offered any time the
+                                // user is in normal contact-search
+                                // mode (i.e. not in share / invite /
+                                // message-search workflows). The
+                                // backspace that used to live inside
+                                // the search bar moved into the
+                                // dialpad's 4th column (DTMFPad
+                                // extraColumn prop, top-to-bottom:
+                                // backspace, -, _).
                                 showDialpad={
-                                    this.state.contactSource === 'ab'
-                                    && !this.props.shareToContacts
+                                    !this.props.shareToContacts
                                     && !this.props.inviteContacts
                                     && !this.state.searchMessages
                                 }
@@ -3208,8 +3424,7 @@ class ReadyBox extends Component {
                                 autoFocus={false}
                                 dark={this.props.dark}
                             />
-                            {this.state.contactSource === 'ab'
-                              && this.state.showAbDialpad
+                            {this.state.showAbDialpad
                               && !this.props.shareToContacts
                               && !this.props.inviteContacts
                               && !this.state.searchMessages ? (
@@ -3335,7 +3550,6 @@ class ReadyBox extends Component {
                                         <IconButton
                                         style={blueButtonClass}
                                         size={32}
-                                        disabled={fileTransfersDisabled}
                                         onPress={this.recordAudio}
                                         icon={recordIcon}
                                     />
@@ -3996,6 +4210,7 @@ class ReadyBox extends Component {
 						password={this.props.password}
 						callHistoryUrl={this.props.callHistoryUrl}
 						refreshHistory={this.props.refreshHistory}
+						refreshAccountInfo={this.props.refreshAccountInfo}
 						refreshFavorites={this.props.refreshFavorites}
 						localHistory={this.props.localHistory}
 						saveHistory={this.props.saveHistory}
@@ -4055,6 +4270,7 @@ class ReadyBox extends Component {
 						searchMessages = {this.state.searchMessages}
 						searchString = {this.state.searchString}
 						recordAudio = {this.recordAudio}
+						defaultConferenceDomain = {this.props.defaultConferenceDomain}
 						dark = {this.props.dark}
 						messagesMetadata = {this.props.messagesMetadata}
 						chatScrollTrigger = {this.props.chatScrollTrigger}
@@ -4164,6 +4380,13 @@ class ReadyBox extends Component {
                     accountId={this.props.account ? this.props.account.id: null}
                     lookupContacts={this.props.lookupContacts}
 					defaultConferenceDomain = {this.props.defaultConferenceDomain}
+                    /* Per-domain conference configuration. The modal
+                       reads conferenceSettings.pstnBridge to show the
+                       PSTN access-number under the "Allow calling
+                       from telephones" toggle when the bridge is
+                       defined. Falls through harmlessly when the
+                       server doesn't expose a bridge. */
+                    conferenceSettings = {this.props.conferenceSettings}
                 />
             </Fragment>
         );
@@ -4197,6 +4420,11 @@ ReadyBox.propTypes = {
     favoriteUris    : PropTypes.array,
     blockedUris     : PropTypes.array,
     defaultDomain   : PropTypes.string,
+    // Per-domain conference configuration (codec, pstnBridge,
+    // sipBridge). Forwarded to ConferenceModal which surfaces the
+    // pstnBridge phone number below the "Allow calling from
+    // telephones" toggle when defined.
+    conferenceSettings: PropTypes.object,
     selectContact   : PropTypes.func,
     lookupContacts  : PropTypes.func,
     call            : PropTypes.object,

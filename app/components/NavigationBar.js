@@ -75,6 +75,7 @@ const SIM_TICKS_TO_CONVERGE = 5;
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
 import AboutModal from './AboutModal';
+import PaymentInfoModal from './PaymentInfoModal';
 import CallMeMaybeModal from './CallMeMaybeModal';
 import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
@@ -372,7 +373,7 @@ class NavigationBar extends Component {
     // The Appbar subtitle normally shows the account URI / organization
     // line. While a call is warming up we hijack it to surface the
     // current phase ("Acquiring mic…", "Gathering candidates…",
-    // "Connecting peer…", …) so the user isn't left staring at a
+    // "Collecting ICE candidates…", …) so the user isn't left staring at a
     // static label for the multi-second window between
     // accept/dial and 'established'.
     //
@@ -534,7 +535,7 @@ class NavigationBar extends Component {
             return 'Connection failed';
         }
         if (ice === 'checking' || conn === 'connecting') {
-            return 'Connecting peer…';
+            return 'Collecting ICE candidates…';
         }
         if (gather === 'gathering') {
             return 'Gathering candidates…';
@@ -943,20 +944,14 @@ class NavigationBar extends Component {
 		    Keyboard.dismiss();
 		}
 
-		// Fold-state transition: clear the cached appBarMeasuredHeight
-		// so the next onLayout on the freshly-mounted Appbar.Header
-		// (we already remount it via key={'appbar-header-' +
-		// _navRemountKey}) reports the new height to the parent.
-		// Without this clear, the height the parent uses for the
-		// chat panel's keyboardVerticalOffset would stay frozen at
-		// whatever was measured on the cover display, which made the
-		// inner-display layout look "smaller than normal" after
-		// unfolding.
-		if (prevProps.isFolded !== this.props.isFolded) {
-			if (this.state.appBarMeasuredHeight !== null) {
-				this.setState({ appBarMeasuredHeight: null });
-			}
-		}
+		// (Removed) fold-transition reset of appBarMeasuredHeight.
+		// In combination with the Appbar.Header remount key it was
+		// supposed to force a fresh onLayout after fold/unfold, but
+		// the pair caused the contacts list to slide under the navbar
+		// in non-folded mode without actually rescaling the cover
+		// display. Both have been reverted; the original "smaller
+		// navbar after unfold" symptom from task #23 needs a
+		// different approach if it returns.
 
 		// Track call identity changes so the warmup listener / poll
 		// interval follow the right Call object. Three relevant cases:
@@ -1157,6 +1152,16 @@ class NavigationBar extends Component {
         switch (event) {
             case 'about':
                 this.toggleAboutModal();
+                break;
+            case 'donate':
+                // Opens the shared PaymentInfoModal with the
+                // 'donate' template ("Blink is free software…").
+                // The same modal renders the 'credit' template
+                // when opened from the 'Payment required' PSTN
+                // branch in app.callStateChanged.
+                if (typeof this.props.togglePaymentInfoModal === 'function') {
+                    this.props.togglePaymentInfoModal('donate');
+                }
                 break;
             case 'callMeMaybe':
                 this.props.toggleCallMeMaybeModal();
@@ -5920,6 +5925,18 @@ class NavigationBar extends Component {
     }
 
     render() {
+        // Folded + search-contacts mode: hide the whole NavigationBar.
+        // The cover display has very little vertical room and the
+        // search bar (rendered by ReadyBox below) takes over the role
+        // of the navbar in this mode — including the close-search
+        // affordance, which is now an in-bar X overlay (see the
+        // onCloseSearch prop on URIInput). Returning null keeps the
+        // measurement / layout path the same on the next fold or
+        // search-exit transition.
+        if (this.props.isFolded && this.props.searchContacts) {
+            return null;
+        }
+
         // DND-themed glyphs in outline style:
         //   • DND off → bell-outline. Reads as "ready to notify"
         //     and matches the weight of the surrounding nav icons.
@@ -5968,7 +5985,19 @@ class NavigationBar extends Component {
         let bellStyle = styles.whiteButton;
 
         if (this.props.connection && this.props.connection.state === 'ready') {
-            bellStyle = styles.greenButton;
+            // WSS is up — distinguish "fully operational" from
+            // "connected but auth/register failed". A green bell
+            // implies the user is reachable; an orange bell tells
+            // them the SIP server is alive but they're not actually
+            // registered (e.g. 403 wrong password / domain not
+            // served / pending register). Without this split the
+            // bell stayed green even on a 403, which misled the
+            // user into thinking everything was fine.
+            if (this.props.registrationState === 'registered') {
+                bellStyle = styles.greenButton;
+            } else {
+                bellStyle = styles.orangeButton;
+            }
         } else if (this.props.connection && this.props.connection.state === 'connecting') {
             bellStyle = styles.whiteButton;
         } else if (this.props.connection && this.props.connection.state === 'disconnected') {
@@ -6170,12 +6199,16 @@ class NavigationBar extends Component {
 		// NavBar height + icon sizing.
 		//
 		// Height (`_navBarHeight`) is parameterizable so we can pick a
-		// comfortable size on tablets (where 60dp looks cramped).
+		// comfortable size on tablets (where 60dp looks cramped) and
+		// to shrink on the cramped folded cover display.
 		// Resolution order:
 		//   1) explicit `navBarHeight` prop (caller decides — e.g. a
 		//      future "navbar size" preference)
-		//   2) folded (Razr cover display): always 60 — vertical space
-		//      is at a premium and the existing layout is tuned for it
+		//   2) folded (Razr cover display): 44 — vertical space is at
+		//      a premium and the rest of the folded chrome is already
+		//      smaller; the previous 60 made the navbar visibly taller
+		//      than its proportion of the cover display, which read as
+		//      "navbar didn't follow the fold" to the user.
 		//   3) tablet: 90 (roughly 1.5× phone, enough to give icons
 		//      and labels room to breathe)
 		//   4) phone: 60 (legacy default)
@@ -6192,10 +6225,12 @@ class NavigationBar extends Component {
 		// title/subtitle) scale linearly with bar height. On phone the
 		// scale is 1.0, so all literals match the legacy values
 		// exactly. On tablet (90/60 = 1.5) the rest of the bar grows
-		// in proportion to the new bar height.
+		// in proportion to the new bar height. On folded (44/60 ≈ 0.73)
+		// glyphs shrink in step with the shorter bar so nothing feels
+		// disproportionately large against the new height.
 		const _navBarHeight = (typeof this.props.navBarHeight === 'number' && this.props.navBarHeight > 0)
 		    ? this.props.navBarHeight
-		    : (this.props.isFolded ? 60 : (this.props.isTablet ? 90 : 60));
+		    : (this.props.isFolded ? 44 : (this.props.isTablet ? 90 : 60));
 		const navIconScale = _navBarHeight / 60;
 		// Pin tablet IconButtons to 32 so they match the call-buttons
 		// bar (size={32}) rendered by ReadyBox. Folded/phone keep the
@@ -6377,7 +6412,11 @@ class NavigationBar extends Component {
         // both the rendered row AND the combined-container height /
         // onAppBarHeightChange report so the chat panel's
         // KeyboardAvoidingView offset stays accurate.
-        const _showBrandStrip = !this.props.isLandscape;
+        // Also hidden on folded (cover-display) layouts — the cover
+        // screen has even less vertical room than landscape phones,
+        // and the user reported the strip was eating space above
+        // the contacts list there.
+        const _showBrandStrip = !this.props.isLandscape && !this.props.isFolded;
         // 26dp: leaves room for an 18dp logo + 13dp wordmark
         // text without feeling like a second header band above
         // the navbar. The previous 34dp felt too thick.
@@ -6471,22 +6510,21 @@ class NavigationBar extends Component {
               as restStyle on the inner Appbar) span the full width.
             */}
             <SafeAreaInsetsContext.Provider value={{ top: 0, bottom: 0, left: 0, right: 0 }}>
+            {/* Appbar.Header intentionally has NO remount key. Two
+                earlier attempts both produced regressions:
+                  • key=_navRemountKey (fold + live window dims) caused
+                    spurious remounts on Android dimension flickers,
+                    leaving the contacts list overlapping the navbar
+                    in non-folded steady-state.
+                  • key='appbar-header-' + (isFolded?'f':'u') still
+                    produced overlap AND didn't actually rescale the
+                    cover display on fold — suggesting the issue is
+                    upstream (a parent View not updating its measured
+                    width on fold), not Paper's Appbar.Header.
+                If you re-introduce a remount key here, also tackle
+                the parent layout chain that survives the transition
+                or you'll just move the symptom. */}
             <Appbar.Header
-                 /* Force-remount on fold / size transitions. Paper's
-                    Appbar.Header (and the IconButtons / Text inside it)
-                    cache their measured layout at the density of the
-                    first mount. On the Razr 60 Ultra, unfolding from
-                    the cover display (where Appbar last measured
-                    itself at folded density / dimensions) doesn't
-                    re-measure automatically — the inner-display
-                    onLayout sometimes fires once with the new height,
-                    but the cached frames for nested IconButton /
-                    Text children stick around. Re-keying on
-                    _navRemountKey (already used to remount the title
-                    and icons below) forces the whole Appbar.Header
-                    subtree to re-mount, which clears the cache and
-                    lets the new fold-state geometry take effect. */
-                 key={'appbar-header-' + _navRemountKey}
                  style={appBarContainer}
                  statusBarHeight={0}
                  /* App bar is always Blink-blue across both themes
@@ -6703,6 +6741,43 @@ class NavigationBar extends Component {
                                onPress={this.props.toggleDnd}
                                icon={bellIcon}
                            />
+                           {/* SIP error-code badge. Rendered at the
+                               bottom-left of the bell when the most
+                               recent REGISTER attempt failed with a
+                               3-digit SIP status code (e.g. 403,
+                               401, 408). Cleared by App.js as soon
+                               as registrationState becomes
+                               'registered' again. pointerEvents=none
+                               so taps still reach the bell. */}
+                           {this.props.registerErrorCode ? (
+                               <View
+                                   pointerEvents="none"
+                                   style={{
+                                       position: 'absolute',
+                                       left: 0,
+                                       bottom: -3,
+                                       minWidth: 18,
+                                       paddingHorizontal: 3,
+                                       paddingVertical: 1,
+                                       borderRadius: 4,
+                                       backgroundColor: '#b22',
+                                       alignItems: 'center',
+                                       justifyContent: 'center',
+                                   }}
+                               >
+                                   <Text
+                                       style={{
+                                           color: 'white',
+                                           fontSize: 9,
+                                           fontWeight: 'bold',
+                                           lineHeight: 11,
+                                       }}
+                                       numberOfLines={1}
+                                   >
+                                       {this.props.registerErrorCode}
+                                   </Text>
+                               </View>
+                           ) : null}
                        </View>
                    );
                })()}
@@ -7152,6 +7227,10 @@ class NavigationBar extends Component {
                          : null }
 
                         {!this.props.inCall ?
+                        <Divider />
+                         : null }
+
+                        {!this.props.inCall ?
                         <Menu.Item onPress={() => this.handleMenu('scanQr')} icon="qr-code" title="Scan QR code..." />
                          : null }
 
@@ -7199,13 +7278,6 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
 
-                       {/* Preferences modal — opens a sheet of
-                           per-account toggles (encryption mode, video
-                           codec, etc.). Pure UI; no overlap with an
-                           active call. Stays available so the user
-                           can adjust e.g. proximity sensor mid-call. */}
-                       <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
- 
                       {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
                         : null}
@@ -7240,6 +7312,13 @@ class NavigationBar extends Component {
 
 					</Menu>
                      : null}
+
+                       {/* Preferences modal — opens a sheet of
+                           per-account toggles (encryption mode, video
+                           codec, etc.). Pure UI; no overlap with an
+                           active call. Stays available so the user
+                           can adjust e.g. proximity sensor mid-call. */}
+                       <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
 
                         {/* Permissions — deep-links to the OS settings
                             screen for Blink. Useful mid-call when the
@@ -7276,6 +7355,16 @@ class NavigationBar extends Component {
                             point — including from inside an open chat. */}
                         <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
 
+                        {/* Donate… — opens PaymentInfoModal with the
+                            bank-transfer details users need to top up
+                            their account (PSTN credit) or to support
+                            the project. Lives directly above "About"
+                            so it sits with the other informational
+                            entries at the bottom of the menu, and is
+                            visible in every context including during
+                            a call (matching About's visibility). */}
+                        <Menu.Item onPress={() => this.handleMenu('donate')} icon="hand-heart" title="Donate…"/>
+
                         {/* About Blink — purely informational (version,
                             build id, dev-mode toggle). No call overlap
                             so we keep it visible. */}
@@ -7298,6 +7387,21 @@ class NavigationBar extends Component {
                     buildId={this.props.buildId}
                     toggleDevMode={this.props.toggleDevMode}
                     devMode={this.props.devMode}
+                />
+
+                {/* Payment information modal — shared between the
+                    "Donate…" menu item and the 'Payment required'
+                    PSTN branch in app.callStateChanged. show/close
+                    come straight from App so both entry points
+                    drive a single instance. The `reason` prop
+                    selects the template:
+                      'donate'           — kebab menu path
+                      'credit'           — PSTN error path */}
+                <PaymentInfoModal
+                    show={this.props.showPaymentInfoModal}
+                    reason={this.props.paymentInfoReason}
+                    paymentAccounts={this.props.paymentAccounts}
+                    close={this.props.togglePaymentInfoModal}
                 />
 
                 <CallMeMaybeModal
@@ -7368,6 +7472,47 @@ class NavigationBar extends Component {
  				    preferredAudioCodec={this.props.preferredAudioCodec}
  				    enableAudioRecording={this.props.enableAudioRecording}
  				    encryptionMode={this.props.encryptionMode}
+ 				    /* Editable Mobile number on the myself view of
+ 				       the modal. Read from per-account settings on
+ 				       open; written back through setAccountSetting
+ 				       on save. See App.ensurePstnCallerIdCaptured
+ 				       for the auto-capture path that seeds this. */
+ 				    myPhoneNumber={this.props.myAccountPhoneNumber}
+ 				    setMyPhoneNumber={this.props.setMyAccountPhoneNumber}
+ 				    /* Focus-time SIM lookup. EditContactModal calls
+ 				       this when the user taps the empty Mobile
+ 				       field; returns the SIM number after prompting
+ 				       READ_PHONE_NUMBERS, or '' on iOS / denial /
+ 				       no MSISDN. Pre-fills the input; Save still
+ 				       commits via setMyPhoneNumber. */
+ 				    readDevicePhoneNumber={this.props.readDevicePhoneNumber}
+ 				    /* "Add credit" button next to the PSTN credit
+ 				       row. EditContactModal closes itself first,
+ 				       then invokes this — we open the PaymentInfo-
+ 				       Modal in the 'credit' template after the My
+ 				       Account fade-out so the two Modals never
+ 				       overlap (RN can't reliably stack them). */
+ 				    openPaymentInfoModal={this.props.openPaymentInfoModalCredit}
+ 				    /* Server-side mobile number, balance and currency
+ 				       fetched via HTTP Digest from account_info.phtml.
+ 				       Displayed read-only under the Email field on the
+ 				       myself view. The modal calls refreshAccountInfo()
+ 				       on open so the values are current. */
+ 				    accountInfo={this.props.accountInfo}
+ 				    accountInfoError={this.props.accountInfoError}
+ 				    refreshAccountInfo={this.props.refreshAccountInfo}
+ 				    setServerCallerId={this.props.setServerCallerId}
+ 				    accountInfoAvailable={this.props.accountInfoAvailable}
+ 				    openSetCallerIdModal={this.props.openSetCallerIdModal}
+ 				    /* SIP password change. Empty input on the modal
+ 				       leaves the password untouched; a non-empty value
+ 				       triggers the round-trip + local password cache
+ 				       update on Save. See App.changeSipPassword. */
+ 				    changeSipPassword={this.props.changeSipPassword}
+ 				    currentPassword={this.props.currentPassword}
+ 				    /* Mirror the modal's Email field back to the SIP
+ 				       account record on Save. */
+ 				    setServerEmail={this.props.setServerEmail}
                 />
 
                 <DeleteAccountModal
@@ -7375,6 +7520,56 @@ class NavigationBar extends Component {
                     close={this.closeDeleteAccountModal}
                     onConfirm={this.confirmDeleteAccount}
                     accountId={this.props.accountId}
+                    /* Server-side delete URL. Rendered inside the
+                       modal as a "Delete account on server…" link
+                       (moved from the My Account modal so the local
+                       + server delete actions sit together). */
+                    deleteAccountUrl={this.props.deleteAccountUrl}
+                    /* In-app primitive that triggers the server's
+                       "request deletion" flow (emails a confirm
+                       link). When wired AND allowDelete is true,
+                       the modal offers the request as a button
+                       instead of (or alongside) the external URL. */
+                    requestServerDeleteAccount={this.props.requestServerDeleteAccount}
+                    /* Cancel a pending delete request. Modal exposes
+                       an Abort button + remaining-time countdown
+                       when accountInfo.delete_request != null. */
+                    abortServerDeleteAccount={this.props.abortServerDeleteAccount}
+                    /* Latest server-side pending-delete record (or
+                       null). Drives the "Pending — confirm by X" UI
+                       and feeds expire_date to the countdown. */
+                    pendingDeleteRequest={
+                        this.props.accountInfo && this.props.accountInfo.delete_request
+                            ? this.props.accountInfo.delete_request : null
+                    }
+                    /* The modal's pickServer handler fires this to
+                       refresh the snapshot BEFORE branching between
+                       Continue (Request deletion) and Abort. Catches
+                       the case where another device or the web
+                       Identity tab issued a delete the local
+                       snapshot doesn't know about yet. */
+                    refreshAccountInfo={this.props.refreshAccountInfo}
+                    /* From the server's allow_delete flag in the
+                       snapshot — true when the in-app flow is
+                       permitted (email set, balance clean, not in
+                       deny-account-delete group). When false the
+                       modal falls back to deleteAccountUrl. */
+                    allowDelete={this.props.allowServerDelete}
+                    /* Customer-profile email — the address the
+                       deletion confirmation link will be sent to
+                       (NOT the SIP account's email; see the
+                       sylk_settings.phtml request_delete_account
+                       handler for the rationale). Surfaced in the
+                       Server-confirm screen so the user can see
+                       where to look for the link before they
+                       commit. */
+                    ownerEmail={
+                        this.props.accountInfo
+                        && this.props.accountInfo.owner
+                        && this.props.accountInfo.owner.email
+                            ? String(this.props.accountInfo.owner.email)
+                            : ''
+                    }
                 />
 
                 {/* Sign-out confirmation. When more than one local

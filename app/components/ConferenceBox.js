@@ -4834,11 +4834,34 @@ class ConferenceBox extends Component {
         clearTimeout(this.overlayTimer);
     }
 
-    inviteParticipants(uris=[]) {
+    async inviteParticipants(uris=[]) {
         console.log('[ConferenceBox] [conference] inviteParticipants called with uris=' + JSON.stringify(uris));
         if (uris.length === 0) {
             console.log('[ConferenceBox] [conference] inviteParticipants: no URIs, returning');
             return;
+        }
+
+        // Mirror of the 1-to-1 PSTN dial guard in App.callKeepStartCall.
+        // If any invitee URI looks like a phone number AND we haven't
+        // yet captured the user's own SIM number, prompt for
+        // READ_PHONE_NUMBERS so future PSTN dials / invites use a
+        // proper Caller ID and so billing has a number to reconcile
+        // against payments. Pure SIP invitees (no phone-number form
+        // in the URI) skip the prompt entirely. Helper is a no-op on
+        // iOS and an early-return when a number is already on file,
+        // so calling it on every invite is cheap.
+        if (typeof this.props.ensurePstnCallerIdCaptured === 'function') {
+            try {
+                const ok = await this.props.ensurePstnCallerIdCaptured(uris);
+                if (!ok) {
+                    console.log('[ConferenceBox] [conference] inviteParticipants: phone permission denied, aborting invite');
+                    return;
+                }
+            } catch (e) {
+                // Never let the permission helper kill the invite —
+                // worst case we proceed without a captured Caller ID.
+                console.log('[ConferenceBox] [conference] inviteParticipants: ensurePstnCallerIdCaptured threw', e && e.message);
+            }
         }
         // Normalise phone-number invitees by appending the local
         // SIP domain. The AB Phonebook entries arrive here as bare
@@ -8852,6 +8875,7 @@ ConferenceBox.propTypes = {
     muted               : PropTypes.bool,
     defaultDomain       : PropTypes.string,
     pstnRules           : PropTypes.object,
+    ensurePstnCallerIdCaptured: PropTypes.func,
     inFocus             : PropTypes.bool,
     reconnectingCall    : PropTypes.bool,
     audioOnly           : PropTypes.bool,

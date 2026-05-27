@@ -12,8 +12,22 @@ import PlatformToggle from './PlatformToggle';
 // their phone keypad — that's why the field switches to numeric. The
 // auto-generated value is exactly 6 digits; the user is free to type a
 // different number provided it is at least 4 digits long.
-const random6DigitRoom = () =>
-  String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+//
+// First digit is constrained to 1–9 (never 0) for two reasons:
+//   • dial-in codes that begin with 0 are confusable with international
+//     trunk prefixes on some PSTN gateways and routinely get re-written
+//     before they reach the bridge, leaving callers stranded;
+//   • the room code is read out / typed in by humans, and a leading 0
+//     is the most common digit to drop when transcribing — losing it
+//     silently turns a valid 6-digit room into an invalid 5-digit one.
+// Subsequent five digits are unrestricted (0–9), giving 9 × 10⁵ =
+// 900 000 possible rooms (vs. 10⁶ before), which is more than enough
+// for the ad-hoc dial-in use case and still preserves the 6-digit shape.
+const random6DigitRoom = () => {
+  const first = String(Math.floor(Math.random() * 9) + 1); // 1..9
+  const rest = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+  return first + rest;
+};
 
 // Minimum length the user is allowed to type when overriding the
 // auto-generated dial-in room number. 3 or fewer digits are too easy
@@ -75,6 +89,13 @@ const ConferenceModal = ({
   targetUri: propTargetUri,
   defaultDomain,
   defaultConferenceDomain,
+  // Per-domain conference configuration. We only consult
+  // `pstnBridge` here — when it's a non-empty string the modal
+  // shows the PSTN access-number ("Phone number: …") directly
+  // under the "Allow calling from telephones" toggle so the user
+  // knows which number to give to their PSTN callers. When the
+  // server doesn't expose a bridge the row is omitted entirely.
+  conferenceSettings,
 }) => {
   // Initial room field value. When a propTargetUri is supplied
   // (saved-room shortcut, chat header), we honour it. Otherwise
@@ -246,17 +267,29 @@ const ConferenceModal = ({
     setParticipants((prev) => prev.filter((p) => p !== uriToRemove));
   };
 
-  // True when the dial-in box is ticked AND the room name is a valid
-  // numeric room (digits only, 4–16 chars). Used to gate the join
+  // True when the room name is a valid numeric room (digits only,
+  // 4–16 chars, MUST NOT start with 0). Used to gate the join
   // buttons and the validation warning under the field. The field
-  // is pre-filled with a valid 6-digit suggestion on open, so this
-  // is true straight away unless the user edits to something
-  // invalid.
+  // is pre-filled with a valid 6-digit suggestion on open (first
+  // digit always 1–9), so this is true straight away unless the
+  // user edits to something invalid.
+  //
+  // The leading-zero ban matches the random-room generator above:
+  // some PSTN gateways treat a leading 0 as an international trunk
+  // prefix and re-route or strip the code before it reaches the
+  // bridge, and humans drop leading zeros when transcribing a code
+  // someone read to them. Both failure modes manifest as "I dialed
+  // the number you gave me but couldn't get in", which is the
+  // worst kind of dial-in bug to chase. Easier to reject up front.
+  //
+  // The previous `!pstnEnabled ||` short-circuit was removed when
+  // the "Allow calling from telephones" toggle was hidden from
+  // the panel — every room is a dial-in room now, so the validity
+  // check always applies.
   const pstnRoomValid =
-    !pstnEnabled
-    || (/^[0-9]+$/.test(targetUri)
-        && targetUri.length >= PSTN_ROOM_MIN_DIGITS
-        && targetUri.length <= PSTN_ROOM_MAX_DIGITS);
+    /^[1-9][0-9]*$/.test(targetUri)
+    && targetUri.length >= PSTN_ROOM_MIN_DIGITS
+    && targetUri.length <= PSTN_ROOM_MAX_DIGITS;
 
   const joinConference = (withVideo) => {
     if (!targetUri) return;
@@ -348,17 +381,20 @@ const ConferenceModal = ({
                       mode="flat"
                       autoCapitalize="none"
                       autoCorrect={false}
-                      // Label and keyboard mode reflect the dial-in
-                      // toggle. With dial-in ON, the same field is
-                      // the numeric room code phone callers will
-                      // enter on their keypad — number-pad keyboard,
-                      // 16-digit cap, non-digit input is stripped.
-                      label={pstnEnabled
-                        ? `Enter dial-in room number (${PSTN_ROOM_MIN_DIGITS}–${PSTN_ROOM_MAX_DIGITS} digits)`
-                        : 'Enter the room you wish to join'}
-                      placeholder={pstnEnabled ? '123456' : 'room'}
-                      keyboardType={pstnEnabled ? 'number-pad' : 'default'}
-                      maxLength={pstnEnabled ? PSTN_ROOM_MAX_DIGITS : undefined}
+                      // The room name is ALWAYS a numeric dial-in code
+                      // now: number-pad keyboard, 16-digit cap, and
+                      // any non-digit / leading-zero input is stripped
+                      // in onChangeText below. This used to be gated
+                      // by the (now hidden) "Allow calling from
+                      // telephones" toggle; we keep the dial-in flag
+                      // wiring intact (pstnEnabled defaults to true,
+                      // joinConference still forwards options.pstn)
+                      // but the field itself is no longer toggle-
+                      // dependent — every room is a numeric room.
+                      label={`Enter dial-in room number (${PSTN_ROOM_MIN_DIGITS}–${PSTN_ROOM_MAX_DIGITS} digits)`}
+                      placeholder="123456"
+                      keyboardType="number-pad"
+                      maxLength={PSTN_ROOM_MAX_DIGITS}
                       value={targetUri}
                       // While the field still holds the auto-
                       // generated suggestion, render the digits in
@@ -372,14 +408,20 @@ const ConferenceModal = ({
                         // First edit flips the field out of pristine
                         // mode so the muted style above stops applying.
                         if (pristineRoom) setPristineRoom(false);
-                        if (pstnEnabled) {
-                          // Strip any non-digit so paste-of-garbage
-                          // ("(021) 345-6") becomes "021345" and the
-                          // field always renders a valid dial-in code.
-                          setTargetUri(text.replace(/[^0-9]/g, ''));
-                        } else {
-                          setTargetUri(text);
-                        }
+                        // Strip any non-digit so paste-of-garbage
+                        // ("(021) 345-6") becomes "021345" and the
+                        // field always renders a valid dial-in code.
+                        // Then strip any leading zeros so the field
+                        // can never hold a value that begins with 0
+                        // (see pstnRoomValid comment for why — TL;DR
+                        // PSTN gateways treat leading 0 as an inter-
+                        // national trunk prefix, and humans drop it
+                        // when transcribing). The replace handles
+                        // both the typed-a-zero-first case and the
+                        // pasted-"021345" case in the same pass.
+                        const digits = text.replace(/[^0-9]/g, '');
+                        const noLeadingZero = digits.replace(/^0+/, '');
+                        setTargetUri(noLeadingZero);
                       }}
                       // Trailing × clears the field so the user can
                       // overwrite the random pre-fill with their own
@@ -401,9 +443,9 @@ const ConferenceModal = ({
                         />
                       ) : null}
                     />
-                    {pstnEnabled && targetUri.length > 0 && !pstnRoomValid ? (
+                    {targetUri.length > 0 && !pstnRoomValid ? (
                       <Text style={[styles.body, { color: 'orange', marginTop: 2 }]}>
-                        Room must be {PSTN_ROOM_MIN_DIGITS}–{PSTN_ROOM_MAX_DIGITS} digits
+                        Room must be {PSTN_ROOM_MIN_DIGITS}–{PSTN_ROOM_MAX_DIGITS} digits and not start with 0
                       </Text>
                     ) : null}
                     {/* Sylk Domain input was an experiment — hidden for now.
@@ -440,27 +482,17 @@ const ConferenceModal = ({
                       to mark a contact as a conference — either the
                       explicit `conference` flag or the 'conference'
                       tag. */}
-                  {(() => {
-                    const _selTags = (selectedContact && Array.isArray(selectedContact.tags))
-                        ? selectedContact.tags : [];
-                    const _isExistingConference = !!(selectedContact
-                        && (selectedContact.conference
-                            || _selTags.indexOf('conference') > -1));
-                    if (_isExistingConference) return null;
-                    return (
-                      <PlatformToggle
-                        value={pstnEnabled}
-                        onValueChange={setPstnEnabled}
-                        label="Allow calling from telephones"
-                        // Center the toggle row horizontally inside the
-                        // modal so the label + pill cluster sits in the
-                        // middle of the surface, matching the other
-                        // centered chrome (room name field, participant
-                        // chips). marginTop preserved.
-                        style={{ marginTop: 8, alignSelf: 'center' }}
-                      />
-                    );
-                  })()}
+                  {/* "Allow calling from telephones" toggle pill +
+                      "Phone access number: …" caption are hidden in
+                      the Join Conference panel per product direction.
+                      The PSTN bridge access path is still wired up
+                      end-to-end (pstnEnabled state, joinConference
+                      options.pstn) so anything driving the flag from
+                      elsewhere keeps working; we just don't surface
+                      the toggle or the bridge number on this screen
+                      anymore. To re-enable, restore the previous
+                      IIFE that rendered PlatformToggle + "Phone
+                      access number" Text from the file history. */}
 
                   {participants.length > 0 && (
                     <View>
@@ -550,7 +582,11 @@ ConferenceModal.propTypes = {
   selectedContact: PropTypes.object,
   targetUri: PropTypes.string.isRequired,
   defaultDomain: PropTypes.string,
-  defaultConferenceDomain: PropTypes.string
+  defaultConferenceDomain: PropTypes.string,
+  // { codec, pstnBridge, sipBridge } from the server's per-domain
+  // configuration. Optional — only pstnBridge is consulted, and the
+  // PSTN access-number row is suppressed when it's null / undefined.
+  conferenceSettings: PropTypes.object,
 };
 
 export default ConferenceModal;

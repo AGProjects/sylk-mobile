@@ -862,26 +862,53 @@ public class IncomingCallService extends Service {
 
 		cancelNotification(notificationId);
 
-		SylkLogger.d("[call] [service] -- Launching Sylk app");
-		Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-		if (launchIntent != null) {
-			launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-			launchIntent.putExtra("session-id", callId);
-			launchIntent.putExtra("from_uri", from_uri);
-			launchIntent.putExtra("to_uri", to_uri);
-			launchIntent.putExtra("media-type", mediaType);
-			launchIntent.putExtra("event", event);
-			launchIntent.putExtra("displayName", displayName);
-			// Raw SIP-level display name from the push (FCM "from_display_name"),
-			// forwarded verbatim so the JS side can use it to backfill a
-			// missing/URI-equal contact name. Distinct from `displayName`
-			// above, which carries the locally-resolved (contact-DB) label.
-			if (fromDisplayName != null) {
-				launchIntent.putExtra("from_display_name", fromDisplayName);
+		// Only launch MainActivity when the app is NOT already in the
+		// foreground. When the user accepts a call while the app is
+		// already on screen, startActivity() here adds nothing the
+		// bridge event below can't deliver — but it DOES fire
+		// MainActivity.onNewIntent, which kicks off a flurry of
+		// activity-lifecycle callbacks (onPause / onResume / appState
+		// active⇄background bounces) that compete for the same JS
+		// message queue as the ACTION_ACCEPT_* bridge event we're
+		// about to emit. The result was a 3–4 s delay between the
+		// bridge event being emitted and callEventHandler actually
+		// running on the JS side — visible in metro.log as multiple
+		// "state active -> background" / "state background -> active"
+		// log lines clustering around the route flip. Skipping the
+		// startActivity in the foreground case lets the bridge event
+		// reach JS on the next tick, which is what the user expects
+		// ("the app is already up, just take me to /call").
+		//
+		// Background / locked-screen case still needs startActivity
+		// to bring MainActivity to the front — without it the bridge
+		// event would fire into a JS context whose Activity is still
+		// stopped, and the user wouldn't see the call screen until
+		// they manually returned to the app.
+		boolean appInForeground = isAppInForeground();
+		if (!appInForeground) {
+			SylkLogger.d("[call] [service] -- Launching Sylk app (app was not in foreground)");
+			Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+			if (launchIntent != null) {
+				launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+				launchIntent.putExtra("session-id", callId);
+				launchIntent.putExtra("from_uri", from_uri);
+				launchIntent.putExtra("to_uri", to_uri);
+				launchIntent.putExtra("media-type", mediaType);
+				launchIntent.putExtra("event", event);
+				launchIntent.putExtra("displayName", displayName);
+				// Raw SIP-level display name from the push (FCM "from_display_name"),
+				// forwarded verbatim so the JS side can use it to backfill a
+				// missing/URI-equal contact name. Distinct from `displayName`
+				// above, which carries the locally-resolved (contact-DB) label.
+				if (fromDisplayName != null) {
+					launchIntent.putExtra("from_display_name", fromDisplayName);
+				}
+				launchIntent.putExtra("phoneLocked", phoneLocked);
+				startActivity(launchIntent);
+				SylkLogger.d("[call] [service] RN app launched for call: " + callId);
 			}
-			launchIntent.putExtra("phoneLocked", phoneLocked);
-			startActivity(launchIntent);
-			SylkLogger.d("[call] [service] RN app launched for call: " + callId);
+		} else {
+			SylkLogger.d("[call] [service] -- App already in foreground, skipping startActivity for call: " + callId);
 		}
 
 		// RN app alive → send event only

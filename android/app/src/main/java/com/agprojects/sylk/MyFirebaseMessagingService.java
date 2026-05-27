@@ -7,6 +7,8 @@ import androidx.annotation.NonNull;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 
+import com.facebook.react.ReactApplication;
+
 import android.Manifest;
 import androidx.core.app.ActivityCompat;
 import android.app.NotificationChannel;
@@ -1020,6 +1022,41 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			SylkLogger.d("[call] [fcm]" + event + " " + callId + " from " + fromUri + " to " + lookupAccount);
+
+			// Wake JS NOW (before any UI / notification / Telecom work)
+			// so it can kick a WSS reconnect during the ringing window
+			// instead of after the user presses Accept. See
+			// ReactEventEmitter.sendCallPrepEvent javadoc for the full
+			// rationale.
+			//
+			// On Android the JS thread doesn't process FCM data pushes
+			// until something tickles the bridge — by default that's
+			// the user's Accept tap, which can be 2-10 s after FCM
+			// arrival. During that gap, the OS may have suspended the
+			// WSS socket and sylk-server may have decided we're
+			// unreachable (resulting in the 480 Temporarily
+			// Unavailable the user diagnosed). Emitting a bridge event
+			// here wakes the JS thread immediately; it runs
+			// scheduleBackToForeground / handleRegistration; the WSS
+			// re-registers DURING ringing; by Accept-time, the
+			// device's acceptCall has a live WSS to ride on.
+			//
+			// Best-effort: if RN isn't running (truly cold process),
+			// sendCallPrepEvent silently drops. The classic accept
+			// path still wakes the activity.
+			try {
+				if (getApplicationContext() instanceof ReactApplication) {
+					ReactEventEmitter.sendCallPrepEvent(
+						callId,
+						fromUri,
+						toUri,
+						event,
+						(ReactApplication) getApplicationContext()
+					);
+				}
+			} catch (Throwable t) {
+				SylkLogger.w("[call] [fcm] prep event emit threw", t);
+			}
 
 			List<String> tags = new ArrayList<>();
             Contact contact = getContact(lookupAccount, fromUri);

@@ -57,6 +57,20 @@ class URIInput extends React.Component {
             this.uriInput.current.select();
             this.clicked = true;
         }
+        // Notify the host that the user has explicitly tapped the
+        // search field. Used by ReadyBox to lazily kick the
+        // address-book load (and the OS contacts-permission prompt
+        // if needed) the FIRST time the user actually intends to
+        // search — i.e., on click rather than waiting for the first
+        // keystroke. loadAddressBook on the host side is idempotent
+        // and only re-prompts when permission is not yet granted.
+        if (typeof this.props.onSearchFocus === 'function') {
+            try {
+                this.props.onSearchFocus();
+            } catch (e) {
+                // Swallow — focus-side prompts are best-effort.
+            }
+        }
     }
 
     onInputKeyDown(event) {
@@ -93,19 +107,19 @@ class URIInput extends React.Component {
         if (this.state.inviteContacts) placeholder = 'Select contacts to invite...';
         if (this.state.searchMessages) placeholder = 'Search messages';
 
-        // The Sylk / AddressBook source toggle now lives in the Sort/Order
-        // row above the search bar. The placeholder still hints at which
-        // source is active so the user gets feedback without looking up.
+        // The Sylk / AddressBook source toggle that used to sit in
+        // the Sort/Order row above the search bar has been removed —
+        // the main interface now unifies SIP + Phonebook results
+        // into a single search, matching the invite-to-conference
+        // picker behaviour. The placeholder reflects that unified
+        // search rather than naming a specific corpus.
         const showSourceHint =
             !this.state.shareToContacts &&
             !this.state.inviteContacts &&
             !this.state.searchMessages;
 
         if (showSourceHint) {
-            placeholder =
-                this.state.contactSource === 'ab'
-                    ? 'Search Tel'
-                    : 'Search SIP contacts';
+            placeholder = 'Search contact...';
         }
 
         // Theme-aware colour set. Pulled to be explicit in BOTH
@@ -219,6 +233,34 @@ class URIInput extends React.Component {
                         iconColor={darkColors.iconColor}
                     />
                 ) : null}
+                {/* Close-search overlay at the right edge. Only
+                    rendered when the host supplies onCloseSearch
+                    (folded search-contacts mode in ReadyBox — see
+                    that file's URIInput call site). Sits at the
+                    same right:4 slot the dialpad would occupy, and
+                    we don't render the dialpad in that mode so there's
+                    no collision. The button stays visible regardless
+                    of whether the field has text, since exiting search
+                    is the primary affordance in folded mode where the
+                    navbar (which usually carries the close-search
+                    button) has been hidden.
+                    Icon is "arrow-up" (up arrow) rather than the ×
+                    glyph used by the clear-text overlay at right:48,
+                    so the two buttons are visually distinct: × = wipe
+                    the typed search, ↑ = exit search mode (the search
+                    bar collapses back upward into the previous chrome
+                    where the navbar used to be — the up-arrow
+                    metaphor mirrors that motion). */}
+                {typeof this.props.onCloseSearch === 'function' ? (
+                    <IconButton
+                        icon="arrow-up"
+                        size={22}
+                        onPress={this.props.onCloseSearch}
+                        accessibilityLabel="Close search"
+                        style={uriInputStyles.dialpadOverlay}
+                        iconColor={darkColors.iconColor}
+                    />
+                ) : null}
                 {/* Dialpad toggle overlaid INSIDE the search bar,
                     always pinned flush against the right edge
                     (right:4). In invite mode the green Invite
@@ -226,8 +268,9 @@ class URIInput extends React.Component {
                     the dialpad rather than the other way around —
                     keeps the dialpad in the consistent "tap the
                     rightmost icon" spot across normal and invite
-                    flows. */}
-                {this.props.showDialpad ? (
+                    flows. Suppressed when onCloseSearch is provided
+                    so the close-X owns the right edge. */}
+                {this.props.showDialpad && typeof this.props.onCloseSearch !== 'function' ? (
                     <IconButton
                         icon="dialpad"
                         size={22}
@@ -428,6 +471,19 @@ URIInput.propTypes = {
     inviteEnabled: PropTypes.bool,
     onInvitePress: PropTypes.func,
     onCancelInvitePress: PropTypes.func,
+    // Close-search X overlay. When provided, an X icon renders at the
+    // right edge of the Searchbar (replacing the dialpad slot) and
+    // calls this handler. Used by ReadyBox in folded search-contacts
+    // mode where the NavigationBar is hidden — the in-bar X becomes
+    // the only way to exit search.
+    onCloseSearch: PropTypes.func,
+    // Fired the first time the user taps the search field within a
+    // given component lifecycle. ReadyBox uses this to kick the
+    // address-book load + OS contacts-permission prompt on explicit
+    // user search intent (the in-bar source picker that used to
+    // gate the prompt has been removed in favour of a unified
+    // Sylk + Phonebook search).
+    onSearchFocus: PropTypes.func,
     dark: PropTypes.bool, // <-- dark mode as prop
 };
 

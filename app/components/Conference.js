@@ -682,6 +682,13 @@ class Conference extends React.Component {
 						sylkDomain = {this.props.sylkDomain}
 						conferenceSettings = {this.props.conferenceSettings}
 						pstnRules = {this.props.pstnRules}
+						/* PSTN Caller-ID capture — see App.ensurePstnCallerIdCaptured.
+						   Called from ConferenceBox.inviteParticipants
+						   before forwarding URIs to the focus, so that
+						   inviting a phone number from inside a
+						   conference triggers the same one-shot
+						   READ_PHONE_NUMBERS prompt as a 1-to-1 dial. */
+						ensurePstnCallerIdCaptured = {this.props.ensurePstnCallerIdCaptured}
                    />
                 );
             } else {
@@ -800,6 +807,7 @@ Conference.propTypes = {
     muted                   : PropTypes.bool,
     defaultDomain           : PropTypes.string,
     pstnRules               : PropTypes.object,
+    ensurePstnCallerIdCaptured: PropTypes.func,
     startedByPush           : PropTypes.bool,
     inFocus                 : PropTypes.bool,
     toggleFavorite          : PropTypes.func,

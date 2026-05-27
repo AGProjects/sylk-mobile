@@ -2374,6 +2374,7 @@ class ContactsListBox extends Component {
             isLandscape={this.state.isLandscape}
             contacts={this.state.contacts}
             defaultDomain={this.props.defaultDomain}
+            defaultConferenceDomain={this.props.defaultConferenceDomain}
             accountId={this.state.accountId}
             favoriteUris={this.state.favoriteUris}
             messages={this.state.renderMessages}
@@ -2667,25 +2668,25 @@ class ContactsListBox extends Component {
     }
 
     getServerHistory() {
-        if (!this.state.accountId) {
-            return;
+        // DECOMMISSIONED. Server call history is no longer fetched
+        // standalone — it arrives as the call_history field of the
+        // sylk_settings.phtml snapshot inside App.refreshAccountInfo
+        // (with a 60s retry on failure). This method is kept as a
+        // stub so callers (pull-to-refresh, the
+        // refreshHistory-prop-change effect) compile, and it
+        // delegates to App.refreshAccountInfo so the user-visible
+        // "pull to reload" gesture still does something useful.
+        this.setState({ isRefreshing: false });
+        if (typeof this.props.refreshAccountInfo === 'function') {
+            this.props.refreshAccountInfo().catch(() => {});
         }
-        
-        if (!this.state.callHistoryUrl) {
-			return;
-        }
+        return;
 
-        if (this.ended || !this.state.accountId || this.state.isRefreshing) {
-            return;
-        }
-
-        //console.log('Get server history...');
-
-        this.setState({isRefreshing: true});
-
+        // Legacy DigestAuthRequest path retained below for reference.
+        // The early return above prevents any of it from executing.
+        // eslint-disable-next-line no-unreachable
         let history = [];
         let localTime;
-
         let getServerCallHistory = new DigestAuthRequest(
             'GET',
             `${this.state.callHistoryUrl}?action=get_history&realm=${this.state.accountId.split('@')[1]}`,
@@ -2873,6 +2874,23 @@ class ContactsListBox extends Component {
 		  return null;
 	  }
 
+	  // Theme-aware palette for the audio bubble's inner content. The
+	  // bubble wrapper itself (ChatBubble.js) is transparent in Night
+	  // mode and white in Day mode; the label + slider colors below
+	  // flip in lock-step so the controls stay readable on whichever
+	  // surface the wrapper exposes.
+	  const _audioTheme = DarkModeManager.getTheme();
+	  const audioFgColor          = _audioTheme.isDark ? '#FFFFFF' : '#111B21';
+	  const audioSliderColor      = _audioTheme.isDark ? '#ffffff' : '#4572A6';
+	  const audioSliderUnfilled   = _audioTheme.isDark ? 'rgba(255,255,255,0.3)' : 'rgba(69,114,166,0.25)';
+	  const audioSliderKnob       = _audioTheme.isDark ? '#ffffff' : '#4572A6';
+	  // Caption tint for the "Remote" / "Local" sub-labels under each
+	  // waveform strip. AudioWaveform's default is a 55%-alpha white
+	  // (only legible on dark surfaces), so we override with a low-alpha
+	  // dark grey in Day mode to keep that "secondary caption" feel
+	  // against the white bubble.
+	  const audioWaveformLabel    = _audioTheme.isDark ? 'rgba(255,255,255,0.55)' : 'rgba(17,27,33,0.55)';
+
 	  // Load duration if not already loaded
 	  if (currentMessage.audio && !audioDurations[currentMessage._id]) {
 		this.getAudioDuration(currentMessage.audio, currentMessage._id);
@@ -3028,7 +3046,7 @@ class ContactsListBox extends Component {
 			<Text
 			  style={[
 				styles.audioLabel,
-				{ marginBottom: 2, marginTop: 0, alignSelf: isIncoming ? 'flex-start' : 'flex-end' },
+				{ marginBottom: 2, marginTop: 0, alignSelf: isIncoming ? 'flex-start' : 'flex-end', color: audioFgColor },
 				labelPadding,
 			  ]}
 			  numberOfLines={1}
@@ -3083,6 +3101,7 @@ class ContactsListBox extends Component {
 			                    barCount={60}
 			                    channel="r"
 			                    label={stereo ? 'Remote' : null}
+			                    labelColor={audioWaveformLabel}
 			                    playedColor="#3498db"
 			                    unplayedColor="rgba(52, 152, 219, 0.25)"
 			                />
@@ -3096,6 +3115,7 @@ class ContactsListBox extends Component {
 			                    barCount={60}
 			                    channel="l"
 			                    label={stereo ? 'Local' : null}
+			                    labelColor={audioWaveformLabel}
 			                    playedColor="#2ecc71"
 			                    unplayedColor="rgba(46, 204, 113, 0.25)"
 			                />
@@ -3114,9 +3134,9 @@ class ContactsListBox extends Component {
 			  height={4}
 			  knobWidth={6}
 			  knobHeight={20}
-			  color={"#ffffff"}
-			  unfilledColor="rgba(255,255,255,0.3)"
-			  knobColor={"#ffffff"}
+			  color={audioSliderColor}
+			  unfilledColor={audioSliderUnfilled}
+			  knobColor={audioSliderKnob}
 			  onSeekStart={() => this.pauseAudioForScrub(currentMessage)}
 			  onSeek={(pct) => this.seekAudioMessage(currentMessage, pct)}
 			  onSeekChange={(pct) => this.onAudioBubbleScrubChange(currentMessage, pct)}
@@ -6030,6 +6050,14 @@ class ContactsListBox extends Component {
 					); 
 				}
         } else if (currentMessage.audio) {
+			// The audio bubble's outer wrapper (ChatBubble.js) is
+			// transparent in Night mode and white in Day mode, so the
+			// kebab icon, the "Call recording" / "Audio" label, and
+			// the cancel-transfer icon all need to flip alongside it.
+			// White on transparent → white on dark surface (Night, fine);
+			// white on white surface (Day) would make them invisible.
+			const _audioTextTheme = DarkModeManager.getTheme();
+			const _audioTextFg = _audioTextTheme.isDark ? 'white' : '#111B21';
 			return (
 				<View style={[{flexDirection: 'row', alignItems: 'flex-start', borderWidth: 0, borderColor: 'red',
 				justifyContent: 'space-between', // distribute items evenly
@@ -6041,7 +6069,7 @@ class ContactsListBox extends Component {
 							style={styles.audio}
 							size={20}
 							icon="menu"
-							iconColor='white'
+							iconColor={_audioTextFg}
 							onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
 						/>
 					  )}
@@ -6070,7 +6098,7 @@ class ContactsListBox extends Component {
 						{/* Label text on the left */}
 						<Text
 						  style={{
-							color: 'white',
+							color: _audioTextFg,
 							fontSize: 14,
 							flexShrink: 1,
 							textAlignVertical: 'center',
@@ -6115,14 +6143,14 @@ class ContactsListBox extends Component {
 						  size={24}
 						  onPress={() => this.cancelTransfer(currentMessage)}
 						  style={{ }}
-						  iconColor={'white'}
+						  iconColor={_audioTextFg}
 						/>
 						: null}
-							
+
 					   </View>
 					  </View>
 				</View>
-			); 
+			);
 
         } else if (currentMessage.image) {
             const fontColor = !isIncoming ? "black": "white";
@@ -7474,13 +7502,23 @@ scrollToMessage(id) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
 
             // The address-book pile is mixed into searchExtraItems in
-            // two cases:
+            // three cases:
             //   • the user has explicitly flipped the source toggle
-            //     to 'ab' (normal contacts-list browse path), OR
+            //     to 'ab' (normal contacts-list browse path — the
+            //     toggle UI is currently hidden in the main interface
+            //     but the code path is preserved), OR
             //   • we're in invite-to-conference mode, which merges
             //     Blink + Phonebook into a single picker list (no
             //     source toggle is shown for that workflow — the
-            //     user gets every reachable contact in one place).
+            //     user gets every reachable contact in one place), OR
+            //   • we're in the default Sylk view with an active
+            //     search (>2 chars). The main interface no longer
+            //     exposes a Sylk/Phonebook source picker — the search
+            //     unifies both sources so the user sees any matching
+            //     contact regardless of which corpus it lives in.
+            //     The default (no search) view still shows only Sylk
+            //     contacts, matching what the user expects when
+            //     browsing rather than searching.
             // Share-to-contacts stays Blink-only as before.
             //
             // In invite mode the AB pile is filtered down to PHONE
@@ -7492,11 +7530,18 @@ scrollToMessage(id) {
             // that getABContacts attaches (rather than URI-shape
             // sniffing, which misclassified phones whose URIs happen
             // to contain '@' — e.g. WhatsApp-augmented contacts).
-            // Outside invite mode (the normal AB browse) we still
-            // show both, since the user might be looking up an email
-            // to start a chat.
+            // Outside invite mode (the normal AB browse or the
+            // unified main-interface search) we still show both,
+            // since the user might be looking up an email to start
+            // a chat.
+            const unifiedSylkSearch =
+                !this.state.shareToContacts
+                && !this.state.inviteContacts
+                && contactSource !== 'ab'
+                && !!this.state.targetUri
+                && this.state.targetUri.length > 2;
             if (Array.isArray(this.state.contacts)
-                && (contactSource === 'ab' || this.state.inviteContacts)) {
+                && (contactSource === 'ab' || this.state.inviteContacts || unifiedSylkSearch)) {
                 if (this.state.inviteContacts) {
                     searchExtraItems = searchExtraItems.concat(
                         this.state.contacts.filter(c => {
@@ -7671,7 +7716,23 @@ scrollToMessage(id) {
                 return;
             }
 
-            if (this.state.filter && item.tags.indexOf(this.state.filter) > -1) {
+            // The "calls" category bar filter changed in v13 from a
+            // tag-based check (item.tags includes 'calls') to a
+            // column-based one (item.lastCallTimestamp not null). The
+            // tag check missed rows that were never tagged — rejected
+            // on connect, fast-cancelled, network failures — even
+            // though the user clearly placed/received the call.
+            // last_call_timestamp is stamped by updateHistoryEntry on
+            // every call end (fan-out across all rows matching the
+            // URI), so it's the authoritative "this contact has call
+            // activity" signal. This is a STRICT filter: rows without
+            // a last_call_timestamp are dropped from the Calls view
+            // (no fallthrough to the not-blocked branch).
+            if (this.state.filter === 'calls') {
+                if (item.lastCallTimestamp != null) {
+                    filteredItems.push(item);
+                }
+            } else if (this.state.filter && item.tags.indexOf(this.state.filter) > -1) {
                 filteredItems.push(item);
             } else if (this.state.blockedUris.indexOf(item.uri) === -1 && this.state.blockedUris.indexOf(fromDomain) === -1) {
                 filteredItems.push(item);
@@ -8516,6 +8577,26 @@ scrollToMessage(id) {
                   maxInputLength={16000}
                   tickStyle={{ color: 'green' }}
                   renderTicks={(currentMessage) => {
+                    // Ticks (✓ sent / ✓✓ received-displayed / 🕓 pending)
+                    // are a sender-side delivery indicator — they only
+                    // make sense on OUTGOING bubbles, where they tell
+                    // the local user that their own message was sent,
+                    // delivered, or read. On INCOMING (remote) bubbles
+                    // a tick would mis-read as "the remote user marked
+                    // your incoming message as read", which is non-
+                    // sensical. In Day theme the issue was especially
+                    // visible: ticks rendered onto the white incoming
+                    // bubble in plain green, making remote messages
+                    // look like they carried read/displayed receipts.
+                    // gifted-chat calls renderTicks for both sides
+                    // when the prop is set (the default-tick logic
+                    // that gates by user._id is bypassed entirely
+                    // when a custom renderTicks is supplied), so we
+                    // gate by direction explicitly here.
+                    if (currentMessage
+                            && currentMessage.direction === 'incoming') {
+                        return null;
+                    }
                     // Live-location bubbles: the IMDN ✓✓ only ever
                     // reflects the ORIGIN tick's delivery state, not
                     // any of the heartbeats that follow. Once the
