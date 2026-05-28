@@ -3584,24 +3584,44 @@ class AudioCallBox extends Component {
                         // the call is connecting — same vertical
                         // position as in-call so it doesn't visually
                         // jump when the call connects.
-                        <>
-                          {this._renderRecordControlOverlay()}
-                          <View key={'cb-btnbar-' + _callRemountKey} style={[buttonContainerClass, extraButtonContainerClass]}>
-                            {this.renderAudioDevicePicker(buttonSize, whiteButtonClass, _callRemountKey, slotContainerStyle)}
+                        //
+                        // Post-termination: after the call ends we sit
+                        // on this screen for a few seconds before the
+                        // app auto-returns to /ready (see the "go to
+                        // ready" timer in app.js). During that window
+                        // the audio-device picker and the record-arming
+                        // pill are noise — neither has an actionable
+                        // effect on a dead call, and the record pill in
+                        // particular has visually confused users
+                        // ("did the call get recorded?"). Hide them and
+                        // leave only the red hangup IconButton, which
+                        // doubles as a "dismiss / return to /ready now"
+                        // shortcut (its onPress fires user_cancel_call,
+                        // which hangupCall in app.js maps to
+                        // changeRoute('/ready', …)).
+                        (() => {
+                            const _callEnded = !!(this.state.call && this.state.call.state === 'terminated');
+                            return (
+                                <>
+                                  {!_callEnded && this._renderRecordControlOverlay()}
+                                  <View key={'cb-btnbar-' + _callRemountKey} style={[buttonContainerClass, extraButtonContainerClass]}>
+                                    {!_callEnded && this.renderAudioDevicePicker(buttonSize, whiteButtonClass, _callRemountKey, slotContainerStyle)}
 
-                            <View style={[slotContainerStyle, {marginLeft: hangupMarginLeft}]}>
-                                <TouchableHighlight style={styles.roundshape}>
-                                  <IconButton
-                                      key={'cb-btn-cancel-' + _callRemountKey}
-                                      size={buttonSize}
-                                      style={hangupButtonClass}
-                                      icon="phone-hangup"
-                                      onPress={this.cancelCall}
-                                  />
-                              </TouchableHighlight>
-                            </View>
-                          </View>
-                        </>
+                                    <View style={[slotContainerStyle, _callEnded ? null : {marginLeft: hangupMarginLeft}]}>
+                                        <TouchableHighlight style={styles.roundshape}>
+                                          <IconButton
+                                              key={'cb-btn-cancel-' + _callRemountKey}
+                                              size={buttonSize}
+                                              style={hangupButtonClass}
+                                              icon="phone-hangup"
+                                              onPress={this.cancelCall}
+                                          />
+                                      </TouchableHighlight>
+                                    </View>
+                                  </View>
+                                </>
+                            );
+                        })()
                     )
                 }
 

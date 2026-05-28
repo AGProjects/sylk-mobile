@@ -8106,6 +8106,45 @@ class Sylk extends Component {
 		AudioRouteModule.start(this.state.selectedDevice);	
     }
 
+	/** Emit one [disclaimer] log line per tracked disclaimer at app
+	 *  start (called from registrationStateChanged → registered).
+	 *  Reads each disclaimer's boolean + companion timestamp via the
+	 *  *.readAcknowledged / readAcknowledgedAt pair the three
+	 *  disclosure modules expose, then prints status + a formatted
+	 *  date so support / audit reviewers can confirm at a glance
+	 *  what the user has agreed to. Silent on per-disclaimer errors
+	 *  so a settings-bridge hiccup on one doesn't suppress the
+	 *  others. */
+	async _logDisclaimerSummary() {
+		const _fmt = (ts) => {
+			if (!ts || typeof ts !== 'number') return 'never';
+			try { return new Date(ts).toISOString(); } catch (e) { return String(ts); }
+		};
+		const _emit = async (label, mod) => {
+			try {
+				const agreed = await mod.readAcknowledged();
+				const at = typeof mod.readAcknowledgedAt === 'function'
+					? await mod.readAcknowledgedAt()
+					: 0;
+				utils.timestampedLog('[disclaimer]', label,
+					agreed ? 'agreed' : 'NOT agreed',
+					'at', _fmt(at));
+			} catch (e) {
+				utils.timestampedLog('[disclaimer]', label, 'read failed:',
+					e && e.message);
+			}
+		};
+		// Lazy-import to avoid pulling the disclosure modules into the
+		// hot-load path; only this audit reader needs them at the app
+		// level (per-feature gates pull them via their own imports).
+		const locMod = require('./locationDisclosure');
+		const callMod = require('./callRecordingDisclosure');
+		const confMod = require('./conferenceRecordingDisclosure');
+		_emit('location',            locMod);
+		_emit('call recording',      callMod);
+		_emit('conference recording', confMod);
+	}
+
 	audioManagerStop() {
 		// Belt-and-braces: if the proximity sensor blacked the screen mid-call
 		// and the final transition to FAR never made it through (sensor stuck
@@ -8116,13 +8155,42 @@ class Sylk extends Component {
 			utils.timestampedLog('[proximity] audioManagerStop turnScreenOn failed', e && e.message);
 		}
 
+		// Audio-mode diagnostic — capture the system's AudioManager mode
+		// (IN_COMMUNICATION / NORMAL / RINGTONE / ...) before AND after
+		// InCallManager.stop() so we can tell whether the stack actually
+		// returns the device to MODE_NORMAL post-call. The recording
+		// playback path uses MediaPlayer which expects MODE_NORMAL —
+		// staying in IN_COMMUNICATION (16 kHz mono, voice-comm routing)
+		// makes playback sound thin / muffled. Android-only (iOS doesn't
+		// expose the equivalent API the same way) and best-effort —
+		// suppressed if AudioRouteModule isn't linked in.
+		// Diagnostic log only — the JS-side reset has been removed
+		// now that AudioRouteModule.restoreAudioMode unconditionally
+		// restores to MODE_NORMAL (handler.java line ~1168). Keep the
+		// before/after log lines so a regression of the native restore
+		// is easy to spot from metro.log.
+		const _logAudioMode = async (when) => {
+			if (Platform.OS !== 'android') return;
+			if (!AudioRouteModule || typeof AudioRouteModule.getAudioModeName !== 'function') return;
+			try {
+				const mode = await AudioRouteModule.getAudioModeName();
+				utils.timestampedLog('[audio-mode] ' + when + ':',
+					mode, 'selectedDevice=', this.state.selectedAudioDevice);
+			} catch (e) {
+				utils.timestampedLog('[audio-mode] ' + when + ': lookup failed', e && e.message);
+			}
+		};
+		_logAudioMode('audioManagerStop before');
+
 		if (this.useInCallManger) {
 		    InCallManager.stop();
 			if (this._audioDevicePollInterval) { clearInterval(this._audioDevicePollInterval); this._audioDevicePollInterval = null; }
+			setTimeout(() => { _logAudioMode('audioManagerStop after (+500ms)'); }, 500);
 		    return;
 	    }
 
 		AudioRouteModule.stop();
+		setTimeout(() => { _logAudioMode('AudioRouteModule.stop after (+500ms)'); }, 500);
     }
 
 	async selectAudioDevice(deviceType) {
@@ -9914,6 +9982,15 @@ class Sylk extends Component {
                 clearTimeout(this._switchInProgressTimer);
                 this._switchInProgressTimer = null;
             }
+
+            // Disclaimer audit log. Emits one [disclaimer] line per
+            // tracked disclaimer (location, call recording, conference
+            // recording) showing agreement status + timestamp. Useful
+            // for support cases ("when did this user agree to call
+            // recording?") and for catching missing disclaimers
+            // post-upgrade. Best-effort — wrap in try/catch so a
+            // settings-bridge hiccup doesn't break registration.
+            this._logDisclaimerSummary();
 
 			// Pass the timestamp of the last synced message as a fallback
 			// `since`. If the server has pruned the lastSyncId we still
@@ -12019,9 +12096,45 @@ class Sylk extends Component {
                 // still surface the reason as a system notification,
                 // since there's no in-screen affordance to render it.
                 if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
-                    this.setState({terminatedReason: reason});
+                    // Call-swap guard: if the terminating call is no
+                    // longer the active one (the user accepted a new
+                    // incoming call and we hung this one up with
+                    // reason='accept_new_call'), don't write its SIP
+                    // reason to app state. CallOverlay's render uses
+                    // state.terminatedReason for the call-screen
+                    // subtitle and would otherwise paint e.g. "Hangup"
+                    // — the OLD call's wire-side reason — onto the new
+                    // call's screen while it's still in 'progress'
+                    // (see CallOverlay.render's 'progress' branch).
+                    // The activeCall ref captures the call that's
+                    // currently being shown; the old terminator can
+                    // still drive the system-notification path below
+                    // for non-call routes via the else branch.
+                    const _active = this.state.currentCall || this.state.incomingCall;
+                    if (!_active || _active.id === call.id) {
+                        this.setState({terminatedReason: reason});
+                    }
                 } else {
-                    this._notificationCenter.postSystemNotification(reason);
+                    // Snackbar post on call termination is suppressed
+                    // for the routine "call ended after X" / "Hangup"
+                    // class of reasons — the user already knows the
+                    // call ended (ring tone stopped, CallOverlay
+                    // dismissed) and a follow-up snackbar adds noise
+                    // without information. "Payment required" is
+                    // ALSO suppressed here because it already has a
+                    // dedicated UI: the PaymentInfoModal popped a
+                    // few lines above (search for
+                    // setShowPaymentInfoModal) carries the bank-
+                    // transfer details inline, and the system-
+                    // message breadcrumb saves the link in chat
+                    // history. The snackbar would just stack a
+                    // third surface over the same information.
+                    const _r = typeof reason === 'string' ? reason : '';
+                    const _isRoutineEnd =
+                        /^(call ended|hangup|busy|cancelled|canceled|no answer|terminated|bye|ok|payment required)\b/i.test(_r.trim());
+                    if (!_isRoutineEnd) {
+                        this._notificationCenter.postSystemNotification(reason);
+                    }
                 }
 
                 // call.mediaTypes is stamped on the SylkRTC call at
@@ -14117,11 +14230,74 @@ class Sylk extends Component {
             return;
         }
 
-        if (reason === 'user_cancel_call' ||
+        if (reason === 'accept_new_call') {
+            // Call-swap path: user accepted a second incoming call while
+            // already in an active one. We need to tear the old call down
+            // and reuse the same /call screen for the new one. Previously
+            // this routed to /ready as part of the long if-chain below,
+            // and getLocalMedia('/call') routed back ~5 s later once the
+            // media stream resolved — visible to the user as a momentary
+            // bounce to the contacts list and a stale-looking call
+            // screen.
+            //
+            // Stay on /call instead. The render passes
+            //   call = activeCall = state.currentCall || state.incomingCall
+            // to AudioCallBox, so the moment we null out currentCall the
+            // held incomingCall becomes the active call and AudioCallBox
+            // stays mounted, switching its displayed contact via the
+            // remoteIdentity-based callContact resolution in render()
+            // (see app.call() ~line 34354).
+            //
+            // We inline the same cleanup the changeRoute('/ready', ...)
+            // path did for this reason:
+            //   - clear stale 1:1-call state but PRESERVE incomingCall
+            //   - release the old audio session + local media
+            //   - re-acquire media for the new call
+            // …minus the changeRoute itself.
+            let _messages = this.state.messages;
+            if (this.state.callContact && this.state.callContact.uri in _messages) {
+                delete _messages[this.state.callContact.uri];
+            }
+
+            this.setState({
+                outgoingCallUUID: null,
+                currentCall: null,
+                callContact: null,
+                messages: {},
+                selectedContact: null,
+                inviteContacts: false,
+                selectedContacts: [],
+                sourceContact: null,
+                // Hold the new incoming call across the swap — it's
+                // the call we're about to answer below.
+                incomingCall: this.state.incomingCall,
+                reconnectingCall: false,
+                muted: false,
+                // Clear any stale subtitle reason from a prior call.
+                // The old call's own 'terminated' event will fire
+                // shortly afterwards; the activeCall guard at the
+                // setState in callStateChanged ('terminated' switch
+                // branch) prevents that write from clobbering the new
+                // call's "Connecting…" / "Call in progress…" subtitle.
+                terminatedReason: null
+            });
+
+            this.stopRingback();
+            this.audioManagerStop();
+            this.closeLocalMedia();
+
+            if (this.state.incomingCall) {
+                const _hasVideo = !!(this.state.incomingCall.mediaTypes
+                                     && this.state.incomingCall.mediaTypes.video);
+                // getLocalMedia eventually does changeRoute('/call',
+                // 'media_ready'); since we're already on /call this is
+                // a no-op (changeRoute short-circuits on route equality).
+                this.getLocalMedia(Object.assign({audio: true, video: _hasVideo}), '/call');
+            }
+        } else if (reason === 'user_cancel_call' ||
             reason === 'user_hangup_call' ||
             reason === 'answer_failed' ||
             reason === 'callkeep_hangup_call' ||
-            reason === 'accept_new_call' ||
             reason === 'stop_preview' ||
             reason === 'escalate_to_conference' ||
             reason === 'user_hangup_conference_confirmed' ||
@@ -14845,10 +15021,22 @@ class Sylk extends Component {
 			}
         }
         
-        if (this.state.currentCall && this.state.incomingCall && this.state.currentCall === this.state.incomingCall && this.state.incomingCall.id !== callUUID) {
-            utils.timestampedLog('Reject second incoming [call]');
-            this.callKeeper.rejectCall(callUUID);
-        }
+        // NOTE: previously we auto-rejected a second incoming call here when
+        // the existing currentCall was itself an inbound call
+        // (state.currentCall === state.incomingCall). That bricked the
+        // "accept new, hang up old" UX: rejectCall() registered the new UUID
+        // in CallManager._terminatedCalls, so when the user later pressed
+        // Accept on the CallKeep panel, CallManager.acceptCall short-circuited
+        // into endCall() and never forwarded to app.acceptCall — which is the
+        // only place that hangs up the current call before accepting the new
+        // one (app.acceptCall, "will hangup current call first" branch).
+        // Result: caller kept ringing, old call stayed alive. The Sofia
+        // "two incoming calls" limitation cited up by incomingCallFromWebSocket
+        // doesn't apply once the user opts to drop the existing call, which is
+        // exactly what acceptCall does for them. Let the new call ring; the
+        // accept path will tear the first one down with reason
+        // 'accept_new_call' and resume answering the second one in
+        // callStateChanged.
 
         if (this.state.account && from === this.state.account.id && this.state.currentCall && this.state.currentCall.remoteIdentity.uri === from) {
             utils.timestampedLog('Reject [call] to myself', callUUID);
@@ -14882,10 +15070,32 @@ class Sylk extends Component {
         }
 
         if (this.isConference()) {
-            utils.timestampedLog('Reject [call] while in a conference', callUUID);
-            if (to !== this.state.targetUri) {
-                this._notificationCenter.postSystemNotification('Missed call from', {body: from});
-            }
+            // While the user is in a conference, a parallel 1-to-1
+            // incoming call is auto-rejected — the caller hears the
+            // standard reject response (sylkrtc's terminate(),
+            // typically a Busy Here / Decline), and the user gets a
+            // missed-call notification so they can call back after
+            // the conference. This is intentionally different from
+            // a 1-to-1 active call, which leaves the second call
+            // ringing so the user can choose to accept (the
+            // accept-new-call path tears down the first call
+            // automatically). A conference can't be torn down that
+            // cheaply, so we don't even offer the choice.
+            //
+            // Earlier this notification was gated on
+            // `to !== this.state.targetUri` to suppress the case
+            // where the call was somehow routed to the conference
+            // URI itself. That gate hid the notification on the
+            // common case where `to` wasn't passed by the caller
+            // (incomingCallFromWebSocket / push paths) AND on
+            // legitimate direct calls when the conference URI
+            // happened to match — leaving the user unaware
+            // someone tried to reach them. Always notify; the
+            // tiny risk of a duplicate self-ring notification is
+            // outweighed by the "I had no idea X tried to call"
+            // bug it created.
+            utils.timestampedLog('Reject [call] while in a conference', callUUID, 'from', from);
+            this._notificationCenter.postSystemNotification('Missed call from', {body: from});
             this.callKeeper.rejectCall(callUUID);
             return true;
         }
@@ -20314,7 +20524,25 @@ class Sylk extends Component {
         // tick counter still has full data.
         if (category === 'location') {
             query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
-        } else if (category && category !== 'text') {
+        } else if (category === 'text' || category === 'links') {
+            // Text & Links share the same SQL slice: explicit text/*
+            // content types only. Pre-fix this branch fell through
+            // with no extra clause, which let through every
+            // metadata-bearing row (sylk-message-metadata for
+            // reactions / replies / location ticks,
+            // sylk-account-delete-request, pgp-public-key
+            // handshakes, etc.). sql2GiftedChat returned null for
+            // those JS-side, but the SQL was still pulling and
+            // (for encrypted rows) decrypting them — wasted work
+            // that scaled with the conversation length. Push the
+            // text-only gate down into SQL so the slice we get
+            // back already only contains text/plain and text/html
+            // — the two content types unreadCounterTypes treats
+            // as user-visible text (text/pgp-public-key
+            // deliberately excluded). 'links' narrows further in
+            // JS via the URL post-filter in ContactsListBox.
+            query = query + " and content_type in ('text/plain', 'text/html')";
+        } else if (category) {
             // Media categories (image / video / audio / other)
             // narrow to file-transfer rows exclusively. The old
             // `metadata != ''` clause let through every metadata-
@@ -20340,7 +20568,31 @@ class Sylk extends Component {
         await this.ExecuteQuery(query, params).then((results) => {
             rows = results.rows;
             total = rows.item(0).rows;
-            utils.timestampedLog('[message] Total', total, 'messages exchanged with', uris.join(', '));
+            // What `total` actually is:
+            //   • No filter        → conversation total across all message types.
+            //   • category='location' → count of location origin rows.
+            //   • category='image' | 'video' | 'audio' | 'other'
+            //                        → count of ALL file-transfer rows
+            //                          (the SQL gate is content_type =
+            //                          'application/sylk-file-transfer';
+            //                          the actual image/video/audio
+            //                          split happens further down in
+            //                          JS, after metadata is parsed,
+            //                          and lands as the smaller "loaded
+            //                          N messages exchanged" number).
+            //   • pinned=true     → count of pinned rows.
+            // Naming is explicit about that breadth so the line
+            // doesn't get re-read as "242 audio messages" when the
+            // user asked for audio and is actually seeing the
+            // file-transfer superset count.
+            const _scopeLabel = has_filter
+                ? (category === 'location' ? 'location rows'
+                    : (category === 'text' ? "text rows (text/plain + text/html only)"
+                    : (category === 'links' ? "text rows (text/plain + text/html only; URL filter applied later)"
+                    : (category ? 'file-transfer rows (image+video+audio+other)'
+                    : (pinned ? 'pinned rows' : 'filtered rows')))))
+                : 'rows (all message types)';
+            utils.timestampedLog('[message] SQL count:', total, _scopeLabel, 'with', uris.join(', '));
         }).catch((error) => {
             console.log('SQL error:', error);
         });
@@ -20464,7 +20716,25 @@ class Sylk extends Component {
         // above for why 'location' takes its own clause.
         if (category === 'location') {
             query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
-        } else if (category && category !== 'text') {
+        } else if (category === 'text' || category === 'links') {
+            // Text & Links share the same SQL slice: explicit text/*
+            // content types only. Pre-fix this branch fell through
+            // with no extra clause, which let through every
+            // metadata-bearing row (sylk-message-metadata for
+            // reactions / replies / location ticks,
+            // sylk-account-delete-request, pgp-public-key
+            // handshakes, etc.). sql2GiftedChat returned null for
+            // those JS-side, but the SQL was still pulling and
+            // (for encrypted rows) decrypting them — wasted work
+            // that scaled with the conversation length. Push the
+            // text-only gate down into SQL so the slice we get
+            // back already only contains text/plain and text/html
+            // — the two content types unreadCounterTypes treats
+            // as user-visible text (text/pgp-public-key
+            // deliberately excluded). 'links' narrows further in
+            // JS via the URL post-filter in ContactsListBox.
+            query = query + " and content_type in ('text/plain', 'text/html')";
+        } else if (category) {
             // Media categories (image / video / audio / other)
             // narrow to file-transfer rows exclusively. The old
             // `metadata != ''` clause let through every metadata-
@@ -21139,6 +21409,18 @@ class Sylk extends Component {
 			// synthesised bubble's createdAt; the forEach now skips
 			// live-location bubbles, so the secondary query's
 			// synthesised bubbles can no longer bump contact.timestamp.
+			//
+			// Gate: only run when the user is browsing the mixed
+			// timeline (no category filter) or explicitly filtering
+			// to locations. Other category fetches (image / video /
+			// audio / file / pinned) have no business pulling 1000
+			// extra location rows — that was both a wasted SQL
+			// round-trip per chip tap AND a confusing log line
+			// ("[location] secondary query: added 247 entries"
+			// printed even when the user asked for audio).
+			if (category && category !== 'location') {
+				// Skip — see gate comment above.
+			} else
 			try {
 				const locationQuery = `SELECT rowid, * FROM messages
 					WHERE account = ?
@@ -34364,9 +34646,54 @@ return (
         // raw object/null.
         const videoMuted = !!this.state.incomingCall;
 
+        // Compute the <Call> mount key (see the comment on the key prop
+        // below for what this is for). When activeCall is non-null we
+        // use its id and stash it; when it goes null (the post-hangup
+        // "few seconds before /ready" window) we keep returning the
+        // last-seen id, so React keeps the existing Call mounted and
+        // its internal state.call retention can keep showing the
+        // "Call ended" subtitle + hangup-only action bar. A FRESH
+        // call later will have a different id and produce the desired
+        // remount; only same-call transitions (non-null → null →
+        // back-to-null) are stabilised here.
+        if (call) {
+            this._lastActiveCallId = call.id;
+        }
+        const _callMountKey = call
+            ? call.id
+            : (this._lastActiveCallId || 'no-call');
+
         return (
             <Fragment>
             <Call
+                /* key={activeCall.id}: force a fresh mount whenever the
+                   active call's id changes. We rely on this for the
+                   "accept new while in active call" swap path
+                   (hangupCall(reason='accept_new_call') in app.js): we
+                   stay on /call across the swap so the user doesn't
+                   see a bounce to /ready, but Call.js holds its own
+                   call / direction / localMedia state internally. If
+                   we let it survive the prop change A → B, its
+                   componentWillReceiveProps hits the
+                   `nextProps.localMedia && !this.state.localMedia`
+                   gate and skips mediaPlaying (because state.localMedia
+                   is the OLD stream) — call.answer() never fires on
+                   the new call and it times out at "connecting" on
+                   both ends. Tying the key to call.id makes React
+                   unmount the old Call instance and mount a fresh
+                   one, which is what the previous (/ready bounce →
+                   /call) flow effectively did via the route change.
+                   When activeCall goes null (post-hangup window),
+                   we deliberately keep the previous id (via
+                   _lastActiveCallId above) so the post-call screen
+                   stays mounted and AudioCallBox's own state.call
+                   retention (which is gated on `nextProps.call !==
+                   null` in its cwrp at AudioCallBox.js:1465) keeps
+                   pointing at the just-terminated call object — that's
+                   what drives the `_callEnded` check in the
+                   pre-connection bar so the audio-device picker
+                   hides and only the red hangup button remains. */
+                key = {_callMountKey}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 /* PSTN dialing rules from the per-domain

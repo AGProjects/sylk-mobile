@@ -1,7 +1,7 @@
 'use strict';
 
 import React, {useState, Component, Fragment} from 'react';
-import { Alert, Clipboard, Platform, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Switch, PanResponder} from 'react-native';
+import { Alert, Clipboard, Platform, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Switch, PanResponder, NativeModules} from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
 import classNames from 'classnames';
@@ -10,7 +10,7 @@ import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
 import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu } from 'react-native-paper';
-import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated} from 'react-native';
+import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated, Easing} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -74,6 +74,12 @@ import InCallManager from 'react-native-incall-manager';
 
 import xss from 'xss';
 import * as RNFS from 'react-native-fs';
+import CallRecorder from '../CallRecorder';
+import CallRecordingDisclosureModal from './CallRecordingDisclosureModal';
+import {
+    readAcknowledged as readConferenceRecordingDisclosure,
+    setAcknowledged  as setConferenceRecordingDisclosure,
+} from '../conferenceRecordingDisclosure';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 
 import md5 from "react-native-md5";
@@ -483,6 +489,32 @@ class ConferenceBox extends Component {
             // PARTICIPANT_STALL_MS. Tile hidden + grid recalculated until
             // data resumes.
             stalledParticipants: new Set(),
+            // Multi-track conference recording state. Sibling to
+            // AudioCallBox's isRecording/recordingElapsedSec, but the
+            // file model is different: one .wav per source (mic +
+            // each remote participant) plus a manifest.json. See
+            // CallRecorder.js for the on-disk layout.
+            //   • isConferenceRecording — toggles the red record dot
+            //     + the action-bar button colour.
+            //   • conferenceRecordingDir — absolute path of the
+            //     directory the native recorder is populating; set
+            //     when _startConferenceRecording resolves.
+            //   • conferenceRecordingElapsedSec — driven by a 1 Hz
+            //     setInterval for the action-bar timer pill.
+            isConferenceRecording: false,
+            conferenceRecordingDir: null,
+            conferenceRecordingElapsedSec: 0,
+            // Conference recording disclaimer gate. The disclaimer is
+            // stored independently from the 1-to-1 call recording one
+            // (see conferenceRecordingDisclosure.js) because recording
+            // a multi-party room is meaningfully different — more
+            // consents matter, the moderator may not be you, the file
+            // captures every attendee at once. showConferenceRecording
+            // Disclosure flips true on the first Record tap if the
+            // flag isn't already set; the modal's onContinue persists
+            // the flag and resumes the start, onCancel just closes
+            // and leaves the recorder un-started.
+            showConferenceRecordingDisclosure: false,
 			availableAudioDevices : this.props.availableAudioDevices,
 			selectedAudioDevice: this.props.selectedAudioDevice,
 			audioDevicePickerVisible: false,
@@ -883,6 +915,99 @@ class ConferenceBox extends Component {
             // console.log('[ConferenceBox] sipConferenceParticipants duration=' + duration + ':\n' +
             //             JSON.stringify(participants, null, 2));
             const _list = Array.isArray(participants) ? participants : [];
+            // Diagnostic — proves the listener is actually firing and
+            // shows the size + types of the snapshot so we can match
+            // it against the Conference.js "SIP conference participants:"
+            // log line which is on the same emit. If this line is
+            // missing while Conference.js's is present, the
+            // ConferenceBox listener never got wired up (timing /
+            // remount race) and we'll need to defer the attach.
+            try {
+                const _summary = _list.map((sp) => {
+                    if (!sp) return '?';
+                    const _muted = (sp.endpoints && sp.endpoints[0]
+                        && sp.endpoints[0].muted) ? '[muted]' : '';
+                    return (sp.type || '?') + ':' + (sp.uri || '?') + _muted;
+                }).join(', ');
+                console.log('[ConferenceBox] sipConferenceParticipants tick:',
+                    'size=', _list.length,
+                    'primed=', !!this._sipRosterPrimed,
+                    'prev=', (this._prevSipUris ? Array.from(this._prevSipUris).join(',') : '∅'),
+                    'curr=[', _summary, ']');
+            } catch (e) {
+                console.log('[ConferenceBox] sipConferenceParticipants tick log failed:',
+                    e && e.message);
+            }
+
+            // Diff the SIP roster so PSTN / SIP callers get the same
+            // join/leave chat-log entries the WebRTC participants get
+            // via onParticipantJoined / onParticipantLeft. The
+            // videoroom's `participantJoined` event only fires for
+            // WebRTC peers; SIP / PSTN callers come through the audio
+            // bridge and only ever show up in the
+            // sipConferenceParticipants snapshot we're processing
+            // here. Without this, you'd see "X was invited" in the
+            // chat but no matching "X joined" when they connected,
+            // and no "X left" when they hung up — exactly the
+            // symptom you described.
+            //
+            // _prevSipUris is the participant URI set from the
+            // previous tick. New URIs → joins, removed URIs → leaves.
+            // Bridge entries are skipped (sp.type === 'bridge') so
+            // the plumbing doesn't show up in the chat audit log,
+            // matching what we do for WebRTC bridge tiles.
+            try {
+                const _prevSet = this._prevSipUris || new Set();
+                const _currSet = new Set();
+                const _currByUri = new Map();
+                for (const sp of _list) {
+                    if (!sp || !sp.uri) continue;
+                    if (sp.type === 'bridge') continue;
+                    const _u = String(sp.uri);
+                    _currSet.add(_u);
+                    _currByUri.set(_u, sp);
+                }
+                // Only post join/leave messages once the FIRST snapshot
+                // has been seen — otherwise the very first snapshot
+                // (which already has the existing participants in it)
+                // would generate a spurious "joined" for everyone who
+                // was in the room before we did. After the first
+                // snapshot, _prevSipUris is populated and the diff
+                // produces the right thing.
+                if (this._sipRosterPrimed) {
+                    for (const _u of _currSet) {
+                        if (!_prevSet.has(_u)) {
+                            this.postChatSystemMessage(_u + ' joined', true);
+                            // Auto-unmute workaround. The server-side
+                            // _auto_mute_new_sip_participants in
+                            // sylkserver/webrtcgateway/handler.py
+                            // muted every new SIP arrival before we
+                            // added the room-size gate; in any
+                            // deployment that hasn't been restarted
+                            // since (or where the gate misfires) the
+                            // PSTN caller still arrives muted. When
+                            // the WebRTC roster is just me (no other
+                            // WebRTC publishers) and a new SIP caller
+                            // appears, schedule an unmute REFER 1s
+                            // later so the small 1-on-1 case (the
+                            // most surprising one — you dialled a
+                            // PSTN number and can't hear them)
+                            // recovers automatically.
+                            this._maybeAutoUnmuteNewSipParticipant(_u, _currByUri.get(_u));
+                        }
+                    }
+                    for (const _u of _prevSet) {
+                        if (!_currSet.has(_u)) {
+                            this.postChatSystemMessage(_u + ' left', true);
+                        }
+                    }
+                }
+                this._prevSipUris = _currSet;
+                this._sipRosterPrimed = true;
+            } catch (e) {
+                console.log('[conference] [chat] sip roster diff failed:', e && e.message);
+            }
+
             // Cache on the call object so a subsequent ConferenceBox
             // remount can seed state.sipParticipants from it instead
             // of starting empty. Conference.js also attaches its own
@@ -1118,6 +1243,609 @@ class ConferenceBox extends Component {
 		return this.state.participants.length > 0;
 	}
 
+    /** Heuristic — true if `p` is the PSTN / SIP audio bridge leg
+     *  rather than a real attendee. Mirrors the _isBridge function
+     *  used by the audio-tile builder and the per-participant
+     *  bandwidth overlay so all three surfaces agree on what counts
+     *  as "plumbing". Display-name "bridge" + URI rooted in
+     *  @conference. are the load-bearing tests; AOR cross-check
+     *  against sipParticipants[type==='bridge'] catches the cases
+     *  where the display name is missing. */
+    _isBridgeParticipant(p) {
+        if (!p || !p.identity) return false;
+        const dn = p.identity._displayName || p.identity.displayName || '';
+        if (/bridge/i.test(dn)) return true;
+        const uri = p.identity._uri || p.identity.uri || '';
+        if (uri.indexOf('@conference.') > -1) return true;
+        // AOR check — strip scheme + params, compare against the
+        // sipParticipants snapshot for any entry tagged type='bridge'.
+        const _aor = (() => {
+            let s = uri;
+            if (s.indexOf('sip:') === 0) s = s.slice(4);
+            else if (s.indexOf('sips:') === 0) s = s.slice(5);
+            return s.split(';')[0];
+        })();
+        if (_aor && Array.isArray(this.state.sipParticipants)) {
+            for (const sp of this.state.sipParticipants) {
+                if (sp && sp.type === 'bridge') {
+                    let bs = sp.uri || '';
+                    if (bs.indexOf('sip:') === 0) bs = bs.slice(4);
+                    else if (bs.indexOf('sips:') === 0) bs = bs.slice(5);
+                    const _baor = bs.split(';')[0];
+                    if (_baor && _baor === _aor) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** When a new SIP/PSTN participant joins, schedule a 1s deferred
+     *  unmute IF the WebRTC roster is just me (no other WebRTC
+     *  publishers in this.state.participants).
+     *
+     *  Why this exists: sylkserver's webrtcgateway runs
+     *  _auto_mute_new_sip_participants on every conference-info
+     *  NOTIFY and sends REFER ;method=MUTE to the focus for newly-
+     *  seen SIP arrivals. I added a room-size gate there (skip the
+     *  mute if participants <= 3 and no active speakers), but the
+     *  gate only takes effect after sylkserver restart, and there
+     *  are deployments where we don't control the restart cadence.
+     *  This client-side workaround undoes the mute for the most
+     *  surprising case: you dialled a PSTN number, you're the only
+     *  one in the room, and you can't hear them because they came
+     *  in muted.
+     *
+     *  The 1s delay lets the mute REFER land and propagate first
+     *  (otherwise our unmute REFER races the mute REFER and the
+     *  result depends on focus serialization order); we then send
+     *  the un-mute and the focus broadcasts the un-muted state via
+     *  the next conference-info NOTIFY, which both updates the SIP
+     *  participant's tile and unmutes their audio stream so we
+     *  actually hear them.
+     *
+     *  Only fires when alone in the WebRTC sense — multi-WebRTC
+     *  rooms keep the auto-mute behaviour so a moderator's choice
+     *  to mute newcomers isn't undone by everyone else's client.
+     *  Also gated on the new arrival's reported muted state at the
+     *  +1s tick: if they came in un-muted (e.g. the server gate is
+     *  working) we don't send a redundant un-mute REFER. */
+    _maybeAutoUnmuteNewSipParticipant(uri, snapshotEntry) {
+        if (!uri || !snapshotEntry) return;
+        const myPid = snapshotEntry.participant_id;
+        if (!myPid) return;
+        // Skip the bridge itself — already filtered upstream in the
+        // SIP diff (sp.type === 'bridge' is excluded from _currSet)
+        // but belt-and-braces in case the heuristic changes.
+        if (snapshotEntry.type === 'bridge') return;
+        // Skip if there's already another WebRTC publisher — the mute
+        // was probably intentional (moderator running a managed-floor
+        // meeting). Counted at SCHEDULE time, then re-checked at
+        // FIRE time to handle the race where someone else joins in
+        // the 1s window.
+        const _webrtcOthersNow = (this.state.participants || []).length;
+        if (_webrtcOthersNow > 0) {
+            console.log('[conference] [auto-unmute] skipping for', uri,
+                '— there are', _webrtcOthersNow, 'WebRTC publishers');
+            return;
+        }
+        setTimeout(() => {
+            if (this.unmounted) return;
+            if (!this.props.call) return;
+            // Re-check at fire time so a join during the 1s window
+            // doesn't trigger a stale unmute. Same "only me" gate
+            // as above.
+            const _webrtcOthersThen = (this.state.participants || []).length;
+            if (_webrtcOthersThen > 0) {
+                console.log('[conference] [auto-unmute] cancelled for', uri,
+                    '— WebRTC roster grew to', _webrtcOthersThen);
+                return;
+            }
+            // Re-look-up the participant in the current snapshot —
+            // they may have left during the 1s window, or their pid
+            // may have changed (rare but possible for bridge-renamed
+            // entries). If they're already un-muted server-side
+            // there's nothing to do.
+            const _currentList = this.state.sipParticipants || [];
+            const _current = _currentList.find(
+                (sp) => sp && sp.uri === uri && sp.participant_id);
+            if (!_current) {
+                console.log('[conference] [auto-unmute] cancelled for', uri,
+                    '— no longer in SIP roster');
+                return;
+            }
+            if (!_current.muted) {
+                console.log('[conference] [auto-unmute] already un-muted server-side:',
+                    uri, 'pid=', _current.participant_id);
+                return;
+            }
+            if (typeof this.props.call.muteParticipant !== 'function') {
+                console.log('[conference] [auto-unmute] muteParticipant RPC unavailable on call');
+                return;
+            }
+            console.log('[conference] [auto-unmute] sending unmute for', uri,
+                'pid=', _current.participant_id);
+            try {
+                // muteParticipant(pid, false) is the unmute branch —
+                // same RPC the per-tile mute toggle uses (see the
+                // SIP tile mute IconButton around line 7134).
+                this.props.call.muteParticipant(_current.participant_id, false);
+                this.postChatSystemMessage(
+                    'Auto-unmuted ' + uri + ' (you are alone in the room)',
+                    true);
+            } catch (e) {
+                console.log('[conference] [auto-unmute] failed:', e && e.message);
+            }
+        }, 1000);
+    }
+
+    // Pulse opacity for the recording pill. Same shape as the
+    // AudioCallBox 1-to-1 recorder pill (_recordPulse there): loops
+    // 1 → 0.4 → 1 over ~1.2 s while recording, sits at 1 otherwise.
+    // Instance field so it survives re-renders without resetting;
+    // started from _startConferenceRecording, stopped from
+    // _stopConferenceRecording. Lives on the class instance (set in
+    // constructor via the `=` initializer pattern wasn't reliable
+    // across the older React Native classes here, so explicit
+    // assignment in componentDidMount handles it — guarded so a
+    // hot-reload doesn't double-allocate the Animated.Value).
+    _ensureRecordPulse() {
+        if (!this._recordPulse) {
+            this._recordPulse = new Animated.Value(1);
+        }
+    }
+
+    _startRecordPulse() {
+        this._ensureRecordPulse();
+        if (this._recordPulseLoop) return;
+        this._recordPulseLoop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(this._recordPulse, {
+                    toValue: 0.4,
+                    duration: 600,
+                    easing: Easing.inOut(Easing.ease),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(this._recordPulse, {
+                    toValue: 1,
+                    duration: 600,
+                    easing: Easing.inOut(Easing.ease),
+                    useNativeDriver: true,
+                }),
+            ])
+        );
+        this._recordPulseLoop.start();
+    }
+
+    _stopRecordPulse() {
+        if (this._recordPulseLoop) {
+            this._recordPulseLoop.stop();
+            this._recordPulseLoop = null;
+        }
+        if (this._recordPulse) {
+            this._recordPulse.setValue(1);
+        }
+    }
+
+    /** Render the AudioCallBox-style recording pill. Two visual
+     *  states (no "armed" because a conference is already live by
+     *  the time the user sees the action bar):
+     *
+     *    - Idle:      translucent white background, red dot, label
+     *                 "Record conference".
+     *    - Active:    solid red background, white dot, label
+     *                 "Recording". Pill opacity pulses via
+     *                 _recordPulse so the bar visually communicates
+     *                 "we're capturing right now".
+     *
+     *  Returns null if the native conference-mix API is missing so
+     *  the surrounding layout collapses cleanly (same behaviour as
+     *  the previous IconButton variant). */
+    _renderConferenceRecordControl() {
+        if (!CallRecorder.conferenceAvailable()) return null;
+        this._ensureRecordPulse();
+
+        const isRec = !!this.state.isConferenceRecording;
+        let bg, label, dotColor;
+        if (isRec) {
+            bg = 'rgba(220, 30, 30, 0.95)';
+            dotColor = '#fff';
+            label = 'Recording';
+        } else {
+            bg = 'rgba(255, 255, 255, 0.18)';
+            dotColor = '#e53935';
+            label = 'Record conference';
+        }
+
+        return (
+            <Animated.View style={{ opacity: isRec ? this._recordPulse : 1 }}>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        this._toggleConferenceRecording();
+                    }}
+                    style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: bg,
+                        // Pill dimensions cloned verbatim from
+                        // AudioCallBox._renderRecordControl so the
+                        // conference pill is visually identical to
+                        // the one users already know from 1-to-1
+                        // calls — same paddingVertical/Horizontal,
+                        // same borderRadius, same dot 12 × 12 with
+                        // marginLeft -10 to anchor left.
+                        paddingVertical: 10,
+                        paddingHorizontal: 24,
+                        borderRadius: 16,
+                    }}
+                >
+                    <View style={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: 6,
+                        backgroundColor: dotColor,
+                        marginLeft: -10,
+                        marginRight: 12,
+                    }} />
+                    <Text style={{
+                        color: '#fff',
+                        fontWeight: 'bold',
+                        fontSize: 12,
+                        marginRight: -7,
+                    }}>
+                        {label}
+                    </Text>
+                </TouchableOpacity>
+            </Animated.View>
+        );
+    }
+
+    /** Begin a compressed-mix conference recording.
+     *
+     *  Writes the same stereo Opus-OGG (Android) / AAC m4a (iOS) the
+     *  1-to-1 AudioCallBox recorder produces — mic on L, sum of all
+     *  remote participants on R with int16 clip-guard — so the
+     *  resulting file plays back in the existing audio chat bubble
+     *  without any changes. Late joiners are picked up by
+     *  onParticipantJoined; leavers by onParticipantLeft.
+     *
+     *  No-op if a recording is already running or the native module
+     *  doesn't expose the conference API. */
+    async _startConferenceRecording() {
+        if (this.state.isConferenceRecording) return;
+        if (!CallRecorder.conferenceAvailable()) {
+            utils.timestampedLog('[conference] [recorder] native module missing the conference API — record button disabled');
+            return;
+        }
+        // Disclaimer gate. First-time conference recording needs an
+        // explicit user agreement that's stored independently from
+        // the 1-to-1 call recording disclaimer (see
+        // conferenceRecordingDisclosure.js for why). If not agreed,
+        // pop the modal and bail out of this start attempt — the
+        // modal's onContinue calls _startConferenceRecording again
+        // after persisting the flag.
+        try {
+            const agreed = await readConferenceRecordingDisclosure();
+            if (!agreed) {
+                utils.timestampedLog('[conference] [recorder] disclosure not yet acknowledged — showing modal');
+                if (!this.unmounted) {
+                    this.setState({ showConferenceRecordingDisclosure: true });
+                }
+                return;
+            }
+        } catch (e) {
+            // If the read failed, fall through and let the recording
+            // happen — better than silently locking out the feature
+            // because the settings bridge had a hiccup.
+            console.log('[conference] [recorder] disclosure read failed:', e && e.message);
+        }
+        const ts = Date.now();
+        const docDir = RNFS && RNFS.DocumentDirectoryPath;
+        // File extension follows the per-platform native format the
+        // existing 1-to-1 recorder uses, so utils.isAudio +
+        // AudioRecorderPlayer decode it correctly for the chat
+        // bubble preview path when we wire that up.
+        const ext = Platform.OS === 'android' ? 'ogg' : 'm4a';
+        const outPath = docDir
+            ? `${docDir}/sylk-conf-recording-${ts}.${ext}`
+            : `sylk-conf-recording-${ts}.${ext}`;
+        try {
+            const result = await CallRecorder.startConference(
+                this.props.call,
+                this.state.participants || [],
+                outPath
+            );
+            if (result === 'not_implemented') {
+                utils.timestampedLog('[conference] [recorder] native module returned not_implemented');
+                return;
+            }
+            this._conferenceRecordingTick = setInterval(() => {
+                if (this.unmounted) return;
+                this.setState((s) => ({
+                    conferenceRecordingElapsedSec:
+                        (s.conferenceRecordingElapsedSec || 0) + 1,
+                }));
+            }, 1000);
+            this.setState({
+                isConferenceRecording: true,
+                conferenceRecordingDir: outPath,
+                conferenceRecordingElapsedSec: 0,
+            });
+            this._startRecordPulse();
+            utils.timestampedLog('[conference] [recorder] started:', outPath,
+                'initial participants=', (this.state.participants || []).length);
+        } catch (e) {
+            console.log('[conference] [recorder] start failed:', e && e.message);
+            this.setState({
+                isConferenceRecording: false,
+                conferenceRecordingDir: null,
+                conferenceRecordingElapsedSec: 0,
+            });
+        }
+    }
+
+    /** Stop the conference recording, move the file into the per-room
+     *  folder ({Documents}/{accountId}/{conferenceUri}/{transfer_id}/
+     *  {filename}, the same convention every other file transfer uses),
+     *  and inject a synthetic sylk-file-transfer system message into
+     *  the conference chat so the audio bubble shows up alongside the
+     *  participant join/leave entries.
+     *
+     *  Returns the persisted message id (also used as the directory
+     *  name under the conference URI) for debugging — actual UI side-
+     *  effects are driven entirely by saveConferenceMessage updating
+     *  state.messages, which the chat panel observes via the
+     *  parent-passed messages prop. */
+    async _stopConferenceRecording() {
+        if (!this.state.isConferenceRecording) return;
+        if (this._conferenceRecordingTick) {
+            clearInterval(this._conferenceRecordingTick);
+            this._conferenceRecordingTick = null;
+        }
+        this._stopRecordPulse();
+        const elapsed = this.state.conferenceRecordingElapsedSec || 0;
+        let r = null;
+        try {
+            r = await CallRecorder.stopConference();
+        } catch (e) {
+            console.log('[conference] [recorder] stop failed:', e && e.message);
+        }
+        if (!this.unmounted) {
+            this.setState({
+                isConferenceRecording: false,
+                conferenceRecordingElapsedSec: 0,
+            });
+        }
+        const srcPath = r && r.path;
+        if (!srcPath) {
+            utils.timestampedLog('[conference] [recorder] stopConference returned no path');
+            return;
+        }
+        utils.timestampedLog('[conference] [recorder] stopped:',
+            srcPath, 'duration', elapsed, 's',
+            'peaks=', !!(r && r.peaks));
+
+        // Resolve the conference URI + account id. The conference URI
+        // is on this.props.remoteUri (Conference.js passes
+        // remoteUri = this.state.room); the account id comes from the
+        // call object the way AudioCallBox / app.js do it.
+        const conferenceUri = this.props.remoteUri;
+        const accountId = (this.props.account && this.props.account.id)
+            || (this.props.call && this.props.call.account && this.props.call.account.id);
+        if (!conferenceUri || !accountId) {
+            console.log('[conference] [recorder] missing conferenceUri/accountId; file kept at',
+                srcPath);
+            return;
+        }
+
+        // Per-room storage path matches the file-transfer convention
+        // used elsewhere in app.js (e.g. saveCallRecording's destDir
+        // around line 31984, file2GiftedChat's localPath around
+        // line 16727): {Documents}/{accountId}/{remote_party}/
+        // {transfer_id}/{filename}. remote_party here is the
+        // conference URI, transfer_id is a fresh uuid we use for
+        // both the chat msg_id and the storage subfolder.
+        const id = uuid.v4();
+        const basename = (srcPath.split('/').pop() || `sylk-conf-recording-${Date.now()}.ogg`)
+            .replace(/\s|:/g, '_');
+        const destDir = `${RNFS.DocumentDirectoryPath}/${accountId}/${conferenceUri}/${id}`;
+        const destPath = `${destDir}/${basename}`;
+        try {
+            await RNFS.mkdir(destDir);
+            const stripped = srcPath.startsWith('file://') ? srcPath.substr(7) : srcPath;
+            const exists = await RNFS.exists(stripped);
+            if (exists) {
+                try {
+                    await RNFS.copyFile(stripped, destPath);
+                    // Remove the source so we don't leave two copies on
+                    // disk — the app's DocumentDirectory root would
+                    // otherwise accumulate one sylk-conf-recording-*.ogg
+                    // per recording with no cleanup path.
+                    try { await RNFS.unlink(stripped); } catch (e) {}
+                } catch (e) {
+                    console.log('[conference] [recorder] copy failed:', e && e.message);
+                }
+            } else {
+                console.log('[conference] [recorder] source missing:', stripped);
+            }
+        } catch (e) {
+            console.log('[conference] [recorder] mkdir/copy error:', e && e.message);
+        }
+
+        let filesize = 0;
+        try {
+            const stat = await RNFS.stat(destPath);
+            filesize = stat && stat.size ? Number(stat.size) : 0;
+        } catch (e) { /* best-effort */ }
+
+        // Pick mime from the actual extension — same logic as
+        // saveCallRecording. The conference recorder writes Opus-OGG
+        // on Android (.ogg) and AAC m4a on iOS (.m4a).
+        const lower = (basename || '').toLowerCase();
+        let filetype = 'audio/mp4';
+        if (lower.endsWith('.ogg') || lower.endsWith('.opus')) {
+            filetype = 'audio/ogg';
+        }
+
+        // Build the file_transfer metadata blob — same shape as the
+        // 1-to-1 recorder's payload so the chat bubble code path
+        // (utils.isAudio + AudioRecorderPlayer) renders it as an
+        // audio message bubble identically. sender = us (we made
+        // the recording), receiver = the conference. call_recording
+        // flag rides along so any future "this isn't a wire message"
+        // checks can still tell.
+        const localDisplayName =
+            (this.props.call && this.props.call.localIdentity
+                && (this.props.call.localIdentity._displayName
+                    || this.props.call.localIdentity.displayName))
+            || accountId;
+        const file_transfer = {
+            path: destPath,
+            local_url: destPath,
+            filename: basename,
+            sender: { uri: accountId, displayName: localDisplayName },
+            receiver: { uri: conferenceUri },
+            transfer_id: id,
+            direction: 'outgoing',
+            filesize: filesize,
+            filetype: filetype,
+            duration: elapsed,
+            call_recording: true,
+            // Conference-mix marker. The bubble in ContactsListBox
+            // reads this to relabel the right-channel waveform from
+            // "Remote" → "Participants" — for a conference recording
+            // the R channel is the sum of every other attendee, not a
+            // single remote party, so the original label was
+            // misleading. Anything else that ever wants to special-
+            // case conference recordings (e.g. transcript routing)
+            // can read the same flag instead of pattern-matching the
+            // receiver URI for @videoconference.
+            is_conference: true,
+        };
+        if (r && r.peaks && Array.isArray(r.peaks.l) && Array.isArray(r.peaks.r)) {
+            file_transfer.peaks = r.peaks;
+        }
+
+        const ts = new Date();
+        const text = (utils.beautyFileNameForBubble
+            ? utils.beautyFileNameForBubble(file_transfer)
+            : basename);
+
+        const giftedChatMessage = {
+            _id: id,
+            key: id,
+            text: text,
+            metadata: file_transfer,
+            createdAt: ts,
+            direction: 'outgoing',
+            audio: destPath,
+            local_url: destPath,
+            sent: 1,
+            user: { _id: accountId, name: localDisplayName },
+        };
+
+        // saveConferenceMessage takes the conference URI as the "room"
+        // key and persists the message into the SQL messages table
+        // (content_type = application/sylk-file-transfer) AND into
+        // state.messages[room] so the chat panel updates without a
+        // round-trip refetch. Stashes the result on the instance for
+        // debugging.
+        if (typeof this.props.saveConferenceMessage === 'function') {
+            try {
+                await this.props.saveConferenceMessage(conferenceUri, giftedChatMessage);
+                utils.timestampedLog('[conference] [recorder] message persisted to chat:',
+                    'id=', id, 'destPath=', destPath);
+            } catch (e) {
+                console.log('[conference] [recorder] saveConferenceMessage failed:', e && e.message);
+            }
+        } else {
+            console.log('[conference] [recorder] saveConferenceMessage prop missing; file kept at',
+                destPath);
+        }
+
+        // Also drop a short system line in the chat so the recording
+        // is easy to spot among the other audit entries. Same shape
+        // as the join/leave/mute lines (system message, save=true).
+        try {
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            const dur = mins > 0
+                ? `${mins}m ${secs}s`
+                : `${secs}s`;
+            this.postChatSystemMessage('Conference recording saved (' + dur + ')', true);
+        } catch (e) { /* best-effort */ }
+
+        this._lastConferenceRecording = {
+            filePath:    destPath,
+            peaks:       r && r.peaks,
+            durationSec: elapsed,
+            remoteUri:   conferenceUri,
+            transferId:  id,
+        };
+    }
+
+    /** Disclosure modal — user tapped "I agree". Persist the flag
+     *  under disclaimers.conferenceRecording (+ companion timestamp
+     *  via setAcknowledged) and resume the start. The resume goes
+     *  through the same _startConferenceRecording entry point so the
+     *  whole flow is identical to "user tapped Record after already
+     *  agreeing previously" — just one extra round-trip. */
+    async _onConferenceRecordingDisclosureContinue() {
+        try {
+            await setConferenceRecordingDisclosure();
+            utils.timestampedLog('[disclaimer] user agreed to conference recording disclaimer');
+        } catch (e) {
+            console.log('[conference] [recorder] persisting disclosure failed:', e && e.message);
+        }
+        if (this.unmounted) return;
+        this.setState({ showConferenceRecordingDisclosure: false }, () => {
+            this._startConferenceRecording();
+        });
+    }
+
+    /** Disclosure modal — user tapped "Cancel". Close the modal and
+     *  leave the recorder untouched (no recording, no persisted
+     *  agreement). They can tap Record again later to re-prompt. */
+    _onConferenceRecordingDisclosureCancel() {
+        if (this.unmounted) return;
+        this.setState({ showConferenceRecordingDisclosure: false });
+        utils.timestampedLog('[disclaimer] user declined conference recording disclaimer');
+    }
+
+    /** Action-bar record button handler. Stops if active, starts if not. */
+    _toggleConferenceRecording() {
+        if (this.state.isConferenceRecording) {
+            this._stopConferenceRecording();
+        } else {
+            this._startConferenceRecording();
+        }
+    }
+
+    /** Attach a late-joiner to an active recording. Retries a few
+     *  times because the participant's RTCPeerConnection receiver
+     *  doesn't have an audio track until WebRTC's ontrack event
+     *  fires, which can land slightly after onParticipantJoined.
+     *  Without the retry the first ~100 ms of a late join would
+     *  return false from addConferenceParticipant and that
+     *  participant would never get recorded. */
+    _attachConferenceRecordingParticipant(p, attempt = 0) {
+        if (!this.state.isConferenceRecording) return;
+        if (!p || this.unmounted) return;
+        CallRecorder.addConferenceParticipant(p).then((ok) => {
+            if (ok || attempt >= 20) return;   // 20 × 100ms = 2s budget
+            setTimeout(() => {
+                this._attachConferenceRecordingParticipant(p, attempt + 1);
+            }, 100);
+        }).catch(() => {
+            // The recorder spits at the JS layer through `false`, not
+            // by rejecting, so a rejection here usually means the
+            // native call itself blew up — log once and stop trying.
+            console.log('[conference] [recorder] addConferenceParticipant rejected for pid=',
+                p && p.id);
+        });
+    }
+
     componentWillUnmount() {
         // Cancel all 60s "no-update" invite timers. The persisted
         // invitedParticipants map outlives ConferenceBox, but the
@@ -1171,6 +1899,57 @@ class ConferenceBox extends Component {
 
         // [qos] — stop the sampler started in componentDidMount.
         stopQosLogging();
+
+        // Audio-mode diagnostic. If the recording playback sounds bad
+        // (thin / muffled) it's usually because the system is still
+        // in MODE_IN_COMMUNICATION post-call instead of MODE_NORMAL.
+        // Log the mode at three points:
+        //   • here (right as ConferenceBox tears down, before app.js
+        //     audioManagerStop fires),
+        //   • +500 ms (after audioManagerStop has had a chance to
+        //     flip the mode back), and
+        //   • +1500 ms (catches a delayed transition that some
+        //     Android OEM stacks do via a deferred audio-focus
+        //     callback).
+        // Android-only — iOS doesn't expose the equivalent API
+        // through AudioRouteModule.
+        if (Platform.OS === 'android'
+                && NativeModules.AudioRouteModule
+                && typeof NativeModules.AudioRouteModule.getAudioModeName === 'function') {
+            const _ar = NativeModules.AudioRouteModule;
+            const _log = (when) => {
+                _ar.getAudioModeName().then((mode) => {
+                    utils.timestampedLog('[audio-mode] ConferenceBox ' + when + ':', mode);
+                }).catch((e) => {
+                    utils.timestampedLog('[audio-mode] ConferenceBox ' + when + ': lookup failed',
+                        e && e.message);
+                });
+            };
+            _log('unmount');
+            setTimeout(() => _log('unmount +500ms'), 500);
+            setTimeout(() => _log('unmount +1500ms'), 1500);
+        }
+
+        // Mark unmounted so the conference recording's setInterval
+        // tick and late-joiner retry timers can short-circuit instead
+        // of calling setState on a torn-down component. The flag is
+        // also read by a couple of older async paths (line ~1166
+        // referenced it without anyone setting it, which would have
+        // never short-circuited those) — setting it here fixes both.
+        this.unmounted = true;
+
+        // Finalise any in-flight conference recording so the WAV
+        // files are properly closed (RIFF + data chunk sizes patched
+        // in) and the manifest is written. Fire-and-forget — we
+        // can't await inside componentWillUnmount but the native
+        // recorder's stop path is synchronous on disk.
+        if (this.state.isConferenceRecording) {
+            this._stopConferenceRecording().catch(() => {});
+        }
+        if (this._conferenceRecordingTick) {
+            clearInterval(this._conferenceRecordingTick);
+            this._conferenceRecordingTick = null;
+        }
 
         clearTimeout(this.overlayTimer);
         clearTimeout(this.participantsTimer);
@@ -2090,7 +2869,7 @@ class ConferenceBox extends Component {
             return;
         }
         try {
-            this.postChatSystemMessage(uri + ' was removed', false);
+            this.postChatSystemMessage(uri + ' was removed', true);
         } catch (e) { /* non-fatal */ }
     }
 
@@ -2181,7 +2960,7 @@ class ConferenceBox extends Component {
             if (remaining <= 0) {
                 p.status = '408 No answer';
                 p.remaining = 0;
-                this.postChatSystemMessage(_uri + ' did not answer', false);
+                this.postChatSystemMessage(_uri + ' did not answer', true);
             } else {
                 // Keep top status as 'Invited' so the failure regex
                 // doesn't trigger early; expose remaining seconds for
@@ -2382,15 +3161,32 @@ class ConferenceBox extends Component {
         console.log('[conference] [grid] participant joined', p.identity && p.identity._uri,
             'remote-count', _prev, '->', _prev + 1);
 
-        if (p.identity._uri.search('guest.') === -1) {
+        // Suppress chat-line logging for the PSTN audio bridge —
+        // it's plumbing (sylk-janus-audio-bridge → conference
+        // focus), not a real attendee. Same heuristic the audio
+        // tile builder and the per-participant bandwidth overlay
+        // use (display name contains "bridge" or URI rooted in
+        // @conference.). The participant itself still gets added
+        // to state.participants and lights up its tile / stats —
+        // we only skip the system message in the persistent chat
+        // thread so the audit log stays human-readable.
+        const _isBridgeJoin = this._isBridgeParticipant(p);
+        if (_isBridgeJoin) {
+            console.log('[conference] [chat] suppressing bridge join from chat log:',
+                p.identity && p.identity._uri);
+        } else if (p.identity._uri.search('guest.') === -1) {
             if (p.identity._uri !== this.props.call.localIdentity._uri) {
                 // used for history item
                 this.props.saveParticipant(this.props.call.id, this.state.remoteUri, p.identity._uri);
             }
             const dn = p.identity._uri + ' joined';
-            this.postChatSystemMessage(dn, false);
+            // save=true so the join lands in the persistent conference
+            // chat thread via saveConferenceMessage — was previously
+            // dropped after the call ended, which is why the chat
+            // showed only "outgoing call ended" after disconnect.
+            this.postChatSystemMessage(dn, true);
         } else {
-            this.postChatSystemMessage('An anonymous guest joined', false);
+            this.postChatSystemMessage('An anonymous guest joined', true);
         }
 
         this.lookupContact(p.identity._uri, p.identity._displayName);
@@ -2410,6 +3206,16 @@ class ConferenceBox extends Component {
         });
         // this.changeResolution();
         this.fullScreenTimer();
+
+        // Conference recording: hook the new participant's audio track
+        // into the multi-track recorder if one is active. Their
+        // RTCPeerConnection's receiver is wired up here as part of
+        // p.attach(), but the audio track may take a beat longer to
+        // appear — schedule the attach asynchronously and retry a few
+        // times rather than racing the WebRTC track-added callback.
+        if (this.state.isConferenceRecording) {
+            this._attachConferenceRecordingParticipant(p);
+        }
     }
 
 	/** Per-participant VU-meter sampler — runs at ~5 Hz from the
@@ -2971,7 +3777,25 @@ class ConferenceBox extends Component {
 			this.exitFullScreenIfAlone();
 		}, 100);
 
-        this.postChatSystemMessage(p.identity.uri + ' left', false);
+        // save=true so the leave shows up in the persisted conference
+        // chat (paired with the join event from onParticipantJoined).
+        // Same bridge-suppression check as onParticipantJoined — if
+        // we silenced the join we silence the leave too so the chat
+        // log doesn't show an unmatched "left" line for plumbing.
+        if (this._isBridgeParticipant(p)) {
+            console.log('[conference] [chat] suppressing bridge leave from chat log:',
+                p.identity && p.identity.uri);
+        } else {
+            this.postChatSystemMessage(p.identity.uri + ' left', true);
+        }
+
+        // Conference recording: finalise this participant's WAV file
+        // in place if one is currently active. The native side records
+        // the leave timestamp into the manifest so post-processing can
+        // align the truncated track against the rest of the timeline.
+        if (this.state.isConferenceRecording) {
+            CallRecorder.removeConferenceParticipant(p).catch(() => {});
+        }
     }
 
     onParticipantStateChanged(oldState, newState) {
@@ -4007,10 +4831,15 @@ class ConferenceBox extends Component {
     muteAudio(event) {
         event.preventDefault();
         if (this.state.audioMuted) {
-            //this.postChatSystemMessage('Audio un-muted');
+            // Log the local-side mute toggle into the conference chat
+            // so the audit trail captures who muted/unmuted and when.
+            // save=true persists it; the matching "remote requested"
+            // event (room asked us to mute) is logged separately in
+            // onMuteAudio below.
+            this.postChatSystemMessage('You unmuted your microphone', true);
             this.props.toggleMute(this.props.call.id, false);
         } else {
-            //this.postChatSystemMessage('Audio muted');
+            this.postChatSystemMessage('You muted your microphone', true);
             this.props.toggleMute(this.props.call.id, true);
         }
      }
@@ -4789,6 +5618,14 @@ class ConferenceBox extends Component {
         if (this.props.call && typeof this.props.toggleMute === 'function') {
             console.log('[ConferenceBox] [conference] onMuteAudio: muting local mic');
             this.props.toggleMute(this.props.call.id, true);
+            // Log the remote-initiated mute into the conference chat.
+            // The originator URI was extracted at the top of this
+            // method; fall back to a generic phrasing if the gateway
+            // payload didn't carry it.
+            const _by = _origUri && _origUri !== '?'
+                ? _origUri
+                : 'another participant';
+            this.postChatSystemMessage('You were muted by ' + _by, true);
         }
     }
 
@@ -4816,6 +5653,17 @@ class ConferenceBox extends Component {
         if (this.props.call && typeof this.props.toggleMute === 'function') {
             console.log('[ConferenceBox] [conference] onMuteRequest: setting local mic muted=' + _muted);
             this.props.toggleMute(this.props.call.id, _muted);
+            // Persist the per-participant mute request into the
+            // conference chat. Mirrors the room-wide onMuteAudio
+            // log above; differentiates 'muted' vs 'unmuted' since
+            // muteParticipant carries an explicit boolean (the
+            // room-wide event is always "mute").
+            const _by = _origUri && _origUri !== '?'
+                ? _origUri
+                : 'another participant';
+            this.postChatSystemMessage(
+                (_muted ? 'You were muted by ' : 'You were unmuted by ') + _by,
+                true);
         }
     }
 
@@ -4937,7 +5785,7 @@ class ConferenceBox extends Component {
                 return;
             }
             console.log('[ConferenceBox] [conference] invite started for ' + uri);
-            this.postChatSystemMessage(uri + ' was invited', false);
+            this.postChatSystemMessage(uri + ' was invited', true);
             this.invitedParticipants.set(uri, {timestamp: Date.now(), status: 'Invited'})
             this.props.saveParticipant(this.props.call.id, this.state.remoteUri, uri);
             this.lookupContact(uri);
@@ -5559,6 +6407,54 @@ class ConferenceBox extends Component {
               </View>
         );
 
+        // Conference recording button (compressed stereo mix —
+        // mic L, sum of all remote participants on R, same
+        // Opus-OGG / AAC m4a the 1-to-1 recorder produces so the
+        // existing audio chat bubble plays it back). Only shown
+        // when the native module exposes the conference API —
+        // older builds without the conference-mix path linked in
+        // fall through to no button rather than a tap that does
+        // nothing.
+        //
+        // One-shot diagnostic — logs the gating result on first
+        // render of this layout so it's obvious from metro.log
+        // whether the button is hidden because the native module
+        // is missing the conference methods (i.e. the app hasn't
+        // been rebuilt since the conference-mix patch landed) vs
+        // some other bug. Guard with an instance flag so we don't
+        // spam on every re-render.
+        if (!this._loggedConferenceAvailability) {
+            this._loggedConferenceAvailability = true;
+            utils.timestampedLog('[conference] [recorder] conferenceAvailable=',
+                CallRecorder.conferenceAvailable(),
+                ' startConference type=',
+                (NativeModules.SylkCallRecorder
+                    ? typeof NativeModules.SylkCallRecorder.startConference
+                    : 'no-module'));
+        }
+        if (CallRecorder.conferenceAvailable()) {
+            const recIcon = this.state.isConferenceRecording
+                ? 'record-rec' : 'record';
+            floatingButtons.push(
+              <View style={styles.buttonContainer} key="RecordConference">
+                <PulsingView active={!!this.state.isConferenceRecording}>
+                  <TouchableHighlight style={styles.roundshape}>
+                    <IconButton
+                        size={this.state.videoEnabled ? 25 : 25}
+                        style={buttonClass}
+                        title={this.state.isConferenceRecording
+                            ? 'Stop recording'
+                            : 'Record conference'}
+                        onPress={this._toggleConferenceRecording}
+                        icon={recIcon}
+                        key="recordConferenceButton"
+                    />
+                  </TouchableHighlight>
+                </PulsingView>
+              </View>
+            );
+        }
+
        // Audio-view hangup, pushed LAST so it lands on the right end
        // of the centered floating button row. Extra marginLeft visually
        // separates the destructive action from the Mute / Invite group
@@ -5806,6 +6702,17 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
             );
 
+            // Conference recording pill — visually identical to the
+            // 1-to-1 AudioCallBox recording pill, rendered as an
+            // overlay above the action bar (not inline within it) so
+            // the bar's chat/audio/mute/hangup rhythm stays
+            // unchanged. Same dimensions, same colours, same pulse
+            // animation. See _renderConferenceRecordControl above
+            // for the JSX — guarded on
+            // CallRecorder.conferenceAvailable() so a build without
+            // the native conference-mix path linked in collapses
+            // the overlay to nothing.
+
             // Portrait action bar layout: each button sits in its own
             // flex:1/maxWidth:72 slot — same rhythm as
             // AudioCallBox.portraitButtonContainer so the four buttons
@@ -5853,6 +6760,41 @@ class ConferenceBox extends Component {
                     </View>
                 </View>
             );
+
+            // Recording pill overlay — positioned ABOVE the audio
+            // action bar at the same screen position AudioCallBox
+            // uses for its 1-to-1 pill (~130 px from screen bottom
+            // on phones, more on tablets). pointerEvents="box-none"
+            // so the surrounding empty space doesn't intercept
+            // touches meant for the audio body / participant list
+            // underneath; the pill itself is fully tappable. The
+            // overlay is suppressed in landscape (same as
+            // audioViewActionBar above — landscape folds the
+            // controls into ConferenceHeader's buttons.bottom) and
+            // in the chat view (the keyboard would push the pill
+            // off-screen).
+            var conferenceRecordPillOverlay = null;
+            if (!this.state.isLandscape && !this.state.audioChatView
+                    && CallRecorder.conferenceAvailable()) {
+                let pillBottom = 130;
+                if (this.props.isTablet) {
+                    pillBottom = 200;
+                }
+                conferenceRecordPillOverlay = (
+                    <View
+                        pointerEvents="box-none"
+                        style={{
+                            position: 'absolute',
+                            bottom: pillBottom,
+                            left: 0, right: 0,
+                            alignItems: 'center',
+                            zIndex: 1500,
+                            elevation: 25,
+                        }}>
+                        {this._renderConferenceRecordControl()}
+                    </View>
+                );
+            }
 
             // Top-of-list action bar — three buttons rendered ABOVE
             // the participant list in the audio view:
@@ -7539,6 +8481,23 @@ class ConferenceBox extends Component {
 				    buttons.bottom instead), so audioViewActionBar is
 				    null in that orientation. */}
 				{audioViewActionBar}
+				{/* Recording pill — same AudioCallBox-style pill
+				    rendered as an overlay above the action bar so
+				    its red dot + label sits cleanly above the
+				    button row (matches the 1-to-1 call visual). */}
+				{conferenceRecordPillOverlay}
+				{/* Conference recording disclosure modal — first-tap
+				    consent gate, surfaces only when the user taps
+				    the Record pill and disclaimers.conferenceRecording
+				    is not yet acknowledged. Kind='conference' swaps
+				    the title + footer copy vs the 1-to-1 call flow
+				    that AudioCallBox uses. */}
+				<CallRecordingDisclosureModal
+				    show={this.state.showConferenceRecordingDisclosure}
+				    kind="conference"
+				    onContinue={this._onConferenceRecordingDisclosureContinue}
+				    onCancel={this._onConferenceRecordingDisclosureCancel}
+				/>
 				</View>
 
 				{/* Floating self-PIP for audio view, only when the

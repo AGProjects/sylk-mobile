@@ -1163,22 +1163,48 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         */
 
         pendingBtDevice = null;
-        // Prefer the pre-call snapshot taken at FCM push receipt — that's
-        // the user's true mode before Telecom polluted it. Fall back to
-        // origAudioMode if no snapshot was taken (e.g. outgoing call).
-        int restoreTarget;
-        String restoreSource;
-        if (preCallMode != -1) {
-            restoreTarget = preCallMode;
-            restoreSource = "preCallMode";
-            preCallMode = -1; // consume the snapshot
-        } else {
-            restoreTarget = origAudioMode;
-            restoreSource = "origAudioMode";
-        }
+        // ALWAYS restore to MODE_NORMAL when a call ends.
+        //
+        // Previously we preferred preCallMode (the snapshot taken at FCM
+        // push receipt, before Telecom polluted the mode) and fell back
+        // to origAudioMode for outgoing calls. The fallback path was
+        // fundamentally broken on devices where some earlier audio
+        // component (WebRTC's JavaAudioDeviceModule, a leaked previous
+        // call's lingering audio session, etc.) had already set the mode
+        // to IN_COMMUNICATION before AudioRouteModule.start() captured
+        // origAudioMode. In that case origAudioMode held IN_COMMUNICATION
+        // and restoreAudioMode dutifully "restored" to IN_COMMUNICATION
+        // — perpetuating the pollution call-after-call. The user
+        // observed this on a Razr 60 Ultra: even immediately post-reboot
+        // the very first conference start logged "Original audio mode:
+        // IN_COMMUNICATION(3)" because libwebrtc had already flipped the
+        // mode internally before the JS-side audioManagerStart() ran.
+        //
+        // MODE_NORMAL is the correct end-of-call state regardless of
+        // what was happening before — MediaPlayer (chat-bubble audio
+        // playback, ringtones, notification sounds) all expect it. The
+        // ringtone path uses MODE_RINGTONE while a ringtone is actually
+        // playing and reverts to NORMAL on its own; we don't need to
+        // preserve a transient RINGTONE state across an end-of-call.
+        //
+        // preCallMode / origAudioMode are still captured at start() (for
+        // diagnostic logging) but no longer consulted here. The whole
+        // pollution-propagation problem is resolved at the source.
+        int restoreTarget = AudioManager.MODE_NORMAL;
         audioManager.setMode(restoreTarget);
         SylkLogger.d("[audio] Audio mode restored to " + getAudioModeDescription(restoreTarget)
-                + " (source=" + restoreSource + ")");
+                + " (source=force-NORMAL; ignored origAudioMode="
+                + getAudioModeDescription(origAudioMode)
+                + ", preCallMode="
+                + (preCallMode == -1 ? "none" : getAudioModeDescription(preCallMode))
+                + ")");
+        // Consume the FCM preCallMode snapshot so it doesn't survive
+        // into the next call's restore. We don't use it but keeping the
+        // sentinel honest avoids stale state if anyone re-introduces a
+        // consumer of this field later.
+        if (preCallMode != -1) {
+            preCallMode = -1;
+        }
 
         try {
             if (scoManager != null) {

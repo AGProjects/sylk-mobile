@@ -28,21 +28,35 @@ import {
 } from './accountSettingsAccess';
 
 const SETTING_PATH = 'disclaimers.locationPolicy';
+// Companion timestamp (Unix ms) of when the user agreed; sibling field
+// so existing `=== true` boolean reads keep working unchanged. Same
+// pattern callRecordingDisclosure and conferenceRecordingDisclosure
+// use — the new Disclaimers section in PreferencesModal reads all
+// three via this *At companion.
+const SETTING_PATH_AT = 'disclaimers.locationPolicyAt';
 
 export async function readAcknowledged(/* accountId */) {
     return getAccountSetting(SETTING_PATH) === true;
 }
 
+export async function readAcknowledgedAt(/* accountId */) {
+    const v = getAccountSetting(SETTING_PATH_AT);
+    return typeof v === 'number' && v > 0 ? v : 0;
+}
+
 export async function setAcknowledged(/* accountId */) {
     await setAccountSetting(SETTING_PATH, true);
+    await setAccountSetting(SETTING_PATH_AT, Date.now());
 }
 
 export async function clearAcknowledged(/* accountId */) {
     await setAccountSetting(SETTING_PATH, false);
+    await setAccountSetting(SETTING_PATH_AT, 0);
 }
 
 export default {
     readAcknowledged,
+    readAcknowledgedAt,
     setAcknowledged,
     clearAcknowledged,
 };

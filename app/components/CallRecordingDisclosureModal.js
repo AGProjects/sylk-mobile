@@ -70,6 +70,26 @@ class CallRecordingDisclosureModal extends Component {
         // layers on top of the parent Modal's Surface within the same
         // RN view tree, with no presentation-context limitation.
         if (!this.state.show) return null;
+
+        // `kind` controls the call/conference flavor of the copy. Both
+        // surfaces (this modal + ConferenceBox / AudioCallBox) hit the
+        // same EU one-party / all-party split, so the body content is
+        // shared verbatim; only the title and the footer hint change.
+        // Default is 'call' for back-compat with existing callers.
+        const _isConf = this.props.kind === 'conference';
+        const _title = _isConf
+            ? 'Conference recording can have consequences'
+            : 'Call recording can have consequences';
+        const _footerOptIn = _isConf
+            ? 'Tapping "I agree" enables conference recording on this device. You can opt out from Preferences at any time.'
+            : 'Tapping "I agree" enables automatic call recording for new calls on this device. You can opt out from Preferences at any time.';
+        const _footerOptOut = _isConf
+            ? 'You have already agreed. Tap Opt out below to withdraw your consent; the disclaimer will reappear next time you start a conference recording.'
+            : 'You have already agreed. Tap Opt out below to withdraw your consent; automatic call recording will be turned off and the disclaimer will reappear next time you enable it.';
+        const _bodyLeadIn = _isConf
+            ? 'Recording a conference captures every attendee at once. The legal exposure is the same as for a 1-to-1 call but the number of people whose consent matters is larger.'
+            : null;
+
         const body = (
             <View style={containerStyles.overlay}>
                     <KeyboardAvoidingView
@@ -91,7 +111,7 @@ class CallRecordingDisclosureModal extends Component {
                                 fontWeight: '600',
                                 textAlign: 'center',
                             }}>
-                                Call recording can have consequences
+                                {_title}
                             </Text>
 
                             {/* Soft-cap the body height so the
@@ -109,6 +129,14 @@ class CallRecordingDisclosureModal extends Component {
                                 showsVerticalScrollIndicator={true}
                                 keyboardShouldPersistTaps="handled"
                             >
+                                {/* Conference-specific lead-in. Skipped
+                                    for the call flow so the existing
+                                    1-to-1 copy stays unchanged. */}
+                                {_bodyLeadIn ? (
+                                    <Text style={[styles.body, { marginTop: 2, fontSize: 14, lineHeight: 18 }]}>
+                                        {_bodyLeadIn}
+                                    </Text>
+                                ) : null}
                                 {/* One-party-consent block. */}
                                 <Text style={[styles.body, { marginTop: 2, fontSize: 15, fontWeight: 'bold' }]}>
                                     One-Party Consent Countries
@@ -150,9 +178,7 @@ class CallRecordingDisclosureModal extends Component {
                                     make — same pattern the location
                                     disclosure uses. */}
                                 <Text style={[styles.body, { marginTop: 6, fontSize: 12, opacity: 0.75, lineHeight: 15 }]}>
-                                    {this.props.showOptOut
-                                        ? 'You have already agreed. Tap Opt out below to withdraw your consent; automatic call recording will be turned off and the disclaimer will reappear next time you enable it.'
-                                        : 'Tapping "I agree" enables automatic call recording for new calls on this device. You can opt out from Preferences at any time.'}
+                                    {this.props.showOptOut ? _footerOptOut : _footerOptIn}
                                 </Text>
 
                                 {/* Tappable link to the definitive
@@ -301,6 +327,11 @@ CallRecordingDisclosureModal.propTypes = {
     // instead of a Modal. Use when opened from inside another Modal
     // (iOS won't present nested Modals).
     inline     : PropTypes.bool,
+    // 'call' (default — 1-to-1 call recording) or 'conference'
+    // (multi-party conference recording). Swaps title + body lead-in
+    // + footer hint while sharing the EU one-party / all-party
+    // consent body verbatim.
+    kind       : PropTypes.oneOf(['call', 'conference']),
 };
 
 export default CallRecordingDisclosureModal;

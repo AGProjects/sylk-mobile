@@ -1,35 +1,34 @@
-Sylk Mobile
-===========
+Blink Mobile
+============
 
 iOS: Open, federated SIP messaging
 Android: Open-source messenger and video client. Like email — for real-time comms
 
 Fully featured SIP client based on open standards
 
+
 Description
 -----------
 
-Sylk Mobile is part of Sylk Suite, a set of real-time communications
-applications using IETF SIP protocol and WebRTC specifications.
 
-Sylk Mobile can place and receive audio and video calls to and from SIP
-addresses and Web browsers.  File transfers are interoperable with SIP
-end-points supporting MSRP media.  Messages are encrypted end-to-end using
-PGP.  Mutual location can be easily shared for meeting purposes.  Audio and
-video calls can be end-to-end encrypted using zRTP.
+Blink mobile uses Sylk Suite to deliver real-time communications
+applications using IETF SIP protocol and WebRTC specifications.  With it you
+can call to any other SIP address and you can receive calls from SIP
+applications and WebRTC browsers.
 
 
 Features
 --------
 
 * Audio and video calls
-* Classic telephony support
-* Call recording
-* Online and offline Messaging
-* Advanced file transfers
+* Audio call recording
+* Online and offline messaging
+* File sharing
 * Support for multiple devices 
 * Portrait and landscape modes
-* Receive calls from the web
-* Location-based meetup
+* Location sharing
 * Multiparty conferencing
-* End-to-end encryption
+* Interoperable with SIP clients
+* Receive calls from the web
+* Classic telephony support
+* End-to-end encryption for all media

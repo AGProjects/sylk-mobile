@@ -1663,6 +1663,12 @@ class ReadyBox extends Component {
         const active = this.state.messagesCategoryFilter;
         const candidates = [
             {key: 'text',     title: 'Text',      icon: 'text'},
+            // Links subset of Text — same SQL slice (text-only,
+            // file-transfer rows are dropped in sql2GiftedChat) plus
+            // a JS post-filter that keeps only messages whose body
+            // contains a URL. See the linksOnly branch in
+            // ContactsListBox's filteredMessages pipeline.
+            {key: 'links',    title: 'Links',     icon: 'link-variant'},
             {key: 'audio',    title: 'Audio',     icon: 'microphone'},
             {key: 'image',    title: 'Image',     icon: 'image'},
             {key: 'video',    title: 'Video',     icon: 'video'},
@@ -1670,8 +1676,15 @@ class ReadyBox extends Component {
             {key: 'other',    title: 'Other',     icon: 'file'},
         ];
         for (const c of candidates) {
+            // 'links' has no precomputed count (it's a JS-derived
+            // subset of text — see candidates table above), so
+            // gate it on the text count instead: if the contact
+            // has any text bubbles there might be links among
+            // them, and the JS filter will show the empty state
+            // if not.
+            const _countKey = c.key === 'links' ? 'text' : c.key;
             const has = showAll
-                || (counts && counts[c.key] > 0)
+                || (counts && counts[_countKey] > 0)
                 || c.key === active;
             if (!has) continue;
             items.push({
@@ -1720,7 +1733,10 @@ class ReadyBox extends Component {
         if (!this.props.selectedContact) return items;
         const cat = this.state.messagesCategoryFilter;
         const inLocationFilter = cat === 'location';
-        const inTextFilter = cat === 'text';
+        // 'links' is a subset of 'text' — same "byte size isn't a
+        // useful axis here" reasoning applies, so it hides the
+        // by-size sort icon alongside plain 'text'.
+        const inTextFilter = cat === 'text' || cat === 'links';
         // Pin is a CUMULATIVE modifier — it stacks on top of any
         // content-type filter, not a replacement for one. Sits at
         // the start of the right group right after the splitter so
@@ -1748,14 +1764,27 @@ class ReadyBox extends Component {
         if (showPinned) {
             items.push({key: 'pinned', title: 'Pinned', icon: 'pin', enabled: true, selected: pinnedActive});
         }
-        if (!inLocationFilter) {
-            items.push({key: 'orderByTime', title: 'Sort: by time', icon: 'clock-outline', enabled: this.state.orderBy === 'timestamp', selected: false});
-            if (!inTextFilter) {
-                items.push({key: 'orderBySize', title: 'Sort: by size', icon: 'harddisk', enabled: this.state.orderBy === 'size', selected: false});
+        // Sort / order icons (time / size / asc / desc) hidden by
+        // user request — bar reads cleaner with only media-type
+        // chips. The date-period filter (Day/Week/Month/Year)
+        // above the chat now handles "narrow the visible window",
+        // and the chips' implicit "newest first" order is enough
+        // for browsing. Wrapped in a `false &&` guard rather than
+        // deleted so the items can be re-enabled by flipping the
+        // gate — the underlying state (orderBy / sortOrder) and
+        // their handlers in renderNavigationItem are all still
+        // wired up, so flipping the gate is a one-line
+        // restoration.
+        if (false) {
+            if (!inLocationFilter) {
+                items.push({key: 'orderByTime', title: 'Sort: by time', icon: 'clock-outline', enabled: this.state.orderBy === 'timestamp', selected: false});
+                if (!inTextFilter) {
+                    items.push({key: 'orderBySize', title: 'Sort: by size', icon: 'harddisk', enabled: this.state.orderBy === 'size', selected: false});
+                }
             }
+            items.push({key: 'orderAscending',  title: 'Order: ascending',  icon: 'arrow-up',   enabled: this.state.sortOrder === 'asc',  selected: false});
+            items.push({key: 'orderDescending', title: 'Order: descending', icon: 'arrow-down', enabled: this.state.sortOrder === 'desc', selected: false});
         }
-        items.push({key: 'orderAscending',  title: 'Order: ascending',  icon: 'arrow-up',   enabled: this.state.sortOrder === 'asc',  selected: false});
-        items.push({key: 'orderDescending', title: 'Order: descending', icon: 'arrow-down', enabled: this.state.sortOrder === 'desc', selected: false});
         return items;
     }
 
@@ -2070,6 +2099,7 @@ class ReadyBox extends Component {
             // visually uniform. "Pin" / "Pinned" both fit; Pin is
             // shorter and matches the icon meaning.
             text:     'Text',
+            links:    'Links',
             audio:    'Audio',
             image:    'Image',
             video:    'Video',
@@ -3113,27 +3143,23 @@ class ReadyBox extends Component {
                                 />
                             </View>
                             {/* Splitter between the two button
-                                groups. The bar's left half is the
-                                FILTER chips (which message type to
-                                show), the right half is the SORT
-                                toggles (how to order them). The
-                                hairline divider used to read like
-                                an accidental seam — bumping it to a
-                                solid 1 px line at 45 % opacity with
-                                more breathing room makes the two
-                                regions clearly distinct without
-                                taking real estate. The slight
-                                inset (marginVertical: 4) keeps the
-                                line visually shorter than the full
-                                bar height so it reads as a
-                                separator, not a column edge. */}
-                            <View style={{
+                                groups — hidden alongside the
+                                sort/order icons (see the `if (false)`
+                                gate in categorySortItems). With only
+                                the optional Pinned chip on the
+                                right, a divider would mark a seam
+                                where there's no longer a real
+                                two-group structure to communicate.
+                                Wrapped in `false &&` rather than
+                                deleted so the splitter is one flag
+                                flip away when sort/order come back. */}
+                            {false && <View style={{
                                 width: 1,
                                 alignSelf: 'stretch',
                                 marginVertical: 4,
                                 marginHorizontal: 8,
                                 backgroundColor: 'rgba(0,0,0,0.45)',
-                            }} />
+                            }} />}
                             {/* Right group ("Sort"). A subtle
                                 background tint behind the cluster
                                 gives the row a second visual cue

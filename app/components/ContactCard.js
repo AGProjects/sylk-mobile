@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 8,
-    backgroundColor: '#27ae60',
+    backgroundColor: '#95a5a6',
     alignSelf: 'flex-end',
   },
   telPillText: {
@@ -506,7 +506,7 @@ class ContactCard extends Component {
 				  </View>
 				  {isTelContact ? (
 				    // Tel contacts replace the storage-size readout
-				    // with a green "tel" pill so the row is visually
+				    // with a neutral "tel" pill so the row is visually
 				    // identifiable as a phone-number entry without
 				    // having to read the URI.
 				    <View style={styles.telPill}>

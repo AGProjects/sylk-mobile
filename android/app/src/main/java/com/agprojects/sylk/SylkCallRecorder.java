@@ -17,8 +17,12 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -90,6 +94,25 @@ public class SylkCallRecorder {
     private BlockingQueue<short[]> mMicQ;
     private BlockingQueue<short[]> mRemoteQ;
     private Thread mWriterThread;
+
+    // Conference-mix mode (N remote tracks summed into the R channel,
+    // mic on L). Sibling to the 1-to-1 mode that uses mRemoteTrack /
+    // mRemoteSink / mRemoteQ. When mIsConference is true the writer
+    // loop uses _pollMixedRemote() instead of mRemoteQ.poll(), which
+    // polls each per-remote queue once and sums them with int16
+    // clip-guard into a single mixed chunk before pairing with mic.
+    //
+    // Lookup is keyed by participantId (any string the JS layer hands
+    // us — typically the sylkrtc Participant.id). Each entry owns one
+    // RemoteSink attached to the matching AudioTrack and one bounded
+    // queue identical in shape to mRemoteQ. Adding / removing
+    // participants mid-recording is just a map mutation under the
+    // mConferenceLock — the writer loop snapshots the values list per
+    // iteration so it never deadlocks against a concurrent
+    // addConferenceRemote / removeConferenceRemote call.
+    private boolean mIsConference = false;
+    private final Object mConferenceLock = new Object();
+    private final Map<String, ConferenceRemote> mConferenceRemotes = new ConcurrentHashMap<>();
 
     // Output rate: 16 kHz, STEREO with mic on L and remote on R so
     // each side of the conversation lands on its own channel — useful
@@ -263,6 +286,188 @@ public class SylkCallRecorder {
     }
 
     /**
+     * Conference-mix variant of start(). Takes a list of remote audio
+     * tracks instead of one — each one gets its own RemoteSink + queue,
+     * and the writer loop sums them into the R channel before pairing
+     * with mic on L. Output file is the same stereo Opus-OGG container
+     * the 1-to-1 path produces, so the chat bubble plays it without
+     * any changes.
+     *
+     * Late joiners come in via addConferenceRemote(); leavers via
+     * removeConferenceRemote(). Both are idempotent and safe to call
+     * any time after this returns true.
+     *
+     * Returns true on success. Returns false only if mic + all remotes
+     * resolved to nothing useful — callers should fall back to
+     * mic-only AAC capture in that case (same convention as start()).
+     */
+    public synchronized boolean startConference(MediaStreamTrack micTrack,
+                                                List<RemoteEntry> remotes,
+                                                String outputPath) throws IOException {
+        if (mRunning.get()) {
+            throw new IllegalStateException("Recorder already running");
+        }
+        // Filter the remote list to AudioTracks we can actually sink.
+        // A null or empty list is allowed — recording can still proceed
+        // with the mic alone, and the JS layer can attach remotes
+        // afterwards via addConferenceRemote() as ontrack events fire.
+        List<RemoteEntry> usable = new ArrayList<>();
+        if (remotes != null) {
+            for (RemoteEntry e : remotes) {
+                if (e != null && e.track instanceof AudioTrack) usable.add(e);
+            }
+        }
+
+        mPath = outputPath;
+        mPresentationTimeUs = 0;
+        mTrackIndex = -1;
+        mMuxerStarted = false;
+        mPeaksLocal      = new ArrayList<>(600);
+        mPeaksRemote     = new ArrayList<>(600);
+        mPeakAccumLocal  = 0;
+        mPeakAccumRemote = 0;
+        mPeakBinChunks   = 0;
+        mIsConference    = true;
+        mConferenceRemotes.clear();
+
+        // Same encoder + muxer setup as start() — split into a helper
+        // so both modes share exactly one copy. Throws IOException on
+        // failure; we leave mIsConference set so the caller's catch
+        // block can call stop() / cleanup uniformly.
+        _setupEncoderAndMuxer(outputPath);
+
+        mMicQ = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+        // mRemoteQ stays null in conference mode — the writer loop's
+        // _pollMixedRemote() reads directly from each ConferenceRemote
+        // queue, no shared mixed queue in between.
+        mRemoteQ = null;
+        mRemoteTrack = null;
+        mRemoteSink = null;
+
+        for (RemoteEntry e : usable) {
+            _addConferenceRemoteLocked(e);
+        }
+
+        // Mic AudioRecord setup is identical to start(); reuse the
+        // helper so the VOICE_COMMUNICATION source + buffer sizing
+        // logic only lives in one place.
+        _setupMic();
+
+        mRunning.set(true);
+        if (mMicRecord != null) {
+            mMicThread = new Thread(this::micLoop, "SylkCallRecorder-Mic");
+            mMicThread.setPriority(Thread.NORM_PRIORITY + 1);
+            mMicThread.start();
+        }
+        mWriterThread = new Thread(this::writerLoop, "SylkCallRecorder-Writer");
+        mWriterThread.setPriority(Thread.NORM_PRIORITY + 1);
+        mWriterThread.start();
+
+        SylkLogger.i("[call] [recorder] Conference recording started: " + outputPath
+                + " mic=" + (mMicRecord != null)
+                + " initialRemotes=" + usable.size());
+        return true;
+    }
+
+    /** Attach a remote audio track mid-recording. Returns true if a
+     *  new ConferenceRemote was created, false if the participantId
+     *  is already tracked or the track isn't an AudioTrack. */
+    public boolean addConferenceRemote(RemoteEntry entry) {
+        if (!mRunning.get() || !mIsConference) return false;
+        if (entry == null || entry.participantId == null) return false;
+        if (!(entry.track instanceof AudioTrack)) return false;
+        synchronized (mConferenceLock) {
+            if (mConferenceRemotes.containsKey(entry.participantId)) return false;
+            _addConferenceRemoteLocked(entry);
+        }
+        return true;
+    }
+
+    /** Detach a remote participant by id. Their sink is removed and
+     *  their queue drains naturally — no further chunks land for that
+     *  participant after this returns. Idempotent. */
+    public boolean removeConferenceRemote(String participantId) {
+        if (!mRunning.get() || !mIsConference) return false;
+        if (participantId == null) return false;
+        synchronized (mConferenceLock) {
+            ConferenceRemote r = mConferenceRemotes.remove(participantId);
+            if (r == null) return false;
+            try {
+                if (r.track != null && r.sink != null) {
+                    r.track.removeSink(r.sink);
+                }
+            } catch (Throwable ignore) {}
+            r.sink = null;
+            r.track = null;
+            SylkLogger.i("[call] [recorder] removeConferenceRemote: pid=" + participantId);
+        }
+        return true;
+    }
+
+    /** Shared encoder/muxer setup — called from both start() and
+     *  startConference(). Same MediaCodec Opus encoder, same OGG
+     *  MediaMuxer, same OUTPUT_SAMPLE_RATE / OUTPUT_CHANNELS. */
+    private void _setupEncoderAndMuxer(String outputPath) throws IOException {
+        try {
+            MediaFormat fmt = MediaFormat.createAudioFormat(
+                MediaFormat.MIMETYPE_AUDIO_OPUS,
+                OUTPUT_SAMPLE_RATE,
+                OUTPUT_CHANNELS);
+            fmt.setInteger(MediaFormat.KEY_BIT_RATE, OPUS_BITRATE_BPS);
+            fmt.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT);
+            mEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS);
+            mEncoder.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            mEncoder.start();
+            mMuxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG);
+        } catch (Throwable t) {
+            SylkLogger.e("[call] [recorder] Encoder/muxer setup failed: " + t.getMessage());
+            try { if (mEncoder != null) { mEncoder.release(); } } catch (Throwable ignore) {}
+            try { if (mMuxer != null) { mMuxer.release(); } } catch (Throwable ignore) {}
+            mEncoder = null;
+            mMuxer = null;
+            throw new IOException("Opus encoder setup failed: " + t.getMessage());
+        }
+    }
+
+    /** Shared mic setup — pulls AudioRecord parameters into one place
+     *  so both start() and startConference() get the same VOICE_COMMUNICATION
+     *  source and buffer sizing. */
+    private void _setupMic() {
+        final int channelCfg = AudioFormat.CHANNEL_IN_MONO;
+        final int encoding   = AudioFormat.ENCODING_PCM_16BIT;
+        final int minBuf     = AudioRecord.getMinBufferSize(OUTPUT_SAMPLE_RATE, channelCfg, encoding);
+        final int bufBytes   = Math.max(minBuf, MIC_FRAMES_PER_CHUNK * 2 * 4);
+        try {
+            mMicRecord = new AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                OUTPUT_SAMPLE_RATE, channelCfg, encoding, bufBytes);
+            if (mMicRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                SylkLogger.w("[call] [recorder] AudioRecord did not initialize; mic side will be silent");
+                try { mMicRecord.release(); } catch (Throwable t) {}
+                mMicRecord = null;
+            } else {
+                mMicRecord.startRecording();
+            }
+        } catch (Throwable t) {
+            SylkLogger.w("[call] [recorder] AudioRecord setup failed: " + t.getMessage()
+                    + " — mic side will be silent");
+            mMicRecord = null;
+        }
+    }
+
+    private void _addConferenceRemoteLocked(RemoteEntry e) {
+        ConferenceRemote cr = new ConferenceRemote(
+            e.participantId,
+            (AudioTrack) e.track,
+            new ArrayBlockingQueue<short[]>(QUEUE_CAPACITY)
+        );
+        cr.sink = new ConferenceRemoteSink(cr);
+        cr.track.addSink(cr.sink);
+        mConferenceRemotes.put(e.participantId, cr);
+        SylkLogger.i("[call] [recorder] addConferenceRemote: pid=" + e.participantId);
+    }
+
+    /**
      * Mic capture loop. Reads 10 ms PCM slices from AudioRecord and
      * pushes a freshly-allocated short[] onto mMicQ. Drops chunks if
      * the queue is full (writer can't keep up — should be rare).
@@ -317,6 +522,30 @@ public class SylkCallRecorder {
         } finally {
             mRemoteSink = null;
             mRemoteTrack = null;
+        }
+
+        // Conference-mode cleanup. Each ConferenceRemote owns one
+        // RemoteSink attached to its AudioTrack — detach them all here
+        // before the writer thread is joined so no more chunks land on
+        // queues we're about to drain. Errors are demoted to warnings
+        // because tracks can race teardown when the user hangs up at
+        // exactly the wrong moment.
+        if (mIsConference) {
+            synchronized (mConferenceLock) {
+                for (ConferenceRemote r : mConferenceRemotes.values()) {
+                    try {
+                        if (r.track != null && r.sink != null) {
+                            r.track.removeSink(r.sink);
+                        }
+                    } catch (Throwable t) {
+                        SylkLogger.w("[call] [recorder] conference removeSink failed: " + t.getMessage());
+                    }
+                    r.sink = null;
+                    r.track = null;
+                }
+                mConferenceRemotes.clear();
+            }
+            mIsConference = false;
         }
 
         // Mic AudioRecord teardown. Stop first (so the read loop bails
@@ -502,12 +731,23 @@ public class SylkCallRecorder {
 
             // Top up empty pending slots from each queue. Only poll the
             // side(s) we haven't already grabbed.
+            //
+            // In conference mode, instead of polling a single shared
+            // remote queue we poll each per-participant queue once and
+            // sum the results into one mixed remote chunk. From the
+            // writer's perspective the rest of the loop is identical
+            // — pendingRem is just "this iteration's R-channel PCM",
+            // wherever it came from.
             try {
                 if (pendingMic == null && mMicQ != null) {
                     pendingMic = mMicQ.poll(POLL_MS, TimeUnit.MILLISECONDS);
                 }
-                if (pendingRem == null && mRemoteQ != null) {
-                    pendingRem = mRemoteQ.poll(POLL_MS, TimeUnit.MILLISECONDS);
+                if (pendingRem == null) {
+                    if (mIsConference) {
+                        pendingRem = _pollMixedRemote(POLL_MS);
+                    } else if (mRemoteQ != null) {
+                        pendingRem = mRemoteQ.poll(POLL_MS, TimeUnit.MILLISECONDS);
+                    }
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
@@ -703,8 +943,70 @@ public class SylkCallRecorder {
     }
 
     private boolean queuesEmpty() {
-        return (mMicQ == null || mMicQ.isEmpty())
-            && (mRemoteQ == null || mRemoteQ.isEmpty());
+        boolean micEmpty = (mMicQ == null || mMicQ.isEmpty());
+        if (!micEmpty) return false;
+        if (mIsConference) {
+            for (ConferenceRemote r : mConferenceRemotes.values()) {
+                if (r.queue != null && !r.queue.isEmpty()) return false;
+            }
+            return true;
+        }
+        return (mRemoteQ == null || mRemoteQ.isEmpty());
+    }
+
+    /**
+     * Conference-mode mixed-remote poll. Polls each per-participant
+     * queue once (non-blocking after the first to keep the writer's
+     * cadence near 100 Hz), sums the results into a single short[]
+     * with int16 clip-guard, and returns it. Returns null if no
+     * participant had anything within POLL_MS — caller treats that the
+     * same way it treats a quiet single-remote queue.
+     *
+     * Sum length is the max chunk length across the participants —
+     * shorter chunks are zero-padded so a participant whose codec
+     * delivers fewer frames doesn't truncate the mix.
+     */
+    private short[] _pollMixedRemote(int firstPollMs) throws InterruptedException {
+        // Snapshot the values list so a concurrent addConferenceRemote/
+        // removeConferenceRemote (which mutates mConferenceRemotes
+        // under mConferenceLock) doesn't trip a ConcurrentModification
+        // here. ConcurrentHashMap.values() is weakly consistent so the
+        // snapshot is cheap.
+        ArrayList<ConferenceRemote> snapshot = new ArrayList<>(mConferenceRemotes.values());
+        if (snapshot.isEmpty()) return null;
+
+        // First poll waits up to firstPollMs so we don't spin when the
+        // whole room is silent; subsequent polls are non-blocking so
+        // the mix doesn't lag the slowest sender.
+        short[][] chunks = new short[snapshot.size()][];
+        int got = 0;
+        int maxLen = 0;
+        for (int i = 0; i < snapshot.size(); i++) {
+            ConferenceRemote r = snapshot.get(i);
+            if (r.queue == null) continue;
+            short[] c = (i == 0)
+                ? r.queue.poll(firstPollMs, TimeUnit.MILLISECONDS)
+                : r.queue.poll();
+            if (c != null) {
+                chunks[i] = c;
+                if (c.length > maxLen) maxLen = c.length;
+                got++;
+            }
+        }
+        if (got == 0 || maxLen == 0) return null;
+
+        short[] mix = new short[maxLen];
+        for (int i = 0; i < chunks.length; i++) {
+            short[] c = chunks[i];
+            if (c == null) continue;
+            for (int j = 0; j < c.length; j++) {
+                int sum = mix[j] + c[j];
+                if (sum > 32767) sum = 32767;
+                else if (sum < -32768) sum = -32768;
+                mix[j] = (short) sum;
+            }
+        }
+        return mix;
     }
 
 
@@ -821,6 +1123,68 @@ public class SylkCallRecorder {
      * just copy. We don't currently handle non-16-bit (libwebrtc has
      * been 16-bit since forever — log and skip if it ever changes).
      */
+    // -----------------------------------------------------------------
+    // Conference-mode helpers and data classes.
+    // -----------------------------------------------------------------
+
+    /** Input bundle for startConference() / addConferenceRemote(). */
+    public static class RemoteEntry {
+        public final MediaStreamTrack track;
+        public final String participantId;
+        public RemoteEntry(MediaStreamTrack track, String participantId) {
+            this.track = track;
+            this.participantId = participantId == null ? "" : participantId;
+        }
+    }
+
+    /** One per remote audio track in conference mode. Owns the sink
+     *  attached to the WebRTC AudioTrack and the per-track queue the
+     *  sink offers PCM chunks into. The mixed-remote poll in
+     *  _pollMixedRemote() pulls from queue, sums across all entries,
+     *  and emits a single short[] for the writer loop. */
+    private static class ConferenceRemote {
+        final String participantId;
+        AudioTrack track;
+        ConferenceRemoteSink sink;
+        final BlockingQueue<short[]> queue;
+        ConferenceRemote(String pid, AudioTrack t, BlockingQueue<short[]> q) {
+            this.participantId = pid;
+            this.track = t;
+            this.queue = q;
+        }
+    }
+
+    /** Per-track sink for conference mode. Mirrors RemoteSink (the
+     *  1-to-1 sink) but pushes into its owner's per-track queue
+     *  instead of the shared mRemoteQ. Same resampling +
+     *  pcmToMono pipeline so the writer's downstream code sees the
+     *  same 16 kHz mono Int16 shape regardless of the negotiated
+     *  source codec / rate. */
+    private class ConferenceRemoteSink implements AudioTrackSink {
+        final ConferenceRemote owner;
+        ConferenceRemoteSink(ConferenceRemote o) { owner = o; }
+
+        @Override
+        public void onData(ByteBuffer audioData,
+                           int bitsPerSample,
+                           int sampleRate,
+                           int numberOfChannels,
+                           int numberOfFrames,
+                           long absoluteCaptureTimestampMs) {
+            if (!mRunning.get()) return;
+            short[] mono = pcmToMono(audioData, bitsPerSample, numberOfChannels, numberOfFrames);
+            if (mono == null) return;
+            short[] chunk = resampleTo(mono, sampleRate, OUTPUT_SAMPLE_RATE);
+            if (chunk == null || chunk.length == 0) return;
+            if (owner.queue != null && !owner.queue.offer(chunk)) {
+                if ((mDropCounter++ & 0x3F) == 0) {
+                    SylkLogger.w("[call] [recorder] conf RemoteQ full pid="
+                            + owner.participantId + ", dropping chunk");
+                }
+            }
+        }
+    }
+
     private static short[] pcmToMono(ByteBuffer data,
                                      int bitsPerSample,
                                      int channels,

@@ -655,10 +655,25 @@ const ChatBubble = memo(
     // The encryption lock badge is rendered inside the bubble's own
     // timestamp bar (see renderTime in ContactsListBox.js) so it sits
     // beside the time text and can't escape the rounded bubble corners.
+    //
+    // alignItems: incoming → flex-start, outgoing → flex-end. RN's
+    // default for a column flex container is alignItems: 'stretch',
+    // which combined with the outer flex:1/alignSelf:'stretch'
+    // (needed so the row reaches both screen edges so image/video
+    // bubbles can letterbox edge-to-edge) was stretching plain text
+    // <Bubble>s to the full row width — a single word ended up in a
+    // near-screen-wide pill. Image / video / audio branches set
+    // alignSelf: 'stretch' on their OWN wrapperStyle explicitly, so
+    // they still span full width; switching this container to a
+    // directional alignItems only affects bubbles that didn't opt
+    // into stretch.
     return (
       <View style={{
           flex: 1,
           alignSelf: 'stretch',
+          alignItems: currentMessage.direction === 'incoming'
+              ? 'flex-start'
+              : 'flex-end',
       }}>
         {replyPreview}
         {content}

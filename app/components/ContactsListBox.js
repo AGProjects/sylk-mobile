@@ -181,6 +181,30 @@ class ContactsListBox extends Component {
             messages: this.props.messages,
             renderMessages: [],
             filteredMessages: [],
+            // Date-period filter (D/W/M/Y). Two-step UI:
+            //   1. User picks a media type (text / image / video / …).
+            //      ContactsListBox computes day / week / month / year
+            //      tags for every visible bubble.
+            //   2. User taps a D/W/M/Y chip; an inline horizontal
+            //      tag scroller appears above the chat with the
+            //      tags that actually occur in the current results
+            //      (e.g. "May 2026", "Apr 2026", …). Tapping a tag
+            //      narrows filteredMessages further.
+            // Both reset whenever the media-type filter or the
+            // active period chip changes — see the CWRP / CDU
+            // branches that drive that reset.
+            datePeriod: null,    // 'day' | 'week' | 'month' | 'year' | null
+            dateTag: null,       // selected tag id, e.g. '2026-05'
+            availableDateTags: { day: [], week: [], month: [], year: [] },
+            // True from the moment the user taps a media-type chip
+            // (image / video / audio / location / …) until the
+            // freshly-fetched messages for that category land in
+            // props.messages[uri]. Drives the centred ActivityIndicator
+            // overlay below so the chip tap feels acknowledged —
+            // without it the previous category's bubbles kept
+            // rendering until the SQL fetch returned, which on big
+            // histories looked like the chip didn't respond.
+            messagesLoading: false,
             chat: this.props.chat,
             pinned: false,
             message: null,
@@ -403,6 +427,12 @@ class ContactsListBox extends Component {
             this._audioBubbleVuInterval = null;
         }
 
+        // Category-filter loading timeout — same hygiene reason.
+        if (this._messagesLoadingTimer) {
+            clearTimeout(this._messagesLoadingTimer);
+            this._messagesLoadingTimer = null;
+        }
+
         this.ended = true;
     }
 
@@ -467,7 +497,7 @@ class ContactsListBox extends Component {
 		    if (!nextProps.selectedContact && nextProps.selectedContact) {
 				console.log('Selected contact changed to', nextProps.selectedContact.uri);
             }
-            if (!nextProps.selectedContact) { 
+            if (!nextProps.selectedContact) {
 				this.resetContact()
             }
             this.setState({selectedContact: nextProps.selectedContact});
@@ -476,6 +506,22 @@ class ContactsListBox extends Component {
                this.setState({scrollToBottom: true});
             } else {
                 this.setState({renderMessages: []});
+            }
+            // Always drop any in-flight category-filter overlay when
+            // the contact changes — the loading flag was set for the
+            // previous contact's fetch, and the new contact's
+            // messages have their own arrival path. Leaving it set
+            // would strand the dim layer over the new conversation
+            // until something else cleared it. Cancel the timeout
+            // fallback too so it can't fire stale against the new
+            // contact.
+            if (this._messagesLoadingTimer) {
+                clearTimeout(this._messagesLoadingTimer);
+                this._messagesLoadingTimer = null;
+            }
+            if (this.state.messagesLoading) {
+                console.log('[messagesLoading] false — contact changed');
+                this.setState({messagesLoading: false});
             }
         };
         
@@ -695,8 +741,67 @@ class ContactsListBox extends Component {
             this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
         }
 
-        if ('messagesCategoryFilter' in nextProps) { 
+        if ('messagesCategoryFilter' in nextProps) {
 			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
+				// Block back-to-back filter taps: while the previous
+				// getMessages is still resolving, ignore further chip
+				// taps. Without this guard a fast tap on (image →
+				// video) would fire two SQL slices whose completions
+				// race — the user could see image bubbles briefly
+				// after picking Video, or vice versa. The overlay
+				// already tells the user "work is in progress"; this
+				// just makes the input match what the overlay
+				// promises (one fetch at a time).
+				if (this.state.messagesLoading) {
+					console.log('[messagesLoading] filter change ignored, previous fetch still in flight:', nextProps.messagesCategoryFilter);
+					return;
+				}
+				// Immediately blank the chat surface and raise the
+				// loading overlay so the user can see that the new
+				// category is being fetched. Without this the
+				// previous category's bubbles stayed on-screen
+				// until getMessages resolved (can be several
+				// hundred ms on large histories), making the chip
+				// feel unresponsive and the eventual swap appear
+				// out of nowhere.
+				//
+				// Also reset the date-period filter and any
+				// selected tag — date tags ("May 2026", "Week 21")
+				// are scoped to the previous category's results
+				// and don't carry meaning across a media-type
+				// switch (per UX spec: reset when media type or
+				// period changes). availableDateTags will refill
+				// from the new category's messages once they
+				// land.
+				this.setState({
+					renderMessages: [],
+					messagesLoading: true,
+					datePeriod: null,
+					dateTag: null,
+					availableDateTags: { day: [], week: [], month: [], year: [] },
+				});
+				console.log('[messagesLoading] true — fetching category:', nextProps.messagesCategoryFilter);
+				// Hard timeout fallback. Two cases the CDU-based
+				// clear (watching renderMessages flip from [] to
+				// non-empty) misses:
+				//   • Category with zero results — renderMessages
+				//     stays [] forever.
+				//   • SQL slice fails or the parent never re-emits
+				//     messages for this uri.
+				// Clear the overlay after a generous ceiling so the
+				// UI can't get stuck. Stored on `this` so a follow-
+				// up filter change (or contact change) can cancel
+				// the previous timer before queueing a new one.
+				if (this._messagesLoadingTimer) {
+					clearTimeout(this._messagesLoadingTimer);
+				}
+				this._messagesLoadingTimer = setTimeout(() => {
+					this._messagesLoadingTimer = null;
+					if (this.state.messagesLoading) {
+						console.log('[messagesLoading] false — timeout fallback (no data within 5s)');
+						this.setState({messagesLoading: false});
+					}
+				}, 5000);
 				this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: this.state.pinned});
 			}
         }
@@ -3100,7 +3205,9 @@ class ContactsListBox extends Component {
 			                    height={28}
 			                    barCount={60}
 			                    channel="r"
-			                    label={stereo ? 'Remote' : null}
+			                    label={stereo
+			                        ? (md.is_conference ? 'Participants' : 'Remote')
+			                        : null}
 			                    labelColor={audioWaveformLabel}
 			                    playedColor="#3498db"
 			                    unplayedColor="rgba(52, 152, 219, 0.25)"
@@ -4297,12 +4404,26 @@ class ContactsListBox extends Component {
                     // Incoming messages live on the sender's device and we have no
                     // authority to remove them — so hide the "Also delete for X"
                     // toggle unless every selected message is outgoing.
+                    //
+                    // Conferences have no per-participant delete RPC — the
+                    // gateway broadcasts each message to every attendee
+                    // independently and there's no "rescind" verb in the
+                    // sylkrtc videoroom signalling. Force canDeleteRemote
+                    // to false when the chat thread is a conference room
+                    // so the "Also delete those sent for X" checkbox is
+                    // hidden entirely. Same `@videoconference` URI test
+                    // DeleteHistoryModal (line 338) and DeleteFileTransfers
+                    // (line 298) use, so the three delete surfaces stay
+                    // consistent.
+                    const _isConferenceThread = this.state.targetUri
+                        && this.state.targetUri.includes('@videoconference');
                     const allMsgs = this.state.renderMessages || [];
                     const msgsById = new Map(allMsgs.map(m => [m._id, m]));
-                    const canDeleteRemote = messagesToDelete.every((id) => {
-                        const m = msgsById.get(id);
-                        return m && m.direction === 'outgoing';
-                    });
+                    const canDeleteRemote = !_isConferenceThread
+                        && messagesToDelete.every((id) => {
+                            const m = msgsById.get(id);
+                            return m && m.direction === 'outgoing';
+                        });
                     this.setState({
                         messagesToDelete: messagesToDelete,
                         canDeleteRemote: canDeleteRemote,
@@ -4644,6 +4765,36 @@ class ContactsListBox extends Component {
             return true;
         }
 
+        // Grouped-image selection changed. The grouped-head bubble
+        // owns the ThumbnailGrid whose corner checkmarks read from
+        // state.selectedImages, and ChatBubble's own memo comparator
+        // already detects this and asks for a re-render. But this
+        // gifted-chat Message-level hook sits ABOVE the ChatBubble
+        // memo — its fallback `return false` short-circuits the
+        // whole chain, so the per-bubble memo never even runs and
+        // the ThumbnailGrid keeps its stale selectedIds prop.
+        // Without this trigger, tapping a tile toggles
+        // state.selectedImages correctly but the corner checkmark
+        // never appears (regression introduced alongside the
+        // reactionTarget gate above).
+        //
+        // Mirror the reactionTarget transition pattern: when
+        // selection changes, force a single pass over visible
+        // bubbles and let the per-bubble ChatBubble memo decide
+        // which one(s) actually re-render. _previousSelectedImages
+        // is refreshed in componentDidUpdate (alongside
+        // _previousReactionTargetId) so this hook sees the
+        // pre-commit reference here.
+        // `_previousSelectedImages` is undefined until componentDidUpdate
+        // runs for the first time (CDU doesn't fire after the initial
+        // mount), so guard against that here to avoid a one-time
+        // spurious full re-render right after first paint.
+        const prevSel = this._previousSelectedImages;
+        const currSel = this.state.selectedImages;
+        if (prevSel !== undefined && prevSel !== currSel) {
+            return true;
+        }
+
         return false;
     }
 
@@ -4783,6 +4934,14 @@ class ContactsListBox extends Component {
           || (this.state.replyingTo && this.state.replyingTo._id)
           || null;
 
+      // Track the previous selectedImages array reference so the
+      // next shouldUpdateMessage cycle can detect that the grouped-
+      // image selection changed (see the matching prevSel/currSel
+      // check there). Refreshed AFTER the render that committed the
+      // new selection so the next prop diff catches it as "this
+      // pass differs from the previous pass".
+      this._previousSelectedImages = this.state.selectedImages;
+
       // External scroll trigger. App.js bumps `chatScrollTrigger`
       // when an outgoing event (e.g. user just confirmed a Meet me
       // there share) wants the chat view to scroll to the latest
@@ -4801,6 +4960,30 @@ class ContactsListBox extends Component {
 
       if (prevState.renderMessages !== this.state.renderMessages) {
 	      //console.log('renderMessages did change', this.state.renderMessages.length);
+
+          // Spinner-stop signal. The CWRP path raises messagesLoading
+          // to true and blanks renderMessages when the user taps a
+          // media-type chip. The freshly-fetched messages land via
+          // the parent's setState({messages: {...}}) → CWRP merge
+          // path → setState({renderMessages: newMessages}). That's
+          // the moment to drop the overlay: a prop-reference check
+          // in CWRP was unreliable because the parent occasionally
+          // re-emits messages without changing the per-uri array
+          // reference (status flips, decrypt completions, etc.),
+          // so the prev/next compare missed the actual swap. Watching
+          // renderMessages state is the canonical "I have new
+          // bubbles to render" signal and fires exactly once per
+          // fetch.
+          if (this.state.messagesLoading
+                  && (this.state.renderMessages || []).length > 0) {
+              console.log('[messagesLoading] false — renderMessages populated:',
+                  this.state.renderMessages.length, 'bubbles');
+              if (this._messagesLoadingTimer) {
+                  clearTimeout(this._messagesLoadingTimer);
+                  this._messagesLoadingTimer = null;
+              }
+              this.setState({messagesLoading: false});
+          }
       }
 
       if (prevState.actionSheetDisplayed !== this.state.actionSheetDisplayed) {
@@ -5191,7 +5374,7 @@ class ContactsListBox extends Component {
 		  });
 	   }
 
-	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy || prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter || prevState.sortOrder !== this.state.sortOrder) {
+	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy || prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter || prevState.sortOrder !== this.state.sortOrder || prevState.datePeriod !== this.state.datePeriod || prevState.dateTag !== this.state.dateTag) {
 
 			let filteredMessages = this.state.renderMessages;
 
@@ -5253,6 +5436,160 @@ class ContactsListBox extends Component {
 				  message => !message
 				    || message.contentType !== 'application/sylk-live-location'
 				);
+			}
+
+			// Links subset of Text. The SQL slice + sql2GiftedChat
+			// have already narrowed to text-shaped rows (file-
+			// transfer dropped); now keep only those whose body
+			// contains something that looks like a URL. Matches
+			//   - http:// / https:// followed by any non-whitespace
+			//   - bare www.<something> (very common in chat)
+			//   - common TLDs after a dot for unscheme'd domains
+			//     (e.g. "anthropic.com/news") — kept intentionally
+			//     conservative (\b<tld>\b) to avoid flagging "v1.2"
+			//     or "file.txt" as a link.
+			// Tested against text/plain and text/html bodies; the
+			// regex is run against (message.text || message.html)
+			// so HTML messages whose .text is the rendered plain
+			// version still match because the URL survives the
+			// flattening (linkifyHtml above leaves the raw href
+			// text in place).
+			if (_catFilter === 'links') {
+				const _urlRegex = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|app|co|dev|me|gov|edu|info|ai|xyz)(?:\/\S*)?)/i;
+				filteredMessages = filteredMessages.filter(message => {
+				    if (!message) return false;
+				    const body = (message.text || '') + ' ' + (message.html || '');
+				    return _urlRegex.test(body);
+				});
+			}
+
+			// === Date-period tag pipeline ===
+			//
+			// Runs only when a media-type filter is active — the
+			// chip group, the inline tag scroller, and the date
+			// state are all gated on that condition (see the
+			// renderDatePeriodBar method and the reset branches
+			// in CWRP / CDU). Skipping the work otherwise keeps
+			// the mixed-timeline view's per-render cost flat.
+			//
+			// Two outputs:
+			//   • availableDateTags — unique day/week/month/year
+			//     tags actually present in the post-category
+			//     messages, each sorted newest-first by sortKey.
+			//     Fed back into state so the horizontal tag
+			//     scroller above the chat reflects only periods
+			//     the user can actually pick.
+			//   • filteredMessages — narrowed to the selected
+			//     {period, tag} pair when both are set.
+			//
+			// availableDateTags is computed from the messages
+			// BEFORE the dateTag narrow, so changing the active
+			// tag doesn't make other tags disappear from the
+			// scroller mid-session.
+			if (_catFilter) {
+				// Mirror the per-category renderer's visibility
+				// filter when collecting tags. Without this, pills
+				// could appear for months whose only members are
+				// invisible to the user:
+				//
+				//   • 'image' → the grid shows messages whose
+				//     `m.image` is populated, i.e. downloaded
+				//     images. Image-category rows whose file
+				//     hasn't been downloaded yet still live in
+				//     renderMessages (sql2GiftedChat keeps them
+				//     because they passed the isImg check) but
+				//     have `image: undefined`. Counting them
+				//     produces pills like "May 2026" even when
+				//     no image is visible for that month.
+				//
+				//   • 'video' → matches the dual-clause filter
+				//     the video grid uses (downloaded videos
+				//     OR file-transfer rows whose metadata
+				//     classifies as video). Undownloaded videos
+				//     ARE visible as placeholder tiles, so they
+				//     count.
+				//
+				//   • 'audio' / 'text' / 'links' / 'location' /
+				//     'other' → the chat list shows every row,
+				//     so the broader set is correct; no extra
+				//     narrowing here.
+				let _msgsForTags = filteredMessages;
+				if (_catFilter === 'image') {
+					_msgsForTags = filteredMessages.filter(m => m && !!m.image);
+				} else if (_catFilter === 'video') {
+					_msgsForTags = filteredMessages.filter(m => {
+						if (!m) return false;
+						if (m.video) return true;
+						if (!m.metadata || !m.metadata.filename) return false;
+						const fname = m.metadata.filename;
+						const ftype = m.metadata.filetype;
+						if (utils.isImage(fname, ftype)) return false;
+						if (utils.isAudio(fname, ftype)) return false;
+						return utils.isVideo(fname, ftype);
+					});
+				}
+				const _tagPerMsg = _msgsForTags.map(m => {
+					const ts = m && m.createdAt;
+					const tags = utils.getMessageDateTags(ts);
+					return { id: m && m._id, tags };
+				});
+				const _collect = (period) => {
+					const seen = new Map();
+					for (const e of _tagPerMsg) {
+						const t = e.tags && e.tags[period];
+						if (!t) continue;
+						if (!seen.has(t.id)) {
+							seen.set(t.id, t);
+						}
+					}
+					return Array.from(seen.values())
+						.sort((a, b) => b.sortKey - a.sortKey);
+				};
+				const nextAvail = {
+					day: _collect('day'),
+					week: _collect('week'),
+					month: _collect('month'),
+					year: _collect('year'),
+				};
+				// Cheap shallow stability check — keys are the
+				// ids in order, joined. Cuts per-render setState
+				// churn (which otherwise re-fires CDU
+				// recursively).
+				const _join = (arr) => arr.map(t => t.id).join('|');
+				const prevAvail = this.state.availableDateTags || {};
+				const changed =
+					_join(prevAvail.day  || []) !== _join(nextAvail.day)  ||
+					_join(prevAvail.week || []) !== _join(nextAvail.week) ||
+					_join(prevAvail.month|| []) !== _join(nextAvail.month)||
+					_join(prevAvail.year || []) !== _join(nextAvail.year);
+				if (changed) {
+					// Compact summary log — kept (cheap, only fires
+					// on actual change) so future regressions in tag
+					// computation are easy to spot. Full label lists
+					// were dropped after the UI was verified.
+					console.log('[dateFilter] category=', _catFilter,
+						'messages=', filteredMessages.length,
+						'tagCounts d/w/m/y=',
+						nextAvail.day.length,
+						nextAvail.week.length,
+						nextAvail.month.length,
+						nextAvail.year.length);
+					this.setState({availableDateTags: nextAvail});
+				}
+				// Apply the active {period, tag} narrow if any.
+				const _period = this.state.datePeriod;
+				const _tag = this.state.dateTag;
+				if (_period && _tag) {
+					const allowedIds = new Set(
+						_tagPerMsg
+							.filter(e => e.tags
+								&& e.tags[_period]
+								&& e.tags[_period].id === _tag)
+							.map(e => e.id)
+					);
+					filteredMessages = filteredMessages.filter(m =>
+						m && allowedIds.has(m._id));
+				}
 			}
 
 		    //console.log('filteredMessages type:', typeof filteredMessages);
@@ -5902,7 +6239,15 @@ class ContactsListBox extends Component {
 		};
 		
         if (currentMessage.video) {
-            const fontColor = !isIncoming ? "black": "white";
+            // Same Day-mode fix as the image branch below: direction-only
+            // colours rendered white-on-white on an incoming bubble in
+            // Day mode (theme.bubbleIncoming = '#FFFFFF'), hiding the
+            // menu / fullscreen / cancel icons. Use the theme's bubble
+            // text colours so contrast holds in both modes.
+            const _vidTheme = DarkModeManager.getTheme();
+            const fontColor = isIncoming
+                ? _vidTheme.bubbleIncomingText
+                : _vidTheme.bubbleOutgoingText;
 
 			if (currentMessage.metadata.preview) {
 				return (
@@ -5961,7 +6306,7 @@ class ContactsListBox extends Component {
 								style={styles.photoMenu}
 								size={20}
 								icon="menu"
-								iconColor={!isIncoming ? "black": "white"}
+								iconColor={fontColor}
 								onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
 							/>
 						  )}
@@ -6153,7 +6498,21 @@ class ContactsListBox extends Component {
 			);
 
         } else if (currentMessage.image) {
-            const fontColor = !isIncoming ? "black": "white";
+            // The image-bubble footer hosts the kebab/menu, grid, and
+            // fullscreen IconButtons over the bubble's background.
+            // Pre-fix this picked colours by direction only — black
+            // when outgoing, white when incoming — which worked in
+            // Night mode (incoming bubble = green, outgoing = white)
+            // but broke in Day mode: the incoming bubble is white
+            // (theme.bubbleIncoming = '#FFFFFF'), so white-on-white
+            // made the entire icon row invisible. Pull the contrasting
+            // colour from the active theme's bubble-text keys
+            // (bubbleIncomingText / bubbleOutgoingText) instead so the
+            // icons stay readable on either bubble in either mode.
+            const _imgTheme = DarkModeManager.getTheme();
+            const fontColor = isIncoming
+                ? _imgTheme.bubbleIncomingText
+                : _imgTheme.bubbleOutgoingText;
 
             if (currentMessage.metadata.preview) {
 				return (
@@ -6238,7 +6597,7 @@ class ContactsListBox extends Component {
 							style={styles.photoMenu}
 							size={20}
 							icon="menu"
-							iconColor={!isIncoming ? "black": "white"}
+							iconColor={fontColor}
 							onPress={() => this.onLongMessagePress(chatContext, currentMessage)}
 						/>
 					  )}
@@ -6632,7 +6991,13 @@ class ContactsListBox extends Component {
 
             const _innerContent = (
                 <View>
-                    <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10}]}>
+                    {/* flexWrap:'wrap' added to match CustomMessageText's
+                        row container. Without it, the outer wrapper here
+                        can prevent the inner ParsedText from wrapping on
+                        Samsung devices with large Font size / Bold font /
+                        Screen zoom turned on, and the message renders as
+                        a single clipped line. */}
+                    <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, flexWrap: 'wrap'}]}>
                          {_isFileBubble ?
 					 <Icon
 					  type="font-awesome"
@@ -7044,7 +7409,7 @@ renderFocusedMessagesControls = () => (
 	>
 	  <Icon name="arrow-up" size={22} color="white" />
 	</TouchableOpacity>
-	
+
 	<TouchableOpacity
 	  onPress={() => this.loadPrevious()}
 	  style={navButton}
@@ -7054,6 +7419,164 @@ renderFocusedMessagesControls = () => (
 
   </View>
 );
+
+// Toggle a date-period chip (D / W / M / Y). Tap the same chip
+// twice to clear it. Tapping a different period from the one
+// currently active swaps periods AND clears the previously-
+// selected tag (per UX spec: "reset when period changes") — the
+// available tag list for the new period is a different set of
+// strings and a stale dateTag from the old period would never
+// match anyway.
+togglePeriod = (period) => {
+    if (this.state.datePeriod === period) {
+        this.setState({datePeriod: null, dateTag: null});
+        return;
+    }
+    this.setState({datePeriod: period, dateTag: null});
+};
+
+setDateTag = (tagId) => {
+    // Tap the active tag again -> clear (deselect). Otherwise
+    // pin the chat to that tag.
+    if (this.state.dateTag === tagId) {
+        this.setState({dateTag: null});
+        return;
+    }
+    this.setState({dateTag: tagId});
+};
+
+// Date-period filter bar. Renders only when a media-type filter
+// is active (the chips have nothing to do otherwise — the
+// mixed-timeline view doesn't surface this functionality). Two
+// stacked rows:
+//   • D / W / M / Y chips (icon + label, same visual language as
+//     the bottom navbar's category chips).
+//   • Horizontal scroller of available tags for the active
+//     period. Each tag pill carries the human-readable label
+//     ("May 2026", "Week 21, 2026", …). The scroller only renders
+//     when a period is selected — the chips alone keep the bar
+//     small when the user hasn't picked one yet.
+renderDatePeriodBar = () => {
+    if (!this.state.messagesCategoryFilter) return null;
+    const theme = DarkModeManager.getTheme();
+    // theme.surface picks the "control" tone: a touch darker than
+    // theme.background in Day (#E0E0E0 vs #EDEDED) and lighter in
+    // Night (#1F1F1F vs #121212). The chat surface itself uses
+    // theme.chatBackground (#ECE5DD warm beige in Day, #0B141A
+    // near-black in Night), so theme.surface always reads as a
+    // distinct band above the message list without resorting to a
+    // hardcoded colour.
+    const _bg = theme.surface;
+    const _fg = theme.textPrimary;
+    const _activeBg = '#436294';   // Sylk-blue, same as other selected chips
+    const _activeFg = '#FFFFFF';
+    const periods = [
+        {key: 'day',   label: 'Day',   icon: 'calendar-today'},
+        {key: 'week',  label: 'Week',  icon: 'calendar-week'},
+        {key: 'month', label: 'Month', icon: 'calendar-month'},
+        {key: 'year',  label: 'Year',  icon: 'calendar-blank'},
+    ];
+    const active = this.state.datePeriod;
+    const activeTag = this.state.dateTag;
+    const tags = (active
+        && this.state.availableDateTags
+        && this.state.availableDateTags[active])
+        || [];
+    return (
+        <View style={{
+            backgroundColor: _bg,
+            // zIndex/elevation keep the bar above the chat surface
+            // (the GiftedChat list paints to the same layer and
+            // would otherwise visually cover the bar's bottom
+            // border on some Android builds).
+            zIndex: 10,
+            elevation: 2,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderColor: theme.divider || 'rgba(0,0,0,0.15)',
+        }}>
+            {/* Period chip row */}
+            <View style={{flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 6, paddingHorizontal: 8}}>
+                {periods.map(p => {
+                    const isSel = active === p.key;
+                    return (
+                        <TouchableOpacity
+                            key={p.key}
+                            onPress={() => this.togglePeriod(p.key)}
+                            style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                paddingHorizontal: 10,
+                                paddingVertical: 4,
+                                borderRadius: 14,
+                                backgroundColor: isSel ? _activeBg : 'transparent',
+                                borderWidth: isSel ? 0 : 0.5,
+                                borderColor: 'rgba(0,0,0,0.2)',
+                            }}
+                        >
+                            <Icon name={p.icon} size={16} color={isSel ? _activeFg : _fg} />
+                            <Text style={{
+                                marginLeft: 4,
+                                fontSize: 12,
+                                color: isSel ? _activeFg : _fg,
+                            }}>{p.label}</Text>
+                        </TouchableOpacity>
+                    );
+                })}
+            </View>
+            {/* Tag scroller (only when a period is selected) */}
+            {active ? (
+                tags.length > 0 ? (
+                    <FlatList
+                        // Period-keyed so the list REMOUNTS when the
+                        // user switches periods. Without this, the
+                        // scroll offset carried over from the
+                        // previous period — a long Day list scrolled
+                        // far to the right would leave the new Month
+                        // list also scrolled past its visible
+                        // entries, so the user wouldn't see any
+                        // tags at first. Remounting on period
+                        // change is the cheapest reliable reset
+                        // (no ref + scrollToOffset plumbing).
+                        key={`tags-${active}`}
+                        horizontal
+                        data={tags}
+                        keyExtractor={t => String(t.id)}
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={{paddingHorizontal: 8, paddingBottom: 6}}
+                        renderItem={({item}) => {
+                            const isTagSel = activeTag === item.id;
+                            return (
+                                <TouchableOpacity
+                                    onPress={() => this.setDateTag(item.id)}
+                                    style={{
+                                        marginRight: 6,
+                                        paddingHorizontal: 10,
+                                        paddingVertical: 4,
+                                        borderRadius: 12,
+                                        backgroundColor: isTagSel ? _activeBg : 'rgba(0,0,0,0.05)',
+                                        borderWidth: isTagSel ? 0 : 0.5,
+                                        borderColor: 'rgba(0,0,0,0.15)',
+                                    }}
+                                >
+                                    <Text style={{
+                                        fontSize: 12,
+                                        color: isTagSel ? _activeFg : _fg,
+                                    }}>{item.label}</Text>
+                                </TouchableOpacity>
+                            );
+                        }}
+                    />
+                ) : (
+                    <View style={{paddingHorizontal: 12, paddingBottom: 6}}>
+                        <Text style={{fontSize: 11, color: _fg, opacity: 0.6}}>
+                            No {active}s in the current results.
+                        </Text>
+                    </View>
+                )
+            ) : null}
+        </View>
+    );
+};
 
 exitFocusMode = () => {
   this.setState({
@@ -8243,6 +8766,31 @@ scrollToMessage(id) {
 					<ActivityIndicator size="large" color="#999" />
 				  </View>
 				)}
+
+				{/* Media-type filter loading overlay. Set true the moment
+				    the user taps a media-type chip in the search bar
+				    (componentWillReceiveProps detects the messages-
+				    CategoryFilter change), cleared as soon as the parent
+				    delivers the freshly-fetched messages for this uri.
+				    Same centred ActivityIndicator + dim treatment as the
+				    gettingSharedAsset overlay above so the two share a
+				    visual language. */}
+				{this.state.messagesLoading && (
+				  <View
+					style={{
+					  position: 'absolute',
+					  top: 0,
+					  left: 0,
+					  right: 0,
+					  bottom: 0,
+					  justifyContent: 'center',
+					  alignItems: 'center',
+					  backgroundColor: 'rgba(0,0,0,0.4)',
+					}}
+				  >
+					<ActivityIndicator size="large" color="#fff" />
+				  </View>
+				)}
   
              {/* Column count for both media grids. Phone portrait
                  reads cramped at 3 (~120dp tiles on a 360dp screen
@@ -8250,7 +8798,16 @@ scrollToMessage(id) {
                  whenever there's more horizontal room — tablet or
                  phone-landscape. */}
              {this.showImageGrid ?
-				  <ThumbnailGrid
+				  // The image grid is a flex:1 ThumbnailGrid which
+				  // otherwise eats the whole screen — leaving no
+				  // room for the date-period bar above it. Wrap in
+				  // a column View so the bar sits at the top
+				  // (natural height) and the grid takes the rest.
+				  // Same pattern as the chat-view branch below.
+				  <View style={{flex: 1}}>
+				    {this.renderDatePeriodBar()}
+				    <View style={{flex: 1}}>
+				      <ThumbnailGrid
 					images={images}
 					isLandscape={this.state.isLandscape}
 					numColumns={(this.state.isTablet || this.state.isLandscape) ? 3 : 2}
@@ -8287,7 +8844,9 @@ scrollToMessage(id) {
 						<Image source={{uri:item.uri}} style={{width:size, height:size, borderRadius:6}} />
 					  </View>
 					)}
-				  />
+				      />
+				    </View>
+				  </View>
 			  : null}
 
              {/* Video grid view (Video filter chip active). Same
@@ -8313,6 +8872,14 @@ scrollToMessage(id) {
                  contact's entire media history in one fetch. */}
              {this.showVideoGrid ?
                  <View style={{flex: 1}}>
+                  {/* Date-period bar above the video grid — same
+                      wrap pattern as the image grid above. The
+                      pre-existing flex:1 wrapper already gave the
+                      grid its own scrolling area, so inserting the
+                      bar here just sits at the top of that column
+                      without further plumbing. */}
+                  {this.renderDatePeriodBar()}
+                  <View style={{flex: 1}}>
                   <ThumbnailGrid
                     images={videos}
                     isLandscape={this.state.isLandscape}
@@ -8372,6 +8939,7 @@ scrollToMessage(id) {
                     }}
                     onLongPress={(item) => console.log('long video', item && item.id)}
                   />
+                  </View>
                  </View>
 			  : null}
 
@@ -8402,6 +8970,15 @@ scrollToMessage(id) {
                     // the input bar lands flush above the keyboard.
                     useManualOverlap ? {paddingBottom: this.state.keyboardOverlap || 0} : null,
                 ]}>
+                {/* Date-period filter bar — D/W/M/Y chips + inline
+                    horizontal scroller of available tags. Renders
+                    above the chat (above the KeyboardWrapper that
+                    holds the message list) only while a media-type
+                    filter is active. See renderDatePeriodBar for
+                    the gating + visual treatment; tapPath:
+                    chip → togglePeriod, tag → setDateTag → CDU
+                    pipeline narrows filteredMessages. */}
+                {this.renderDatePeriodBar()}
 				<KeyboardWrapper
 					  // Key folds (heh) the rounded window dims into
 					  // the wrapper's identity. On the Razr both
@@ -8714,6 +9291,13 @@ scrollToMessage(id) {
 
               : (items.length === 1 && this.showReadonlyChat) ?
               <View style={[chatContainer, borderClass]}>
+                {/* Date-period filter bar — same purpose as in the
+                    main chat branch above. The readonly chat is the
+                    fallback render path when showChat returns false
+                    but a single contact item is selected (e.g. some
+                    filter states route here), so the bar lives in
+                    both branches to be safe. */}
+                {this.renderDatePeriodBar()}
                 <GiftedChat innerRef={this.chatListRef}
 				  listViewProps={{
 					ref: (ref) => { this.flatListRef = ref; },

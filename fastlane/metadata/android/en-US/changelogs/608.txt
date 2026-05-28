@@ -1,0 +1,5 @@
+Added media browser calendar filter
+Added audio recording for caonference call 
+Group images selection fixes
+Avatar fixes
+Overall bug fixes

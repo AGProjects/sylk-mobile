@@ -28,6 +28,11 @@ import {
 } from './accountSettingsAccess';
 
 const SETTING_PATH = 'disclaimers.callRecording';
+// Companion timestamp (Unix ms) of when the user agreed. Stored as a
+// sibling field rather than promoting the flag itself to an object so
+// the boolean read in the rest of the codebase (`=== true`) keeps
+// working unchanged. Cleared (set to 0) when the user opts out.
+const SETTING_PATH_AT = 'disclaimers.callRecordingAt';
 
 /**
  * Read the per-account flag. Returns false when no account is loaded
@@ -39,16 +44,27 @@ export async function readAcknowledged(/* accountId */) {
     return getAccountSetting(SETTING_PATH) === true;
 }
 
+/** Unix ms of the agreement (0 if never agreed). Drives the per-
+ *  disclaimer timestamp shown in the new Disclaimers settings section
+ *  + the startup [disclaimer] log lines. */
+export async function readAcknowledgedAt(/* accountId */) {
+    const v = getAccountSetting(SETTING_PATH_AT);
+    return typeof v === 'number' && v > 0 ? v : 0;
+}
+
 export async function setAcknowledged(/* accountId */) {
     await setAccountSetting(SETTING_PATH, true);
+    await setAccountSetting(SETTING_PATH_AT, Date.now());
 }
 
 export async function clearAcknowledged(/* accountId */) {
     await setAccountSetting(SETTING_PATH, false);
+    await setAccountSetting(SETTING_PATH_AT, 0);
 }
 
 export default {
     readAcknowledged,
+    readAcknowledgedAt,
     setAcknowledged,
     clearAcknowledged,
 };

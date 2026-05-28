@@ -47,13 +47,20 @@ import {
     readAcknowledged as readCallRecordingDisclosure,
     setAcknowledged  as setCallRecordingDisclosure,
     clearAcknowledged as clearCallRecordingDisclosure,
+    readAcknowledgedAt as readCallRecordingDisclosureAt,
 } from '../callRecordingDisclosure';
 import LocationPrivacyDisclosureModal from './LocationPrivacyDisclosureModal';
 import {
     readAcknowledged as readLocationDisclosure,
     setAcknowledged  as setLocationDisclosure,
     clearAcknowledged as clearLocationDisclosure,
+    readAcknowledgedAt as readLocationDisclosureAt,
 } from '../locationDisclosure';
+import {
+    readAcknowledged as readConferenceRecordingDisclosure,
+    clearAcknowledged as clearConferenceRecordingDisclosure,
+    readAcknowledgedAt as readConferenceRecordingDisclosureAt,
+} from '../conferenceRecordingDisclosure';
 
 // Three-stop choices for the Location preferences. Values are kept in
 // the units the persistent setting expects directly (seconds for the
@@ -530,6 +537,50 @@ const PreferencesModal = ({
     // the consent without having to start a share.
     const [locDisclosureMode, setLocDisclosureMode] = useState('hidden');
     const [locHasAcknowledged, setLocHasAcknowledged] = useState(false);
+
+    // Disclaimers section — read-only summary of agreement status +
+    // timestamp for each of the three tracked disclaimers. Hydrated on
+    // mount + on `show` toggle so opening the modal always reflects
+    // the current SQL state (the toggles above can write the call /
+    // location flags; the conference flag is written from
+    // ConferenceBox._onConferenceRecordingDisclosureContinue).
+    //
+    // Stored as objects so each row knows both "agreed?" and "when?"
+    // independently. `at` is Unix ms (0 = never agreed); we format
+    // with toLocaleString for the visible row so it matches the
+    // device's locale.
+    const [discSummary, setDiscSummary] = useState({
+        location:   { agreed: false, at: 0 },
+        call:       { agreed: false, at: 0 },
+        conference: { agreed: false, at: 0 },
+    });
+
+    useEffect(() => {
+        let cancelled = false;
+        const _hydrate = async () => {
+            try {
+                const [locAck, locAt, callAck, callAt, confAck, confAt] = await Promise.all([
+                    readLocationDisclosure(accountId).catch(() => false),
+                    readLocationDisclosureAt(accountId).catch(() => 0),
+                    readCallRecordingDisclosure(accountId).catch(() => false),
+                    readCallRecordingDisclosureAt(accountId).catch(() => 0),
+                    readConferenceRecordingDisclosure(accountId).catch(() => false),
+                    readConferenceRecordingDisclosureAt(accountId).catch(() => 0),
+                ]);
+                if (cancelled) return;
+                setDiscSummary({
+                    location:   { agreed: locAck === true,  at: typeof locAt === 'number'   ? locAt   : 0 },
+                    call:       { agreed: callAck === true, at: typeof callAt === 'number'  ? callAt  : 0 },
+                    conference: { agreed: confAck === true, at: typeof confAt === 'number'  ? confAt  : 0 },
+                });
+            } catch (e) {
+                // Best-effort; the row just shows "never agreed" if
+                // the read fails.
+            }
+        };
+        _hydrate();
+        return () => { cancelled = true; };
+    }, [accountId, show]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1193,6 +1244,64 @@ const PreferencesModal = ({
                                     >
                                         View privacy policy
                                     </Text>
+                                </View>
+
+                                {/* Disclaimers section — read-only
+                                    audit summary of which disclaimers
+                                    the user has agreed to and when.
+                                    Mirrors the [disclaimer] log lines
+                                    emitted at app start
+                                    (app.js _logDisclaimerSummary). The
+                                    actual consent flow stays in the
+                                    matching toggle / record-button
+                                    surfaces; this section is just a
+                                    surfaces-it-in-one-place dashboard
+                                    so users can answer "did I agree to
+                                    X?" without going hunting. Each
+                                    row shows the timestamp in the
+                                    device's locale so it reads naturally
+                                    for the user; the underlying value
+                                    is Unix ms (matches the
+                                    [disclaimer] log's ISO timestamp). */}
+                                <View style={{ marginTop: 18 }}>
+                                    <Text style={{ fontSize: FS_LABEL, fontWeight: '600', marginBottom: 6 }}>
+                                        Disclaimers
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, opacity: 0.7, marginBottom: 8 }}>
+                                        When you agreed to each consent prompt.
+                                    </Text>
+                                    {[
+                                        { key: 'location',   label: 'Location sharing' },
+                                        { key: 'call',       label: 'Call recording' },
+                                        { key: 'conference', label: 'Conference recording' },
+                                    ].map((row) => {
+                                        const entry = discSummary[row.key] || { agreed: false, at: 0 };
+                                        let when;
+                                        if (entry.agreed && entry.at > 0) {
+                                            try { when = new Date(entry.at).toLocaleString(); }
+                                            catch (e) { when = String(entry.at); }
+                                        } else if (entry.agreed) {
+                                            when = 'agreed (timestamp not recorded)';
+                                        } else {
+                                            when = 'not agreed';
+                                        }
+                                        return (
+                                            <View key={row.key}
+                                                  style={{ flexDirection: 'row',
+                                                           justifyContent: 'space-between',
+                                                           alignItems: 'center',
+                                                           paddingVertical: 4 }}>
+                                                <Text style={{ fontSize: FS_BODY, flex: 1, paddingRight: 8 }}>
+                                                    {row.label}
+                                                </Text>
+                                                <Text style={{ fontSize: FS_CAPTION,
+                                                               opacity: entry.agreed ? 1 : 0.6,
+                                                               textAlign: 'right' }}>
+                                                    {when}
+                                                </Text>
+                                            </View>
+                                        );
+                                    })}
                                 </View>
 
                                 {/* Future sections go here. */}

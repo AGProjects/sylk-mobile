@@ -8,8 +8,14 @@ import android.content.IntentFilter;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.TypedValue;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.File;
@@ -146,8 +152,122 @@ public class IncomingCallActivity extends AppCompatActivity {
 		acceptButton.setOnClickListener(v -> sendAcceptIntent(acceptAction));
 		declineButton.setOnClickListener(v -> sendRejectIntent());
 
+		// On foldables (e.g. Galaxy Z Fold / Razr) the lock-screen overlay can
+		// be shown on the narrow cover display. The default 220dp logo plus
+		// 48dp buttons with an 80dp bottom margin overflow that ~300–380dp
+		// canvas. Detect the cover-display width and shrink the central logo,
+		// the bottom button bar and the top notification bubble so everything
+		// fits without scrolling/clipping.
+		applyFoldedScalingIfNeeded();
+
         SylkLogger.d("[call] [ui] IncomingCallActivity alert panel displayed");
 
+	}
+
+	/**
+	 * Detect a narrow (folded cover) screen and rescale the central Sylk
+	 * logo + Accept/Decline buttons so the overlay fits. We base the check on
+	 * the smallest screen dimension in dp: a typical phone is ≥ 360dp wide,
+	 * Galaxy Z Fold cover ≈ 320dp, Razr cover ≈ 373dp. Anything ≤ 400dp gets
+	 * the compact treatment so we comfortably cover all current cover
+	 * displays without affecting normal phones.
+	 */
+	private void applyFoldedScalingIfNeeded() {
+		try {
+			DisplayMetrics metrics = getResources().getDisplayMetrics();
+			float density = metrics.density;
+			float widthDp = metrics.widthPixels / density;
+			float heightDp = metrics.heightPixels / density;
+			float smallestDp = Math.min(widthDp, heightDp);
+
+			boolean isFolded = smallestDp <= 400f;
+			SylkLogger.d("[call] [ui] IncomingCallActivity widthDp=" + widthDp
+					+ " heightDp=" + heightDp
+					+ " smallestDp=" + smallestDp
+					+ " isFolded=" + isFolded);
+
+			if (!isFolded) {
+				return;
+			}
+
+			ImageView logo = findViewById(R.id.appLogo);
+			if (logo != null) {
+				// 220dp → ~120dp on cover display.
+				int logoPx = dpToPx(120);
+				ViewGroup.LayoutParams lp = logo.getLayoutParams();
+				lp.width = logoPx;
+				lp.height = logoPx;
+				logo.setLayoutParams(lp);
+			}
+
+			LinearLayout buttonContainer = findViewById(R.id.buttonContainer);
+			if (buttonContainer != null) {
+				ViewGroup.LayoutParams blp = buttonContainer.getLayoutParams();
+				if (blp instanceof ViewGroup.MarginLayoutParams) {
+					// 80dp → 32dp keeps the buttons clear of the bottom edge
+					// without taking up half the cover display.
+					((ViewGroup.MarginLayoutParams) blp).bottomMargin = dpToPx(32);
+					buttonContainer.setLayoutParams(blp);
+				}
+			}
+
+			// Shrink the Accept / Decline buttons themselves: 140x48 dp is too
+			// wide for ~320dp cover screens (two buttons + 32dp gap overflow).
+			int btnWidthPx = dpToPx(108);
+			int btnHeightPx = dpToPx(40);
+			int btnSidePx = dpToPx(8);
+
+			View acceptBtn = findViewById(R.id.acceptButton);
+			View declineBtn = findViewById(R.id.declineButton);
+			if (acceptBtn != null) {
+				ViewGroup.LayoutParams alp = acceptBtn.getLayoutParams();
+				alp.width = btnWidthPx;
+				alp.height = btnHeightPx;
+				if (alp instanceof ViewGroup.MarginLayoutParams) {
+					((ViewGroup.MarginLayoutParams) alp).setMarginStart(btnSidePx);
+				}
+				acceptBtn.setLayoutParams(alp);
+				if (acceptBtn instanceof Button) {
+					((Button) acceptBtn).setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+				}
+			}
+			if (declineBtn != null) {
+				ViewGroup.LayoutParams dlp = declineBtn.getLayoutParams();
+				dlp.width = btnWidthPx;
+				dlp.height = btnHeightPx;
+				if (dlp instanceof ViewGroup.MarginLayoutParams) {
+					((ViewGroup.MarginLayoutParams) dlp).setMarginEnd(btnSidePx);
+				}
+				declineBtn.setLayoutParams(dlp);
+				if (declineBtn instanceof Button) {
+					((Button) declineBtn).setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+				}
+			}
+
+			// Tighten the top notification bubble so the caller name row also
+			// fits inside the narrow canvas — drop its top margin and side
+			// padding a bit.
+			View bubble = findViewById(R.id.notificationBubble);
+			if (bubble != null) {
+				ViewGroup.LayoutParams nlp = bubble.getLayoutParams();
+				if (nlp instanceof ViewGroup.MarginLayoutParams) {
+					ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) nlp;
+					mlp.topMargin = dpToPx(16);
+					mlp.leftMargin = dpToPx(4);
+					mlp.rightMargin = dpToPx(4);
+					bubble.setLayoutParams(mlp);
+				}
+				int padPx = dpToPx(10);
+				bubble.setPadding(padPx, padPx, padPx, padPx);
+			}
+		} catch (Exception e) {
+			SylkLogger.e("[call] [ui] applyFoldedScalingIfNeeded failed", e);
+		}
+	}
+
+	private int dpToPx(int dp) {
+		float density = getResources().getDisplayMetrics().density;
+		return Math.round(dp * density);
 	}
 
 	// Utility methods

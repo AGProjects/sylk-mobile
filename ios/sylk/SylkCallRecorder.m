@@ -36,9 +36,79 @@ static const NSUInteger kPeakBinSamples = 1600; // 16000 * 0.1
 // identical and the JS bubble can index either side the same way.
 static const NSUInteger kMaxPeaks = 1000;
 
+@class SylkCallRecorder;
+
+@interface SylkConfMixRemote : NSObject {
+@public
+    NSString *_participantId;
+    RTCAudioTrack *_track;
+    NSMutableData *_rollBuffer;
+    id /* SylkConfMixRenderer */ _renderer;
+}
+@end
+@implementation SylkConfMixRemote @end
+
+@interface SylkConfMixRenderer : NSObject <RTCAudioRenderer>
+@property (nonatomic, weak) SylkConfMixRemote *owner;
+@property (nonatomic, weak) NSLock *lock;
+@property (nonatomic, weak) SylkCallRecorder *recorder;
+@end
+
+@implementation SylkConfMixRenderer
+
+- (void)renderPCMBuffer:(AVAudioPCMBuffer *)pcmBuffer {
+    SylkConfMixRemote *o = self.owner;
+    NSLock *lk = self.lock;
+    SylkCallRecorder *rec = self.recorder;
+    if (!o || !lk || !rec || !pcmBuffer) return;
+
+    AVAudioFormat *srcFormat = pcmBuffer.format;
+    if (!srcFormat || pcmBuffer.frameLength == 0) return;
+    if (srcFormat.commonFormat != AVAudioPCMFormatInt16
+            || srcFormat.channelCount != 1) {
+        return;
+    }
+    const double srcRate = srcFormat.sampleRate;
+    if (srcRate <= 0) return;
+    NSUInteger step = (NSUInteger)((srcRate / kOutputSampleRate) + 0.5);
+    if (step < 1) step = 1;
+    const int16_t *src = pcmBuffer.int16ChannelData[0];
+    if (!src) return;
+    NSUInteger srcFrames = pcmBuffer.frameLength;
+    NSUInteger outFrames = srcFrames / step;
+    if (outFrames == 0) return;
+
+    int16_t scratch[outFrames];
+    for (NSUInteger i = 0; i < outFrames; i++) {
+        int sum = 0;
+        NSUInteger base = i * step;
+        for (NSUInteger j = 0; j < step; j++) sum += src[base + j];
+        scratch[i] = (int16_t)(sum / (int)step);
+    }
+    [lk lock];
+    [o->_rollBuffer appendBytes:scratch length:outFrames * sizeof(int16_t)];
+    [lk unlock];
+}
+
+@end
+
 @interface SylkCallRecorder () <RTCAudioRenderer> {
     // Bridge — needed to look up tracks via WebRTCModule.
     __weak RCTBridge *_bridge;
+
+    // Conference-mix mode. Sibling to the 1-to-1 path that wires a
+    // single RTCAudioTrack into _remRoll via -renderPCMBuffer:. In
+    // conference mode each remote participant has its own
+    // SylkConfMixRemote with an RTCAudioRenderer (SylkConfMixRenderer)
+    // appending into a per-track NSMutableData. A mixer step on the
+    // writer timer (runs before _drainWriter on each tick) sums the
+    // per-track buffers into _remRoll with int16 clip-guard, so
+    // _drainWriter itself doesn't need any conference-awareness —
+    // from its perspective there's still just _micRoll on L and
+    // _remRoll on R.
+    BOOL _isConference;
+    NSMutableDictionary<NSString *, SylkConfMixRemote *> *_conferenceRemotes;
+    NSLock *_conferenceLock;
 
     // State
     BOOL _running;
@@ -402,6 +472,24 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
         if (_remoteTrack) {
             [_remoteTrack removeRenderer:self];
             _remoteTrack = nil;
+        }
+        // Conference-mix mode cleanup. Detach every per-track
+        // renderer before we drain the mixer so no late callbacks
+        // can append to a rolling buffer that's about to be released.
+        if (_isConference) {
+            [_conferenceLock lock];
+            for (SylkConfMixRemote *r in [_conferenceRemotes allValues]) {
+                @try {
+                    if (r->_track && r->_renderer) {
+                        [r->_track removeRenderer:r->_renderer];
+                    }
+                } @catch (NSException *e) {}
+                r->_renderer = nil;
+                r->_track = nil;
+            }
+            [_conferenceRemotes removeAllObjects];
+            [_conferenceLock unlock];
+            _isConference = NO;
         }
         // Stop the mic.
         if (_engine) {
@@ -781,6 +869,392 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
         }
         if (o > 0) [sb appendString:@","];
         [sb appendFormat:@"%d", peak];
+    }
+}
+
+#pragma mark - Conference-mix (compressed stereo, mic L / mix R)
+
+RCT_EXPORT_METHOD(startConference:(NSInteger)micPcId
+                  micTrackId:(NSString *)micTrackId
+                  remotes:(NSArray<NSDictionary *> *)remotes
+                  outputPath:(NSString *)outputPath
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    @synchronized (self) {
+        if (_running) {
+            reject(@"EBUSY", @"Recorder already running", nil);
+            return;
+        }
+        _isConference = YES;
+        if (!_conferenceLock) _conferenceLock = [[NSLock alloc] init];
+        _conferenceRemotes = [NSMutableDictionary dictionary];
+
+        // Reuse the entire 1-to-1 startup path: same AAC m4a output,
+        // same mic AVAudioEngine tap, same writer pump. The only
+        // difference is that the per-track renderers feed _remRoll
+        // indirectly via the mixer step (see -_runConferenceMixer),
+        // not directly via -renderPCMBuffer:.
+        //
+        // We open the output file + writer pump by calling a tiny
+        // helper that mirrors -start:'s file-open + engine path with
+        // the remote-track step skipped — the 1-to-1 path's "resolve
+        // and attach single remote track" stage doesn't apply here.
+        NSError *err = nil;
+        if (![self _openOutputAndMicForConference:outputPath error:&err]) {
+            _isConference = NO;
+            _conferenceRemotes = nil;
+            reject(@"EFAIL", err ? err.localizedDescription : @"open failed", err);
+            return;
+        }
+
+        // Attach the per-track renderers for the initial roster. The
+        // JS layer can add/remove participants later via
+        // -addConferenceRemote / -removeConferenceRemote.
+        if ([remotes isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *entry in remotes) {
+                if (![entry isKindOfClass:[NSDictionary class]]) continue;
+                NSString *trackId = entry[@"trackId"];
+                NSNumber *pcIdN   = entry[@"pcId"];
+                NSString *pid     = entry[@"participantId"];
+                if (!trackId.length || !pid.length) continue;
+                [self _attachConfMixRemote:trackId pcId:pcIdN participantId:pid];
+            }
+        }
+
+        _running = YES;
+        [SylkLogger log:@"[call] [recorder] Conference recording started: %@ initialRemotes=%lu",
+              outputPath, (unsigned long)_conferenceRemotes.count];
+        resolve(outputPath);
+    }
+}
+
+RCT_EXPORT_METHOD(addConferenceRemote:(NSInteger)pcId
+                  trackId:(NSString *)trackId
+                  participantId:(NSString *)participantId
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    if (!_running || !_isConference || participantId.length == 0) {
+        resolve(@(NO));
+        return;
+    }
+    [_conferenceLock lock];
+    BOOL exists = (_conferenceRemotes[participantId] != nil);
+    [_conferenceLock unlock];
+    if (exists) { resolve(@(NO)); return; }
+    BOOL ok = [self _attachConfMixRemote:trackId pcId:@(pcId)
+                            participantId:participantId];
+    resolve(@(ok));
+}
+
+RCT_EXPORT_METHOD(removeConferenceRemote:(NSString *)participantId
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    if (!_running || !_isConference || participantId.length == 0) {
+        resolve(@(NO));
+        return;
+    }
+    [_conferenceLock lock];
+    SylkConfMixRemote *r = _conferenceRemotes[participantId];
+    if (r) {
+        @try {
+            if (r->_track && r->_renderer) {
+                [r->_track removeRenderer:r->_renderer];
+            }
+        } @catch (NSException *e) {}
+        r->_renderer = nil;
+        r->_track = nil;
+        [_conferenceRemotes removeObjectForKey:participantId];
+    }
+    [_conferenceLock unlock];
+    [SylkLogger log:@"[call] [recorder] removeConferenceRemote: pid=%@", participantId];
+    resolve(@(r != nil));
+}
+
+RCT_EXPORT_METHOD(stopConference:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    // Forward to the same -stop: path the 1-to-1 recorder uses — the
+    // conference-mode cleanup happens inside -stop: (it sees
+    // _isConference and detaches the per-track renderers there).
+    [self stop:resolve rejecter:reject];
+}
+
+/** Resolve a remote track via WebRTCModule, wrap it as a
+ *  SylkConfMixRemote with its own rolling buffer + RTCAudioRenderer,
+ *  attach the renderer. Returns YES on success. */
+- (BOOL)_attachConfMixRemote:(NSString *)trackId
+                        pcId:(NSNumber *)pcId
+               participantId:(NSString *)participantId {
+    id webrtcModule = [_bridge moduleForName:@"WebRTCModule"];
+    if (!webrtcModule
+            || ![webrtcModule respondsToSelector:@selector(trackForId:pcId:)]) {
+        return NO;
+    }
+    id rawTrack = [webrtcModule trackForId:trackId pcId:pcId];
+    if (!rawTrack || ![rawTrack isKindOfClass:[RTCAudioTrack class]]) {
+        return NO;
+    }
+    RTCAudioTrack *track = (RTCAudioTrack *)rawTrack;
+
+    SylkConfMixRemote *r = [[SylkConfMixRemote alloc] init];
+    r->_participantId = participantId;
+    r->_track         = track;
+    r->_rollBuffer    = [NSMutableData dataWithCapacity:32 * 1024];
+    SylkConfMixRenderer *renderer = [[SylkConfMixRenderer alloc] init];
+    renderer.owner    = r;
+    renderer.lock     = _conferenceLock;
+    renderer.recorder = self;
+    r->_renderer      = renderer;
+
+    [_conferenceLock lock];
+    _conferenceRemotes[participantId] = r;
+    [_conferenceLock unlock];
+    [track addRenderer:renderer];
+    [SylkLogger log:@"[call] [recorder] addConferenceRemote: pid=%@", participantId];
+    return YES;
+}
+
+/** Conference-mode mixer step. Sums the per-track rolling buffers
+ *  into _remRoll with int16 clip-guard, so _drainWriter (unchanged)
+ *  consumes them as if they were the single-remote stream the
+ *  1-to-1 path produces.
+ *
+ *  Mix rate is "min across participants currently sending audio".
+ *  Muted participants (zero queued bytes) are ignored so they
+ *  don't stall the mix; late joiners contribute as soon as their
+ *  first sink callback lands. If nobody is sending for a while
+ *  but the mic keeps growing, push silence into _remRoll so
+ *  _drainWriter can keep producing output (otherwise _micRoll
+ *  would grow unbounded). */
+- (void)_runConferenceMixer {
+    if (!_isConference) return;
+
+    [_conferenceLock lock];
+    NSArray<SylkConfMixRemote *> *active = [_conferenceRemotes allValues];
+
+    NSUInteger minNonZero = NSUIntegerMax;
+    BOOL anyHasData = NO;
+    for (SylkConfMixRemote *r in active) {
+        NSUInteger len = r->_rollBuffer.length;
+        if (len > 0) {
+            anyHasData = YES;
+            if (len < minNonZero) minNonZero = len;
+        }
+    }
+
+    if (!anyHasData) {
+        [_conferenceLock unlock];
+        // Silence-pacer: if mic has built up more than ~200 ms of
+        // PCM without any remote data, the recording would stall
+        // (every iteration of _drainWriter pairs min(mic, rem) = 0).
+        // Push 100 ms of silence into _remRoll so _drainWriter can
+        // drain the mic side and keep the file moving. 100 ms at
+        // 16 kHz mono Int16 = 3200 bytes.
+        NSUInteger micBytes;
+        [_queueLock lock];
+        micBytes = _micRoll.length;
+        [_queueLock unlock];
+        if (micBytes > 6400) {
+            static const NSUInteger silenceBytes = 3200;
+            int16_t silence[1600] = {0};
+            (void)silence; // suppress -Wunused-variable on some clangs
+            [_queueLock lock];
+            [_remRoll appendBytes:silence length:silenceBytes];
+            [_queueLock unlock];
+        }
+        return;
+    }
+
+    // Round to whole int16 frames just in case.
+    minNonZero &= ~((NSUInteger)sizeof(int16_t) - 1);
+    if (minNonZero < sizeof(int16_t)) {
+        [_conferenceLock unlock];
+        return;
+    }
+    // Cap per-tick work so the writer timer doesn't block on a long
+    // mix when participants have a lot buffered (e.g. mic resumed
+    // after a brief stall). 8 kB = ~125 ms of mono Int16 at 16 kHz.
+    const NSUInteger kMaxMixChunkBytes = 8192;
+    NSUInteger chunkBytes = MIN(minNonZero, kMaxMixChunkBytes);
+    NSUInteger chunkFrames = chunkBytes / sizeof(int16_t);
+
+    int16_t *mix = calloc(chunkFrames, sizeof(int16_t));
+    if (!mix) {
+        [_conferenceLock unlock];
+        return;
+    }
+
+    for (SylkConfMixRemote *r in active) {
+        NSUInteger available = r->_rollBuffer.length;
+        if (available == 0) continue;
+        NSUInteger take = MIN(chunkBytes, available);
+        const int16_t *src = (const int16_t *)r->_rollBuffer.bytes;
+        NSUInteger srcFrames = take / sizeof(int16_t);
+        for (NSUInteger i = 0; i < srcFrames; i++) {
+            int sum = (int)mix[i] + (int)src[i];
+            if (sum > 32767) sum = 32767;
+            else if (sum < -32768) sum = -32768;
+            mix[i] = (int16_t)sum;
+        }
+        [r->_rollBuffer replaceBytesInRange:NSMakeRange(0, take)
+                                  withBytes:NULL length:0];
+    }
+    [_conferenceLock unlock];
+
+    [_queueLock lock];
+    [_remRoll appendBytes:mix length:chunkBytes];
+    [_queueLock unlock];
+    free(mix);
+}
+
+/** Open AAC m4a output + start mic engine — shared subset of -start:
+ *  used by the conference-mix path that doesn't have a single remote
+ *  track to resolve. Mirrors the file-open / mic-engine / writer-
+ *  pump setup verbatim so any future tweak there gets picked up here
+ *  too. */
+- (BOOL)_openOutputAndMicForConference:(NSString *)outputPath
+                                  error:(NSError **)error {
+    _outputPath = [outputPath copy];
+    _lastPath = nil;
+    _lastPeaksJson = nil;
+
+    NSURL *outURL = [NSURL fileURLWithPath:outputPath];
+    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+
+    NSError *err = nil;
+    _assetWriter = [[AVAssetWriter alloc] initWithURL:outURL
+                                             fileType:AVFileTypeAppleM4A
+                                                error:&err];
+    if (err || !_assetWriter) {
+        if (error) *error = err ?: [NSError errorWithDomain:@"SylkCallRecorder" code:1 userInfo:@{NSLocalizedDescriptionKey:@"AVAssetWriter init failed"}];
+        return NO;
+    }
+    NSDictionary *audioSettings = @{
+        AVFormatIDKey:         @(kAudioFormatMPEG4AAC),
+        AVNumberOfChannelsKey: @(kOutputChannels),
+        AVSampleRateKey:       @(kOutputSampleRate),
+        AVEncoderBitRateKey:   @(kAACBitRate),
+    };
+    _audioInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio
+                                                 outputSettings:audioSettings];
+    _audioInput.expectsMediaDataInRealTime = YES;
+    if (![_assetWriter canAddInput:_audioInput]) {
+        _assetWriter = nil; _audioInput = nil;
+        if (error) *error = [NSError errorWithDomain:@"SylkCallRecorder" code:2 userInfo:@{NSLocalizedDescriptionKey:@"cannot add audio input"}];
+        return NO;
+    }
+    [_assetWriter addInput:_audioInput];
+
+    AudioStreamBasicDescription pcmDesc = {0};
+    pcmDesc.mSampleRate       = kOutputSampleRate;
+    pcmDesc.mFormatID         = kAudioFormatLinearPCM;
+    pcmDesc.mFormatFlags      = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+    pcmDesc.mFramesPerPacket  = 1;
+    pcmDesc.mChannelsPerFrame = kOutputChannels;
+    pcmDesc.mBitsPerChannel   = 16;
+    pcmDesc.mBytesPerFrame    = (pcmDesc.mBitsPerChannel / 8) * pcmDesc.mChannelsPerFrame;
+    pcmDesc.mBytesPerPacket   = pcmDesc.mBytesPerFrame;
+    OSStatus formatStatus = CMAudioFormatDescriptionCreate(kCFAllocatorDefault,
+        &pcmDesc, 0, NULL, 0, NULL, NULL, &_formatDesc);
+    if (formatStatus != noErr || !_formatDesc) {
+        _assetWriter = nil; _audioInput = nil;
+        if (error) *error = [NSError errorWithDomain:@"SylkCallRecorder" code:3 userInfo:@{NSLocalizedDescriptionKey:@"CMAudioFormatDescriptionCreate failed"}];
+        return NO;
+    }
+    if (![_assetWriter startWriting]) {
+        if (error) *error = _assetWriter.error;
+        if (_formatDesc) { CFRelease(_formatDesc); _formatDesc = NULL; }
+        _assetWriter = nil; _audioInput = nil;
+        return NO;
+    }
+    [_assetWriter startSessionAtSourceTime:kCMTimeZero];
+    _writeTimestamp = kCMTimeZero;
+
+    _micRoll   = [NSMutableData dataWithCapacity:32 * 1024];
+    _remRoll   = [NSMutableData dataWithCapacity:32 * 1024];
+    _queueLock = [[NSLock alloc] init];
+    _peaksLocalRaw  = [NSMutableArray arrayWithCapacity:600];
+    _peaksRemoteRaw = [NSMutableArray arrayWithCapacity:600];
+    _peakAccumLocal  = 0;
+    _peakAccumRemote = 0;
+    _peakSamplesInBin = 0;
+
+    // Mic engine — same fallback chain -start: uses (degenerate
+    // formats from RTCAudioSession's voice-chat mode etc.). Lifted
+    // out into a small block so a future tweak there propagates
+    // automatically. Returns NO with mic disabled rather than
+    // failing — conference recordings can still proceed with just
+    // the remotes.
+    [self _bringUpMicEngineOrSilent];
+
+    // Writer pump — fires every 15 ms. In conference mode we run the
+    // mixer step first so _drainWriter sees a populated _remRoll.
+    __weak typeof(self) wself = self;
+    _writerQueue = dispatch_queue_create("agprojects.sylk.recorder.writer",
+                                         DISPATCH_QUEUE_SERIAL);
+    _writerTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _writerQueue);
+    dispatch_source_set_timer(_writerTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 0),
+                              15ull * NSEC_PER_MSEC,
+                              5ull * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(_writerTimer, ^{
+        [wself _runConferenceMixer];
+        [wself _drainWriter];
+    });
+    dispatch_resume(_writerTimer);
+    return YES;
+}
+
+/** Best-effort mic engine bring-up. Cloned from -start:'s mic path
+ *  with the failure case demoted to "skip mic, keep recording" so
+ *  a conference can still produce output if the platform refuses
+ *  to give us a tap on the input node. */
+- (void)_bringUpMicEngineOrSilent {
+    _engine = [[AVAudioEngine alloc] init];
+    AVAudioInputNode *input = _engine.inputNode;
+    AVAudioFormat *hwFormat = [input inputFormatForBus:0];
+    if (!hwFormat || hwFormat.sampleRate <= 0 || hwFormat.channelCount == 0) {
+        AVAudioFormat *outFmt = [input outputFormatForBus:0];
+        if (outFmt && outFmt.sampleRate > 0 && outFmt.channelCount > 0) hwFormat = outFmt;
+    }
+    if (!hwFormat || hwFormat.sampleRate <= 0 || hwFormat.channelCount == 0) {
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        double sessRate = session.sampleRate;
+        NSInteger sessChans = session.inputNumberOfChannels;
+        if (sessRate > 0 && sessChans > 0) {
+            hwFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+                                                         sampleRate:sessRate
+                                                           channels:(AVAudioChannelCount)sessChans
+                                                        interleaved:NO];
+        }
+    }
+    if (!hwFormat || hwFormat.sampleRate <= 0 || hwFormat.channelCount == 0) {
+        hwFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+                                                     sampleRate:48000.0 channels:1 interleaved:NO];
+    }
+    AVAudioFormat *targetFormat =
+        [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
+                                          sampleRate:kOutputSampleRate
+                                            channels:1
+                                         interleaved:YES];
+    AVAudioConverter *converter =
+        [[AVAudioConverter alloc] initFromFormat:hwFormat toFormat:targetFormat];
+    if (!converter) {
+        RCTLogWarn(@"[SylkCallRecorder] conf mic converter init failed; recording remotes only");
+        _engine = nil;
+        return;
+    }
+    converter.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering;
+    converter.sampleRateConverterQuality   = AVAudioQualityHigh;
+    __weak typeof(self) wself = self;
+    [input installTapOnBus:0 bufferSize:0 format:hwFormat
+                     block:^(AVAudioPCMBuffer * _Nonnull buf, AVAudioTime * _Nonnull when) {
+        [wself _onMicBuffer:buf converter:converter targetFormat:targetFormat];
+    }];
+    NSError *engineErr = nil;
+    if (![_engine startAndReturnError:&engineErr]) {
+        RCTLogWarn(@"[SylkCallRecorder] conf mic engine start failed: %@; recording remotes only", engineErr);
+        [input removeTapOnBus:0];
+        _engine = nil;
     }
 }
 

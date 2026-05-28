@@ -784,10 +784,14 @@ async function sql2GiftedChat(item, content, filter = {}) {
     // Parse file-transfer JSON
     //---------------------------
     if (item.content_type === "application/sylk-file-transfer") {
-        if (category == 'text') {
+        // 'links' is a JS-derived subset of 'text' (see the link
+        // post-filter in ContactsListBox), so it shares the same
+        // "drop file-transfer rows" semantics — same SQL slice
+        // shape, then a body-contains-URL filter narrows further.
+        if (category == 'text' || category == 'links') {
 			return null;
         }
-    
+
         let sql_metadata = item.metadata || text;
         try {
             Object.assign(metadata, JSON.parse(sql_metadata));
@@ -803,9 +807,12 @@ async function sql2GiftedChat(item, content, filter = {}) {
     let must_check_category = true;
 
     // -------------------------
-    // If filtering for media, but no filename → drop
+    // If filtering for media, but no filename → drop. 'text' and
+    // 'links' are both text-shaped (no filename expected); they
+    // skip this gate so plain text bubbles survive into the JS
+    // post-filter that narrows links further.
     // -------------------------
-    if (category && category !== "text" && !metadata.filename) {
+    if (category && category !== "text" && category !== "links" && !metadata.filename) {
         return nullWithLog({
             msgId: item.msg_id,
             filename: "",
@@ -839,7 +846,13 @@ async function sql2GiftedChat(item, content, filter = {}) {
 						console.log('Error stat file:', e.message);
 					}
 				} else {
-					console.log('File does not exist', item.msg_id, metadata.local_url);
+					// Per-row file-missing log was very noisy on accounts
+					// with lots of historical transfers whose local files
+					// have been cleaned up. Local_url is reset to null
+					// silently — the bubble's download affordance picks
+					// up from there. Re-enable while debugging if a
+					// specific msg_id needs to be traced.
+					//console.log('File does not exist', item.msg_id, metadata.local_url);
 					metadata.local_url = null;
 				}
             }
@@ -1000,13 +1013,29 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     // Locally-recorded calls (saveCallRecording in app.js) are stamped
     // with call_recording AND filename matching `sylk-call-recording-*`.
     // Render them with a clearer label than the generic "Audio".
+    //
+    // Conference recordings (saved by ConferenceBox._stopConferenceRecording)
+    // carry the same call_recording=true flag plus is_conference=true.
+    // We branch on is_conference so the chat bubble says "Conference
+    // recording" instead of the 1-to-1 "Call recording" — same look
+    // and feel, just an unambiguous label for the multi-party file
+    // (mic L, sum of all remote participants on R).
     const isCallRecording = (metadata.call_recording === true)
-        || (file_name && file_name.toLowerCase().startsWith('sylk-call-recording-'));
+        || (file_name && file_name.toLowerCase().startsWith('sylk-call-recording-'))
+        || (file_name && file_name.toLowerCase().startsWith('sylk-conf-recording-'));
+    const isConferenceRecording = (metadata.is_conference === true)
+        || (file_name && file_name.toLowerCase().startsWith('sylk-conf-recording-'));
 
     if (isImage(decrypted_file_name, metadata.filetype)) {
         text = 'Photo';
     } else if (isAudio(decrypted_file_name, metadata.filetype)) {
-        text = isCallRecording ? 'Call recording' : 'Audio';
+        if (isConferenceRecording) {
+            text = 'Conference recording';
+        } else if (isCallRecording) {
+            text = 'Call recording';
+        } else {
+            text = 'Audio';
+        }
     } else if (isVideo(decrypted_file_name, metadata.filetype)) {
         text = 'Video';
     } else {
@@ -1699,6 +1728,51 @@ const availableAudioDeviceNames = {
 	BUILTIN_SPEAKER: 'Speaker',
 };
                     
+// Date-period tags for the chat date filter. Returns a stable
+// identifier per period plus a human-readable label suited for
+// display in a horizontal tag scroller. Used by ContactsListBox to:
+//   • compute available periods from the visible messages
+//   • compare a message's tag against the user-selected tag
+//
+// `id` is what gets compared / stored; `label` is what the user
+// sees. Two messages on the same calendar day share day.id; the
+// week id uses the ISO-8601 week number so Mon-of-week-21 and
+// Sun-of-week-21 collapse to the same tag.
+function getMessageDateTags(date) {
+    if (!(date instanceof Date)) {
+        try { date = new Date(date); } catch (e) { return null; }
+    }
+    if (!date || isNaN(date.getTime())) return null;
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    // ISO 8601 week number. Algorithm: shift to the Thursday of the
+    // current week (ISO weeks are defined by their Thursday), then
+    // count weeks from Jan 1.
+    const tmp = new Date(Date.UTC(yyyy, date.getMonth(), date.getDate()));
+    const dayNum = tmp.getUTCDay() || 7;
+    tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+    const weekNum = Math.ceil(((tmp - yearStart) / 86400000 + 1) / 7);
+    const isoYear = tmp.getUTCFullYear();
+    const monthShort = date.toLocaleString('default', { month: 'short' });
+    return {
+        day:   { id: `${yyyy}-${mm}-${dd}`,
+                 label: `${parseInt(dd, 10)} ${monthShort} ${yyyy}`,
+                 sortKey: date.getTime() },
+        week:  { id: `${isoYear}-W${String(weekNum).padStart(2, '0')}`,
+                 label: `Week ${weekNum}, ${isoYear}`,
+                 sortKey: tmp.getTime() },
+        month: { id: `${yyyy}-${mm}`,
+                 label: `${monthShort} ${yyyy}`,
+                 sortKey: new Date(yyyy, date.getMonth(), 1).getTime() },
+        year:  { id: `${yyyy}`,
+                 label: `${yyyy}`,
+                 sortKey: new Date(yyyy, 0, 1).getTime() },
+    };
+}
+
+exports.getMessageDateTags = getMessageDateTags;
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
