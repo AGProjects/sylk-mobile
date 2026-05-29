@@ -41,6 +41,30 @@ public class MainActivity extends ReactActivity {
 
         SylkLogger.d("[app] MainActivity onCreate intent=" + getIntent());
 
+        // Stamp the launch intent's URI into SylkPrefs IF this was a
+        // sylk://message/ tap. SylkBridge.consumeLaunchMessageUri()
+        // reads it synchronously from JS's componentDidMount so the
+        // very first render can hide the contacts list — Linking's
+        // 'url' event doesn't fire until 2–3 s later, too late to
+        // prevent the contacts-list flash.
+        try {
+            Intent _launch = getIntent();
+            Uri _data = _launch != null ? _launch.getData() : null;
+            String _scheme = _data != null ? _data.getScheme() : null;
+            String _host = _data != null ? _data.getHost() : null;
+            if (Intent.ACTION_VIEW.equals(_launch.getAction())
+                    && "sylk".equalsIgnoreCase(_scheme)
+                    && "message".equalsIgnoreCase(_host)) {
+                getSharedPreferences("SylkPrefs", MODE_PRIVATE)
+                    .edit()
+                    .putString("launchMessageUri", _data.toString())
+                    .apply();
+                SylkLogger.d("[app] launchMessageUri stamped: " + _data);
+            }
+        } catch (Throwable t) {
+            SylkLogger.w("[app] stamping launchMessageUri failed: " + t.getMessage());
+        }
+
         // Handle the launch intent (replaces SplashActivity)
         handleIntent(getIntent());
 
@@ -162,19 +186,60 @@ public class MainActivity extends ReactActivity {
 
     /**
      * Handle deep links (sylk://, https://webrtc.sipthor.net)
-     * Forward to React Native via Linking / event emitter
+     * Forward to React Native via Linking / event emitter.
+     *
+     * Why we emit a custom event instead of relying on Linking:
+     * react-native-linking ties its 'url' DeviceEventEmitter to
+     * AppState lifecycle transitions. On a warm-start notification
+     * tap (app already running) the activity's onNewIntent fires
+     * IMMEDIATELY but the 'url' event isn't dispatched to JS until
+     * the activity's onResume / AppState transitions complete — a
+     * 3-second window in field traces (logcat "Deep link received"
+     * at 14:03:36, JS "Event from url" at 14:03:39). User stares at
+     * the previous screen for those 3 seconds before the chat opens.
+     *
+     * Mirror what emitShareIntent does for ACTION_SEND: push the
+     * URL into a custom RCTDeviceEventEmitter event so JS can react
+     * instantly via a dedicated DeviceEventEmitter listener — no
+     * Linking lifecycle wait. JS still keeps the Linking listener
+     * as a fallback for any caller that goes through getInitialURL
+     * + addEventListener('url', ...).
      */
     private void handleViewIntent(Uri uri) {
         SylkLogger.d("[app] Deep link received: " + uri);
 
-        // IMPORTANT:
-        // Do NOT start another Activity here.
-        // React Native's Linking module will read getInitialURL()
-        // or receive this via onNewIntent.
+        emitDeepLinkIntent(uri);
+    }
 
-        // If you later want to manually emit:
-        // ReactContext ctx = getReactInstanceManager().getCurrentReactContext();
-        // ...
+    /**
+     * Emit a SylkDeepLink event with the URL so JS can navigate
+     * synchronously, bypassing react-native-linking's lifecycle-
+     * gated event timing. Mirrors emitShareIntent for ACTION_SEND.
+     *
+     * If the React context isn't ready yet (cold-start, JS hasn't
+     * bundled), we silently no-op — cold-start is already covered
+     * by the launchMessageUri SharedPreferences read in
+     * App.constructor (SylkBridge.consumeLaunchMessageUri).
+     */
+    private void emitDeepLinkIntent(Uri uri) {
+        if (uri == null) return;
+        try {
+            ReactContext context = getReactInstanceManager().getCurrentReactContext();
+            if (context == null) {
+                // Cold-start path — JS not bundled yet. The constructor's
+                // SylkBridge.consumeLaunchMessageUri() will pick up the
+                // stamped SharedPreferences value as soon as JS mounts.
+                SylkLogger.d("[app] emitDeepLinkIntent: ReactContext null — relying on launchMessageUri pref");
+                return;
+            }
+            WritableMap payload = Arguments.createMap();
+            payload.putString("url", uri.toString());
+            context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                .emit("SylkDeepLink", payload);
+            SylkLogger.d("[app] emitDeepLinkIntent: emitted SylkDeepLink for " + uri);
+        } catch (Throwable t) {
+            SylkLogger.w("[app] emitDeepLinkIntent failed: " + t.getMessage());
+        }
     }
 
     /* ----------------------------------

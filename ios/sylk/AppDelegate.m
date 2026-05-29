@@ -772,10 +772,38 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
         //[SylkLogger log:@"[app] Incoming message payload: %@", userInfo];
 
         BOOL allow = [self shouldDisplayMessageFromPayload:data];
-        
+
         if (!allow) {
             [SylkLogger log:@"[app] Message notification suppressed"];
             return completionHandler(UIBackgroundFetchResultNoData);
+        }
+
+        // Persist directly to sylk.db ONLY when the app is NOT in the
+        // foreground. When foreground, the websocket connection delivers
+        // the same msg_id and JS's saveIncomingMessage writes the row —
+        // running the native INSERT in parallel would race against that
+        // write and only ever no-op via INSERT OR IGNORE.
+        UIApplicationState _insertAppState = [UIApplication sharedApplication].applicationState;
+        if (_insertAppState == UIApplicationStateActive) {
+            [SylkLogger log:@"[message] [apns] App is foreground — skipping native SQL insert; WS will deliver"];
+        } else {
+            NSString *(^coerceStr)(id) = ^NSString *(id obj) {
+                if ([obj isKindOfClass:[NSString class]]) return obj;
+                if ([obj isKindOfClass:[NSNumber class]]) return [obj stringValue];
+                return @"";
+            };
+            NSString *messageId = [coerceStr(data[@"message_id"])
+                                    stringByTrimmingCharactersInSet:
+                                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            NSString *msgContent = coerceStr(data[@"content"]);
+            NSString *msgContentType = coerceStr(data[@"content_type"]);
+            NSString *msgDisplayName = coerceStr(data[@"from_display_name"]);
+            [self insertIncomingMessageToSqlForAccount:toUri
+                                               fromUri:fromUri
+                                             messageId:messageId
+                                               content:msgContent
+                                           contentType:msgContentType
+                                           displayName:msgDisplayName];
         }
     }
 
@@ -788,6 +816,54 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
  didReceiveNotificationResponse:(UNNotificationResponse *)response
           withCompletionHandler:(void (^)(void))completionHandler
 {
+  // First emit our own "user tapped a message notification" signal so
+  // JS can navigate to the chat IMMEDIATELY. We do this BEFORE the
+  // RNCPushNotificationIOS forward so the dedicated SylkPushTapped
+  // listener wins the race against the generic 'notification' event
+  // (the latter doesn't distinguish "delivered to OS" from "tapped by
+  // user", forcing JS to guess).
+  //
+  // Mirrors the Android SylkDeepLink emit in MainActivity:
+  // a synchronous DeviceEventEmitter event so the chat opens without
+  // waiting for any AppState / lifecycle round-trip. On cold-start
+  // taps the bridge may not be ready yet — RCTEventDispatcher gracefully
+  // queues the emit until JS is up, OR self.bridge is nil and we
+  // silently skip (the launch-time getInitialNotification path in JS
+  // handles cold-start).
+  @try {
+      NSDictionary *userInfo = response.notification.request.content.userInfo;
+      NSDictionary *data = userInfo[@"data"];
+      if ([data isKindOfClass:[NSDictionary class]]) {
+          NSString *event = data[@"event"];
+          NSString *fromUri = data[@"from_uri"];
+          if ([event isKindOfClass:[NSString class]]
+              && [[event lowercaseString] isEqualToString:@"message"]
+              && [fromUri isKindOfClass:[NSString class]]
+              && fromUri.length > 0) {
+
+              RCTBridge *bridge = self.bridge;
+              if (bridge != nil) {
+                  NSMutableDictionary *payload = [NSMutableDictionary dictionary];
+                  payload[@"fromUri"] = fromUri;
+                  if ([data[@"to_uri"] isKindOfClass:[NSString class]]) {
+                      payload[@"toUri"] = data[@"to_uri"];
+                  }
+                  if ([data[@"message_id"] isKindOfClass:[NSString class]]) {
+                      payload[@"messageId"] = data[@"message_id"];
+                  }
+                  [bridge.eventDispatcher
+                      sendDeviceEventWithName:@"SylkPushTapped"
+                                         body:payload];
+                  [SylkLogger log:@"[app] SylkPushTapped emitted fromUri=%@", fromUri];
+              } else {
+                  [SylkLogger log:@"[app] SylkPushTapped skip: bridge nil (cold-start path will use getInitialNotification)"];
+              }
+          }
+      }
+  } @catch (NSException *exc) {
+      [SylkLogger log:@"[app] SylkPushTapped emit threw: %@", exc.reason];
+  }
+
   [RNCPushNotificationIOS didReceiveNotificationResponse:response];
   completionHandler();
 }
@@ -1321,8 +1397,339 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		return NO;
 	}
 
-    
+
     return YES;
+}
+
+/**
+ * Derive a friendly display name from a SIP URI when the push payload
+ * does not carry from_display_name. Mirrors newContact() in app.js:
+ * 'john.doe@host' -> 'John Doe'. Phone-number usernames are left as-is.
+ */
++ (NSString *)deriveDisplayNameFromUri:(NSString *)uri {
+    if (uri.length == 0) return @"";
+    NSRange at = [uri rangeOfString:@"@"];
+    NSString *user = (at.location != NSNotFound) ? [uri substringToIndex:at.location] : uri;
+    if (user.length == 0) return uri;
+
+    NSCharacterSet *digitSet = [NSCharacterSet characterSetWithCharactersInString:@"+0123456789"];
+    BOOL allDigits = YES;
+    for (NSUInteger i = 0; i < user.length; i++) {
+        unichar c = [user characterAtIndex:i];
+        if (![digitSet characterIsMember:c]) { allDigits = NO; break; }
+    }
+    if (allDigits) return user;
+
+    NSArray<NSString *> *parts = [user componentsSeparatedByCharactersInSet:
+                                   [NSCharacterSet characterSetWithCharactersInString:@"._-"]];
+    NSMutableArray *titled = [NSMutableArray array];
+    for (NSString *p in parts) {
+        if (p.length == 0) continue;
+        NSString *first = [[p substringToIndex:1] uppercaseString];
+        NSString *rest = p.length > 1 ? [[p substringFromIndex:1] lowercaseString] : @"";
+        [titled addObject:[first stringByAppendingString:rest]];
+    }
+    NSString *out = [[titled componentsJoinedByString:@" "] stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return out.length > 0 ? out : user;
+}
+
+/**
+ * Append a single msg_id to the comma-separated unread_messages
+ * column for a contact, deduping against any id already present.
+ * Mirrors contact.unread.push(id) + unread_messages =
+ * contact.unread.toString() in saveSylkContact.
+ */
++ (NSString *)appendUnreadId:(NSString *)existing newId:(NSString *)newId {
+    if (newId.length == 0) return existing ?: @"";
+    if (existing.length == 0) return newId;
+    NSArray<NSString *> *parts = [existing componentsSeparatedByString:@","];
+    for (NSString *p in parts) {
+        if ([[p stringByTrimmingCharactersInSet:
+              [NSCharacterSet whitespaceAndNewlineCharacterSet]] isEqualToString:newId]) {
+            return existing; // already present
+        }
+    }
+    return [NSString stringWithFormat:@"%@,%@", existing, newId];
+}
+
+/**
+ * Cheap "is this account row enabled" check used to gate the native
+ * SQL insert path. Different from isAccountActive: that one also
+ * applies privacy filters (rejectNonContacts / rejectAnonymous / DND)
+ * which gate the notification UI; for the SQL insert we only want to
+ * skip when the account row is missing or disabled (active != '1').
+ */
+- (BOOL)isAccountEnabled:(NSString *)account {
+    if (account.length == 0) return NO;
+    NSString *dbPath = [self sylkDatabasePath];
+    if (dbPath.length == 0) return NO;
+
+    sqlite3 *db = NULL;
+    BOOL enabled = NO;
+    @try {
+        if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
+            // Fail open on DB-open errors — better to land the message
+            // in SQL than to drop it because of a transient issue.
+            return YES;
+        }
+        sqlite3_busy_timeout(db, 2000);
+        sqlite3_stmt *stmt = NULL;
+        const char *sql = "SELECT active FROM accounts WHERE account = ?";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *col = (const char *)sqlite3_column_text(stmt, 0);
+                if (col) {
+                    NSString *active = [NSString stringWithUTF8String:col];
+                    enabled = [active isEqualToString:@"1"];
+                }
+            }
+        }
+        if (stmt) sqlite3_finalize(stmt);
+    } @catch (NSException *ex) {
+        [SylkLogger log:@"[message] [apns] isAccountEnabled exception: %@", ex.reason];
+        enabled = YES; // fail open
+    } @finally {
+        if (db) sqlite3_close(db);
+    }
+    return enabled;
+}
+
+/**
+ * Persist an incoming push message directly into sylk.db so the RN
+ * app finds it in the messages table on the next chat-open / foreground
+ * cycle — no payload re-fetch from the notification on the JS side.
+ * Mirrors the schema saveIncomingMessage / saveSylkContact writes from
+ * JS (see app.js initSQL / createTables).
+ *
+ *   - INSERT OR IGNORE into contacts so a brand-new sender renders with
+ *     a friendly display name when WS hasn't delivered yet.
+ *   - INSERT OR IGNORE into messages with the 16-column shape
+ *     saveIncomingMessage uses. PRIMARY KEY (account, msg_id) dedupes
+ *     against the eventual WS / journal arrival.
+ *
+ * PGP-enveloped bodies are stored verbatim with encrypted=1 — JS holds
+ * the private key and decrypts at render time. Failures are swallowed:
+ * a push that can't be persisted still gets a notification, and the WS
+ * path will eventually backfill SQL.
+ */
+- (void)insertIncomingMessageToSqlForAccount:(NSString *)account
+                                     fromUri:(NSString *)fromUri
+                                   messageId:(NSString *)messageId
+                                     content:(NSString *)content
+                                 contentType:(NSString *)contentType
+                                 displayName:(NSString *)displayName
+{
+    if (account.length == 0 || fromUri.length == 0 || messageId.length == 0) {
+        [SylkLogger log:@"[message] [apns] insert: missing required fields"];
+        return;
+    }
+
+    // Only TWO things stop the insert:
+    //   1. blocked contact
+    //   2. disabled account (accounts.active != '1')
+    // Mute / DND / rejectAnonymous / rejectNonContacts all pass through
+    // — those gate the NOTIFICATION UI only and JS's saveIncomingMessage
+    // path persists those messages too. We must match that so chat
+    // history doesn't differ between push and WS delivery.
+    Contact *blockedCheck = nil;
+    @try { blockedCheck = [self getContact:account uri:fromUri]; } @catch (...) {}
+    if (blockedCheck && [self isBlocked:blockedCheck.tags]) {
+        [SylkLogger log:@"[message] [apns] insert: %@ is blocked, dropping", fromUri];
+        return;
+    }
+
+    if (![self isAccountEnabled:account]) {
+        [SylkLogger log:@"[message] [apns] insert: account %@ is disabled, dropping", account];
+        return;
+    }
+
+    NSString *dbPath = [self sylkDatabasePath];
+    if (dbPath.length == 0) {
+        [SylkLogger log:@"[message] [apns] insert: database not found"];
+        return;
+    }
+
+    // Mirror the JS-side arrival entry (app.js:
+    // "[message] handleIncomingMessage <id> from <uri> <contentType>")
+    // so APPLOG reads identically whether the message arrived via push
+    // or via the websocket.
+    [SylkLogger log:@"[message] handleIncomingMessage %@ from %@ %@ (via push)",
+          messageId, fromUri, (contentType.length > 0 ? contentType : @"text/plain")];
+
+    NSString *safeContent = content ?: @"";
+    NSString *safeContentType = contentType.length > 0 ? contentType : @"text/plain";
+    BOOL isEncrypted = ([safeContent rangeOfString:@"-----BEGIN PGP MESSAGE-----"].location != NSNotFound)
+                    && ([safeContent rangeOfString:@"-----END PGP MESSAGE-----"].location != NSNotFound);
+    int encrypted = isEncrypted ? 1 : 0;
+    NSString *metadata = [safeContentType isEqualToString:@"application/sylk-file-transfer"] ? safeContent : @"";
+
+    NSDate *now = [NSDate date];
+    long long unixSec = (long long)[now timeIntervalSince1970];
+
+    static NSDateFormatter *isoFmt = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        isoFmt = [[NSDateFormatter alloc] init];
+        isoFmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+        isoFmt.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+        isoFmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    });
+    // timestamp column stores the JSON-stringified Date the JS path writes —
+    // JSON.stringify(new Date()) produces "\"...Z\"" including the
+    // surrounding quotes — so we emit the same shape here. JS reads
+    // this back through a JSON.parse reviver.
+    NSString *tsCol = [NSString stringWithFormat:@"\"%@\"", [isoFmt stringFromDate:now]];
+
+    sqlite3 *db = NULL;
+    @try {
+        if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
+            [SylkLogger log:@"[message] [apns] insert: failed to open db at %@", dbPath];
+            return;
+        }
+        sqlite3_busy_timeout(db, 5000);
+
+        // ---- contact upsert ----
+        // We need to know whether a row already exists AND, if so,
+        // what its unread_messages list looks like so we can append
+        // this message id (saveSylkContact in JS rebuilds the whole
+        // list from contact.unread; we do the equivalent append-and-
+        // dedup directly on the comma-separated column).
+        BOOL contactExists = NO;
+        NSString *existingUnread = @"";
+        {
+            sqlite3_stmt *stmt = NULL;
+            const char *sql = "SELECT unread_messages FROM contacts WHERE account = ? AND uri = ? LIMIT 1";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 2, [fromUri UTF8String], -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    contactExists = YES;
+                    const char *col = (const char *)sqlite3_column_text(stmt, 0);
+                    if (col) existingUnread = [NSString stringWithUTF8String:col];
+                }
+            }
+            if (stmt) sqlite3_finalize(stmt);
+        }
+
+        if (!contactExists) {
+            // Brand-new sender. INSERT the contact stub with this
+            // msg_id already seeded in unread_messages and timestamp
+            // set to the message arrival time, so the contacts list
+            // renders the unread badge immediately on next chat-list
+            // read — without waiting for the WS journal sync.
+            NSString *resolvedName = (displayName.length > 0)
+                ? [displayName stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]]
+                : [AppDelegate deriveDisplayNameFromUri:fromUri];
+            if (resolvedName.length == 0) resolvedName = fromUri;
+            NSString *contactId = [[[NSUUID UUID] UUIDString] lowercaseString];
+
+            sqlite3_stmt *stmt = NULL;
+            const char *sql =
+                "INSERT OR IGNORE INTO contacts ("
+                "contact_id, remote_id, account, uri, uris, email, photo, "
+                "timestamp, name, organization, unread_messages, tags, "
+                "participants, public_key, direction, last_call_media, "
+                "conference, last_call_id, last_call_duration, "
+                "last_call_timestamp, properties, local_properties"
+                ") VALUES (?, '', ?, ?, '', '', '', ?, ?, '', ?, '', "
+                "'', '', 'incoming', '', 0, '', 0, NULL, '', '')";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, [contactId UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 2, [account UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 3, [fromUri UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(stmt, 4, unixSec);
+                sqlite3_bind_text(stmt, 5, [resolvedName UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 6, [messageId UTF8String], -1, SQLITE_TRANSIENT);
+                int rc = sqlite3_step(stmt);
+                if (rc != SQLITE_DONE) {
+                    [SylkLogger log:@"[message] [apns] insert: contact INSERT rc=%d (%s)",
+                          rc, sqlite3_errmsg(db)];
+                } else {
+                    [SylkLogger log:@"[message] [apns] insert: contact stub for %@ name=%@ unread=%@",
+                          fromUri, resolvedName, messageId];
+                }
+            }
+            if (stmt) sqlite3_finalize(stmt);
+        } else {
+            // Existing contact — append messageId to unread_messages
+            // (dedupe) and bump timestamp so the chat list lifts the
+            // row to the top with an incremented unread badge.
+            //
+            // SQLite's MAX(col, ?) is a SCALAR function (different from
+            // the MAX() aggregate): it returns the larger of the column
+            // value and the bound parameter for each row. This mirrors
+            // saveIncomingMessage's
+            //   if (_wsTsMs > _contactTsMs) contact.timestamp = ...
+            // guard so an out-of-order push or a push that lands after
+            // the WS already advanced contact.timestamp can't regress
+            // the last-activity clock.
+            NSString *newUnread = [AppDelegate appendUnreadId:existingUnread newId:messageId];
+            sqlite3_stmt *stmt = NULL;
+            const char *sql = "UPDATE contacts SET unread_messages = ?, timestamp = MAX(timestamp, ?) WHERE account = ? AND uri = ?";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, [newUnread UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(stmt, 2, unixSec);
+                sqlite3_bind_text(stmt, 3, [account UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 4, [fromUri UTF8String], -1, SQLITE_TRANSIENT);
+                int rc = sqlite3_step(stmt);
+                if (rc != SQLITE_DONE) {
+                    [SylkLogger log:@"[message] [apns] insert: contact UPDATE rc=%d (%s)",
+                          rc, sqlite3_errmsg(db)];
+                } else {
+                    NSInteger count = newUnread.length == 0
+                        ? 0
+                        : [[newUnread componentsSeparatedByString:@","] count];
+                    [SylkLogger log:@"[message] [apns] updated contact unread for %@ unread=%@ count=%ld ts<=MAX(existing,%lld)",
+                          fromUri, newUnread, (long)count, unixSec];
+                }
+            }
+            if (stmt) sqlite3_finalize(stmt);
+        }
+
+        // ---- message insert ----
+        {
+            sqlite3_stmt *stmt = NULL;
+            const char *sql =
+                "INSERT OR IGNORE INTO messages ("
+                "account, encrypted, msg_id, timestamp, unix_timestamp, "
+                "content, content_type, metadata, from_uri, to_uri, "
+                "direction, received, related_action, related_msg_id, "
+                "disposition_notification, expire"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'incoming', 1, NULL, NULL, '', 0)";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(stmt, 2, encrypted);
+                sqlite3_bind_text(stmt, 3, [messageId UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 4, [tsCol UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(stmt, 5, unixSec);
+                sqlite3_bind_text(stmt, 6, [safeContent UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 7, [safeContentType UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 8, [metadata UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 9, [fromUri UTF8String], -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 10, [account UTF8String], -1, SQLITE_TRANSIENT);
+                int rc = sqlite3_step(stmt);
+                if (rc != SQLITE_DONE) {
+                    [SylkLogger log:@"[message] [apns] insert: message INSERT rc=%d (%s)",
+                          rc, sqlite3_errmsg(db)];
+                } else {
+                    // Mirror the JS-side save log
+                    // (app.js: "save incoming [message] <id> from <uri>")
+                    // so APPLOG reads identically whether the row was
+                    // written by JS or by the native APNs handler.
+                    [SylkLogger log:@"save incoming [message] %@ from %@ encrypted=%d (via push)",
+                          messageId, fromUri, encrypted];
+                }
+            }
+            if (stmt) sqlite3_finalize(stmt);
+        }
+    } @catch (NSException *ex) {
+        [SylkLogger log:@"[message] [apns] insert exception: %@ - %@", ex.name, ex.reason];
+    } @finally {
+        if (db) sqlite3_close(db);
+    }
 }
 
 - (void)answerCallWithUUID:(NSString *)uuidString

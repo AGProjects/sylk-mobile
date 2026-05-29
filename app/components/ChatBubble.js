@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { View, TouchableOpacity, Text, Image } from 'react-native';
+import { View, TouchableOpacity, Text, Image, Dimensions } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import utils from '../utils';
@@ -160,8 +160,20 @@ const ChatBubble = memo(
 	  }
 	}
 
-//    const MIN_BUBBLE_WIDTH = currentMessage.contentType === "application/sylk-file-transfer" ? 220: 120;
-    const MIN_BUBBLE_WIDTH = 220;
+    // MIN_BUBBLE_WIDTH is used as both minWidth AND maxWidth on reply
+    // bubbles (see the `else if (originalMessage)` branch ~ line 593)
+    // and as the minWidth on the reply-preview pane above it. Forcing
+    // both panes to the same explicit width keeps them visually
+    // unified — they look like one bubble with two sections — but
+    // also means short replies get padded out to this width.
+    //
+    // File-transfer reply bubbles need ~220 because the preview hosts
+    // a file icon + filename and looks cramped any narrower. Plain
+    // text replies don't need that floor — a "Yes" → "ok" exchange
+    // at 220px wide looks absurdly oversized for ~30px of content.
+    // 120 is enough room for the preview's quote line + a few
+    // characters of original text without the bubble feeling huge.
+    const MIN_BUBBLE_WIDTH = currentMessage.contentType === "application/sylk-file-transfer" ? 220 : 120;
     
     const measuredWidth = bubbleWidths[currentMessage._id] || 0;
     const bubbleWidth = Math.max(measuredWidth, MIN_BUBBLE_WIDTH);
@@ -537,6 +549,27 @@ const ChatBubble = memo(
       // some visible edge against the chat surface.
       const audioBubbleBg     = theme.isDark ? 'transparent' : '#FFFFFF';
       const audioBubbleBorder = theme.isDark ? 'white'       : 'rgba(0,0,0,0.12)';
+      // Explicit pixel width for the audio bubble wrapper, derived from
+      // window width with the SAME formula renderMessageAudio uses for
+      // sliderWidth (sliderWidth + 94 = playButton(48) + margin(10) +
+      // column padding(36) [18+18 symmetric]). Locking the wrapper to
+      // an explicit pixel width eliminates the asymmetry between
+      // incoming and outgoing bubbles that was previously visible:
+      // with content-sized wrappers, gifted-chat's avatar-gutter-vs-
+      // no-gutter asymmetry (plus some flexbox subtlety we couldn't
+      // fully pin down) caused the incoming wrapper to paint NARROWER
+      // than its play-button + waveform content. By pinning wrapper
+      // width explicitly, we guarantee the colored background is
+      // exactly the right size to contain the waveform AND the play
+      // button on both sides.
+      //
+      // IMPORTANT: the 94 here MUST match the sliderBudget formula
+      // in ContactsListBox.renderMessageAudio. Both sides need to
+      // agree on the playButton + margin + column padding budget or
+      // the bubble background will mismatch its content.
+      const _audioWinW = Dimensions.get('window').width;
+      const _audioSliderBudget = Math.max(120, Math.min((_audioWinW - 50) * 0.8 - 94, 520));
+      const _audioWrapperWidth = _audioSliderBudget + 94;
       content = (
         <Bubble
           {...bubbleProps}
@@ -555,16 +588,16 @@ const ChatBubble = memo(
               backgroundColor: audioBubbleBg,
               borderColor: audioBubbleBorder,
               borderWidth: 0.5,
-              alignSelf: 'stretch',
               marginRight: 24,
+              width: _audioWrapperWidth,
             },
             right: {
               ...rightWrapper,
               backgroundColor: audioBubbleBg,
               borderColor: audioBubbleBorder,
               borderWidth: 0.5,
-              alignSelf: 'stretch',
               marginLeft: 24,
+              width: _audioWrapperWidth,
             },
           }}
         />
@@ -905,6 +938,35 @@ const ChatBubble = memo(
 			//console.log(`[Bubble ${id}] RERENDER → content field '${f}' changed`, p[f], '->', n[f]);
 			locTrace(false, `content '${f}' changed ${oldVal} -> ${newVal}`);
 			return false;
+		  }
+		}
+
+		// ==== Audio waveform peaks ====
+		// metadata.peaks arrives AFTER the file_transfer for a fresh
+		// audio message (the sender ships peaks-metadata in a separate
+		// sylk-message-metadata payload because SylkServer's file
+		// broadcast strips custom keys — see app.js
+		// updateMetadataFromRemote / _applyPendingPeaks). When peaks
+		// land, updateFileTransferBubble does setState with a freshly
+		// cloned message object — but none of the other tracked fields
+		// in this comparator change (text/audio/playing/position/etc.
+		// are all the same), so without this check the memo skips the
+		// re-render and the AudioWaveform keeps drawing its flat-line
+		// "no peaks yet" placeholder until the user navigates away
+		// and back. Comparing the channel lengths (rather than deep-
+		// equaling arrays of 100s of values) is cheap and reliable —
+		// peaks are written once and never edited, so a length change
+		// is a faithful proxy for "peaks just arrived".
+		{
+		  const pPeaks = p.metadata && p.metadata.peaks;
+		  const nPeaks = n.metadata && n.metadata.peaks;
+		  const pLenL = (pPeaks && Array.isArray(pPeaks.l)) ? pPeaks.l.length : 0;
+		  const nLenL = (nPeaks && Array.isArray(nPeaks.l)) ? nPeaks.l.length : 0;
+		  const pLenR = (pPeaks && Array.isArray(pPeaks.r)) ? pPeaks.r.length : 0;
+		  const nLenR = (nPeaks && Array.isArray(nPeaks.r)) ? nPeaks.r.length : 0;
+		  if (pLenL !== nLenL || pLenR !== nLenR) {
+		    locTrace(false, `peaks arrived: L ${pLenL}->${nLenL}, R ${pLenR}->${nLenR}`);
+		    return false;
 		  }
 		}
 

@@ -70,7 +70,21 @@ class MainApplication : Application(), ReactApplication {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
-    ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
+    // Flipper init is a DEBUG-only diagnostic. The dangerous part of
+    // calling it unconditionally is `reactNativeHost.reactInstanceManager`
+    // — that getter eagerly creates the React bridge, which iterates
+    // getPackages() and calls createNativeModules() on every package.
+    // That spawns AudioRouteModule, BluetoothScoManager, UnreadModule,
+    // etc. at Application.onCreate time — even when the process was
+    // started solely to run MyFirebaseMessagingService for an incoming
+    // chat push and there is no Activity in sight (canonical symptom:
+    // `[audio] AudioRouteModule init` appearing in APPLOG right after
+    // a swipe-kill + push). The native side now writes the message
+    // straight into sylk.db without ever needing the RN bridge, so
+    // keep the bridge cold until MainActivity actually starts.
+    if (BuildConfig.DEBUG) {
+      ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
+    }
 
     // Eagerly register our self-managed PhoneAccount so the Telecom framework
     // already knows about it the moment the first FCM push arrives. Idempotent

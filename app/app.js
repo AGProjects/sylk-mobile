@@ -1010,6 +1010,54 @@ class Sylk extends Component {
         super();
         autoBind(this)
 
+        // Plain instance field so async callers can guard against
+        // setState-after-unmount. Flipped true by componentWillUnmount.
+        // See the comment on `isUnmounted` for why this isn't a getter.
+        this.unmounted = false;
+
+        // SYNCHRONOUS native check at the very top of the constructor:
+        // did this process get spawned by a sylk://message tap?
+        // MainActivity.onCreate() stamps the launch URI into
+        // SharedPreferences before React mounts; SylkBridge.
+        // consumeLaunchMessageUri() reads + clears it synchronously.
+        // We capture the parsed `from` URI here so this.state below
+        // can pre-arm chatOpenLoading/chatOpenUri for the very first
+        // render — no contacts-list flash. The actual selectChatContact
+        // call is deferred to componentDidMount because it touches
+        // setState (illegal in constructor) and the lookupContact +
+        // selectContact path.
+        this._launchMessageFrom = null;
+        this._launchMessageStub = null;
+        try {
+            const _SylkBridgeMod = NativeModules && NativeModules.SylkBridge;
+            const _launchUri = _SylkBridgeMod && typeof _SylkBridgeMod.consumeLaunchMessageUri === 'function'
+                ? _SylkBridgeMod.consumeLaunchMessageUri()
+                : null;
+            if (_launchUri) {
+                const _parts = String(_launchUri).split('/');
+                const _from = _parts[_parts.length - 1];
+                if (_from) {
+                    this._launchMessageFrom = _from;
+                    // Mint the stub once and stash it on `this` so the
+                    // state initialiser below uses the same reference
+                    // we logged here. Doing it inline in state.{} risks
+                    // a hidden newContact() throw turning into a silent
+                    // selectedContact:null (boolean coercion in &&).
+                    try {
+                        this._launchMessageStub = this.newContact(_from);
+                    } catch (stubErr) {
+                        console.log('[chat-overlay] newContact stub failed', stubErr && stubErr.message);
+                    }
+                    utils.timestampedLog('[chat-overlay] launchMessageUri (ctor) from=', _from,
+                        'stub=', this._launchMessageStub
+                            ? {id: this._launchMessageStub.id, uri: this._launchMessageStub.uri, name: this._launchMessageStub.name}
+                            : null);
+                }
+            }
+        } catch (e) {
+            console.log('[chat-overlay] consumeLaunchMessageUri (ctor) failed', e && e.message);
+        }
+
         // Make this App instance available to non-React modules
         // (locationDisclosure / callRecordingDisclosure) that need to
         // read or write state.accountSetting through a singleton
@@ -1291,6 +1339,38 @@ class Sylk extends Component {
             // flip this — only an actual sync round-trip does. See
             // requestSyncConversations / clearFirstSyncPending.
             firstSyncPending: false,
+            // Cold-start chat-open spinner.
+            //
+            // Defaults to FALSE so a normal launcher start never shows
+            // the overlay. Set to true ONLY when eventFromUrl runs the
+            // message branch (deep-link sylk://message/incoming/<uri>).
+            // That means the user will see a brief contacts-list flash
+            // on a cold-start notification tap during the 2–4 s window
+            // before Linking's 'url' event fires (Linking.getInitialURL
+            // returns null on Android singleTask). The trade-off
+            // chosen: prefer that brief flash over showing the spinner
+            // on every normal launcher start.
+            //
+            // Cleared by getMessages once the SQL slice for chatOpenUri
+            // resolves, and by the 20 s safety net in componentDidMount.
+            //
+            // Initialised below via SylkBridge.consumeLaunchMessageUri()
+            // — when the launch intent was a sylk://message tap, we
+            // pre-arm both flags so the very first render already shows
+            // the spinner instead of the contacts list. componentDidMount
+            // then calls selectChatContact(from) so the chat view
+            // actually mounts under the overlay.
+            chatOpenLoading: !!this._launchMessageFrom,
+            chatOpenUri: this._launchMessageFrom || null,
+            // Stub contact pre-seeded ABOVE via this.newContact(...)
+            // when the launch was a sylk://message tap, so ReadyBox
+            // renders the chat view (header + empty body) from the
+            // very first paint instead of the contacts list (which
+            // only shows when selectedContact === null).
+            // componentDidMount calls selectChatContact a moment later
+            // to upgrade the stub to a real contact via
+            // lookupContact + saveSylkContact.
+            selectedContact: this._launchMessageStub || null,
             localMedia: null,
             generatedVideoTrack: false,
             contacts: [],
@@ -1331,7 +1411,9 @@ class Sylk extends Component {
             attachedLogContent: null,
             attachedLogUri: null,
             messages: {},
-            selectedContact: null,
+            // selectedContact pre-seeded above with a stub if the
+            // launch was from a sylk://message tap, so the chat view
+            // renders from the first paint. Default null otherwise.
             // Mirror of NavigationBar's activeLocationShares map
             // ({ [uri]: expiresAtMs }). Kept here so ReadyBox can pulse
             // its chat-header "Share location" button while a share is
@@ -1775,6 +1857,30 @@ class Sylk extends Component {
 				  // route to contacts, parse link, etc
 				}
 			  );
+
+			// Warm-start deep-link fast path. MainActivity.handleViewIntent
+			// emits this synchronously when the user taps a sylk://
+			// notification while the app is already running. Bypasses
+			// react-native-linking's AppState-lifecycle-gated 'url' event
+			// (which has been measured at ~3 s wall-clock latency in
+			// field traces — "Deep link received" native at 14:03:36 vs
+			// JS "Event from url" at 14:03:39). The Linking listener
+			// installed in componentDidMount still fires later as a
+			// belt-and-suspenders fallback; eventFromUrl is idempotent
+			// for the message branch (selectChatContact + setState are
+			// no-ops on the same uri).
+			DeviceEventEmitter.addListener('SylkDeepLink',
+				(payload) => {
+					const _url = payload && payload.url;
+					if (!_url) return;
+					utils.timestampedLog('[app] SylkDeepLink received url=', _url);
+					try {
+						this.eventFromUrl(_url);
+					} catch (e) {
+						console.log('[app] SylkDeepLink eventFromUrl threw', e && e.message);
+					}
+				}
+			);
 
 			// Dismiss the "Answering call..." fullscreen overlay the
 			// moment AudioCallBox.componentDidMount fires for any call.
@@ -2497,7 +2603,7 @@ class Sylk extends Component {
 					lines.push('    server: ' + _stringify(inServer ? _server[k] : undefined));
 				}
 			}
-			console.log('[config] cached vs server for', domain, '\n' + lines.join('\n'));
+			//console.log('[config] cached vs server for', domain, '\n' + lines.join('\n'));
 		} catch (e) {
 			console.log('[config] cached-vs-server diff failed:', e && e.message);
 		}
@@ -3512,9 +3618,29 @@ class Sylk extends Component {
                 this.fetchSharedItemsAndroidAtStart();
 				this.fetchSharedItemsiOS();
                 if (this.initialChatUri) {
-                    //console.log('Starting chat with', this.initialChatUri);
-                    const chatContact = this.lookupContact(this.initialChatUri, true, true);
-					this.initialChatUri = null;
+                    // Cold-start deep-link replay.
+                    //
+                    // selectChatContact() from a sylk://message/incoming/<uri>
+                    // tap runs WAY before this — typically before contacts
+                    // / account / route have loaded — and the boot path's
+                    // `Route /ready : start_up` then clobbers whatever
+                    // contact selection that early call managed to set.
+                    // The selectChatContact call still stashed the URI in
+                    // initialChatUri (line ~9241), and this replay is the
+                    // dedicated "now that contacts are loaded, actually
+                    // navigate" hook. The previous version only did the
+                    // lookup and threw the result away, which is why
+                    // tapping a message push left the user on /ready.
+                    const _uri = this.initialChatUri;
+                    this.initialChatUri = null;
+                    const chatContact = this.lookupContact(_uri, true, true);
+                    if (chatContact) {
+                        utils.timestampedLog('[deeplink] cold-start chat open for', _uri);
+                        this.selectContact(chatContact);
+                    } else {
+                        utils.timestampedLog('[deeplink] cold-start replay: no contact for', _uri,
+                            '— staying on /ready');
+                    }
                 }
             }, 100);
 
@@ -5876,12 +6002,30 @@ class Sylk extends Component {
                     delete messages[this.state.callContact.uri];
                 }
 
-                this.setState({
+                // Boot / connectivity / registration route flips must
+                // NOT wipe selectedContact + messages. On a sylk://
+                // message deep-link cold-start, the constructor
+                // pre-seeded the stub and eventFromUrl ran
+                // selectChatContact() BEFORE loadAccounts' tail
+                // changeRoute('/ready', 'start_up') fires here. Wiping
+                // dropped the user back on the contacts list during
+                // the gap before getMessages re-mounted the chat view
+                // — that's what produced the "still saw CL" reports.
+                // The clear was only ever meaningful for call-end
+                // reasons (no_more_calls, user_hangup_call, rejected,
+                // conference_really_ended, …) which legitimately
+                // release the chat-bound stream of messages.
+                const _isBootOrConnectivityFlip = reason === 'start_up'
+                    || reason === 'registered'
+                    || reason === 'register failure'
+                    || reason === 'register failed'
+                    || reason === 'websocket disconnected'
+                    || reason === 'enrollment';
+
+                const _stateUpdate = {
                             outgoingCallUUID: null,
                             currentCall: null,
                             callContact: null,
-                            messages: {},
-                            selectedContact: null,
                             inviteContacts: false,
                             //shareToContacts: false,
                             selectedContacts: [],
@@ -5889,7 +6033,12 @@ class Sylk extends Component {
                             incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
                             reconnectingCall: false,
                             muted: false
-                            });
+                            };
+                if (!_isBootOrConnectivityFlip) {
+                    _stateUpdate.messages = {};
+                    _stateUpdate.selectedContact = null;
+                }
+                this.setState(_stateUpdate);
             }
 
             if (this.currentRoute === '/call' || this.currentRoute === '/conference') {
@@ -5967,6 +6116,20 @@ class Sylk extends Component {
 
 	componentWillUnmount() {
 		utils.timestampedLog('[app] will unmount');
+
+		// Flip the unmounted gate AS SOON AS this callback fires, so
+		// every other teardown step (and any in-flight async caller
+		// that consults `this.unmounted`) sees the right answer for
+		// the rest of the function. Replaces the old `get unmounted()`
+		// getter that returned `!this._loaded` — the latter
+		// considered the component "unmounted" during the entire
+		// componentDidMount window (since `_loaded` was set only at
+		// the END of mount), which made every fast-path / early boot
+		// async caller bail with `unmounted=true` for the first 1–3 s
+		// of every cold start. Now `unmounted` strictly means
+		// "componentWillUnmount has fired" and the boot-time guards
+		// behave correctly.
+		this.unmounted = true;
 
 		// Cancel any pending push-accept route gate so its setTimeout
 		// callback doesn't fire into an unmounted App and call
@@ -6091,9 +6254,14 @@ class Sylk extends Component {
 		this.setState({ proximityNear: proximity});
 	};
   
-    get unmounted() {
-        return !this._loaded;
-    }
+    // `unmounted` is a plain instance field, set false in the
+    // constructor and flipped true by componentWillUnmount. It used
+    // to be a getter that returned `!this._loaded`, which falsely
+    // reported the App as "unmounted" for the entire componentDidMount
+    // window (since `_loaded` is only flipped at the END of mount).
+    // That broke every early-boot async caller — the chat-open
+    // fast-path bailed with `unmounted=true` for the first 1–3 s of
+    // every cold start. Now the flag means what its name says.
 
     isUnmounted() {
         return this.unmounted;
@@ -7725,6 +7893,56 @@ class Sylk extends Component {
 	}
 
     async componentDidMount() {
+        // Pair to the constructor's consumeLaunchMessageUri() read.
+        // Initial state already has chatOpenLoading/chatOpenUri set;
+        // here we trigger selectChatContact so ReadyBox flips into
+        // chat mode (mounts the chat view under the overlay). We
+        // can't do this from the constructor — selectContact calls
+        // setState and uses lookupContact's create+save path which
+        // requires the component to be mounted.
+        if (this._launchMessageFrom) {
+            try {
+                this.selectChatContact(this._launchMessageFrom);
+            } catch (e) {
+                console.log('[chat-overlay] selectChatContact (mount) failed', e && e.message);
+            }
+        }
+
+        // Hard 20 s safety net for the cold-start chat-open spinner.
+        // Defends against every "spinner never clears" failure mode:
+        //   - getMessages never resolves (SQL slice hangs)
+        //   - eventFromUrl's message branch sets the flag but a later
+        //     code path forgets to clear it
+        //   - the contactsLoaded / initialChatUri replay path errors
+        //     out before getMessages can run
+        //   - any new code path that sets chatOpenLoading and forgets
+        //     to lift it
+        // After 20 s the user can use the app regardless. Wired BEFORE
+        // any await so it always arms even if initSQL or later boot
+        // work throws.
+        setTimeout(() => {
+            if (!this.unmounted && this.state.chatOpenLoading) {
+                utils.timestampedLog('[chat-overlay] 20s safety timeout — clearing chatOpenLoading');
+                this.setState({chatOpenLoading: false, chatOpenUri: null});
+            }
+        }, 20000);
+
+        // Fast-path: kick this BEFORE awaiting initSQL so the chat-open
+        // SQL query doesn't have to wait for the pragmas + showTables +
+        // createTables chain (~500 ms) to finish. The fast-path
+        // internally polls for `this.db` with a tiny upper bound, so
+        // it'll fire its SELECT the moment SQLite.openDatabase resolves
+        // (typically 50–200 ms ahead of `initSQL` returning). Fire and
+        // forget — the full getMessages slice overwrites this a few
+        // seconds later with the complete history. The user-visible
+        // win is going from a 13–17 s "empty chat view" stare-down to
+        // seeing the last message in ~1 s.
+        if (this._launchMessageFrom) {
+            this._fastLoadInitialMessages(this._launchMessageFrom).catch(e => {
+                console.log('[chat-fast] threw:', e && e.message);
+            });
+        }
+
 		await this.initSQL();
         utils.timestampedLog('[app] did mount');
 
@@ -7912,18 +8130,62 @@ class Sylk extends Component {
 
 		if (Platform.OS === 'ios') {
 			//console.log('--- Added iOS push listeners');
-	
+
 			// save references to handler functions for cleanup
 			this._onLocalNotification = this.onLocalNotification.bind(this);
 			this._onRemoteNotification = this.onRemoteNotification.bind(this);
-	
+
 			PushNotificationIOS.addEventListener('localNotification', this._onLocalNotification);
 			PushNotificationIOS.addEventListener('notification', this._onRemoteNotification);
-	
+
+			// Warm-start push-tap fast path on iOS. AppDelegate's
+			// userNotificationCenter:didReceiveNotificationResponse:
+			// fires the moment the user TAPS a message notification
+			// (vs the generic 'notification' event above, which also
+			// fires on silent delivery). Mirrors Android's
+			// SylkDeepLink — selectChatContact + the fast-load
+			// pre-seed so the user lands in the chat with the latest
+			// bubble visible instead of the contacts list.
+			DeviceEventEmitter.addListener('SylkPushTapped', (payload) => {
+				const _from = payload && payload.fromUri;
+				if (!_from) return;
+				utils.timestampedLog('[app] SylkPushTapped received fromUri=', _from);
+				try {
+					this.setState({chatOpenLoading: true, chatOpenUri: _from});
+					this.selectChatContact(_from);
+					this._fastLoadInitialMessages(_from).catch(e => {
+						console.log('[chat-fast] (SylkPushTapped) threw:', e && e.message);
+					});
+				} catch (e) {
+					console.log('[app] SylkPushTapped handler threw', e && e.message);
+				}
+			});
+
 			// initial notification if app launched from push
 			const initialNotification = await PushNotificationIOS.getInitialNotification();
 			if (initialNotification) {
 				this.onRemoteNotification(initialNotification);
+				// Cold-start tap on iOS: the AppDelegate's
+				// didReceiveNotificationResponse fired BEFORE the
+				// bridge was ready, so SylkPushTapped didn't reach
+				// us. The bare onRemoteNotification call above only
+				// stashes the payload (it doesn't navigate). Pull
+				// the from_uri out and run the same fast-load /
+				// navigate as the warm-start path so the launch tap
+				// also opens the chat directly.
+				try {
+					const _data = initialNotification && initialNotification._data && initialNotification._data.data;
+					if (_data && _data.event === 'message' && _data.from_uri) {
+						utils.timestampedLog('[app] iOS cold-start initialNotification message from=', _data.from_uri);
+						this.setState({chatOpenLoading: true, chatOpenUri: _data.from_uri});
+						this.selectChatContact(_data.from_uri);
+						this._fastLoadInitialMessages(_data.from_uri).catch(e => {
+							console.log('[chat-fast] (iOS cold-start) threw:', e && e.message);
+						});
+					}
+				} catch (e) {
+					console.log('[app] iOS cold-start initial nav threw', e && e.message);
+				}
 			}
 		}
         
@@ -7947,20 +8209,34 @@ class Sylk extends Component {
 				console.warn('notificationTapped missing data:', event);
 				return;
 			  }
-			
-			  console.log('User tapped notification bubble for', event.fromUri);
-			  /*
-			  console.log('Message ID:', event.id);
-			  console.log('Message content:', event.content);
-			  console.log('Message contentType:', event.contentType);
-			  */
 
+			  console.log('User tapped notification bubble for', event.fromUri);
+
+			  // Navigate to the chat AND feed the push payload through
+			  // incomingMessageFromPush. The native FCM service has
+			  // already INSERTed the row into the messages table, so
+			  // the durable copy is on disk — but waiting for that to
+			  // round-trip back through getMessages + decrypt queue
+			  // takes 6–13 s on cold start. incomingMessageFromPush
+			  // decrypts the payload synchronously and seeds an in-
+			  // memory transient bubble in state.incomingMessage[from],
+			  // which the chat-load merge pass at line ~21364 picks
+			  // up and renders alongside the SQL bubbles. Once the
+			  // SQL row eventually loads with the same _id, the merge
+			  // pass's dedup gate (existing.some(_id===msg._id))
+			  // suppresses the transient copy. Net effect: user sees
+			  // the message ~immediately after tap instead of waiting
+			  // for the full SQL slice + decrypt queue to drain.
+			  //
 			  // Native may emit the SIP "From" display name as either
-			  // fromDisplayName (camelCase, matches the JS convention used
-			  // elsewhere on the Android side) or from_display_name (the
-			  // raw key used in FCM data payloads). Accept either so we
-			  // don't lose the name on contact auto-create when the user
-			  // taps the notification for a stranger.
+			  // fromDisplayName (camelCase) or from_display_name (the
+			  // raw FCM key). Accept either so contact auto-create
+			  // lands a friendly name on a first-time sender.
+			  try {
+				this.selectChatContact(event.fromUri);
+			  } catch (e) {
+				console.log('notificationTapped: selectChatContact failed', e && e.message);
+			  }
 			  const _tapDisplayName = event.fromDisplayName || event.from_display_name || null;
 			  this.incomingMessageFromPush(event.id, event.fromUri, event.content, event.contentType, _tapDisplayName);
 			});
@@ -8956,6 +9232,14 @@ class Sylk extends Component {
 			utils.timestampedLog('[message] FCM in-app event: message from', from,
 				'displayName=', notification['from_display_name'] || '(none)');
 
+			// Native already INSERTed the row (or skipped on foreground
+			// to let WS handle it). We additionally feed the payload
+			// through incomingMessageFromPush so the user sees the
+			// bubble immediately on resume — synchronous decrypt +
+			// state.incomingMessage seed, gets dedup'd by the chat-
+			// load merge pass once the SQL row lands. When the app is
+			// not active we stash to AsyncStorage so checkPendingActions
+			// replays the same path at the next resume.
 			if (this.state.appState != 'active') {
 				utils.timestampedLog('[message] Save pending message to AsyncStorage from', from, '(' + Platform.OS + ')');
 				AsyncStorage.setItem(`incomingMessage`, JSON.stringify(notification));
@@ -9050,6 +9334,13 @@ class Sylk extends Component {
 
 		utils.timestampedLog('[message] Received push message', 'from', displayName, 'to', to);
 			
+        // Stash the payload in AsyncStorage so checkPendingActions
+        // can feed it through incomingMessageFromPush as soon as JS
+        // resumes — that gives the user the bubble immediately,
+        // ahead of getMessages + decrypt-queue. The native AppDelegate
+        // (insertIncomingMessageToSqlForAccount:) has already written
+        // the durable copy to SQL, so this is purely for UI immediacy;
+        // chat-load merge dedups by _id once the SQL bubble loads.
         if (this.state.appState != 'active') {
 			try {
 				utils.timestampedLog('[message] Save pending message to AsyncStorage from', from, '(' + Platform.OS + ')');
@@ -10994,6 +11285,7 @@ class Sylk extends Component {
 					const _source = _cached
 						? 'configurations[' + _domain + ']'
 						: (_configJson ? 'state.configurationJson' : 'state slots only');
+					/*
 					console.log('[account] [load] server config dump (source=' + _source + '):',
 						JSON.stringify({
 							sylkDomain:        this.state.sylkDomain,
@@ -11007,6 +11299,7 @@ class Sylk extends Component {
 							serverSettingsUrlInConfig: _picked ? (_picked.serverSettingsUrl || null) : null,
 						})
 					);
+					*/
 				} catch (e) {
 					console.log('[account] [load] server config dump failed:', e && e.message);
 				}
@@ -14923,6 +15216,13 @@ class Sylk extends Component {
                 this.setState({targetUri: to});
             }
 
+            // Non-message events run their own UI flows (call screen,
+            // conference modal, content-share). Lift the cold-start
+            // chat-open overlay so it doesn't sit on top of them.
+            if (event !== 'message' && this.state.chatOpenLoading) {
+                this.setState({chatOpenLoading: false, chatOpenUri: null});
+            }
+
             if (event === 'conference') {
                 utils.timestampedLog('Conference [call] from external URL:', url);
                 this.startedByPush = true;
@@ -14969,7 +15269,27 @@ class Sylk extends Component {
                 //this.fetchSharedItemsAndroidAtStart('Linking');
             } else if (event === 'message') {
 				 from = url_parts[4];
+				 // Show the loading spinner immediately so the user lands
+				 // on a "Opening chat with <uri>…" view instead of the
+				 // contacts list while the boot path (auto-login,
+				 // contacts hydrate, getMessages SQL slice) finishes.
+				 // Cleared by getMessages once the SQL slice resolves
+				 // (see the setState in the slice .then callback).
+				 this.setState({chatOpenLoading: true, chatOpenUri: from});
                  this.selectChatContact(from);
+                 // Fast-path: ALSO fire here so warm-start /
+                 // Linking-driven taps (where consumeLaunchMessageUri
+                 // returned null because MainActivity wasn't recreated
+                 // — typical of Metro reloads or the OS keeping the
+                 // process alive) still get the last-20-bubbles
+                 // pre-seed. The function is race-guarded against
+                 // getMessages so a duplicate call when the cold-start
+                 // path already kicked one is a no-op.
+                 if (from) {
+                     this._fastLoadInitialMessages(from).catch(e => {
+                         console.log('[chat-fast] (eventFromUrl) threw:', e && e.message);
+                     });
+                 }
             } else {
                  utils.timestampedLog('[app] Error: Invalid external URL event', event);
             }
@@ -15119,21 +15439,25 @@ class Sylk extends Component {
 	    //console.log('FCM key', key);
 
 		if (key.startsWith('incomingMessage')) {
+			// Replay the stashed push payload through incomingMessageFromPush
+			// so the freshly-resumed app shows the bubble immediately —
+			// in parallel with the SQL-loaded row that native already
+			// wrote. Once getMessages loads the durable SQL bubble with
+			// the same msg_id, the chat-load merge pass at line ~21364
+			// dedups the transient state.incomingMessage copy.
 			const pendingJson = await AsyncStorage.getItem(key);
 			if (!pendingJson) {
 			    console.log('No pending json');
 				continue;
 			}
-
 			const payload = JSON.parse(pendingJson);
 			// Pull the SIP "From" display name from whichever key the
 			// origin path used:
-			//   • from_display_name  — raw FCM/APNS payload key (Android
+			//   • from_display_name — raw FCM/APNS payload key (Android
 			//     FCM stores notification as-is; iOS AppDelegate writes
 			//     the same key into userInfo).
-			//   • display_name       — set by onRemoteNotification (iOS)
-			//     after a local contact-name preference pass. Falling
-			//     back to this preserves the legacy iOS path.
+			//   • display_name      — set by onRemoteNotification (iOS)
+			//     after a local contact-name preference pass.
 			const _replayDisplayName = payload.from_display_name || payload.display_name || null;
 			this.incomingMessageFromPush(payload.message_id, payload.from_uri, payload.content, payload.content_type, _replayDisplayName);
 			await AsyncStorage.removeItem(key);
@@ -20214,8 +20538,51 @@ class Sylk extends Component {
                 msg = utils.sql2GiftedChat(message, content);
                 msg = unwrapMessage(msg);
 
-                render_messages.push(msg);
-                messages[uri] = render_messages;
+                // Dedup before push, reading the CURRENT in-state array
+                // (not the reference captured at decryptMessage entry).
+                //
+                // Why re-read: `render_messages` and `messages` were
+                // captured when decryptMessage started, possibly tens of
+                // seconds ago. A subsequent getMessages call does
+                // `messages[orig_uri] = []` (line ~20760) — that
+                // replaces the array reference for `orig_uri` with a
+                // fresh empty array and rebuilds it. The reference we
+                // captured here is now DETACHED from state.messages: a
+                // .push() into it would mutate an orphan array that no
+                // component renders, AND the .some() dedup check would
+                // miss bubbles that a later WS arrival or decrypt-queue
+                // has already landed in the live array.
+                //
+                // Symptom of the old code: the same msg_id rendered
+                // twice when boot fired getMessages back-to-back —
+                // first queue's decrypt completed against the
+                // first-call array (now detached, invisible), then
+                // second queue's decrypt completed against the second-
+                // call array WITHOUT seeing the first push (different
+                // array reference), pushing a fresh copy.
+                //
+                // Always operate on the live array. If it doesn't exist
+                // (chat closed between queue start and decrypt finish),
+                // skip — there's nothing rendered to update anyway.
+                const liveMessages = this.state.messages;
+                const liveList = (liveMessages && liveMessages[uri]) || null;
+                if (!Array.isArray(liveList)) {
+                    return;
+                }
+                if (liveList.some(m => m && m._id === msg._id)) {
+                    utils.timestampedLog('[message]', id,
+                        'decrypt-complete dedup skip (already in chat)');
+                } else {
+                    liveList.push(msg);
+                }
+                // Keep the captured-reference variables in sync for the
+                // rest of this function (the throttled setState reads
+                // `messages` for the spread; we want it to spread the
+                // live object so a ContactsListBox re-render goes
+                // through with the latest contents).
+                render_messages = liveList;
+                messages = liveMessages;
+                messages[uri] = liveList;
                 // Push the freshly-decrypted message into state, but
                 // THROTTLED. Firing setState on every decrypt
                 // forced a full re-render of ContactsListBox each
@@ -20236,20 +20603,33 @@ class Sylk extends Component {
                 // change; previous code wrote `setState({message:…})`
                 // (singular, dead key) which never propagated.
                 if (!this._decryptFlushAt) this._decryptFlushAt = 0;
+                if (this._decryptFlushCount == null) this._decryptFlushCount = 0;
                 const _isLast = pending_messages.length === 0;
                 const _now = Date.now();
-                // Throttle is now 3 s — at the previous 500 ms the
-                // throttle was effectively a no-op since a single
-                // decrypt cycle takes ~1 s on slow devices, so
-                // every iteration was triggering a re-render and
-                // the chat list never had a quiet moment to
-                // process input. 3 s keeps the queue feeling
-                // "alive" (the user sees a batch appear every few
-                // seconds) while leaving the UI thread mostly idle
-                // between flushes so the back button actually
-                // responds to a tap.
-                if (_isLast || (_now - this._decryptFlushAt) > 3000) {
+                // Two-tier flush policy.
+                //
+                // The first 2 decrypts in any burst flush IMMEDIATELY
+                // (no throttle) so the freshest bubbles — the ones the
+                // user is staring at after a push tap / chat open —
+                // appear with no batching delay. After that the
+                // throttle kicks in at 1 s (was 3 s) so the tail of a
+                // long decrypt queue still batches enough to keep the
+                // ContactsListBox re-render cost down, but not so
+                // aggressively that a mid-pack message looks frozen.
+                // _isLast always wins, same as before.
+                //
+                // History: an earlier 500 ms throttle was effectively
+                // a no-op since a single decrypt cycle takes ~1 s on
+                // slow devices, so every iteration triggered a re-
+                // render and the chat list never had a quiet moment
+                // to process input. The pendulum then swung to 3 s,
+                // which fixed the input lag but made the user wait
+                // up to 3 s for the first bubble. Two-tier (top of
+                // burst immediate + 1 s throttle after) gets both.
+                const _isPriorityFlush = this._decryptFlushCount < 2;
+                if (_isLast || _isPriorityFlush || (_now - this._decryptFlushAt) > 1000) {
                     this._decryptFlushAt = _now;
+                    this._decryptFlushCount += 1;
                     this.setState({messages: {...messages}});
                 }
                 if (_isLast) {
@@ -20423,6 +20803,266 @@ class Sylk extends Component {
         }).catch((error) => {
             console.log('SQL error:', error);
         });
+    }
+
+    /**
+     * Cold-start chat-open fast path. When the user taps a
+     * sylk://message/incoming/<uri> notification, the boot chain
+     * (initSQL → loadAccounts → loadAccount → handleRegistration →
+     * contactsLoaded → deeplink-replay → selectContact →
+     * waitForContactsLoaded → getMessages SQL slice over 340+ rows
+     * → decrypt) takes ~13 s before the first bubble lands on screen
+     * — and the just-arrived push message can take another ~4 s on
+     * top of that for its PGP decrypt to finish. To the user the
+     * chat header shows immediately but the body stays blank for
+     * 13–17 s.
+     *
+     * This method short-circuits the long path: as soon as initSQL
+     * has finished it pulls JUST the last N text rows for the launch
+     * URI (no JOIN, no count, no contactsLoaded gate, no
+     * waitForContactsLoaded), decrypts encrypted=1 inline with the
+     * private key, builds GiftedChat bubbles, and pushes them into
+     * state.messages[uri]. The full getMessages slice still runs
+     * later via the normal deeplink-replay path; it'll
+     * `messages[uri] = []` then refill, so the fast-load result is
+     * naturally superseded with the complete history once it's
+     * ready.
+     *
+     * Filters intentionally narrow to text/plain and text/html only:
+     * file-transfer, location ticks, reactions and other metadata
+     * bubbles need the full categorisation pipeline in getMessages
+     * to render correctly. The fast-path is purely "show me what
+     * they last said."
+     */
+    async _fastLoadInitialMessages(uri, limit=20) {
+        if (!uri || this.unmounted) return;
+
+        // Wait briefly for `this.db` to be set. The fast-path is
+        // intentionally kicked from componentDidMount BEFORE
+        // `await this.initSQL()`, so we may beat openDatabase by a
+        // few hundred ms on cold start. 2 s upper bound is generous —
+        // a real device sets db within 200 ms.
+        const _dbWaitStart = Date.now();
+        while (!this.db) {
+            if (this.unmounted) return;
+            if (Date.now() - _dbWaitStart > 2000) return;
+            await new Promise(r => setTimeout(r, 20));
+        }
+
+        // Read accountId + private key directly from SQL instead of
+        // polling React state. The boot path's loadAccounts +
+        // loadAccount writes them to state.accountId / state.keys,
+        // but those writes don't land until ~1–3 s after initSQL
+        // resolves — and the fast-path was previously losing all
+        // that time to a 50 ms setTimeout polling loop. A single
+        // SELECT against the accounts table is ~5 ms and gives us
+        // both values immediately, so stage 1 can fire as soon as
+        // the SQL handle is open. The state writes happen anyway via
+        // the normal boot path; we just don't gate the fast-path on
+        // them.
+        let accountId = this.state.accountId || null;
+        let privateKey = (this.state.keys && this.state.keys.private) || null;
+        if (!accountId || !privateKey) {
+            try {
+                const r = await this.ExecuteQuery(
+                    "SELECT account, private_key FROM accounts "
+                    + "WHERE active = '1' OR active = 1 "
+                    + "ORDER BY last_active_timestamp DESC LIMIT 1",
+                    []
+                );
+                if (r && r.rows && r.rows.length > 0) {
+                    const row = r.rows.item(0);
+                    if (!accountId) accountId = row.account || null;
+                    if (!privateKey) privateKey = row.private_key || null;
+                }
+            } catch (e) {
+                utils.timestampedLog('[chat-fast] direct accounts read failed', e && e.message);
+            }
+        }
+        if (!accountId) return;
+
+        // Bail if getMessages already raced us. Cheap idempotency
+        // — the full slice is the authoritative source.
+        if (this.state.messages[uri] && this.state.messages[uri].length > 0) return;
+
+        // Minimal slice: text-shaped rows only, by URI alone (no
+        // contact-aliasing — that needs contactsLoaded and an
+        // allContactUris JOIN). The 99% case is one-URI-per-peer;
+        // the rare alias case picks up its history later from the
+        // full getMessages.
+        const q = `SELECT * FROM messages
+                   WHERE account = ?
+                     AND (from_uri = ? OR to_uri = ?)
+                     AND (deleted IS NULL OR deleted = 0)
+                     AND content_type IN ('text/plain', 'text/html')
+                   ORDER BY unix_timestamp DESC, rowid DESC
+                   LIMIT ?`;
+
+        let rowsResult;
+        try {
+            const result = await this.ExecuteQuery(q, [accountId, uri, uri, limit]);
+            rowsResult = result.rows;
+        } catch (e) {
+            utils.timestampedLog('[chat-fast] SQL failed for', uri, e && e.message);
+            return;
+        }
+        if (this.unmounted) return;
+        if (!rowsResult || rowsResult.length === 0) return;
+
+        // Helper: turn one SQL row into a GiftedChat bubble, decrypting
+        // inline if the row is encrypted=1. Returns the bubble or
+        // null when the row isn't displayable (decrypt failed, hard
+        // failure, encrypted=3, etc.).
+        const _bubbleFromRow = async (item) => {
+            try {
+                let content = item.content;
+                if (item.encrypted === 1) {
+                    if (!privateKey) return null;
+                    try {
+                        content = await OpenPGP.decrypt(item.content, privateKey);
+                        // Persist plaintext + encrypted=2 so the later
+                        // full getMessages slice doesn't re-do this
+                        // work.
+                        try {
+                            await this.ExecuteQuery(
+                                'UPDATE messages SET content = ?, encrypted = 2 WHERE account = ? AND msg_id = ?',
+                                [content, accountId, item.msg_id]
+                            );
+                        } catch (uErr) { /* best-effort */ }
+                        item.content = content;
+                        item.encrypted = 2;
+                    } catch (decErr) {
+                        utils.timestampedLog('[chat-fast] decrypt failed for',
+                            item.msg_id, decErr && decErr.message);
+                        return null;
+                    }
+                } else if (item.encrypted === 3) {
+                    return null;
+                }
+                const b = await utils.sql2GiftedChat(item, content);
+                return b || null;
+            } catch (e) {
+                utils.timestampedLog('[chat-fast] row error', e && e.message);
+                return null;
+            }
+        };
+
+        // -----------------------------------------------------------
+        // STAGE 1 — the push message alone.
+        //
+        // The SQL DESC query above returns the most recent row at
+        // index 0, which on a cold-start tap is the bubble that
+        // just arrived as a push (native FCM / iOS inserted it into
+        // SQL before JS even mounted; encrypted=1). Decrypt JUST
+        // that one row inline and setState immediately so the user
+        // sees the message they tapped the notification for as the
+        // FIRST thing under the chat header — no waiting for the
+        // other 19 rows in the slice or for getMessages' 340-row
+        // full pass.
+        // -----------------------------------------------------------
+        const firstBubble = await _bubbleFromRow(rowsResult.item(0));
+
+        if (this.unmounted) return;
+        if (this.state.messages[uri] && this.state.messages[uri].length > 0) return;
+
+        if (firstBubble) {
+            const next1 = {...this.state.messages, [uri]: [firstBubble]};
+            const _patch1 = {messages: next1};
+            // Drop the spinner as soon as the push bubble is on
+            // screen — the rest of the fast-path and the full slice
+            // arrive a few hundred ms later under no overlay.
+            if (this.state.chatOpenLoading && this.state.chatOpenUri === uri) {
+                _patch1.chatOpenLoading = false;
+                _patch1.chatOpenUri = null;
+            }
+            this.setState(_patch1);
+            utils.timestampedLog('[chat-fast] stage 1 for', uri);
+
+            // Clear the unread badge for this URI even though the
+            // boot-path confirmRead → resetUnreadCount may not run
+            // until much later. The fast-path can put the chat on
+            // screen BEFORE contactsLoaded fires, at which point
+            // resetUnreadCount silently no-ops (lookupContacts
+            // returns []) — and the contacts row still carries
+            // unread_messages = '<msg_id>'. When contacts finally
+            // hydrate, saveSylkContact then mirrors that non-empty
+            // list back into UnreadModule.setUnreadForContact,
+            // bouncing the badge from 0 to 1 a few seconds after
+            // the user is already reading the message. Three writes
+            // here defuse that race:
+            //   1. UnreadModule.resetUnreadForContact: clears the
+            //      native per-contact counter + refreshes the
+            //      global badge.
+            //   2. UPDATE contacts.unread_messages = NULL: so when
+            //      the SQL contacts hydration runs later it loads
+            //      contact.unread = [] instead of [msg_id], and the
+            //      mirror in saveSylkContact stays at 0.
+            //   3. The IMDN "displayed" disposition still gets sent
+            //      later via the AppState-foreground handler's
+            //      confirmRead() — which by then has contacts
+            //      loaded and can use the SELECT-based path safely.
+            try {
+                if (Platform.OS === 'android' && UnreadModule
+                        && typeof UnreadModule.resetUnreadForContact === 'function') {
+                    UnreadModule.resetUnreadForContact(uri);
+                }
+            } catch (e) { /* native bridge optional */ }
+            try {
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET unread_messages = NULL WHERE account = ? AND uri = ?',
+                    [accountId, uri]
+                );
+            } catch (e) {
+                utils.timestampedLog('[chat-fast] unread clear UPDATE failed', e && e.message);
+            }
+            // Warm-start path: contacts are already loaded with
+            // unread=['msg_id']. Clear the in-memory copy too so the
+            // ContactsListBox per-row counter drops immediately. On
+            // cold-start this is a no-op (lookupContacts returns
+            // empty until contacts hydrate from the now-cleared SQL).
+            try {
+                this.resetUnreadCount(uri);
+            } catch (e) { /* best-effort */ }
+        }
+
+        // -----------------------------------------------------------
+        // STAGE 2 — the remaining 19 history bubbles.
+        //
+        // These are almost all already encrypted=2 (decrypted on
+        // previous runs), so the loop is fast — sql2GiftedChat is
+        // the only work per row. We rebuild the full N-item array
+        // (newest first, same shape getMessages produces) and
+        // setState once at the end. The user perceives this as the
+        // chat history "filling in" right after the push bubble
+        // they were reading.
+        // -----------------------------------------------------------
+        const tail = [];
+        for (let i = 1; i < rowsResult.length; i++) {
+            const b = await _bubbleFromRow(rowsResult.item(i));
+            if (b) tail.push(b);
+        }
+
+        if (this.unmounted) return;
+        // getMessages already overtook us with the full slice — no
+        // point overwriting its larger result with our 20.
+        if (this.state.messages[uri] && this.state.messages[uri].length > 1) return;
+
+        // Compose newest-first array: [firstBubble, ...tail]. If the
+        // first row didn't decrypt but tail rows did, we still seed
+        // with just the tail.
+        const combined = firstBubble ? [firstBubble, ...tail] : tail;
+        if (combined.length === 0) return;
+
+        const next2 = {...this.state.messages, [uri]: combined};
+        const _patch2 = {messages: next2};
+        // Defensive: if for any reason the spinner is still up
+        // (stage 1 short-circuited above), drop it here.
+        if (this.state.chatOpenLoading && this.state.chatOpenUri === uri) {
+            _patch2.chatOpenLoading = false;
+            _patch2.chatOpenUri = null;
+        }
+        this.setState(_patch2);
+        utils.timestampedLog('[chat-fast] stage 2:', combined.length, 'bubbles for', uri);
     }
 
     async getMessages(obj, filter={pinned: false, category: null, text:null, contentType: null}) {
@@ -20849,20 +21489,56 @@ class Sylk extends Component {
 						if (item.encrypted === null) {
 							item.encrypted = 1;
 						}
-	
+
 						/*
 						 encrypted:
 						 1 = unencrypted
 						 2 = decrypted
 						 3 = failed to decrypt message
 						*/
-	
+
 						if (!(uri in decryptingMessages)) {
 							decryptingMessages[orig_uri] = [];
 						}
 						try {
+							// Track msg_id as "still being decrypted" in the
+							// LOCAL map regardless — that's what drives the
+							// chat-list "decrypting…" indicator and the SQL
+							// slice's "this row will arrive via the queue
+							// soon, don't render it now" gate. But only push
+							// into the actual worker queue when no PRIOR
+							// getMessages call already queued the same id.
+							//
+							// _decryptInFlight is SESSION-PERSISTENT: once a
+							// msg_id has been queued in this process, never
+							// re-queue it. The fire-and-forget UPDATE
+							// messages SET encrypted=2 (line ~20319) can be
+							// slow to commit under SQL contention, so a
+							// subsequent getMessages call may still see the
+							// SQL row as encrypted=1 even though we already
+							// decrypted once. Previously we cleared the
+							// inflight entry on decrypt completion; that
+							// produced visible double-render whenever boot
+							// fired getMessages back-to-back (the second
+							// call re-queued, re-decrypted, and pushed a
+							// second copy because the captured
+							// render_messages reference was stale by then).
+							//
+							// Boot fires getMessages 2–4 times for the same
+							// contact in quick succession (selectedContact
+							// changes, journal replay, focus events). Without
+							// this gate each call rebuilt messages_to_decrypt
+							// from scratch and re-issued OpenPGP.decrypt for
+							// the same msg_id N times — which is what stretched
+							// the visible delay before the first bubble
+							// rendered (each duplicate decrypt blocks the
+							// queue behind it).
 							decryptingMessages[orig_uri].push(item.msg_id);
-							messages_to_decrypt.push(item);
+							if (!this._decryptInFlight) this._decryptInFlight = new Set();
+							if (!this._decryptInFlight.has(item.msg_id)) {
+								this._decryptInFlight.add(item.msg_id);
+								messages_to_decrypt.push(item);
+							}
 						} catch (e) {
 						    console.log('Error adding decryptingMessages', e);
 						}
@@ -21308,9 +21984,7 @@ class Sylk extends Component {
 						if (orig_uri in messages) {
 							messages[orig_uri].push(msg);
 						}
-					    
-					    //console.log("---- Loaded message from SQL:", msg._id);
-						
+
 						if (pinned || category) {
 							filteredMessageIds.push(msg._id);
 						}
@@ -21382,6 +22056,60 @@ class Sylk extends Component {
 					}
 				}
 			});
+
+			// Diagnostic: show the last 5 messages in the SAME ORDER they
+			// render on the phone (top-of-block = older, bottom-of-block =
+			// newest), so the final printed line of the block matches the
+			// bottom bubble in the chat. Useful for eyeballing whether a
+			// chat-load's tail matches what's on screen — most "duplicate
+			// bubbles on first load" reports show up here as a doubled id
+			// at the bottom of the block.
+			//
+			// `messages[orig_uri]` was just built by the SQL DESC for-loop
+			// (newest at index 0), so the 5 newest are slice(0, 5). We
+			// reverse that slice so iteration goes oldest -> newest, which
+			// means the last console.log line === the bottom of the chat.
+			try {
+				const _builtList = messages[orig_uri] || [];
+				const _tail = _builtList.slice(0, 5).reverse();
+				const _arrow = (d) => (d === 'outgoing' ? '→' : '←');
+				const _fullId = (id) => (id ? String(id) : '?');
+				const _time = (ts) => {
+					if (!ts) return '       ';
+					try {
+						const d = ts instanceof Date ? ts : new Date(ts);
+						const hh = String(d.getHours()).padStart(2, '0');
+						const mm = String(d.getMinutes()).padStart(2, '0');
+						const ss = String(d.getSeconds()).padStart(2, '0');
+						return `${hh}:${mm}:${ss}`;
+					} catch (e) { return '       '; }
+				};
+				const _snippet = (m) => {
+					let s = '';
+					if (m && typeof m.text === 'string' && m.text.length > 0) {
+						s = m.text;
+					} else if (m && m.html) {
+						s = String(m.html).replace(/<[^>]+>/g, '');
+					} else if (m && m.metadata && m.metadata.filename) {
+						s = '[file] ' + m.metadata.filename;
+					} else if (m && m.contentType) {
+						s = '<' + m.contentType + '>';
+					}
+					s = s.replace(/\s+/g, ' ').trim();
+					return s.length > 40 ? s.slice(0, 37) + '...' : s;
+				};
+				utils.timestampedLog('[chat-load]',
+					_builtList.length, 'bubbles for', orig_uri,
+					'— last 5 (bottom of chat is last line):');
+				for (const m of _tail) {
+					console.log('  ' + _arrow(m && m.direction)
+						+ ' ' + _time(m && m.createdAt)
+						+ '  ' + _fullId(m && m._id)
+						+ '  ' + _snippet(m));
+				}
+			} catch (e) {
+				console.log('[chat-load] diagnostic failed', e && e.message);
+			}
 
 			this.setState({filteredMessageIds: filteredMessageIds, contentTypes: contentTypes});
 
@@ -22057,57 +22785,124 @@ class Sylk extends Component {
 				}
 			}
 
-			// Decrypt the messages serially with an abort check
-			// before each item, so navigating away from the chat
-			// stops the queue. The previous parallel fan-out
-			// (messages_to_decrypt.forEach) launched every
-			// OpenPGP.decrypt call up-front; even after the user
-			// switched contacts or went back to the contact list,
-			// the native OpenPGP module kept chewing through the
-			// backlog one message at a time, pinning CPU on slow
-			// devices for tens of seconds — visible in the user's
-			// log as a stream of `Message X decrypted from …`
-			// lines that kept arriving long after they'd left
-			// that chat.
+			// Decrypt the messages with a bounded-parallel worker pool
+			// and a per-item abort check, so navigating away from the
+			// chat stops the queue.
 			//
-			// Serial + per-item gate: between each decrypt we
-			// check that selectedContact still points at this
-			// chat. The moment it doesn't, we drop the rest of
-			// the queue. The messages will be picked up the next
-			// time the user re-opens the chat (the SQL slice
-			// re-loads anything still encrypted=1).
+			// History: the original fan-out via .forEach launched every
+			// OpenPGP.decrypt call up-front; on slow devices the queue
+			// kept chewing through the backlog one msg at a time long
+			// after the user had left the chat (CPU pin, visible as a
+			// long tail of "decrypted from" log lines for a chat the
+			// user wasn't even on anymore). The replacement was strict
+			// serial + 100 ms hand-yields between items.
+			//
+			// Serial was too slow for the actual hot path: a freshly-
+			// opened chat with 2 PGP rows took ~4 s before the first
+			// bubble appeared (1–2 s of OpenPGP.decrypt for the first
+			// one, then yield + ~1–2 s for the second), because every
+			// row blocked the next. Boot also re-ran getMessages 2–4
+			// times for the same contact, each rebuild re-queuing the
+			// same rows — multiplying the wait.
+			//
+			// New shape: a pool of CONCURRENCY workers. Each one pulls
+			// items off a shared queue. The newest N rows skip the
+			// 100 ms breath so the freshest bubbles (the user's
+			// reason for opening the chat) appear ASAP; the tail
+			// keeps the yield so taps / scrolls stay responsive.
+			// Reset the burst-flush counter so the freshest items in this
+			// queue get the no-throttle treatment. See the two-tier flush
+			// policy inside decryptMessage; without this reset, every
+			// queue after the very first one would be throttled because
+			// the counter from the previous burst is still > 2.
+			this._decryptFlushCount = 0;
+
 			(async () => {
 				const queueUri = orig_uri;
-				let i = 1;
-				const total = messages_to_decrypt.length;
-				for (const item of messages_to_decrypt) {
-					if (!this.state.selectedContact
-							|| this.state.selectedContact.uri !== queueUri) {
-						console.log('[decrypt] queue aborted —',
-							'user left', queueUri,
-							'remaining=' + (total - i + 1));
-						break;
+				const CONCURRENCY = 4;
+				const PRIORITY_ITEMS = 4; // newest N: no 100ms breath
+				const queue = messages_to_decrypt.slice();
+				let consumed = 0;
+
+				// Helper: when the user aborts (leaves the chat), any
+				// msg_ids still queued have never been STARTED — drop
+				// them from the inflight set so a subsequent re-open
+				// can re-queue them. (Items that DID start, even if
+				// they're still in OpenPGP.decrypt when the user leaves,
+				// stay parked in the set until the .so resolves — same
+				// session-persistent treatment as items that fully
+				// completed. They can't be re-queued anyway because the
+				// underlying decrypt call is still consuming the .so.)
+				const releaseUnstarted = () => {
+					if (!this._decryptInFlight) return;
+					for (const q of queue) {
+						if (q && q.msg_id) this._decryptInFlight.delete(q.msg_id);
 					}
-					const updateContact = total === i;
-					try {
-						await this.decryptMessage(item, updateContact);
-					} catch (e) {
-						console.log('[decrypt] queue item failed',
-							e && e.message ? e.message : e);
+				};
+
+				const worker = async () => {
+					while (queue.length > 0) {
+						if (!this.state.selectedContact
+								|| this.state.selectedContact.uri !== queueUri) {
+							const remaining = queue.length;
+							releaseUnstarted();
+							queue.length = 0;
+							console.log('[decrypt] queue aborted —',
+								'user left', queueUri,
+								'remaining=' + remaining);
+							return;
+						}
+						const item = queue.shift();
+						if (!item) return;
+						const myIndex = ++consumed;
+						const isPriority = myIndex <= PRIORITY_ITEMS;
+
+						try {
+							// updateContact false — contact-list preview
+							// refresh is handled by the
+							// _idMismatch / _tsAdvance gate further up in
+							// getMessages (line ~22117) on a future chat-
+							// open, and by the WS-arrival path when a
+							// live message lands. Passing true here on
+							// the last item, as the old serial loop did,
+							// was rarely doing anything because the
+							// queue's last item is the OLDEST PGP row
+							// (DESC iteration order) — so the
+							// `message.timestamp > contact.timestamp`
+							// guard inside decryptMessage almost always
+							// no-op'd. Dropping the post-queue refresh
+							// avoids a redundant OpenPGP.decrypt re-run
+							// that would only have hit the dedup-skip log.
+							await this.decryptMessage(item, false);
+						} catch (e) {
+							console.log('[decrypt] queue item failed',
+								e && e.message ? e.message : e);
+						}
+						// NOTE: do NOT delete item.msg_id from
+						// _decryptInFlight here. The set is
+						// session-persistent — see the comment at the
+						// queue-population site (~line 20935). Removing
+						// on completion allowed a subsequent getMessages
+						// call to re-queue the same id whenever the
+						// encrypted=2 SQL UPDATE hadn't yet committed,
+						// producing visible double-decrypt + double-
+						// render (the captured render_messages reference
+						// in decryptMessage went stale across calls, so
+						// dedup .some() missed). Leaving the id parked
+						// keeps the queue gate honest until the process
+						// restarts.
+
+						if (!isPriority) {
+							// 100 ms breath only for tail items. The
+							// priority items run back-to-back so the
+							// first 4 bubbles land with no gap.
+							await new Promise(resolve => setTimeout(resolve, 100));
+						}
 					}
-					// Explicit yield so any pending touch / scroll
-					// events get processed between heavy decrypts.
-					// 100 ms is small enough to be imperceptible in
-					// the queue's overall pace (each decrypt is
-					// ~1 s anyway), large enough to give the
-					// React Native bridge a clear window to
-					// dispatch a tap that the user has already
-					// initiated. Without this, on a slow device
-					// the user couldn't reliably back out of the
-					// chat while the queue was running.
-					await new Promise(resolve => setTimeout(resolve, 100));
-					i = i + 1;
-				}
+				};
+
+				const workers = Array.from({length: CONCURRENCY}, () => worker());
+				await Promise.all(workers);
 			})();
 
 			// Drain any auto-downloads queued during the SQL loop.
@@ -22236,11 +23031,25 @@ class Sylk extends Component {
 
 			this.setState({messages: messages,
 						   messagesMetadata: messagesMetadata,
-						   decryptingMessages: decryptingMessages
+						   decryptingMessages: decryptingMessages,
+						   // Clear the cold-start chat-open spinner when
+						   // this slice is for the URI the deep-link
+						   // requested. Other getMessages calls (e.g.
+						   // category filter, /ready re-entry) must NOT
+						   // clear it because they don't represent the
+						   // deep-link's chat being ready.
+						   ...(this.state.chatOpenLoading && this.state.chatOpenUri === orig_uri
+						       ? {chatOpenLoading: false, chatOpenUri: null}
+						       : {})
 			});
 
         }).catch((error) => {
             console.log('getMessages SQL error:', error);
+            // Even on error, clear the loading flag so the user isn't
+            // stuck staring at a spinner.
+            if (this.state.chatOpenLoading && this.state.chatOpenUri === orig_uri) {
+                this.setState({chatOpenLoading: false, chatOpenUri: null});
+            }
         });
     }
 
@@ -28589,6 +29398,20 @@ class Sylk extends Component {
     }
 
     async incomingMessageFromJournal(message, info={}) {
+        // Always-on entry log: prints the msg_id of every message the
+        // journal replays, with sender + contentType. Lets us
+        // distinguish journal-replayed bubbles from WS-arrived bubbles
+        // in metro.log, and confirms which msg_ids the server thinks
+        // we still need to receive after a reconnect. Mirrors the
+        // shape of the live-arrival log in incomingMessageFromWebSocket
+        // (line ~24574: "[message] handleIncomingMessage <id> from ...").
+        utils.timestampedLog('[message] incomingMessageFromJournal',
+            message && message.id,
+            'from', message && message.sender && message.sender.uri,
+            message && message.contentType,
+            'idx=' + (info && info.idx),
+            'total=' + (info && info.total));
+
         // [IMDN-DIAG] verbose journal-entry log so we can correlate the
         // ~20-IMDN burst with what the server actually replays. Each line
         // tells us the message id, sender, contentType, age, and the
@@ -30079,6 +30902,44 @@ class Sylk extends Component {
 	
 			// copy metadata immutably
 			newMsg.metadata = { ...metadata };
+
+			// Carry forward metadata.peaks across post-download updates.
+			// updateFileTransferBubble is called from MULTIPLE paths and
+			// they don't all carry peaks data in their metadata argument:
+			//
+			//   • updateMetadataFromRemote('peaks', …) — peaks-bearing.
+			//     Fires when the sender's separate sylk-message-metadata
+			//     {action:'peaks'} payload arrives. Sets metadata.peaks.
+			//
+			//   • file-download-complete refresh — peaks-LESS. Fires
+			//     once the receiver has pulled the audio file down
+			//     locally and we need to update the bubble with
+			//     local_url so playback works without re-fetching. The
+			//     file_transfer broadcast that originally arrived from
+			//     SylkServer carries the standard fields (filename,
+			//     transfer_id, sender, receiver, url, hash, …) but
+			//     NOT peaks — peaks travel out-of-band via the
+			//     metadata payload above. So this caller's `metadata`
+			//     argument has no `.peaks` key.
+			//
+			// Without this carry-forward, the post-download refresh
+			// arrives ~1 s after the peaks update and wholesale
+			// REPLACES the bubble's metadata with a peaks-less copy.
+			// The waveform vanishes (it was visible for ~1 s in
+			// between, but in practice users don't see that frame —
+			// the post-download refresh fires before the first paint
+			// completes), and the only way to recover is to navigate
+			// out and back so getMessages re-reads from SQL where
+			// peaks are persisted.
+			if (msg.metadata
+			        && msg.metadata.peaks
+			        && Array.isArray(msg.metadata.peaks.l)
+			        && msg.metadata.peaks.l.length > 0
+			        && (!newMsg.metadata.peaks
+			            || !Array.isArray(newMsg.metadata.peaks.l)
+			            || newMsg.metadata.peaks.l.length === 0)) {
+			    newMsg.metadata.peaks = msg.metadata.peaks;
+			}
 	
 			// reset media fields
 			newMsg.image = null;
@@ -33341,6 +34202,42 @@ return (
 					// applied.
 					edges={Platform.OS === 'android' ? [] : ['top', 'bottom', 'right']}
                   >
+
+				{this.state.chatOpenLoading && (
+					// In-chat spinner overlay. selectedContact has been
+					// pre-seeded with a stub in the constructor when the
+					// launch was from a sylk://message tap, so ReadyBox
+					// renders the chat view (header + empty body) from
+					// the very first paint. This overlay sits over the
+					// empty body so the user sees:
+					//   • the contact name in the chat header (visible
+					//     because we DON'T cover the top inset / nav bar)
+					//   • a centred spinner indicating "messages are
+					//     loading"
+					// Cleared by getMessages when the SQL slice resolves.
+					//
+					// Transparent background so the chat view shows
+					// through with just the spinner on top. pointerEvents
+					// "box-none" lets the user still interact with the
+					// header (back button) while the spinner is up.
+					<View
+					  pointerEvents="box-none"
+					  style={{
+						position: 'absolute',
+						top: 0,
+						left: 0,
+						right: 0,
+						bottom: 0,
+						justifyContent: 'center',
+						alignItems: 'center',
+						zIndex: 10000,
+						elevation: 10000,
+					  }}
+						>
+						<ActivityIndicator animating={true} size={'large'} color={"#D32F2F"} />
+					</View>
+					)
+					}
 
 				{this.state.syncConversations && !this.state.lastSyncId && (
 					<View

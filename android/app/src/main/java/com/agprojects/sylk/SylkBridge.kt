@@ -83,4 +83,26 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
             prefs.edit().putString("sipBridgeDomain", trimmed).apply()
         }
     }
+
+    /**
+     * Single-shot synchronous read of the deep-link URI that brought
+     * the app to foreground when the launch intent was a
+     * sylk://message/incoming/<uri> tap. MainActivity.onCreate stamps
+     * this pref as the very first thing it does so JS can pick it up
+     * before any user-visible render happens.
+     *
+     * Returns the URI string (and atomically clears the pref) or null
+     * if the launch wasn't a message-push tap. JS uses this to suppress
+     * the contacts list during the 2–3 s gap before Linking's 'url'
+     * event fires — without flashing the contacts list to the user
+     * when they tapped a notification.
+     */
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun consumeLaunchMessageUri(): String? {
+        val uri = prefs.getString("launchMessageUri", null)
+        if (uri != null) {
+            prefs.edit().remove("launchMessageUri").apply()
+        }
+        return uri
+    }
 }

@@ -83,7 +83,21 @@ class ReadyBox extends Component {
             messagesCategoryFilter: null,
             historyPeriodFilter: null,
             participants: null,
-            chat: (this.props.selectedContact !== null) && (this.props.call !== null),
+            // Drop the `&& props.call !== null` clause from the
+            // original initial-state expression. That clause forced
+            // chat=false on every cold-start where the app wasn't
+            // already in a call — even when App.constructor had pre-
+            // seeded selectedContact from a sylk://message launch
+            // intent (via SylkBridge.consumeLaunchMessageUri). The
+            // first paint then rendered the contacts list and only
+            // flipped to chat mode after componentWillReceiveProps
+            // fired with the next prop update, producing the
+            // "contacts list briefly visible under the spinner"
+            // symptom on a notification cold-start tap. selectedContact
+            // alone is the right signal: ReadyBox is in chat mode iff
+            // the App has a contact selected, regardless of any
+            // concurrent call.
+            chat: this.props.selectedContact !== null,
             isTyping: this.props.isTyping,
             navigationItems: this.props.navigationItems,
             keys: this.props.keys,
@@ -162,8 +176,19 @@ class ReadyBox extends Component {
             return;
         }
 
-        if (this.props.selectedContact) {
-            this.setState({targetUri: nextProps.selectedContact ? nextProps.selectedContact.uri : '', chat: false});
+        if (this.props.selectedContact && !nextProps.selectedContact) {
+            // This branch is the "user is LEAVING the chat" case
+            // (new selectedContact is null after the old one was set).
+            // Previously the guard was just `this.props.selectedContact`
+            // — truthy on every re-render where a contact was still
+            // selected — which slammed chat=false on every App re-
+            // render. Boot fires dozens of those (contactsLoaded,
+            // account loaded, journal sync, every saveSylkContact),
+            // and each one re-exposed the contacts list under my
+            // chat-open overlay on a cold-start sylk://message tap.
+            // The `&& !nextProps.selectedContact` guard restricts
+            // this reset to the actual "leaving the chat" transition.
+            this.setState({targetUri: '', chat: false});
         }
 
         if (!this.props.inviteContacts && nextProps.inviteContacts) {

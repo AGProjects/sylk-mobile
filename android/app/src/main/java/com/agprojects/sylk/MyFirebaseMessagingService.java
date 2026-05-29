@@ -47,6 +47,7 @@ import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Collections;
+import java.util.UUID;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -62,7 +63,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 	// Throttle message notifications per sender: at most one visible
 	// notification per THROTTLE_NOTIFICATION_MS milliseconds.
-	private static final long THROTTLE_NOTIFICATION_MS = 60_000L;
+	private static final long THROTTLE_NOTIFICATION_MS = 15_000L;
 	private static final String LAST_NOTIF_PREFIX = "last_notif_";
 
 	private void createNotificationChannel() {
@@ -589,26 +590,63 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	}
 
 	private boolean isAppInForeground() {
-		// Prefer the explicit hint JS pushes via SylkBridge.setAppActive
-		// — when present and true, JS is actively handling messages over
-		// the websocket and FCM must not double-count by also calling
-		// incrementUnreadForContact. ActivityManager.getMyMemoryState is
-		// useless here because this service runs in its own process and
-		// reports BACKGROUND for itself even when the main React Native
-		// app process is at IMPORTANCE_FOREGROUND.
+		// Sanity gate via the OS process state. MyFirebaseMessagingService
+		// has no `android:process` attribute in the manifest, so it shares
+		// the same process as the main React Native activity. That makes
+		// ActivityManager.getMyMemoryState() a reliable signal here —
+		// despite the older comment that claimed otherwise:
+		//
+		//   - Before swipe-kill: process holds the foreground activity →
+		//     IMPORTANCE_FOREGROUND (or VISIBLE if the user just pulled
+		//     down the notification shade).
+		//   - After swipe-kill: Android spawns a fresh process to run
+		//     the FCM service. Its importance is IMPORTANCE_FOREGROUND_SERVICE
+		//     (the service is what triggered the spawn) — NOT
+		//     IMPORTANCE_FOREGROUND. Crucially, the stale `appActive=true`
+		//     SharedPreferences flag left behind by the previous run is
+		//     still there, and the old logic blindly trusted it,
+		//     producing the "JS-reported appActive=true" log line even
+		//     though the activity had been swiped out.
+		//
+		// So: ask the OS first. If we are not in a UI-visible bucket,
+		// JS cannot be running regardless of any stale flag, and we
+		// clear the flag so subsequent reads elsewhere don't lie either.
+		android.app.ActivityManager.RunningAppProcessInfo proc =
+				new android.app.ActivityManager.RunningAppProcessInfo();
+		android.app.ActivityManager.getMyMemoryState(proc);
+		boolean osForeground =
+				proc.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+				|| proc.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+
 		SharedPreferences prefs = getSharedPreferences("SylkPrefs", MODE_PRIVATE);
+
+		if (!osForeground) {
+			boolean staleFlag = prefs.contains("appActive") && prefs.getBoolean("appActive", false);
+			SylkLogger.d("[fcm] isAppInForeground: OS importance=" + proc.importance
+					+ " (not FOREGROUND/VISIBLE) — treating as background"
+					+ (staleFlag ? " (cleared stale appActive=true left behind by swipe-kill)" : ""));
+			if (prefs.contains("appActive")) {
+				prefs.edit().remove("appActive").apply();
+			}
+			return false;
+		}
+
+		// OS says a UI activity is up. Trust the JS-reported flag now —
+		// JS distinguishes AppState 'active' from 'inactive' (e.g.
+		// notification shade pulled down) which both look the same to
+		// the OS importance buckets.
 		if (prefs.contains("appActive")) {
 			boolean jsActive = prefs.getBoolean("appActive", false);
-			SylkLogger.d("[fcm] isAppInForeground: JS-reported appActive=" + jsActive);
+			SylkLogger.d("[fcm] isAppInForeground: OS=foreground, JS-reported appActive=" + jsActive);
 			return jsActive;
 		}
 
-		// Fallback for the very first boot before JS has set the flag.
-		android.app.ActivityManager.RunningAppProcessInfo appProcessInfo =
-				new android.app.ActivityManager.RunningAppProcessInfo();
-		android.app.ActivityManager.getMyMemoryState(appProcessInfo);
-		return appProcessInfo.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
-				|| appProcessInfo.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+		// OS says foreground but JS hasn't reported yet (first boot
+		// before AppState listener attached). Default to true so we
+		// don't double-process a message that JS is about to handle
+		// over the websocket.
+		SylkLogger.d("[fcm] isAppInForeground: OS=foreground, no JS flag yet — defaulting to true");
+		return true;
 	}
 
 	private long getLastNotificationTime(String uri) {
@@ -640,6 +678,339 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		int current = prefs.getInt("unread_chat_" + uri, 0) + 1;
 		SylkLogger.d("[fcm] incrementUnreadForContact " + uri + " " + current);
 		prefs.edit().putInt("unread_chat_" + uri, current).apply();
+	}
+
+	/**
+	 * Derive a friendly display name from a SIP URI when the push payload
+	 * does not carry from_display_name. Mirrors newContact() in app.js:
+	 * 'john.doe@host' → 'John Doe'. Phone-number usernames are left as-is.
+	 */
+	private static String deriveDisplayNameFromUri(String uri) {
+		if (uri == null) return "";
+		int at = uri.indexOf('@');
+		String user = at > 0 ? uri.substring(0, at) : uri;
+		if (user.isEmpty()) return uri;
+		// All digits / +digits → phone number, keep verbatim.
+		if (user.matches("^\\+?[0-9]+$")) return user;
+		String[] parts = user.split("[._-]+");
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < parts.length; i++) {
+			String p = parts[i];
+			if (p.isEmpty()) continue;
+			if (sb.length() > 0) sb.append(' ');
+			sb.append(Character.toUpperCase(p.charAt(0)));
+			if (p.length() > 1) sb.append(p.substring(1).toLowerCase());
+		}
+		String out = sb.toString().trim();
+		return out.isEmpty() ? user : out;
+	}
+
+	/**
+	 * Persist an incoming push message directly into sylk.db so the RN
+	 * app finds it on the next chat open — no in-app payload fetch
+	 * required. Mirrors the schema saveIncomingMessage / saveSylkContact
+	 * write from JS (see app.js initSQL / createTables).
+	 *
+	 *   - INSERT OR IGNORE into contacts so a brand-new sender renders
+	 *     with a friendly display name when WS hasn't delivered yet.
+	 *     The PRIMARY KEY (account, contact_id) is a UUID; we only seed
+	 *     a row when no existing contact matches (account, uri).
+	 *   - INSERT OR IGNORE into messages with the 16-column shape
+	 *     saveIncomingMessage uses. PRIMARY KEY (account, msg_id)
+	 *     dedupes against the eventual WS / journal arrival.
+	 *
+	 * PGP-enveloped bodies are stored verbatim with encrypted=1 — JS
+	 * holds the private key and decrypts at render time. Failures are
+	 * swallowed: a push that can't be persisted still gets a
+	 * notification, and the WS path will eventually backfill SQL.
+	 */
+	private void insertIncomingMessageToSql(String account,
+											String fromUri,
+											String messageId,
+											String content,
+											String contentType,
+											String fromDisplayName) {
+		if (account == null || account.isEmpty()
+				|| fromUri == null || fromUri.isEmpty()
+				|| messageId == null || messageId.isEmpty()) {
+			SylkLogger.w("[message] [fcm] insertIncomingMessageToSql: missing required fields");
+			return;
+		}
+
+		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+		if (!dbFile.exists()) {
+			SylkLogger.w("[message] [fcm] insertIncomingMessageToSql: database file not found");
+			return;
+		}
+
+		// Detect PGP envelope. JS uses the same string check
+		// (indexOf '-----BEGIN PGP MESSAGE-----' / '-----END PGP MESSAGE-----')
+		// to drive its encrypted column value. We can't decrypt natively —
+		// the private key lives in JS state — so we just preserve the
+		// ciphertext and let getMessages handle decrypt-on-render.
+		// Mirror the JS-side arrival entry (app.js:
+		// "[message] handleIncomingMessage <id> from <uri> <contentType>")
+		// so APPLOG reads identically whether the message arrived via push
+		// or via the websocket.
+		SylkLogger.d("[message] handleIncomingMessage " + messageId
+				+ " from " + fromUri
+				+ " " + (contentType == null ? "text/plain" : contentType)
+				+ " (via push)");
+
+		String safeContent = content == null ? "" : content;
+		boolean isEncrypted = safeContent.indexOf("-----BEGIN PGP MESSAGE-----") > -1
+				&& safeContent.indexOf("-----END PGP MESSAGE-----") > -1;
+		int encrypted = isEncrypted ? 1 : 0;
+
+		String safeContentType = contentType == null ? "text/plain" : contentType;
+		// file-transfer rows mirror message.content into the metadata
+		// column (saveIncomingMessage line ~30338); all other rows leave
+		// metadata empty.
+		String metadata = safeContentType.equals("application/sylk-file-transfer")
+				? safeContent
+				: "";
+
+		long nowMs = System.currentTimeMillis();
+		long unixSec = nowMs / 1000L;
+		// timestamp column stores the JSON-stringified Date the JS path
+		// writes — JSON.stringify(new Date()) produces "\"2026-05-29T...\""
+		// including the surrounding quotes — so we emit the same shape
+		// here. JS reads this back through a JSON.parse reviver.
+		String isoTs = isoFromMillis(nowMs);
+		String tsCol = "\"" + isoTs + "\"";
+
+		SQLiteDatabase db = null;
+		try {
+			db = SQLiteDatabase.openDatabase(
+					dbFile.getPath(), null, SQLiteDatabase.OPEN_READWRITE);
+			try { db.execSQL("PRAGMA busy_timeout = 5000"); } catch (Exception ignore) {}
+
+			// ---- contact upsert ----
+			// We need to know whether a row already exists AND, if so,
+			// what its unread_messages list looks like so we can append
+			// this message id (saveSylkContact in JS rebuilds the whole
+			// list from contact.unread; we do the equivalent append-and-
+			// dedup directly on the comma-separated column).
+			boolean contactExists = false;
+			String existingUnread = "";
+			Cursor c = null;
+			try {
+				c = db.rawQuery(
+						"SELECT unread_messages FROM contacts WHERE account = ? AND uri = ? LIMIT 1",
+						new String[]{account, fromUri});
+				if (c != null && c.moveToFirst()) {
+					contactExists = true;
+					String col = c.getString(0);
+					existingUnread = col == null ? "" : col;
+				}
+			} catch (Exception lookupEx) {
+				SylkLogger.w("[message] [fcm] contact lookup failed: " + lookupEx.getMessage());
+			} finally {
+				if (c != null) { try { c.close(); } catch (Exception ignore) {} }
+			}
+
+			if (!contactExists) {
+				// Brand-new sender. INSERT the contact stub with this
+				// msg_id already seeded in unread_messages and timestamp
+				// set to the message arrival time, so the contacts list
+				// renders the unread badge immediately on next chat-list
+				// read — without waiting for the WS journal sync.
+				String resolvedName = (fromDisplayName != null && !fromDisplayName.trim().isEmpty())
+						? fromDisplayName.trim()
+						: deriveDisplayNameFromUri(fromUri);
+				String contactId = UUID.randomUUID().toString();
+				try {
+					db.execSQL(
+							"INSERT OR IGNORE INTO contacts ("
+									+ "contact_id, remote_id, account, uri, uris, email, photo, "
+									+ "timestamp, name, organization, unread_messages, tags, "
+									+ "participants, public_key, direction, last_call_media, "
+									+ "conference, last_call_id, last_call_duration, "
+									+ "last_call_timestamp, properties, local_properties"
+									+ ") VALUES (?, '', ?, ?, '', '', '', ?, ?, '', ?, '', "
+									+ "'', '', 'incoming', '', 0, '', 0, NULL, '', '')",
+							new Object[]{contactId, account, fromUri, unixSec, resolvedName, messageId});
+					SylkLogger.d("[message] [fcm] inserted contact stub for " + fromUri
+							+ " name=" + resolvedName + " unread=" + messageId);
+				} catch (Exception contactEx) {
+					SylkLogger.w("[message] [fcm] contact INSERT failed: " + contactEx.getMessage());
+				}
+			} else {
+				// Existing contact — append messageId to unread_messages
+				// (dedupe) and bump timestamp so the chat list lifts the
+				// row to the top with an incremented unread badge.
+				//
+				// SQLite's MAX(col, ?) is a SCALAR function (different
+				// from the MAX() aggregate): it returns the larger of
+				// the column value and the bound parameter for each row.
+				// This mirrors saveIncomingMessage's
+				//   if (_wsTsMs > _contactTsMs) contact.timestamp = ...
+				// guard so an out-of-order push or a push that lands
+				// after the WS already advanced contact.timestamp can't
+				// regress the last-activity clock.
+				String newUnread = appendUnreadId(existingUnread, messageId);
+				try {
+					db.execSQL(
+							"UPDATE contacts SET unread_messages = ?, timestamp = MAX(timestamp, ?) "
+									+ "WHERE account = ? AND uri = ?",
+							new Object[]{newUnread, unixSec, account, fromUri});
+					int unreadCount = newUnread.isEmpty()
+							? 0
+							: newUnread.split(",").length;
+					SylkLogger.d("[message] [fcm] updated contact unread for " + fromUri
+							+ " unread=" + newUnread + " count=" + unreadCount
+							+ " ts<=MAX(existing," + unixSec + ")");
+				} catch (Exception updEx) {
+					SylkLogger.w("[message] [fcm] contact UPDATE failed: " + updEx.getMessage());
+				}
+			}
+
+			// ---- message insert ----
+			db.execSQL(
+					"INSERT OR IGNORE INTO messages ("
+							+ "account, encrypted, msg_id, timestamp, unix_timestamp, "
+							+ "content, content_type, metadata, from_uri, to_uri, "
+							+ "direction, received, related_action, related_msg_id, "
+							+ "disposition_notification, expire"
+							+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'incoming', 1, NULL, NULL, '', 0)",
+					new Object[]{
+							account, encrypted, messageId, tsCol, unixSec,
+							safeContent, safeContentType, metadata, fromUri, account
+					});
+			// Mirror the JS-side save log
+			// (app.js: "save incoming [message] <id> from <uri>") so
+			// APPLOG reads identically whether the row was written by
+			// JS or by the native FCM handler.
+			SylkLogger.d("save incoming [message] " + messageId
+					+ " from " + fromUri
+					+ " encrypted=" + encrypted + " (via push)");
+		} catch (SQLiteDatabaseLockedException locked) {
+			SylkLogger.w("[message] [fcm] DB locked, message not persisted: " + messageId);
+		} catch (SQLiteException sqlEx) {
+			SylkLogger.w("[message] [fcm] SQLite error persisting message", sqlEx);
+		} catch (Exception e) {
+			SylkLogger.e("[message] [fcm] insertIncomingMessageToSql failed", e);
+		} finally {
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
+		}
+	}
+
+	/**
+	 * Decide whether an incoming push message may be persisted into
+	 * sylk.db for this account/sender. Mirrors the same four-condition
+	 * rejection set the existing isAccountActive() implements for calls,
+	 * minus the showRejectedCallNotification side effect (we don't want
+	 * a "rejected call" banner firing on a rejected message):
+	 *
+	 *   - account row missing or active != '1'  → false
+	 *   - rejectAnonymous && (anonymous fromUri) → false
+	 *   - rejectNonContacts && no contact known  → false
+	 *
+	 * DND, mute, and active-chat suppression all PASS — those gate the
+	 * notification UI only, not storage. saveIncomingMessage in JS
+	 * persists muted/DND-suppressed messages too.
+	 */
+	private boolean isInsertAllowedForAccount(String account, String fromUri, List<String> contactTags) {
+		if (account == null || account.isEmpty()) return false;
+
+		File dbFile = getApplicationContext().getDatabasePath("sylk.db");
+		if (!dbFile.exists()) return false;
+
+		boolean isActive = false;
+		boolean rejectAnonymous = false;
+		boolean rejectNonContacts = false;
+		boolean readOk = false;
+
+		SQLiteDatabase db = null;
+		Cursor cursor = null;
+		try {
+			db = SQLiteDatabase.openDatabase(dbFile.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+			cursor = db.rawQuery("SELECT active, settings FROM accounts WHERE account = ?",
+					new String[]{account});
+			if (cursor != null && cursor.moveToFirst()) {
+				isActive = "1".equals(cursor.getString(cursor.getColumnIndexOrThrow("active")));
+				String settingsJson = cursor.getString(cursor.getColumnIndexOrThrow("settings"));
+				if (settingsJson != null && !settingsJson.isEmpty()) {
+					try {
+						JSONObject root = new JSONObject(settingsJson);
+						JSONObject privacy = root.optJSONObject("privacy");
+						if (privacy != null) {
+							rejectAnonymous   = privacy.optBoolean("rejectAnonymous",   false);
+							rejectNonContacts = privacy.optBoolean("rejectNonContacts", false);
+						}
+					} catch (JSONException jsonEx) {
+						SylkLogger.w("[message] [fcm] insert: settings JSON parse failed — failing open", jsonEx);
+					}
+				}
+				readOk = true;
+			}
+		} catch (SQLiteDatabaseLockedException locked) {
+			// Fail open on DB lock — better to land the message in SQL
+			// than to drop it because the JS thread happened to be writing.
+			SylkLogger.w("[message] [fcm] insert: DB locked — failing open");
+			return true;
+		} catch (SQLiteException sqlEx) {
+			SylkLogger.w("[message] [fcm] insert: SQLite error — failing open", sqlEx);
+			return true;
+		} catch (Exception e) {
+			SylkLogger.e("[message] [fcm] insert: account-flag read failed — failing open", e);
+			return true;
+		} finally {
+			if (cursor != null) { try { cursor.close(); } catch (Exception ignore) {} }
+			if (db != null) { try { db.close(); } catch (Exception ignore) {} }
+		}
+
+		if (!readOk) {
+			// Account row simply doesn't exist — never write a row for
+			// an account we don't know about (would orphan in SQL).
+			return false;
+		}
+
+		if (!isActive) return false;
+
+		if (rejectNonContacts && (contactTags == null)) {
+			SylkLogger.d("[message] [fcm] insert: rejectNonContacts blocks " + fromUri);
+			return false;
+		}
+
+		if (rejectAnonymous && fromUri != null
+				&& (fromUri.contains("anonymous") || fromUri.contains("@guest."))) {
+			SylkLogger.d("[message] [fcm] insert: rejectAnonymous blocks " + fromUri);
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Append a single msg_id to the comma-separated unread_messages
+	 * column for a contact, deduping against any id that is already
+	 * present. Empty existing -> just the new id; otherwise comma-join
+	 * the existing list with the new id appended only when missing.
+	 * Empty / null new id is a no-op (returns the existing list).
+	 *
+	 * Mirrors the effect of contact.unread.push(id) +
+	 * unread_messages = contact.unread.toString() in saveSylkContact.
+	 */
+	private static String appendUnreadId(String existing, String newId) {
+		if (newId == null || newId.isEmpty()) return existing == null ? "" : existing;
+		if (existing == null || existing.isEmpty()) return newId;
+		for (String id : existing.split(",")) {
+			if (newId.equals(id.trim())) return existing; // already there
+		}
+		return existing + "," + newId;
+	}
+
+	/**
+	 * ISO-8601 millisecond timestamp string, UTC zone — same shape that
+	 * (new Date()).toISOString() produces in JS so the SQL value matches
+	 * the existing JS-written rows byte-for-byte.
+	 */
+	private static String isoFromMillis(long ms) {
+		java.text.SimpleDateFormat sdf =
+				new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+		sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+		return sdf.format(new java.util.Date(ms));
 	}
 	
 	public static void setUnreadForContact(Context context, String uri, int count) {
@@ -1228,6 +1599,38 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				return;
 			}
 
+			// Persist directly to sylk.db ONLY when the app is NOT in the
+			// foreground. When the app IS foreground, the live websocket
+			// connection delivers the same msg_id and JS's
+			// saveIncomingMessage path writes the row — running the
+			// native INSERT there would race against the JS write and
+			// only ever no-op via INSERT OR IGNORE.
+			//
+			// The insert is otherwise gated by:
+			//   1. blocked contact (isBlocked above already returned)
+			//   2. disabled account (active != '1')
+			//   3. rejectAnonymous && anonymous sender
+			//   4. rejectNonContacts && unknown sender
+			// Mute, DND, and active-chat suppression all PASS — those
+			// gate the NOTIFICATION UI only. saveIncomingMessage in JS
+			// persists muted/DND-suppressed messages too.
+			String content = data.get("content");
+			String contentType = data.get("content_type");
+			boolean _insertAppForeground = isAppInForeground();
+			if (_insertAppForeground) {
+				SylkLogger.d("[message] [fcm] App is foreground — skipping native SQL insert; WS will deliver "
+						+ messageId);
+			} else {
+				List<String> _insertTags = (contact != null) ? tags : null;
+				if (isInsertAllowedForAccount(toUri, fromUri, _insertTags)) {
+					insertIncomingMessageToSql(toUri, fromUri, messageId, content, contentType, pushDisplayName);
+				} else {
+					SylkLogger.w("[message] [fcm] Insert skipped for "
+							+ fromUri + " (account=" + toUri
+							+ "): disabled / rejectAnonymous / rejectNonContacts");
+				}
+			}
+
 			if (isMuted(tags)) {
 				SylkLogger.d("[message] [fcm] Skipping notification: user " + fromUri + " is muted");
 				return;
@@ -1250,11 +1653,30 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				SylkLogger.d("[message] [fcm] DND bypass for " + fromUri);
 			}
 
-			// inside onMessageReceived or wherever you handle the message
+			// Active-chat suppression. JS writes SylkPrefs.currentChat
+			// when the user enters a chat, clears it on exit. BUT swipe-
+			// kill skips the cleanup — the pref keeps pointing at the
+			// last-opened chat forever. If we trust it blindly, the very
+			// next push from that sender after a cold start gets
+			// silently swallowed because we think the user is still in
+			// the chat. Cross-check with the OS process state
+			// (isAppInForeground already does the same dance for
+			// appActive) and treat a stale activeChat as "no active
+			// chat", clearing it as a side effect so subsequent code
+			// paths that read it directly don't lie either.
+			boolean appInForeground = isAppInForeground();
 			String activeChat = prefs.getString("currentChat", null);
 
+			if (activeChat != null && !appInForeground) {
+				SylkLogger.w("[message] [fcm] Stale currentChat=" + activeChat
+						+ " (OS reports app is background) — clearing and ignoring");
+				prefs.edit().remove("currentChat").apply();
+				activeChat = null;
+			}
+
 			if (activeChat != null && activeChat.equals(fromUri)) {
-				// User is already in this chat, skip showing notification/bubble
+				// User is genuinely in this chat right now, skip
+				// showing notification/bubble.
 				SylkLogger.d("[message] [fcm] Skipping notification: user is in chat " + activeChat);
 				return;
 			}
@@ -1267,7 +1689,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			// Skip increment if app is in foreground — JS side will count this
 			// message via setUnreadForContact and we would otherwise double-count.
-			boolean appInForeground = isAppInForeground();
+			// (appInForeground was computed above for the activeChat stale-pref check.)
 			if (appInForeground) {
 				SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri);
 			} else {
@@ -1300,9 +1722,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						+ " (last alerted " + elapsed + "ms ago, window "
 						+ THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
 			}
-
-			String content = data.get("content");
-			String contentType = data.get("content_type");
 
 			// ----- CHANNEL -----
 			String channelId = MESSAGES_CHANNEL_ID;

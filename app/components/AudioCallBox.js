@@ -3064,7 +3064,24 @@ class AudioCallBox extends Component {
 										alignItems: 'center',
 										justifyContent: 'center',
 									}}>
-										{/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
+										<Button
+											mode="contained"
+											onPress={() => {
+												this._cancelAutoStartTimer();
+												if (this.props.confirmStartCall) {
+													this.props.confirmStartCall();
+												}
+											}}
+											// minWidth holds the
+											// button at its widest
+											// label so the
+											// button doesn't visibly
+											// shrink as the countdown
+											// ticks down.
+											style={{ marginRight: 12, minWidth: 180 }}
+										>
+											Start audio call
+										</Button>
 										<View style={{
 											flexDirection: 'row',
 											marginTop: 10,
@@ -3530,7 +3547,17 @@ class AudioCallBox extends Component {
                                     keeping countdown width === button
                                     width regardless of label changes. */}
                                 <View>
-                                    {/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
+                                    <Button
+                                        mode="contained"
+                                        onPress={() => {
+                                            this._cancelAutoStartTimer();
+                                            if (this.props.confirmStartCall) {
+                                                this.props.confirmStartCall();
+                                            }
+                                        }}
+                                    >
+                                        Start audio call
+                                    </Button>
 
                                     {/* Sliding bar — width inherited
                                         from the wrapper (= Start button

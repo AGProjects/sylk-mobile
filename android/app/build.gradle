@@ -79,7 +79,15 @@ import com.android.build.OutputFile
 
 project.ext.react = [
     entryFile: "index.js",
-    enableHermes: false,  // clean and rebuild if changing
+    // NOTE: enableHermes was the legacy react.gradle knob (see the
+    // commented-out apply-from below). The new react-native-gradle-
+    // plugin (active since RN 0.71) reads `hermesEnabled` from
+    // gradle.properties instead — it's set to true there, and the
+    // hermes-android implementation is added in the dependencies
+    // block below behind `if (hermesEnabled.toBoolean())`. Don't
+    // re-add `enableHermes:` here; it was producing confusion
+    // ("Hermes is off? then why is hermes-android linked?") without
+    // affecting the actual build.
 ]
 
 //apply from: "../../node_modules/react-native/react.gradle"
@@ -145,8 +153,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
         missingDimensionStrategy "react-native-camera", "general"
-        versionCode 608
-        versionName "6.0.8"
+        versionCode 700
+        versionName "7.0.0"
         multiDexEnabled true
     }
 

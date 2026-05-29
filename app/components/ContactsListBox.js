@@ -3087,12 +3087,42 @@ class ContactsListBox extends Component {
 	      bubbleVu = this.state.audioBubbleVu || bubbleVu;
 	  }
 
-	  // Compute a slider width that fits within the audio bubble while
-	  // leaving room for the play/pause button and the same side margins
-	  // GiftedChat applies to other bubbles (avatar gutter, bubble padding,
-	  // play button ~48, slider side gap, end margin).
+	  // Compute a slider width that targets the audio bubble's MAX
+	  // allowed width (GiftedChat caps bubbles at ~80% of the row),
+	  // not its current measured width.
+	  //
+	  // Why not the measured width: the audio bubble is content-sized
+	  // by the gifted-chat Bubble wrapper — i.e., the wrapper grows
+	  // to fit its children. If we set sliderWidth from the CURRENT
+	  // measured bubble width, the bubble can never get any larger
+	  // than it is now: the children stay the same width → the
+	  // bubble stays the same width → next render produces the same
+	  // children. The result is a small, never-growing audio bubble
+	  // hugging its content rather than extending out to the row's
+	  // right margin like other bubbles do.
+	  //
+	  // Instead, size the slider against the bubble's TARGET width —
+	  // ~80% of the row, minus a rough avatar-gutter/margin allowance
+	  // (~50px) minus the bubble's internal play-button + paddings
+	  // budget (~94px = 48 button + 10 margin + 36 column padding
+	  // [18+18 symmetric]). The bubble will then naturally grow to
+	  // fill its ~80% maxWidth allowance just like a long text bubble
+	  // does. The Math.min against 520 keeps very wide screens
+	  // (tablets, foldables) from turning the recording into a runway.
+	  //
+	  // Lower clamp of 120 keeps the slider usable on small/zoomed
+	  // displays — Screen zoom on Samsung can shrink the logical
+	  // window width significantly, and 120px is still a touchable
+	  // scrub target.
+	  //
+	  // IMPORTANT: the 94 here MUST match the audio wrapper-width
+	  // formula in ChatBubble.js (search for _audioWrapperWidth). Both
+	  // sides need to agree on the playButton + margin + padding
+	  // budget or the bubble background will mismatch its content.
 	  const windowWidth = Dimensions.get('window').width;
-	  const sliderWidth = Math.max(160, Math.min(windowWidth - 200, 520));
+	  const targetBubbleWidth = (windowWidth - 50) * 0.8;   // ~80% of row, sans avatar gutter
+	  const sliderBudget = targetBubbleWidth - 94;          // playButton(48) + margin(10) + column padding(36)
+	  const sliderWidth = Math.max(120, Math.min(sliderBudget, 520));
 
 	  //console.log('current audio message', currentMessage.metadata);
 
@@ -3147,7 +3177,14 @@ class ContactsListBox extends Component {
 		>
 		  {isIncoming && playButton}
 
-		  <View style={{ flexDirection: 'column', alignItems: isIncoming ? 'flex-start' : 'flex-end', justifyContent: 'center', flex: 1, paddingLeft: isIncoming ? 18 : 8, paddingRight: isIncoming ? 8 : 18 }}>
+		  {/* Column padding is symmetric (18/18) so the waveform has the
+		      same breathing room on both sides — the historical 18/8
+		      asymmetry pushed the waveform too close to the bubble's
+		      far edge on the side opposite the play button. The extra
+		      10px on the far side is reflected in the wrapper-width
+		      math below and in ChatBubble.js's audio bubble wrapperStyle
+		      (the column padding budget there is now 36 instead of 26). */}
+		  <View style={{ flexDirection: 'column', alignItems: isIncoming ? 'flex-start' : 'flex-end', justifyContent: 'center', flex: 1, paddingLeft: 18, paddingRight: 18 }}>
 			<Text
 			  style={[
 				styles.audioLabel,
