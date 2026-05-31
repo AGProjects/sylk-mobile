@@ -416,11 +416,11 @@ const styles = StyleSheet.create({
 
   buttonContainer: {
     // Horizontal spacing between call-button cells in the conference
-    // action bar. History: 3 → 1 → 6 → 3 (user requested "less
-    // margins between call buttons in video conference"). The audio
-    // view uses a different wrapper (audioViewActionBarButton), so
-    // tightening here primarily impacts the video floating bar.
-    margin: 3,
+    // action bar. 5 dp = 10 dp combined gap between adjacent buttons,
+    // matching the landscape navbar wrapper's `marginLeft: 10` in
+    // ConferenceHeader so portrait and landscape video bars have
+    // the same rhythm.
+    margin: 5,
   },
 
   // Small dark circle for the per-participant close-X kick affordance.

@@ -469,6 +469,23 @@ class ZrtpSession {
         // continuity secrets.
         this.localDeviceId = _localDeviceId;
         this.peerDeviceId = null;
+        // ---- media-plane stuck-state surface ---------------------------
+        // True once the activity poller has decided we're "stuck at key-
+        // agreed with no inbound RTP" (same condition that fires the
+        // one-shot DIAGNOSTIC log line). Used by AudioCallBox / VideoBox
+        // to render the amber "Media" pill alongside the ZRTP pill, and
+        // by the panel that pops up when the user taps that pill. The
+        // snapshot is refreshed on every subsequent poll tick (~500 ms)
+        // so the panel always shows fresh stats when opened.
+        //
+        // Transitions:
+        //   false → true  : emitted as 'zrtpMediaStuckChanged'
+        //                   { stuck: true,  snapshot }
+        //   true  → false : emitted as 'zrtpMediaStuckChanged'
+        //                   { stuck: false, snapshot: null }
+        //                   (fires the moment inbound RTP starts flowing)
+        this.mediaStuck = false;
+        this.mediaStuckSnapshot = null;
         this._log('created — local ephem pub (hex prefix):',
             toHex(this.ephemeral.publicKey).slice(0, 16) + '… call_id=', this.callId);
     }
@@ -477,7 +494,7 @@ class ZrtpSession {
         // Every line includes the SIP Call-ID so a single grep through
         // metro.log finds the whole handshake for a given call.
         //   - [call] [zrtp]   : line classification, mirrors what app.js
-        //                       and the [messaging] [zrtp] sender lines
+        //                       and the [message] [call] [zrtp] sender lines
         //                       already use so filters compose.
         //   - call_id=<sip>   : the SIP Call-ID (this.callId), the same
         //                       one that travels on the wire and matches
@@ -578,42 +595,42 @@ class ZrtpSession {
         // -------------------------------------------------------------------
 
         if (transport === 'call' && this.call && typeof this.call.sendMessage === 'function') {
-            utils.timestampedLog('[messaging] [zrtp] sending via call.sendMessage', ctx);
+            utils.timestampedLog('[message] [call] [zrtp] sending via call.sendMessage', ctx);
             this._log('transport=call (session-message):', label);
             try {
                 this.call.sendMessage(encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
                     if (err) {
-                        utils.timestampedLog('[messaging] [zrtp] call.sendMessage FAILED', ctx,
+                        utils.timestampedLog('[message] [call] [zrtp] call.sendMessage FAILED', ctx,
                             'err=', err && err.message ? err.message : String(err));
                     } else {
-                        utils.timestampedLog('[messaging] [zrtp] call.sendMessage OK', ctx);
+                        utils.timestampedLog('[message] [call] [zrtp] call.sendMessage OK', ctx);
                     }
                     if (cb) cb(err);
                 });
             } catch (e) {
                 const errMsg = e && e.message ? e.message : String(e);
-                utils.timestampedLog('[messaging] [zrtp] call.sendMessage THREW — falling back to account', ctx,
+                utils.timestampedLog('[message] [call] [zrtp] call.sendMessage THREW — falling back to account', ctx,
                     'err=', errMsg);
                 this._log('call.sendMessage threw — falling back to account:', errMsg);
                 this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
                     if (err) {
-                        utils.timestampedLog('[messaging] [zrtp] account.sendMessage FAILED (fallback)', ctx,
+                        utils.timestampedLog('[message] [call] [zrtp] account.sendMessage FAILED (fallback)', ctx,
                             'err=', err && err.message ? err.message : String(err));
                     } else {
-                        utils.timestampedLog('[messaging] [zrtp] account.sendMessage OK (fallback)', ctx);
+                        utils.timestampedLog('[message] [call] [zrtp] account.sendMessage OK (fallback)', ctx);
                     }
                     if (cb) cb(err);
                 });
             }
         } else {
-            utils.timestampedLog('[messaging] [zrtp] sending via account.sendMessage', ctx);
+            utils.timestampedLog('[message] [call] [zrtp] sending via account.sendMessage', ctx);
             this._log('transport=account (account-message):', label);
             this.account.sendMessage(this.peerUri, encrypted, ZRTP_CONTENT_TYPE, {}, (err) => {
                 if (err) {
-                    utils.timestampedLog('[messaging] [zrtp] account.sendMessage FAILED', ctx,
+                    utils.timestampedLog('[message] [call] [zrtp] account.sendMessage FAILED', ctx,
                         'err=', err && err.message ? err.message : String(err));
                 } else {
-                    utils.timestampedLog('[messaging] [zrtp] account.sendMessage OK', ctx);
+                    utils.timestampedLog('[message] [call] [zrtp] account.sendMessage OK', ctx);
                 }
                 if (cb) cb(err);
             });
@@ -778,6 +795,17 @@ class ZrtpSession {
                     this._log('inbound media flowing (Δpkts=' + aggDelta +
                               ') -> key-active');
                     this._setState('key-active');
+                    // Clear the media-stuck condition if it was latched.
+                    // Inbound RTP has started flowing, so any Media pill /
+                    // diagnostic panel the UI is showing should disappear.
+                    if (this.mediaStuck) {
+                        this.mediaStuck = false;
+                        this.mediaStuckSnapshot = null;
+                        try {
+                            this.call.emit('zrtpMediaStuckChanged',
+                                           { stuck: false, snapshot: null });
+                        } catch (_) { /* call torn down */ }
+                    }
                     // Auto-rotate rs1 only when this call's _deriveAndLog
                     // actually mixed the existing rs1 into HKDF (i.e. the
                     // peer proved they held the same secret). Other states
@@ -804,41 +832,35 @@ class ZrtpSession {
                 // the auto-stop safety net.
                 __consecutiveZeroDelta++;
             }
-            // Stuck-at-key-agreed diagnostic. Fires exactly once. Catches
-            // the failure mode where both sides reach key-agreed but the
-            // peer never actually sends encoded media — typically because
-            // the peer aborted FrameEncryptor install (e.g. v3 verify
-            // failed on their side with no peer_pub_key plumbed, or the
-            // bridge tore the audio stream down). In that case the mobile
-            // sits at key-agreed indefinitely, the pill never lights, and
-            // any "decrypted" audio is noise. Before this diagnostic the
-            // only signal was the absence of a "-> key-active" log line,
-            // which is easy to miss; now there is a single greppable line
-            // that names the likely cause.
-            if (!__stuckDiagFired
-                    && this.state === 'key-agreed'
-                    && this._sendersInstalled
-                    && !__everSawActivity
-                    && __tickCount >= STUCK_DIAG_TICKS) {
-                __stuckDiagFired = true;
-                this._log('DIAGNOSTIC: ' + STUCK_DIAG_MS + 'ms past key-agreed'
-                          + ' with no inbound RTP — pill will stay OFF and audio'
-                          + ' will be silent. Likely causes: (a) peer never sent'
-                          + ' media; (b) peer aborted FrameEncryptor install'
-                          + ' (check peer log for v3 verify failure / missing'
-                          + ' "media now end-to-end encrypted" line); (c) Janus'
-                          + ' / sylk-server bridge dropped the audio stream;'
-                          + ' (d) DTLS-SRTP unwrap failing on the Janus→mobile'
-                          + ' leg (packets arrive on the wire but never reach'
-                          + ' the inbound-rtp accounting layer).'
-                          + ' role=' + this.role
-                          + ' _sendersInstalled=' + this._sendersInstalled
-                          + ' encryptedKinds=[' + this.encryptedKinds.join(',') + ']'
-                          + ' negotiatedVersion=' + this.negotiatedVersion
-                          + ' continuity=' + this.continuityState);
-                // Snapshot pc.getStats so the next time this fires, the log
-                // line above is followed by enough media-plane state to
-                // distinguish (a)/(b) from (c)/(d):
+            // Stuck-at-key-agreed detector. Catches the failure mode where
+            // both sides reach key-agreed but the peer never actually sends
+            // encoded media — typically because the peer aborted
+            // FrameEncryptor install (e.g. v3 verify failed on their side
+            // with no peer_pub_key plumbed, or the bridge tore the audio
+            // stream down). In that case the mobile sits at key-agreed
+            // indefinitely, the pill never lights, and any "decrypted"
+            // audio is noise.
+            //
+            // Two surfaces consume this signal:
+            //   1. The metro.log DIAGNOSTIC line (emitted exactly once via
+            //      __stuckDiagFired) — for support engineers grep-ing the
+            //      log post-mortem.
+            //   2. The UI "Media" pill (driven by zrtpMediaStuckChanged /
+            //      zrtpMediaDiagUpdated events) — for the user looking at
+            //      the call screen in real time. The pill appears the
+            //      instant the stuck condition latches and disappears the
+            //      instant inbound RTP starts flowing (handled in the
+            //      key-active transition branch above). Tapping the pill
+            //      opens a panel that re-reads this.mediaStuckSnapshot;
+            //      we refresh the snapshot on every poll tick (~500 ms)
+            //      so the panel shows fresh stats while it's open.
+            const stuckNow = this.state === 'key-agreed'
+                             && this._sendersInstalled
+                             && !__everSawActivity
+                             && __tickCount >= STUCK_DIAG_TICKS;
+            if (stuckNow) {
+                // Snapshot pc.getStats — full enough to distinguish (a)/(b)
+                // from (c)/(d):
                 //   - "no inbound-rtp reports at all" → the PC never even saw
                 //     an SSRC; Janus isn't forwarding for this call, or DTLS
                 //     never finished, or candidate-pair selection failed.
@@ -855,61 +877,71 @@ class ZrtpSession {
                 //     delta is still 0" → packets ARE arriving, the poller's
                 //     baseline accidentally captured them and is stuck at the
                 //     ceiling; that's a poller bug.
-                // We do this as a self-invoking IIFE so the await doesn't
-                // block the outer poller tick's control flow.
+                // The snapshot is published on the session AND emitted on
+                // the Call so the UI panel can subscribe. We do this as a
+                // self-invoking IIFE so the await doesn't block the outer
+                // poller tick's control flow.
+                const fireLogLines = !__stuckDiagFired;
+                if (fireLogLines) {
+                    __stuckDiagFired = true;
+                    this._log('DIAGNOSTIC: ' + STUCK_DIAG_MS + 'ms past key-agreed'
+                              + ' with no inbound RTP — pill will stay OFF and audio'
+                              + ' will be silent. Likely causes: (a) peer never sent'
+                              + ' media; (b) peer aborted FrameEncryptor install'
+                              + ' (check peer log for v3 verify failure / missing'
+                              + ' "media now end-to-end encrypted" line); (c) Janus'
+                              + ' / sylk-server bridge dropped the audio stream;'
+                              + ' (d) DTLS-SRTP unwrap failing on the Janus→mobile'
+                              + ' leg (packets arrive on the wire but never reach'
+                              + ' the inbound-rtp accounting layer).'
+                              + ' role=' + this.role
+                              + ' _sendersInstalled=' + this._sendersInstalled
+                              + ' encryptedKinds=[' + this.encryptedKinds.join(',') + ']'
+                              + ' negotiatedVersion=' + this.negotiatedVersion
+                              + ' continuity=' + this.continuityState);
+                }
                 (async () => {
+                    let diag;
                     try {
-                        const snap = await pc.getStats();
-                        let inboundCount = 0;
-                        let transportBytesReceived = 0;
-                        let iceState = (this.call && this.call._pc
-                                        && this.call._pc.iceConnectionState) || '?';
-                        let selectedPairId = null;
-                        const inboundLines = [];
-                        const pairLines = [];
-                        snap.forEach((r) => {
-                            if (!r) return;
-                            if (r.type === 'inbound-rtp') {
-                                inboundCount++;
-                                inboundLines.push(
-                                    '{kind=' + (r.kind || r.mediaType || '?')
-                                    + ' ssrc=' + (r.ssrc != null ? r.ssrc : '?')
-                                    + ' packetsReceived=' + (r.packetsReceived || 0)
-                                    + ' bytesReceived=' + (r.bytesReceived || 0)
-                                    + ' jitter=' + (r.jitter != null ? r.jitter : '?')
-                                    + ' codec=' + (r.codecId || '?') + '}');
-                            } else if (r.type === 'transport') {
-                                transportBytesReceived += Number(r.bytesReceived || 0);
-                                if (r.selectedCandidatePairId) {
-                                    selectedPairId = r.selectedCandidatePairId;
-                                }
-                            } else if (r.type === 'candidate-pair') {
-                                pairLines.push(
-                                    '{id=' + r.id
-                                    + ' state=' + (r.state || '?')
-                                    + ' nominated=' + (r.nominated ? 'yes' : 'no')
-                                    + ' bytesReceived=' + (r.bytesReceived || 0)
-                                    + ' bytesSent=' + (r.bytesSent || 0) + '}');
-                            }
-                        });
-                        this._log('DIAGNOSTIC stats: iceConnectionState=' + iceState
-                                  + ' inbound-rtp.count=' + inboundCount
-                                  + ' transport.bytesReceived=' + transportBytesReceived
-                                  + ' selectedCandidatePairId=' + (selectedPairId || '<none>'));
-                        if (inboundLines.length === 0) {
-                            this._log('DIAGNOSTIC stats: NO inbound-rtp reports — '
-                                      + 'PC never observed an SSRC for this call');
-                        } else {
-                            for (const line of inboundLines) {
-                                this._log('DIAGNOSTIC stats: inbound-rtp ' + line);
-                            }
-                        }
-                        for (const line of pairLines) {
-                            this._log('DIAGNOSTIC stats: candidate-pair ' + line);
-                        }
+                        diag = await this._snapshotMediaDiag(pc);
                     } catch (e) {
                         this._log('DIAGNOSTIC stats: getStats snapshot failed: '
                                   + ((e && e.message) || String(e)));
+                        return;
+                    }
+                    if (fireLogLines) {
+                        this._log('DIAGNOSTIC stats: iceConnectionState=' + diag.iceConnectionState
+                                  + ' inbound-rtp.count=' + diag.inboundCount
+                                  + ' transport.bytesReceived=' + diag.transportBytesReceived
+                                  + ' selectedCandidatePairId=' + (diag.selectedCandidatePairId || '<none>'));
+                        if (diag.inboundLines.length === 0) {
+                            this._log('DIAGNOSTIC stats: NO inbound-rtp reports — '
+                                      + 'PC never observed an SSRC for this call');
+                        } else {
+                            for (const line of diag.inboundLines) {
+                                this._log('DIAGNOSTIC stats: inbound-rtp ' + line);
+                            }
+                        }
+                        for (const line of diag.pairLines) {
+                            this._log('DIAGNOSTIC stats: candidate-pair ' + line);
+                        }
+                    }
+                    // Publish to UI listeners. mediaStuck latches on the
+                    // first stuck tick; subsequent ticks only refresh the
+                    // snapshot (no transition emit). The panel listens on
+                    // zrtpMediaDiagUpdated to live-refresh while open.
+                    this.mediaStuckSnapshot = diag;
+                    if (!this.mediaStuck) {
+                        this.mediaStuck = true;
+                        try {
+                            this.call.emit('zrtpMediaStuckChanged',
+                                           { stuck: true, snapshot: diag });
+                        } catch (_) { /* call torn down */ }
+                    } else {
+                        try {
+                            this.call.emit('zrtpMediaDiagUpdated',
+                                           { snapshot: diag });
+                        } catch (_) { /* call torn down */ }
                     }
                 })();
             }
@@ -951,6 +983,95 @@ class ZrtpSession {
         this._noActivityTicks = 0;
     }
 
+    /**
+     * Parse pc.getStats() into the diagnostic structure that the metro.log
+     * DIAGNOSTIC lines and the UI "Media" panel both consume.
+     *
+     * Returns an object with the same fields the log line prints:
+     *   iceConnectionState         — string from pc.iceConnectionState
+     *   inboundCount               — number of inbound-rtp reports
+     *   transportBytesReceived     — sum of all transport.bytesReceived
+     *   selectedCandidatePairId    — id of the selected pair (or null)
+     *   inboundLines               — pre-formatted inbound-rtp summaries
+     *   pairLines                  — pre-formatted candidate-pair summaries
+     *   inbound                    — structured per-stream rows for the UI
+     *   pairs                      — structured candidate-pair rows
+     *   role, sendersInstalled,    — context fields the panel surfaces
+     *   encryptedKinds, negotiatedVersion, continuity, capturedAt
+     *
+     * Keeping the pre-formatted lines lets the existing _log path stay
+     * byte-identical to the pre-refactor output; the structured fields
+     * are what the React panel renders.
+     */
+    async _snapshotMediaDiag(pc) {
+        const snap = await pc.getStats();
+        let inboundCount = 0;
+        let transportBytesReceived = 0;
+        const iceConnectionState = (this.call && this.call._pc
+                                    && this.call._pc.iceConnectionState) || '?';
+        let selectedCandidatePairId = null;
+        const inboundLines = [];
+        const pairLines = [];
+        const inbound = [];
+        const pairs = [];
+        snap.forEach((r) => {
+            if (!r) return;
+            if (r.type === 'inbound-rtp') {
+                inboundCount++;
+                inboundLines.push(
+                    '{kind=' + (r.kind || r.mediaType || '?')
+                    + ' ssrc=' + (r.ssrc != null ? r.ssrc : '?')
+                    + ' packetsReceived=' + (r.packetsReceived || 0)
+                    + ' bytesReceived=' + (r.bytesReceived || 0)
+                    + ' jitter=' + (r.jitter != null ? r.jitter : '?')
+                    + ' codec=' + (r.codecId || '?') + '}');
+                inbound.push({
+                    kind: r.kind || r.mediaType || '?',
+                    ssrc: r.ssrc != null ? r.ssrc : null,
+                    packetsReceived: Number(r.packetsReceived || 0),
+                    bytesReceived: Number(r.bytesReceived || 0),
+                    jitter: r.jitter != null ? r.jitter : null,
+                    codec: r.codecId || null,
+                });
+            } else if (r.type === 'transport') {
+                transportBytesReceived += Number(r.bytesReceived || 0);
+                if (r.selectedCandidatePairId) {
+                    selectedCandidatePairId = r.selectedCandidatePairId;
+                }
+            } else if (r.type === 'candidate-pair') {
+                pairLines.push(
+                    '{id=' + r.id
+                    + ' state=' + (r.state || '?')
+                    + ' nominated=' + (r.nominated ? 'yes' : 'no')
+                    + ' bytesReceived=' + (r.bytesReceived || 0)
+                    + ' bytesSent=' + (r.bytesSent || 0) + '}');
+                pairs.push({
+                    id: r.id,
+                    state: r.state || '?',
+                    nominated: !!r.nominated,
+                    bytesReceived: Number(r.bytesReceived || 0),
+                    bytesSent: Number(r.bytesSent || 0),
+                });
+            }
+        });
+        return {
+            capturedAt: Date.now(),
+            role: this.role,
+            sendersInstalled: !!this._sendersInstalled,
+            encryptedKinds: this.encryptedKinds.slice(),
+            negotiatedVersion: this.negotiatedVersion,
+            continuity: this.continuityState,
+            iceConnectionState,
+            inboundCount,
+            transportBytesReceived,
+            selectedCandidatePairId,
+            inboundLines,
+            pairLines,
+            inbound,
+            pairs,
+        };
+    }
+
     async startProbe() {
         if (this.state !== 'idle') {
             this._log('startProbe ignored — state is', this.state);
@@ -969,6 +1090,21 @@ class ZrtpSession {
         }
         if (this.localDeviceId) {
             payload.device_id = this.localDeviceId;
+        }
+        // Per-device rs_id candidates. Caller can't know which of the
+        // peer's devices will pick up this call (multiple devices may be
+        // registered behind the same AOR), so we ship the rs_id_hex
+        // computed from every per-device rs1 record we have stored for
+        // this peer URI. The callee picks the entry whose device_id
+        // matches its own localDeviceId — see handleIncoming(). This
+        // fixes the "caller stored rs1 only in the per-device slot, so
+        // the legacy rs_id_hex field is empty and the callee sees us as
+        // having no continuity" failure mode that caused asymmetric
+        // continuity classification (one side 'verified', the other
+        // 'one-sided-local') and the cascading mismatch problem.
+        const candidates = this._collectRsIdHexCandidates();
+        if (candidates.length > 0) {
+            payload.rs_id_hex_candidates = candidates;
         }
         await this._maybeSign(payload);
         this._log('SEND probe (transport=' + _zrtpMessageTransport + '):', payload);
@@ -1031,15 +1167,45 @@ class ZrtpSession {
         }
         // Stash peer's rs_id (if any) BEFORE _deriveAndLog runs. Only on
         // probe and accept; the other types don't carry it.
+        //
+        // Resolution order (first match wins):
+        //   1. rs_id_hex_candidates — array of {device_id, rs_id_hex}.
+        //      If our localDeviceId appears in this list, use that entry.
+        //      This is the "drawer fix": lets the caller advertise every
+        //      per-device rs_id it has stored for this peer URI so the
+        //      callee can pick the one keyed to its own device, avoiding
+        //      the asymmetric-classification problem where caller has
+        //      per-device rs1 but ships nothing in the legacy slot.
+        //   2. rs_id_hex — the single legacy field. Used when the peer
+        //      didn't send candidates, or none matched our localDeviceId.
+        //
+        // Either way the value is validated and lower-cased before being
+        // stashed for the continuity decision in _deriveAndLog.
         if ((payload.type === 'probe' || payload.type === 'accept')
                 && this.negotiatedVersion >= 2) {
-            const rid = payload.rs_id_hex;
-            if (typeof rid === 'string' && rid.length === RS_ID_HEX_LEN
-                    && /^[0-9a-fA-F]+$/.test(rid)) {
-                this.peerRsIdHex = rid.toLowerCase();
-            } else {
-                this.peerRsIdHex = null;
+            let resolved = null;
+            const cands = payload.rs_id_hex_candidates;
+            if (Array.isArray(cands) && this.localDeviceId) {
+                for (const c of cands) {
+                    if (!c || typeof c !== 'object') continue;
+                    if (c.device_id !== this.localDeviceId) continue;
+                    const rid = c.rs_id_hex;
+                    if (typeof rid === 'string'
+                            && rid.length === RS_ID_HEX_LEN
+                            && /^[0-9a-fA-F]+$/.test(rid)) {
+                        resolved = rid.toLowerCase();
+                        break;
+                    }
+                }
             }
+            if (!resolved) {
+                const rid = payload.rs_id_hex;
+                if (typeof rid === 'string' && rid.length === RS_ID_HEX_LEN
+                        && /^[0-9a-fA-F]+$/.test(rid)) {
+                    resolved = rid.toLowerCase();
+                }
+            }
+            this.peerRsIdHex = resolved;
         }
 
         if (payload.type === 'probe' || payload.type === 'accept') {
@@ -2024,21 +2190,61 @@ class ZrtpSession {
         this.localRsIdHex = null;
     }
 
-    // Derive the next per-peer retained secret (rs1) using the same
-    // formula as python3-sipsimple. Both sides compute identical bytes
-    // from identical inputs, so post-call rotation stays in lockstep.
+    // Build the array shipped in the probe's rs_id_hex_candidates field.
+    // Iterates every per-device rs1 record we have stored for this peer
+    // URI and emits {device_id, rs_id_hex} for each — letting the callee
+    // pick the entry that matches its own local device_id.
     //
-    // The salt chain is gated on this call's continuityState: only when
-    // both sides proved they held the same rs1 ('verified') do we mix
-    // local rs1 forward. After mismatch / first-time / one-sided the
-    // two sides held DIFFERENT local rs1 (or none), so mixing them
-    // would diverge them again — instead we re-bootstrap from zero
-    // salt so both sides converge on the same fresh next_rs1.
+    // The legacy single-slot rs_id_hex still travels in the top-level
+    // rs_id_hex field for backward compatibility with peers that don't
+    // know how to read the array. Callees that DO read the array prefer
+    // the device-matched entry over the legacy field.
+    _collectRsIdHexCandidates() {
+        const devices = this._contactZrtpRecord && this._contactZrtpRecord.devices;
+        if (!devices || typeof devices !== 'object') return [];
+        const out = [];
+        for (const peerDeviceId of Object.keys(devices)) {
+            const slot = devices[peerDeviceId];
+            const hex = slot && slot.rs1_hex;
+            if (typeof hex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hex)) continue;
+            try {
+                out.push({
+                    device_id: peerDeviceId,
+                    rs_id_hex: rsIdHexOf(fromHex(hex)),
+                });
+            } catch (_) { /* skip malformed entry */ }
+        }
+        return out;
+    }
+
+    // Derive the next per-peer retained secret (rs1) for this device pair.
+    // Both sides MUST compute identical bytes from identical inputs so the
+    // rs_id_hex one side sends on the next call matches what the other
+    // side computes locally.
+    //
+    // Algorithm: HKDF(sharedSecret, salt=zeros, info='sylk-zrtp/v2/next-rs1').
+    //
+    // Earlier versions mixed the existing rs1 into the HKDF salt when
+    // continuityState === 'verified', as a forward-secrecy chain. That
+    // turned out to be the root cause of the cascading "SAS changed"
+    // problem: the two sides decide continuityState independently from
+    // local visibility (whose probe carried rs_id_hex, whose didn't), so
+    // when one side computed 'verified' and the other computed
+    // 'one-sided-local' on the SAME call, they took different salt
+    // branches and persisted DIFFERENT next_rs1 values. Every subsequent
+    // call between those devices then showed mismatch on whichever side
+    // received an rs_id_hex first, forever.
+    //
+    // Salt=zeros makes the derivation symmetric by construction. Both
+    // sides see the same sharedSecret and use the same salt, so they
+    // ALWAYS produce the same next_rs1. The cost is a shallower forward
+    // secrecy chain — an attacker who recovered ONE call's sharedSecret
+    // could compute the next rs_id. We accept that trade because the
+    // continuity indicator misfiring on legitimate calls is the actual
+    // observed problem; chain-deep forward secrecy on rs1 isn't.
     _deriveNextRs1() {
         if (!this.sharedSecret) return null;
-        const salt = (this.continuityState === 'verified' && this.localRs1)
-            ? this.localRs1
-            : new Uint8Array(32);
+        const salt = new Uint8Array(32);
         try {
             return hkdf(this.sharedSecret, salt, 'sylk-zrtp/v2/next-rs1', RS_BYTES);
         } catch (e) {

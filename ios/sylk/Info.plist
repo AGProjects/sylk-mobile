@@ -89,6 +89,8 @@
 	<string>Location is used to keep sharing live location with a contact while Blink is in the background, until you stop the share or it expires.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>Location is used to keep sharing your location with a contact while Blink is in the background, until you stop the share or it expires.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Blink uses local network access to set up audio and video calls with low latency.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Microphone is used for audio calls</string>
 	<key>NSPhotoLibraryUsageDescription</key>
@@ -114,6 +116,7 @@
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>fetch</string>
 		<string>remote-notification</string>
 		<string>voip</string>

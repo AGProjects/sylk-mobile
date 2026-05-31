@@ -432,7 +432,7 @@ class ConferenceHeader extends React.Component {
                 const participants = otherCount + 1;
                 callDetail = callDetail +  ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
             } else {
-                callDetail = callDetail + ' and nobody joined yet';
+                callDetail = callDetail + ' and I am still alone';
             }
         } else {
 			callDetail = 'Nobody joined yet';
@@ -465,18 +465,20 @@ class ConferenceHeader extends React.Component {
 		let appBarContainer = {
 			backgroundColor: 'rgba(67, 98, 148, 0.92)',
 			height: 60,
-			// Landscape: parent SafeAreaView already pushes us in by
-			// leftInset, AND Paper's outer Appbar wrapper adds its own
-			// paddingHorizontal = max(left, right). That stacks to
-			// 2 × leftInset of indent. Cancel Paper's padding so the
-			// visible content lands exactly at the safe-area boundary
-			// — same x as the video container below. Mirrors the fix
-			// applied in CallOverlay.
+			// Landscape: extend the navbar from screen-left to the
+			// safe-area-right boundary (matches the outer container
+			// override in ConferenceBox for Android landscape so the
+			// kebab sits flush with the right margin instead of being
+			// indented by leftInset). marginLeft cancels Paper's
+			// padding + the SafeAreaView push so the appbar's left
+			// edge lands at x=0; width carries it to width -
+			// rightInset (screen edge minus Android system-buttons
+			// strip).
 			marginLeft: this.state.isLandscape
 				? -Math.max(leftInset, rightInset)
 				: 0,
 			marginTop: -topInset,
-			width: this.state.isLandscape ? width - rightInset - leftInset: width,
+			width: this.state.isLandscape ? width - rightInset : width,
 		}
 
 		if (Platform.OS === "ios") {
@@ -587,7 +589,15 @@ class ConferenceHeader extends React.Component {
 				    navbar. */}
 				{this.state.isLandscape &&
 				  this.props.buttons.bottom?.map((btn, idx) => (
-					<View key={idx} style={{ marginLeft: 2 }}>
+					// No extra marginLeft on the wrapper — each btn
+					// already carries its own 5 dp left/right
+					// margin via styles.buttonContainer (margin:5),
+					// so a 10 dp inter-button gap matches portrait.
+					// An earlier 10 dp wrapper-marginLeft stacked
+					// with the per-button margins for an effective
+					// 20 dp gap, which the user reported as "too
+					// much space".
+					<View key={idx}>
 					  {btn}
 					</View>
 				  ))

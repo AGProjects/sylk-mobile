@@ -66,30 +66,43 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	private static final long THROTTLE_NOTIFICATION_MS = 15_000L;
 	private static final String LAST_NOTIF_PREFIX = "last_notif_";
 
+	// Channel for both server-side rejected-call notifications AND the
+	// silent missed-call notifications posted when an incoming push is
+	// dropped on purpose (in-conference, app DND, OS DND).
+	//
+	// IMPORTANCE_LOW + setBypassDnd(true) so the entry appears on the
+	// shade and lockscreen WHILE OS DND is on (the whole point of the
+	// DND-drop missed-call notif), without ringing or heads-up.
+	//
+	// Channel id is bumped to "_v2" because Android caches user-visible
+	// channel preferences after first creation — toggling setBypassDnd /
+	// importance on an existing channel id is a no-op. A new id starts
+	// fresh.
+	public static final String REJECTED_CALLS_CHANNEL_ID = "rejected_calls_channel_v2";
+
 	private void createNotificationChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			String channelId = "rejected_calls_channel";
-			String channelName = "Rejected Calls";
-
 			NotificationManager manager = getSystemService(NotificationManager.class);
-			if (manager != null) {
-				NotificationChannel existing = manager.getNotificationChannel(channelId);
-				if (existing != null) {
-					manager.deleteNotificationChannel(channelId);
-					//SylkLogger.e("[call] [fcm] Deleted existing notification channel: " + channelId);
-				}
+			if (manager == null) return;
 
-				NotificationChannel channel = new NotificationChannel(
-						channelId,
-						channelName,
-						NotificationManager.IMPORTANCE_HIGH
-				);
+			// Tear down the legacy IMPORTANCE_HIGH channel once. Idempotent.
+			manager.deleteNotificationChannel("rejected_calls_channel");
 
-				channel.setDescription("Notifications for rejected calls");
+			if (manager.getNotificationChannel(REJECTED_CALLS_CHANNEL_ID) != null) return;
 
-				manager.createNotificationChannel(channel);
-				//SylkLogger.e("[call] [fcm] Notification channel created: "+ channelId);
-			}
+			NotificationChannel channel = new NotificationChannel(
+					REJECTED_CALLS_CHANNEL_ID,
+					"Missed / rejected calls",
+					NotificationManager.IMPORTANCE_LOW
+			);
+			channel.setDescription("Missed-call entries (DND, in conference) and server-side rejected calls");
+			channel.setBypassDnd(true);
+			channel.setSound(null, null);
+			channel.enableVibration(false);
+			channel.enableLights(false);
+
+			manager.createNotificationChannel(channel);
+			SylkLogger.d("[call] [fcm] Rejected/missed-calls channel created (" + REJECTED_CALLS_CHANNEL_ID + ")");
 		}
 	}
 
@@ -193,7 +206,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	}
 	
 	private void showRejectedCallNotification(String fromUri, String reason) {
-		String channelId = "rejected_calls_channel";
+		String channelId = REJECTED_CALLS_CHANNEL_ID;
 	
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -211,6 +224,80 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	
 		NotificationManagerCompat manager = NotificationManagerCompat.from(this);
 		manager.notify((int) System.currentTimeMillis(), builder.build()); // unique ID
+	}
+
+	/**
+	 * Silent local notification used when an incoming-call-style push
+	 * (1-1 audio/video or conference invite) is dropped because the
+	 * user is unavailable for some app-controlled reason — currently:
+	 *   - already mid-conference (reasonText "you were in a conference"),
+	 *   - app DND on   (reasonText "Do Not Disturb"),
+	 *   - OS DND on    (reasonText "system Do Not Disturb").
+	 * Posted on the same "rejected_calls_channel" we already publish
+	 * server-side rejects through — silent (no ringtone, no full-screen
+	 * intent), just a normal-priority entry the user sees on their
+	 * lockscreen / shade so they can call back / join afterwards.
+	 */
+	// Static so it can be called from the WSS-delivered call path via
+	// SylkBridge as well as from the FCM-delivered push path. The channel
+	// is IMPORTANCE_LOW + setBypassDnd(true), so the notification appears
+	// on the shade/lockscreen even while OS DND is on, without ringing.
+	public static void showSuppressedCallNotification(Context context, String fromUri, String event, String reasonText) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+				ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+					!= PackageManager.PERMISSION_GRANTED) {
+			SylkLogger.e("[call] [fcm] POST_NOTIFICATIONS not granted — cannot show suppressed-call notif (" + reasonText + ")");
+			return;
+		}
+
+		boolean isConfInvite = "incoming_conference_request".equals(event);
+		boolean isDnd = reasonText != null && reasonText.toLowerCase().contains("do not disturb");
+		String who = (fromUri != null && !fromUri.isEmpty()) ? fromUri : "Unknown";
+		// Compact, consistent titles for both suppression paths:
+		//   DND drop          → "Missed call during DND period"
+		//   In-conference drop → "Missed call during conference"
+		// "Missed invite during …" replaces "Missed call …" when the event
+		// is a conference invite. The body is just the caller URI; the
+		// reason is already conveyed by the title.
+		// Title mapping:
+		//   DND  + call   → "Missed call (Do not disturb)"
+		//   DND  + invite → "Missed conference (Do not disturb)"
+		//   conf + call   → "Missed call (In conference)"
+		//   conf + invite → "Missed conference (Already in)"
+		String title;
+		if (isDnd) {
+			title = isConfInvite ? "Missed conference (Do not disturb)" : "Missed call (Do not disturb)";
+		} else {
+			title = isConfInvite ? "Missed conference (Already in)" : "Missed call (In conference)";
+		}
+		String body = who;
+
+		NotificationCompat.Builder builder = new NotificationCompat.Builder(context, REJECTED_CALLS_CHANNEL_ID)
+				.setSmallIcon(R.drawable.ic_notification)
+				.setContentTitle(title)
+				.setContentText(body)
+				.setPriority(NotificationCompat.PRIORITY_LOW)
+				.setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+				.setAutoCancel(true)
+				.setSound(null)
+				.setVibrate(new long[]{0L});
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			builder.setSilent(true);
+		}
+
+		NotificationManagerCompat.from(context).notify((int) System.currentTimeMillis(), builder.build());
+		SylkLogger.d("[call] [fcm] Posted silent missed-call notification: " + title + " — " + body);
+	}
+
+	// Instance overload kept so the existing FCM-path call sites don't change.
+	private void showSuppressedCallNotification(String fromUri, String event, String reasonText) {
+		showSuppressedCallNotification(this, fromUri, event, reasonText);
+	}
+
+	// Back-compat thin wrapper — preserves the original in-conference call site.
+	private void showInConferenceMissedCallNotification(String fromUri, String event) {
+		showSuppressedCallNotification(fromUri, event, "you were in a conference");
 	}
 
 	private Contact getContact(String account, String uri) {
@@ -392,14 +479,17 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			return false;
 		}
 	
-		// App DND (privacy.dnd in accounts.settings JSON) used to reject
-		// the call here. It no longer does. The caller is expected to
-		// re-read the same flag via isAppDndOn() and decide whether to
-		// suppress the ringtone — app DND now means "deliver the push
-		// silently", not "drop it". The OS DND path (isDndEnabled +
-		// canBypassDnd) is separate and still does what it did before.
-		// (isDnd is intentionally left read above so the log line above
-		// continues to show the current value for diagnostics.)
+		// App DND (privacy.dnd in accounts.settings JSON) is NOT enforced
+		// here. The caller (onMessageReceived) re-reads the same flag via
+		// isAppDndOn() and, when active without a per-contact bypassdnd,
+		// drops the push and surfaces a silent "Missed call … (Do Not
+		// Disturb)" notification on rejected_calls_channel — same shape
+		// as the in-conference drop and the OS-DND drop. Keeping the
+		// enforcement in onMessageReceived (rather than here) means a
+		// single code path posts the missed-call notification for every
+		// DND flavour. (isDnd is intentionally left read above so the
+		// log line above continues to show the current value for
+		// diagnostics.)
 	
 		if (!isActive) {
 			SylkLogger.e("[call] [fcm] Account is not active");
@@ -1268,7 +1358,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("cancel")) {
 			callId = data.get("session-id");
 			if (callId == null || callId.trim().isEmpty()) {
-				SylkLogger.w("[call] [fcm] Missing callId");
+				SylkLogger.w("[call] [fcm] [drop] Missing callId (event=" + event + ")");
 				return;
 			}
 			callId = callId.trim();
@@ -1305,7 +1395,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (event.equals("incoming_session") || event.equals("incoming_conference_request") || event.equals("message")) {
 	        fromUri = data.get("from_uri");
 			if (fromUri == null || fromUri.trim().isEmpty()) {
-				SylkLogger.w("[call] [fcm] Missing fromUri");
+				SylkLogger.w("[call] [fcm] [drop] Missing fromUri (event=" + event + ", callId=" + callId + ")");
 				if (callId != null ) {
 					IncomingCallService.handledCalls.add(callId);
 				}
@@ -1317,7 +1407,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	        if (event.equals("incoming_session")) {
 				String activeCall = prefs.getString("currentCall", null);
 				if (activeCall != null && activeCall.equals(fromUri)) {
-					SylkLogger.d("[call] [fcm] Skipping notification: already in call with " + activeCall);
+					SylkLogger.d("[call] [fcm] [drop] already in call with " + activeCall + " (callId=" + callId + ")");
 					return;
 				}
 			}
@@ -1325,7 +1415,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			toUri = data.get("to_uri");
 			if (toUri == null || toUri.trim().isEmpty()) {
 				IncomingCallService.handledCalls.add(callId);
-				SylkLogger.w("[call] [fcm] Missing toUri");
+				SylkLogger.w("[call] [fcm] [drop] Missing toUri (event=" + event + ", from=" + fromUri + ", callId=" + callId + ")");
 				return;
 			}
 
@@ -1366,10 +1456,9 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						int semi = host.indexOf(';');
 						if (semi >= 0) host = host.substring(0, semi);
 						if (host.equalsIgnoreCase(sipBridgeDomain)) {
-							SylkLogger.d("[call] [fcm] Dropping incoming_session push: "
-									+ "from_uri host '" + host
-									+ "' matches configured sipBridge '" + sipBridgeDomain
-									+ "' (duplicate of conferenceInvite, callId=" + callId + ")");
+							SylkLogger.d("[call] [fcm] [drop] sipBridge twin of conferenceInvite from " + fromUri
+									+ " (host '" + host + "' matches configured sipBridge '" + sipBridgeDomain
+									+ "', callId=" + callId + ")");
 							if (callId != null) {
 								IncomingCallService.handledCalls.add(callId);
 							}
@@ -1383,10 +1472,29 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         if (event.equals("incoming_session") || event.equals("incoming_conference_request")) {
 			incomingCalls.add(callId);
 
+			// In-conference gate. While the user is mid-conference (flag
+			// set by JS via SylkBridge.setInConference on enter/leave),
+			// any incoming-call-style push — a 1-1 audio/video call
+			// (incoming_session) or a conference invite
+			// (incoming_conference_request) — would otherwise fire the
+			// loud full-screen Telecom ringer and disrupt the active
+			// conference media. Drop the push silently and surface a
+			// regular silent local notification so the user knows they
+			// had a missed call to return after hanging up. Mirrors the
+			// iOS shouldDisplayMessageFromPayload gate.
+			if (prefs.getBoolean("inConference", false)) {
+				IncomingCallService.handledCalls.add(callId);
+				SylkLogger.d("[call] [fcm] [drop] in conference, suppressing "
+						+ event + " from " + fromUri
+						+ " (callId=" + callId + ")");
+				showInConferenceMissedCallNotification(fromUri, event);
+				return;
+			}
+
 			if (event.equals("incoming_conference_request")) {
 				String account = data.get("account");
 				if (account == null || account.trim().isEmpty()) {
-					SylkLogger.w("[call] [fcm] Missing account");
+					SylkLogger.w("[call] [fcm] [drop] Missing account on conferenceInvite (from=" + fromUri + ", callId=" + callId + ")");
 					return;
 				}
 				lookupAccount = account.trim().toLowerCase();
@@ -1446,53 +1554,64 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 			if (isBlocked(tags)) {
 				IncomingCallService.handledCalls.add(callId);
-				SylkLogger.w("[call] [fcm] Caller " + fromUri + " is blocked");
+				SylkLogger.w("[call] [fcm] [drop] caller " + fromUri + " is blocked (callId=" + callId + ")");
 				return;
 			}
 
 			if (isMuted(tags)) {
 				IncomingCallService.handledCalls.add(callId);
-				SylkLogger.d("[call] [fcm] Skipping notification: user " + fromUri + " is muted");
+				SylkLogger.d("[call] [fcm] [drop] caller " + fromUri + " is muted (callId=" + callId + ")");
 				return;
 			}
 
 			if (!isAccountActive(lookupAccount, fromUri, tags)) {
 				IncomingCallService.handledCalls.add(callId);
+				// isAccountActive logs the specific reason internally
+				// (inactive account, rejectAnonymous, rejectNonContacts, …);
+				// this line is the single greppable drop summary so the
+				// Logs window shows it alongside every other drop.
+				SylkLogger.d("[call] [fcm] [drop] account/privacy rules rejected "
+						+ event + " from " + fromUri + " to " + lookupAccount
+						+ " (callId=" + callId + ")");
 				return;
 			}
 
-			// Two DND gates with different semantics:
+			// DND gates. Both now have the SAME semantics: hard drop the
+			// push and surface a silent missed-call notification on
+			// rejected_calls_channel (same channel + style as the
+			// in-conference suppression path). The user sees a "Missed
+			// call from X (Do Not Disturb)" entry afterwards instead of
+			// the full incoming-call UI ringing / showing
+			// "Collecting ICE candidates…" mid-DND.
 			//
-			//   OS DND (NotificationManager interruption filter):
-			//     hard drop unless the contact is tagged bypassdnd.
-			//     This is unchanged.
+			//   OS DND  — Android system Do Not Disturb (interruption
+			//             filter ≠ ALL). Body suffix: "system Do Not Disturb".
+			//   App DND — privacy.dnd in accounts.settings JSON (the bell
+			//             on the navbar). Body suffix: "Do Not Disturb".
 			//
-			//   App DND (privacy.dnd in accounts.settings JSON, the bell
-			//     on the navbar):
-			//     soft gate — let the push through but tell the
-			//     IncomingCallService to skip the ringtone. The
-			//     notification, full-screen intent, Telecom hand-off
-			//     still happen, so the call is visible and answerable;
-			//     it just doesn't ring. Contacts tagged bypassdnd
-			//     override this and ring normally.
+			// Contacts tagged bypassdnd override both — push falls through
+			// and rings normally.
 			boolean osDnd  = isDndEnabled(this);
 			boolean appDnd = isAppDndOn(lookupAccount);
 			boolean bypass = canBypassDnd(tags);
-
-			if (osDnd && !bypass) {
-				IncomingCallService.handledCalls.add(callId);
-				SylkLogger.d("[call] [fcm] OS DND active, dropping message from " + fromUri);
-				return; // notification dropped
-			}
 
 			if ((osDnd || appDnd) && bypass) {
 				SylkLogger.d("[call] [fcm] DND bypass for " + fromUri
 					+ " (osDnd=" + osDnd + " appDnd=" + appDnd + ")");
 			}
 
-			boolean suppressRingtone = appDnd && !bypass;
-			if (suppressRingtone) {
-				SylkLogger.d("[call] [fcm] App DND on, delivering silent push for " + fromUri);
+			if (osDnd && !bypass) {
+				IncomingCallService.handledCalls.add(callId);
+				SylkLogger.d("[call] [fcm] [drop] OS DND active, dropping " + event + " from " + fromUri + " (callId=" + callId + ")");
+				showSuppressedCallNotification(fromUri, event, "system Do Not Disturb");
+				return; // notification dropped
+			}
+
+			if (appDnd && !bypass) {
+				IncomingCallService.handledCalls.add(callId);
+				SylkLogger.d("[call] [fcm] [drop] App DND active, dropping " + event + " from " + fromUri + " (callId=" + callId + ")");
+				showSuppressedCallNotification(fromUri, event, "Do Not Disturb");
+				return; // notification dropped
 			}
 
             Intent serviceIntent = new Intent(this, IncomingCallService.class);
@@ -1503,9 +1622,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
             serviceIntent.putExtra("displayName", displayName);
             serviceIntent.putExtra("phoneLocked", phoneLocked);
-            serviceIntent.putExtra("suppress_ringtone", suppressRingtone);
-			SylkLogger.d("[call] [fcm] phoneLocked: " + phoneLocked
-				+ " suppress_ringtone: " + suppressRingtone);
+            // suppress_ringtone is no longer used by App DND (the call is
+            // dropped before reaching the service). Always false here; kept
+            // for backward-compat with any other caller that may still read it.
+            serviceIntent.putExtra("suppress_ringtone", false);
+			SylkLogger.d("[call] [fcm] phoneLocked: " + phoneLocked);
 
 			ContextCompat.startForegroundService(this, serviceIntent);
 

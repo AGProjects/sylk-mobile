@@ -113,7 +113,7 @@ class Call extends Component {
             this.props.call.on('mediaUpdated', this.onMediaUpdated);
             this.props.call.on('updateRequest', this.onUpdateRequest);
             this.props.call.on('updateFailed', this.onUpdateFailed);
-            utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (mount)',
+            utils.timestampedLog('[message] [call] [zrtp] attached incomingMessage handler to call (mount)',
                 'call_id=', this.props.call._callId || this.props.call.callId || this.props.call.id,
                 'peer=', this.props.call.remoteIdentity && this.props.call.remoteIdentity.uri,
                 'inlineMessaging=', !!this.props.call.enableInlineMessaging);
@@ -236,7 +236,25 @@ class Call extends Component {
                       // the user already started the call; pretending
                       // otherwise would re-render the awaiting UI
                       // and restart the 6-second auto-start countdown.
-                      userStartedCall: this.props.reconnectingCall === true,
+                      //
+                      // Also true when this is a remount of a Call
+                      // subtree mid-dial. app.js keys <Call> on
+                      // activeCall.id (with a 'no-call' fallback
+                      // before the SIP Call object lands), so the
+                      // moment account.call() returns and currentCall
+                      // gets set, the key flips and this constructor
+                      // runs again on a fresh instance. props.call
+                      // being non-null on mount means there is
+                      // already a SIP call in flight — the user has
+                      // unambiguously committed. Without this branch
+                      // the fresh state.userStartedCall would be
+                      // false, awaiting would compute true once the
+                      // call terminates and state.call goes null, and
+                      // AudioCallBox / LocalMedia would fire a brand-
+                      // new auto-start countdown on the post-call
+                      // screen.
+                      userStartedCall: this.props.reconnectingCall === true
+                          || this.props.call != null,
                       // Mid-call audio→video upgrade prompt state.
                       // upgradePromptMode = 'outgoing' when the user
                       // tapped +video, 'incoming' when the peer sent
@@ -265,9 +283,30 @@ class Call extends Component {
     componentDidMount() {
         this.lookupContact();
 
-        if (this.state.direction === 'outgoing' && this.state.callUUID && this.state.callState !== 'established') {
+        // !this.state.call: skip startCallWhenReady when a SIP call
+        // object is already live. app.js keys <Call> on activeCall.id
+        // ('no-call' → call.id), so the moment account.call() returns
+        // and currentCall gets set, the key flips and this whole subtree
+        // remounts on a fresh instance with props.call already populated.
+        // Without this guard, the remount's componentDidMount would fire
+        // startCallWhenReady → start() → account.call() AGAIN with the
+        // same options.id, sending a duplicate session-create. The
+        // server rejects the second one with "Session ID … already in
+        // use" and the call terminates as a sendCall_request_error
+        // before ringing even starts. Mirrors the same !this.props.call
+        // guard LocalMedia.js uses around its auto-start countdown.
+        if (this.state.direction === 'outgoing'
+            && this.state.callUUID
+            && this.state.callState !== 'established'
+            && !this.state.call) {
             utils.timestampedLog('[call] start', this.state.callUUID, 'when ready to', this.state.targetUri);
             this.startCallWhenReady(this.state.callUUID);
+        } else if (this.state.direction === 'outgoing'
+            && this.state.callUUID
+            && this.state.call) {
+            utils.timestampedLog('[call] componentDidMount skip startCallWhenReady — call already in flight',
+                'callUUID=', this.state.callUUID,
+                'callState=', this.state.call && this.state.call.state);
         }
 
         if (this.state.direction === 'incoming') {
@@ -361,13 +400,13 @@ class Call extends Component {
         console.log('Session message', message.id, message.contentType, 'received');
         // Surface ZRTP envelopes that arrive on the call's session-
         // message channel separately so the receive side is visible
-        // in applog alongside the [messaging] [zrtp] send lines.
+        // in applog alongside the [message] [call] [zrtp] send lines.
         // Note: by default sylkrtc has call.enableInlineMessaging =
         // false and forwards in-dialog messages up to
         // account.on('incomingMessage') instead, so this handler may
         // never fire unless the call is opted into inline mode.
         if (message && message.contentType === ZRTP_CONTENT_TYPE) {
-            utils.timestampedLog('[messaging] [zrtp] received via call.incomingMessage',
+            utils.timestampedLog('[message] [call] [zrtp] received via call.incomingMessage',
                 'msg_id=', message.id,
                 'peer=', message.sender && message.sender.uri,
                 'size=', (message.content ? message.content.length : 0) + 'B');
@@ -424,7 +463,7 @@ class Call extends Component {
             nextProps.call.on('mediaUpdated', this.onMediaUpdated);
             nextProps.call.on('updateRequest', this.onUpdateRequest);
             nextProps.call.on('updateFailed', this.onUpdateFailed);
-            utils.timestampedLog('[messaging] [zrtp] attached incomingMessage handler to call (cwrp)',
+            utils.timestampedLog('[message] [call] [zrtp] attached incomingMessage handler to call (cwrp)',
                 'call_id=', nextProps.call._callId || nextProps.call.callId || nextProps.call.id,
                 'peer=', nextProps.call.remoteIdentity && nextProps.call.remoteIdentity.uri,
                 'inlineMessaging=', !!nextProps.call.enableInlineMessaging);

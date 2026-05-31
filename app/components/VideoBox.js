@@ -6,7 +6,7 @@ import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
 import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
-import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight  } from 'react-native';
+import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder  } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 // RNCamera is used ONLY for the camera-enable modal preview tile —
 // a native AVCaptureSession / CameraX-backed view that is completely
@@ -27,6 +27,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import CallOverlay from './CallOverlay';
 import NetworkSpeedometer from './NetworkSpeedometer';
+import MediaInfoPanel from './MediaInfoPanel';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 import InCallManager from 'react-native-incall-manager';
@@ -139,6 +140,11 @@ class VideoBox extends Component {
             // hide again. Header-embedded speedometer in CallOverlay
             // is removed entirely — fullscreen-only.
             showUsage: false,
+            // Drag-set position for the network speedometer overlay.
+            // null = use the default top-left anchor (see
+            // _getDefaultSpeedoPosition). Mirrors the ConferenceBox
+            // implementation.
+            speedoPosition: null,
             showMyself: true,
             remoteVideoShow: true,
             remoteSharesScreen: false,
@@ -157,6 +163,10 @@ class VideoBox extends Component {
             localMedia: this.props.localMedia,
             statistics: [],
             myVideoCorner: 'topLeft',
+            // Drag-set position for the self-view PIP thumbnail.
+            // null = use the default anchor (top-left, below the
+            // header). Replaces the old corner cycling behaviour.
+            selfThumbPosition: null,
             fullScreen: false,
             enableMyVideo: true,
             swapVideo: false,
@@ -171,6 +181,14 @@ class VideoBox extends Component {
             // ZRTP state, mirroring AudioCallBox.
             zrtpState: null,
             zrtpDialogVisible: false,
+            // Media-stuck pill + info-panel visibility, mirroring
+            // AudioCallBox. mediaStuck is latched true by CallZrtp.js's
+            // activity poller when the call sits at 'key-agreed' for
+            // >5s with no inbound RTP. mediaInfoPanelVisible toggles the
+            // shared <MediaInfoPanel /> modal; the panel owns its own
+            // pc.getStats() poller while visible.
+            mediaStuck: false,
+            mediaInfoPanelVisible: false,
             // zRTP-mandatory handshake-failed prompt — same logic as
             // AudioCallBox.
             zrtpMandatoryFailedVisible: false,
@@ -205,6 +223,179 @@ class VideoBox extends Component {
 		this.prevStats = {}; // initialize here
 		this.prevValues = {};
         this.overlayTimer = null;
+
+        // PanResponder for the i/speedometer view at the top-left of
+        // the video. 15dp threshold so a normal tap (to toggle
+        // showUsage) doesn't get hijacked as a drag. Mirrors the
+        // implementation in ConferenceBox.
+        this._SPEEDO_W = 200;
+        this._SPEEDO_H = 110;
+        this._speedoDragStart = null;
+        this._speedoPanResponder = PanResponder.create({
+            onStartShouldSetPanResponder: () => false,
+            onStartShouldSetPanResponderCapture: () => false,
+            onMoveShouldSetPanResponder: (_e, g) =>
+                Math.abs(g.dx) > 15 || Math.abs(g.dy) > 15,
+            onMoveShouldSetPanResponderCapture: (_e, g) =>
+                Math.abs(g.dx) > 15 || Math.abs(g.dy) > 15,
+            onPanResponderGrant: () => {
+                this._speedoDragStart = this.state.speedoPosition
+                    || this._getDefaultSpeedoPosition();
+            },
+            onPanResponderMove: (_e, g) => {
+                if (!this._speedoDragStart) return;
+                const { width, height } = Dimensions.get('window');
+                let x = this._speedoDragStart.x + g.dx;
+                let y = this._speedoDragStart.y + g.dy;
+                x = Math.max(0, Math.min(width - this._SPEEDO_W, x));
+                y = Math.max(0, Math.min(height - this._SPEEDO_H, y));
+                this.setState({ speedoPosition: { x, y } });
+            },
+            onPanResponderRelease: () => { this._speedoDragStart = null; },
+            onPanResponderTerminate: () => { this._speedoDragStart = null; },
+        });
+
+        // PanResponder for the self-view PIP thumbnail. Lower 5dp
+        // threshold so the thumbnail follows the finger immediately —
+        // we no longer have a tap-to-cycle behaviour competing for
+        // the gesture.
+        this._selfThumbDragStart = null;
+        this._selfThumbPanResponder = PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onStartShouldSetPanResponderCapture: () => false,
+            onMoveShouldSetPanResponder: (_e, g) =>
+                Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3,
+            onMoveShouldSetPanResponderCapture: (_e, g) =>
+                Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3,
+            onPanResponderGrant: () => {
+                this._selfThumbDragStart = this.state.selfThumbPosition
+                    || this._getDefaultSelfThumbPosition();
+            },
+            onPanResponderMove: (_e, g) => {
+                if (!this._selfThumbDragStart) return;
+                const { width, height } = Dimensions.get('window');
+                const w = this._selfThumbW || 120;
+                const h = this._selfThumbH || 160;
+                let x = this._selfThumbDragStart.x + g.dx;
+                let y = this._selfThumbDragStart.y + g.dy;
+
+                // Coordinate model.
+                //
+                // The thumbnail's parent (myselfContainer inside the
+                // main render container) is wrapped by the app-level
+                // SafeAreaView, so its origin sits at screen-x =
+                // leftInset (only in landscape) and screen-y =
+                // topInset. The PIP corner math at line 2315 confirms
+                // this: `topLeft: { top: -topInset }` in fullscreen
+                // means parent-y = -topInset reaches screen-y = 0.
+                //
+                // To clamp the thumb so its visible rectangle stays
+                // on the phone screen we translate desired screen-x
+                // / screen-y bounds back into parent-relative coords
+                // by subtracting the parent's screen offset.
+                const insets = this.state.insets || {};
+                const topInset = insets.top || 0;
+                const leftInset = insets.left || 0;
+                const rightInset = insets.right || 0;
+                const bottomInset = insets.bottom || 0;
+                const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+
+                const parentScreenY = topInset;
+                // SafeAreaView's left-padding behaviour differs by
+                // platform: iOS landscape pushes content RIGHT by
+                // leftInset (so parent x=0 = screen-x=leftInset),
+                // but on Android landscape the safe-area inset is
+                // applied as padding on the side WITHOUT a shift —
+                // parent x=0 stays at screen-x=0. Assuming a left
+                // shift on Android over-subtracted leftInset from
+                // maxX, which is exactly the "thumb stops at the
+                // right inset boundary" the user reported.
+                const parentScreenX = (Platform.OS === 'ios' && this.state.isLandscape)
+                    ? leftInset : 0;
+
+                // Bounds are expressed in SCREEN coordinates of the
+                // thumb's edge (later translated to parent-relative
+                // coords via parentScreen*). Earlier the FS values
+                // were stored as parent-relative offsets (`-leftInset`
+                // etc.) which was wrong on Android — parentScreenX
+                // is 0 there, so the thumb was free to drift to
+                // parent-x = -leftInset i.e. screen-x = -leftInset
+                // (off the left edge).
+                let topBound, bottomBound, leftBound, rightBound;
+                if (this.state.fullScreen) {
+                    // Immersive fullscreen: thumb edges can reach the
+                    // actual phone screen edges (0..width). On
+                    // Android, Dimensions.get('window').width
+                    // excludes the system-buttons column even in
+                    // immersive mode, so the true right edge is at
+                    // `width + rightInset`; bottom similarly. iOS
+                    // hides the status bar but Dimensions already
+                    // reports the full screen rectangle, so we
+                    // clamp to `width` / `height` — extending by
+                    // rightInset / bottomInset there would push the
+                    // thumb off the visible screen.
+                    topBound = 0;
+                    leftBound = 0;
+                    if (Platform.OS === 'android') {
+                        bottomBound = height + bottomInset;
+                        rightBound = width + rightInset;
+                    } else {
+                        bottomBound = height;
+                        rightBound = width;
+                    }
+                } else {
+                    // Non-fullscreen: thumb stays within the
+                    // visible call area.
+                    //   * Top: stops at the NAVBAR BOTTOM so the
+                    //     thumb never overlaps the call header.
+                    //   * Bottom: stops above the home-indicator /
+                    //     gesture-nav strip.
+                    //   * Left / Right: stop at the safe-area
+                    //     boundaries. On Android the visible
+                    //     content rect is shifted left by
+                    //     rightInset (the system-buttons column
+                    //     sits on the right but Dimensions reports
+                    //     window.width as `width - rightInset`),
+                    //     so both bounds need an extra
+                    //     `-rightInset` shift. iOS doesn't have
+                    //     that shift, so we keep the standard
+                    //     safe-area bounds — otherwise the thumb
+                    //     was stopping well short on iOS portrait
+                    //     and overshooting in the wrong direction
+                    //     on landscape.
+                    topBound = topInset + headerBarHeight;
+                    bottomBound = height - bottomInset;
+                    if (Platform.OS === 'android') {
+                        leftBound = leftInset - rightInset;
+                        rightBound = width - rightInset - rightInset;
+                    } else {
+                        // iOS non-FS:
+                        //   * Right edge: thumb can reach the
+                        //     actual phone screen edge (the video
+                        //     container already stretches there).
+                        //   * Left edge: stops at `leftInset`
+                        //     because in landscape that's where
+                        //     the notch sits; the thumb shouldn't
+                        //     be draggable into the notch in
+                        //     non-FS. In portrait leftInset is
+                        //     normally 0 so this is equivalent to
+                        //     `leftBound = 0`.
+                        leftBound = leftInset;
+                        rightBound = width;
+                    }
+                }
+
+                const minX = leftBound - parentScreenX;
+                const maxX = rightBound - w - parentScreenX;
+                const minY = topBound - parentScreenY;
+                const maxY = bottomBound - h - parentScreenY;
+                x = Math.max(minX, Math.min(maxX, x));
+                y = Math.max(minY, Math.min(maxY, y));
+                this.setState({ selfThumbPosition: { x, y } });
+            },
+            onPanResponderRelease: () => { this._selfThumbDragStart = null; },
+            onPanResponderTerminate: () => { this._selfThumbDragStart = null; },
+        });
         this.localVideo = React.createRef();
         this.remoteVideo = React.createRef();
 
@@ -306,19 +497,25 @@ class VideoBox extends Component {
             nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
             nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             nextProps.call.on('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
+            nextProps.call.on('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+            nextProps.call.on('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
 
             if (this.state.call !== null) {
                 this.state.call.removeListener('stateChanged', this.callStateChanged);
                 this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
                 this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
                 this.state.call.removeListener('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
+                this.state.call.removeListener('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+                this.state.call.removeListener('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
             }
             const existing = getZrtpSession(nextProps.call);
             const newLocalStream = nextProps.call.getLocalStreams()[0];
             this.setState({call: nextProps.call,
                            localStream: newLocalStream,
                            remoteStream: nextProps.call.getRemoteStreams()[0],
-                           zrtpState: (existing && existing.state) ? existing.state : null
+                           zrtpState: (existing && existing.state) ? existing.state : null,
+                           mediaStuck: !!(existing && existing.mediaStuck),
+                           mediaInfoPanelVisible: false
             });
 
             // Re-attach the local-video-track health listeners to the
@@ -714,6 +911,92 @@ class VideoBox extends Component {
         });
     }
 
+    // Media-stuck listener — same shape as AudioCallBox. stuck=true
+    // surfaces the amber "Media stuck" pill alongside the zRTP pill;
+    // stuck=false hides it. Does NOT close the info panel — that's
+    // independent of the stuck condition.
+    zrtpMediaStuckChanged({ stuck }) {
+        if (this.unmounted) return;
+        this.setState({ mediaStuck: !!stuck });
+    }
+
+    // Sink for the per-poll diag refresh event. The shared MediaInfoPanel
+    // runs its own getStats poller while visible, so we don't need to
+    // store snapshots here — registering a noop sink just keeps the event
+    // from being "unhandled".
+    zrtpMediaDiagUpdated(/* { snapshot } */) {
+        // intentionally empty
+    }
+
+    /** Default position for the i/speedometer view.
+     *  - Fullscreen: anchor at the actual top-left of the phone
+     *    screen. The parent container is wrapped by the safe-area
+     *    inset, so reaching the screen edge means negating
+     *    topInset (matches the PIP corner math at line 2315 which
+     *    uses `top: -topInset` in fullscreen).
+     *  - Non-fullscreen: anchor just BELOW the call navbar. The
+     *    parent already accounts for topInset here, so we only add
+     *    the headerBarHeight. */
+    _getDefaultSpeedoPosition() {
+        const insets = this.state.insets || {};
+        const topInset = insets.top || 0;
+        const leftInset = insets.left || 0;
+        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+        let x, y;
+        if (this.state.fullScreen) {
+            // Pull above the safe-area inset to reach the actual
+            // top edge of the phone screen, then nudge 15dp in from
+            // both edges so the iPhone's rounded display corner
+            // doesn't clip the icon. In landscape the parent
+            // container is shifted right by leftInset to clear the
+            // notch — negate it so the icon reaches the screen's
+            // actual left edge (matches the PIP corner math at
+            // line 2315: `left: -leftInset`).
+            x = (this.state.isLandscape ? -leftInset : 0) + 15;
+            y = -topInset + 15;
+        } else {
+            // Non-fullscreen: anchor under the navbar.
+            // In landscape on iOS the parent container is shifted
+            // RIGHT by leftInset (the video stretches edge-to-edge
+            // with marginLeft: -leftInset, see line ~2383), so to
+            // push the icon flush with the actual screen-left we
+            // have to negate the inset — same trick the PIP corners
+            // use. In portrait the parent already starts at
+            // screen-x=0, so no negation is needed.
+            x = this.state.isLandscape ? -leftInset : 4;
+            y = headerBarHeight + 8;
+        }
+        return { x, y };
+    }
+
+    /** Default position for the self-view PIP thumbnail. Anchors at
+     *  the TOP-RIGHT of the visible video area so it doesn't collide
+     *  with the i/speedometer overlay at the top-left. Used to seed
+     *  the PanResponder and as the fallback when
+     *  state.selfThumbPosition is null. */
+    _getDefaultSelfThumbPosition() {
+        const { width } = Dimensions.get('window');
+        const insets = this.state.insets || {};
+        const topInset = insets.top || 0;
+        const rightInset = insets.right || 0;
+        const w = this._selfThumbW || 120;
+        // Mirror the previous corner math: in fullscreen the thumb
+        // sits flush with the top; otherwise it clears the header
+        // bar.
+        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+        const y = this.state.fullScreen ? Math.max(0, topInset) : headerBarHeight;
+        const x = Math.max(0, width - w - rightInset);
+        return { x, y };
+    }
+
+    _openMediaInfoPanel() {
+        this.setState({ mediaInfoPanelVisible: true });
+    }
+
+    _closeMediaInfoPanel() {
+        this.setState({ mediaInfoPanelVisible: false });
+    }
+
     // Fired by CallZrtp when zRTP strict mode collides with H264 video.
     // The session has already stopped the local video sender; we suppress
     // the camera-enable prompt and any local preview tile.
@@ -1078,9 +1361,13 @@ class VideoBox extends Component {
             this.state.call.on('zrtpStateChanged', this.zrtpStateChanged);
             this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             this.state.call.on('zrtpStrictH264VideoDrop', this.zrtpStrictH264VideoDrop);
+            this.state.call.on('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+            this.state.call.on('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
             const existing = getZrtpSession(this.state.call);
             if (existing && existing.state) {
-                this.setState({ zrtpState: existing.state });
+                const _seed = { zrtpState: existing.state };
+                if (existing.mediaStuck) _seed.mediaStuck = true;
+                this.setState(_seed);
             }
 
             // Trigger the answer for incoming video calls (mirrors what
@@ -1158,6 +1445,8 @@ class VideoBox extends Component {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
             this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
             this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
+            this.state.call.removeListener('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+            this.state.call.removeListener('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
         }
 
 		if (this.state.call != null && this.state.call.statistics != null) {
@@ -1226,6 +1515,7 @@ class VideoBox extends Component {
 
             this._monitoredVideoTrack = track;
 
+            /*
             utils.timestampedLog(
                 '[video-track] [call] monitor attached',
                 'id=', track.id,
@@ -1233,6 +1523,7 @@ class VideoBox extends Component {
                 'muted=', track.muted,
                 'callUUID=', (this.props.call && this.props.call.id)
             );
+            */
         } catch (e) {
             console.log('[video-track] attach failed:', e && e.message);
         }
@@ -2224,6 +2515,56 @@ class VideoBox extends Component {
 				remoteVideoContainer.marginTop = -topInset;
 				remoteVideoContainer.height = height;
 			}
+		} else {
+			// Android.
+			//
+			// In landscape, stretch the video edge-to-edge so the
+			// picture isn't pillarboxed by the OS-provided left
+			// safe-area inset (gesture-nav indicator / notch area).
+			// Without this the video sits inside the safe-area and
+			// the left strip of the screen stays as the call screen
+			// background.
+			//
+			// Mirrors the iOS pattern: shift the
+			// remoteVideoContainer (NOT the whole VideoBox
+			// container) so CallOverlay — which has its own
+			// landscape marginLeft shift — doesn't end up
+			// double-shifted off-screen.
+			if (this.state.isLandscape) {
+				// Use absolute left/right anchoring instead of
+				// marginLeft+width so the video container's edges
+				// can be pinned to the actual screen edges
+				// independently. width: '100%' from the base
+				// style is irrelevant once `left` and `right` are
+				// both set, but we clear it explicitly so the
+				// layout engine doesn't try to honour both.
+				delete remoteVideoContainer.width;
+				remoteVideoContainer.left = -leftInset;
+				// Fullscreen: pull the right edge OUT by rightInset
+				// so the video covers the entire phone screen
+				// (the OS hides system buttons in immersive mode).
+				// Non-fullscreen: stop AT the safe-area boundary
+				// so we don't render under the Android system
+				// buttons on the right.
+				remoteVideoContainer.right = this.state.fullScreen ? -rightInset : 0;
+				if (this.state.fullScreen) {
+					corners = {
+						topLeft: { top: 0, left: -leftInset},
+						topRight: { top: 0, right: -rightInset},
+						bottomRight: { bottom: 0, right: -rightInset},
+						bottomLeft: { bottom: 0, left: -leftInset},
+						id: 'android-landscape-fs'
+					};
+				} else {
+					corners = {
+						topLeft: { top: headerBarHeight, left: -leftInset},
+						topRight: { top: headerBarHeight, right: -rightInset},
+						bottomRight: { bottom: 0, right: -rightInset},
+						bottomLeft: { bottom: 0, left: -leftInset},
+						id: 'android-landscape'
+					};
+				}
+			}
 		}
 		
 		// Self-video thumbnail dimensions. On the Razr cover display we
@@ -2233,6 +2574,12 @@ class VideoBox extends Component {
 		const selfThumbWidth  = this.props.isFolded ? 72 : 120;
 		const selfThumbHeight = this.props.isFolded ? 96 : 160;
 		const selfSurfaceHeight = this.props.isFolded ? 54 : 90;
+		// Cache the current thumbnail dimensions on the instance so
+		// the PanResponder (which closes over `this` rather than this
+		// render scope) can clamp the drag against the live size on
+		// fold/unfold and orientation transitions.
+		this._selfThumbW = selfThumbWidth;
+		this._selfThumbH = selfThumbHeight;
 
 		let mySurfaceContainer = {
 			flex: 1,
@@ -2308,12 +2655,55 @@ class VideoBox extends Component {
         // emitting our AES-GCM ciphertext) NOT 'key-agreed' (handshake
         // done but media flow not yet verified). See CallZrtp.js's
         // _startMediaActivityPoller for the state-machine details.
+        // Standalone Media-stuck pill — used when zRTP didn't reach
+        // key-active (so the main badge is hidden) but the activity
+        // poller has latched mediaStuck=true. Tapping opens the same
+        // shared MediaInfoPanel.
+        const renderMediaStuckPill = () => {
+            if (!this.state.mediaStuck) return null;
+            if (!this.state.callOverlayVisible) return null;
+            if (this.state.videoPickerVisible || this.state.audioDevicePickerVisible) return null;
+            let bottomOffset;
+            if (this.props.isTablet) {
+                bottomOffset = this.state.isLandscape ? 140 : 200;
+            } else {
+                bottomOffset = this.state.isLandscape ? 80 : 130;
+            }
+            return (
+                <View pointerEvents="box-none" style={{
+                    position: 'absolute',
+                    bottom: bottomOffset,
+                    left: 0,
+                    right: 0,
+                    alignItems: 'center',
+                    zIndex: 3000,
+                    elevation: 40,
+                }}>
+                    <TouchableOpacity onPress={this._openMediaInfoPanel}>
+                        <View style={{
+                            backgroundColor: 'rgba(230, 120, 0, 0.95)',
+                            paddingVertical: 4,
+                            paddingHorizontal: 10,
+                            borderRadius: 12,
+                            alignSelf: 'center',
+                        }}>
+                            <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>
+                                ⚠ Media stuck — tap for info
+                            </Text>
+                        </View>
+                    </TouchableOpacity>
+                </View>
+            );
+        };
         const renderZrtpBadge = () => {
             if (!this.state.callOverlayVisible) {
                 return null;
             }
             if (this.state.zrtpState !== 'key-active') {
-                return null;
+                // Fall back to the Media-stuck pill so the user has
+                // something to tap when the handshake never lit the
+                // green badge but media is broken.
+                return renderMediaStuckPill();
             }
             // Suppress the pill while either the camera picker or the
             // audio-device picker is open. The pill sits at zIndex:3000
@@ -2333,17 +2723,21 @@ class VideoBox extends Component {
             const session = getZrtpSession(this.state.call);
             const kinds = (session && session.encryptedKinds) || [];
             const kindsLabel = formatEncryptedKindsLabel(kinds);
-            // Label simplification per user spec:
-            //   both audio + video (or unknown) → "zRTP end to end encryption"
-            //   audio only                      → "zRTP audio only end to end encryption"
-            //   video only                      → "zRTP video only end to end encryption"
+            // Label simplification per user spec — dropped the longer
+            // "end to end encryption" copy to match AudioCallBox. The
+            // lock glyph + "zRTP encrypted" already communicates the
+            // state without the qualifier eating pill width. The audio-
+            // only / video-only prefix is still honoured for the
+            // unusual cases where only one stream is end-to-end
+            // encrypted (e.g. mid-call upgrade with one half still
+            // mismatched).
             let _kindsPrefix = '';
             if (kindsLabel === 'audio') {
                 _kindsPrefix = 'audio only ';
             } else if (kindsLabel === 'video') {
                 _kindsPrefix = 'video only ';
             }
-            const _zrtpLabel = '🔒 zRTP ' + _kindsPrefix + 'end to end encryption';
+            const _zrtpLabel = '🔒 zRTP ' + _kindsPrefix + 'encrypted';
             if (status === 'verified') {
                 bg = 'rgba(0, 170, 80, 0.9)';
                 // "verified" suffix suppressed in the green pill — the
@@ -2403,6 +2797,34 @@ class VideoBox extends Component {
             // the green pill is enough on its own and re-verification
             // isn't a normal user task.
             const _showTapToVerify = status !== 'verified';
+            // Secondary "i" pill — opens the shared MediaInfoPanel.
+            // Sits as a sibling next to the zRTP pill in the same
+            // horizontal row, matched height + corner radius so the
+            // two pills read as a unit.
+            const _infoPill = (
+                <TouchableOpacity
+                    accessibilityLabel="Media info"
+                    onPress={this._openMediaInfoPanel}
+                    style={{
+                        marginLeft: 14,
+                        paddingVertical: 4,
+                        paddingHorizontal: 10,
+                        borderRadius: 12,
+                        backgroundColor: 'rgba(255,255,255,0.20)',
+                        alignSelf: 'center',
+                        flexShrink: 0,
+                    }}
+                >
+                    <Text style={{
+                        color: 'white',
+                        fontSize: 12,
+                        fontWeight: 'bold',
+                        fontStyle: 'italic',
+                    }}>
+                        i
+                    </Text>
+                </TouchableOpacity>
+            );
             return (
                 <View pointerEvents="box-none" style={{
                     position: 'absolute',
@@ -2413,9 +2835,12 @@ class VideoBox extends Component {
                     zIndex: 3000,
                     elevation: 40,
                 }}>
-                    {isTappable ? (
-                        <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
-                    ) : inner}
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {isTappable ? (
+                            <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
+                        ) : inner}
+                        {_infoPill}
+                    </View>
                     {_showTapToVerify ? (
                         <Text style={{
                             color: 'rgba(255, 255, 255, 0.65)',
@@ -2787,6 +3212,12 @@ class VideoBox extends Component {
                     </View>
                 )}
                 {renderZrtpBadge()}
+                <MediaInfoPanel
+                    call={this.state.call}
+                    visible={!!this.state.mediaInfoPanelVisible}
+                    onClose={this._closeMediaInfoPanel}
+                    mediaStuck={!!this.state.mediaStuck}
+                />
                 <CallOverlay
                     show = {show}
                     remoteUri = {this.state.remoteUri}
@@ -2850,27 +3281,31 @@ class VideoBox extends Component {
 
 
                 {this.showMyself ?
-				  <View
+				  (() => {
+				    // Resolve the thumbnail's on-screen position.
+				    // selfThumbPosition is set the first time the
+				    // user drags; until then we anchor at the
+				    // default top-right just below the header. We no
+				    // longer use the fixed corner cycling.
+				    const _pos = this.state.selfThumbPosition
+				        || this._getDefaultSelfThumbPosition();
+				    return (
+				      <View
 					key={'vb-myself-wrap-' + _videoRemountKey}
+					pointerEvents="box-none"
 					style={myselfContainer}
 				  >
 					<View
 					  key={'vb-myself-pos-' + _videoRemountKey}
+					  {...this._selfThumbPanResponder.panHandlers}
 					  style={{
 						position: 'absolute',
 						width: selfThumbWidth,
 						height: selfThumbHeight,
-						...corner,
+						top: _pos.y,
+						left: _pos.x,
 					  }}
 					>
-					  <TouchableOpacity
-						style={{ flex: 1 }}
-						onPress={() => {
-						  const currentIndex = cornerOrder.indexOf(this.state.myVideoCorner);
-						  const nextIndex = (currentIndex + 1) % cornerOrder.length;
-						  this.setState({ myVideoCorner: cornerOrder[nextIndex] });
-						}}
-					  >
 					  <Surface key={'vb-myself-surf-' + _videoRemountKey} style={mySurfaceContainer}>
 						<RTCView
 							key={'vb-myself-rtc-' + _videoRemountKey}
@@ -2881,10 +3316,68 @@ class VideoBox extends Component {
 							mirror={this.state.mirror}
 						/>
 					</Surface>
-					  </TouchableOpacity>
+					{/* Swap-camera affordance, top-left of the
+					    thumbnail. Stays above the RTCView via
+					    zIndex/elevation. hitSlop expands the tap
+					    area beyond the small visible glyph. */}
+					<TouchableOpacity
+					    onPress={() => this.toggleCamera()}
+					    accessibilityLabel="Switch camera"
+					    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+					    style={{
+					        position: 'absolute',
+					        top: 4,
+					        left: 4,
+					        zIndex: 1600,
+					        elevation: 30,
+					        width: 26,
+					        height: 26,
+					        borderRadius: 13,
+					        backgroundColor: 'rgba(0,0,0,0.45)',
+					        alignItems: 'center',
+					        justifyContent: 'center',
+					    }}
+					>
+					    <Icon
+					        name="camera-switch"
+					        size={16}
+					        color="#ffffff"
+					    />
+					</TouchableOpacity>
+					{/* Close (hide self-view), top-right of the
+					    thumbnail. Sets enableMyVideo=false so the
+					    PIP is removed; the user can bring it back
+					    via the video picker's "Show myself" toggle. */}
+					<TouchableOpacity
+					    onPress={() => this.setState({enableMyVideo: false})}
+					    accessibilityRole="button"
+					    accessibilityLabel="Close self-view"
+					    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+					    style={{
+					        position: 'absolute',
+					        top: 4,
+					        right: 4,
+					        zIndex: 1600,
+					        elevation: 30,
+					        width: 26,
+					        height: 26,
+					        borderRadius: 13,
+					        backgroundColor: 'rgba(0,0,0,0.45)',
+					        alignItems: 'center',
+					        justifyContent: 'center',
+					    }}
+					>
+					    <Icon
+					        name="close"
+					        size={16}
+					        color="#ffffff"
+					    />
+					</TouchableOpacity>
 					</View>
 
 				  </View>
+				    );
+				  })()
                  : null }
 
                 {this.state.reconnectingCall ?
@@ -2915,18 +3408,40 @@ class VideoBox extends Component {
                     escalateToConference={this.escalateToConference}
                 />
 
-                {/* Fullscreen-only network HUD. Two states:
+                {/* Network HUD. Two states:
                     - Hidden behind a small "i" info icon (default).
                     - User taps the icon → speedometer expands.
                     - User taps the speedometer → collapses back to icon.
-                    Both elements share the same top-right anchor. */}
-                {this.state.fullScreen && this.state.call && !this.state.videoEnableDialogVisible ? (
+                    Anchored at the top-left of the video, matching the
+                    conference UI. Rendered in BOTH fullscreen and
+                    non-fullscreen — the default y already accounts
+                    for the navbar so the icon stays clear when the
+                    header is visible. When the speedometer is
+                    expanded the user can drag it anywhere on screen;
+                    the i icon stays fixed at the default anchor. */}
+                {this.state.call && !this.state.videoEnableDialogVisible ? (() => {
+                    const _spd = this.state.speedoPosition;
+                    const _default = this._getDefaultSpeedoPosition();
+                    const _posLeft = (this.state.showUsage && _spd) ? _spd.x : _default.x;
+                    const _posTop = (this.state.showUsage && _spd) ? _spd.y : _default.y;
+                    const _panProps = this.state.showUsage
+                        ? this._speedoPanResponder.panHandlers
+                        : {};
+                    return (
                     <View
+                        {..._panProps}
                         style={{
                             position: 'absolute',
-                            top: (this.state.insets.top || 0) + 16,
-                            right: (this.state.insets.right || 0) + 4,
+                            top: _posTop,
+                            left: _posLeft,
                             zIndex: 9999,
+                            // Android: zIndex alone doesn't stack
+                            // above other absolutely-positioned
+                            // siblings (the remote-video container
+                            // with its full-screen TouchableWithoutFeedback,
+                            // for example). elevation lifts this
+                            // layer above them.
+                            elevation: 50,
                         }}
                     >
                         {this.state.showUsage ? (
@@ -2968,7 +3483,8 @@ class VideoBox extends Component {
                             </TouchableOpacity>
                         )}
                     </View>
-                ) : null}
+                    );
+                })() : null}
 
                 {/* Camera-enable modal (RTCView + backdrop + buttons).
                     Rendered OUTSIDE the Portal so the iOS RTCView

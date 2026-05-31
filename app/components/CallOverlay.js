@@ -88,6 +88,42 @@ class CallOverlay extends React.Component {
             return;
         }
 
+        // Fresh-appearance reset. Two triggers, both meaning "the user
+        // is starting a new call attempt and any leftover state from a
+        // previous call is no longer relevant":
+        //
+        //   • overlay just became visible (show flipped false → true)
+        //     — they navigated into a call screen.
+        //   • remoteUri changed to a different peer — even within the
+        //     same overlay mount, this is a new conversation.
+        //
+        // Without this, the window BETWEEN the old call's hangup and
+        // the new call's call object materialising (parent has call=null,
+        // no new call object yet) falls into the render's
+        // `!this.state.call` branch which checks this.finalDuration
+        // first → renders "Call ended after Xs" using the previous
+        // call's data. The existing cWRP block below only resets these
+        // fields when a new call OBJECT arrives, which is too late —
+        // the stale string already painted.
+        const _overlayJustAppeared = !!nextProps.show && !this.props.show;
+        const _remoteUriChanged = nextProps.remoteUri
+                                  && nextProps.remoteUri !== this.state.remoteUri;
+        if (_overlayJustAppeared || _remoteUriChanged) {
+            if (this.timer) {
+                clearInterval(this.timer);
+                this.timer = null;
+            }
+            this.duration = null;
+            this.finalDuration = null;
+            this.setState({
+                terminatedReason: null,
+                // Don't clobber callState if the new call's state is
+                // already known — only clear if it was 'terminated' (a
+                // leftover from the previous call).
+                callState: this.state.callState === 'terminated' ? null : this.state.callState,
+            });
+        }
+
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
             this.setState({reconnectingCall: nextProps.reconnectingCall});
         }
@@ -340,7 +376,11 @@ class CallOverlay extends React.Component {
 
         this.timer = setInterval(() => {
             const duration = moment.duration(new Date() - this.state.startTime);
-            if (this.duration > 3600) {
+            // Was comparing the previous tick's STRING ("00:00", null,
+            // etc.) against 3600 — always false, so we'd never switch
+            // to the hh:mm:ss layout after an hour. Compare the
+            // current duration's seconds value instead.
+            if (duration.asSeconds() >= 3600) {
                 this.duration = duration.format('hh:mm:ss', {trim: false});
             } else {
                 this.duration = duration.format('mm:ss', {trim: false});
@@ -364,8 +404,7 @@ class CallOverlay extends React.Component {
             let callDetail = 'Contacting server...';
 
             if (this.duration) {
-                callDetail = <View><Icon name="clock"/><Text>{this.duration}</Text></View>;
-                callDetail = this.duration + 's';
+                callDetail = this.duration;
             } else {
                 if (this.state.reconnectingCall) {
                     callDetail = 'Reconnecting call...';
@@ -386,7 +425,19 @@ class CallOverlay extends React.Component {
                         callDetail = "Call in progress..."
                     }
                 } else if (this.state.callState === 'established') {
-                    callDetail = 'Media established';
+                    // The setInterval that updates this.duration hasn't
+                    // fired yet (it ticks once per second AFTER established).
+                    // Compute a one-shot duration from startTime so the
+                    // status line shows "00:00" instantly on call answer
+                    // instead of the placeholder "Media established".
+                    if (this.state.startTime) {
+                        const d = moment.duration(new Date() - this.state.startTime);
+                        callDetail = d.asSeconds() >= 3600
+                            ? d.format('hh:mm:ss', {trim: false})
+                            : d.format('mm:ss', {trim: false});
+                    } else {
+                        callDetail = '00:00';
+                    }
                 } else if (this.state.callState) {
                     callDetail = toTitleCase(this.state.callState);
                 } else if (!this.state.call) {
@@ -533,6 +584,21 @@ class CallOverlay extends React.Component {
 			} else {
 				if (Platform.Version < 34) {
 					appBarContainer.marginTop = 0;
+				}
+				// Android landscape: same problem as iOS — Paper's
+				// Appbar.Header wraps the inner Appbar in a View that
+				// applies paddingHorizontal: Math.max(left, right)
+				// from the safe-area insets, and CallOverlay sits
+				// inside the app-level SafeAreaView so its natural
+				// origin is at device x=leftInset. Without
+				// compensation the navbar starts at x=leftInset
+				// (visible empty strip on the left) — even though
+				// the video container behind it now stretches
+				// edge-to-edge.
+				if (this.state.isLandscape) {
+					const paperPad = Math.max(leftInset, rightInset);
+					appBarContainer.marginLeft = -(leftInset + paperPad);
+					appBarContainer.width = width - rightInset;
 				}
 			}
         

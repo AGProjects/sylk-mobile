@@ -1838,7 +1838,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 16,
+        this.sqlTableVersions = {'messages': 18,
                                  'contacts': 13,
                                  'accounts': 21
                                  }
@@ -2114,6 +2114,62 @@ class Sylk extends Component {
             return;
         }
        await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
+    }
+
+    // Idempotent wrapper around requestPushNotificationPermission. Fires
+    // the OS push prompt exactly once per app session, gated on the
+    // user having PGP private keys ready — that's the strongest signal
+    // we have that they're a fully-set-up account, not someone who
+    // just bounced through the login screen. Called from:
+    //   1. The boot-time SQL load path (state.keys hydrated from disk)
+    //   2. savePrivateKey (keys just imported / generated)
+    // First caller to land with keys present wins; subsequent calls
+    // no-op.
+    _maybeTriggerPushPermissionAfterKeys(source) {
+        if (this._pushPermissionRequested) return;
+        const keys = this.state && this.state.keys;
+        if (!keys || !keys.private) return;
+        this._pushPermissionRequested = true;
+        console.log('[push] keys present, triggering permission prompt (source=' + source + ')');
+        // Small delay so the prompt doesn't collide with any other
+        // post-login UI transition (route change, modal open) the
+        // caller may have just initiated.
+        setTimeout(() => {
+            this.requestPushNotificationPermission();
+        }, 1500);
+    }
+
+    // Trigger the platform push-notification permission prompt. Called
+    // by _maybeTriggerPushPermissionAfterKeys above once private keys
+    // exist on the device — so the OS dialog only appears for a fully
+    // set-up account, not at cold boot and not for an account that's
+    // logged in but hasn't yet generated / imported keys. Idempotent:
+    // OS will not re-prompt if the user already granted or denied.
+    async requestPushNotificationPermission() {
+        try {
+            if (Platform.OS === 'ios') {
+                const { APNSTokenModule } = NativeModules;
+                if (APNSTokenModule && APNSTokenModule.requestNotificationPermission) {
+                    APNSTokenModule.requestNotificationPermission();
+                } else {
+                    console.log('[push] APNSTokenModule.requestNotificationPermission unavailable');
+                }
+            } else if (Platform.OS === 'android') {
+                // Firebase Messaging's requestPermission is a no-op on
+                // Android < 13; on 13+ it surfaces the POST_NOTIFICATIONS
+                // dialog. After grant we can fetch the FCM token.
+                await messaging().requestPermission();
+                try {
+                    const app = getApp();
+                    const fcmToken = await messaging(app).getToken();
+                    if (fcmToken) this._onPushRegistered(fcmToken);
+                } catch (e) {
+                    console.log('[push] getToken after grant failed:', e && e.message);
+                }
+            }
+        } catch (e) {
+            console.log('[push] requestPushNotificationPermission failed:', e && e.message);
+        }
     }
 
 	async  displayJoinNotification() {
@@ -2675,14 +2731,27 @@ class Sylk extends Component {
         //console.log('Request camera permission');
 
         if (Platform.OS === 'ios') {
+            // react-native-permissions maps "not yet asked" to DENIED.
+            // The old code only called check() and on DENIED just told
+            // the user to visit Settings — but the user was never asked
+            // in the first place. Fix: when DENIED, actually request()
+            // so the OS prompt fires. Once the user picks something the
+            // result is GRANTED / BLOCKED and the regular paths apply.
             check(PERMISSIONS.IOS.CAMERA).then((result) => {
                 switch (result) {
                   case RESULTS.UNAVAILABLE:
                     console.log('Camera feature is not available (on this device / in this context)');
                     break;
                   case RESULTS.DENIED:
-                    console.log('Camera permission has not been requested / is denied but requestable');
-                    this._notificationCenter.postSystemNotification("Access to camera is denied. Go to Settings -> Sylk to enable access.");
+                    console.log('Camera permission not yet requested — prompting now');
+                    request(PERMISSIONS.IOS.CAMERA).then((rr) => {
+                        if (rr === RESULTS.GRANTED || rr === RESULTS.LIMITED) {
+                            console.log('Camera permission granted by user');
+                        } else {
+                            console.log('Camera permission declined by user, result =', rr);
+                            this._notificationCenter.postSystemNotification("Access to camera is denied. Go to Settings -> Sylk to enable access.");
+                        }
+                    }).catch(() => {});
                     break;
                   case RESULTS.LIMITED:
                     console.log('Camera permission is limited: some actions are possible');
@@ -2753,14 +2822,25 @@ class Sylk extends Component {
         //console.log('Request mic permission by', requestedBy);
 
         if (Platform.OS === 'ios') {
+            // See requestCameraPermission above — same fix. DENIED here
+            // means "not yet asked" (react-native-permissions convention),
+            // so we must call request() to actually surface the OS prompt
+            // instead of just telling the user to visit Settings.
             check(PERMISSIONS.IOS.MICROPHONE).then((result) => {
                 switch (result) {
                   case RESULTS.UNAVAILABLE:
                     console.log('Mic feature is not available (on this device / in this context)');
                     break;
                   case RESULTS.DENIED:
-                    console.log('Mic permission has not been requested / is denied but requestable');
-                    this._notificationCenter.postSystemNotification("Access to microphone is denied. Go to Settings -> Sylk to enable access.");
+                    console.log('Mic permission not yet requested — prompting now');
+                    request(PERMISSIONS.IOS.MICROPHONE).then((rr) => {
+                        if (rr === RESULTS.GRANTED || rr === RESULTS.LIMITED) {
+                            console.log('Mic permission granted by user');
+                        } else {
+                            console.log('Mic permission declined by user, result =', rr);
+                            this._notificationCenter.postSystemNotification("Access to microphone is denied. Go to Settings -> Sylk to enable access.");
+                        }
+                    }).catch(() => {});
                     break;
                   case RESULTS.LIMITED:
                     console.log('Mic permission is limited: some actions are possible');
@@ -2859,6 +2939,13 @@ class Sylk extends Component {
         }
 
 		this.updateKeySql(keys);
+
+        // Keys just landed (generated locally or imported from another
+        // device). This is the strongest "fully set-up account" signal
+        // we have, so it's the right moment to surface the iOS / Android
+        // push notification permission prompt. The helper is idempotent
+        // and won't re-prompt if the SQL-load path already fired.
+        this._maybeTriggerPushPermissionAfterKeys('savePrivateKey');
 
         // On fresh enrollment the order is: registration completes BEFORE keys
         // exist locally, so requestSyncConversations() fires once and bails with
@@ -3117,8 +3204,25 @@ class Sylk extends Component {
     }
 
     async toggleSearchContacts () {
-        //console.log(' -- toggle search contacts', !this.state.searchContacts);
-        this.setState({searchContacts: !this.state.searchContacts});
+        const next = !this.state.searchContacts;
+        //console.log(' -- toggle search contacts', next);
+        this.setState({searchContacts: next});
+        // The Search button (account-search icon in NavigationBar) is
+        // the ONLY user gesture that should trigger the OS contacts
+        // permission prompt. Focus / typing inside the search bar used
+        // to kick loadAddressBook implicitly, which surprised users
+        // with a permission dialog they didn't ask for (notably right
+        // after first login on a new device when the search field
+        // grabbed focus on its own). Now we only fire it when search
+        // mode is being entered — loadAddressBook itself is idempotent
+        // (no-op if permission granted and contacts already fetched).
+        if (next) {
+            try {
+                this.loadAddressBook();
+            } catch (e) {
+                console.log('toggleSearchContacts loadAddressBook failed:', e && e.message);
+            }
+        }
     }
 
 	async getChatContacts() {
@@ -3795,6 +3899,26 @@ class Sylk extends Component {
 			 return;
 	     }
 
+	     // Anchor the native in-conference clear on "no current call".
+	     // The flag is SET explicitly in outgoingConference (where we
+	     // unambiguously know it's a conference, before _participants
+	     // is attached by sylkrtc). The clear is anchored here on
+	     // currentCall → null because that covers every termination
+	     // path — clean 'terminated', provider reset, account
+	     // logout / switch, WSS-side teardown — without depending on
+	     // isConference(call) at the moment of teardown (which is
+	     // unreliable because _participants is sometimes removed
+	     // before the terminate hook runs). We deliberately do NOT
+	     // try to derive conf-vs-1-1 from a non-null currentCall
+	     // here for the same reason — _participants may not have
+	     // landed yet when setState fires. Setting on a 1-1 call is
+	     // also safe-by-omission: 1-1 calls never go through
+	     // outgoingConference, so the flag stays false for them.
+	     if (this.state.currentCall !== prevState.currentCall
+	             && !this.state.currentCall) {
+	         this.setNativeInConferenceFlag(false);
+	     }
+
 	     if (this.state.accountId != prevState.accountId) {
 		     //console.log(this.cdu_counter, 'CDU --- accountId changed', prevState.accountId, '->', this.state.accountId);
 			 this.cdu_counter = this.cdu_counter + 1;
@@ -4436,9 +4560,11 @@ class Sylk extends Component {
                                      image TEXT, 
                                      encrypted INTEGER default 0, 
                                      direction TEXT, 
-                                     state TEXT, 
-                                     disposition_notification TEXT, 
-                                     PRIMARY KEY (account, msg_id)) 
+                                     state TEXT,
+                                     disposition_notification TEXT,
+                                     category TEXT,
+                                     has_link INTEGER,
+                                     PRIMARY KEY (account, msg_id))
                                     `;
 
         this.ExecuteQuery(create_table_messages).then((success) => {
@@ -4456,6 +4582,23 @@ class Sylk extends Component {
             console.log(idx_messages_account_time);
             console.log('SQL messages idx creation error:', error);
         });
+
+		// Category-aware compound index. Also added by the v17
+		// migration for upgraded installs; declared here for fresh
+		// installs which skip the migration block entirely.
+		const idx_messages_contact_category_ts =
+			'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_ts ON messages(account, from_uri, to_uri, category, unix_timestamp)';
+		this.ExecuteQuery(idx_messages_contact_category_ts).catch((error) => {
+			console.log('SQL category idx creation error:', error);
+		});
+
+		// v18 has_link compound index — fresh-install side, same
+		// reasoning as the v17 one above.
+		const idx_messages_contact_category_link_ts =
+			'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_link_ts ON messages(account, from_uri, to_uri, category, has_link, unix_timestamp)';
+		this.ExecuteQuery(idx_messages_contact_category_link_ts).catch((error) => {
+			console.log('SQL has_link idx creation error:', error);
+		});
 
         let create_table_contacts = `CREATE TABLE IF NOT EXISTS contacts ( 
                                      account TEXT NOT NULL, 
@@ -4681,6 +4824,51 @@ class Sylk extends Component {
                                                 //   cheap as the column grows.
                                                 16: [{query: 'alter table messages add column expire INTEGER default 0', params: []},
                                                      {query: 'CREATE INDEX IF NOT EXISTS idx_messages_expire ON messages(expire) WHERE expire > 0', params: []}],
+                                                // v17: persisted per-row category column.
+                                                //   One of {'text','image','video','audio','location',
+                                                //   'other'} or NULL (control rows: pgp keys,
+                                                //   reactions, replies — never surfaced as bubbles).
+                                                //   Computed at INSERT time by saveOutgoing-/save-
+                                                //   IncomingMessageSql via _classifyMessageCategory,
+                                                //   so subsequent reads don't have to repeat the
+                                                //   JSON-parse + utils.isImage/isAudio/isVideo loop
+                                                //   per file-transfer row. The compound index puts
+                                                //   `category` before `unix_timestamp` so both
+                                                //   "all messages in category X" and "per-day
+                                                //   histogram for category X" reads sit on an
+                                                //   index range scan instead of a table scan.
+                                                //   Backfill of existing rows runs after the
+                                                //   migration block (see _backfillMessageCategories,
+                                                //   invoked from initSQL once the version bump
+                                                //   commits) — one-shot, no rerun on subsequent
+                                                //   boots.
+                                                17: [{query: 'alter table messages add column category TEXT', params: []},
+                                                     {query: 'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_ts ON messages(account, from_uri, to_uri, category, unix_timestamp)', params: []}],
+                                                // v18: per-row has_link flag overlaying the
+                                                //   category column. Persisted alongside
+                                                //   category so a single text row that contains
+                                                //   a URL can be queried under both the "text"
+                                                //   chip AND the "links" chip without inventing
+                                                //   a multi-value category. Computed at INSERT
+                                                //   time when we have plaintext (outgoing rows
+                                                //   always; incoming rows that arrive via the
+                                                //   push handler with already-decrypted body)
+                                                //   and lazily at decrypt time in sql2GiftedChat
+                                                //   for stored encrypted rows. The compound
+                                                //   index puts has_link before unix_timestamp
+                                                //   so the Links date-pill query
+                                                //   (`AND category='text' AND has_link=1`)
+                                                //   stays on the index — same shape as the
+                                                //   per-category date queries from v17.
+                                                //   Backfill: pre-v18 rows land with NULL
+                                                //   has_link; the decrypt-time path fills them
+                                                //   in over normal use (one UPDATE per row, at
+                                                //   most once). No big bulk-decrypt pass at
+                                                //   boot — keeps upgrades quick on big chats
+                                                //   even if the link pills lag a tiny bit
+                                                //   behind reality until rows get rendered.
+                                                18: [{query: 'alter table messages add column has_link INTEGER', params: []},
+                                                     {query: 'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_link_ts ON messages(account, from_uri, to_uri, category, has_link, unix_timestamp)', params: []}],
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -4878,6 +5066,25 @@ class Sylk extends Component {
             // (dnd / rejectAnonymous / rejectNonContacts). See
             // ACCOUNT_SETTINGS_DEFAULTS for the full schema.
             this.ensureColumn('accounts', 'settings', 'TEXT');
+            // Per-row category column (v17). Same self-heal so the
+            // backfill below can rely on the column existing even
+            // if the v17 migration entry got skipped.
+            this.ensureColumn('messages', 'category', 'TEXT');
+            // v18 has_link self-heal — same idempotent pattern.
+            this.ensureColumn('messages', 'has_link', 'INTEGER');
+
+            // Backfill the category column for rows that pre-date
+            // v17. Runs at most once per install (guarded by an
+            // AsyncStorage flag inside the method); subsequent
+            // boots see the flag and short-circuit. Fire-and-forget
+            // — the chat surface tolerates a brief window where
+            // category is NULL on old rows (queries falling back to
+            // counting all rows, which matches pre-v17 behaviour).
+            this._backfillMessageCategories();
+            // v18 has_link backfill for already-plaintext rows.
+            // Same fire-and-forget pattern; the lazy decrypt
+            // path handles encrypted-only rows over normal use.
+            this._backfillHasLink();
 
         }).catch((error) => {
             console.log('upgradeSQLTables error:', error);
@@ -5800,6 +6007,20 @@ class Sylk extends Component {
     changeRoute(route, reason) {
         console.log('Route', route, 'with reason', reason);
         utils.timestampedLog('[app] Route', this.currentRoute, '->', route, ':', reason);
+
+        // Drive the native in-conference flag off route transitions.
+        // outgoingConference also sets the flag on conference start,
+        // but that hook misses the case where the user is ALREADY in
+        // a conference when the JS bundle reloads (the join happened
+        // under the old bundle without the set). The route is the
+        // most reliable anchor: /conference means a conference is on
+        // screen, anything else means we aren't in one. Idempotent
+        // — native writes are cheap.
+        if (route === '/conference') {
+            this.setNativeInConferenceFlag(true);
+        } else if (this.currentRoute === '/conference' && route !== '/conference') {
+            this.setNativeInConferenceFlag(false);
+        }
         // Overlay dismissal is now driven by the
         // SylkAudioCallBoxMounted DeviceEventEmitter event (see the
         // listener in constructor) — that's the precise moment the
@@ -6374,19 +6595,36 @@ class Sylk extends Component {
             if (!this.serverSettingsSynced) {
                 this._startReconciliationTimer();
             }
-            // Server email wins. If the snapshot includes an email,
-            // overwrite the local state.email and mirror the value
-            // onto the myself contact record so the next render of
-            // any UI binding (My Account header, Gravatar lookup,
-            // payment receipt "From:") uses the authoritative value.
-            // We don't gate on "local empty" — even if a stale local
-            // value exists, the server is the source of truth here.
+            // Server email wins — ALWAYS. At start (and on every
+            // subsequent snapshot) we unconditionally overwrite the
+            // local state.email with the server-provided SIP account
+            // email and mirror the value onto the myself contact
+            // record so every UI binding (My Account header, Gravatar
+            // lookup, payment receipt "From:") uses the authoritative
+            // value. No "local empty" gate, no "different from local"
+            // gate — the server is the single source of truth.
             try {
-                const srvEmail = (info && typeof info.email === 'string') ? info.email.trim() : '';
-                if (!this.unmounted && srvEmail !== (this.state.email || '')) {
+                let srvEmail = (info && typeof info.email === 'string') ? info.email.trim() : '';
+                // Fallback: the server account row sometimes has a null
+                // email (older accounts, accounts enrolled before email
+                // was a required field, accounts created via PSTN flow
+                // without email capture). For Sylk identities the SIP
+                // address IS in user@domain shape, so it makes a
+                // sensible default — better than rendering "(no email)"
+                // in My Account and breaking Gravatar / payment-receipt
+                // lookups that all need *something*.
+                if (!srvEmail && account && account.indexOf('@') > -1) {
+                    srvEmail = account;
+                }
+                if (!this.unmounted) {
+                    // Unconditional overwrite — do NOT gate on
+                    // srvEmail !== state.email. The user explicitly
+                    // wants the local value clobbered with the server
+                    // value at every refresh (and in particular at
+                    // start), regardless of what the local value was.
                     this.setState({ email: srvEmail });
                     const myContact = this.lookupContact && this.lookupContact(account);
-                    if (myContact && srvEmail !== (myContact.email || '')) {
+                    if (myContact) {
                         myContact.email = srvEmail;
                         if (typeof this.saveSylkContact === 'function') {
                             this.saveSylkContact(account, myContact, 'server-sync');
@@ -8322,7 +8560,21 @@ class Sylk extends Component {
 
         getPhoneNumber().then(myPhoneNumber => {
             //console.log('myPhoneNumber', myPhoneNumber);
-            this.setState({myPhoneNumber: myPhoneNumber});
+            // Validate before persisting. react-native-device-info
+            // returns the literal string 'unknown' on iOS (Apple
+            // doesn't expose the SIM MSISDN to apps) and can return
+            // empty / non-numeric strings on Android when the SIM has
+            // no number programmed. We only want to surface a value
+            // that's actually a phone number — anything else gets
+            // dropped so the My Account field stays empty (prompting
+            // the user to enter their own) instead of showing
+            // 'unknown' as their Caller ID.
+            if (myPhoneNumber
+                    && typeof myPhoneNumber === 'string'
+                    && myPhoneNumber !== 'unknown'
+                    && utils.isPhoneNumber(myPhoneNumber)) {
+                this.setState({myPhoneNumber: myPhoneNumber});
+            }
         });
 
  		this.listenForPushNotifications();
@@ -8916,11 +9168,18 @@ class Sylk extends Component {
 
     Linking.addEventListener('url', this.updateLinkingURL);
 
-    // --- Request permissions ---
+    // --- Push permission deferred until after first successful login ---
+    // Previously this block called messaging().requestPermission() on
+    // Android and registered the APNs listener on iOS at app boot,
+    // which surfaced the OS push prompt before the user had even seen
+    // the login screen. The prompt is now triggered post-login in
+    // registrationStateChanged → registered (see
+    // requestPushNotificationPermission below). We still set up the
+    // APNs token listener here (no prompt) so that when the native
+    // side eventually calls registerForRemoteNotifications, JS can
+    // receive the resulting token.
     if (Platform.OS === 'ios') {
         await this.registerPushToken();
-    } else {
-        await messaging().requestPermission();
     }
 
     if (Platform.OS === 'android') {
@@ -10344,6 +10603,14 @@ class Sylk extends Component {
 				this.requestNotificationsPermission();
 			}, 40000);
 
+			// Push permission prompt is NOT triggered here any more —
+			// it's gated on PGP keys being present (see
+			// _maybeTriggerPushPermissionAfterKeys), so on a fresh
+			// account that registers before keys arrive we wait. The
+			// keys-ready paths (savePrivateKey, SQL key load) call
+			// the helper, which short-circuits if either path has
+			// already fired the prompt this session.
+
             //if (this.currentRoute === '/login' && (!this.startedByPush || Platform.OS === 'ios'))  {
             // TODO if the call does not arrive, we never get back to ready
             if (this.currentRoute === '/login' && !this.signOut) {
@@ -11230,7 +11497,16 @@ class Sylk extends Component {
 				               lastSyncId: data.last_sync_id,
 				               lastSyncTimestamp: lastSyncTimestamp,
 				               keyStatus: {...keyStatus},
-				               });
+				               }, () => {
+				    // Returning user: keys hydrated from disk, this is
+				    // the right moment to surface the push permission
+				    // prompt (gated on the keys actually being present —
+				    // the SQL row can be there without a key pair).
+				    // _maybeTriggerPushPermissionAfterKeys is idempotent
+				    // and short-circuits if savePrivateKey already fired
+				    // the prompt this session.
+				    this._maybeTriggerPushPermissionAfterKeys('sqlLoad');
+				});
 
 				// Hydrate the in-memory call_history dedupe cache so
 				// the next refreshAccountInfo this session can skip
@@ -11651,6 +11927,33 @@ class Sylk extends Component {
         return false;
     }
 
+    /**
+     * Push the current "user is in a conference" state down to the
+     * native push handlers (iOS PushKit, Android FCM). When set, an
+     * incoming audio / video / conference-invite push is silently
+     * dropped at the native layer — the loud CallKit / Telecom ringer
+     * never fires — and the native handler posts a regular silent
+     * "missed call" local notification instead. Cleared the moment
+     * the conference call terminates so the next push rings normally.
+     *
+     * Idempotent and safe to call from any state-change path.
+     */
+    setNativeInConferenceFlag(active) {
+        try {
+            if (Platform.OS === 'android') {
+                if (SylkBridge && typeof SylkBridge.setInConference === 'function') {
+                    SylkBridge.setInConference(!!active);
+                }
+            } else if (Platform.OS === 'ios') {
+                if (SharedDataModule && typeof SharedDataModule.setInConference === 'function') {
+                    SharedDataModule.setInConference(!!active);
+                }
+            }
+        } catch (e) {
+            console.log('setNativeInConferenceFlag failed:', e);
+        }
+    }
+
 	setProximityChosenDevice() {
 		// This runs at call-state transitions (ringing / proceeding /
 		// early-media / established). The original "proximity set
@@ -11962,6 +12265,15 @@ class Sylk extends Component {
                 callsState[callUUID] = {startTime: new Date()};
                 this.setState({callsState: callsState});
 
+                // The native in-conference flag is set up in
+                // outgoingConference (the only entry point for both
+                // outgoing and incoming-invite-accepted conference
+                // calls) — earlier we tried to set it here gated on
+                // isConference(call), but call._participants isn't
+                // attached until after 'established' fires, so this
+                // branch always missed it. componentDidUpdate handles
+                // the clear when currentCall returns to null.
+
                 // Capture whether the user already chose a device (Speaker /
                 // Earpiece in the picker before the call connected) BEFORE
                 // audioManagerStart() — that helper resets
@@ -12024,6 +12336,31 @@ class Sylk extends Component {
                         clearTimeout(this.timeoutIncomingTimer);
                         this.timeoutIncomingTimer = null;
                     }
+                } else if (this.isConference(call)) {
+                    // OUTGOING CONFERENCES: in sylkrtc's conference
+                    // state machine 'established' can arrive while
+                    // setRemoteDescription is still in flight — in
+                    // that case the library sets _delay_established
+                    // and only re-emits 'established' after the SDP
+                    // promise resolves. The delay window can be
+                    // long enough that CallKit's outgoing-
+                    // connecting timer (~45 s) fires first and
+                    // tears the audio session down — which is the
+                    // user-visible "audio cut 45 s after join"
+                    // symptom on iOS. 1-to-1 SIP calls don't hit
+                    // this path because their state machine
+                    // reliably reaches 'established' once media
+                    // flows. Fire BOTH setCurrentCallActive (to
+                    // promote the CallKit call to connected) and
+                    // audioManagerStart (to push AVAudioSession to
+                    // playAndRecord via InCallManager) right here
+                    // on 'accepted' so the audio session is
+                    // anchored independently of when (or whether)
+                    // 'established' eventually arrives. Repeats on
+                    // 'established' are no-ops.
+                    utils.timestampedLog('[conference] accepted for outgoing — reporting CallKit connected + kicking audioManager to keep audio session alive');
+                    this.callKeeper.setCurrentCallActive(callUUID);
+                    this.audioManagerStart();
                 }
 
                 if (callUUID === this.state.incomingCallUUID) {
@@ -12083,6 +12420,13 @@ class Sylk extends Component {
 				if (direction === 'outgoing' && Platform.OS === 'android') {
 					SylkBridge.setActiveCall(null);
 				}
+
+                // The native in-conference flag is cleared by
+                // componentDidUpdate when state.currentCall goes
+                // null — the gated check we had here misfired because
+                // call._participants is sometimes removed before
+                // 'terminated' fires, leaving isConference(call)
+                // false at the very moment we needed it to be true.
 
                 if (this.state.incomingCall && this.state.incomingCall.id === call.id) {
                     newincomingCall = null;
@@ -13100,7 +13444,7 @@ class Sylk extends Component {
             displayName = this.state.displayName;
         }
 
-        utils.timestampedLog('[account] [register] process for', accountId, '(', displayName, ')');
+        //utils.timestampedLog('[account] [register] process for', accountId, '(', displayName, ')');
 
         if (!this.state.connection) {
             console.log('No connection');
@@ -13509,18 +13853,21 @@ class Sylk extends Component {
 
     updateSelection(uri) {
          //console.log('updateSelection', uri);
-         let selectedContacts = this.state.selectedContacts;
-         //console.log('selectedContacts', selectedContacts);
-
-         let idx = selectedContacts.indexOf(uri);
-
-         if (idx === -1) {
-             selectedContacts.push(uri);
-         } else {
-             selectedContacts.splice(idx, 1);
-         }
-
-         this.setState({selectedContacts: selectedContacts});
+         // Immutable update — the previous implementation mutated the
+         // existing array in place (push/splice on the state reference)
+         // which kept the array's identity unchanged. Downstream
+         // reference-equality memo checks (FlatList extraData,
+         // React.memo, ContactsListBox's UNSAFE_componentWillReceiveProps
+         // shallow compare) couldn't detect the change, so any cached
+         // child kept its stale `selected` decoration. Building a new
+         // array on every toggle gives those checks a real signal and
+         // also matches the React state-update convention.
+         const current = this.state.selectedContacts || [];
+         const idx = current.indexOf(uri);
+         const next = idx === -1
+             ? current.concat([uri])
+             : current.slice(0, idx).concat(current.slice(idx + 1));
+         this.setState({selectedContacts: next});
     }
 
     async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}, domain=null) {
@@ -13814,6 +14161,20 @@ class Sylk extends Component {
         // call UI gates (countdown bar, awaiting-user-start, etc.)
         // stay suppressed through the re-establishment. Fresh
         // outgoing starts clear it.
+        // Stash the user's "Audio" vs "Video" button-press intent so
+        // Call.js's render branch knows which preview to show for the
+        // brief window between route → /call and getLocalMedia
+        // returning. Without this assignment outgoingMediaIsVideo
+        // computed in app.call() is always false (this.outgoingMedia
+        // retains its previous value — typically null on a fresh
+        // dial), so Call.js falls into the `box = <AudioCallBox/>`
+        // branch even for video calls, briefly mounting the audio
+        // pre-call layout (with its blue Start audio call button and
+        // 4 s countdown) before LocalMedia takes over once the camera
+        // stream arrives. The conference-start sibling already does
+        // this; the 1:1 path was missing it.
+        this.outgoingMedia = options;
+
         const _startCallSetState = {
             targetUri: targetUri,
             callContact: this.state.selectedContact,
@@ -14866,6 +15227,22 @@ class Sylk extends Component {
 
     outgoingConference(call) {
         // called by sylrtc.js when an outgoing conference starts
+        //
+        // Flip the native in-conference flag the moment a conference
+        // call is initiated — earlier checks tried to gate this on
+        // isConference(call) (which inspects call._participants), but
+        // _participants is added by sylkrtc AFTER 'established' fires,
+        // so a parallel incoming push during the join window sees
+        // inConference=false in NSUserDefaults / SharedPreferences and
+        // the loud CallKit panel / Telecom ringer fires. By the time
+        // _participants does land, the panel is already up. Setting
+        // here is unambiguous: outgoingConference fires only for
+        // conference calls (both outgoing and incoming-invite accepts
+        // flow through here via conferenceCall → outgoingConference),
+        // so we know this is a conference even before _participants
+        // exists. componentDidUpdate clears the flag when currentCall
+        // returns to null.
+        this.setNativeInConferenceFlag(true);
         call.on('stateChanged', this.callStateChanged);
         // Same in-dialog messaging wiring as outgoingCall — see comment
         // there. Always enabled (regardless of the current ZRTP
@@ -15104,7 +15481,7 @@ class Sylk extends Component {
         utils.timestampedLog('Conference [call] invite from websocket', data.id, 'from', data.originator, 'for room', data.room);
         if (this.isConference()) {
             return;
-        }            
+        }
         const media = {audio: true, video: true}
 		this.incomingConference(data.id, data.room, data.originator.uri, data.originator.displayName, media, 'websocket');
     }
@@ -15693,6 +16070,90 @@ class Sylk extends Component {
         this.callKeeper.incomingCallFromPush(callUUID, from, displayName, mediaType, force, skipNativePanel);
     }
 
+    // Centralised handler for an incoming WSS-delivered call that we drop
+    // because DND (app or OS) is active and the caller isn't on the
+    // favoriteUris bypass list. Posts the silent missed-call notification
+    // (same channel as the in-conference and FCM-DND suppression paths),
+    // then mirrors what the 'terminated' state handler does for a regular
+    // missed call: addHistoryEntry → contact.unread/tags bookkeeping →
+    // saveSylkContact → saveSystemMessage. Without this, the user has
+    // zero in-app indication that someone tried to reach them — no chat
+    // entry, no contact badge, no NavBar missed-call count. Finally
+    // reject the call at the sylkrtc level so the dialog tears down and
+    // the RTCPeerConnection doesn't linger in iceGathering forever.
+    _handleDndDrop(call, callUUID, from, osDnd) {
+        const reasonText = osDnd ? 'system Do Not Disturb' : 'Do Not Disturb';
+        utils.timestampedLog('[call] [wss] [drop] DND active — dropping call from '
+            + from + ' (callUUID=' + callUUID + ' reason=' + reasonText + ')');
+
+        // 1. Silent missed-call notification on rejected_calls_channel_v2.
+        if (Platform.OS === 'android' && SylkBridge
+                && typeof SylkBridge.showSuppressedCallNotification === 'function') {
+            try {
+                SylkBridge.showSuppressedCallNotification(from, false, reasonText);
+            } catch (e) { /* best effort */ }
+        }
+
+        // 2. Missed-call bookkeeping. Same shape as the foreground-missed
+        // branch at the top of the 'terminated' state handler (around
+        // line 12504-12558), keyed on the SIP Call-ID so the eventual
+        // server call_history sync de-dupes against what we record here.
+        try {
+            const _sipCallId = (call && (call._callId || call.callId)) || callUUID;
+            this.addHistoryEntry(from, callUUID, 'incoming');
+            const _missedContact = this.lookupContact(from);
+            if (_missedContact) {
+                if (!Array.isArray(_missedContact.unread)) _missedContact.unread = [];
+                if (!Array.isArray(_missedContact.tags))   _missedContact.tags = [];
+                let _changed = false;
+                if (_missedContact.unread.indexOf(_sipCallId) === -1) {
+                    _missedContact.unread.push(_sipCallId);
+                    _changed = true;
+                }
+                if (_missedContact.tags.indexOf('missed') === -1) {
+                    _missedContact.tags.push('missed');
+                    _changed = true;
+                }
+                const _mc = Array.isArray(this.state.missedCalls)
+                    ? this.state.missedCalls.slice() : [];
+                if (_mc.indexOf(_sipCallId) === -1) {
+                    _mc.push(_sipCallId);
+                    this.setState({missedCalls: _mc});
+                    _changed = true;
+                }
+                if (_changed) {
+                    this.saveSylkContact(from, _missedContact, 'missedCallDnd');
+                }
+            } else {
+                utils.timestampedLog('[call] [wss] [drop] DND missed-call: no Sylk contact for',
+                    from, '— badge skipped');
+            }
+
+            // 3. Chat breadcrumb. Same saveSystemMessage shape the
+            // terminated handler uses (line 12651-12663) and that the
+            // _finalizeRevivableMiss path uses (line 14716).
+            const _now = new Date();
+            const _ts = utils.appendLeadingZeroes(_now.getHours()) + ":"
+                      + utils.appendLeadingZeroes(_now.getMinutes()) + ":"
+                      + utils.appendLeadingZeroes(_now.getSeconds());
+            this.saveSystemMessage(
+                from,
+                _ts + ' - Missed call (Do not disturb)',
+                'incoming',
+                true   // missed=true so the bubble renders as a missed-call row
+            );
+        } catch (e) {
+            console.log('[call] [wss] [drop] DND bookkeeping error:', e && e.message);
+        }
+
+        // 4. Tear down the sylkrtc dialog. A bare `return` leaves the Call
+        // object alive and the PeerConnection drifting in iceGathering,
+        // which is what produced the "Collecting ICE candidates…" navbar
+        // stickiness the user reported earlier.
+        try { this.callKeeper.rejectCall(callUUID); }
+        catch (e) { console.log('[call] [wss] [drop] rejectCall threw:', e && e.message); }
+    }
+
     async incomingCallFromWebSocket(call, mediaTypes) {
         if (this.unmounted) {
             return;
@@ -15805,8 +16266,28 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
-            console.log('Do not disturb')
+        // DND drop for WSS-delivered incoming calls. Mirrors the FCM-side
+        // gate in MyFirebaseMessagingService.onMessageReceived (the
+        // [call] [fcm] [drop] OS/App DND branches). When the WSS is up
+        // the call arrives here directly — the FCM service never sees it
+        // — so without this check the call would proceed to SDP/ICE
+        // warmup and the NavBar would show "Collecting ICE candidates…".
+        // _handleDndDrop posts the silent missed-call notification, runs
+        // the missed-call bookkeeping (history, contact badge, chat row)
+        // and tears down the sylkrtc dialog.
+        const appDnd = !!(this.state.accountSetting
+            && this.state.accountSetting.privacy
+            && this.state.accountSetting.privacy.dnd);
+        let osDnd = false;
+        if (Platform.OS === 'android' && NativeModules.AndroidSettings
+                && typeof NativeModules.AndroidSettings.isOsDndOn === 'function') {
+            try {
+                osDnd = await NativeModules.AndroidSettings.isOsDndOn();
+            } catch (e) { /* fail open */ }
+        }
+        const isFavorite = this.state.favoriteUris.indexOf(from) !== -1;
+        if ((appDnd || osDnd) && !isFavorite) {
+            this._handleDndDrop(call, callUUID, from, osDnd);
             return;
         }
 
@@ -16162,8 +16643,14 @@ class Sylk extends Component {
         let timestamp = new Date();
         let params;
         let unix_timestamp = Math.floor(timestamp / 1000);
-        params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, contentType, from_uri, to_uri, "outgoing", "1"];
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        const _cat = this._classifyMessageCategory(contentType, null, null);
+        // saveOutgoingRawMessage is called with the wire-format
+        // content (ciphertext for encrypted text). The plaintext
+        // isn't available here, so we can't reliably set has_link
+        // — leave it NULL and let sql2GiftedChat fill it on first
+        // decrypt-read.
+        params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, contentType, from_uri, to_uri, "outgoing", "1", _cat, null];
+        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL insert message OK');
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -16390,7 +16877,27 @@ class Sylk extends Component {
 			}));
 
             if (uri === this.state.accountId) {
-                this.setState({email: contact.email, displayName: contact.name})
+                // Mirror the myself-contact load filter in loadSylkContacts
+                // (see ~line 3576). Don't propagate displayName when it's
+                // empty, the literal 'Myself' sentinel, or a case-insensitive
+                // URI echo — those values used to leak into the My Account
+                // panel and then get re-saved verbatim. The user only wants
+                // a display name they've actually typed in. Same idea for
+                // email: don't clobber a server-supplied email with a contact
+                // row that has none (e.g. autosaved before refreshAccountInfo).
+                const _rawName = (contact.name || '').trim();
+                const _isUriEcho = _rawName !== ''
+                    && _rawName.toLowerCase() === (uri || '').toLowerCase();
+                const _next = {};
+                if (_rawName && _rawName !== 'Myself' && !_isUriEcho) {
+                    _next.displayName = _rawName;
+                }
+                if (contact.email) {
+                    _next.email = contact.email;
+                }
+                if (Object.keys(_next).length > 0) {
+                    this.setState(_next);
+                }
             }
 
         }).catch((error) => {
@@ -16506,7 +17013,22 @@ class Sylk extends Component {
 					this.updateBlocked(uri, blocked);
 	
 				} else {
-					this.setState({email: contact.email, displayName: contact.name})
+					// Same filter as saveSylkContact's insert path above:
+					// drop URI-echo / 'Myself' / empty displayName, and
+					// don't overwrite a working email with an empty one.
+					const _rawName = (contact.name || '').trim();
+					const _isUriEcho = _rawName !== ''
+					    && _rawName.toLowerCase() === (uri || '').toLowerCase();
+					const _next = {};
+					if (_rawName && _rawName !== 'Myself' && !_isUriEcho) {
+					    _next.displayName = _rawName;
+					}
+					if (contact.email) {
+					    _next.email = contact.email;
+					}
+					if (Object.keys(_next).length > 0) {
+					    this.setState(_next);
+					}
 				}
             }
 
@@ -17166,6 +17688,19 @@ class Sylk extends Component {
                 return;
             }
 
+            // Defensive: belt-and-braces over the sanitization in
+            // file2GiftedChat. If filename slipped through with a leading
+            // slash (e.g. from an older code path or shared-extension
+            // intent payload), strip it here too — otherwise this
+            // concatenation produces `.../<transfer_id>//filename`,
+            // RNFS.copyFile silently writes to the wrong place, and the
+            // viewer later gets a black screen for a file that never
+            // existed at the path we stored.
+            const _safeFilename = String(file_transfer.filename || '').replace(/^[/.]+/, '') || `file-${file_transfer.transfer_id}`;
+            if (_safeFilename !== file_transfer.filename) {
+                console.log('[upload] normalising filename', JSON.stringify(file_transfer.filename), '->', _safeFilename);
+                file_transfer.filename = _safeFilename;
+            }
             const localPath = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + file_transfer.receiver.uri + "/" + file_transfer.transfer_id + "/" + file_transfer.filename;
             if (file_transfer.path !== localPath) {
                 // the file may have already been copied
@@ -17883,8 +18418,10 @@ class Sylk extends Component {
         let sender = !system ? message.user._id : null;
 
         var content = message.text;
-        var params = [this.state.accountId, system, JSON.stringify(message.metadata), message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, content, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0];
-        await this.ExecuteQuery("INSERT INTO messages (account, system, metadata, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        const _cat = this._classifyMessageCategory(contentType, message.metadata, null);
+        const _hl = this._hasLinkInText(contentType, content);
+        var params = [this.state.accountId, system, JSON.stringify(message.metadata), message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, content, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0, _cat, _hl];
+        await this.ExecuteQuery("INSERT INTO messages (account, system, metadata, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL insert conference message', message._id, from_uri, to_uri, message.direction);
             if (room in messages) {
                 messages[room].push(message);
@@ -18101,8 +18638,14 @@ class Sylk extends Component {
 				expire = nowSecForExpire + SEVEN_DAYS_SEC;
 			}
 
-			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted, related_msg_id, related_action, expire];
-			await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted, related_msg_id, related_action, expire) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+			const _cat = this._classifyMessageCategory(content_type, message.metadata, related_action);
+			// `message.text` here is the value being persisted in
+			// the content column — for outgoing encrypted rows
+			// that's the CIPHERTEXT, not the plaintext. We can't
+			// reliably probe for URLs, so leave has_link NULL and
+			// let the lazy decrypt-time update path fill it in.
+			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted, related_msg_id, related_action, expire, _cat, null];
+			await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted, related_msg_id, related_action, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 
 			}).catch((error) => {
 				if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -19605,6 +20148,31 @@ class Sylk extends Component {
     }
 
     async autoDownloadFile(file_transfer) {
+        // Per-network auto-download gate — driven by the two
+        // pill toggles in Preferences → Data Usage. Defaults: BOTH
+        // ON (Wi-Fi AND Mobile). Settings live at
+        // accountSetting.device.autoDownloadOn{Wifi,Mobile}. The
+        // current network type comes from state.connectivity which
+        // _watchNetwork keeps in sync ('wifi' / 'mobile' / null).
+        // We only block here when the network type is KNOWN — if
+        // connectivity hasn't been determined yet (early boot, before
+        // the first NetInfo event), we fall through and let the
+        // legacy filesize gate decide. Manual downloads (user tap on
+        // a file bubble) go through downloadFile(), not this path,
+        // so they're never blocked by these toggles.
+        const _dev = (this.state.accountSetting && this.state.accountSetting.device) || {};
+        const _wifiAllowed   = _dev.autoDownloadOnWifi   !== false; // default true
+        const _mobileAllowed = _dev.autoDownloadOnMobile !== false; // default true
+        if (this.state.connectivity === 'wifi' && !_wifiAllowed) {
+            console.log('autoDownloadFile skipped — Wi-Fi auto-download disabled in Preferences',
+                file_transfer.transfer_id);
+            return;
+        }
+        if (this.state.connectivity === 'mobile' && !_mobileAllowed) {
+            console.log('autoDownloadFile skipped — Mobile auto-download disabled in Preferences',
+                file_transfer.transfer_id);
+            return;
+        }
         if (this.state.connectivity == 'mobile' && file_transfer.filesize > 20 * 1000 * 1000) {
         	console.log('autoDownloadFile large file transfer skipped on mobile', file_transfer.transfer_id);
  			return;
@@ -19993,6 +20561,49 @@ class Sylk extends Component {
             file_transfer.error = null;
 
             this.updateFileTransferSql(file_transfer, encrypted, true);
+        }
+
+        // Repair a broken/truncated stored filename before we use it to
+        // compute the on-disk path. Old records (and one historical
+        // image-picker bug) stored filename as a leading "/" + truncated
+        // basename — e.g. "/E0707C84-D6B5-4348-AA31-" instead of the
+        // full "E0707C84-D6B5-4348-AA31-70A893468001.jpg". When that
+        // happens the download writes to a stub filename, decryption
+        // produces another stub, and the viewer hits a file-not-found
+        // even though the bytes arrived correctly. The URL on the
+        // file_transfer always has the full server-side filename at the
+        // tail (we set url = '...transfer_id/filename' at send time and
+        // the server preserves it on upload), so derive the canonical
+        // basename from there whenever the stored value looks broken.
+        const _stored = String(file_transfer.filename || '');
+        const _urlBase = (() => {
+            try {
+                let u = String(file_transfer.url || '');
+                if (u.endsWith('.asc')) u = u.slice(0, -4);
+                const tail = u.split('?')[0].split('/').pop();
+                return tail ? decodeURIComponent(tail) : '';
+            } catch (e) { return ''; }
+        })();
+        const _strippedStored = _stored.replace(/^[/.]+/, ''); // collapse leading "/" or "."
+        const _looksBroken =
+            !_strippedStored                              // empty
+            || _stored.startsWith('/')                    // leading-slash bug
+            || _stored.startsWith('.')                    // leading-dot bug
+            || (_urlBase && _urlBase.length > _strippedStored.length
+                && _urlBase.startsWith(_strippedStored)); // truncated to prefix
+        if (_looksBroken && _urlBase) {
+            console.log('[dl-diag] repairing filename id=' + id,
+                'stored=' + JSON.stringify(_stored),
+                'urlBase=' + JSON.stringify(_urlBase));
+            file_transfer.filename = _urlBase;
+        } else if (_strippedStored !== _stored) {
+            // Filename was salvageable but had a stray leading "/" or
+            // "." — strip those so the path concatenation below doesn't
+            // produce a double slash.
+            console.log('[dl-diag] sanitising filename id=' + id,
+                'before=' + JSON.stringify(_stored),
+                'after=' + JSON.stringify(_strippedStored));
+            file_transfer.filename = _strippedStored;
         }
 
         // Ensure the on-disk filename carries the .asc suffix whenever
@@ -20639,8 +21250,16 @@ class Sylk extends Component {
                 }
             }
 
-            let params = [content, id, this.state.accountId];
-            this.ExecuteQuery("update messages set encrypted = 2, content = ? where msg_id = ? and account = ?", params).then((result) => {
+            // Lazy has_link fill — we just decrypted plaintext for a
+            // text/* row. Persist alongside the content + encrypted=2
+            // update so subsequent reads of this row (incl. the per-
+            // contact date index) can answer the Links chip without
+            // having to decrypt again. Non-text content types and
+            // bodies without a URL get has_link=0; the UPDATE writes
+            // it once and we stop re-deriving on every read.
+            const _hl = this._hasLinkInText(message.content_type, content);
+            let params = [content, _hl, id, this.state.accountId];
+            this.ExecuteQuery("update messages set encrypted = 2, content = ?, has_link = ? where msg_id = ? and account = ?", params).then((result) => {
                 if (this.state.selectedContact && this.state.selectedContact.uri === uri && pending_messages.length === 0) {
                     this.confirmRead(uri, 'sql saved read');
                 }
@@ -20791,6 +21410,301 @@ class Sylk extends Component {
 		].filter(Boolean))];
 	}
 
+	// Single source of truth for the per-row category column.
+	// One of {'text','image','video','audio','location','other'}
+	// or null. Called at INSERT time so subsequent reads can gate
+	// SQL directly on `category=?` instead of re-parsing metadata
+	// on every scan.
+	//
+	// Mapping (kept aligned with the JS classifier in
+	// sql2GiftedChat — utils.isImage/isAudio/isVideo strip a
+	// trailing .asc themselves, so we don't have to special-case
+	// PGP-armored names here either):
+	//
+	//   text/plain | text/html                              → 'text'
+	//   application/sylk-file-transfer:
+	//     metadata classifies as image / audio / video      → matches
+	//     otherwise (filename present)                      → 'other'
+	//     no filename                                       → null
+	//   application/sylk-message-metadata + related_action='location'
+	//                                                       → 'location'
+	//   everything else (pgp keys, reactions, replies, ctrl)→ null
+	//
+	// `metadata` may arrive as either a parsed object (most insert
+	// sites already have it parsed) or a JSON string (saveOutgoing-
+	// MessageSql passes JSON.stringify on the way to SQL). Accept
+	// both — the alternative is forcing every caller to remember to
+	// pass the parsed form, which is exactly the kind of leakage
+	// this method exists to avoid.
+	_classifyMessageCategory(contentType, metadata, relatedAction) {
+		if (!contentType) return null;
+		if (contentType === 'text/plain' || contentType === 'text/html') {
+			return 'text';
+		}
+		if (contentType === 'application/sylk-message-metadata') {
+			return relatedAction === 'location' ? 'location' : null;
+		}
+		if (contentType !== 'application/sylk-file-transfer') {
+			return null;
+		}
+		// File-transfer: classify by filename / filetype.
+		let meta = metadata;
+		if (typeof meta === 'string') {
+			try { meta = JSON.parse(meta); }
+			catch (e) { return 'other'; }
+		}
+		if (!meta || typeof meta !== 'object') return 'other';
+		const fname = meta.filename;
+		const ftype = meta.filetype || null;
+		if (!fname) return null;  // no filename → not a real attachment
+		if (utils.isImage(fname, ftype)) return 'image';
+		if (utils.isAudio(fname, ftype)) return 'audio';
+		if (utils.isVideo(fname, ftype)) return 'video';
+		return 'other';
+	}
+
+	// Companion to _classifyMessageCategory: returns 1 if the text
+	// body contains something link-shaped, 0 otherwise. Persisted
+	// in the has_link column so the SQL date index can answer
+	// "which days contain link messages" without scanning content.
+	// Only meaningful for text-shaped rows (text/plain, text/html);
+	// returns 0 for non-text content types.
+	_hasLinkInText(contentType, text) {
+		if (contentType !== 'text/plain' && contentType !== 'text/html') {
+			return 0;
+		}
+		if (!text || typeof text !== 'string') return 0;
+		return utils.containsUrl(text) ? 1 : 0;
+	}
+
+	// One-shot backfill of the `category` column for rows that
+	// existed before the v17 migration. Called from initSQL after
+	// the version-bump commits. Subsequent boots see
+	// state.categoryBackfillDone (persisted via AsyncStorage) and
+	// no-op. New software with sparse history, per user
+	// instruction, so we walk every row in one pass — no batching,
+	// no resume logic.
+	async _backfillMessageCategories() {
+		try {
+			const _doneKey = 'sql.categoryBackfill.v17';
+			const done = await AsyncStorage.getItem(_doneKey);
+			if (done === '1') return;
+			utils.timestampedLog('[category] starting backfill of pre-v17 messages');
+			const rowsRes = await this.ExecuteQuery(
+				'SELECT msg_id, content_type, metadata, related_action FROM messages WHERE category IS NULL',
+				[]
+			);
+			const rows = rowsRes.rows;
+			const total = rows.length;
+			if (total === 0) {
+				utils.timestampedLog('[category] backfill: no rows to update');
+				await AsyncStorage.setItem(_doneKey, '1');
+				return;
+			}
+			utils.timestampedLog('[category] backfill: classifying', total, 'rows');
+			// Bucket updates by computed category so we can batch
+			// each into a single IN(...) UPDATE. Cheaper than
+			// per-row UPDATE for a few thousand rows.
+			const buckets = {}; // category → [msg_id, …]
+			for (let i = 0; i < total; i++) {
+				const r = rows.item(i);
+				const cat = this._classifyMessageCategory(
+					r.content_type, r.metadata, r.related_action
+				);
+				if (cat == null) continue; // leave NULL — not a bubble
+				if (!buckets[cat]) buckets[cat] = [];
+				buckets[cat].push(r.msg_id);
+			}
+			for (const cat of Object.keys(buckets)) {
+				const ids = buckets[cat];
+				if (!ids.length) continue;
+				// Chunk to keep the SQL within parameter-count limits
+				// (SQLite caps host params at 999 per statement).
+				const CHUNK = 500;
+				for (let off = 0; off < ids.length; off += CHUNK) {
+					const slice = ids.slice(off, off + CHUNK);
+					const placeholders = slice.map(() => '?').join(',');
+					await this.ExecuteQuery(
+						`UPDATE messages SET category=? WHERE msg_id IN (${placeholders})`,
+						[cat, ...slice]
+					);
+				}
+				utils.timestampedLog('[category] backfill: marked',
+					ids.length, 'rows as', cat);
+			}
+			await AsyncStorage.setItem(_doneKey, '1');
+			utils.timestampedLog('[category] backfill complete');
+		} catch (e) {
+			console.log('[category] backfill failed:',
+				e && e.message ? e.message : e);
+		}
+	}
+
+	// Companion to _backfillMessageCategories: fills has_link for
+	// rows where we already have plaintext (encrypted=2 means
+	// "decrypted and stored as plaintext", or unencrypted text
+	// rows from the saveOutgoingRawMessage path). Encrypted-only
+	// rows are left for the lazy decrypt-time path to handle —
+	// no big bulk-decrypt pass at boot.
+	//
+	// Same one-shot pattern as the category backfill: an
+	// AsyncStorage flag guards re-runs. Bucket UPDATEs by
+	// computed has_link value so we only need two batched
+	// statements at most (one for has_link=1, one for =0).
+	async _backfillHasLink() {
+		try {
+			const _doneKey = 'sql.hasLinkBackfill.v18';
+			const done = await AsyncStorage.getItem(_doneKey);
+			if (done === '1') return;
+			utils.timestampedLog('[has_link] starting backfill of pre-v18 text rows');
+			// encrypted IS NULL covers historical rows from before
+			// the encrypted column was set; '0' is explicit
+			// "unencrypted"; '2' is "decrypted, plaintext stored
+			// in content". '1' (encrypted ciphertext) and '3'
+			// (failed decrypt) are skipped — we don't have
+			// plaintext to probe.
+			const rowsRes = await this.ExecuteQuery(
+				`SELECT msg_id, content, content_type FROM messages
+				 WHERE has_link IS NULL
+				   AND category = 'text'
+				   AND (encrypted = 2 OR encrypted = 0 OR encrypted IS NULL)`,
+				[]
+			);
+			const rows = rowsRes.rows;
+			const total = rows.length;
+			if (total === 0) {
+				utils.timestampedLog('[has_link] backfill: no rows to update');
+				await AsyncStorage.setItem(_doneKey, '1');
+				return;
+			}
+			utils.timestampedLog('[has_link] backfill: scanning', total, 'plaintext text rows');
+			const linkIds = [];
+			const noLinkIds = [];
+			for (let i = 0; i < total; i++) {
+				const r = rows.item(i);
+				const hl = this._hasLinkInText(r.content_type, r.content);
+				(hl ? linkIds : noLinkIds).push(r.msg_id);
+			}
+			const _applyBatch = async (ids, value) => {
+				if (!ids.length) return;
+				const CHUNK = 500;
+				for (let off = 0; off < ids.length; off += CHUNK) {
+					const slice = ids.slice(off, off + CHUNK);
+					const placeholders = slice.map(() => '?').join(',');
+					await this.ExecuteQuery(
+						`UPDATE messages SET has_link = ? WHERE msg_id IN (${placeholders})`,
+						[value, ...slice]
+					);
+				}
+			};
+			await _applyBatch(linkIds, 1);
+			await _applyBatch(noLinkIds, 0);
+			utils.timestampedLog('[has_link] backfill complete:',
+				linkIds.length, 'with links,',
+				noLinkIds.length, 'without');
+			await AsyncStorage.setItem(_doneKey, '1');
+		} catch (e) {
+			console.log('[has_link] backfill failed:',
+				e && e.message ? e.message : e);
+		}
+	}
+
+	// Return a per-contact full-history date index used by the
+	// calendar bar in ContactsListBox. One row per (calendar day,
+	// count) for the entire conversation — NOT limited to the
+	// current load window, so the year/month/day pills reflect
+	// real history depth ("this contact has messages in 2019")
+	// instead of just whatever's in renderMessages right now.
+	//
+	// Single-pass SQL with strftime grouping. Index assist: the
+	// existing (account, from_uri, to_uri, unix_timestamp) compound
+	// index from getMessages handles the WHERE; SQLite handles the
+	// GROUP BY in a hash table. On a 50K-row contact this returns
+	// in tens of milliseconds.
+	//
+	// `day_id` is computed in LOCAL timezone so calendar pills
+	// match the user's wall clock (a message at 23:30 local on
+	// May 5 sits in the May 5 pill, not May 6 UTC). 'localtime'
+	// modifier on strftime applies the device's current zone;
+	// matches getMessageDateTags in utils.js which uses
+	// date.getFullYear / getMonth / getDate (also local).
+	async getContactDateIndex(contact, category, opts) {
+		if (!contact) return [];
+		await this.waitForContactsLoaded();
+		const uris = this.getAllContactUris(contact);
+		if (!uris.length) return [];
+		const placeholders = uris.map(() => '?').join(', ');
+		const pinnedOnly = !!(opts && opts.pinned);
+		// Gate the query by the persisted `category` column. Three
+		// shapes:
+		//   • No category passed → all bubble-shape rows. We
+		//     exclude NULL (control rows: pgp keys, reactions,
+		//     replies — not surfaced as bubbles).
+		//   • A specific category → category = ? (single value).
+		//   • category === 'links' → fold into 'text' since the
+		//     persisted column doesn't distinguish (the link
+		//     filter is a JS post-filter on text bodies). Pills
+		//     for the Links chip reflect all text dates; the
+		//     actual link narrowing happens in ContactsListBox
+		//     after fetch.
+		let categoryClause = ' AND category IS NOT NULL';
+		const params = [
+			this.state.accountId,
+			this.state.accountId,
+			...uris,
+			...uris,
+			this.state.accountId,
+		];
+		if (category) {
+			// Links is text + has_link=1 (v18). The persisted
+			// has_link flag is set at INSERT for outgoing/
+			// plaintext rows and lazily on first decrypt for
+			// stored ciphertext, so the SQL can finally answer
+			// the Links chip honestly.
+			if (category === 'links') {
+				categoryClause = ' AND category = ? AND has_link = 1';
+				params.push('text');
+			} else {
+				categoryClause = ' AND category = ?';
+				params.push(category);
+			}
+		}
+		// Pinned is a cumulative modifier — stacks on top of
+		// category. Date pills in pinned mode should reflect just
+		// dates where the user has pinned messages of the active
+		// category (or any category, if none is selected).
+		if (pinnedOnly) {
+			categoryClause = categoryClause + ' AND pinned = 1';
+		}
+		const query = `
+			SELECT strftime('%Y-%m-%d', unix_timestamp, 'unixepoch', 'localtime') AS day_id,
+			       COUNT(*) AS cnt
+			FROM messages
+			WHERE account = ?
+			  AND ((from_uri = ? AND to_uri IN (${placeholders}))
+			    OR (from_uri IN (${placeholders}) AND to_uri = ?))
+			  ${categoryClause}
+			GROUP BY day_id
+			ORDER BY day_id DESC
+		`;
+		try {
+			const res = await this.ExecuteQuery(query, params);
+			const rows = res.rows;
+			const out = [];
+			for (let i = 0; i < rows.length; i++) {
+				const r = rows.item(i);
+				if (!r || !r.day_id) continue;
+				out.push({ day_id: r.day_id, count: r.cnt || 0 });
+			}
+			utils.timestampedLog('[dateIndex] loaded', out.length,
+				'distinct days for', uris.join(', '));
+			return out;
+		} catch (e) {
+			console.log('[dateIndex] SQL error:', e && e.message);
+			return [];
+		}
+	}
+
     async contactsCount() {
         let query = "SELECT count(*) as rows FROM contacts where account = ?";
         let rows;
@@ -20920,13 +21834,17 @@ class Sylk extends Component {
                     if (!privateKey) return null;
                     try {
                         content = await OpenPGP.decrypt(item.content, privateKey);
-                        // Persist plaintext + encrypted=2 so the later
-                        // full getMessages slice doesn't re-do this
-                        // work.
+                        // Persist plaintext + encrypted=2 + has_link
+                        // so the later full getMessages slice doesn't
+                        // re-do this work. has_link is set here in
+                        // the chat-fast path the same way the slow
+                        // path does — single source of truth via
+                        // _hasLinkInText.
                         try {
+                            const _hl = this._hasLinkInText(item.content_type, content);
                             await this.ExecuteQuery(
-                                'UPDATE messages SET content = ?, encrypted = 2 WHERE account = ? AND msg_id = ?',
-                                [content, accountId, item.msg_id]
+                                'UPDATE messages SET content = ?, encrypted = 2, has_link = ? WHERE account = ? AND msg_id = ?',
+                                [content, _hl, accountId, item.msg_id]
                             );
                         } catch (uErr) { /* best-effort */ }
                         item.content = content;
@@ -21070,16 +21988,24 @@ class Sylk extends Component {
         let uri = obj.id ? obj.uri : obj;
         let contact = obj;
         await this.waitForContactsLoaded();
-        
+
         if (!obj.id) {
             contact = this.lookupContact(uri, true);
-        } 
-               
+        }
+
         console.log('-- Get messages from', uri, filter, 'zoom', this.state.messageZoomFactor);
         let pinned = filter && 'pinned' in filter ? filter['pinned'] : false;
         let category = filter && 'category' in filter ? filter['category'] : null;
-        
-        let has_filter = pinned || category;
+        // Optional date-range filter (unix seconds, inclusive both
+        // ends) used by the calendar bar in ContactsListBox when
+        // the user picks a Year / Month / Day pill. When set, the
+        // slice query pulls EVERY row in that range (not the
+        // most-recent N) so the in-memory pipeline can narrow it
+        // further without losing rows to the load window.
+        let dateFrom = filter && 'dateFrom' in filter ? filter['dateFrom'] : null;
+        let dateTo   = filter && 'dateTo'   in filter ? filter['dateTo']   : null;
+
+        let has_filter = pinned || category || dateFrom != null || dateTo != null;
 
         let messages = this.state.messages;
 
@@ -21162,39 +22088,30 @@ class Sylk extends Component {
         // 'location_update' trail rows are still picked up by the
         // secondary location query further down, so the bubble's
         // tick counter still has full data.
-        if (category === 'location') {
-            query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
-        } else if (category === 'text' || category === 'links') {
-            // Text & Links share the same SQL slice: explicit text/*
-            // content types only. Pre-fix this branch fell through
-            // with no extra clause, which let through every
-            // metadata-bearing row (sylk-message-metadata for
-            // reactions / replies / location ticks,
-            // sylk-account-delete-request, pgp-public-key
-            // handshakes, etc.). sql2GiftedChat returned null for
-            // those JS-side, but the SQL was still pulling and
-            // (for encrypted rows) decrypting them — wasted work
-            // that scaled with the conversation length. Push the
-            // text-only gate down into SQL so the slice we get
-            // back already only contains text/plain and text/html
-            // — the two content types unreadCounterTypes treats
-            // as user-visible text (text/pgp-public-key
-            // deliberately excluded). 'links' narrows further in
-            // JS via the URL post-filter in ContactsListBox.
-            query = query + " and content_type in ('text/plain', 'text/html')";
-        } else if (category) {
-            // Media categories (image / video / audio / other)
-            // narrow to file-transfer rows exclusively. The old
-            // `metadata != ''` clause let through every metadata-
-            // bearing row — location ticks, peaks metadata,
-            // reactions, replies — which made the JS-side
-            // classifier scan a much larger set than needed and
-            // wasted decrypt cycles on rows that could never be
-            // media. content_type filter pushes the same exclusion
-            // down into SQL so the slice that comes back is
-            // already exclusively the universe the grid cares
-            // about.
-            query = query + " and content_type = 'application/sylk-file-transfer'";
+        // Per-category SQL gate driven by the persisted v17
+        // `category` column. 'links' folds into 'text' because the
+        // persisted column doesn't distinguish — link narrowing is
+        // a JS post-filter on text bodies, done in ContactsListBox.
+        // 'links' = text + has_link=1 (v18). Everything else
+        // continues to use a single category equality.
+        const _gateCategory = category === 'links' ? 'text' : category;
+        const _gateLinksOnly = category === 'links';
+        if (_gateCategory) {
+            query = query + ' and category = ?';
+        }
+        if (_gateLinksOnly) {
+            query = query + ' and has_link = 1';
+        }
+        // Date-range gate (calendar bar pill). Inclusive both ends
+        // — dateFrom is the start-of-period epoch in seconds,
+        // dateTo is the end-of-period epoch. Same constraint added
+        // to both COUNT and SLICE so the total reflects what'll be
+        // returned.
+        if (dateFrom != null) {
+            query = query + ' and unix_timestamp >= ?';
+        }
+        if (dateTo != null) {
+            query = query + ' and unix_timestamp <= ?';
         }
 
 		params = [
@@ -21204,6 +22121,11 @@ class Sylk extends Component {
 			...uris,
 			this.state.accountId
 		];
+        if (_gateCategory) {
+            params.push(_gateCategory);
+        }
+        if (dateFrom != null) params.push(dateFrom);
+        if (dateTo   != null) params.push(dateTo);
 
         await this.ExecuteQuery(query, params).then((results) => {
             rows = results.rows;
@@ -21226,11 +22148,9 @@ class Sylk extends Component {
             // user asked for audio and is actually seeing the
             // file-transfer superset count.
             const _scopeLabel = has_filter
-                ? (category === 'location' ? 'location rows'
-                    : (category === 'text' ? "text rows (text/plain + text/html only)"
-                    : (category === 'links' ? "text rows (text/plain + text/html only; URL filter applied later)"
-                    : (category ? 'file-transfer rows (image+video+audio+other)'
-                    : (pinned ? 'pinned rows' : 'filtered rows')))))
+                ? (category
+                    ? `category='${category === 'links' ? 'text (link JS post-filter)' : category}' rows`
+                    : (pinned ? 'pinned rows' : 'filtered rows'))
                 : 'rows (all message types)';
             utils.timestampedLog('[message] SQL count:', total, _scopeLabel, 'with', uris.join(', '));
         }).catch((error) => {
@@ -21263,13 +22183,21 @@ class Sylk extends Component {
         // ones).
         if (!has_filter) {
             try {
+                // Single GROUP BY against the persisted `category`
+                // column — replaces the previous two-query +
+                // per-row JSON-parse pass. SQLite scans the
+                // contact's rows once and buckets by category;
+                // pinned is summed in parallel as a CASE-WHEN
+                // since it's a cumulative modifier, not a
+                // category.
                 const countsQuery = `
                     SELECT
-                        SUM(CASE WHEN content_type='application/sylk-message-metadata' AND related_action='location' THEN 1 ELSE 0 END) as cnt_location,
-                        SUM(CASE WHEN content_type='application/sylk-file-transfer' THEN 1 ELSE 0 END) as cnt_files,
-                        SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) as cnt_pinned
+                        category,
+                        COUNT(*) AS cnt,
+                        SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) AS cnt_pinned
                     FROM messages WHERE account = ? AND
                     ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
+                    GROUP BY category
                 `;
                 const cParams = [
                     this.state.accountId,
@@ -21279,66 +22207,27 @@ class Sylk extends Component {
                     this.state.accountId,
                 ];
                 const cRes = await this.ExecuteQuery(countsQuery, cParams);
-                const cntLocation = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_location) || 0;
-                const cntFiles    = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_files)    || 0;
-                const cntPinned   = (cRes.rows.length > 0 && cRes.rows.item(0).cnt_pinned)   || 0;
-                // Text = whatever's left after subtracting locations
-                // and file-transfer rows. Clamp at 0 so a transient
-                // mismatch never produces a negative chip label.
-                const cntText = Math.max(0, total - cntLocation - cntFiles);
-
                 const categoryCounts = {
-                    text:     cntText,
+                    text:     0,
                     image:    0,
                     audio:    0,
                     video:    0,
-                    location: cntLocation,
+                    location: 0,
                     other:    0,
-                    // Pinned is a CUMULATIVE modifier rather than a
-                    // content-type filter (see ReadyBox#categorySort-
-                    // Items comment for the design). Carrying its
-                    // count alongside the others lets the right-side
-                    // "Pinned" chip use the same "hide-if-empty"
-                    // logic as the left-side chips.
-                    pinned:   cntPinned,
+                    pinned:   0,
                 };
-
-                if (cntFiles > 0) {
-                    // Pull just the metadata strings so we don't drag
-                    // file bodies into memory. utils.isImage / isAudio
-                    // / isVideo strip a trailing .asc themselves so we
-                    // don't have to special-case PGP-armored names.
-                    // Narrowed to content_type='application/sylk-file-
-                    // transfer' so we don't bucket location ticks /
-                    // peaks metadata / reactions into the media
-                    // chip counts.
-                    const fileQuery = `
-                        SELECT metadata FROM messages WHERE account = ? AND
-                        ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
-                        AND content_type = 'application/sylk-file-transfer'
-                    `;
-                    const fRes = await this.ExecuteQuery(fileQuery, cParams);
-                    for (let i = 0; i < fRes.rows.length; i++) {
-                        let meta;
-                        try { meta = JSON.parse(fRes.rows.item(i).metadata); }
-                        catch (_) { categoryCounts.other++; continue; }
-                        if (!meta || !meta.filename) {
-                            // Metadata blobs without a filename are
-                            // typically non-file-transfer payloads
-                            // (e.g. live-location trail rows). Don't
-                            // bucket them as "other" — they're not
-                            // media in the filter-chip sense.
-                            continue;
-                        }
-                        const fname = meta.filename;
-                        const ftype = meta.filetype || null;
-                        if (utils.isImage(fname, ftype))      categoryCounts.image++;
-                        else if (utils.isAudio(fname, ftype)) categoryCounts.audio++;
-                        else if (utils.isVideo(fname, ftype)) categoryCounts.video++;
-                        else                                  categoryCounts.other++;
+                for (let i = 0; i < cRes.rows.length; i++) {
+                    const r = cRes.rows.item(i);
+                    const cat = r.category;
+                    const cnt = r.cnt || 0;
+                    if (cat && cat in categoryCounts) {
+                        categoryCounts[cat] = cnt;
                     }
+                    // Pinned is summed per row in the GROUP BY,
+                    // so it lands once per category bucket;
+                    // accumulate across buckets.
+                    categoryCounts.pinned += (r.cnt_pinned || 0);
                 }
-
                 contact.categoryCounts = categoryCounts;
             } catch (e) {
                 console.log('[categoryCounts] SQL/parse error:', e && e.message);
@@ -21352,41 +22241,28 @@ class Sylk extends Component {
             query = query + ' and pinned = 1';
         }
 
-        // Mirror the COUNT query's per-category gate. See the comment
-        // above for why 'location' takes its own clause.
-        if (category === 'location') {
-            query = query + " and content_type = 'application/sylk-message-metadata' and related_action = 'location'";
-        } else if (category === 'text' || category === 'links') {
-            // Text & Links share the same SQL slice: explicit text/*
-            // content types only. Pre-fix this branch fell through
-            // with no extra clause, which let through every
-            // metadata-bearing row (sylk-message-metadata for
-            // reactions / replies / location ticks,
-            // sylk-account-delete-request, pgp-public-key
-            // handshakes, etc.). sql2GiftedChat returned null for
-            // those JS-side, but the SQL was still pulling and
-            // (for encrypted rows) decrypting them — wasted work
-            // that scaled with the conversation length. Push the
-            // text-only gate down into SQL so the slice we get
-            // back already only contains text/plain and text/html
-            // — the two content types unreadCounterTypes treats
-            // as user-visible text (text/pgp-public-key
-            // deliberately excluded). 'links' narrows further in
-            // JS via the URL post-filter in ContactsListBox.
-            query = query + " and content_type in ('text/plain', 'text/html')";
-        } else if (category) {
-            // Media categories (image / video / audio / other)
-            // narrow to file-transfer rows exclusively. The old
-            // `metadata != ''` clause let through every metadata-
-            // bearing row — location ticks, peaks metadata,
-            // reactions, replies — which made the JS-side
-            // classifier scan a much larger set than needed and
-            // wasted decrypt cycles on rows that could never be
-            // media. content_type filter pushes the same exclusion
-            // down into SQL so the slice that comes back is
-            // already exclusively the universe the grid cares
-            // about.
-            query = query + " and content_type = 'application/sylk-file-transfer'";
+        // Mirror the COUNT query's per-category gate. 'links' =
+        // text + has_link=1 (v18); other categories use a single
+        // equality on the persisted column.
+        const _sliceCategory = category === 'links' ? 'text' : category;
+        const _sliceLinksOnly = category === 'links';
+        if (_sliceCategory) {
+            query = query + ' and category = ?';
+        }
+        if (_sliceLinksOnly) {
+            query = query + ' and has_link = 1';
+        }
+        // Mirror the date-range gate too. When a range is active
+        // we also bump the slice to the FILTERED_LIMIT (already in
+        // effect when has_filter is true), so the user gets every
+        // row in that period at once instead of having to
+        // paginate. A year of dense chat tops out well within the
+        // 10000-row cap.
+        if (dateFrom != null) {
+            query = query + ' and unix_timestamp >= ?';
+        }
+        if (dateTo != null) {
+            query = query + ' and unix_timestamp <= ?';
         }
 
         query = query + ' order by unix_timestamp desc limit ?, ?';
@@ -21396,9 +22272,13 @@ class Sylk extends Component {
 			...uris,
 			...uris,
 			this.state.accountId,
-			this.state.messageStart, 
-			limit
 		];
+		if (_sliceCategory) {
+			params.push(_sliceCategory);
+		}
+		if (dateFrom != null) params.push(dateFrom);
+		if (dateTo   != null) params.push(dateTo);
+		params.push(this.state.messageStart, limit);
 
 		await this.ExecuteQuery(query, params).then(async (results) => {
             console.log('SQL get messages, rows =', results.rows.length);
@@ -22057,59 +22937,11 @@ class Sylk extends Component {
 				}
 			});
 
-			// Diagnostic: show the last 5 messages in the SAME ORDER they
-			// render on the phone (top-of-block = older, bottom-of-block =
-			// newest), so the final printed line of the block matches the
-			// bottom bubble in the chat. Useful for eyeballing whether a
-			// chat-load's tail matches what's on screen — most "duplicate
-			// bubbles on first load" reports show up here as a doubled id
-			// at the bottom of the block.
-			//
-			// `messages[orig_uri]` was just built by the SQL DESC for-loop
-			// (newest at index 0), so the 5 newest are slice(0, 5). We
-			// reverse that slice so iteration goes oldest -> newest, which
-			// means the last console.log line === the bottom of the chat.
-			try {
-				const _builtList = messages[orig_uri] || [];
-				const _tail = _builtList.slice(0, 5).reverse();
-				const _arrow = (d) => (d === 'outgoing' ? '→' : '←');
-				const _fullId = (id) => (id ? String(id) : '?');
-				const _time = (ts) => {
-					if (!ts) return '       ';
-					try {
-						const d = ts instanceof Date ? ts : new Date(ts);
-						const hh = String(d.getHours()).padStart(2, '0');
-						const mm = String(d.getMinutes()).padStart(2, '0');
-						const ss = String(d.getSeconds()).padStart(2, '0');
-						return `${hh}:${mm}:${ss}`;
-					} catch (e) { return '       '; }
-				};
-				const _snippet = (m) => {
-					let s = '';
-					if (m && typeof m.text === 'string' && m.text.length > 0) {
-						s = m.text;
-					} else if (m && m.html) {
-						s = String(m.html).replace(/<[^>]+>/g, '');
-					} else if (m && m.metadata && m.metadata.filename) {
-						s = '[file] ' + m.metadata.filename;
-					} else if (m && m.contentType) {
-						s = '<' + m.contentType + '>';
-					}
-					s = s.replace(/\s+/g, ' ').trim();
-					return s.length > 40 ? s.slice(0, 37) + '...' : s;
-				};
-				utils.timestampedLog('[chat-load]',
-					_builtList.length, 'bubbles for', orig_uri,
-					'— last 5 (bottom of chat is last line):');
-				for (const m of _tail) {
-					console.log('  ' + _arrow(m && m.direction)
-						+ ' ' + _time(m && m.createdAt)
-						+ '  ' + _fullId(m && m._id)
-						+ '  ' + _snippet(m));
-				}
-			} catch (e) {
-				console.log('[chat-load] diagnostic failed', e && e.message);
-			}
+			// Diagnostic [chat-load] last-5 tail removed per user
+			// request — the per-message log was noisy and the chat
+			// surface itself is the authoritative view of what
+			// loaded. Re-introduce by un-commenting if a "duplicate
+			// bubble at first load" report needs eyeballing again.
 
 			this.setState({filteredMessageIds: filteredMessageIds, contentTypes: contentTypes});
 
@@ -23976,6 +24808,18 @@ class Sylk extends Component {
     }
 
     requestSyncConversations(lastId=null, options={}, uri) {
+        // Fresh-device first sync: when there's no lastSyncId AND the
+        // caller didn't pass a since, fall back to since = 5 years ago.
+        // Empirically the server returns a small/truncated batch when
+        // both lastSyncId and since are omitted (see metro.log around
+        // 13:18:36 on 2026-05-30 where lastId=null / since=n/a returned
+        // 14 entries while the manual refetch with since=30d returned
+        // 195). A 5-year window is wide enough to cover any realistic
+        // account history without bounding the sync to an arbitrary
+        // recent slice.
+        if (lastId == null && (!options || !options.since)) {
+            options = { ...(options || {}), since: moment().subtract(5, 'years').toDate() };
+        }
         utils.timestampedLog('Request [journal] from', lastId, 'since', (options && options.since) ? (options.since instanceof Date ? options.since.toISOString() : options.since) : 'n/a');
         if (!this.state.account) {
             console.log('Wait for sync until we have account');
@@ -30105,8 +30949,14 @@ class Sylk extends Component {
         //console.log('--- metadata', metadata);
 
         let unix_timestamp = Math.floor(ts / 1000);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action];
-        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, related_action);
+        // `content` here is what gets stored — ciphertext when
+        // encrypted is set. Leave has_link NULL on encrypted text
+        // (decrypt-time path fills it); compute eagerly when the
+        // body is clear.
+        const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action, _cat, _hl];
+        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
 
             if (message.contentType === 'application/sylk-file-transfer') {
@@ -30688,7 +31538,10 @@ class Sylk extends Component {
         let disposition_notification = '';
 		const ts = typeof message.timestamp === 'number' ? message.timestamp: new Date(message.timestamp).getTime();
 		const unix_timestamp = Math.floor(ts / 1000);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification];
+        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, null);
+        // Encrypted text → has_link NULL (decrypt path fills it).
+        const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl];
         this.pendingNewSQLMessages.push(params);
 
         if (this.pendingNewSQLMessages.length > 49) {
@@ -30707,11 +31560,11 @@ class Sylk extends Component {
 		INSERT INTO messages (
 		  account, encrypted, msg_id, timestamp, unix_timestamp,
 		  content, content_type, metadata, from_uri, to_uri,
-		  direction, pending, sent, received, state, disposition_notification
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  direction, pending, sent, received, state, disposition_notification, category, has_link
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`;
 
-        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state, disposition_notification) VALUES ";
+        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state, disposition_notification, category, has_link) VALUES ";
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
         this.pendingNewSQLMessages = [];
@@ -30822,9 +31675,14 @@ class Sylk extends Component {
 		
 		console.log('saveSystemMessage', uri, content);
 
-        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction];
+        // System messages are surfaced as text bubbles; classify as 'text'
+        // so date pills count them like any other text row.
+        const _cat = this._classifyMessageCategory('text/plain', null, null);
+        // System messages are plaintext at insert time.
+        const _hl = this._hasLinkInText('text/plain', content);
+        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl];
 
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             this.renderSystemMessage(uri, content, direction, timestamp, system);
 
         }).catch((error) => {
@@ -31320,9 +32178,13 @@ class Sylk extends Component {
         }
 
 		let disposition_notification = message.dispositionNotification ? message.dispositionNotification.join(",") : '';
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification, expire];
+        const _cat = this._classifyMessageCategory(message.contentType, metadata, related_action);
+        // Incoming text typically arrives encrypted; eagerly
+        // classify only when content is clear (encrypted falsy).
+        const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification, expire, _cat, _hl];
 
-        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 			//console.log('saveIncomingMessage SQL OK');
 
 			// Round the websocket timestamp to second precision so it matches
@@ -31606,7 +32468,11 @@ class Sylk extends Component {
 
         //console.log('Sync metadata', message.id, message.contentType, metadata, typeof(message.content));
 
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state, disposition_notification];
+        const _cat = this._classifyMessageCategory(message.contentType, metadata, null);
+        // Sync bulk inserts arrive with ciphertext when encrypted;
+        // skip eager has_link, decrypt path handles it.
+        const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state, disposition_notification, _cat, _hl];
 
         this.pendingNewSQLMessages.push(params);
         
@@ -32835,6 +33701,39 @@ class Sylk extends Component {
         }
     }
 
+    // Drop URIs that should never be persisted as room invitees:
+    //   • own account id   — can't invite yourself.
+    //   • the room URI itself — the conference focus shows up in the
+    //     SIP participant list as a "bridge" peer and used to leak
+    //     into appendInvitedParties when callers passed the raw
+    //     participant URIs straight from the SDK roster.
+    //   • bridge-pattern URIs — anything rooted in @conference.,
+    //     @videoconference., or with a display-name fragment of
+    //     "bridge" looks like a focus / mixer peer, not a person
+    //     the user invited. Mirror ConferenceBox._isBridgeParticipant
+    //     here so the SQL row never carries a bridge in
+    //     contact.participants.
+    _shouldDropInvitee(uri, roomUri) {
+        if (!uri || typeof uri !== 'string') return true;
+        const u = uri.trim().toLowerCase();
+        if (!u) return true;
+        const selfId = (this.state.account && this.state.account.id || '').toLowerCase();
+        if (selfId && u === selfId) return true;
+        const room = (roomUri || '').toLowerCase();
+        if (room) {
+            const roomLocal = room.indexOf('@') > -1 ? room.split('@')[0] : room;
+            const uLocal   = u.indexOf('@')    > -1 ? u.split('@')[0]    : u;
+            // Drop both an exact room-URI match and a URI whose local
+            // part matches the room (the focus often presents under
+            // the room name on a different domain).
+            if (u === room) return true;
+            if (uLocal && roomLocal && uLocal === roomLocal) return true;
+        }
+        if (u.indexOf('@conference.') > -1) return true;
+        if (/bridge/i.test(u.split('@')[0] || '')) return true;
+        return false;
+    }
+
     appendInvitedParties(room, uris) {
         //console.log('Save invited parties', uris, 'for room', room);
         let myInvitedParties = this.state.myInvitedParties;
@@ -32862,8 +33761,14 @@ class Sylk extends Component {
         // saveConference(room, uris) with the raw input — so additions
         // collected via the in-room invite UI overwrote the saved
         // list instead of extending it.
+        // Apply the shared invitee filter (self / room URI / bridge
+        // patterns) to the already-saved list too, in case legacy SQL
+        // rows from earlier builds carry bridge or room-URI entries.
+        // Without this the cleanup would only apply to NEW additions
+        // and leave stale entries in place until the user manually
+        // removed them in EditConferenceModal.
         let current_uris = myInvitedParties.hasOwnProperty(_roomKey)
-            ? myInvitedParties[_roomKey].slice()
+            ? myInvitedParties[_roomKey].slice().filter((u) => !this._shouldDropInvitee(u, room))
             : [];
         uris.forEach((uri) => {
             if (!uri) {
@@ -32872,7 +33777,7 @@ class Sylk extends Component {
             if (uri.indexOf('@') === -1) {
                 uri = uri + '@' + this.state.defaultDomain;
             }
-            if (uri === this.state.account.id) {
+            if (this._shouldDropInvitee(uri, room)) {
                 return;
             }
             if (current_uris.indexOf(uri) === -1) {
@@ -32902,6 +33807,16 @@ class Sylk extends Component {
         let basename = fileObject.fileName || filepath.split('\\').pop().split('/').pop();
 
         basename = basename.replace(/\s|:/g, '_');
+        // Strip any leading slashes / dots: an empty or "/"-prefixed basename
+        // would later get concatenated into the storage path as
+        // `.../<transfer_id>//filename`, producing a path that's never
+        // actually written. Seen historically with iOS image-picker temp
+        // names that the basename derivation didn't fully normalise.
+        basename = basename.replace(/^[/.]+/, '');
+        if (!basename) {
+            // Last-resort fallback — never store an empty filename.
+            basename = `file-${id}`;
+        }
 
         let file_transfer = { 'path': filepath,
                               'filename': basename,
@@ -33138,11 +34053,13 @@ class Sylk extends Component {
             0,                                       // sent
             1,                                       // received
             null,                                    // related_msg_id
-            null                                     // related_action
+            null,                                    // related_action
+            this._classifyMessageCategory('application/sylk-file-transfer', metadataJson, null), // category
+            0,                                       // has_link — file transfer, not text
         ];
         try {
             await this.ExecuteQuery(
-                "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params
             );
         } catch (e) {
@@ -33732,10 +34649,17 @@ class Sylk extends Component {
             if (uri.indexOf('@') === -1) {
                 uri =  uri + '@' + this.state.defaultDomain;
             }
-            if (uri !== this.state.account.id) {
-                new_participants.push(uri);
-                console.log('Added', uri, 'to room', room);
+            // Centralised filter — keeps self / room URI / bridge
+            // entries out of the persisted invitee list regardless of
+            // which path called saveConference. Previously only self
+            // was excluded, so the room contact would end up with
+            // itself / the bridge as an "invitee", which then
+            // pre-populated the next Join Conference panel with junk.
+            if (this._shouldDropInvitee(uri, room)) {
+                return;
             }
+            new_participants.push(uri);
+            console.log('Added', uri, 'to room', room);
         });
 
         contact.participants = new_participants;
@@ -35007,6 +35931,27 @@ return (
                         try { DarkModeManager.setMode(mode); } catch (e) {}
                         this.setAccountSetting('device.themeMode', mode);
                     }}
+                    /* Data Usage: per-network auto-download toggles for
+                       incoming media (images, audio messages, files).
+                       Defaults: BOTH ON — Wi-Fi and Mobile — per the
+                       user's choice. We treat missing/null/undefined
+                       as "on" via the `!== false` check; the user has
+                       to explicitly turn a network off (which writes
+                       false to the setting) to opt out. Persisted
+                       under accountSetting.device so the choice
+                       survives app restart. autoDownloadFile reads
+                       state.accountSetting.device.autoDownload* before
+                       kicking off a non-user-initiated download. */
+                    autoDownloadOnWifi = {
+                        !this.state.accountSetting.device
+                            || this.state.accountSetting.device.autoDownloadOnWifi !== false
+                    }
+                    setAutoDownloadOnWifi = {(v) => this.setAccountSetting('device.autoDownloadOnWifi', !!v)}
+                    autoDownloadOnMobile = {
+                        !this.state.accountSetting.device
+                            || this.state.accountSetting.device.autoDownloadOnMobile !== false
+                    }
+                    setAutoDownloadOnMobile = {(v) => this.setAccountSetting('device.autoDownloadOnMobile', !!v)}
                     buildId = {this.buildId}
                     getTransferedFiles = {this.getTransferedFiles}
                     transferedFiles = {this.state.transferedFiles}
@@ -35259,6 +36204,7 @@ return (
                     deleteMessage = {this.deleteMessage}
                     deleteFiles = {this.deleteFiles}
                     getMessages = {this.getMessages}
+                    getContactDateIndex = {this.getContactDateIndex}
                     pinMessage = {this.pinMessage}
                     unpinMessage = {this.unpinMessage}
                     selectContact = {this.selectContact}

@@ -6748,8 +6748,14 @@ class NavigationBar extends Component {
                                401, 408). Cleared by App.js as soon
                                as registrationState becomes
                                'registered' again. pointerEvents=none
-                               so taps still reach the bell. */}
-                           {this.props.registerErrorCode ? (
+                               so taps still reach the bell.
+
+                               408 (Request Timeout) is suppressed
+                               here — it's a transient network/proxy
+                               timeout that recovers on its own and
+                               surfacing it on the bell was adding
+                               noise rather than signal. */}
+                           {this.props.registerErrorCode && Number(this.props.registerErrorCode) !== 408 ? (
                                <View
                                    pointerEvents="none"
                                    style={{
@@ -7120,7 +7126,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        { this.props.devMode ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>: null}
+                        <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>
 
                         {!isConference && !this.props.searchMessages && this.props.publicKey && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
@@ -7251,7 +7257,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        { (this.props.devMode && this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!this.props.inCall ?
 						<Divider />
@@ -7647,6 +7653,10 @@ class NavigationBar extends Component {
                     setLocationPrivacyRadiusMeters={this.props.setLocationPrivacyRadiusMeters}
                     themeMode={this.props.themeMode}
                     setThemeMode={this.props.setThemeMode}
+                    autoDownloadOnWifi={this.props.autoDownloadOnWifi}
+                    setAutoDownloadOnWifi={this.props.setAutoDownloadOnWifi}
+                    autoDownloadOnMobile={this.props.autoDownloadOnMobile}
+                    setAutoDownloadOnMobile={this.props.setAutoDownloadOnMobile}
                 />
 
                 { this.state.showEditConferenceModal ?

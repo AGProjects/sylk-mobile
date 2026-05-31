@@ -98,6 +98,28 @@ const pillTextStyle = (active) => ({
     fontWeight: active ? '600' : '400',
 });
 
+// Sub-category ("Filter results") pills sit in a second row that only
+// appears once at least one top pill is selected. Painted in amber to
+// distinguish them at a glance from the green top-level filter so the
+// user can tell which row they're refining. Same dimensions / radii as
+// the top pills so the two rows align visually.
+const subPillStyle = (active) => ({
+    marginHorizontal: 2,
+    marginVertical: 2,
+    height: 22,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    backgroundColor: active ? '#e65100' : '#fff3e0',
+    alignItems: 'center',
+    justifyContent: 'center',
+});
+const subPillTextStyle = (active) => ({
+    color: active ? '#fff' : '#bf360c',
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: active ? '600' : '400',
+});
+
 // Max height for the pill area = ~3 rows of pills + their gaps. Each
 // row is roughly 22 (height) + 4 (top+bottom margin) = 26 px. 3 rows ≈
 // 80 px. If the total tag count exceeds that, the vertical ScrollView
@@ -185,19 +207,76 @@ function _scanTagsAndBuildFilter(text) {
     const sortedTags = Array.from(tagCounts.entries())
         .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
         .map(([tag, count]) => ({ name: tag, count }));
-    const filter = (selectedSet) => {
-        if (!selectedSet || selectedSet.size === 0) return text;
+    // Returns the lines that pass the TOP filter (OR over selectedSet).
+    // Empty / missing selectedSet means "no top filter" — every line passes.
+    // Returns an array of line indices so callers can derive sub-tag
+    // candidates AND/or build the final filtered text without duplicating
+    // the scan.
+    const _topMatchingIndices = (selectedSet) => {
+        if (!selectedSet || selectedSet.size === 0) {
+            // Identity range — every line passes.
+            const all = new Array(lines.length);
+            for (let i = 0; i < lines.length; i++) all[i] = i;
+            return all;
+        }
         const wantUntagged = selectedSet.has(UNTAGGED_KEY);
         const out = [];
         for (let i = 0; i < lines.length; i++) {
             const lineTags = perLineTags[i];
             if (!lineTags) {
-                if (wantUntagged) out.push(lines[i]);
+                if (wantUntagged) out.push(i);
                 continue;
             }
-            // OR-match: keep the line if any of its tags is selected.
             for (const t of lineTags) {
-                if (selectedSet.has(t)) { out.push(lines[i]); break; }
+                if (selectedSet.has(t)) { out.push(i); break; }
+            }
+        }
+        return out;
+    };
+    // Build the "Filter results" sub-pill candidate list: tags found on
+    // lines that already pass the TOP filter, excluding tags the user
+    // has already picked at the top level (those would be no-op refiners).
+    // Returns the same {name, count} shape the top-level pills use so the
+    // renderer can reuse its mapping. Sorted by descending count then
+    // alphabetical for stable display.
+    const getSubTags = (topSelectedSet) => {
+        if (!topSelectedSet || topSelectedSet.size === 0) return [];
+        const matched = _topMatchingIndices(topSelectedSet);
+        const subCounts = new Map();
+        for (const i of matched) {
+            const lineTags = perLineTags[i];
+            if (!lineTags) continue;
+            for (const t of lineTags) {
+                if (topSelectedSet.has(t)) continue; // skip user's top picks
+                subCounts.set(t, (subCounts.get(t) || 0) + 1);
+            }
+        }
+        return Array.from(subCounts.entries())
+            .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+            .map(([tag, count]) => ({ name: tag, count }));
+    };
+    // Combined filter. The top set is OR-matched (more pills → more
+    // lines), as before. If a non-empty sub set is supplied it's
+    // intersected (AND) with the top result — the line must match the
+    // top OR-filter AND contain at least one of the sub-selected tags.
+    // Untagged lines can never carry a sub tag, so a non-empty sub set
+    // excludes them automatically.
+    const filter = (topSelectedSet, subSelectedSet) => {
+        const hasTop = topSelectedSet && topSelectedSet.size > 0;
+        const hasSub = subSelectedSet && subSelectedSet.size > 0;
+        if (!hasTop && !hasSub) return text;
+        const matched = _topMatchingIndices(topSelectedSet);
+        if (!hasSub) {
+            const out = new Array(matched.length);
+            for (let k = 0; k < matched.length; k++) out[k] = lines[matched[k]];
+            return out.join('\n');
+        }
+        const out = [];
+        for (const i of matched) {
+            const lineTags = perLineTags[i];
+            if (!lineTags) continue;
+            for (const t of lineTags) {
+                if (subSelectedSet.has(t)) { out.push(lines[i]); break; }
             }
         }
         return out.join('\n');
@@ -205,6 +284,7 @@ function _scanTagsAndBuildFilter(text) {
     return {
         tags: sortedTags,           // [{name, count}, ...] desc by count
         filter,
+        getSubTags,
         hasUntagged,
         untaggedCount,
         nonEmptyLineCount,
@@ -272,6 +352,14 @@ class ShowLogsModal extends Component {
             // Empty set = no filter (show everything). The filter is
             // OR — selecting more tags shows MORE lines.
             selectedTags: new Set(),
+            // Sub-category ("Filter results") selection — only meaningful
+            // when at least one top pill is selected. AND-matched against
+            // the top filter: a line must pass the top OR-filter AND
+            // contain at least one of these sub tags. Any change to the
+            // top selection clears this set (the candidate list is
+            // re-derived from the new top result, so a stale sub pick
+            // would either no-op or filter to zero).
+            selectedSubTags: new Set(),
             // Font scale multiplier for the log text. Driven by the
             // − / + controls in the header. Clamped to FONT_MIN /
             // FONT_MAX in _decreaseFont / _increaseFont.
@@ -313,12 +401,30 @@ class ShowLogsModal extends Component {
     _toggleTag = (tagKey) => {
         const next = new Set(this.state.selectedTags);
         if (next.has(tagKey)) next.delete(tagKey); else next.add(tagKey);
-        this.setState({ selectedTags: next });
+        // Any change to the top selection invalidates the sub-pill
+        // candidate list (it's derived from the lines passing the top
+        // filter). Reset selectedSubTags so the user starts fresh on
+        // the new top result instead of getting a phantom AND-filter
+        // against the previous candidates.
+        this.setState({ selectedTags: next, selectedSubTags: new Set() });
     }
 
     _clearTags = () => {
-        if (this.state.selectedTags.size === 0) return;
-        this.setState({ selectedTags: new Set() });
+        if (this.state.selectedTags.size === 0 && this.state.selectedSubTags.size === 0) return;
+        // Clearing the top filter also clears any sub filter — without
+        // a top pick the sub row is hidden anyway.
+        this.setState({ selectedTags: new Set(), selectedSubTags: new Set() });
+    }
+
+    _toggleSubTag = (tagKey) => {
+        const next = new Set(this.state.selectedSubTags);
+        if (next.has(tagKey)) next.delete(tagKey); else next.add(tagKey);
+        this.setState({ selectedSubTags: next });
+    }
+
+    _clearSubTags = () => {
+        if (this.state.selectedSubTags.size === 0) return;
+        this.setState({ selectedSubTags: new Set() });
     }
 
     _decreaseFont = () => {
@@ -513,6 +619,7 @@ class ShowLogsModal extends Component {
         const {
             tags,
             filter,
+            getSubTags,
             hasUntagged,
             untaggedCount,
             nonEmptyLineCount,
@@ -534,8 +641,15 @@ class ShowLogsModal extends Component {
         // accountId, so this flag captures exactly the cross-account
         // viewing case.
         const _isViewingOthersLogs = !!this.props.subtitle;
-        const filteredLogs = filter(this.state.selectedTags);
+        const filteredLogs = filter(this.state.selectedTags, this.state.selectedSubTags);
         const hasFilter = this.state.selectedTags.size > 0;
+        const hasSubFilter = this.state.selectedSubTags.size > 0;
+        // Only derive sub-tag candidates when there's a top filter to
+        // refine — getSubTags returns [] otherwise and the second row
+        // is hidden. Computed against the CURRENT top selection so the
+        // candidates always reflect what's reachable from the user's
+        // present top picks.
+        const subTags = hasFilter ? getSubTags(this.state.selectedTags) : [];
         // In landscape we reclaim vertical space by hiding the title
         // line and the bottom action button rows. The close (X) button
         // stays visible so the user always has a way out of the modal
@@ -907,6 +1021,103 @@ class ShowLogsModal extends Component {
                                     })}
                                 </View>
                             </ScrollView>
+
+                            {/* "Filter results" sub-pill row — only
+                                rendered when a top-level filter is active
+                                AND there's at least one OTHER tag present
+                                on those filtered lines to refine by.
+                                Tapping a sub pill AND-narrows the result
+                                to lines that match BOTH the top
+                                OR-selection AND at least one sub pick.
+                                The leading "Filter results:" label
+                                doubles as a heading and an explanation
+                                of what the amber row does — it would
+                                otherwise be ambiguous next to the green
+                                top row. The Clear button clears ONLY the
+                                sub selection (the top row has its own
+                                Clear above), so the user can drop a
+                                refinement without losing the broader
+                                top filter. */}
+                            {hasFilter && subTags.length > 0 ? (
+                            <View style={{
+                                paddingTop: 4,
+                                borderTopWidth: StyleSheet.hairlineWidth,
+                                borderTopColor: '#eee',
+                                marginTop: 4,
+                            }}>
+                                <View style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    paddingHorizontal: 8,
+                                    paddingBottom: 2,
+                                }}>
+                                    <Text style={{
+                                        color: '#bf360c',
+                                        fontSize: 10,
+                                        lineHeight: 12,
+                                        fontWeight: '600',
+                                    }}>
+                                        Filter results
+                                    </Text>
+                                    {hasSubFilter ? (
+                                        <TouchableOpacity
+                                            key="__clear_sub__"
+                                            onPress={this._clearSubTags}
+                                            accessibilityLabel="Clear sub filter"
+                                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                            style={{
+                                                height: 22,
+                                                paddingHorizontal: 10,
+                                                borderRadius: 11,
+                                                backgroundColor: 'transparent',
+                                                borderWidth: StyleSheet.hairlineWidth,
+                                                borderColor: '#e65100',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                            }}
+                                        >
+                                            <Text style={{
+                                                color: '#bf360c',
+                                                fontSize: 10,
+                                                lineHeight: 12,
+                                                fontWeight: '600',
+                                            }}>
+                                                Clear
+                                            </Text>
+                                        </TouchableOpacity>
+                                    ) : null}
+                                </View>
+                                <ScrollView
+                                    style={{ maxHeight: PILL_BAR_MAX_HEIGHT }}
+                                    showsVerticalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
+                                >
+                                    <View style={{
+                                        flexDirection: 'row',
+                                        flexWrap: 'wrap',
+                                        paddingHorizontal: 6,
+                                        alignItems: 'center',
+                                    }}>
+                                        {subTags.map((t) => {
+                                            const active = this.state.selectedSubTags.has(t.name);
+                                            return (
+                                                <TouchableOpacity
+                                                    key={t.name}
+                                                    onPress={() => this._toggleSubTag(t.name)}
+                                                    accessibilityLabel={`Refine by ${t.name} (${t.count})`}
+                                                    style={subPillStyle(active)}
+                                                >
+                                                    <Text style={subPillTextStyle(active)}>
+                                                        {t.name} ({t.count})
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </View>
+                                </ScrollView>
+                            </View>
+                            ) : null}
                         </View>
 
                         {/* Action row + support row pinned at the bottom.

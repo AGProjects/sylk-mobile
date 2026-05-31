@@ -181,21 +181,33 @@ class ContactsListBox extends Component {
             messages: this.props.messages,
             renderMessages: [],
             filteredMessages: [],
-            // Date-period filter (D/W/M/Y). Two-step UI:
-            //   1. User picks a media type (text / image / video / …).
-            //      ContactsListBox computes day / week / month / year
-            //      tags for every visible bubble.
-            //   2. User taps a D/W/M/Y chip; an inline horizontal
-            //      tag scroller appears above the chat with the
-            //      tags that actually occur in the current results
-            //      (e.g. "May 2026", "Apr 2026", …). Tapping a tag
-            //      narrows filteredMessages further.
-            // Both reset whenever the media-type filter or the
-            // active period chip changes — see the CWRP / CDU
-            // branches that drive that reset.
-            datePeriod: null,    // 'day' | 'week' | 'month' | 'year' | null
-            dateTag: null,       // selected tag id, e.g. '2026-05'
-            availableDateTags: { day: [], week: [], month: [], year: [] },
+            // Year/Month/Day drill-down filter. Three stacked rows
+            // in the calendar bar above the chat:
+            //   • Year (always visible while the bar is up)
+            //   • Month (appears once a year is picked)
+            //   • Day   (appears once a month is picked)
+            // Each row narrows the chat further. The narrowest
+            // active selection (dateDay > dateMonth > dateYear)
+            // determines the actual filter applied to messages.
+            // All three reset together on category change; tapping
+            // an already-active pill clears it AND everything
+            // below.
+            dateYear: null,    // e.g. '2024'
+            dateMonth: null,   // e.g. '2024-05'  (implies dateYear='2024')
+            dateDay: null,     // e.g. '2024-05-12' (implies dateMonth + dateYear)
+            availableYears: [],   // [{id, label, sortKey, count}, …]
+            availableMonths: [],  // only populated when dateYear is set
+            availableDays: [],    // only populated when dateMonth is set
+            // Full per-contact day list pulled from SQL via
+            // props.getContactDateIndex when the chat opens. Shape:
+            // [{day_id: 'YYYY-MM-DD', count}, …] sorted day desc.
+            // Used as the SOURCE for the year/month/day pills so
+            // the calendar reflects the WHOLE history of the
+            // conversation, not just the windowed slice currently
+            // in renderMessages. Refreshed whenever the contact
+            // changes (CWRP) and after a new message is appended
+            // locally (debounced — see _scheduleDateIndexRefresh).
+            contactDateIndex: [],
             // True from the moment the user taps a media-type chip
             // (image / video / audio / location / …) until the
             // freshly-fetched messages for that category land in
@@ -273,6 +285,23 @@ class ContactsListBox extends Component {
 			text: '',
 			fullSize: false,
 			expandedImage: null,
+			// Width/height of the currently-expanded single image. Pre-resolved
+			// in onImagePress via Image.getSize (with a screen-size fallback)
+			// and passed to react-native-image-zoom-viewer's imageUrls so the
+			// library skips its internal getSize call — that call fails on
+			// iOS 26 for our local-file URIs and would otherwise leave the
+			// viewer black. See ThumbnailGrid.js openViewer for the same fix.
+			expandedImageSize: null,
+			// True when the underlying file is unreadable — either Image.getSize
+			// failed or the inner <Image> reported onError. Drives the "File not
+			// available" placeholder in the viewer Modal so the user sees a
+			// real message instead of black. Reset on each onImagePress.
+			expandedImageMissing: false,
+			// True from the moment the user taps "Download from server" in
+			// the placeholder until the viewer closes (or until a fresh
+			// onImagePress resets it). Keeps the button in its spinner
+			// state so repeat taps don't spam downloadFile.
+			expandedImageDownloading: false,
 			fullScreen: this.props.fullScreen,
 			visibleMessageIds: [], 
 			renderedMessageIds: new Set(),
@@ -504,8 +533,15 @@ class ContactsListBox extends Component {
 
             if (nextProps.selectedContact) {
                this.setState({scrollToBottom: true});
+               // Load the full-history date index for this contact
+               // so the calendar bar pills reflect every day the
+               // conversation has messages — independent of the
+               // windowed slice that getMessages loads into
+               // renderMessages. Fire-and-forget; the setState
+               // happens when the SQL resolves.
+               this._loadContactDateIndex(nextProps.selectedContact);
             } else {
-                this.setState({renderMessages: []});
+                this.setState({renderMessages: [], contactDateIndex: []});
             }
             // Always drop any in-flight category-filter overlay when
             // the contact changes — the loading flag was set for the
@@ -741,6 +777,34 @@ class ContactsListBox extends Component {
             this.setState({scrollToBottom: false, messageZoomFactor: nextProps.messageZoomFactor});
         }
 
+        // Search-bar closed (user tapped X). Reset the whole
+        // search/filter environment so the chat returns to its
+        // default state — no pills, no category, no date narrow,
+        // no loading overlay, default window of recent messages
+        // restored on the next CWRP getMessages. Triggered on the
+        // searchMessages prop transitioning from true → false.
+        // ReadyBox's own CDU already clears messagesCategoryFilter
+        // in this case, but the date-filter state lives in
+        // ContactsListBox so it's our responsibility to wipe.
+        if ('searchMessages' in nextProps
+                && this.state.searchMessages
+                && !nextProps.searchMessages) {
+            console.log('[search] bar closed — resetting date filter + pills');
+            this.setState({
+                dateYear: null,
+                dateMonth: null,
+                dateDay: null,
+                availableYears: [],
+                availableMonths: [],
+                availableDays: [],
+                messagesLoading: false,
+            });
+            if (this._messagesLoadingTimer) {
+                clearTimeout(this._messagesLoadingTimer);
+                this._messagesLoadingTimer = null;
+            }
+        }
+
         if ('messagesCategoryFilter' in nextProps) {
 			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
 				// Block back-to-back filter taps: while the previous
@@ -754,6 +818,27 @@ class ContactsListBox extends Component {
 				// promises (one fetch at a time).
 				if (this.state.messagesLoading) {
 					console.log('[messagesLoading] filter change ignored, previous fetch still in flight:', nextProps.messagesCategoryFilter);
+					return;
+				}
+				// "Go to chat on this day" carve-out. The grid's
+				// chat-icon button does its own coordinated state
+				// update (clears category at the parent AND sets
+				// dateYear/Month/Day locally AND fires
+				// _refetchForDateSelection with explicit range).
+				// We must NOT take the normal "category changed,
+				// wipe the date filter + refetch default window"
+				// path here — that would erase the very pills the
+				// user just navigated to. Flag is one-shot:
+				// consume it and refresh the date index against
+				// the new (null) category, then bail out before
+				// the resets below.
+				if (this._suppressNextCategoryReset) {
+					this._suppressNextCategoryReset = false;
+					console.log('[goToDay] category-change CWRP suppressed — preserving date filter');
+					this._loadContactDateIndex(
+						nextProps.selectedContact,
+						nextProps.messagesCategoryFilter,
+						nextProps.pinned);
 					return;
 				}
 				// Immediately blank the chat surface and raise the
@@ -770,16 +855,26 @@ class ContactsListBox extends Component {
 				// are scoped to the previous category's results
 				// and don't carry meaning across a media-type
 				// switch (per UX spec: reset when media type or
-				// period changes). availableDateTags will refill
-				// from the new category's messages once they
-				// land.
+				// period changes). availableYears / Months / Days
+				// will refill from the new category's messages
+				// once they land.
 				this.setState({
 					renderMessages: [],
 					messagesLoading: true,
-					datePeriod: null,
-					dateTag: null,
-					availableDateTags: { day: [], week: [], month: [], year: [] },
+					dateYear: null,
+					dateMonth: null,
+					dateDay: null,
+					availableYears: [],
+					availableMonths: [],
+					availableDays: [],
 				});
+				// Refresh the per-contact date index against the
+				// new category so the calendar pills re-derive
+				// from the right slice (e.g. only days that have
+				// images when the user picks the Image chip).
+				this._loadContactDateIndex(
+					nextProps.selectedContact,
+					nextProps.messagesCategoryFilter);
 				console.log('[messagesLoading] true — fetching category:', nextProps.messagesCategoryFilter);
 				// Hard timeout fallback. Two cases the CDU-based
 				// clear (watching renderMessages flip from [] to
@@ -807,6 +902,29 @@ class ContactsListBox extends Component {
         }
 
         if (nextProps.pinned !== this.state.pinned && nextProps.selectedContact) {
+            // Pinned is a cumulative modifier (stacks on the
+            // active category). Toggling it changes the universe
+            // of messages, so wipe any date-filter state the user
+            // had selected against the previous universe — same
+            // reset the category-change branch does. Then refresh
+            // the per-contact date index against the new flag so
+            // pills line up with the new visible set.
+            console.log('[pinned] toggled to', !!nextProps.pinned,
+                '— resetting date filter + refreshing date index');
+            this.setState({
+                renderMessages: [],
+                messagesLoading: true,
+                dateYear: null,
+                dateMonth: null,
+                dateDay: null,
+                availableYears: [],
+                availableMonths: [],
+                availableDays: [],
+            });
+            this._loadContactDateIndex(
+                nextProps.selectedContact,
+                nextProps.messagesCategoryFilter,
+                nextProps.pinned);
             this.props.getMessages(nextProps.selectedContact.uri, {category: nextProps.messagesCategoryFilter, pinned: nextProps.pinned});
         }
 
@@ -1245,7 +1363,12 @@ class ContactsListBox extends Component {
 
    exitFullScreen() {
 		this.props.setFullScreen(false);
-		this.setState({ expandedImage: null});
+		this.setState({
+			expandedImage: null,
+			expandedImageSize: null,
+			expandedImageMissing: false,
+			expandedImageDownloading: false,
+		});
    }
 	
 	onImagePress = (message) => {
@@ -1261,7 +1384,68 @@ class ContactsListBox extends Component {
 		if (message._id in this.state.mediaRotations) {
 			rotation = this.state.mediaRotations[message._id];
 		}
-		this.setState({ expandedImage: message, rotation: rotation});
+		// Pre-resolve dimensions so react-native-image-zoom-viewer doesn't
+		// have to call Image.getSize itself — that call fails on iOS 26 for
+		// the bare absolute local-file paths we use, leaving the viewer
+		// black. We supply a screen-size fallback so the image always
+		// renders even when getSize never resolves; the renderImage
+		// callback below then detects onError to swap in a friendly
+		// "file not available" placeholder instead of a black void.
+		const win = Dimensions.get('window');
+		const fallbackSize = {width: win.width, height: win.height};
+		this.setState({
+			expandedImage: message,
+			rotation: rotation,
+			expandedImageSize: null,
+			expandedImageMissing: false,
+			expandedImageDownloading: false,
+		});
+
+		// On iOS, msg.image is a bare /var/mobile/... path (utils.sylk2GiftedChat
+		// drops the file:// prefix on iOS). Image.getSize needs a real URL
+		// scheme, so prepend file:// before asking.
+		const rawUri = message.image;
+		const probeUri = (Platform.OS === 'ios' && rawUri && rawUri.startsWith('/'))
+			? 'file://' + rawUri
+			: rawUri;
+
+		// Captured for the missing-file log so the per-message identifiers
+		// are visible without re-reading state from the failure path.
+		const _logMsgId = message && message._id;
+		const _logTransferId = message && message.metadata && message.metadata.transfer_id;
+
+		let settled = false;
+		const finish = (dims, missing, reason) => {
+			if (settled) return;
+			settled = true;
+			if (missing) {
+				console.log('[image-viewer] missing file',
+					'reason=', reason,
+					'msgId=', _logMsgId,
+					'transferId=', _logTransferId || '(none)',
+					'uri=', rawUri);
+			}
+			this.setState({expandedImageSize: dims, expandedImageMissing: !!missing});
+		};
+		// Important: timeout falls back to screen dims WITHOUT marking
+		// missing. Slow native callbacks (seen under load on iOS 26)
+		// don't mean the file is gone. The real "missing" signal comes
+		// from getSize's fail callback or <Image>'s onError below.
+		const timer = setTimeout(() => finish(fallbackSize, false), 2000);
+		try {
+			Image.getSize(
+				probeUri,
+				(w, h) => { clearTimeout(timer); finish({width: w, height: h}, false); },
+				(err) => {
+					clearTimeout(timer);
+					finish(fallbackSize, true,
+						'getSize failed: ' + (err && (err.message || String(err))));
+				},
+			);
+		} catch (e) {
+			clearTimeout(timer);
+			finish(fallbackSize, true, 'getSize threw: ' + (e && e.message));
+		}
 	  }
 	};
 
@@ -3436,6 +3620,19 @@ class ContactsListBox extends Component {
 			size: msg.metadata.filesize,
 			timestamp: msg.metadata.timestamp,
 			rotation: msg.metadata.rotation || this.state.mediaRotations[msg._id] || 0,
+			// Surface the file-transfer id on each grid item so the
+			// viewer can log it (alongside the URI) when an underlying
+			// file fails to open — invaluable for tracing which
+			// historical transfer actually has a broken path on disk.
+			transferId: msg.metadata && msg.metadata.transfer_id,
+			// Full file-transfer metadata. Carries url + transfer_id +
+			// sender/receiver — everything downloadFile() needs to
+			// re-fetch the original from the server when the local
+			// copy is gone (stale container path, image-picker temp
+			// cleaned up by iOS, etc.). The "Download from server"
+			// button in ThumbnailGrid's missing-file placeholder
+			// hands this object straight to props.downloadFile.
+			metadata: msg.metadata,
 			title: msg.text || '',
 		  }));
 		  
@@ -3478,6 +3675,22 @@ class ContactsListBox extends Component {
 			// media-gallery grid keeps the photo-picker behaviour
 			// because it doesn't pass tapAlwaysOpens.
 			tapAlwaysOpens={true}
+			// Wire the viewer's "Download from server" affordance to
+			// the existing file-transfer pipeline. ThumbnailGrid only
+			// calls this when its missing-file placeholder is showing,
+			// i.e. the local file is genuinely gone — handing the
+			// item's full metadata (url + transfer_id + sender +
+			// receiver) to downloadFile re-fetches the original from
+			// the SylkServer-hosted location. force=true bypasses
+			// downloadFile's already-on-disk guard since by definition
+			// the on-disk check just failed for this tile.
+			onRequestDownload={(item) => {
+			  if (item && item.metadata && this.props.downloadFile) {
+				console.log('[image-viewer] manual download',
+				  'msgId=', item.id, 'transferId=', item.transferId);
+				this.props.downloadFile(item.metadata, true);
+			  }
+			}}
 			onLongPress={(item) => console.log('long', item)}
 			renderThumb={({item, index, size}) => (
 			  <View style={{flex:1}}>
@@ -4922,6 +5135,23 @@ class ContactsListBox extends Component {
 	}
 
 	componentDidUpdate(prevProps, prevState) {
+      // If the user tapped "Download from server" on the missing-file
+      // placeholder and the chat layer subsequently refreshed the
+      // expanded message with a fresh local_url, drop the missing/
+      // downloading flags so the viewer re-attempts the load against
+      // the new URI without requiring a close+reopen.
+      const prevExp = prevState.expandedImage;
+      const curExp = this.state.expandedImage;
+      if (prevExp && curExp && prevExp._id === curExp._id
+          && prevExp.image !== curExp.image
+          && (this.state.expandedImageMissing || this.state.expandedImageDownloading)) {
+          this.setState({
+              expandedImageMissing: false,
+              expandedImageDownloading: false,
+              expandedImageSize: null,
+          });
+      }
+
       // Notify the parent app whenever the reaction bar opens or
       // closes. app.js uses this to hide the top NavigationBar
       // (call buttons + menu) while the reaction overlay is up —
@@ -4978,6 +5208,35 @@ class ContactsListBox extends Component {
       // new selection so the next prop diff catches it as "this
       // pass differs from the previous pass".
       this._previousSelectedImages = this.state.selectedImages;
+
+      // Scroll each calendar-bar row to keep the active pill in
+      // view whenever its selection transitions. Fires for both
+      // tap-a-pill paths (selectDateYear / Month / Day in the bar)
+      // AND remote selection (in-chat "Go to date" pill, which
+      // sets all three at once). Without this hook, picking a
+      // tag that sits off-screen would leave it invisible.
+      const _scrollRow = (ref, tags, id) => {
+          if (!ref || !ref.current || !ref.current.scrollToIndex) return;
+          if (!id || !tags) return;
+          const _idx = tags.findIndex(t => t && t.id === id);
+          if (_idx < 0) return;
+          try {
+              ref.current.scrollToIndex({
+                  index: _idx,
+                  animated: true,
+                  viewPosition: 0.5,
+              });
+          } catch (e) { /* swallow — best effort */ }
+      };
+      if (prevState.dateYear !== this.state.dateYear) {
+          _scrollRow(this._yearListRef, this.state.availableYears, this.state.dateYear);
+      }
+      if (prevState.dateMonth !== this.state.dateMonth) {
+          _scrollRow(this._monthListRef, this.state.availableMonths, this.state.dateMonth);
+      }
+      if (prevState.dateDay !== this.state.dateDay) {
+          _scrollRow(this._dayListRef, this.state.availableDays, this.state.dateDay);
+      }
 
       // External scroll trigger. App.js bumps `chatScrollTrigger`
       // when an outgoing event (e.g. user just confirmed a Meet me
@@ -5411,7 +5670,7 @@ class ContactsListBox extends Component {
 		  });
 	   }
 
-	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy || prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter || prevState.sortOrder !== this.state.sortOrder || prevState.datePeriod !== this.state.datePeriod || prevState.dateTag !== this.state.dateTag) {
+	   if (prevState.searchString !== this.state.searchString || prevState.renderMessages != this.state.renderMessages || prevState.orderBy != this.state.orderBy || prevState.messagesCategoryFilter !== this.state.messagesCategoryFilter || prevState.sortOrder !== this.state.sortOrder || prevState.dateYear !== this.state.dateYear || prevState.dateMonth !== this.state.dateMonth || prevState.dateDay !== this.state.dateDay || prevState.searchMessages !== this.state.searchMessages || prevState.contactDateIndex !== this.state.contactDateIndex) {
 
 			let filteredMessages = this.state.renderMessages;
 
@@ -5492,140 +5751,170 @@ class ContactsListBox extends Component {
 			// flattening (linkifyHtml above leaves the raw href
 			// text in place).
 			if (_catFilter === 'links') {
-				const _urlRegex = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|app|co|dev|me|gov|edu|info|ai|xyz)(?:\/\S*)?)/i;
+				// Shared URL test (see utils.containsUrl) so a
+				// regex tweak applies to both the runtime filter
+				// AND the INSERT-time has_link classification.
 				filteredMessages = filteredMessages.filter(message => {
 				    if (!message) return false;
-				    const body = (message.text || '') + ' ' + (message.html || '');
-				    return _urlRegex.test(body);
+				    return utils.containsUrl(message.text, message.html);
 				});
 			}
 
-			// === Date-period tag pipeline ===
+			// === Year/Month/Day drill-down pipeline ===
 			//
-			// Runs only when a media-type filter is active — the
-			// chip group, the inline tag scroller, and the date
-			// state are all gated on that condition (see the
-			// renderDatePeriodBar method and the reset branches
-			// in CWRP / CDU). Skipping the work otherwise keeps
-			// the mixed-timeline view's per-render cost flat.
+			// PILL SOURCE: state.contactDateIndex — the full per-
+			// contact day list pulled from SQL once per chat open.
+			// It carries every day the conversation has messages,
+			// not just the windowed slice currently in
+			// renderMessages, so the year pills can read "2019"
+			// even when the user only just opened the chat and
+			// hasn't paginated that far back. Search/category
+			// state does NOT narrow the pill source (encrypted
+			// message bodies can't be LIKE-matched in SQL, and we
+			// don't want pills to only reflect the in-memory
+			// window) — search and category narrow the displayed
+			// chat AFTER a date is picked, which is the practical
+			// equivalent for the user.
 			//
-			// Two outputs:
-			//   • availableDateTags — unique day/week/month/year
-			//     tags actually present in the post-category
-			//     messages, each sorted newest-first by sortKey.
-			//     Fed back into state so the horizontal tag
-			//     scroller above the chat reflects only periods
-			//     the user can actually pick.
-			//   • filteredMessages — narrowed to the selected
-			//     {period, tag} pair when both are set.
-			//
-			// availableDateTags is computed from the messages
-			// BEFORE the dateTag narrow, so changing the active
-			// tag doesn't make other tags disappear from the
-			// scroller mid-session.
-			if (_catFilter) {
-				// Mirror the per-category renderer's visibility
-				// filter when collecting tags. Without this, pills
-				// could appear for months whose only members are
-				// invisible to the user:
-				//
-				//   • 'image' → the grid shows messages whose
-				//     `m.image` is populated, i.e. downloaded
-				//     images. Image-category rows whose file
-				//     hasn't been downloaded yet still live in
-				//     renderMessages (sql2GiftedChat keeps them
-				//     because they passed the isImg check) but
-				//     have `image: undefined`. Counting them
-				//     produces pills like "May 2026" even when
-				//     no image is visible for that month.
-				//
-				//   • 'video' → matches the dual-clause filter
-				//     the video grid uses (downloaded videos
-				//     OR file-transfer rows whose metadata
-				//     classifies as video). Undownloaded videos
-				//     ARE visible as placeholder tiles, so they
-				//     count.
-				//
-				//   • 'audio' / 'text' / 'links' / 'location' /
-				//     'other' → the chat list shows every row,
-				//     so the broader set is correct; no extra
-				//     narrowing here.
-				let _msgsForTags = filteredMessages;
-				if (_catFilter === 'image') {
-					_msgsForTags = filteredMessages.filter(m => m && !!m.image);
-				} else if (_catFilter === 'video') {
-					_msgsForTags = filteredMessages.filter(m => {
-						if (!m) return false;
-						if (m.video) return true;
-						if (!m.metadata || !m.metadata.filename) return false;
-						const fname = m.metadata.filename;
-						const ftype = m.metadata.filetype;
-						if (utils.isImage(fname, ftype)) return false;
-						if (utils.isAudio(fname, ftype)) return false;
-						return utils.isVideo(fname, ftype);
-					});
-				}
-				const _tagPerMsg = _msgsForTags.map(m => {
-					const ts = m && m.createdAt;
-					const tags = utils.getMessageDateTags(ts);
-					return { id: m && m._id, tags };
-				});
-				const _collect = (period) => {
-					const seen = new Map();
-					for (const e of _tagPerMsg) {
-						const t = e.tags && e.tags[period];
-						if (!t) continue;
-						if (!seen.has(t.id)) {
-							seen.set(t.id, t);
+			// NARROW SOURCE: filteredMessages from the loaded
+			// window. When a date is picked and the target day
+			// isn't in renderMessages yet, the narrow trivially
+			// resolves to an empty chat — the user has signalled
+			// "fetch this date", which is a follow-up to wire to
+			// app.js getMessages with a date-window filter. For
+			// now the narrow shows whichever matching rows are
+			// already loaded.
+			if (_catFilter || this.state.dateYear || this.state.dateMonth
+					|| this.state.dateDay || this.state.searchMessages
+					|| this.state.pinned) {
+				const _yearSel  = this.state.dateYear;
+				const _monthSel = this.state.dateMonth;
+
+				// Pill source: always the SQL contactDateIndex now
+				// that v18 added has_link. getContactDateIndex
+				// passes category through and the 'links' branch
+				// gates on `category='text' AND has_link=1`, so
+				// the persisted column produces honest counts for
+				// every category without needing the in-memory
+				// fallback the previous codepath used as a
+				// stopgap.
+				const _index = this.state.contactDateIndex || [];
+
+				// Build the three pill rows from the date index.
+				// Each row groups + sums counts at its
+				// granularity.
+				const _yearAgg  = new Map();
+				const _monthAgg = new Map();
+				const _dayAgg   = new Map();
+				for (const e of _index) {
+					if (!e || !e.day_id || e.day_id.length < 10) continue;
+					const yId = e.day_id.substring(0, 4);
+					const mId = e.day_id.substring(0, 7);
+					const dId = e.day_id;
+					const cnt = e.count || 0;
+
+					// Year row: every year contributes.
+					const yEntry = _yearAgg.get(yId);
+					if (yEntry) yEntry.count += cnt;
+					else _yearAgg.set(yId, { id: yId, label: yId,
+						sortKey: parseInt(yId, 10) * 10000, count: cnt });
+
+					// Month row: only when a year is selected and
+					// this day falls inside it.
+					if (_yearSel && yId === _yearSel) {
+						const mEntry = _monthAgg.get(mId);
+						if (mEntry) mEntry.count += cnt;
+						else {
+							const _mNum = parseInt(mId.substring(5, 7), 10);
+							const _mShort = new Date(parseInt(yId, 10), _mNum - 1, 1)
+								.toLocaleString('default', { month: 'short' });
+							_monthAgg.set(mId, { id: mId,
+								label: `${_mShort} ${yId}`,
+								sortKey: parseInt(yId, 10) * 100 + _mNum,
+								count: cnt });
 						}
 					}
-					return Array.from(seen.values())
-						.sort((a, b) => b.sortKey - a.sortKey);
-				};
-				const nextAvail = {
-					day: _collect('day'),
-					week: _collect('week'),
-					month: _collect('month'),
-					year: _collect('year'),
-				};
-				// Cheap shallow stability check — keys are the
-				// ids in order, joined. Cuts per-render setState
-				// churn (which otherwise re-fires CDU
-				// recursively).
-				const _join = (arr) => arr.map(t => t.id).join('|');
-				const prevAvail = this.state.availableDateTags || {};
-				const changed =
-					_join(prevAvail.day  || []) !== _join(nextAvail.day)  ||
-					_join(prevAvail.week || []) !== _join(nextAvail.week) ||
-					_join(prevAvail.month|| []) !== _join(nextAvail.month)||
-					_join(prevAvail.year || []) !== _join(nextAvail.year);
-				if (changed) {
-					// Compact summary log — kept (cheap, only fires
-					// on actual change) so future regressions in tag
-					// computation are easy to spot. Full label lists
-					// were dropped after the UI was verified.
-					console.log('[dateFilter] category=', _catFilter,
-						'messages=', filteredMessages.length,
-						'tagCounts d/w/m/y=',
-						nextAvail.day.length,
-						nextAvail.week.length,
-						nextAvail.month.length,
-						nextAvail.year.length);
-					this.setState({availableDateTags: nextAvail});
+
+					// Day row: only when a month is selected and
+					// this day falls inside it.
+					if (_monthSel && mId === _monthSel) {
+						const dEntry = _dayAgg.get(dId);
+						if (dEntry) dEntry.count += cnt;
+						else {
+							const _dNum = parseInt(dId.substring(8, 10), 10);
+							const _mNum = parseInt(dId.substring(5, 7), 10);
+							const _mShort = new Date(parseInt(yId, 10), _mNum - 1, 1)
+								.toLocaleString('default', { month: 'short' });
+							_dayAgg.set(dId, { id: dId,
+								label: `${_dNum} ${_mShort}`,
+								sortKey: new Date(yId, _mNum - 1, _dNum).getTime(),
+								count: cnt });
+						}
+					}
 				}
-				// Apply the active {period, tag} narrow if any.
-				const _period = this.state.datePeriod;
-				const _tag = this.state.dateTag;
-				if (_period && _tag) {
-					const allowedIds = new Set(
-						_tagPerMsg
-							.filter(e => e.tags
-								&& e.tags[_period]
-								&& e.tags[_period].id === _tag)
-							.map(e => e.id)
-					);
-					filteredMessages = filteredMessages.filter(m =>
-						m && allowedIds.has(m._id));
+				const _sortDesc = (a, b) => b.sortKey - a.sortKey;
+				const nextYears  = Array.from(_yearAgg.values()).sort(_sortDesc);
+				const nextMonths = _yearSel ? Array.from(_monthAgg.values()).sort(_sortDesc) : [];
+				const nextDays   = _monthSel ? Array.from(_dayAgg.values()).sort(_sortDesc) : [];
+
+				// Stability check (id + count) so identical
+				// recomputations don't fire setState and recurse.
+				const _join = (arr) => arr.map(t => `${t.id}:${t.count}`).join('|');
+				const _prevY = _join(this.state.availableYears  || []);
+				const _prevM = _join(this.state.availableMonths || []);
+				const _prevD = _join(this.state.availableDays   || []);
+				const _nextY = _join(nextYears);
+				const _nextM = _join(nextMonths);
+				const _nextD = _join(nextDays);
+				if (_prevY !== _nextY || _prevM !== _nextM || _prevD !== _nextD) {
+					console.log('[dateFilter] indexDays=', _index.length,
+						'years=', nextYears.length,
+						'months=', nextMonths.length,
+						'days=', nextDays.length);
+					this.setState({
+						availableYears:  nextYears,
+						availableMonths: nextMonths,
+						availableDays:   nextDays,
+					});
+				}
+
+				// Narrow filteredMessages to the most specific
+				// selection. The narrow is derived from each
+				// message's local-timezone tags (utils.getMessage-
+				// DateTags), same as the SQL index uses
+				// strftime('localtime') — so the bucket boundaries
+				// match between the index and the in-memory pass.
+				const _activeNarrow = this.state.dateDay
+					? { period: 'day',   id: this.state.dateDay }
+					: this.state.dateMonth
+						? { period: 'month', id: this.state.dateMonth }
+						: this.state.dateYear
+							? { period: 'year',  id: this.state.dateYear }
+							: null;
+				if (_activeNarrow) {
+					const _before = filteredMessages.length;
+					filteredMessages = filteredMessages.filter(m => {
+						if (!m) return false;
+						const t = utils.getMessageDateTags(m.createdAt);
+						return !!(t && t[_activeNarrow.period]
+							&& t[_activeNarrow.period].id === _activeNarrow.id);
+					});
+					// If the SQL pill said "category=image, day=X
+					// has N rows" but the in-memory narrow lands
+					// fewer (or zero) results, the gap is one of:
+					//   • renderMessages window doesn't cover that
+					//     day yet (load earlier or pick a fetch
+					//     range — TODO date-range getMessages)
+					//   • SQL category='image' includes rows whose
+					//     local_url is missing / never downloaded,
+					//     so they don't render in the image grid
+					//     (grid filters on m.image which is only
+					//     set when local_url resolves to disk)
+					console.log('[dateNarrow]', _activeNarrow.period, '=',
+						_activeNarrow.id,
+						'window=', _before,
+						'matched=', filteredMessages.length,
+						'category=', _catFilter || 'none');
 				}
 			}
 
@@ -7102,6 +7391,95 @@ class ContactsListBox extends Component {
 	      fontSize: 12,
 	      fontWeight: '600',
 	  };
+
+	  // Go-to-date pill: when the user is searching by text inside a
+	  // non-grid view (text / links / audio / location / other —
+	  // anything but the image and video ThumbnailGrids, which don't
+	  // route through renderDay anyway), turn each between-messages
+	  // day header into a tappable button. Tapping it clears the
+	  // search query (same path as the Searchbar's × — see
+	  // ReadyBox.clearMessageSearch), dismisses the keyboard, and
+	  // jumps the chat to that day by setting dateYear / dateMonth /
+	  // dateDay together. Visual treatment differs from the
+	  // read-only label above (Sylk-blue fill, calendar-arrow icon,
+	  // explicit "Go to …" wording) so the affordance is obvious.
+	  //
+	  // Suppressed when ANY calendar date pill is already
+	  // selected (year, month, or day). Once the user has
+	  // narrowed via the drill-down, the chat is already pinned
+	  // — a "Go to date X" button reads as redundant noise, and
+	  // the selected pill above already tells them which date.
+	  const _searchActive = !!(this.state.searchString
+	      && this.state.searchString.length > 0);
+	  const _inGrid = this.showImageGrid || this.showVideoGrid;
+	  const _hasActiveTag = !!(this.state.dateYear
+	      || this.state.dateMonth
+	      || this.state.dateDay);
+	  if (_searchActive && !_inGrid && !_hasActiveTag) {
+	      const _tags = utils.getMessageDateTags(currentMessage && currentMessage.createdAt);
+	      const _dayTag = _tags && _tags.day;
+	      if (_dayTag) {
+	          // Derive the implicit year/month so the
+	          // breadcrumb in the calendar bar lights up the
+	          // full path (Year + Month + Day) after the tap.
+	          const _yId = _dayTag.id.substring(0, 4);
+	          const _mId = _dayTag.id.substring(0, 7);
+	          return (
+	              <View style={{
+	                  alignItems: 'center',
+	                  marginTop: 5,
+	                  marginBottom: 10,
+	              }}>
+	                  <TouchableOpacity
+	                      activeOpacity={0.8}
+	                      onPress={() => {
+	                          try { Keyboard.dismiss(); } catch (e) {}
+	                          if (typeof this.props.clearMessageSearch === 'function') {
+	                              this.props.clearMessageSearch();
+	                          }
+	                          this.setState({
+	                              dateYear: _yId,
+	                              dateMonth: _mId,
+	                              dateDay: _dayTag.id,
+	                          });
+	                      }}
+	                      style={{
+	                          flexDirection: 'row',
+	                          alignItems: 'center',
+	                          backgroundColor: '#436294', // Sylk-blue
+	                          paddingHorizontal: 12,
+	                          paddingVertical: 5,
+	                          borderRadius: 14,
+	                      }}
+	                  >
+	                      <Icon name="calendar-arrow-right" size={14} color="#FFFFFF" />
+	                      <Text style={{
+	                          color: '#FFFFFF',
+	                          fontSize: 12,
+	                          fontWeight: '600',
+	                          marginLeft: 6,
+	                      }}>
+	                          Go to {_dayTag.label}
+	                      </Text>
+	                  </TouchableOpacity>
+	              </View>
+	          );
+	      }
+	  }
+
+	  // Calendar pill active → hide GiftedChat's between-messages
+	  // date label entirely. The bar above already shows what
+	  // period the chat is pinned to (Year + Month + Day pills
+	  // highlighted), and on Day-selection in particular every
+	  // bubble shares the same date — the in-line "May 15, 2025"
+	  // separator becomes pure noise. Hide it for Year and Month
+	  // selections too since the calendar bar is doing the job
+	  // and the date label adds chrome to a view the user has
+	  // already narrowed.
+	  if (_hasActiveTag) {
+	      return null;
+	  }
+
 	  return <Day {...props} wrapperStyle={_dayWrapperStyle} textStyle={_dayTextStyle} />;
 	};
 
@@ -7457,29 +7835,239 @@ renderFocusedMessagesControls = () => (
   </View>
 );
 
-// Toggle a date-period chip (D / W / M / Y). Tap the same chip
-// twice to clear it. Tapping a different period from the one
-// currently active swaps periods AND clears the previously-
-// selected tag (per UX spec: "reset when period changes") — the
-// available tag list for the new period is a different set of
-// strings and a stale dateTag from the old period would never
-// match anyway.
-togglePeriod = (period) => {
-    if (this.state.datePeriod === period) {
-        this.setState({datePeriod: null, dateTag: null});
+// Fetch the contact's full-history date index from SQL via the
+// app.js prop callback. Idempotent: each call replaces the
+// previous result; no debounce here because the call sites
+// (selectedContact change + post-send / post-receive append)
+// are already coarse-grained. Swallows errors silently so a
+// hiccup in the SQL layer can't take down the chat UI; the
+// calendar bar just shows whatever the most recent successful
+// load returned.
+_loadContactDateIndex = async (contact, category, pinned) => {
+    if (!contact || typeof this.props.getContactDateIndex !== 'function') {
         return;
     }
-    this.setState({datePeriod: period, dateTag: null});
+    const _catForLoad = (category !== undefined)
+        ? category
+        : this.state.messagesCategoryFilter;
+    const _pinnedForLoad = (pinned !== undefined)
+        ? !!pinned
+        : !!this.state.pinned;
+    try {
+        const index = await this.props.getContactDateIndex(
+            contact, _catForLoad, { pinned: _pinnedForLoad });
+        if (this.ended) return;
+        // Race guard: bail if the contact, category, OR pinned
+        // mode has shifted since we kicked the load off. A fast
+        // tap on (Pinned on → Pinned off) would otherwise let an
+        // older "pinned-only" result win.
+        const _cur = this.state.selectedContact;
+        if (_cur && contact && _cur.uri !== contact.uri) return;
+        if (_catForLoad !== this.state.messagesCategoryFilter) return;
+        if (_pinnedForLoad !== !!this.state.pinned) return;
+        this.setState({contactDateIndex: Array.isArray(index) ? index : []});
+    } catch (e) {
+        console.log('[dateIndex] load failed:', e && e.message);
+    }
 };
 
-setDateTag = (tagId) => {
-    // Tap the active tag again -> clear (deselect). Otherwise
-    // pin the chat to that tag.
-    if (this.state.dateTag === tagId) {
-        this.setState({dateTag: null});
+// Compute a unix-seconds range from a year/month/day selection.
+// Both ends inclusive in LOCAL time so it lines up with the SQL
+// date index (strftime('localtime')) and the in-memory tag
+// pipeline (utils.getMessageDateTags uses local).
+//   • dayId set    → 00:00:00 → 23:59:59 of that day
+//   • monthId set  → 1st 00:00 → last-day 23:59:59 of that month
+//   • yearId set   → Jan 1 00:00 → Dec 31 23:59:59 of that year
+//   • all null     → empty range (no filter)
+_dateFilterRange = ({yearId, monthId, dayId}) => {
+    if (dayId) {
+        const [y, m, d] = dayId.split('-').map(Number);
+        const a = new Date(y, m - 1, d, 0, 0, 0).getTime() / 1000;
+        const b = new Date(y, m - 1, d, 23, 59, 59).getTime() / 1000;
+        return { dateFrom: Math.floor(a), dateTo: Math.floor(b) };
+    }
+    if (monthId) {
+        const [y, m] = monthId.split('-').map(Number);
+        const a = new Date(y, m - 1, 1, 0, 0, 0).getTime() / 1000;
+        // Last day = day 0 of next month
+        const b = new Date(y, m, 0, 23, 59, 59).getTime() / 1000;
+        return { dateFrom: Math.floor(a), dateTo: Math.floor(b) };
+    }
+    if (yearId) {
+        const y = Number(yearId);
+        const a = new Date(y, 0, 1, 0, 0, 0).getTime() / 1000;
+        const b = new Date(y, 11, 31, 23, 59, 59).getTime() / 1000;
+        return { dateFrom: Math.floor(a), dateTo: Math.floor(b) };
+    }
+    return {};  // no date filter active
+};
+
+// Drive a getMessages refetch with the current category + the
+// passed date selection. Called from selectDateYear / Month / Day
+// on both select and deselect. The state setState for the
+// dateYear/Month/Day happens in the caller — this helper just
+// takes the post-state-change values so it doesn't have to wait
+// for setState to commit.
+_refetchForDateSelection = ({yearId, monthId, dayId}, opts) => {
+    const contact = this.state.selectedContact;
+    if (!contact || typeof this.props.getMessages !== 'function') return;
+    const range = this._dateFilterRange({yearId, monthId, dayId});
+    const hasRange = range.dateFrom != null;
+    // Allow the caller to override category / pinned without
+    // waiting for the matching setState to commit. The async
+    // gap was the bug behind "go to chat on this day" silently
+    // refetching with the OLD category (image / video) — the
+    // user landed on the date but stayed inside the grid view
+    // because category had visually-but-not-yet-actually been
+    // cleared. Explicit override at the call site sidesteps
+    // setState's batching.
+    const _cat = (opts && 'category' in opts)
+        ? opts.category
+        : this.state.messagesCategoryFilter;
+    const _pinned = (opts && 'pinned' in opts)
+        ? opts.pinned
+        : this.state.pinned;
+    console.log('[dateFetch] refetch',
+        hasRange ? `range=${new Date(range.dateFrom * 1000).toISOString().slice(0,10)}..${new Date(range.dateTo * 1000).toISOString().slice(0,10)}` : 'no range (full window)',
+        'category=', _cat || 'none',
+        'pinned=', !!_pinned);
+    this.setState({renderMessages: [], messagesLoading: true});
+    if (this._messagesLoadingTimer) {
+        clearTimeout(this._messagesLoadingTimer);
+    }
+    this._messagesLoadingTimer = setTimeout(() => {
+        this._messagesLoadingTimer = null;
+        if (this.state.messagesLoading) {
+            this.setState({messagesLoading: false});
+        }
+    }, 5000);
+    this.props.getMessages(contact.uri, {
+        category: _cat,
+        pinned: _pinned,
+        dateFrom: range.dateFrom,
+        dateTo: range.dateTo,
+    });
+};
+
+// Per-tile "go to chat on this day" handler. Triggered by the
+// small chat icon overlay on each image/video grid tile. The
+// goal is the same as picking the day pill in the calendar bar
+// PLUS dropping out of the media-type filter so the user lands
+// in the regular chat view, narrowed to that picture's day.
+// Useful workflow: browse photo gallery → spot something
+// interesting → "what were we talking about that day?"
+_goToChatOnDayOfItem = (item) => {
+    if (!item) return;
+    const ts = item.createdAt || item.timestamp;
+    const tags = utils.getMessageDateTags(ts);
+    const _dayTag = tags && tags.day;
+    if (!_dayTag) {
+        console.log('[goToDay] no day tag derivable from item', item.id);
         return;
     }
-    this.setState({dateTag: tagId});
+    const _yId = _dayTag.id.substring(0, 4);
+    const _mId = _dayTag.id.substring(0, 7);
+    console.log('[goToDay] navigating to day', _dayTag.id, 'from grid tile', item.id);
+    // Suppress the next category-change CWRP branch. The
+    // clearMessageCategoryFilter call below makes the parent
+    // (ReadyBox) emit a fresh messagesCategoryFilter=null prop,
+    // and our CWRP normally treats that as "user picked a new
+    // category, wipe the date filter and re-load fresh". For
+    // this code path we WANT to keep dateYear/Month/Day set —
+    // they're the whole point of the navigation. The flag is
+    // consumed (and cleared) inside the CWRP branch on the very
+    // next pass.
+    this._suppressNextCategoryReset = true;
+    if (typeof this.props.clearMessageCategoryFilter === 'function') {
+        this.props.clearMessageCategoryFilter();
+    }
+    this.setState({
+        // Mirror the impending prop change so the chat-view
+        // gate flips immediately (showChat reads
+        // this.state.messagesCategoryFilter).
+        messagesCategoryFilter: null,
+        dateYear: _yId,
+        dateMonth: _mId,
+        dateDay: _dayTag.id,
+    });
+    this._refetchForDateSelection(
+        {yearId: _yId, monthId: _mId, dayId: _dayTag.id},
+        {category: null});
+};
+
+// Year/Month/Day drill-down handlers.
+//
+// Selection rules:
+//   • Picking a year clears month and day (the lower rows
+//     repopulate against the new parent context).
+//   • Picking a month sets/keeps the implied year and clears day.
+//   • Picking a day sets/keeps the implied year+month.
+//
+// Deselection rules (tap the same pill again):
+//   • Clears that level AND every level below it. Re-tap year →
+//     wipe month + day too. Re-tap month → wipe day. Re-tap day
+//     → wipe just day.
+selectDateYear = (yearId) => {
+    if (this.state.dateYear === yearId) {
+        console.log('[dateSel] year DESELECTED', yearId,
+            '(also clearing month + day, refetching default window)');
+        this.setState({dateYear: null, dateMonth: null, dateDay: null});
+        this._refetchForDateSelection({yearId: null, monthId: null, dayId: null});
+        return;
+    }
+    const _yr = (this.state.availableYears || []).find(t => t && t.id === yearId);
+    console.log('[dateSel] year SELECTED', yearId,
+        '(SQL pill count:', _yr ? _yr.count : '?', ')',
+        'category=', this.state.messagesCategoryFilter || 'none');
+    this.setState({dateYear: yearId, dateMonth: null, dateDay: null});
+    this._refetchForDateSelection({yearId, monthId: null, dayId: null});
+};
+
+selectDateMonth = (monthId) => {
+    const _yearId = (monthId && monthId.length >= 4)
+        ? monthId.substring(0, 4)
+        : null;
+    if (this.state.dateMonth === monthId) {
+        console.log('[dateSel] month DESELECTED', monthId,
+            '(refetching the parent year range)');
+        this.setState({dateMonth: null, dateDay: null});
+        // Falls back to whatever year is still selected (or no
+        // range if year was already cleared).
+        this._refetchForDateSelection({
+            yearId: this.state.dateYear,
+            monthId: null,
+            dayId: null,
+        });
+        return;
+    }
+    const _m = (this.state.availableMonths || []).find(t => t && t.id === monthId);
+    console.log('[dateSel] month SELECTED', monthId,
+        '(SQL pill count:', _m ? _m.count : '?', ')',
+        'category=', this.state.messagesCategoryFilter || 'none');
+    this.setState({dateYear: _yearId, dateMonth: monthId, dateDay: null});
+    this._refetchForDateSelection({yearId: _yearId, monthId, dayId: null});
+};
+
+selectDateDay = (dayId) => {
+    const _yearId  = (dayId && dayId.length >= 4)  ? dayId.substring(0, 4)  : null;
+    const _monthId = (dayId && dayId.length >= 7)  ? dayId.substring(0, 7)  : null;
+    if (this.state.dateDay === dayId) {
+        console.log('[dateSel] day DESELECTED', dayId,
+            '(refetching the parent month range)');
+        this.setState({dateDay: null});
+        this._refetchForDateSelection({
+            yearId: this.state.dateYear,
+            monthId: this.state.dateMonth,
+            dayId: null,
+        });
+        return;
+    }
+    const _d = (this.state.availableDays || []).find(t => t && t.id === dayId);
+    console.log('[dateSel] day SELECTED', dayId,
+        '(SQL pill count:', _d ? _d.count : '?', ')',
+        'category=', this.state.messagesCategoryFilter || 'none');
+    this.setState({dateYear: _yearId, dateMonth: _monthId, dateDay: dayId});
+    this._refetchForDateSelection({yearId: _yearId, monthId: _monthId, dayId});
 };
 
 // Date-period filter bar. Renders only when a media-type filter
@@ -7494,123 +8082,166 @@ setDateTag = (tagId) => {
 //     when a period is selected — the chips alone keep the bar
 //     small when the user hasn't picked one yet.
 renderDatePeriodBar = () => {
-    if (!this.state.messagesCategoryFilter) return null;
+    // Render when ANY of:
+    //   • a media-type category is active
+    //   • any date filter is set (year/month/day)
+    //   • the message search bar is open
+    //   • pinned mode is active (cumulative modifier — when the
+    //     user has narrowed to pinned messages the calendar bar
+    //     helps them browse those by date too)
+    const _searchBarOpen = !!this.state.searchMessages;
+    const _pinnedOn = !!this.state.pinned;
+    const _anyDate = !!(this.state.dateYear
+        || this.state.dateMonth
+        || this.state.dateDay);
+    if (!this.state.messagesCategoryFilter
+            && !_anyDate
+            && !_searchBarOpen
+            && !_pinnedOn) {
+        return null;
+    }
     const theme = DarkModeManager.getTheme();
-    // theme.surface picks the "control" tone: a touch darker than
-    // theme.background in Day (#E0E0E0 vs #EDEDED) and lighter in
-    // Night (#1F1F1F vs #121212). The chat surface itself uses
-    // theme.chatBackground (#ECE5DD warm beige in Day, #0B141A
-    // near-black in Night), so theme.surface always reads as a
-    // distinct band above the message list without resorting to a
-    // hardcoded colour.
     const _bg = theme.surface;
     const _fg = theme.textPrimary;
-    const _activeBg = '#436294';   // Sylk-blue, same as other selected chips
+    const _activeBg = '#436294';   // Sylk-blue
     const _activeFg = '#FFFFFF';
-    const periods = [
-        {key: 'day',   label: 'Day',   icon: 'calendar-today'},
-        {key: 'week',  label: 'Week',  icon: 'calendar-week'},
-        {key: 'month', label: 'Month', icon: 'calendar-month'},
-        {key: 'year',  label: 'Year',  icon: 'calendar-blank'},
-    ];
-    const active = this.state.datePeriod;
-    const activeTag = this.state.dateTag;
-    const tags = (active
-        && this.state.availableDateTags
-        && this.state.availableDateTags[active])
-        || [];
-    return (
-        <View style={{
-            backgroundColor: _bg,
-            // zIndex/elevation keep the bar above the chat surface
-            // (the GiftedChat list paints to the same layer and
-            // would otherwise visually cover the bar's bottom
-            // border on some Android builds).
-            zIndex: 10,
-            elevation: 2,
-            borderBottomWidth: StyleSheet.hairlineWidth,
-            borderColor: theme.divider || 'rgba(0,0,0,0.15)',
-        }}>
-            {/* Period chip row */}
-            <View style={{flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 6, paddingHorizontal: 8}}>
-                {periods.map(p => {
-                    const isSel = active === p.key;
-                    return (
-                        <TouchableOpacity
-                            key={p.key}
-                            onPress={() => this.togglePeriod(p.key)}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                paddingHorizontal: 10,
-                                paddingVertical: 4,
-                                borderRadius: 14,
-                                backgroundColor: isSel ? _activeBg : 'transparent',
-                                borderWidth: isSel ? 0 : 0.5,
-                                borderColor: 'rgba(0,0,0,0.2)',
-                            }}
-                        >
-                            <Icon name={p.icon} size={16} color={isSel ? _activeFg : _fg} />
-                            <Text style={{
-                                marginLeft: 4,
-                                fontSize: 12,
-                                color: isSel ? _activeFg : _fg,
-                            }}>{p.label}</Text>
-                        </TouchableOpacity>
-                    );
-                })}
-            </View>
-            {/* Tag scroller (only when a period is selected) */}
-            {active ? (
-                tags.length > 0 ? (
+
+    const years  = this.state.availableYears  || [];
+    const months = this.state.availableMonths || [];
+    const days   = this.state.availableDays   || [];
+    const yearSel  = this.state.dateYear;
+    const monthSel = this.state.dateMonth;
+    const daySel   = this.state.dateDay;
+
+    // Tiny helper: format a count for the pill suffix. We show
+    // the count for ANY positive value (including 1) — the
+    // previous "hide for 1" rule had the user reading "May 2026"
+    // as zero rather than one. Compact thousands ("1.2k") keep
+    // the labels short on dense years.
+    const _fmtCount = (n) => {
+        if (!n || n <= 0) return '';
+        if (n < 1000) return ` (${n})`;
+        const k = (n / 1000).toFixed(n < 10000 ? 1 : 0);
+        return ` (${k}k)`;
+    };
+
+    // A row factory: title + ref + tags + selected id + onPress.
+    // Shared between Year / Month / Day so the visual treatment
+    // stays consistent.
+    const _renderRow = (title, tags, selectedId, onTagPress, listRef, emptyText) => {
+        if (!tags || tags.length === 0) {
+            // For Year (always visible) we surface an empty state;
+            // for Month/Day we just don't render the row at all
+            // (handled by the parent conditional below).
+            return (
+                <View style={{paddingHorizontal: 12, paddingVertical: 4}}>
+                    <Text style={{fontSize: 11, color: _fg, opacity: 0.6}}>
+                        {emptyText}
+                    </Text>
+                </View>
+            );
+        }
+        return (
+            <View style={{paddingVertical: 2}}>
+                <View style={{flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10}}>
+                    <Text
+                        numberOfLines={1}
+                        style={{
+                            fontSize: 10, fontWeight: '600',
+                            color: _fg, opacity: 0.55,
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.5,
+                            marginRight: 8,
+                            // Wider than the longest label ('Month'
+                            // at uppercase bold + 0.5 letter spacing
+                            // overflowed 42px). numberOfLines={1}
+                            // is the belt-and-braces guard against
+                            // future longer titles.
+                            width: 56,
+                        }}>{title}</Text>
                     <FlatList
-                        // Period-keyed so the list REMOUNTS when the
-                        // user switches periods. Without this, the
-                        // scroll offset carried over from the
-                        // previous period — a long Day list scrolled
-                        // far to the right would leave the new Month
-                        // list also scrolled past its visible
-                        // entries, so the user wouldn't see any
-                        // tags at first. Remounting on period
-                        // change is the cheapest reliable reset
-                        // (no ref + scrollToOffset plumbing).
-                        key={`tags-${active}`}
+                        // Title-keyed so each row remounts when its
+                        // parent selection changes — resets the
+                        // scroll offset so the new tag list starts
+                        // visible at the leftmost (newest) entry.
+                        key={`row-${title}-${selectedId || 'none'}`}
+                        ref={ref => { if (listRef) listRef.current = ref; }}
+                        onScrollToIndexFailed={(info) => {
+                            const _w = new Promise(r => setTimeout(r, 100));
+                            _w.then(() => {
+                                const r = listRef && listRef.current;
+                                if (r && r.scrollToIndex) {
+                                    try { r.scrollToIndex({index: info.index, animated: true, viewPosition: 0.5}); }
+                                    catch (e) {}
+                                }
+                            });
+                        }}
                         horizontal
                         data={tags}
                         keyExtractor={t => String(t.id)}
                         showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={{paddingHorizontal: 8, paddingBottom: 6}}
+                        contentContainerStyle={{paddingRight: 8}}
+                        style={{flex: 1}}
                         renderItem={({item}) => {
-                            const isTagSel = activeTag === item.id;
+                            const isSel = selectedId === item.id;
                             return (
                                 <TouchableOpacity
-                                    onPress={() => this.setDateTag(item.id)}
+                                    onPress={() => onTagPress(item.id)}
                                     style={{
                                         marginRight: 6,
                                         paddingHorizontal: 10,
                                         paddingVertical: 4,
                                         borderRadius: 12,
-                                        backgroundColor: isTagSel ? _activeBg : 'rgba(0,0,0,0.05)',
-                                        borderWidth: isTagSel ? 0 : 0.5,
+                                        backgroundColor: isSel ? _activeBg : 'rgba(0,0,0,0.05)',
+                                        borderWidth: isSel ? 0 : 0.5,
                                         borderColor: 'rgba(0,0,0,0.15)',
                                     }}
                                 >
                                     <Text style={{
                                         fontSize: 12,
-                                        color: isTagSel ? _activeFg : _fg,
-                                    }}>{item.label}</Text>
+                                        color: isSel ? _activeFg : _fg,
+                                    }}>{item.label}{_fmtCount(item.count)}</Text>
                                 </TouchableOpacity>
                             );
                         }}
                     />
-                ) : (
-                    <View style={{paddingHorizontal: 12, paddingBottom: 6}}>
-                        <Text style={{fontSize: 11, color: _fg, opacity: 0.6}}>
-                            No {active}s in the current results.
-                        </Text>
-                    </View>
-                )
-            ) : null}
+                </View>
+            </View>
+        );
+    };
+
+    // Per-row refs live on `this` so the CDU scroll-to-selected
+    // hook can address them by name when a selection changes.
+    this._yearListRef  = this._yearListRef  || { current: null };
+    this._monthListRef = this._monthListRef || { current: null };
+    this._dayListRef   = this._dayListRef   || { current: null };
+
+    return (
+        <View style={{
+            backgroundColor: _bg,
+            zIndex: 10,
+            elevation: 2,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderColor: theme.divider || 'rgba(0,0,0,0.15)',
+            paddingVertical: 4,
+        }}>
+            {/* Year row — always rendered when the bar is up. */}
+            {_renderRow('Year', years, yearSel,
+                (id) => this.selectDateYear(id),
+                this._yearListRef,
+                'No dates yet.')}
+
+            {/* Month row — visible once a year is selected. */}
+            {yearSel ? _renderRow('Month', months, monthSel,
+                (id) => this.selectDateMonth(id),
+                this._monthListRef,
+                'No months in this year.') : null}
+
+            {/* Day row — visible once a month is selected. */}
+            {monthSel ? _renderRow('Day', days, daySel,
+                (id) => this.selectDateDay(id),
+                this._dayListRef,
+                'No days in this month.') : null}
         </View>
     );
 };
@@ -8546,6 +9177,16 @@ scrollToMessage(id) {
         if (this.state.reactionTarget) {
             loadEarlier = false;
         }
+
+        // Calendar filter active (any year/month/day selected) →
+        // the chat is pinned to exactly the messages inside that
+        // period; "Load earlier" would either pull in rows outside
+        // the period (which the date filter then drops, making the
+        // button look broken) or duplicate the existing slice. The
+        // user can widen the window via the calendar bar instead.
+        if (this.state.dateYear || this.state.dateMonth || this.state.dateDay) {
+            loadEarlier = false;
+        }
         
         //console.log('chatContainer', chatContainer);
         // safe-area-context occasionally reports topInset as 0 on
@@ -8568,15 +9209,69 @@ scrollToMessage(id) {
 		const leftInset = this.state.insets?.left || 0;
 		const rightInset = this.state.insets?.right || 0;
 
+        // Image-grid input. Mirrors the video-grid's dual-clause
+        // filter (downloaded + undownloaded file-transfer rows that
+        // classify as image). Pre-fix this only included rows where
+        // m.image was populated — i.e. files that had completed
+        // download. Image-category rows whose file hasn't been
+        // downloaded yet still live in renderMessages (SQL
+        // category='image' is honest about history), but the old
+        // filter dropped them, so the user saw 0 tiles for a day
+        // the date pill counted as 3.
+        //
+        // Now every image-category row produces a tile. Already-
+        // downloaded rows render their bitmap; undownloaded rows
+        // get a placeholder + cloud-download icon (ThumbnailGrid
+        // handles the overlay via showPlayIcon + item.downloaded).
+        // Tapping an undownloaded tile fires downloadFile, same
+        // path the video grid uses.
         const images = chatMessages
-		  .filter(m => !!m.image)   // only messages that contain images
+		  .filter(m => {
+		      if (!m) return false;
+		      if (m.image) return true;
+		      // Undownloaded image file-transfer row: classify by
+		      // filename + filetype (matching utils.isImage's
+		      // precedence in sql2GiftedChat so the persisted
+		      // category='image' stamp lines up).
+		      if (!m.metadata || !m.metadata.filename) return false;
+		      const fname = m.metadata.filename;
+		      const ftype = m.metadata.filetype;
+		      if (utils.isAudio(fname, ftype)) return false;
+		      if (utils.isVideo(fname, ftype)) return false;
+		      return utils.isImage(fname, ftype);
+		  })
 		  .map(msg => ({
 			id: String(msg._id),
-			uri: msg.image,
+			// uri drives the FastImage tile. For undownloaded rows
+			// it's empty; the ThumbnailGrid renders a grey tile +
+			// download icon in that case.
+			uri: msg.image || '',
 			title: msg.text || '',
-			size: msg.metadata.filesize,
-			timestamp: msg.metadata.timestamp,
-			rotation: msg.metadata.rotation,
+			size: msg.metadata && msg.metadata.filesize,
+			timestamp: msg.metadata && msg.metadata.timestamp,
+			// Surface the bubble's createdAt so the per-tile
+			// "go to chat on this day" button can derive a
+			// dateDay tag without going back to renderMessages.
+			createdAt: msg.createdAt,
+			rotation: msg.metadata && msg.metadata.rotation,
+			// downloaded flag drives the download-icon overlay in
+			// ThumbnailGrid (same field the video grid uses).
+			downloaded: !!msg.image,
+			// In-flight info for the per-tile progress spinner.
+			stage: this.state.transferProgress
+			    && this.state.transferProgress[msg._id]
+			    && this.state.transferProgress[msg._id].stage,
+			progress: this.state.transferProgress
+			    && this.state.transferProgress[msg._id]
+			    && this.state.transferProgress[msg._id].progress,
+			// Surface transferId + full metadata so the viewer's
+			// missing-file placeholder can both log a useful identifier
+			// AND offer the "Download from server" button (which needs
+			// metadata.url + transfer_id + sender/receiver). Mirrors
+			// the gridImages shape used by the inline grouped-image
+			// bubble in the chat view.
+			transferId: msg.metadata && msg.metadata.transfer_id,
+			metadata: msg.metadata,
 		  }));
 
 		// Video-grid input. Same shape as `images` so ThumbnailGrid
@@ -8637,6 +9332,13 @@ scrollToMessage(id) {
 		      title: msg.text || (msg.metadata && msg.metadata.filename) || '',
 		      size: msg.metadata && msg.metadata.filesize,
 		      timestamp: msg.metadata && msg.metadata.timestamp,
+		      // Mirror the image-grid mapping: surface the bubble's
+		      // createdAt so _goToChatOnDayOfItem can derive a day tag
+		      // even when msg.metadata.timestamp is missing (older
+		      // file-transfer rows persisted before metadata.timestamp
+		      // was populated). Without this fallback the chat-bubble
+		      // overlay silently no-ops for those tiles.
+		      createdAt: msg.createdAt,
 		      rotation: msg.metadata && msg.metadata.rotation,
 		      // Raw file-transfer metadata so the grid's
 		      // onItemPress can call downloadFile on
@@ -8749,9 +9451,26 @@ scrollToMessage(id) {
                 onLongPress={this.onLongMessagePress}
                 refreshing={this.state.isRefreshing}
                 data={items}
-                extraData={items}
+                /* extraData was pinned to `items` which is a fresh array
+                   every render — FlatList treated every parent re-render
+                   as "everything changed" and re-ran renderItem on every
+                   row. Switch to selectedContacts so the list only
+                   re-renders rows when selection changes; combined with
+                   the now-immutable updateSelection in app.js, this
+                   makes per-tap selection in the conference-invite
+                   contact list O(visible rows) instead of O(all rows). */
+                extraData={this.state.selectedContacts}
                 renderItem={this.renderContactItem}
-                listKey={item => item.id}
+                /* listKey is the prop for NESTED VirtualizedLists. The
+                   prop FlatList itself uses is keyExtractor, and without
+                   it FlatList falls back to index-based keys — which,
+                   combined with the reverse() + sort() this render
+                   performs on every pass, churns key→row identity every
+                   selection and forces a full unmount/remount of every
+                   visible row. ~2 s per tap on a non-trivial contact
+                   list. Wiring it to item.id (every contact has one)
+                   restores row recycling. */
+                keyExtractor={(item) => String(item.id)}
                 /* Without this, RN's default 'never' policy makes the
                    first tap on a contact row only dismiss the search
                    keyboard — the touchable's onPress doesn't fire
@@ -8850,6 +9569,23 @@ scrollToMessage(id) {
 					numColumns={(this.state.isTablet || this.state.isLandscape) ? 3 : 2}
 					showTimestamp={true}
 					showSize={true}
+					// Same wiring as the inline grouped-image bubble in
+					// the chat view: when the viewer's missing-file
+					// placeholder fires, hand the item's full metadata
+					// to the app's existing downloadFile pipeline so
+					// the user can re-fetch the original from SylkServer
+					// without leaving the gallery. force=true bypasses
+					// downloadFile's on-disk guard (which has, by
+					// definition, just failed for this tile).
+					onRequestDownload={(item) => {
+					  if (item && item.metadata && this.props.downloadFile) {
+						console.log('[image-viewer] manual download (gallery)',
+						  'msgId=', item.id,
+						  'transferId=', item.transferId || '(none)',
+						  'url=', item.metadata.url);
+						this.props.downloadFile(item.metadata, true);
+					  }
+					}}
 					// Same selection + confirm-delete flow as the
 					// video grid below. Top-left checkbox per
 					// tile, action-bar Delete that opens the
@@ -8875,6 +9611,41 @@ scrollToMessage(id) {
 					    });
 					}}
 					onRotateImage={this.onRotateImage}
+					// Tap routing for undownloaded tiles only.
+					// ThumbnailGrid sees showPlayIcon=false and
+					// routes downloaded image taps to its built-in
+					// openViewer; this callback only fires when the
+					// row hasn't been downloaded yet, in which case
+					// we kick off downloadFile. Once the file
+					// lands, `m.image` populates and the next render's
+					// `downloaded: !!msg.image` flag flips the
+					// overlay off and routes the next tap into the
+					// viewer.
+					onItemPress={(item) => {
+					  if (!item) return;
+					  if (item.metadata && this.props.downloadFile) {
+					    console.log('ImageGrid: download tap for', item.id);
+					    this.props.downloadFile(item.metadata, true);
+					  }
+					}}
+					// Image grid: no play icon on downloaded tiles (the
+					// bitmap is the affordance). ThumbnailGrid still
+					// renders the cloud-download overlay on
+					// undownloaded tiles and the spinner+percentage
+					// during in-flight downloads — those two states
+					// are driven by item.downloaded / item.stage
+					// independently of showPlayIcon. Video grid still
+					// passes showPlayIcon=true for the play triangle
+					// on downloaded videos.
+					showPlayIcon={false}
+					// "Go to chat on this day" — appears as a small
+					// chat-bubble icon overlay on each tile. Tap
+					// drops out of the image grid, lands the user in
+					// the chat narrowed to the picture's day. Lets
+					// the user browse "what was being said when this
+					// photo was sent" without losing the photo's
+					// place in the gallery.
+					onGoToDay={(item) => this._goToChatOnDayOfItem(item)}
 					onLongPress={(item) => console.log('long', item)}
 					renderThumb={({item, index, size}) => (
 					  <View style={{flex:1}}>
@@ -8954,6 +9725,17 @@ scrollToMessage(id) {
                     }}
                     showPlayIcon={true}
                     emptyText="No videos"
+                    // "Go to chat on this day" — same affordance the
+                    // image grid wires up at line ~9624. Each tile
+                    // renders a small chat-bubble icon overlay; tap
+                    // drops out of the video grid into the chat
+                    // narrowed to that video's day. _goToChatOnDayOfItem
+                    // is content-agnostic — it reads item.createdAt /
+                    // item.timestamp, derives the day tag via
+                    // utils.getMessageDateTags, and re-fetches with
+                    // dateYear/Month/Day set — so the image-grid
+                    // handler works as-is for video tiles.
+                    onGoToDay={(item) => this._goToChatOnDayOfItem(item)}
                     onItemPress={(item) => {
                         if (!item) return;
                         if (item.videoUri) {
@@ -9013,8 +9795,9 @@ scrollToMessage(id) {
                     holds the message list) only while a media-type
                     filter is active. See renderDatePeriodBar for
                     the gating + visual treatment; tapPath:
-                    chip → togglePeriod, tag → setDateTag → CDU
-                    pipeline narrows filteredMessages. */}
+                    Year/Month/Day pill taps → selectDateYear /
+                    selectDateMonth / selectDateDay → CDU pipeline
+                    narrows filteredMessages. */}
                 {this.renderDatePeriodBar()}
 				<KeyboardWrapper
 					  // Key folds (heh) the rounded window dims into
@@ -9546,36 +10329,124 @@ scrollToMessage(id) {
 
 			</Modal>
 			
-			{this.state.expandedImage && (
+			{this.state.expandedImage && (() => {
+			  // Build the imageUrls entry with width/height baked in so
+			  // react-native-image-zoom-viewer doesn't fall back to its
+			  // own Image.getSize call. See onImagePress for the iOS 26
+			  // black-screen rationale.
+			  const _rawImageUri = this.state.expandedImage.image;
+			  const _viewerUri = (Platform.OS === 'ios' && _rawImageUri && _rawImageUri.startsWith('/'))
+				? 'file://' + _rawImageUri
+				: _rawImageUri;
+			  const _win = Dimensions.get('window');
+			  const _dims = this.state.expandedImageSize || {width: _win.width, height: _win.height};
+			  return (
 			  <Modal
 				visible={true}
 				transparent={true}
 				onRequestClose={() => this.onImagePress(null)}
 			  >
 				<ImageViewer
-				  imageUrls={[{ url: this.state.expandedImage.image }]}
+				  imageUrls={[{ url: _viewerUri, width: _dims.width, height: _dims.height }]}
 				  enableSwipeDown
 				  onSwipeDown={() => this.onImagePress(null)}
 				  onClick={() => this.onImagePress(null)}
 				  backgroundColor="black"
 				  renderIndicator={() => null}
 				  saveToLocalByLongPress={false}
-				  renderImage={(props) => (
+				  renderImage={(props) => {
+					// If we already know the file is gone (Image.getSize
+					// failed in onImagePress, or a previous render's
+					// <Image> reported onError), short-circuit to the
+					// placeholder so the user doesn't stare at black.
+					if (this.state.expandedImageMissing) {
+					  const _msg = this.state.expandedImage;
+					  // Offer "Download from server" when we have a
+					  // server URL on the message AND a downloadFile
+					  // pipeline wired in via props. Outgoing messages
+					  // that were never uploaded won't have metadata.url;
+					  // we skip the button in that case rather than
+					  // present a dead control.
+					  const _canDl = _msg
+						&& _msg.metadata
+						&& _msg.metadata.url
+						&& typeof this.props.downloadFile === 'function';
+					  const _isDownloading = this.state.expandedImageDownloading;
+					  return (
+						<View style={{
+						  width: _win.width,
+						  height: _win.height,
+						  alignItems: 'center',
+						  justifyContent: 'center',
+						  padding: 24,
+						}}>
+						  <Icon name="image-broken-variant" size={64} color="#888" />
+						  <Text style={{color: '#bbb', marginTop: 12, fontSize: 16, textAlign: 'center'}}>
+							File not available
+						  </Text>
+						  <Text style={{color: '#777', marginTop: 6, fontSize: 12, textAlign: 'center'}}>
+							The image file is missing or could not be opened.
+						  </Text>
+						  {_canDl && (
+							<TouchableOpacity
+							  disabled={_isDownloading}
+							  onPress={() => {
+								console.log('[image-viewer] manual download',
+								  'msgId=', _msg._id,
+								  'transferId=', (_msg.metadata && _msg.metadata.transfer_id) || '(none)',
+								  'url=', _msg.metadata.url);
+								this.setState({expandedImageDownloading: true});
+								try { this.props.downloadFile(_msg.metadata, true); }
+								catch (e) { console.log('downloadFile threw', e && e.message); }
+							  }}
+							  style={{
+								marginTop: 20,
+								flexDirection: 'row',
+								alignItems: 'center',
+								backgroundColor: _isDownloading ? '#555' : '#2196F3',
+								paddingHorizontal: 18,
+								paddingVertical: 10,
+								borderRadius: 22,
+							  }}
+							>
+							  {_isDownloading
+								? <ActivityIndicator size="small" color="#fff" />
+								: <Icon name="cloud-download" size={20} color="#fff" />}
+							  <Text style={{color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8}}>
+								{_isDownloading ? 'Downloading…' : 'Download from server'}
+							  </Text>
+							</TouchableOpacity>
+						  )}
+						</View>
+					  );
+					}
+					return (
 					<View
 					  style={{
+						flex: 1,
 						alignItems: "center",
 						justifyContent: "center",
 					  }}
 					>
 					  <Image
 						{...props}
+						onError={(e) => {
+						  const _msg = this.state.expandedImage;
+						  console.log('[image-viewer] missing file (Image onError)',
+							'msgId=', _msg && _msg._id,
+							'transferId=', (_msg && _msg.metadata && _msg.metadata.transfer_id) || '(none)',
+							'uri=', _msg && _msg.image,
+							'err=', e && e.nativeEvent && e.nativeEvent.error);
+						  this.setState({expandedImageMissing: true});
+						}}
 						style={[
 						  props.style,
 						  { transform: [{ rotate: `${this.state.rotation}deg` }] },
 						]}
 					  />
 					</View>
-				  )}
+					);
+				  }}
 				/>
 			
 				<TouchableOpacity
@@ -9622,7 +10493,8 @@ scrollToMessage(id) {
 				  <Icon name="close" size={36} color="white" />
 				</TouchableOpacity>
 			  </Modal>
-			)}
+			  );
+			})()}
 
 			{/* Location-bubble fullscreen viewer. Mirrors the image
 			    viewer above: a transparent Modal holds a maximised

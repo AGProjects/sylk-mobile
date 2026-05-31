@@ -25,7 +25,8 @@ state.
 | `app/app.js` | Encryption-mode preference plumbing, capability header on INVITE, per-contact overrides. |
 | `app/components/AudioCallBox.js` | Pill rendering, SAS verification dialog, mismatch alarm, downgrade banner (audio screen). |
 | `app/components/VideoBox.js` | Same pill / dialog / mismatch alarm on the video screen. |
-| `app/components/PreferencesModal.js` | Encryption-mode picker (Enabled / Strict) and video codec picker. |
+| `app/components/PreferencesModal.js` | Encryption-mode picker (Enabled / Disabled, with optional Mandatory sub-toggle) and video codec picker. |
+| `app/components/MediaInfoPanel.js` | Live media-plane diagnostic modal (codec, pkt/byte counts, ICE state, candidate-pair RTT, port→IP per SDP m-line). Shared by AudioCallBox and VideoBox. |
 | `app/components/EditContactModal.js` | Per-contact encryption-mode and codec overrides. |
 | `patches/react-native-webrtc+124.0.7.patch` | Native FrameEncryptor / FrameDecryptor (Android JNI + iOS Obj-C++) including the strict-mode auto-promotion. |
 
@@ -68,20 +69,30 @@ All handshake messages are sent as in-dialog SIP MESSAGE with
   "v": 3,
   "type": "probe" | "accept" | "recv_ready" | "sender_ready",
   "call_id": "<SIP Call-ID>",
+  "device_id": "<local device identifier — opaque string>",
   "ephem_pub_hex": "<64 hex chars = 32 bytes X25519 public key>",
   "suites": ["AES-128-GCM"],
-  "rs_id_hex": "<16 hex chars = SHA-256(rs1)[0:8]>",
+  "rs_id_hex": "<16 hex chars = SHA-256(rs1)[0:8] from the legacy single slot>",
+  "rs_id_hex_candidates": [
+    { "device_id": "<peer device identifier>", "rs_id_hex": "<16 hex chars>" },
+    ...
+  ],
   "sig": "<armored detached PGP signature over canonical JSON of the other fields>"
 }
 ```
 
 `suites` is only present on `probe` and `accept`. `ephem_pub_hex` is
 present on `probe` and `accept` (each side carries its own ephemeral
-public key). `rs_id_hex` is present on `probe` and `accept` when the
-sender already holds a retained per-peer secret (`rs1`) for the callee /
-caller — see *Retained-secret continuity (v2)* below. `sig` is present
-on every v3 payload when the sender holds a local PGP private key — see
-*Signed handshake (v3)* below.
+public key). `device_id` is present whenever the sender has a local
+device identifier configured — used to key per-device rs1 storage on
+the receive side. `rs_id_hex` is present on `probe` and `accept` when
+the sender already holds a retained per-peer secret (`rs1`) in the
+legacy single-slot record — see *Retained-secret continuity (v2)*
+below. `rs_id_hex_candidates` is present on `probe` only and carries
+one entry per per-device rs1 the caller has stored for this peer URI
+— see *Drawer fix: per-device rs_id candidates* below. `sig` is
+present on every v3 payload when the sender holds a local PGP private
+key — see *Signed handshake (v3)* below.
 
 ### Version negotiation
 
@@ -106,13 +117,20 @@ hash, without revealing rs1 itself.
 **Continuity decision.** Computed in `_deriveAndLog` on each side after
 the X25519 ECDH:
 
-| local rs1 | peer rs_id present | rs_id match | `continuityState` | HKDF salt | auto-rotate? |
+| local rs1 | peer rs_id present | rs_id match | `continuityState` | per-call HKDF salt | next_rs1 auto-rotate? |
 |---|---|---|---|---|---|
-| no | no | – | `first-time` | zero | no |
-| no | yes | – | `one-sided-peer` | zero | no |
-| yes | no | – | `one-sided-local` | zero | no |
+| no | no | – | `first-time` | zero | yes |
+| no | yes | – | `one-sided-peer` | zero | yes |
+| yes | no | – | `one-sided-local` | zero | yes |
 | yes | yes | yes | `verified` | rs1 | yes |
-| yes | yes | no | `mismatch` | zero | no |
+| yes | yes | no | `mismatch` | zero | yes |
+
+The per-call HKDF salt (column 5) still binds the *current* call's AEAD
+keys and SAS to rs1 when continuity is verified — that's the MitM
+defence. The `next_rs1` derivation (column 6 → see "Why salt=zeros"
+below) is *separately* always salted with zeros so both sides converge
+on the same next rs1 regardless of how each side classified the call.
+The two formulas are independent.
 
 In the `verified` case both sides bind their derived AEAD keys (and the
 SAS) to `rs1`. A MitM who can echo the wire-visible `rs_id_hex` but
@@ -122,33 +140,89 @@ refuses passthrough after the first five legitimate frames, and the
 call's audio breaks down. The attacker is forced out without ever
 reaching the user's ears.
 
-**Seeding rs1.** rs1 is only written when the user has demonstrated
-trust by verbally comparing the SAS and tapping Confirm in the
-verification dialog. That action calls
+**Seeding rs1.** rs1 is written automatically the first time a call
+reaches `key-active` (i.e. the activity poller has observed real AEAD-
+authenticated inbound media). The action calls
 `session.confirmSasAndSeedRs1()`, which derives
-`next_rs1 = HKDF(ss, salt=rs1_or_zero, info="sylk-zrtp/v2/next-rs1", 32)`
-and persists it. Without an explicit SAS Confirm, no rs1 is stored —
-which means a silent MitM on the first call cannot inject a fake rs1
-that they could then use to forge continuity on subsequent calls.
+`next_rs1 = HKDF(ss, salt=0x00×32, info="sylk-zrtp/v2/next-rs1", 32)`
+and persists it. Until the user has verbally compared the SAS, the
+pill stays orange (unverified) so the trust state is still anchored on
+user action — seeding rs1 is just bookkeeping for future continuity
+checks.
 
-**Rotating rs1.** On every continuity-verified call (i.e. one whose
-`continuityState` reached `verified` AND that reached `key-active`),
-both sides automatically derive a fresh `next_rs1` using the same
-formula and persist it. The previous rs1 is discarded. Both sides
-compute identical bytes because the inputs are identical, so they stay
-in lockstep without any extra wire traffic.
+**Rotating rs1.** On every call that reaches `key-active`, both sides
+automatically derive a fresh `next_rs1` using the same formula and
+persist it. The previous rs1 is discarded. Both sides compute identical
+bytes because the inputs are identical, so they stay in lockstep
+without any extra wire traffic.
+
+**Why salt=zeros, not salt=rs1.** Earlier versions of the protocol
+mixed the existing rs1 into the HKDF salt when `continuityState ==
+'verified'`, as a forward-secrecy chain. That turned out to be the
+root cause of a cascading "SAS changed" symptom: the two sides decide
+`continuityState` independently from local visibility (whose probe
+carried rs_id_hex, whose didn't), so when one side computed `verified`
+and the other computed `one-sided-local` on the *same* call, they took
+different salt branches and persisted *different* `next_rs1` values.
+Every subsequent call between those endpoints then showed mismatch on
+whichever side received an rs_id_hex first, forever. The current
+formula (`salt = 0x00×32` regardless of continuity classification)
+makes the derivation symmetric by construction. The trade-off is a
+shallower forward-secrecy chain on rs1 — an attacker who recovered one
+call's shared secret could compute the next rs_id — accepted because
+the cascading-misfire bug it fixes is the actually-observed problem.
 
 **Storage.**
-- sylk-mobile: `contact.localProperties.zrtp.rs1_hex` (32 bytes
-  hex-encoded), written via the existing `saveSylkContact` SQL path.
-  Persistence is wired by emitting `zrtpRs1Update` / `zrtpRs1Clear`
-  events on the sylkrtc `Call` object — app.js listens via
-  `registerZrtpRs1Handlers` and writes through to the contact row.
+- sylk-mobile: `contact.localProperties.zrtp.devices[peer_device_id].rs1_hex`
+  (32 bytes hex-encoded) for the per-device record, with the legacy
+  single-slot `contact.localProperties.zrtp.rs1_hex` kept for backward
+  compat with v2-era peers that don't advertise `device_id`. Written
+  via the existing `saveSylkContact` SQL path. Persistence is wired
+  by emitting `zrtpRs1Update` / `zrtpRs1Clear` events on the sylkrtc
+  `Call` object — `app.js` listens via `registerZrtpRs1Handlers` and
+  writes through to the contact row.
 - python3-sipsimple: a `sylk_zrtp_secrets` table inside the same
   SQLite file libzrtpcpp opens for its RFC 6189 ZID cache
-  (`engine.zrtp_cache`). One row per peer AOR, accessed via the
-  module-level `SylkZrtpSecretStore`. Concurrent access is serialised
-  with a single lock and `check_same_thread=False`.
+  (`engine.zrtp_cache`). One row per `peer_aor` (legacy single slot)
+  PLUS one row per `peer_aor#peer_device_id` composite (per-device
+  slot), accessed via the module-level `SylkZrtpSecretStore`. The
+  store exposes `get(key)`, `put(key, rs1)`, `delete(key)`, and
+  `list_for_aor(peer_aor)` (used to enumerate every per-device entry
+  for a single AOR when building the candidates array). Concurrent
+  access is serialised with a single lock and `check_same_thread=False`.
+
+### Drawer fix: per-device rs_id candidates
+
+The legacy single-slot `rs_id_hex` field works fine when each SIP AOR
+is bound to one device, but breaks down once a contact has multiple
+devices registered behind the same SIP account. The caller can't know
+*which* peer device will pick up this call at probe-send time, so it
+can't pick the right per-device rs1 to advertise in the legacy field —
+and shipping nothing in that field would make the callee classify the
+call as `one-sided-local`, while a stored rs1 on the caller side would
+make the *caller* classify the same call as `mismatch` or `verified`.
+The two sides then disagree on continuity, persist divergent next_rs1
+values, and every subsequent call cascades into a mismatch alarm.
+
+**Probe extension.** Caller's `probe` payload now carries
+`rs_id_hex_candidates`: an array of `{device_id, rs_id_hex}` tuples
+built from every per-device rs1 record the caller has stored for this
+peer URI. The legacy `rs_id_hex` field still travels alongside (for
+backward compat with peers that don't read the array).
+
+**Callee resolution.** On receive, the callee iterates the array and
+picks the entry whose `device_id` matches its *own* `local_device_id`.
+That candidate's rs_id_hex becomes `peer_rs_id_hex` for the
+`_deriveAndLog` continuity decision. If no entry matches (or the array
+is absent), the callee falls back to the legacy `rs_id_hex` field with
+the same validation. Unknown fields are silently ignored by both the
+JS and Python parsers, so pre-patch peers interop without regression.
+
+**Accept payload** does NOT carry the candidates array — by the time
+the callee constructs the accept it already knows the peer's
+`device_id` from the probe and resolves its own per-device rs1
+deterministically via `_resolveLocalRs1ForPeerDevice` /
+`_resolve_local_rs1_for_peer_device`.
 
 **Mismatch handling.** When `continuityState == 'mismatch'` (both
 sides hold an rs1 for each other but they differ — either a legitimate
@@ -316,24 +390,30 @@ The shared secret is the 32-byte ECDH output.
 ### Key schedule
 
 HKDF-SHA256 (`extract-and-expand`, single-block expand). Info strings are
-static UTF-8 labels. The salt depends on the v2 continuity decision:
+static UTF-8 labels. Two distinct salts are used, depending on which
+key is being derived:
 
-- `continuityState == 'verified'`  → `salt = rs1` (32 bytes from store)
-- anything else                    → `salt = 0x00 × 32`
+- *per-call salt* — used for AEAD keys and SAS. Depends on the v2
+  continuity decision:
+  - `continuityState == 'verified'`  → `salt = rs1` (32 bytes from store)
+  - anything else                    → `salt = 0x00 × 32`
+- *next_rs1 salt* — always `0x00 × 32`, irrespective of continuity
+  classification. See "Why salt=zeros, not salt=rs1" above for why
+  these salts diverge.
 
 ```
-audio caller -> callee AEAD key   = HKDF(ss, salt, "sylk-e2ee/v1/audio-caller-to-callee",      16)
-audio callee -> caller AEAD key   = HKDF(ss, salt, "sylk-e2ee/v1/audio-callee-to-caller",      16)
-audio caller -> callee AEAD salt  = HKDF(ss, salt, "sylk-e2ee/v1/audio-caller-to-callee-salt",  8)
-audio callee -> caller AEAD salt  = HKDF(ss, salt, "sylk-e2ee/v1/audio-callee-to-caller-salt",  8)
-SAS                                = HKDF(ss, salt, "sylk-zrtp/v1/sas",                          8)
-next_rs1 (post-call)              = HKDF(ss, salt, "sylk-zrtp/v2/next-rs1",                     32)
+audio caller -> callee AEAD key   = HKDF(ss, per_call_salt, "sylk-e2ee/v1/audio-caller-to-callee",      16)
+audio callee -> caller AEAD key   = HKDF(ss, per_call_salt, "sylk-e2ee/v1/audio-callee-to-caller",      16)
+audio caller -> callee AEAD salt  = HKDF(ss, per_call_salt, "sylk-e2ee/v1/audio-caller-to-callee-salt",  8)
+audio callee -> caller AEAD salt  = HKDF(ss, per_call_salt, "sylk-e2ee/v1/audio-callee-to-caller-salt",  8)
+SAS                                = HKDF(ss, per_call_salt, "sylk-zrtp/v1/sas",                          8)
+next_rs1 (post-call)              = HKDF(ss, zeros,          "sylk-zrtp/v2/next-rs1",                     32)
 ```
 
-Binding the salt to rs1 carries forward into the SAS too — a v2 peer
-that does have rs1 with us will compute the same SAS only if it actually
-holds the same rs1. This closes the SAS-grinding window from v1 (where
-the SAS depended only on the per-call X25519 output).
+Binding the per-call salt to rs1 carries forward into the SAS too — a
+v2 peer that does have rs1 with us will compute the same SAS only if
+it actually holds the same rs1. This closes the SAS-grinding window
+from v1 (where the SAS depended only on the per-call X25519 output).
 
 For video, the same audio key/salt pair is reused — the AEAD construction
 adds a per-frame counter so the key reuse across audio and video is safe
@@ -418,15 +498,27 @@ on Android.
 
 ### Encryption-mode picker
 
-`Preferences -> Encryption` exposes two options:
+`Preferences -> Encryption` exposes a primary toggle plus a
+conditional sub-toggle:
 
-- **Enabled** (`zrtp_optional`, the default) — try to negotiate ZRTP;
-  fall back to DTLS-SRTP if the peer doesn't support it.
-- **Strict** (`zrtp_mandatory`) — try to negotiate ZRTP; on failure,
-  surface a modal prompting **End call** / **Continue**.
+- **Enabled** (default) — runs the ZRTP handshake. With Mandatory
+  *Off* this is `zrtp_optional` (falls back to plain DTLS-SRTP if the
+  peer doesn't speak ZRTP). With Mandatory *On* this is
+  `zrtp_mandatory` (surfaces a modal prompting **End call** /
+  **Continue** if the handshake doesn't complete).
+- **Disabled** (`sdes`) — suppresses the X-Sylk-ZRTP capability
+  header, skips the handshake entirely, and never installs the
+  FrameEncryptor / FrameDecryptor. The call's media is still encrypted
+  between the device and the SylkServer relay via the DTLS-SRTP
+  WebRTC negotiates by default at the transport layer; there's just
+  no end-to-end layer on top. Useful as a deliberate fallback when a
+  bridge or RTP-relay component on the path is incompatible with the
+  FrameEncryptor-modified RTP payload sizes.
 
-The legacy `sdes` value is still accepted at runtime for old saved
-settings but is no longer offered in the picker.
+The Mandatory sub-toggle (On / Off) only appears when Enabled is
+selected — toggling it writes through to `zrtp_mandatory` /
+`zrtp_optional` respectively. Toggling from Disabled back to Enabled
+restores whichever Mandatory state was in effect last.
 
 ### Per-contact override
 
@@ -493,6 +585,52 @@ In `zrtp_mandatory` mode the same condition opens the
 `zrtpMandatoryFailed` modal instead, which terminates the call by
 default and surfaces a Continue button for users who want to
 ride it out without E2E.
+
+### Media info panel + Media-stuck pill
+
+Both AudioCallBox and VideoBox render a shared `<MediaInfoPanel />`
+modal that surfaces the live media-plane state of the active call.
+Entry points:
+
+- A secondary translucent **"i"** pill rendered next to the zRTP pill
+  (same horizontal row, matched height). Always available when the
+  zRTP pill is visible.
+- An **"Media info"** row in the `+` chip drop-up menu next to the
+  avatar (AudioCallBox only; available regardless of contact PGP-key
+  state or call type).
+- An **auto-shown amber "Media stuck — tap for info"** pill that
+  appears when the `CallZrtp.js` activity poller has latched
+  `mediaStuck=true` — i.e. the session reached `key-agreed` more than
+  5 seconds ago, the FrameEncryptor is installed on senders, but no
+  inbound RTP has arrived. Tapping it opens the same panel.
+
+The panel itself is structured into three groups so users don't confuse
+ICE / DTLS plumbing bytes for actual audio:
+
+1. **Audio actually flowing?** — primary readout. Inbound and outbound
+   RTP packet/byte/codec counts. Colour-coded: green when packets are
+   flowing, amber/red when zero.
+2. **Network plumbing (not media)** — secondary readout, dimmer. ICE
+   state, transport-level byte counts (these include STUN keepalives
+   and DTLS handshake traffic and grow even on a silent call),
+   candidate-pair state + RTT.
+3. **Local / Remote SDP m-lines** — for each m-line: kind, port → IP
+   resolved against the session-level `c=` line as fallback, direction
+   (sendrecv / sendonly / recvonly / inactive), proto, rtcp port
+   override, and the negotiated rtpmap codec list.
+
+When `mediaStuck` is true, the panel also shows an amber banner at the
+top naming the four most-likely root causes for the stuck condition:
+(a) peer never sent media, (b) peer aborted encryptor install, (c)
+Janus / sylk-server bridge dropped the audio stream, (d) DTLS-SRTP
+unwrap failing on the bridge → mobile leg.
+
+The panel runs its own 1 Hz `pc.getStats()` poller for the lifetime it
+is visible (started in `componentDidUpdate` when `visible` flips true,
+stopped on close / unmount), so the numbers refresh live while the
+user is looking at them. The poller is independent of any ZRTP
+session, so the panel works regardless of encryption mode (including
+`sdes` / Disabled).
 
 ---
 
@@ -568,6 +706,39 @@ and will land in a later phase.
   and emits `zrtpStrictH264VideoDrop`. VideoBox suppresses the
   camera-enable prompt and renders the call audio-only. Audio still
   gets full E2E.
+- **Symmetric `next_rs1` derivation.** Both sides now derive
+  `next_rs1 = HKDF(ss, salt=zeros, info="sylk-zrtp/v2/next-rs1", 32)`
+  unconditionally, dropping the previous `salt = rs1 if verified else
+  zeros` rule. Fixes the cascading "SAS changed" misfire that surfaced
+  when the two endpoints classified the same call differently and
+  persisted divergent next_rs1 values. python3-sipsimple shipped the
+  matching change in 5.4.3 (`sipsimple/streams/rtp/sylk_zrtp.py
+  :_derive_next_rs1`). Trade-off: shallower forward-secrecy chain on
+  rs1; the cascading-misfire bug was the observed problem.
+- **Drawer fix: per-device rs_id candidates in probes.** Caller's
+  `probe` payload now ships `rs_id_hex_candidates`: an array of
+  `{device_id, rs_id_hex}` pairs covering every per-device rs1 record
+  stored under this peer URI. Callee picks the entry matching its own
+  `local_device_id` and falls back to the legacy `rs_id_hex` field if
+  no match. Eliminates the asymmetric-classification cascade in
+  multi-device deployments where the caller's only stored rs1 lives
+  in the per-device slot. python3-sipsimple 5.4.3 carries the same
+  wire field + matching callee-side resolver.
+- **Media info panel + Media-stuck pill.** A shared
+  `<MediaInfoPanel />` component exposes live `pc.getStats()` + parsed
+  local/remote SDP m-lines (port → IP). Reachable from the "i" pill
+  next to the zRTP pill, from a "Media info" menu row in the `+` chip
+  drop-up, and from an auto-shown amber pill when the activity poller
+  detects the stuck-at-`key-agreed` condition. Refreshes at 1 Hz
+  while open. Independent of encryption mode.
+- **Encryption-mode picker: Disabled option restored.** Preferences
+  now offers Enabled / Disabled as the primary toggle, with a
+  conditional Mandatory sub-toggle when Enabled is selected. Disabled
+  maps to `sdes` (no FrameEncryptor install, falls back to plain
+  DTLS-SRTP). Mandatory On maps to `zrtp_mandatory`; Off maps to
+  `zrtp_optional`. Useful as a deliberate fallback when a bridge or
+  RTP-relay on the path is incompatible with FrameEncryptor-modified
+  RTP payload sizes.
 
 ### Deferred (need `python3-sipsimple` co-changes)
 
@@ -611,6 +782,11 @@ swap).
 | `zrtpStateChanged` | new state string (`'idle'`, `'probing'`, `'key-agreed'`, `'key-active'`, `'failed'`) | Every state transition on the session. |
 | `zrtpMandatoryFailed` | `{reason, detail}` | `zrtp_mandatory` mode and handshake didn't reach `key-agreed` in `ZRTP_MANDATORY_TIMEOUT_MS`, or an immediate-fail condition (no peer PGP key, etc.). |
 | `zrtpDowngradeWarning` | `{reason, detail, state}` | `zrtp_optional` mode and handshake didn't reach `key-agreed` in the same window. |
+| `zrtpStrictH264VideoDrop` | `{}` | `zrtp_mandatory` mode + negotiated video codec is H264 — video tracks dropped to keep audio E2E intact. |
+| `zrtpMediaStuckChanged` | `{stuck: boolean, snapshot}` | Activity poller has been at `key-agreed` for >5 s with no inbound RTP (true → pill on), or inbound RTP has started flowing (false → pill off). `snapshot` is a parsed `pc.getStats()` digest at the moment of latching. |
+| `zrtpMediaDiagUpdated` | `{snapshot}` | Re-fired every ~500 ms while `mediaStuck` is true so panel-side surfaces get fresh stats without polling themselves. |
+| `zrtpRs1Update` | `{uri, device_id, rs1_hex, continuity}` | A fresh `next_rs1` has been derived and should be persisted under `contact.localProperties.zrtp.devices[device_id].rs1_hex`. `app.js` listens via `registerZrtpRs1Handlers`. |
+| `zrtpRs1Clear` | `{uri, device_id}` | The user dismissed a mismatch alarm with **I understand** — forget the stored rs1 for that peer device so the next call re-bootstraps. |
 
 ---
 
@@ -642,3 +818,39 @@ session.encryptedKinds   // -> ['audio'] | ['video'] | ['audio', 'video'] | []
 ```js
 formatEncryptedKindsLabel(['audio', 'video'])  // -> 'audio and video'
 ```
+
+### Media-stuck signal
+
+```js
+session.mediaStuck         // -> boolean, true while key-agreed + no inbound RTP > 5s
+session.mediaStuckSnapshot // -> last parsed pc.getStats() digest, or null
+```
+
+### `next_rs1` derivation (both stacks)
+
+```
+next_rs1 = HKDF-SHA256(
+    ikm  = shared_secret_32_bytes,
+    salt = 0x00 * 32,
+    info = "sylk-zrtp/v2/next-rs1",
+    L    = 32,
+)
+```
+
+Both peers compute identical bytes from identical inputs. No
+dependency on continuity classification.
+
+### Probe-side rs1 advertisement (caller)
+
+```json
+{
+  "rs_id_hex": "<legacy single-slot rs_id, omitted if no legacy rs1>",
+  "rs_id_hex_candidates": [
+    { "device_id": "<peer_device_id_A>", "rs_id_hex": "<...>" },
+    { "device_id": "<peer_device_id_B>", "rs_id_hex": "<...>" }
+  ]
+}
+```
+
+Callee resolves `peer_rs_id_hex` by scanning the candidates array for
+`device_id == local_device_id`, then falls back to the legacy field.

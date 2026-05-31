@@ -90,5 +90,19 @@ class MainApplication : Application(), ReactApplication {
     // already knows about it the moment the first FCM push arrives. Idempotent
     // and a no-op on Android < O.
     SylkTelecom.register(this)
+
+    // Clear the inConference flag on every process start. The flag is
+    // owned by JS — set at conference 'established', cleared at
+    // 'terminated' — but if the process was force-killed mid-conference
+    // (or RN bridge crashed before reaching the terminated handler),
+    // the SharedPreferences entry persists and the next incoming call
+    // push gets wrongly suppressed as "in conference". Resetting at
+    // boot guarantees a clean slate; JS re-sets it once a real
+    // conference is in progress.
+    applicationContext
+        .getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean("inConference", false)
+        .apply()
   }
 }

@@ -117,7 +117,13 @@ target 'sylk' do
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
-      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = "arm64"
+      # Apple Silicon Macs run the iOS Simulator as arm64. Excluding
+      # arm64 here forces an x86_64-only build that LLDB can't attach
+      # to natively (you'd see "specified architecture 'arm64-*-*' is
+      # not compatible with 'x86_64-apple-ios*-simulator'"). Leave the
+      # setting unset so pods build for whatever arch the host needs;
+      # all currently-pinned pods ship arm64 simulator slices.
+      config.build_settings.delete('EXCLUDED_ARCHS[sdk=iphonesimulator*]')
       # C++20 is required by the iOS 26 SDK headers (Apple clang 17+ has
       # deprecated several C++17-only constructs that RCT-Folly's
       # config.h still references). Stays compatible with RN 0.73's

@@ -103,18 +103,60 @@ class LocalMedia extends Component {
         // already in a call and shouldn't see a count-down timer telling
         // them the camera is about to go on the wire — they should tap
         // Start explicitly, or back out.
-        if (this.props.awaitingUserCallStart && this.props.confirmStartCall && !this.props.disableAutoStart) {
+        // !props.call: skip when a SIP call object is already in
+        // flight. app.js keys <Call> on activeCall.id ('no-call' →
+        // call.id), so the moment the WSS Call object lands the whole
+        // Call subtree remounts mid-dial. Call.js's constructor
+        // resets userStartedCall to false, which re-flips
+        // awaitingUserCallStart true on the fresh LocalMedia mount.
+        // Without this guard the countdown would re-fire on a call
+        // the user has already committed to.
+        utils.timestampedLog('[localmedia] [countdown] componentDidMount',
+            'awaiting=', !!this.props.awaitingUserCallStart,
+            'hasConfirmStartCall=', typeof this.props.confirmStartCall === 'function',
+            'disableAutoStart=', !!this.props.disableAutoStart,
+            'hasCall=', !!this.props.call);
+        if (this.props.awaitingUserCallStart
+            && this.props.confirmStartCall
+            && !this.props.disableAutoStart
+            && !this.props.call) {
+            utils.timestampedLog('[localmedia] [countdown] componentDidMount -> start');
             this._startAutoStartTimer();
+        } else {
+            utils.timestampedLog('[localmedia] [countdown] componentDidMount -> skip start');
         }
     }
 
     componentDidUpdate(prevProps, prevState) {
         const enteredAwaiting = !prevProps.awaitingUserCallStart && this.props.awaitingUserCallStart;
         const leftAwaiting = prevProps.awaitingUserCallStart && !this.props.awaitingUserCallStart;
-        if (enteredAwaiting && this.props.confirmStartCall && !this.props.disableAutoStart) {
+        if (enteredAwaiting || leftAwaiting) {
+            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate',
+                'enteredAwaiting=', enteredAwaiting,
+                'leftAwaiting=', leftAwaiting,
+                'prev.awaiting=', !!prevProps.awaitingUserCallStart,
+                'curr.awaiting=', !!this.props.awaitingUserCallStart,
+                'prev.call=', !!prevProps.call,
+                'curr.call=', !!this.props.call);
+        }
+        // !props.call: same reason as in componentDidMount — a Call
+        // remount on activeCall.id change brings LocalMedia back with
+        // awaiting flipping false → true, but no countdown is wanted
+        // when the SIP call object is already on the wire.
+        if (enteredAwaiting
+            && this.props.confirmStartCall
+            && !this.props.disableAutoStart
+            && !this.props.call) {
+            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> start');
             this._startAutoStartTimer();
+        } else if (enteredAwaiting) {
+            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> skip start',
+                'hasConfirm=', typeof this.props.confirmStartCall === 'function',
+                'disableAutoStart=', !!this.props.disableAutoStart,
+                'hasCall=', !!this.props.call);
         }
         if (leftAwaiting) {
+            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> cancel');
             this._cancelAutoStartTimer();
         }
 
@@ -136,6 +178,10 @@ class LocalMedia extends Component {
     }
 
     componentWillUnmount() {
+        utils.timestampedLog('[localmedia] [countdown] componentWillUnmount',
+            'autoStartCountdown=', this.state.autoStartCountdown,
+            'autoStartTotal=', this.state.autoStartTotal,
+            'hasTimer=', !!this._autoStartTimer);
         this._cancelAutoStartTimer();
     }
 
@@ -145,6 +191,20 @@ class LocalMedia extends Component {
      *  more likely to want to fiddle with camera / mute first, but
      *  short enough that the pre-call screen doesn't feel stalled. */
     _startAutoStartTimer(seconds = 6) {
+        utils.timestampedLog('[localmedia] [countdown] _startAutoStartTimer',
+            'seconds=', seconds,
+            'awaiting=', !!this.props.awaitingUserCallStart,
+            'hasCall=', !!this.props.call,
+            'hasTimer=', !!this._autoStartTimer,
+            'callerStack=', (new Error('trace')).stack && (new Error('trace')).stack.split('\n').slice(1, 4).join(' | '));
+        // Defensive idempotency — mirrors the AudioCallBox guard.
+        // componentDidMount + a near-immediate enteredAwaiting branch
+        // in componentDidUpdate could otherwise restart the timer
+        // mid-tick and make the bar visibly re-fill from full.
+        if (this._autoStartTimer) {
+            utils.timestampedLog('[localmedia] [countdown] guard: timer already running, skip');
+            return;
+        }
         this._cancelAutoStartTimer();
         const startSeconds = Math.max(1, seconds);
         // Track the INITIAL total seconds the countdown was armed with
@@ -163,14 +223,21 @@ class LocalMedia extends Component {
             }));
         }, 1000);
         this._autoStartTimer = setTimeout(() => {
+            utils.timestampedLog('[localmedia] [countdown] timer fired (timeout reached)',
+                'awaiting=', !!this.props.awaitingUserCallStart,
+                'hasConfirmStartCall=', typeof this.props.confirmStartCall === 'function');
             this._cancelAutoStartTimer();
             if (this.props.confirmStartCall && this.props.awaitingUserCallStart) {
+                utils.timestampedLog('[localmedia] [countdown] timer -> calling confirmStartCall');
                 this.props.confirmStartCall();
             }
         }, startSeconds * 1000);
+        utils.timestampedLog('[localmedia] [countdown] timer armed for', startSeconds, 's');
     }
 
     _cancelAutoStartTimer() {
+        const hadTimer = !!this._autoStartTimer;
+        const hadInterval = !!this._autoStartTickInterval;
         if (this._autoStartTimer) {
             clearTimeout(this._autoStartTimer);
             this._autoStartTimer = null;
@@ -178,6 +245,12 @@ class LocalMedia extends Component {
         if (this._autoStartTickInterval) {
             clearInterval(this._autoStartTickInterval);
             this._autoStartTickInterval = null;
+        }
+        if (hadTimer || hadInterval) {
+            utils.timestampedLog('[localmedia] [countdown] _cancelAutoStartTimer',
+                'hadTimer=', hadTimer,
+                'hadInterval=', hadInterval,
+                'callerStack=', (new Error('trace')).stack && (new Error('trace')).stack.split('\n').slice(1, 4).join(' | '));
         }
         if (this.state && this.state.autoStartCountdown !== 0) {
             this.setState({ autoStartCountdown: 0 });
@@ -189,6 +262,8 @@ class LocalMedia extends Component {
      *  opens a picker (camera / audio device). Sets `autoStartPaused`
      *  so the progress bar can recolour to signal "frozen". */
     _pauseAutoStartTimer() {
+        utils.timestampedLog('[localmedia] [countdown] _pauseAutoStartTimer',
+            'remaining=', this.state.autoStartCountdown);
         if (this._autoStartTimer) {
             clearTimeout(this._autoStartTimer);
             this._autoStartTimer = null;
@@ -205,6 +280,9 @@ class LocalMedia extends Component {
     /** Resume from the paused countdown value. No-op if 0 (already
      *  fired) or the user has navigated away from awaiting. */
     _resumeAutoStartTimer() {
+        utils.timestampedLog('[localmedia] [countdown] _resumeAutoStartTimer',
+            'remaining=', this.state.autoStartCountdown,
+            'awaiting=', !!this.props.awaitingUserCallStart);
         if (!this.props.awaitingUserCallStart) return;
         // Honour disableAutoStart here too — the mid-call upgrade flow
         // never wants the timer to start, including the path where the
@@ -704,7 +782,33 @@ class LocalMedia extends Component {
                                 elevation: 30,
                             }}>
                                 <View>
-                                    {/* "Start now" Button hidden per user request — only the countdown bar below remains, so the call auto-starts when the timer expires. */}
+                                    {/* "Start video call" Button restored
+                                        above the countdown bar. Tapping
+                                        fires confirmStartCall immediately
+                                        (cancelling the auto-start timer
+                                        first so we don't double-fire on
+                                        the timer's last tick). Mirrors the
+                                        audio-call portrait flow in
+                                        AudioCallBox where the Button +
+                                        countdown bar are stacked together.
+                                        Hidden when the auto-start path is
+                                        disabled (mid-call upgrade flow)
+                                        because there's no countdown to
+                                        race in that case either. */}
+                                    {!this.props.disableAutoStart ? (
+                                    <Button
+                                        mode="contained"
+                                        onPress={() => {
+                                            utils.timestampedLog('[localmedia] [countdown] user tapped Start video call');
+                                            this._cancelAutoStartTimer();
+                                            if (this.props.confirmStartCall) {
+                                                this.props.confirmStartCall();
+                                            }
+                                        }}
+                                    >
+                                        Start now
+                                    </Button>
+                                    ) : null}
                                     {/* Countdown progress bar — hidden
                                         entirely when the auto-start
                                         timer is suppressed (the mid-call
@@ -713,7 +817,15 @@ class LocalMedia extends Component {
                                         translucent cells still draws
                                         and can read as "a timer is
                                         present" even though the count
-                                        is stuck at 0. */}
+                                        is stuck at 0.
+
+                                        alignSelf:'stretch' now works
+                                        again because the outer `<View>`
+                                        holds the Start button above —
+                                        the bar inherits the button's
+                                        natural width so the countdown
+                                        and the action share the same
+                                        footprint. */}
                                     {!this.props.disableAutoStart ? (
                                     <View style={{
                                         flexDirection: 'row',
@@ -851,16 +963,21 @@ class LocalMedia extends Component {
                     ) : (
                         // Audio-only pre-call backdrop. Used to be a
                         // flat near-black (#111) which made the
-                        // "calling out" screen feel black on the new
-                        // Day-mode light linen background. We pin
-                        // a theme.background tone in light mode so
-                        // the linen reads through naturally; Night
-                        // keeps the existing dark surface.
+                        // "calling out" screen feel black on the
+                        // Day-mode light linen background. The Day-
+                        // theme tone was kept for 1:1 calls but the
+                        // user reported the bright surface on
+                        // CONFERENCE connect was jarring — they
+                        // explicitly want black. We pin '#111' for
+                        // conferences regardless of theme; 1:1 calls
+                        // (no participants prop) still honour the
+                        // theme.background tone in Day mode.
                         <View style={[
                             styles.video,
                             videoStyle,
                             {
-                                backgroundColor: DarkModeManager.getTheme().isDark
+                                backgroundColor: (DarkModeManager.getTheme().isDark
+                                    || (this.props.participants !== undefined))
                                     ? '#111'
                                     : DarkModeManager.getTheme().background,
                             },

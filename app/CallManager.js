@@ -224,9 +224,9 @@ export default class CallManager extends events.EventEmitter {
         }
 
         if (reason) {
-            utils.timestampedLog('Callkeep: end call', callUUID, 'with reason', reason);
+            utils.timestampedLog('Callkeep: end [call]', callUUID, 'with reason', reason);
         } else {
-            utils.timestampedLog('Callkeep: end call', callUUID);
+            utils.timestampedLog('Callkeep: end [call]', callUUID);
         }
 
         if (this._pushCalls.has(callUUID)) {
@@ -342,7 +342,7 @@ export default class CallManager extends events.EventEmitter {
 
         // this is called both when user touches Reject and when the call ends
         let callUUID = data.callUUID.toLowerCase();
-        utils.timestampedLog('---- Callkeep: end callback', callUUID);
+        utils.timestampedLog('---- Callkeep: end [call] back', callUUID);
         if (this._timeouts.has(callUUID)) {
             clearTimeout(this._timeouts.get(callUUID));
             this._timeouts.delete(callUUID);

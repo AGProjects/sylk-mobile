@@ -78,8 +78,18 @@ public class ThumbnailService extends IntentService {
             resultPath = "file://" + out.getAbsolutePath();
 
         } catch (Throwable t) {
-            SylkLogger.e("[thumbnail] Extraction failed for " + uri, t);
-            errorMessage = t.getClass().getSimpleName() + ": " + t.getMessage();
+            // Common, expected failures (partial download,
+            // codec MediaMetadataRetriever can't decode,
+            // timestamp past file duration). Log without the
+            // stack trace — the message alone is enough; the
+            // previous .e(msg, t) form printed a 7-line trace
+            // per failed tile and was mostly noise. The
+            // diagnostic info still rides back to JS via
+            // EXTRA_RESULT_ERROR below.
+            String reason = t.getClass().getSimpleName()
+                + (t.getMessage() != null ? ": " + t.getMessage() : "");
+            SylkLogger.w("[thumbnail] Extraction failed for " + uri + " | " + reason);
+            errorMessage = reason;
         }
 
         // Send result back to JS

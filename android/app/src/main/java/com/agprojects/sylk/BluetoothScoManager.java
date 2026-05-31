@@ -120,7 +120,7 @@ public class BluetoothScoManager {
                 public void onServiceDisconnected(int profile) {
                     if (profile == BluetoothProfile.HEADSET) {
                         bluetoothHeadset = null;
-                        SylkLogger.d("[audio] [bt] BluetoothHeadset proxy disconnected");
+                        //SylkLogger.d("[audio] [bt] BluetoothHeadset proxy disconnected");
                         stopScoIfActive();
                     }
                 }

@@ -1040,12 +1040,22 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.props.isTablet) {
+        // Tablet, contact selected → always show the call-button bar
+        // under the navbar. On tablet the contact pane sits side-by-side
+        // with the contact list, so a selected contact is a stable
+        // "current call target" — the bar belongs there as the primary
+        // action affordance for that contact.
+        //
+        // Tablet WITHOUT a selected contact falls through to the
+        // phone-side gates below (target URI required, hidden in
+        // landscape, etc.) — that's the case the earlier blanket
+        // `if (isTablet) return true` was hiding incorrectly.
+        if (this.props.isTablet && this.props.selectedContact) {
             return true;
         }
 
         if (this.props.call) {
-            return false;
+//            return false;
         }
 
         if (!this.state.targetUri) {
@@ -1169,10 +1179,54 @@ class ReadyBox extends Component {
         }
     }
 
+    // Bridge for children that need to clear the message search
+    // query WITHOUT collapsing the surrounding search environment.
+    //
+    // Important: this does NOT call toggleSearchMessages. Flipping
+    // `searchMessages` to false triggers a CDU branch above (the
+    // `if (prevState.searchMessages !== … && !this.state.searchMessages)`
+    // block) that resets sortOrder, orderBy AND
+    // messagesCategoryFilter to their defaults — which means the
+    // ContactsListBox calendar bar (gated on
+    // messagesCategoryFilter being set) would disappear together
+    // with the category chip's selected state. Use case for this
+    // method (the "Go to date" pill rendered between bubbles when
+    // a search string is active) explicitly wants the opposite:
+    // drop the query, keep the category filter and the calendar
+    // bar alive so the date-filter result reads as a narrowing of
+    // the existing search environment rather than a full reset.
+    //
+    // The bar itself stays open with an empty input field. The
+    // user can dismiss it normally (× / hardware back) — same way
+    // they would have from any other "empty search bar" state.
+    clearMessageSearch = () => {
+        console.log('[search] messages search query cleared (programmatic, bar stays open)');
+        this.setState({searchString: ''});
+    };
+
+    // Programmatic clear of the active media-type chip
+    // (Text / Image / Video / Audio / …). Used by children that
+    // need to drop out of a category-filtered surface — chief
+    // current caller is the per-tile "go to chat on this day"
+    // button on grid views, which wants to leave the Image/Video
+    // grid and land the user in the full chat. Unlike a chip tap
+    // this also wipes the search query so the chat that appears
+    // isn't filtered by stale text — the user explicitly asked
+    // to see the conversation around a particular date.
+    clearMessageCategoryFilter = () => {
+        console.log('[search] message category filter cleared (programmatic)');
+        this.setState({
+            messagesCategoryFilter: null,
+            searchString: '',
+        });
+    };
+
     handleSearch(inputText, contact) {
-        if (inputText && inputText.length > 0) {
-            this.kickUnifiedSearchAddressBookLoad();
-        }
+        // Note: previously kicked kickUnifiedSearchAddressBookLoad()
+        // here as a typing-time safety net, but that turned typing in
+        // the search bar into another implicit OS contacts-permission
+        // trigger. Permission is now requested ONLY on explicit Search
+        // button press — see app.js#toggleSearchContacts.
 
         if (this.state.searchMessages) {
             if (!inputText) {
@@ -3430,8 +3484,19 @@ class ReadyBox extends Component {
                                    time the user starts typing. The
                                    helper short-circuits in share /
                                    invite / search-messages modes
-                                   where the pile is not used. */
-                                onSearchFocus={this.kickUnifiedSearchAddressBookLoad}
+                                   where the pile is not used.
+
+                                   DISABLED: focus on the search input
+                                   was triggering the OS contacts-
+                                   permission prompt out of nowhere
+                                   (e.g. after autofocus on first
+                                   login on a new device). Permission
+                                   is now requested ONLY when the user
+                                   explicitly taps the navbar Search
+                                   button — see app.js#toggleSearchContacts
+                                   which calls loadAddressBook when
+                                   entering search mode. */
+                                /* onSearchFocus={this.kickUnifiedSearchAddressBookLoad} */
                                 /* Folded + search-contacts: the
                                    navbar is hidden (see NavigationBar
                                    render gate) so URIInput becomes
@@ -4283,6 +4348,7 @@ class ReadyBox extends Component {
 						deleteMessage = {this.props.deleteMessage}
 						deleteFiles = {this.props.deleteFiles}
 						getMessages = {this.props.getMessages}
+						getContactDateIndex = {this.props.getContactDateIndex}
 						pinMessage = {this.props.pinMessage}
 						unpinMessage = {this.props.unpinMessage}
 						confirmRead = {this.props.confirmRead}
@@ -4320,6 +4386,8 @@ class ReadyBox extends Component {
 						toggleSearchMessages = {this.props.toggleSearchMessages}
 						searchMessages = {this.state.searchMessages}
 						searchString = {this.state.searchString}
+						clearMessageSearch = {this.clearMessageSearch}
+						clearMessageCategoryFilter = {this.clearMessageCategoryFilter}
 						recordAudio = {this.recordAudio}
 						defaultConferenceDomain = {this.props.defaultConferenceDomain}
 						dark = {this.props.dark}

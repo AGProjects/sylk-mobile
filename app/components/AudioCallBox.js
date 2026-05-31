@@ -6,6 +6,7 @@ import autoBind from 'auto-bind';
 import uuid from 'react-native-uuid';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
+import MediaInfoPanel from './MediaInfoPanel';
 import CallOverlay from './CallOverlay';
 import DTMFModal from './DTMFModal';
 import UserIcon from './UserIcon';
@@ -30,15 +31,16 @@ import * as sylkrtc from 'react-native-sylkrtc';
 // correlate WebRTC-reported loss with iperf3 UDP probes and the
 // server-side qos-server.py tcpdump diagnostic.
 //
-// Gated on __DEV__: in production builds the calls become no-ops, so
-// the JS↔native bridge isn't loaded with extra getStats() traffic and
-// no [qos] lines appear in logcat.
+// Previously gated on __DEV__ so production builds avoided extra
+// getStats() traffic on the JS↔native bridge. Temporarily ungated so
+// [qos] CONNECT / STATS / DISCONNECT lines appear in adb logcat for
+// release builds too — used by qos/qos-test.sh to debug intermittent
+// ZRTP-call media failures. Re-add the __DEV__ guard once that's
+// resolved.
 import {
-    startQosLogging as _startQosLogging,
-    stopQosLogging  as _stopQosLogging,
+    startQosLogging,
+    stopQosLogging,
 } from '../../qos/qos-stats';
-const startQosLogging = __DEV__ ? _startQosLogging : () => {};
-const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
 
 // Call recording.
 //   • Android: SylkCallRecorder taps libwebrtc AudioTrackSink for both
@@ -113,7 +115,15 @@ class AudioCallBox extends Component {
             declineReason               : this.props.declineReason,
             callContact                 : this.props.callContact,
             selectedContact             : this.props.selectedContact,
-            terminatedReason            : this.props.terminatedReason,
+            // Never seed terminatedReason from props on initial mount —
+            // no call has terminated yet for this view, and the parent
+            // (app.js) often still has the PREVIOUS call's reason in
+            // state when a fresh AudioCallBox mounts (back-to-back call,
+            // redial after hangup). Carrying it in here makes the new
+            // call's first paint flash the old call's "Call ended after
+            // X" subtitle. Real terminatedReason values arrive via
+            // cWRP after the new call actually terminates.
+            terminatedReason            : null,
             speakerPhoneEnabled         : this.props.speakerPhoneEnabled,
             audioGraphData              : [],
             userStartedCall             : this.props.userStartedCall,
@@ -142,6 +152,22 @@ class AudioCallBox extends Component {
             zrtpDowngradeBannerVisible  : false,
             zrtpDowngradeBannerInfo     : null,
             zrtpMismatchAlarmVisible    : false,
+            // mediaStuck: latched true by CallZrtp.js when the call has
+            // been at 'key-agreed' for >5 s with no inbound RTP — i.e.
+            // the handshake succeeded but the media plane is broken.
+            // This is what GATES the auto-shown "Media" pill below the
+            // stats column. It does NOT gate the info panel itself;
+            // the panel can be opened from the + menu at any time.
+            //
+            // mediaInfoPanelVisible: true while the user has the panel
+            // open. The shared <MediaInfoPanel /> component (see
+            // app/components/MediaInfoPanel.js) owns the 1 Hz
+            // pc.getStats() + SDP-parsing poller while visible — we
+            // just toggle the flag from _openMediaInfoPanel /
+            // _closeMediaInfoPanel and let the child component handle
+            // refresh lifecycle.
+            mediaStuck                  : false,
+            mediaInfoPanelVisible       : false,
             // Toggle between the AudioSpeedometer (default) and the
             // legacy TrafficStats bar-chart. Tap the stats area to flip.
             showOldStats                : false,
@@ -329,11 +355,18 @@ class AudioCallBox extends Component {
             // dialog so the user can pick End call vs Continue.
             this.state.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             this.state.call.on('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
+            // Media-stuck pill driver — see zrtpMediaStuckChanged().
+            this.state.call.on('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+            this.state.call.on('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
             // Catch up if the session already finished its handshake before
             // this component mounted (e.g. after a Fast Refresh / reload).
             const existing = getZrtpSession(this.state.call);
             if (existing && existing.state) {
-                this.setState({ zrtpState: existing.state });
+                const _stateUpdate = { zrtpState: existing.state };
+                if (existing.mediaStuck) {
+                    _stateUpdate.mediaStuck = true;
+                }
+                this.setState(_stateUpdate);
             }
         }
 
@@ -353,7 +386,21 @@ class AudioCallBox extends Component {
         // If we mounted directly into the awaiting-outgoing state, kick
         // off the auto-start timer immediately. componentDidUpdate
         // handles later transitions into / out of awaiting.
-        if (this.props.awaitingUserCallStart && this.props.confirmStartCall) {
+        //
+        // Skip when a call object is already present. app.js keys the
+        // <Call> element on activeCall.id and falls back to 'no-call'
+        // before the SIP Call object lands, so currentCall flipping
+        // null → Call-object forces a fresh Call (and AudioCallBox)
+        // mount mid-dial. Call.js's constructor resets userStartedCall
+        // to false, which makes the awaiting prop true again on this
+        // fresh mount — even though the user already passed the
+        // awaiting phase. Without this guard the countdown bar would
+        // reappear and run a second time. props.call being set means
+        // the SIP call is already in flight; no Start prompt makes
+        // sense.
+        if (this.props.awaitingUserCallStart
+            && this.props.confirmStartCall
+            && !this.props.call) {
             this._startAutoStartTimer();
         }
 
@@ -545,6 +592,20 @@ class AudioCallBox extends Component {
      *  the bar still shows the original total — only the lit-cell
      *  count shrinks. */
     _startAutoStartTimer(seconds = 4, isResume = false) {
+        // Defensive idempotency. Both componentDidMount and
+        // componentDidUpdate (the enteredAwaiting branch) call this
+        // on mount races where the box first renders with awaiting
+        // false and then a parent prop change flips it true a beat
+        // later; without this guard the second call would cancel
+        // the first timer mid-tick and re-seed `autoStartCountdown`
+        // back to `startSeconds` — visually the bar appeared to
+        // start over from full, i.e. the user saw "the countdown
+        // started twice". A resume after pause clears the timer
+        // before calling this, so this guard does not block the
+        // legitimate restart-from-paused-value path.
+        if (this._autoStartTimer) {
+            return;
+        }
         this._cancelAutoStartTimer();
         if (this.unmounted) return;
         const startSeconds = Math.max(1, seconds);
@@ -652,6 +713,54 @@ class AudioCallBox extends Component {
             // re-derives the same next_rs1.
             this._maybeAutoUpgradeRs1(status);
         });
+    }
+
+    // Listener wired up to CallZrtp's zrtpMediaStuckChanged event.
+    // stuck=true latches the amber "Media" pill on (auto-surface so the
+    // user knows something is wrong); stuck=false hides the pill again.
+    // Does NOT close the info panel — the panel is independent of the
+    // stuck condition and can be open for inspection regardless.
+    zrtpMediaStuckChanged({ stuck /*, snapshot */ }) {
+        if (this.unmounted) return;
+        this.setState({ mediaStuck: !!stuck });
+    }
+
+    // CallZrtp emits this every poll tick while stuck. We don't act on
+    // it directly — the info panel runs its own poller while open so
+    // its data isn't gated on a ZRTP session existing. Kept registered
+    // so the event has a sink (no "unhandled emit" warnings) and so
+    // future surfaces can listen if needed.
+    zrtpMediaDiagUpdated(/* { snapshot } */) {
+        // intentionally empty — panel uses its own poller
+    }
+
+    // Open / close the Media info panel. The actual stats polling +
+    // SDP parsing + Dialog rendering now lives in the shared
+    // <MediaInfoPanel /> component (see app/components/MediaInfoPanel.js)
+    // — this side just toggles visibility and the child manages its
+    // own 1 Hz poller for the lifetime it's visible.
+    _openMediaInfoPanel() {
+        this.setState({ mediaInfoPanelVisible: true });
+    }
+
+    _closeMediaInfoPanel() {
+        this.setState({ mediaInfoPanelVisible: false });
+    }
+
+    /**
+     * Render the shared MediaInfoPanel modal. The shared component
+     * owns getStats polling, SDP parsing, and the Dialog layout — this
+     * method just hands it the current call + visibility + stuck flag.
+     */
+    _renderMediaInfoPanel() {
+        return (
+            <MediaInfoPanel
+                call={this.state.call}
+                visible={!!this.state.mediaInfoPanelVisible}
+                onClose={this._closeMediaInfoPanel}
+                mediaStuck={!!this.state.mediaStuck}
+            />
+        );
     }
 
     _maybeAutoUpgradeRs1(status) {
@@ -845,6 +954,8 @@ class AudioCallBox extends Component {
             this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
             this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
             this.state.call.removeListener('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
+            this.state.call.removeListener('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+            this.state.call.removeListener('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
         }
 
         if (this.state.call != null && this.state.call.statistics != null) {
@@ -1378,7 +1489,14 @@ class AudioCallBox extends Component {
         }
         const enteredAwaiting = !prevProps.awaitingUserCallStart && this.props.awaitingUserCallStart;
         const leftAwaiting = prevProps.awaitingUserCallStart && !this.props.awaitingUserCallStart;
-        if (enteredAwaiting && this.props.confirmStartCall) {
+        // !props.call: same reason as the componentDidMount guard —
+        // after the user already pressed Start (or the timer auto-
+        // fired) the parent's <Call> remount on activeCall.id change
+        // brings AudioCallBox back with awaiting flipping false → true
+        // (because Call.js's constructor reset userStartedCall), and
+        // we don't want a second countdown to fire on a call that's
+        // already on the wire.
+        if (enteredAwaiting && this.props.confirmStartCall && !this.props.call) {
             this._startAutoStartTimer();
         }
         if (leftAwaiting) {
@@ -1469,6 +1587,8 @@ class AudioCallBox extends Component {
                 this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
                 this.state.call.removeListener('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
                 this.state.call.removeListener('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
+                this.state.call.removeListener('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+                this.state.call.removeListener('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
             }
 
             // Attach new listener if available
@@ -1477,11 +1597,17 @@ class AudioCallBox extends Component {
                 nextProps.call.on('zrtpStateChanged', this.zrtpStateChanged);
                 nextProps.call.on('zrtpMandatoryFailed', this.zrtpMandatoryFailed);
                 nextProps.call.on('zrtpDowngradeWarning', this.zrtpDowngradeWarning);
+                nextProps.call.on('zrtpMediaStuckChanged', this.zrtpMediaStuckChanged);
+                nextProps.call.on('zrtpMediaDiagUpdated', this.zrtpMediaDiagUpdated);
                 // Catch up: if the session already reached key-agreed on a
                 // prior mount, pull its state so the badge shows immediately.
                 const existing = getZrtpSession(nextProps.call);
                 if (existing && existing.state) {
-                    this.setState({ zrtpState: existing.state });
+                    const _stateUpdate = { zrtpState: existing.state };
+                    if (existing.mediaStuck) {
+                        _stateUpdate.mediaStuck = true;
+                    }
+                    this.setState(_stateUpdate);
                 }
             }
 
@@ -1490,7 +1616,12 @@ class AudioCallBox extends Component {
                 this.setState({reconnectingCall: false});
             }
 
-            this.setState({ call: nextProps.call, zrtpState: null });
+            this.setState({
+                call: nextProps.call,
+                zrtpState: null,
+                mediaStuck: false,
+                mediaInfoPanelVisible: false,
+            });
         }
 
         if (nextProps.reconnectingCall != this.state.reconnectingCall) {
@@ -1515,7 +1646,14 @@ class AudioCallBox extends Component {
             audioCodec: nextProps.audioCodec,
             selectedContacts: nextProps.selectedContacts,
             selectedContact: nextProps.selectedContact,
-            terminatedReason: nextProps.terminatedReason,
+            // When a new call object just arrived (callJustArrived above),
+            // suppress the terminatedReason prop mirror — the parent's
+            // app.js often still holds the PREVIOUS call's reason and
+            // would clobber the just-cleared status line. Same guard
+            // CallOverlay uses (search _callJustSwitched there). On
+            // non-call-switch passes we keep the normal mirror so a real
+            // 'terminated' on THIS call still surfaces its reason.
+            terminatedReason: callJustArrived ? null : nextProps.terminatedReason,
             speakerPhoneEnabled: nextProps.speakerPhoneEnabled,
             localMedia: nextProps.localMedia,
 		    availableAudioDevices: nextProps.availableAudioDevices,
@@ -1586,6 +1724,8 @@ class AudioCallBox extends Component {
                 zrtpDialogVisible: false,
                 zrtpMismatchAlarmVisible: false,
                 zrtpDowngradeBannerVisible: false,
+                mediaStuck: false,
+                mediaInfoPanelVisible: false,
                 recordingArmed: false,
                 remoteAudioLevel: 0,
                 localAudioLevel: 0,
@@ -2115,57 +2255,92 @@ class AudioCallBox extends Component {
         }
 
         return (
-            <Animated.View style={{ opacity: isRec ? this._recordPulse : 1 }}>
-            <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={(e) => {
-                    if (e && e.stopPropagation) e.stopPropagation();
-                    this._toggleCallRecording();
-                }}
-                style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    backgroundColor: bg,
-                    // Pill body thickness — bumped twice per user:
-                    // 3 → 6 ("5px thicker") → 10 ("4 px more").
-                    // borderRadius bumped to keep corners proportional.
-                    // paddingHorizontal bumped 10 → 24 per
-                    // "enlarge width of recording pill".
-                    paddingVertical: 10,
-                    paddingHorizontal: 24,
-                    borderRadius: 16,
-                }}
-            >
-                <View style={{
-                    // Dot enlarged + more gap to "Record" label per
-                    // user request: 8×8 → 12×12, marginRight 6 → 12.
-                    // Negative marginLeft pulls the dot toward the
-                    // pill's LEFT edge per "shift red more to the
-                    // left" — visually anchors the indicator at the
-                    // start of the pill instead of after the
-                    // paddingHorizontal gutter.
-                    width: 12,
-                    height: 12,
-                    borderRadius: 6,
-                    backgroundColor: dotColor,
-                    marginLeft: -10,
-                    marginRight: 12,
-                }} />
-                <Text style={{
-                    color: '#fff',
-                    fontWeight: 'bold',
-                    fontSize: 12,
-                    // Right margin: started symmetric with the dot's
-                    // -10 marginLeft (so the distance from "Record"
-                    // to the right pill edge mirrored the left), then
-                    // bumped 3 px more breathing room per user
-                    // request → -10 + 3 = -7.
-                    marginRight: -7,
-                }}>
-                    {label}
-                </Text>
-            </TouchableOpacity>
-            </Animated.View>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Animated.View style={{ opacity: isRec ? this._recordPulse : 1 }}>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        this._toggleCallRecording();
+                    }}
+                    style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: bg,
+                        // Pill body thickness — bumped twice per user:
+                        // 3 → 6 ("5px thicker") → 10 ("4 px more").
+                        // borderRadius bumped to keep corners proportional.
+                        // paddingHorizontal bumped 10 → 24 per
+                        // "enlarge width of recording pill".
+                        paddingVertical: 10,
+                        paddingHorizontal: 24,
+                        borderRadius: 16,
+                    }}
+                >
+                    <View style={{
+                        // Dot enlarged + more gap to "Record" label per
+                        // user request: 8×8 → 12×12, marginRight 6 → 12.
+                        // Negative marginLeft pulls the dot toward the
+                        // pill's LEFT edge per "shift red more to the
+                        // left" — visually anchors the indicator at the
+                        // start of the pill instead of after the
+                        // paddingHorizontal gutter.
+                        width: 12,
+                        height: 12,
+                        borderRadius: 6,
+                        backgroundColor: dotColor,
+                        marginLeft: -10,
+                        marginRight: 12,
+                    }} />
+                    <Text style={{
+                        color: '#fff',
+                        fontWeight: 'bold',
+                        fontSize: 12,
+                        // Right margin: started symmetric with the dot's
+                        // -10 marginLeft (so the distance from "Record"
+                        // to the right pill edge mirrored the left), then
+                        // bumped 3 px more breathing room per user
+                        // request → -10 + 3 = -7.
+                        marginRight: -7,
+                    }}>
+                        {label}
+                    </Text>
+                </TouchableOpacity>
+                </Animated.View>
+                {/* Round "i" info button — opens the Media info panel.
+                    Rendered to the RIGHT of the record pill, only when
+                    the call is in accepted/established (this whole
+                    method early-returns null otherwise). Stops touch
+                    propagation so tapping it doesn't also trigger the
+                    record pill or any wrapping container. */}
+                <TouchableOpacity
+                    accessibilityLabel="Media info"
+                    onPress={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        this._openMediaInfoPanel();
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={{
+                        marginLeft: 24,
+                        width: 28,
+                        height: 28,
+                        borderRadius: 14,
+                        backgroundColor: 'rgba(33, 150, 243, 0.95)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        elevation: 4,
+                    }}
+                >
+                    <Text style={{
+                        color: 'white',
+                        fontSize: 15,
+                        fontWeight: 'bold',
+                        lineHeight: 17,
+                    }}>
+                        i
+                    </Text>
+                </TouchableOpacity>
+            </View>
         );
     }
 
@@ -2425,27 +2600,24 @@ class AudioCallBox extends Component {
             && !this.state.reconnectingCall;
         if (!callLive) return null;
 
-        // Suppress the "+" escalate-to-conference affordance for
-        // contacts where escalation is meaningless or impossible:
-        //   • 'test' tag — echo/IVR/playback endpoints have nobody on
-        //     the other end to invite into a multi-party call. Mirrors
-        //     the isTestCall gate the in-call action bar uses for the
-        //     legacy invite IconButton (see render(), ~line 2435).
-        //   • no publicKey — the conference-request handshake is
-        //     delivered as an end-to-end encrypted metadata payload.
-        //     Without the peer's public key we can't address them, so
-        //     the request would silently fail. Hide the "+" entirely
-        //     rather than letting the user tap into a dead path.
+        // Per-row visibility for the "+" drop-up:
+        //   • Escalate to conference — requires PGP publicKey (the
+        //     conference_request handshake is delivered as an E2E
+        //     encrypted metadata payload, so without the peer's key it
+        //     would silently fail) and excludes 'test' tag endpoints
+        //     (echo/IVR/playback — nobody on the other end to invite).
+        //   • Media info — has no contact dependency. It's a local
+        //     diagnostic about THIS PC's media plane, so it must be
+        //     reachable on every call, including 'test' endpoints and
+        //     contacts with no PGP key. (Previously the whole chip was
+        //     hidden when either gate failed — that buried Media info
+        //     for unkeyed peers and test calls, the exact users most
+        //     likely to need it.)
         const contact = this.state.callContact;
-        if (contact) {
-            const tags = Array.isArray(contact.tags) ? contact.tags : [];
-            if (tags.indexOf('test') > -1) return null;
-            if (!contact.publicKey) return null;
-        } else {
-            // No contact resolved at all — safer to hide than to show
-            // an action that can't be wired up.
-            return null;
-        }
+        const tags = (contact && Array.isArray(contact.tags)) ? contact.tags : [];
+        const canEscalate = !!contact
+                            && tags.indexOf('test') === -1
+                            && !!contact.publicKey;
 
         // Chip size: keep it readable but visually subordinate to the
         // avatar. ~24% of the avatar diameter lands at 27 px on the
@@ -2518,25 +2690,56 @@ class AudioCallBox extends Component {
                                 backgroundColor: 'rgba(40,40,40,0.97)',
                             }}
                         >
+                            {canEscalate ? (
+                                <TouchableOpacity
+                                    onPress={this.sendConferenceRequest}
+                                    disabled={pending}
+                                    style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        paddingHorizontal: 12,
+                                        paddingVertical: 10,
+                                        opacity: pending ? 0.5 : 1,
+                                    }}
+                                >
+                                    <IconButton
+                                        icon="account-multiple-plus"
+                                        size={20}
+                                        style={{ margin: 0, marginRight: 6 }}
+                                        color="#FFFFFF"
+                                    />
+                                    <Text style={{ color: 'white', fontSize: 14, flexShrink: 1 }}>
+                                        {pending ? 'Waiting for response…' : 'Escalate to conference'}
+                                    </Text>
+                                </TouchableOpacity>
+                            ) : null}
+                            {/* Media info — opens the live media-plane
+                                inspector regardless of whether the amber
+                                pill is currently auto-shown. Closes the +
+                                drop-up at the same time so the panel
+                                isn't covered by it. Always rendered (no
+                                contact gate) so it's reachable on every
+                                established call. */}
                             <TouchableOpacity
-                                onPress={this.sendConferenceRequest}
-                                disabled={pending}
+                                onPress={() => {
+                                    this.setState({ showConferenceRequestPanel: false });
+                                    this._openMediaInfoPanel();
+                                }}
                                 style={{
                                     flexDirection: 'row',
                                     alignItems: 'center',
                                     paddingHorizontal: 12,
                                     paddingVertical: 10,
-                                    opacity: pending ? 0.5 : 1,
                                 }}
                             >
                                 <IconButton
-                                    icon="account-multiple-plus"
+                                    icon="chart-line"
                                     size={20}
                                     style={{ margin: 0, marginRight: 6 }}
                                     color="#FFFFFF"
                                 />
                                 <Text style={{ color: 'white', fontSize: 14, flexShrink: 1 }}>
-                                    {pending ? 'Waiting for response…' : 'Escalate to conference'}
+                                    Media info
                                 </Text>
                             </TouchableOpacity>
                         </Surface>
@@ -2658,28 +2861,66 @@ class AudioCallBox extends Component {
         // It demotes back to 'key-agreed' (pill off) after 2 s of all-
         // passthrough. So the pill is an HONEST media-encryption signal,
         // not a "handshake done" signal.
+        // Amber "Media" pill — surfaces the stuck-at-key-agreed condition
+        // (handshake done, FrameEncryptor installed, but no inbound RTP
+        // for >5 s). Rendered as a separate pill so the user sees ZRTP
+        // succeeded but media is broken — distinct from the green/orange
+        // ZRTP pill that only appears once media is flowing. Tap opens
+        // the diagnostic panel below.
+        const renderMediaPill = () => {
+            if (!this.state.mediaStuck) return null;
+            const callState = this.state.call && this.state.call.state;
+            if (!this.state.call || callState === 'terminated') return null;
+            if (this.state.audioDevicePickerVisible) return null;
+            return (
+                <View style={{ alignItems: 'center', marginTop: 8, overflow: 'visible' }}>
+                    <TouchableOpacity onPress={this._openMediaInfoPanel}>
+                        <View style={{
+                            backgroundColor: 'rgba(230, 120, 0, 0.95)',
+                            paddingVertical: 3,
+                            paddingHorizontal: 10,
+                            borderRadius: 10,
+                            alignSelf: 'center',
+                            flexShrink: 0,
+                        }}>
+                            <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>
+                                ⚠ Media stuck — tap for info
+                            </Text>
+                        </View>
+                    </TouchableOpacity>
+                </View>
+            );
+        };
+        // NOTE: the standalone "i" info button used to live here as
+        // a renderInfoPill helper rendered next to the ZRTP pill.
+        // It now lives inside renderStatsBlock as a round circle
+        // absolutely positioned at the top-right of the
+        // AudioSpeedometer dial — see that method for the markup.
         const renderZrtpBadge = () => {
-            if (this.state.zrtpState !== 'key-active') {
-                return null;
-            }
-            // Defensive: if the call has terminated but our state hasn't
-            // caught up yet (rare race between BYE and the stateChanged
-            // listener), still hide the pill — the encryption state is
-            // meaningless once there's no media leg.
+            // Defensive: hide everything if the call has terminated or
+            // there's no call at all. The audio-device picker also
+            // suppresses these pills since the picker overlaps them.
             const callState = this.state.call && this.state.call.state;
             if (!this.state.call || callState === 'terminated') {
                 return null;
             }
-            // Suppress the pill while the audio-device picker is open.
-            // The pill sits above the call buttons and overlaps the
-            // floating device picker panel; raising the picker above
-            // the pill is fragile because it lives inside several
-            // relatively-positioned wrappers whose stacking contexts
-            // trap zIndex locally. Hiding the pill while the user is
-            // interacting with the picker is the cleaner UX — the
-            // pill returns the moment the picker closes.
             if (this.state.audioDevicePickerVisible) {
                 return null;
+            }
+            if (this.state.zrtpState !== 'key-active') {
+                // ZRTP pill itself isn't showing yet (handshake not
+                // complete, or media never started). The standalone
+                // "i" info button now lives absolutely-positioned at
+                // the top-right of the AudioSpeedometer (see
+                // renderStatsBlock), so we only surface the amber
+                // Media-stuck pill here when relevant.
+                return (
+                    <View style={{ alignItems: 'center', marginTop: 26, overflow: 'visible' }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            {renderMediaPill()}
+                        </View>
+                    </View>
+                );
             }
             let bg, label;
             const status = this._zrtpVerificationStatus();
@@ -2704,15 +2945,12 @@ class AudioCallBox extends Component {
             if (kindsLabel === 'video') {
                 _kindsPrefix = 'video only ';
             }
-            // Folded (cover-display) layout has very little horizontal
-            // room in the stats column, so the long "end to end
-            // encryption" copy gets swapped for the compact "encrypted"
-            // wording per user request ('zRTP encrypted'). The
-            // video-only prefix is still honoured because it's the only
-            // way to convey that audio isn't covered by the agreed key.
-            const _zrtpLabel = this.props.isFolded
-                ? '🔒 zRTP ' + _kindsPrefix + 'encrypted'
-                : '🔒 zRTP ' + _kindsPrefix + 'end to end encryption';
+            // Compact label in both folded and unfolded layouts —
+            // dropped the longer "end to end encryption" copy per user
+            // request; the lock glyph + "zRTP encrypted" already
+            // communicates the meaning without the qualifier eating
+            // pill width.
+            const _zrtpLabel = '🔒 zRTP ' + _kindsPrefix + 'encrypted';
             if (status === 'verified') {
                 bg = 'rgba(0, 170, 80, 0.9)';     // green — verified
                 // "verified" word suppressed in the green pill per
@@ -2759,11 +2997,17 @@ class AudioCallBox extends Component {
             // pill is already self-explanatory.
             // marginTop separates the badge from the stats dial.
             const _showTapToVerify = status !== 'verified';
+            // The standalone "i" info button now lives absolutely-
+            // positioned at the top-right of the AudioSpeedometer
+            // (see renderStatsBlock) — no longer rendered next to the
+            // ZRTP pill in the same row.
             return (
                 <View style={{ alignItems: 'center', marginTop: 26, overflow: 'visible' }}>
-                    {isTappable ? (
-                        <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
-                    ) : inner}
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {isTappable ? (
+                            <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
+                        ) : inner}
+                    </View>
                     {_showTapToVerify ? (
                         <Text style={{
                             color: 'rgba(255, 255, 255, 0.55)',
@@ -2774,6 +3018,12 @@ class AudioCallBox extends Component {
                             Tap to verify
                         </Text>
                     ) : null}
+                    {/* Media pill sits as a sibling below the ZRTP pill.
+                        In the normal "media flowing" case this returns
+                        null; it only renders if mediaStuck latched true
+                        AND somehow we still reached key-active (very
+                        unlikely but defensive). */}
+                    {renderMediaPill()}
                 </View>
             );
         };
@@ -2834,6 +3084,14 @@ class AudioCallBox extends Component {
                             <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
+                    {/* Media diagnostic panel — opened by tapping the
+                        amber "Media stuck" pill. Shows the same fields
+                        that get written to metro.log when the DIAGNOSTIC
+                        line fires, but live-updated every poll tick by
+                        the zrtpMediaDiagUpdated listener so the user sees
+                        current packet counts instead of a 5-second-old
+                        freeze frame. */}
+                    {this._renderMediaInfoPanel()}
                     {/* zRTP mandatory-mode handshake failure prompt
                         used to live HERE (inside <Portal>, as a Paper
                         Dialog). That renders above the entire app,
@@ -3067,6 +3325,7 @@ class AudioCallBox extends Component {
 										<Button
 											mode="contained"
 											onPress={() => {
+												utils.timestampedLog('[audiocallbox] [countdown] user tapped Start audio call (folded)');
 												this._cancelAutoStartTimer();
 												if (this.props.confirmStartCall) {
 													this.props.confirmStartCall();
@@ -3080,7 +3339,7 @@ class AudioCallBox extends Component {
 											// ticks down.
 											style={{ marginRight: 12, minWidth: 180 }}
 										>
-											Start audio call
+											Start now
 										</Button>
 										<View style={{
 											flexDirection: 'row',
@@ -3550,13 +3809,14 @@ class AudioCallBox extends Component {
                                     <Button
                                         mode="contained"
                                         onPress={() => {
+                                            utils.timestampedLog('[audiocallbox] [countdown] user tapped Start audio call (portrait)');
                                             this._cancelAutoStartTimer();
                                             if (this.props.confirmStartCall) {
                                                 this.props.confirmStartCall();
                                             }
                                         }}
                                     >
-                                        Start audio call
+                                        Start now
                                     </Button>
 
                                     {/* Sliding bar — width inherited

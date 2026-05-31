@@ -46,6 +46,22 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
         promise.resolve(callId)
     }
 
+    // Post a silent missed-call notification on rejected_calls_channel_v2,
+    // identical to the one the FCM service posts when an incoming push is
+    // dropped (in-conference, OS DND, app DND). Called from JS when the
+    // WSS-delivered incomingCall handler decides to drop the call before
+    // SDP/ICE warmup. Fire-and-forget — the channel bypasses OS DND so
+    // the entry appears on the shade/lockscreen even during DND.
+    @ReactMethod
+    fun showSuppressedCallNotification(fromUri: String?, isConference: Boolean, reasonText: String?) {
+        val event = if (isConference) "incoming_conference_request" else "incoming_session"
+        val reason = reasonText ?: "Do Not Disturb"
+        SylkLogger.d("[bridge] showSuppressedCallNotification from=$fromUri reason=$reason isConf=$isConference")
+        MyFirebaseMessagingService.showSuppressedCallNotification(
+            reactApplicationContext, fromUri, event, reason
+        )
+    }
+
     // ---------------------------------------------------------------
     // appActive flag — written by JS on AppState 'active'/'background'
     // transitions. MyFirebaseMessagingService.isAppInForeground reads
@@ -73,6 +89,23 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
     // from_uri host part, so a misconfigured (empty) value means "no
     // dedupe" — never accidentally rejects legitimate calls.
     // ---------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // inConference flag — written by JS when the user enters an
+    // active conference call and cleared when they leave. The FCM
+    // service reads it on incoming-call push receipt: if the user is
+    // already mid-conference, the loud full-screen Telecom ringer
+    // would interrupt the active media session and there's no clean
+    // way to accept the new call without dropping the conference.
+    // The push is silently dropped and a regular (silent) "missed
+    // call from X" notification is posted instead. Mirrors the
+    // shouldDisplayMessageFromPayload gate on iOS.
+    // ---------------------------------------------------------------
+    @ReactMethod
+    fun setInConference(active: Boolean) {
+        SylkLogger.d("[bridge] setInConference: $active")
+        prefs.edit().putBoolean("inConference", active).apply()
+    }
+
     @ReactMethod
     fun setSipBridgeDomain(domain: String?) {
         val trimmed = domain?.trim()?.lowercase()

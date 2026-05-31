@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Platform } from 'react-native';
 
 const styles = StyleSheet.create({
   container: {
@@ -38,7 +38,12 @@ const styles = StyleSheet.create({
   portraitbuttonsContainer: {
     flexDirection: 'row',
     marginTop: 'auto',
-    marginBottom: 50,
+    // iOS has no on-screen Android navigation button bar, so push
+    // the call buttons closer to the bottom edge. The safe-area
+    // home-indicator inset is applied at the parent level, so a
+    // small fixed lift here is enough to keep buttons clear of the
+    // indicator without leaving a large empty band beneath them.
+    marginBottom: Platform.OS === 'ios' ? 20 : 50,
     paddingLeft: 20,
     paddingRight: 20,
     justifyContent: 'flex-end', // React Native uses justifyContent
@@ -59,8 +64,11 @@ const styles = StyleSheet.create({
 
   tabletPortraitbuttonsContainer: {
     flexDirection: 'row',
-    marginBottom: 40,
-    bottom: 60,
+    // iOS tablets also have no Android nav bar — lift only slightly
+    // above the home indicator instead of the larger 60dp used on
+    // Android.
+    marginBottom: Platform.OS === 'ios' ? 20 : 40,
+    bottom: Platform.OS === 'ios' ? 20 : 60,
     justifyContent: 'center',
   },
 

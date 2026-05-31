@@ -64,7 +64,7 @@ class EscalateConferenceModal extends React.Component {
                             style={styles.button}
                             onPress={this.escalateToConference}
                             icon="video"
-                            >Start conference</Button>
+                            >Start now</Button>
                             </View>
                         </View>
                     </Surface>

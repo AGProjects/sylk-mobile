@@ -35,6 +35,7 @@
 @property (nonatomic, strong) NSMutableDictionary<NSString *, dispatch_source_t> *autoAnswerTimers;
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)userInfo;
 - (NSString *)readSipBridgeDomainForAccount:(NSString *)account;
+- (void)postInConferenceMissedCallNotificationFrom:(NSString *)fromUri event:(NSString *)event;
 @end
 
 @implementation AppDelegate
@@ -62,6 +63,16 @@
 
     self.autoAnswerTimers = [NSMutableDictionary new];
 
+    // Clear the inConference flag on every app launch. The flag is
+    // owned by JS — set at conference 'established', cleared at
+    // 'terminated' — but if the process was force-killed mid-
+    // conference or crashed before the terminated handler ran, the
+    // NSUserDefaults entry persists and the next incoming-call push
+    // gets wrongly suppressed as "in conference". Resetting at boot
+    // guarantees a clean slate; JS re-sets it when a real conference
+    // is in progress.
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"inConference"];
+
     AVAudioSession *session = [AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
     
     self.moduleName = @"Sylk";
@@ -84,26 +95,12 @@
   [self.window makeKeyAndVisible];
 
   // --- Register notification categories ---
+  // Defining the categories (action buttons for Answer / Decline etc.)
+  // is metadata only — it does NOT surface a permission prompt — so
+  // we still do this at launch. The actual prompt was moved out of
+  // didFinishLaunchingWithOptions; see -requestPushNotificationPermission
+  // below, called from JS after first successful login.
   [self registerNotificationCategories];
-  
-  // Set UNUserNotificationCenter delegate
-  // Register for normal push notifications (required for APNs token)
-  if (@available(iOS 10.0, *)) {
-      UNAuthorizationOptions authOptions = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-      [center requestAuthorizationWithOptions:authOptions
-                            completionHandler:^(BOOL granted, NSError * _Nullable error) {
-          if (granted) {
-              dispatch_async(dispatch_get_main_queue(), ^{
-                  [application registerForRemoteNotifications];
-              });
-          }
-      }];
-  } else {
-      UIUserNotificationType allNotificationTypes = (UIUserNotificationTypeAlert | UIUserNotificationTypeSound | UIUserNotificationTypeBadge);
-      UIUserNotificationSettings *settings = [UIUserNotificationSettings settingsForTypes:allNotificationTypes categories:nil];
-      [application registerUserNotificationSettings:settings];
-      [application registerForRemoteNotifications];
-  }
 
    return YES;
 
@@ -115,6 +112,36 @@
     [SylkLogger log:@"[app] Application ready"];
     for (NSString *uuid in self.autoAnswerTimers.allKeys) {
         [self cancelAutoAnswerForUUID:uuid];
+    }
+}
+
+// Surfaces the iOS user-notification permission prompt and, on grant,
+// registers for APNs. Pulled out of -application:didFinishLaunching… so
+// it only fires when JS asks for it (after first successful login).
+// Calling this when permission is already granted is a no-op for the
+// user — iOS won't re-prompt — and harmlessly re-runs the APNs
+// registration, which is idempotent.
+- (void)requestPushNotificationPermission
+{
+    UIApplication *application = [UIApplication sharedApplication];
+    [SylkLogger log:@"[push] requestPushNotificationPermission called from JS"];
+    if (@available(iOS 10.0, *)) {
+        UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+        UNAuthorizationOptions authOptions = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
+        [center requestAuthorizationWithOptions:authOptions
+                              completionHandler:^(BOOL granted, NSError * _Nullable error) {
+            [SylkLogger log:@"[push] requestAuthorization granted=%d error=%@", granted, error];
+            if (granted) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [application registerForRemoteNotifications];
+                });
+            }
+        }];
+    } else {
+        UIUserNotificationType allNotificationTypes = (UIUserNotificationTypeAlert | UIUserNotificationTypeSound | UIUserNotificationTypeBadge);
+        UIUserNotificationSettings *settings = [UIUserNotificationSettings settingsForTypes:allNotificationTypes categories:nil];
+        [application registerUserNotificationSettings:settings];
+        [application registerForRemoteNotifications];
     }
 }
 
@@ -522,6 +549,34 @@
     return dnd;
 }
 
+
+// Silent local notification used when an incoming-call / conference-
+// invite push is dropped because the user is mid-conference. No
+// custom sound — the OS will use the user's normal notification
+// channel settings (silent if their device is silenced / focused).
+// Posted with category "missed_call" so iOS surfaces it in the
+// missed-call cluster on the lockscreen.
+- (void)postInConferenceMissedCallNotificationFrom:(NSString *)fromUri event:(NSString *)event {
+  NSString *who = (fromUri.length > 0) ? fromUri : @"Unknown";
+  NSString *bodyText = [event isEqualToString:@"incoming_conference_request"]
+        ? [NSString stringWithFormat:@"Conference invite from %@ (you were in a conference)", who]
+        : [NSString stringWithFormat:@"From %@ (you were in a conference)", who];
+
+  UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+  content.title = @"Missed call";
+  content.body = bodyText;
+  content.categoryIdentifier = @"missed_call";
+  // No content.sound — silent on iOS unless the user has the app
+  // set to ring; the request was explicitly for a silent push.
+
+  UNTimeIntervalNotificationTrigger *trigger =
+        [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:0.1 repeats:NO];
+  NSString *reqId = [[NSUUID UUID] UUIDString];
+  UNNotificationRequest *request =
+        [UNNotificationRequest requestWithIdentifier:reqId content:content trigger:trigger];
+  [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request
+                                                         withCompletionHandler:nil];
+}
 
 // helper - show simple local notification for rejected calls (optional)
 - (void)showRejectedCallNotification:(NSString *)fromUri reason:(NSString *)reason {
@@ -1087,6 +1142,25 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     [SylkLogger log:@"[app] Reporting+ending suppressed VoIP call uuid=%@ handle=%@", uuid, handle];
 
     @try {
+        // Queue the end BEFORE reportNewIncomingCall's completion
+        // fires. Previously endCallWithUUID lived inside the
+        // withCompletionHandler block, which means iOS first
+        // presented the CallKit UI, then fired completion, then we
+        // ended the call — leaving a visible flash. Issuing the end
+        // immediately after the report (still on the same run-loop
+        // turn) lets CXProvider coalesce the two transactions: the
+        // report goes in, the end is already queued, and many iOS
+        // versions skip the UI presentation entirely or shorten it
+        // to a single frame.
+        //
+        // Reason is CXCallEndedReason.answeredElsewhere (4) instead
+        // of .declinedElsewhere (6). Apple's CallKit pipeline treats
+        // .answeredElsewhere as "this call was handled on another
+        // device" and tears the UI down without animating the
+        // "declined" / missed-call sweep — observably faster.
+        // Missed-call entry is still surfaced via our own
+        // postInConferenceMissedCallNotificationFrom local
+        // notification on the suppression paths that need it.
         [RNCallKeep reportNewIncomingCall:uuid
                                    handle:handle
                                handleType:@"generic"
@@ -1099,11 +1173,9 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
                               fromPushKit:YES
                                   payload:payload.dictionaryPayload
                     withCompletionHandler:^{
-            // End immediately. CXCallEndedReason 6 = .declinedElsewhere — least
-            // intrusive: produces a missed-call entry but no ring or recents-as-missed.
-            [RNCallKeep endCallWithUUID:uuid reason:6];
             if (completion) completion();
         }];
+        [RNCallKeep endCallWithUUID:uuid reason:4];
     } @catch (NSException *ex) {
         [SylkLogger log:@"[app] Exception in reportAndImmediatelyEnd: %@ - %@", ex.name, ex.reason];
         // Still call completion so we don't dangle, but at this point PushKit
@@ -1300,6 +1372,24 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
 		if (isCancel) {
 			return YES;
+		}
+
+		// In-conference gate. JS persists this flag via
+		// SharedDataModule.setInConference on conference enter/leave.
+		// When set, the active CallKit / WebRTC session for the
+		// conference would be ripped apart by reporting a new
+		// incoming CallKit call alongside it (CXProvider hands the
+		// audio session over to the new call). Suppress the push;
+		// the AppDelegate-level caller will route through
+		// reportAndImmediatelyEndCallForPayload so PushKit's "every
+		// push must reportNewIncomingCall" contract is still met,
+		// and we surface a silent local notification so the user
+		// sees a missed call after the conference ends.
+		if ([[NSUserDefaults standardUserDefaults] boolForKey:@"inConference"]) {
+			[SylkLogger log:@"[app] In conference, suppressing %@ from %@ (callId=%@)",
+				event, fromUri, callId];
+			[self postInConferenceMissedCallNotificationFrom:fromUri event:event];
+			return NO;
 		}
 
 		if (isIncomingConf) {

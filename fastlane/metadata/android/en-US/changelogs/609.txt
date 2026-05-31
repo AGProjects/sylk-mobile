@@ -1,0 +1,2 @@
+Speed up initial message load from push
+Bug fixes

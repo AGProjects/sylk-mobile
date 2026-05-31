@@ -485,7 +485,18 @@ class ConferenceMatrixParticipant extends Component {
 						// stream object the RTCView was already bound
 						// to and never refresh its rendered tracks,
 						// leaving the tile gray.
-						key={`rtc-${remoteStreamUrl || 'none'}-${this.state.trackVersion}`}
+						//
+						// aspectRatio is part of the key as well:
+						// the native RTCView does not always redraw
+						// when objectFit changes on an existing
+						// instance (most visible in solo fullscreen
+						// where the self tile sits under Paper's
+						// Surface — toggling "Aspect ratio" from the
+						// Video... picker did nothing until the view
+						// was forced to remount). Including it here
+						// keeps every matrix tile in sync with the
+						// self tile on toggle.
+						key={`rtc-${remoteStreamUrl || 'none'}-${this.state.trackVersion}-${this.props.aspectRatio || 'cover'}`}
 						// 'cover' fills the tile (may crop edges);
 						// 'contain' fits the whole frame inside
 						// (letterbox). Driven by ConferenceBox's

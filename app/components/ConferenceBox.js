@@ -50,13 +50,14 @@ import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 import DarkModeManager from '../DarkModeManager';
 
 // QoS instrumentation — see qos/qos-stats.js and qos/README.md.
-// Gated on __DEV__ so production builds skip the bridge cost entirely.
+// Previously gated on __DEV__; temporarily ungated so [qos] lines also
+// appear in release-build logcat while debugging intermittent ZRTP-call
+// media failures with qos/qos-test.sh. Re-add the __DEV__ guard once
+// that's resolved.
 import {
-    startQosLogging as _startQosLogging,
-    stopQosLogging  as _stopQosLogging,
+    startQosLogging,
+    stopQosLogging,
 } from '../../qos/qos-stats';
-const startQosLogging = __DEV__ ? _startQosLogging : () => {};
-const stopQosLogging  = __DEV__ ? _stopQosLogging  : () => {};
 
 import { applyVideoEncoderParamsToPc } from './CallZrtp';
 // Note: `ContactsListBox` does NOT export `renderBubble` as a named
@@ -276,7 +277,22 @@ class ConferenceBox extends Component {
         // _autoEscalatedToVideo because the two prompts have
         // different triggers and we only want each path to ask at
         // most once.
-        this._cameraStartPromptShown = false;
+        //
+        // Pre-latched when the conference was JOINED with the Video
+        // button (props.audioOnly === false). In that case the user
+        // has already committed to sharing video at call start, so
+        // the "Enable your camera?" preview modal would just be
+        // noise. Both latches are flipped so neither the user-
+        // explicit tap nor the auto-escalate path can surface the
+        // modal. The user manages their camera via the kebab
+        // Video... submenu (Start video / Stop video) for the rest
+        // of the session — same once-per-session rule as the
+        // post-Cancel / post-Accept state.
+        const _joinedAsVideo = this.props.audioOnly === false;
+        this._cameraStartPromptShown = _joinedAsVideo;
+        if (_joinedAsVideo) {
+            this._autoEscalatedToVideo = true;
+        }
 
         // True after the user has explicitly tapped Stop video (or
         // Mute Camera) during this conference session. Distinct
@@ -393,16 +409,44 @@ class ConferenceBox extends Component {
             //     no permission re-request.
             //   • !this.props.inFocus — the previous behavior
             //     where backgrounded calls also start with the
-            //     camera suppressed. Kept so backgrounded video
-            //     starts don't immediately broadcast frames.
-            videoMuted: this.props.audioOnly || !this.props.inFocus,
+            //     camera suppressed. Kept ONLY for audio-button
+            //     starts. When the user pressed the Video button
+            //     (audioOnly === false), we honour their explicit
+            //     "I want video" intent unconditionally — the
+            //     camera goes live immediately and the conference's
+            //     own self-tile fills the screen (showMyself /
+            //     SOLO_SELF_FULLSCREEN path). Without this, an
+            //     inFocus=false race at mount time was leaving the
+            //     track disabled and neither party saw any frames.
+            videoMuted: this.props.audioOnly === true,
             videoMutedbyUser: !!this.props.audioOnly,
             // Track which camera is active so the self-thumbnail and
             // large self-view only mirror when the front camera is in
-            // use. WebRTC's getUserMedia defaults to the front camera
-            // on mobile, so we start at 'front' and flip on each
-            // _switchCamera() call below.
-            cameraFacing: 'front',
+            // use. We used to hardcode 'front' here on the assumption
+            // that WebRTC's getUserMedia defaults to the user-facing
+            // camera, but in practice the picker showed reversed
+            // labels on devices where the initial track came up on the
+            // 'environment' (back) side — every subsequent
+            // _switchCamera() flip then propagated that off-by-one,
+            // so the user reported "Front Camera" and "Back Camera"
+            // inverted. Read the actual track facing from
+            // RTCMediaStreamTrack.getSettings().facingMode when the
+            // local stream is available, fall back to 'front' if the
+            // info isn't there yet. The wire-level facingMode is
+            // 'user' / 'environment'; map it to our two-state enum.
+            cameraFacing: (() => {
+                try {
+                    const _ls = props.call && props.call.getLocalStreams
+                        ? props.call.getLocalStreams()[0] : null;
+                    const _vt = _ls && _ls.getVideoTracks ? _ls.getVideoTracks()[0] : null;
+                    const _settings = _vt && typeof _vt.getSettings === 'function'
+                        ? _vt.getSettings() : null;
+                    const _fm = _settings && _settings.facingMode;
+                    if (_fm === 'environment') return 'back';
+                    if (_fm === 'user') return 'front';
+                } catch (e) { /* best effort */ }
+                return 'front';
+            })(),
             messages: this.props.messages,
             participants: participants,
             audioChatView: false,
@@ -536,6 +580,30 @@ class ConferenceBox extends Component {
 			// from the top-left. Same shape and clamping as
 			// pipPosition (the audio-view mirror's drag).
 			statsPosition: null,
+			// Free-drag position for the i/speedometer view. null =
+			// use the default top-left-of-first-tile anchored
+			// placement; once the user drags, switches to absolute
+			// {x, y} from the top-left.
+			speedoPosition: null,
+			// User-toggleable "self in PIP" mode. Naming kept for
+			// backwards compat with downstream code but the
+			// semantics are now inverted from earlier revisions:
+			//   • DEFAULT FALSE → MATRIX (grid) mode. Self joins
+			//     the matrix as an equal tile with the remotes:
+			//     1 remote → 2-tile split, 2 remotes → 3-tile
+			//     row/column, 3 remotes → 4-tile 2×2.
+			//   • TRUE → PIP mode. Self moves to the floating
+			//     thumbnail; matrix shows only the remotes.
+			// Toggled by the bottom-right corner icon on the self
+			// preview (X to exit grid → PIP, grid glyph to
+			// return to grid).
+			threeUpRowLayout: false,
+			// Audio-view PIP control visibility. Starts hidden; a
+			// tap on the PIP reveals swap / close / mute controls
+			// for 5 seconds, then auto-hides. Keeps the small
+			// thumbnail clean by default while still surfacing the
+			// affordances on demand.
+			audioPipControlsVisible: false,
 			// Aspect ratio for ALL video tiles (matrix participants
 			// + self PIP / self matrix tile). Matches VideoBox's
 			// state.aspectRatio — 'cover' fills the tile with
@@ -571,7 +639,17 @@ class ConferenceBox extends Component {
 			// land in audio for the first tick or two, then
 			// auto-promote as soon as their own / a peer's video
 			// frames begin to flow.
-			viewMode: 'audio',
+			//
+			// EXCEPT when the conference was joined with the Video
+			// button (props.audioOnly === false): the user has
+			// already committed to video at call start, so seed
+			// viewMode='video' so the video grid renders directly
+			// instead of dropping them into audio view with the
+			// floating self-PIP. enableMyVideo is true in that case
+			// so the user-explicit "Hide mirror" path still works,
+			// videoMuted is false so the conference's own self-tile
+			// surfaces immediately.
+			viewMode: this.props.audioOnly === false ? 'video' : 'audio',
 			// "Start your camera?" prompt shown when the first
 			// remote participant sends video (see _autoEscalatedToVideo
 			// + the inbound-video branch in getConnectionStats).
@@ -682,6 +760,39 @@ class ConferenceBox extends Component {
         // constants to validate state.statsPosition after an
         // orientation change so the panel can't end up stranded
         // off-screen.
+        // PanResponder for the i/speedometer view at the top-left of
+        // the first participant tile. 15 dp threshold (was 5) so a
+        // normal tap that toggles showUsage doesn't get hijacked as
+        // a drag — earlier the 5 dp tolerance was triggering
+        // accidental drags on quick taps and the icon ended up at a
+        // random position.
+        this._SPEEDO_W = 200;
+        this._SPEEDO_H = 110;
+        this._speedoDragStart = null;
+        this._speedoPanResponder = PanResponder.create({
+            onStartShouldSetPanResponder: () => false,
+            onStartShouldSetPanResponderCapture: () => false,
+            onMoveShouldSetPanResponder: (_e, g) =>
+                Math.abs(g.dx) > 15 || Math.abs(g.dy) > 15,
+            onMoveShouldSetPanResponderCapture: (_e, g) =>
+                Math.abs(g.dx) > 15 || Math.abs(g.dy) > 15,
+            onPanResponderGrant: () => {
+                this._speedoDragStart = this.state.speedoPosition
+                    || this._getDefaultSpeedoPosition();
+            },
+            onPanResponderMove: (_e, g) => {
+                if (!this._speedoDragStart) return;
+                const { width, height } = Dimensions.get('window');
+                let x = this._speedoDragStart.x + g.dx;
+                let y = this._speedoDragStart.y + g.dy;
+                x = Math.max(0, Math.min(width - this._SPEEDO_W, x));
+                y = Math.max(0, Math.min(height - this._SPEEDO_H, y));
+                this.setState({ speedoPosition: { x, y } });
+            },
+            onPanResponderRelease: () => { this._speedoDragStart = null; },
+            onPanResponderTerminate: () => { this._speedoDragStart = null; },
+        });
+
         this._STATS_W = 320;
         this._STATS_H = 200;
         this._statsDragStart = null;
@@ -815,15 +926,42 @@ class ConferenceBox extends Component {
 	     // round-trip will clear state.raisedHand via the usual
 	     // onRaisedHands path, so this only fires once per stuck
 	     // condition (re-entry would see raisedHand=false and skip).
-	     const _roomCount = ((this.state.participants ? this.state.participants.length : 0) + 1)
+	     // Count match the render-side _showRaiseHand math: filter
+	     // out bridges from this.state.participants so a room of
+	     // 2 real attendees + 1 PSTN bridge collapses to count=2
+	     // and the auto-lower fires (the previous raw .length
+	     // counted the bridge, leaving the hand stuck up).
+	     const _webrtcRealCount = (this.state.participants || []).filter((p) => {
+	         if (!p || !p.identity) return false;
+	         const _dn = p.identity._displayName || '';
+	         if (/bridge/i.test(_dn)) return false;
+	         const _uri = p.identity._uri || '';
+	         if (_uri.indexOf('@conference.') > -1) return false;
+	         return true;
+	     }).length;
+	     const _roomCount = (_webrtcRealCount + 1)
 	         + ((this.state.sipParticipants || []).filter((sp) => sp && sp.type === 'sip').length);
 	     const _raiseHandVisible = _roomCount > 2;
-	     if (!_raiseHandVisible && this.state.raisedHand && this.props.call
+	     // In-flight guard: fire toggleHand at most ONCE per
+	     // raisedHand=true → false transition. componentDidUpdate
+	     // runs on every re-render (including the burst of empty
+	     // raisedHands echoes the server emits right after a
+	     // toggleHand), and without this guard we could fire
+	     // toggleHand a second time before the server's
+	     // confirmation lands — flipping the hand back UP, which
+	     // then re-armed this branch and looped. The guard is
+	     // cleared in onRaisedHands the moment we observe
+	     // myHandUp=false.
+	     if (!_raiseHandVisible && this.state.raisedHand
+	             && !this._autoLowerInFlight
+	             && this.props.call
 	             && typeof this.props.call.toggleHand === 'function') {
 	         console.log('[ConferenceBox] [conference] auto-lowering hand: raise-hand UI hidden (roomCount=' + _roomCount + ')');
+	         this._autoLowerInFlight = true;
 	         try {
 	             this.props.call.toggleHand();
 	         } catch (e) {
+	             this._autoLowerInFlight = false;
 	             console.log('[ConferenceBox] [conference] auto-lower hand toggleHand threw: ' + (e && e.message));
 	         }
 	     }
@@ -1857,6 +1995,11 @@ class ConferenceBox extends Component {
             }
             this._inviteTimers.clear();
         }
+        // Cancel any in-flight audio-PIP controls auto-hide timer.
+        if (this._audioPipHideTimer) {
+            clearTimeout(this._audioPipHideTimer);
+            this._audioPipHideTimer = null;
+        }
 
         // Release the keep-screen-on we asserted at mount so the
         // OS idle timer resumes once the conference UI is torn
@@ -2323,6 +2466,37 @@ class ConferenceBox extends Component {
                 customStyles={styles.videoPlayer}
             />
         </View>
+        );
+    };
+
+    /** Conference-chat audio message renderer. Without this prop,
+     *  GiftedChat falls back to its default placeholder which
+     *  reads "Audio is not implemented by Gifted chat" — the user
+     *  reported seeing that string verbatim in the conference
+     *  chat once Record Conference began emitting audio
+     *  messages. We render a compact "audio attachment" tile that
+     *  shows the file name (falling back to "Recording") so the
+     *  message is at least identifiable. Full waveform / scrubber
+     *  playback lives in ContactsListBox.renderMessageAudio for
+     *  the regular chat — we don't duplicate that here to avoid
+     *  pulling its state machine into the conference path. */
+    renderMessageAudio = (props) => {
+        const { currentMessage } = props;
+        const _name = (currentMessage && currentMessage.metadata && currentMessage.metadata.name)
+            ? currentMessage.metadata.name
+            : 'Recording';
+        return (
+            <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingVertical: 8,
+                paddingHorizontal: 12,
+            }}>
+                <Icon name="microphone-outline" size={20} color="#ffffff" style={{marginRight: 8}} />
+                <Text style={{color: '#ffffff', fontSize: 14}} numberOfLines={1} ellipsizeMode="middle">
+                    {_name}
+                </Text>
+            </View>
         );
     };
 
@@ -3446,14 +3620,24 @@ class ConferenceBox extends Component {
 										// mode (see constructor). The first
 										// time we observe a REMOTE participant
 										// actually sending video bytes, surface
-										// the UpgradeVideoModal so the user can
-										// choose to start their own camera
-										// (Accept) or stay audio-only (Cancel).
-										// Either branch flips the latch so the
-										// prompt only fires once per session;
-										// subsequent video starts/stops are
-										// the user's responsibility via the
-										// kebab. Gated on:
+										// the StartCameraPreviewModal so the
+										// user can see their own camera preview
+										// and choose to share it (Accept) or
+										// stay audio-only (Cancel). The
+										// previously-used UpgradeVideoModal
+										// (text-only IncomingCallModal-styled
+										// prompt) has been replaced — both the
+										// auto-escalate path and the explicit
+										// audio→video kebab tap now route
+										// through the same preview surface so
+										// the user has ONE consistent control.
+										// The camera track is NOT enabled
+										// here — gate 1 of toggleViewMode (and
+										// the explicit accept handler) is the
+										// only place we flip track.enabled, so
+										// other participants don't see our
+										// camera until we explicitly say yes.
+										// Gated on:
 										//   • `identity !== 'myself'` — our
 										//     own outbound stream doesn't
 										//     count; we only prompt when a
@@ -3469,7 +3653,7 @@ class ConferenceBox extends Component {
 										//   • `viewMode === 'audio'` — never
 										//     prompt if the user has already
 										//     moved to video on their own.
-										//   • `!this.state.cameraPromptVisible`
+										//   • `!this.state.cameraStartPreviewVisible`
 										//     — defensive guard against a
 										//     burst of stats updates while the
 										//     prompt is already up.
@@ -3477,16 +3661,53 @@ class ConferenceBox extends Component {
 												&& identity !== 'myself'
 												&& bytesReceived > 0
 												&& this.state.viewMode === 'audio'
-												&& !this.state.cameraPromptVisible) {
+												&& !this.state.cameraStartPreviewVisible) {
 											this._autoEscalatedToVideo = true;
+											// Also flip the audio→video tap
+											// latch so the same modal session
+											// is bookended by the same accept
+											// /cancel handlers — gate 1 of
+											// toggleViewMode short-circuits if
+											// _cameraStartPromptShown is true,
+											// so when the modal's accept handler
+											// re-enters toggleViewMode it falls
+											// straight into gate 2 (the actual
+											// view-mode switch + track enable).
+											this._cameraStartPromptShown = true;
+											// Force the camera track OFF before
+											// surfacing the modal. The user may
+											// have JOINED the conference as
+											// video (props.audioOnly=false →
+											// videoMuted=false → track.enabled
+											// initially true), in which case
+											// other participants are already
+											// receiving frames. They shouldn't
+											// keep seeing video while a
+											// confirmation modal is in front of
+											// us; the preview card's local
+											// RTCView keeps painting capture
+											// because react-native-webrtc
+											// preserves the local view of the
+											// camera regardless of track.enabled.
+											// The accept path re-enables the
+											// track via gate 2 of toggleViewMode.
+											try {
+												const _ls = this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0];
+												if (_ls && _ls.getVideoTracks().length > 0) {
+													const _t = _ls.getVideoTracks()[0];
+													if (_t.enabled !== false) {
+														_t.enabled = false;
+													}
+												}
+											} catch (e) { /* best effort */ }
 											console.log('[conference] prompting to start camera —',
 												'remote', identity, 'sending video');
 											// Defer the setState one tick so
 											// we don't mutate state in the
 											// middle of the stats forEach.
 											setTimeout(() => this.setState({
-												cameraPromptVisible: true,
-												cameraPromptRemoteUri: identity,
+												cameraStartPreviewVisible: true,
+												videoMuted: true,
 											}), 0);
 										}
 									}
@@ -4494,6 +4715,11 @@ class ConferenceBox extends Component {
      *  this re-entry into toggleViewMode skips the prompt and
      *  proceeds straight to the audio→video transition. */
     onCameraStartPreviewAccept = () => {
+        // Latch the auto-escalate flag — user has made an explicit
+        // choice (Enable camera), so the auto-prompt shouldn't fire
+        // again later in the same session for the same trigger
+        // (remote sending video while we're in audio view).
+        this._autoEscalatedToVideo = true;
         this.setState({cameraStartPreviewVisible: false}, () => {
             if (this.state.viewMode === 'audio') {
                 this.toggleViewMode();
@@ -4501,49 +4727,65 @@ class ConferenceBox extends Component {
         });
     };
 
-    /** Cancel handler for the same preview. User backed out — we
-     *  need to undo the camera track enable we did in
-     *  toggleViewMode (so remote participants stop seeing our
-     *  frames) and stay in audio view. The _cameraStartPromptShown
-     *  latch stays set; the user can switch via the kebab again
-     *  later without re-prompting (mirrors the auto-escalate
-     *  latch behaviour). */
+    /** Cancel handler for the camera-start preview.
+     *  User said "I don't want to enable my camera right now" — but
+     *  they DO want to enter the video conference so they can see
+     *  other participants' video. Switch to video view with the
+     *  camera track left disabled (others see no frames, user sees
+     *  the conference matrix). The _userExplicitlyStoppedVideo latch
+     *  is set so a subsequent audio→video toggle doesn't re-enable
+     *  the camera silently; the user can start their camera later
+     *  from the kebab's "Start video" item.
+     *
+     *  The webrtc track stays at enabled=false. RNCamera (the
+     *  preview's capture handle) is released automatically when the
+     *  modal unmounts on cameraStartPreviewVisible=false.
+     */
     onCameraStartPreviewCancel = () => {
-        // Hide the camera-preview AND drop the self-PIP. Muting the
-        // track via _muteVideo() sets track.enabled=false, which
-        // stops outbound frames going to peers — but locally the
-        // RTCView in the self-PIP keeps showing live camera capture
-        // (react-native-webrtc preserves local preview regardless of
-        // enabled). Setting enableMyVideo:false hides the PIP
-        // entirely so the user doesn't see themselves in their own
-        // tile after backing out of the audio→video upgrade.
-        // Don't force viewMode back to audio — the user may already
-        // be in video view watching OTHER participants' video; Cancel
-        // here just means "I'm not enabling MY camera", not "leave
-        // video view". Let the view stay where it is.
-        // Also clear _cameraStartPromptShown so a SUBSEQUENT
-        // audio→video toggle (e.g. user changes their mind) re-shows
-        // the preview prompt. Without this, the latch sticks and the
-        // next toggle silently enables the camera.
-        this._cameraStartPromptShown = false;
+        // Latch the auto-escalate flag too. Without this, a future
+        // video→audio→video round trip would re-trigger the same
+        // modal via the getConnectionStats "remote sending video"
+        // observation — the user has already made a deliberate
+        // choice ("View only, no camera"), so the auto-prompt
+        // shouldn't second-guess them.
+        this._autoEscalatedToVideo = true;
+        // Belt-and-braces: defensively force the webrtc video track
+        // to disabled. Gate 1 doesn't enable it (RNCamera owns the
+        // preview), but the auto-escalate force-off path may have
+        // run earlier and we want to be sure no frames are on the
+        // wire.
+        try {
+            const localStream = this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0];
+            if (localStream && localStream.getVideoTracks().length > 0) {
+                const track = localStream.getVideoTracks()[0];
+                if (track.enabled !== false) {
+                    track.enabled = false;
+                }
+            }
+        } catch (e) { /* best effort */ }
+        // Mark that the user explicitly chose NOT to enable video,
+        // so the legacy resume-video fall-through inside the
+        // upcoming toggleViewMode call doesn't silently flip the
+        // track back on. The flag is cleared by an explicit Start
+        // video / kebab action later.
+        this._userExplicitlyStoppedVideo = true;
+        // _cameraStartPromptShown stays TRUE — the modal is a
+        // once-per-conference-session decision. After View only,
+        // the user manages their camera via the kebab Video... menu
+        // (Start video / Stop video items). We do NOT re-prompt on
+        // subsequent audio↔video view toggles.
         this.setState({
             cameraStartPreviewVisible: false,
-            enableMyVideo: false,
+            // viewMode flip happens inside toggleViewMode's
+            // _userExplicitlyStoppedVideo branch (it sets
+            // viewMode:nextMode + enableMyVideo:true and returns
+            // before touching the track). We want to land in video
+            // view so the user can see other participants.
             videoMuted: true,
+            videoMutedbyUser: true,
         }, () => {
-            try {
-                this._muteVideo && this._muteVideo();
-            } catch (e) {
-                // _muteVideo is the symmetric helper; if absent for
-                // any reason, fall back to flipping the track
-                // ourselves so we don't leave the camera live.
-                try {
-                    const localStream = this.props.call && this.props.call.getLocalStreams()[0];
-                    if (localStream && localStream.getVideoTracks().length > 0) {
-                        const track = localStream.getVideoTracks()[0];
-                        track.enabled = false;
-                    }
-                } catch (e2) { /* best effort */ }
+            if (this.state.viewMode === 'audio') {
+                this.toggleViewMode();
             }
         });
     };
@@ -4634,27 +4876,56 @@ class ConferenceBox extends Component {
         // prompt in Call.js) instead of just flipping the track.
         // The preview wants real frames, so we enable the video
         // track here BEFORE showing — on Cancel we re-disable it
-        // and stay in audio view; on Start the toggle proceeds.
-        // Once shown (regardless of which button the user picks),
-        // the per-session latch suppresses re-prompting on later
-        // toggles. Skipped when the auto-escalate prompt already
-        // ran this session.
-        // First-time preview modal removed — the user reported that
-        // the audio→video tap required two clicks (the first showed
-        // the preview modal + logged "Resume camera", the second
-        // actually committed the view switch). Flipping the camera
-        // track AND the view in one step makes the formation a true
-        // single-tap action. Re-introduce a preview modal here
-        // (gated on _cameraStartPromptShown) if the confirmation UX
-        // is needed back.
-        if (this.state.videoMuted) {
+        // and stay in audio view; on Accept the modal calls back
+        // into toggleViewMode and the latch _cameraStartPromptShown
+        // routes execution past this gate into the actual view
+        // switch below.
+        //
+        // _cameraStartPromptShown is the per-session latch: set
+        // when the modal opens, cleared by onCameraStartPreviewCancel
+        // so a later toggle re-prompts. onCameraStartPreviewAccept
+        // does NOT clear it, so subsequent audio↔video toggles in
+        // the same session don't re-prompt after the user has once
+        // committed (matches the "ask once per session" UX). The
+        // 1:1 Call.js audio→video upgrade gate uses an analogous
+        // latch in the parent app.
+        if (this.state.videoMuted && !this._cameraStartPromptShown) {
             this._cameraStartPromptShown = true;
+            // DO NOT touch track.enabled here. The modal's preview
+            // is rendered via RNCamera (react-native-camera) with
+            // its OWN native capture handle — completely independent
+            // of the webrtc sender. The conference's video track
+            // stays gated, so other participants see no frames
+            // until the user explicitly taps Enable camera, which
+            // routes through gate 2 and flips track.enabled = true
+            // for the first time.
+            //
+            // showMyself / audio-view PIP suppression on
+            // cameraStartPreviewVisible already keeps the
+            // conference's own background self-surfaces hidden
+            // during this window.
+            this.setState({ cameraStartPreviewVisible: true });
+            return;
+        }
+
+        if (this.state.videoMuted && this.state.cameraStartPreviewVisible) {
+            // Modal is still up — a re-tap of audio→video means the
+            // user tapped while the modal is on screen. Do nothing;
+            // the user must dismiss the modal via View only or
+            // Enable camera to drive the flow forward.
+            return;
+        }
+
+        if (this.state.videoMuted) {
+            // Latch already set AND modal already dismissed (we got
+            // here via the preview modal's accept handler re-entering
+            // toggleViewMode) — proceed to the actual audio→video
+            // switch.
             try {
                 const localStream = this.props.call && this.props.call.getLocalStreams()[0];
                 if (localStream && localStream.getVideoTracks().length > 0) {
                     const track = localStream.getVideoTracks()[0];
                     if (track.enabled !== true) {
-                        console.log('Resume camera');
                         track.enabled = true;
                     }
                 }
@@ -4665,7 +4936,7 @@ class ConferenceBox extends Component {
                 enableMyVideo: true,
                 callOverlayVisible: true,
             }, () => {
-                this._dumpParticipantRoster('view → video (one-tap, no preview)');
+                this._dumpParticipantRoster('view → video (post-preview-accept)');
             });
             return;
         }
@@ -4896,6 +5167,30 @@ class ConferenceBox extends Component {
         this.setState({audioChatView: !this.state.audioChatView});
     }
 
+    /** Toggle visibility of the audio-view PIP's controls (swap,
+     *  close, mute). First tap on the thumbnail reveals them and
+     *  starts a 5 s auto-hide countdown. A SECOND tap while they're
+     *  still visible hides them immediately and cancels the timer
+     *  (per user request). */
+    _showAudioPipControls = () => {
+        if (this.state.audioPipControlsVisible) {
+            // Already visible → second tap hides immediately and
+            // cancels the auto-hide timer.
+            if (this._audioPipHideTimer) {
+                clearTimeout(this._audioPipHideTimer);
+                this._audioPipHideTimer = null;
+            }
+            this.setState({ audioPipControlsVisible: false });
+            return;
+        }
+        // First tap from hidden state → show + start 5 s countdown.
+        this.setState({ audioPipControlsVisible: true });
+        this._audioPipHideTimer = setTimeout(() => {
+            this._audioPipHideTimer = null;
+            this.setState({ audioPipControlsVisible: false });
+        }, 5000);
+    };
+
     toggleCamera(event) {
         // Same callable-from-multiple-paths pattern as muteVideo —
         // the picker / audio-mode PIP overlay call this without an
@@ -4906,14 +5201,44 @@ class ConferenceBox extends Component {
             event.preventDefault();
         }
         const localStream = this.props.call.getLocalStreams()[0];
-        if (localStream.getVideoTracks().length > 0) {
+        if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
             track._switchCamera();
-            // Keep cameraFacing in sync so the self-PIP and large
-            // self-view stop mirroring when the back camera is on.
-            this.setState({
-                cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front'
-            });
+            // After the switch, query the track's actual facingMode
+            // and set state to match REALITY rather than blindly
+            // toggling our local state. Blind toggling perpetuated
+            // any initial mismatch — on devices where the seed
+            // value (constructor's getSettings().facingMode) was
+            // missing or wrong, every flip kept state and the
+            // physical camera out of sync, which is why front/back
+            // looked swapped in the picker.
+            const _readActual = () => {
+                try {
+                    const _s = typeof track.getSettings === 'function' ? track.getSettings() : null;
+                    const _fm = _s && _s.facingMode;
+                    if (_fm === 'user') return 'front';
+                    if (_fm === 'environment') return 'back';
+                } catch (e) { /* best effort */ }
+                return null;
+            };
+            // Some platforms update getSettings() asynchronously, so
+            // query immediately (cheap if it works) and again after a
+            // short delay to catch the late update. Optimistic fall-
+            // back to the toggle if neither query reports a value.
+            const _now = _readActual();
+            if (_now) {
+                this.setState({ cameraFacing: _now });
+            } else {
+                this.setState({
+                    cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front'
+                });
+            }
+            setTimeout(() => {
+                const _later = _readActual();
+                if (_later && _later !== this.state.cameraFacing) {
+                    this.setState({ cameraFacing: _later });
+                }
+            }, 250);
         }
     }
 
@@ -4925,15 +5250,36 @@ class ConferenceBox extends Component {
     // width when available so the right-edge anchor lands at the
     // ACTUAL right edge instead of where a 320-px maxWidth
     // would have placed it.
+    /** Default position for the i/speedometer view — top-left of
+     *  the first participant tile. Used to seed the PanResponder's
+     *  drag start and as the fallback when state.speedoPosition is
+     *  null. Mirrors the render-time anchor math in the JSX. */
+    _getDefaultSpeedoPosition() {
+        const insets = this.state.insets || {};
+        const topInset = insets.top || 0;
+        const leftInset = insets.left || 0;
+        // _navbarOffset is computed in render() and isn't visible
+        // here; reproduce its logic so the drag start matches the
+        // visible position.
+        const _navbarOffset = this.fullScreen
+            ? 0
+            : conferenceHeaderHeight + (this.state.isLandscape ? 0 : 34);
+        const y = _navbarOffset + 12 + topInset;
+        const x = this.state.isLandscape ? 12 : leftInset + 12;
+        return { x, y };
+    }
+
     _getDefaultStatsPosition() {
-        const { width } = Dimensions.get('window');
-        const topInset = (this.state.insets && this.state.insets.top) || 0;
-        const rightInset = (this.state.insets && this.state.insets.right) || 0;
-        const SPEEDOMETER_TOP = topInset + 12;
+        const leftInset = (this.state.insets && this.state.insets.left) || 0;
+        // Anchor matches the i icon's placement: in landscape the
+        // outer container is shifted past the left safe-area inset
+        // so the icon (and this panel) skip the inset; in portrait
+        // we keep the inset. Vertical: directly below the expanded
+        // speedometer (12 + 96 + 6).
+        const SPEEDOMETER_TOP = 12;
         const SPEEDOMETER_HEIGHT_EXPANDED = 96;
         const top = SPEEDOMETER_TOP + SPEEDOMETER_HEIGHT_EXPANDED + 6;
-        const _w = this._statsMeasuredW || this._STATS_W;
-        const x = Math.max(0, width - _w - rightInset - 4);
+        const x = this.state.isLandscape ? 12 : Math.max(0, leftInset + 12);
         return { x, y: top };
     }
 
@@ -5010,6 +5356,15 @@ class ConferenceBox extends Component {
         // still use distinct camera-front / camera-rear icons.
         const mainIcon = 'video';
 
+        // Icons restored to the canonical MCI glyphs: `camera-front` for
+        // Front and `camera-rear` for Back. The earlier swap was a band-
+        // aid for what turned out to be a state/reality mismatch — the
+        // initial cameraFacing was hardcoded to 'front' regardless of
+        // which camera actually came up first, so the picker labelled
+        // the OPPOSITE option on devices that started on the back
+        // camera. With the constructor now reading getSettings().
+        // facingMode the state and the actual camera agree, so the
+        // icons can stay in their natural label-matching positions.
         const cameraOptions = [
             {key: 'front', icon: 'camera-front', label: 'Front Camera', facing: 'front'},
             {key: 'back',  icon: 'camera-rear',  label: 'Back Camera',  facing: 'back'}
@@ -5113,7 +5468,19 @@ class ConferenceBox extends Component {
                 icon: 'aspect-ratio',
                 label: 'Aspect ratio',
                 onPress: () => this.toggleAspectRatio()
-            }
+            },
+            // Grid / PIP toggle. Same flag the corner icon flips.
+            // Shown whenever there is at least one other
+            // participant in the room (the binary choice doesn't
+            // make sense alone).
+            ...(this.visibleParticipants.length >= 1 ? [{
+                key: 'gridLayout',
+                icon: 'grid',
+                label: this.state.threeUpRowLayout ? 'Grid layout' : '3-up layout',
+                onPress: () => this.setState({
+                    threeUpRowLayout: !this.state.threeUpRowLayout,
+                })
+            }] : [])
         ];
 
         // Sizing math copied from VideoBox so the row icons read at
@@ -5230,16 +5597,18 @@ class ConferenceBox extends Component {
                 {this.state.videoPickerVisible && (
                     <View style={{
                         position: 'absolute',
-                        // Opens UPWARD now that the video conference
-                        // call-bar sits at the bottom of the screen.
-                        // bottom:'100%' pins the panel's bottom edge
-                        // to the trigger's top edge; marginBottom
-                        // adds the same 8 px gap the old downward
-                        // (top:'100%' + marginTop:8) layout used.
-                        bottom: '100%',
+                        // Portrait: opens UPWARD (the conference action
+                        // bar sits at the bottom of the screen).
+                        // Landscape: the trigger lives in the navbar at
+                        // the TOP of the screen, so opening upward would
+                        // push the panel off-screen; flip to OPEN
+                        // DOWNWARD via top:'100%' + marginTop:8.
+                        bottom: this.state.isLandscape ? undefined : '100%',
+                        top: this.state.isLandscape ? '100%' : undefined,
                         left: 0,
                         width: panelWidth,
-                        marginBottom: 8,
+                        marginBottom: this.state.isLandscape ? undefined : 8,
+                        marginTop: this.state.isLandscape ? 8 : undefined,
                         zIndex: 100,
                         elevation: 10,
                         backgroundColor: 'rgba(34,34,34,0.92)',
@@ -5339,7 +5708,6 @@ class ConferenceBox extends Component {
             // gated separately so we still avoid a redundant
             // re-render when state already says muted.
             if (track.enabled !== false) {
-                console.log('Mute camera');
                 track.enabled = false;
             }
             if (!this.state.videoMuted) {
@@ -5359,7 +5727,6 @@ class ConferenceBox extends Component {
             // disabled on a state.videoMuted = false render)
             // wouldn't recover.
             if (track.enabled !== true) {
-                console.log('Resume camera');
                 track.enabled = true;
             }
             if (this.state.videoMuted) {
@@ -5574,6 +5941,13 @@ class ConferenceBox extends Component {
             + ' incoming_count=' + _list.length
             + ' incoming_ids=' + JSON.stringify(Array.from(byPid))
             + ' myHandUp=' + myHandUp);
+        // Clear the auto-lower in-flight guard the moment the
+        // server reports our hand is down. Lets a future
+        // size-drop re-arm the auto-lower without trapping the
+        // user in a stuck-raised state.
+        if (!myHandUp) {
+            this._autoLowerInFlight = false;
+        }
         this.setState({raisedHandsByPid: byPid, raisedHand: myHandUp});
     }
 
@@ -5818,11 +6192,55 @@ class ConferenceBox extends Component {
     // smaller live set.
     get visibleParticipants() {
         const stalled = this.state.stalledParticipants || new Set();
-        if (stalled.size === 0) return this.state.participants;
-        return this.state.participants.filter(p => !stalled.has(p.id));
+        // Treat a participant whose video is 100% lossy ("No media")
+        // the same as a stalled one for grid-layout / showMyself
+        // purposes. The tile is suppressed from the matrix above, so
+        // counting them here would leave the grid sized for a slot
+        // that no longer renders — e.g. a 2x2 grid showing 3 actual
+        // tiles + one empty quadrant. The drawer roster still lists
+        // them (so the user knows they're in the room) and the side
+        // carousel + activeSpeakers loops already apply the same
+        // filter via early-returns / `status !== 'No media'` gates.
+        const noMedia = (this.packetLoss && this.packetLoss.get)
+            ? (id) => this.packetLoss.get(id) === 100
+            : () => false;
+        // Also filter PSTN/SIP bridge participants. The matrix tile
+        // builder already drops them from videos[] because they
+        // carry audio only (no video track to render), but earlier
+        // the bridge was still counted here — which meant the grid
+        // sized itself for "self + bridge = 2 tiles" and the user
+        // got a half-screen self tile in a room where they
+        // perceived themselves as alone. With bridges filtered too,
+        // visibleParticipants.length === 0 in the bridge-only case
+        // and the solo-fullscreen path takes over (single self tile
+        // filling the canvas). Same heuristic the matrix builder
+        // and the audio-tile / bandwidth-overlay paths use: display
+        // name contains "bridge" OR URI sits under the conference
+        // domain.
+        const isBridge = (p) => {
+            const dn = (p && p.identity && p.identity._displayName) || '';
+            const uri = (p && p.identity && p.identity._uri) || '';
+            return /bridge/i.test(dn) || uri.indexOf('@conference.') > -1;
+        };
+        return this.state.participants.filter(
+            p => !stalled.has(p.id) && !noMedia(p.id) && !isBridge(p));
     }
 
     get showMyself() {
+        // While the "Enable your camera?" preview modal is up, the
+        // conference's own background self-tile must not also paint
+        // the camera feed — the user would see themselves twice:
+        // once inside the preview card, once in the fullscreen
+        // background self-tile (or the floating PIP, depending on
+        // participant count). The modal is the only legitimate
+        // local-video surface during its visible window. Once the
+        // user taps "Enable camera" the modal flips invisible and
+        // showMyself returns the normal value, handing the camera
+        // feed back to the conference's own self-tile.
+        if (this.state.cameraStartPreviewVisible) {
+            return false;
+        }
+
         if (this.state.chatView && !this.audioOnlyView) {
 			return true;
         }
@@ -5843,11 +6261,15 @@ class ConferenceBox extends Component {
 			return false;
 		}
 
-		// 1 remote → split-screen self+remote (case handled in
-		// videos[]). 3 remote → 2x2 grid with self as 4th tile.
-		// Either way the floating PIP is redundant.
+		// PIP visibility = INVERSE of matrix self-inclusion.
+		// Self in matrix whenever there is at least one remote
+		// AND the user is in matrix mode (!threeUpRowLayout).
+		// 4+ remotes: self still claims one of the 4 matrix slots;
+		// the overflow remotes go to the side carousel.
 		const visibleCount = this.visibleParticipants.length;
-		if (visibleCount === 1 || visibleCount === 3) {
+		const _selfInMatrix = visibleCount >= 1
+		    && !this.state.threeUpRowLayout;
+		if (_selfInMatrix) {
 			return false;
 		}
 
@@ -5896,6 +6318,52 @@ class ConferenceBox extends Component {
 
 		let container = {};
 		let item = {};
+
+		// User-toggleable self placement — applies for ANY remote
+		// count (>= 1):
+		//   • threeUpRowLayout=false (MATRIX mode, default) →
+		//     self joins the matrix as an equal tile. Tile count
+		//     = remotes + 1 (capped at 4; extra remotes go to the
+		//     side carousel).
+		//   • threeUpRowLayout=true (PIP mode) → self moves to the
+		//     floating thumbnail. Matrix tile count = remoteCount
+		//     (capped at 4).
+		if (pinnedCount === 0 && remoteCount >= 1) {
+			const selfInMatrix = !this.state.threeUpRowLayout;
+			const tileCount = Math.min(
+			    selfInMatrix ? remoteCount + 1 : remoteCount,
+			    4,
+			);
+			if (tileCount === 1) {
+				container = { flexDirection: 'column', flexWrap: 'nowrap', justifyContent: 'center', alignItems: 'center' };
+				item = { width: '100%', height: '100%' };
+				return { container, item };
+			}
+			if (tileCount === 2) {
+				if (isLandscape) {
+					container = { flexDirection: 'row', flexWrap: 'nowrap' };
+					item = { width: '50%', height: '100%' };
+				} else {
+					container = { flexDirection: 'column', flexWrap: 'nowrap' };
+					item = { width: '100%', height: '50%' };
+				}
+				return { container, item };
+			}
+			if (tileCount === 3) {
+				if (isLandscape) {
+					container = { flexDirection: 'row', flexWrap: 'nowrap' };
+					item = { width: '33.3333%', height: '100%' };
+				} else {
+					container = { flexDirection: 'column', flexWrap: 'nowrap' };
+					item = { width: '100%', height: '33.3333%' };
+				}
+				return { container, item };
+			}
+			// tileCount === 4 → 2 × 2
+			container = { flexDirection: 'row', flexWrap: 'wrap' };
+			item = { width: '50%', height: '50%' };
+			return { container, item };
+		}
 
 		switch (count) {
 			case 1:
@@ -6077,17 +6545,21 @@ class ConferenceBox extends Component {
 					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
-							// Anchor the floating list ABOVE the
-							// trigger: bottom:'100%' pins the list's
-							// bottom edge to the trigger's top edge,
-							// and marginBottom adds the same 4px gap
-							// the old downward variant used between
-							// the trigger and the first floating row.
-							bottom: '100%',
+							// Portrait: anchor ABOVE the trigger
+							// (bottom:'100%') — call-bar lives at the
+							// bottom of the screen.
+							// Landscape: anchor BELOW the trigger
+							// (top:'100%') because in landscape the
+							// audio device button sits in the navbar
+							// at the TOP of the screen, and opening
+							// upward would push the panel off-screen.
+							bottom: this.state.isLandscape ? undefined : '100%',
+							top: this.state.isLandscape ? '100%' : undefined,
 							left: 0,
 							right: 0,
 							alignItems: 'center',
-							marginBottom: 4,
+							marginBottom: this.state.isLandscape ? undefined : 4,
+							marginTop: this.state.isLandscape ? 4 : undefined,
 							zIndex: 100,
 							elevation: 10,
 						}}>
@@ -6333,22 +6805,12 @@ class ConferenceBox extends Component {
         
         */
         
-        if (_useVideoLayout) {
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key="chat">
-                <TouchableHighlight style={styles.roundshape}>
-                <IconButton
-                    size={25}
-                    style={buttonClass}
-                    title="Chat"
-                    onPress={this.toggleChat}
-                    icon={!this.state.chatView ? "chat" : "chat-remove"} // toggle icon
-                    key="toggleChat"
-                />
-                </TouchableHighlight>
-              </View>
-            );
-       }
+        // Chat toggle button removed from the floating button bar
+        // alongside Record and Invite. toggleChat and the chat-pane
+        // rendering are left intact — they're still driven by other
+        // surfaces (e.g. ChatHeader's toggle, audio-view auto-show,
+        // the GiftedChat panel itself) so the chat can be opened from
+        // outside this floating bar without re-wiring chatView state.
 
      // NOTE: the audio-view hangup button was previously pushed FIRST
      // (leftmost) here. Moved to AFTER the Mute / Invite pushes below
@@ -6375,7 +6837,78 @@ class ConferenceBox extends Component {
             */
         }
 
+        // Add-participant button pushed FIRST so it lands on the
+        // leftmost slot of the centred floating button row.
+        // Hands off to `props.inviteToConferenceFunc` (the parent
+        // wires the contact-picker that the kebab "Invite..." item
+        // also uses) rather than `toggleInviteModal` — the latter
+        // toggles ShareConferenceLinkModal which is the "copy a
+        // share URL" sheet, NOT the invite-by-contact flow the user
+        // expects from the + button.
         floatingButtons.push(
+              // Uniform spacing in BOTH orientations now — no extra
+              // marginRight on this end-cap. Portrait gets its 10 dp
+              // gap from styles.buttonContainer (margin:5 each side);
+              // landscape gets the same 10 dp from ConferenceHeader's
+              // wrapper marginLeft.
+              <View
+                style={styles.buttonContainer}
+                key="Invite">
+                  <TouchableHighlight style={styles.roundshape}>
+            <IconButton
+                size={25}
+                style={buttonClass}
+                title="Add participant"
+                onPress={() => {
+                    if (typeof this.props.inviteToConferenceFunc === 'function') {
+                        this.props.inviteToConferenceFunc();
+                    } else {
+                        // Fallback — older parents without the
+                        // contact-picker plumbing still get a
+                        // working button via the share modal.
+                        this.toggleInviteModal();
+                    }
+                }}
+                icon="account-plus"
+                key="addParticipantButton"
+            />
+                  </TouchableHighlight>
+              </View>
+        );
+
+        // Speaker selector — pushed RIGHT AFTER Add Participant per
+        // user request. Only meaningful in video layout with 2+
+        // remote candidates.
+        if (_useVideoLayout && _remoteVideoSpeakerCount > 1) {
+            floatingButtons.push(
+              <View style={styles.buttonContainer} key="speakers">
+                <TouchableHighlight style={styles.roundshape}>
+                  <IconButton
+                    size={25}
+                    style={buttonClass}
+                    title="Speaker layout"
+                    onPress={this.toggleSpeakerSelection}
+                    icon="account-multiple"
+                    key="speakerLayoutButton"
+                  />
+                </TouchableHighlight>
+              </View>
+            );
+        }
+
+        // Video picker — pushed after Speaker selector. Final order:
+        // Add Participant → Speaker → Video → Audio device → Mute →
+        // Hangup.
+        if (_useVideoLayout) {
+            floatingButtons.push(this.renderVideoPicker(25, buttonClass));
+        }
+
+        // Mute (mic) button — composed here so it can be pushed in
+        // the right slot after Speaker / Audio device / Video picker
+        // (see further below). User-requested order in video mode:
+        // Add Participant → Speaker layout → Audio device → Video →
+        // Mute → Hangup.
+        const _muteButton = (
               <View style={styles.buttonContainer} key="Mute">
                 <PulsingView active={!!this.state.audioMuted}>
                   <TouchableHighlight style={styles.roundshape}>
@@ -6391,69 +6924,31 @@ class ConferenceBox extends Component {
                 </PulsingView>
               </View>
         );
-
-        floatingButtons.push(
-              <View style={styles.buttonContainer} key="InviteParticipants">
-                  <TouchableHighlight style={styles.roundshape}>
-            <IconButton
-                size={this.state.videoEnabled ? 25 : 25}
-                style={buttonClass}
-                title="Invite participants"
-                onPress={this.toggleInviteModal}
-                icon="account-plus"
-                key="inviteParticipantsButton"
-            />
-                </TouchableHighlight>
-              </View>
-        );
-
-        // Conference recording button (compressed stereo mix —
-        // mic L, sum of all remote participants on R, same
-        // Opus-OGG / AAC m4a the 1-to-1 recorder produces so the
-        // existing audio chat bubble plays it back). Only shown
-        // when the native module exposes the conference API —
-        // older builds without the conference-mix path linked in
-        // fall through to no button rather than a tap that does
-        // nothing.
-        //
-        // One-shot diagnostic — logs the gating result on first
-        // render of this layout so it's obvious from metro.log
-        // whether the button is hidden because the native module
-        // is missing the conference methods (i.e. the app hasn't
-        // been rebuilt since the conference-mix patch landed) vs
-        // some other bug. Guard with an instance flag so we don't
-        // spam on every re-render.
-        if (!this._loggedConferenceAvailability) {
-            this._loggedConferenceAvailability = true;
-            utils.timestampedLog('[conference] [recorder] conferenceAvailable=',
-                CallRecorder.conferenceAvailable(),
-                ' startConference type=',
-                (NativeModules.SylkCallRecorder
-                    ? typeof NativeModules.SylkCallRecorder.startConference
-                    : 'no-module'));
+        // Audio mode still needs the mute button in its original
+        // slot (right after Add Participant). Video mode pushes it
+        // later (after the video picker).
+        if (_useAudioLayout) {
+            floatingButtons.push(_muteButton);
         }
-        if (CallRecorder.conferenceAvailable()) {
-            const recIcon = this.state.isConferenceRecording
-                ? 'record-rec' : 'record';
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key="RecordConference">
-                <PulsingView active={!!this.state.isConferenceRecording}>
-                  <TouchableHighlight style={styles.roundshape}>
-                    <IconButton
-                        size={this.state.videoEnabled ? 25 : 25}
-                        style={buttonClass}
-                        title={this.state.isConferenceRecording
-                            ? 'Stop recording'
-                            : 'Record conference'}
-                        onPress={this._toggleConferenceRecording}
-                        icon={recIcon}
-                        key="recordConferenceButton"
-                    />
-                  </TouchableHighlight>
-                </PulsingView>
-              </View>
-            );
-        }
+
+        // Invite-participants button removed from the floating
+        // button bar alongside the conference recording button.
+        // toggleInviteModal + the AddParticipantsModal it opens are
+        // left intact so the entry point can be re-surfaced from
+        // elsewhere (e.g. the kebab menu) without re-wiring the
+        // invite flow.
+
+        // Conference recording button removed from the button bar.
+        // The underlying recorder plumbing (state.isConferenceRecording,
+        // _startConferenceRecording / _stopConferenceRecording,
+        // CallRecorder.conferenceAvailable(), the pulsing pill,
+        // conferenceRecordingDir, the disclosure modal) is left in
+        // place so the feature can be re-surfaced from somewhere
+        // else (e.g. the kebab menu) without re-wiring all the
+        // recorder state. The one-shot conferenceAvailable
+        // diagnostic was attached to this render path and goes with
+        // the button — it can be reintroduced wherever the recorder
+        // is re-exposed.
 
        // Audio-view hangup, pushed LAST so it lands on the right end
        // of the centered floating button row. Extra marginLeft visually
@@ -6487,22 +6982,8 @@ class ConferenceBox extends Component {
         // previous `speakerSelectionParticipants.length > 1` check
         // was fooled by the synthetic myself + unselect entries
         // pushed onto the list.
-        if (_useVideoLayout && _remoteVideoSpeakerCount > 1) {
-            floatingButtons.push(
-              <View style={styles.buttonContainer} key="speakers">
-                <TouchableHighlight style={styles.roundshape}>
-                  <IconButton
-                    size={25}
-                    style={buttonClass}
-                    title="Speaker layout"
-                    onPress={this.toggleSpeakerSelection}
-                    icon="account-multiple"
-                    key="speakerLayoutButton"
-                  />
-                </TouchableHighlight>
-              </View>
-            );
-        }
+       // (Speaker selector was pushed earlier, right after Add
+       //  Participant — see above.)
 
        // Mute-video + toggle-camera have been folded into the unified
        // camera picker below — matches VideoBox.renderVideoPicker so
@@ -6523,16 +7004,30 @@ class ConferenceBox extends Component {
        // and skip these. Putting them in extraButtons of the
        // "myself" audio participant row used to overflow that row
        // and overlap the participant list below.
-       if (_useVideoLayout) {
-            floatingButtons.push(this.renderVideoPicker(25, buttonClass));
-        }
-
+       // Canonical order across every surface: MIC → SPEAKER →
+       // CAMERA. The mute-audio button (mic) was pushed earlier as
+       // part of the audio-style group; here we follow it with the
+       // audio device picker (speaker) and then the video / camera
+       // picker (camera) so the trio reads in the user-requested
+       // order.
         if (_useVideoLayout) {
             floatingButtons.push(this.renderAudioDevicePicker(25, buttonClass));
         }
 
+       // (Video picker was pushed earlier, between Add Participant
+       //  and Speaker selector — see above.)
+
+        // Mute (mic) — rightmost of the safe-controls group, just
+        // before the Hangup button.
+        if (_useVideoLayout) {
+            floatingButtons.push(_muteButton);
+        }
+
      if (_useVideoLayout) {
        floatingButtons.push(
+          // Uniform spacing — no extra marginLeft. Same gap as every
+          // other inter-button gap (10 dp) in both portrait and
+          // landscape.
           <View style={styles.hangupButtonVideoContainer} key='leavec'>
           <TouchableHighlight style={styles.roundshape}>
             <IconButton
@@ -6663,7 +7158,23 @@ class ConferenceBox extends Component {
             // buttons.bottom (the same inline-in-navbar slot the
             // video conference path already uses) and skip the
             // in-body bar entirely.
-            const audioBarButtonSize = this.props.isTablet ? 40 : 34;
+            // Landscape audio mode pushes the call buttons into the
+            // navbar where space is at a premium; shrink them down
+            // a touch (34 → 26 on phone, 40 → 32 on tablet) so they
+            // sit comfortably alongside the title / kebab without
+            // pushing each other into the edges. Portrait keeps the
+            // larger size because the buttons render in the dedicated
+            // audioListTopActionBar / portrait action bar where
+            // there's more room.
+            // Match the video-layout IconButton size (25) so the
+            // audio call buttons read at the same visual weight
+            // as the video bar. Previously phone portrait used 34
+            // and tablets up to 40, which made the audio bar
+            // visibly heavier than the video one even though the
+            // surrounding row geometry was the same.
+            const audioBarButtonSize = this.props.isTablet
+                ? (this.state.isLandscape ? 25 : 28)
+                : (this.state.isLandscape ? 22 : 25);
             const audioChatToggleButton = (
                 <TouchableHighlight style={styles.roundshape} key="bar-chat-wrap">
                     <IconButton
@@ -6702,6 +7213,50 @@ class ConferenceBox extends Component {
                 </TouchableHighlight>
             );
 
+            // Inline Record-conference button — moved INTO the call
+            // buttons bar (next to mic / speaker / hangup) per user
+            // request. Replaces the floating pill overlay above the
+            // bar. Icon is the standard solid "red dot" record glyph
+            // (`record`) in both idle and recording states; the only
+            // visual cue for "actively recording" is the brighter
+            // red tint (matches the 1-to-1 AudioCallBox pill's red
+            // dot). Guarded on CallRecorder.conferenceAvailable()
+            // so a build without the native conference-mix path
+            // collapses this slot to null instead of a dead button.
+            // Record icon matches audioBarButtonSize so it reads
+            // at the same visual weight as the mic / speaker /
+            // hangup buttons in the same row. (Earlier 60 % shrink
+            // was when audioBarButtonSize was 34; with the new
+            // unified 25 dp size it looked tiny.)
+            const _recordIconSize = audioBarButtonSize;
+            // Kick the pulse driver — same Animated.Value used by
+            // the 1-to-1 AudioCallBox record pill. _ensureRecord
+            // Pulse() starts an infinite loop only the first time
+            // it's called, and the loop drives opacity between
+            // ~0.35 and 1.0. While idle we render with opacity 1
+            // so the static red dot stays solid.
+            if (this.state.isConferenceRecording) {
+                this._ensureRecordPulse();
+            }
+            const audioRecordButton = CallRecorder.conferenceAvailable() ? (
+                <Animated.View
+                    key="bar-record-anim"
+                    style={{ opacity: this.state.isConferenceRecording ? this._recordPulse : 1 }}>
+                    <TouchableHighlight style={styles.roundshape} key="bar-record-wrap">
+                        <IconButton
+                            size={_recordIconSize}
+                            style={buttonClass}
+                            title={this.state.isConferenceRecording ? 'Stop recording' : 'Record conference'}
+                            onPress={this._toggleConferenceRecording}
+                            icon="record"
+                            color="#e53935"
+                            iconColor="#e53935"
+                            key="bar-record"
+                        />
+                    </TouchableHighlight>
+                </Animated.View>
+            ) : null;
+
             // Conference recording pill — visually identical to the
             // 1-to-1 AudioCallBox recording pill, rendered as an
             // overlay above the action bar (not inline within it) so
@@ -6739,62 +7294,59 @@ class ConferenceBox extends Component {
             const _audioActionBarFoldedOverride = this.props.isFolded
                 ? { bottom: 10 }
                 : null;
+            // iOS has no system bottom-button bar (Android's nav
+            // pill / 3-button bar). Lower the call-buttons bar to
+            // bottom:10 on iOS so it sits near the home-indicator
+            // strip, reclaiming the ~40 dp of dead space above it.
+            // Android keeps bottom:50 (default) so the bar clears
+            // the system bar comfortably.
+            const _iosLowerActionBar = Platform.OS === 'ios' ? {bottom: 10} : null;
             var audioViewActionBar = (this.state.isLandscape || this.state.audioChatView) ? null : (
-                <View style={[styles.audioViewActionBar, _audioActionBarFoldedOverride]}>
+                <View style={[styles.audioViewActionBar, _audioActionBarFoldedOverride, _iosLowerActionBar]}>
                     <View style={styles.audioViewActionBarButton}>
                         {audioChatToggleButton}
+                    </View>
+                    {/* Canonical order across every surface:
+                        MIC (mute audio) → SPEAKER (audio device) →
+                        CAMERA (video picker, video mode only).
+                        Audio mode has no camera, so the bar is
+                        [chat, mic, speaker, hangup]. */}
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioMuteButton}
                     </View>
                     <View style={styles.audioViewActionBarButton}>
                         {audioDevicePickerButton}
                     </View>
-                    <View style={styles.audioViewActionBarButton}>
-                        {audioMuteButton}
-                    </View>
+                    {/* Record-conference button — sits between the
+                        speaker picker and the hangup so the
+                        destructive control stays at the far right.
+                        Hidden when CallRecorder.conferenceAvailable()
+                        is false (renders as null). */}
+                    {audioRecordButton ? (
+                        <View style={styles.audioViewActionBarButton}>
+                            {audioRecordButton}
+                        </View>
+                    ) : null}
                     {/* Hangup slot picks up an extra marginLeft so the
-                        destructive button sits visibly to the right of
-                        the safe controls — matches AudioCallBox's
-                        hangupMarginLeft (30) so the two views share
-                        the same "stray-tap protection" gap. */}
-                    <View style={[styles.audioViewActionBarButton, {marginLeft: 30}]}>
+                        destructive button sits visibly to the right
+                        of the safe controls. Bumped from 30 → 50 dp
+                        per user request to widen the gap so the
+                        audio bar matches the more obvious separation
+                        the video bar's combined 24 dp button-end-cap
+                        + extra wrapper margin gives. */}
+                    <View style={[styles.audioViewActionBarButton, {marginLeft: 50}]}>
                         {audioHangupButton}
                     </View>
                 </View>
             );
 
-            // Recording pill overlay — positioned ABOVE the audio
-            // action bar at the same screen position AudioCallBox
-            // uses for its 1-to-1 pill (~130 px from screen bottom
-            // on phones, more on tablets). pointerEvents="box-none"
-            // so the surrounding empty space doesn't intercept
-            // touches meant for the audio body / participant list
-            // underneath; the pill itself is fully tappable. The
-            // overlay is suppressed in landscape (same as
-            // audioViewActionBar above — landscape folds the
-            // controls into ConferenceHeader's buttons.bottom) and
-            // in the chat view (the keyboard would push the pill
-            // off-screen).
+            // Conference recording is now an inline IconButton
+            // inside audioViewActionBar (audioRecordButton, defined
+            // below) instead of a floating pill overlay. The pill
+            // JSX (_renderConferenceRecordControl) is kept for the
+            // 1-to-1 AudioCallBox path that still wants the pill
+            // look; only the conference overlay is retired here.
             var conferenceRecordPillOverlay = null;
-            if (!this.state.isLandscape && !this.state.audioChatView
-                    && CallRecorder.conferenceAvailable()) {
-                let pillBottom = 130;
-                if (this.props.isTablet) {
-                    pillBottom = 200;
-                }
-                conferenceRecordPillOverlay = (
-                    <View
-                        pointerEvents="box-none"
-                        style={{
-                            position: 'absolute',
-                            bottom: pillBottom,
-                            left: 0, right: 0,
-                            alignItems: 'center',
-                            zIndex: 1500,
-                            elevation: 25,
-                        }}>
-                        {this._renderConferenceRecordControl()}
-                    </View>
-                );
-            }
 
             // Top-of-list action bar — three buttons rendered ABOVE
             // the participant list in the audio view:
@@ -6895,7 +7447,9 @@ class ConferenceBox extends Component {
             // participant" geometry so the 10 px gap requested by
             // the user lands predictably.
             var audioListTopActionBar = (this.state.audioChatView || this.state.isLandscape || this.props.isFolded) ? null : (
-                <View style={styles.audioListTopActionBar}>
+                // DEBUG border: lime = audioListTopActionBar
+                // (the top operator row: Raise hand / Mute all / Add).
+                <View style={[styles.audioListTopActionBar, {borderWidth: debugBorderWidth, borderColor: 'lime'}]}>
                     {_showRaiseHand ? (
                     <View style={styles.audioListTopActionBarButton}>
                         <TouchableHighlight style={styles.roundshape} key="top-raisehand-wrap">
@@ -6951,11 +7505,14 @@ class ConferenceBox extends Component {
                         </View>
                     </View>
                     ) : null}
-                    {/* Add-participant button is hidden in folded
-                        (cover-display) mode per user request: the
-                        cover screen doesn't have room for the full
-                        invite flow, and the user can re-open the
-                        conference on the main display to add people. */}
+                    {/* Add-participant button — always rendered here
+                        alongside Raise hand and Mute all (the canonical
+                        room-operator row), except in folded (cover-
+                        display) mode where the top bar isn't drawn.
+                        Per user request the button no longer migrates
+                        to the speedometer column when the self-thumb
+                        is visible — it stays in this single, consistent
+                        top action bar. */}
                     {!this.props.isFolded ? (
                     <View style={styles.audioListTopActionBarButton}>
                         <TouchableHighlight style={styles.roundshape} key="top-invite-wrap">
@@ -6991,10 +7548,11 @@ class ConferenceBox extends Component {
                 // Order matches the portrait action bar so the muscle
                 // memory carries over: chat-toggle, audio picker,
                 // mute, hangup.
+                // Canonical order: chat, MIC, SPEAKER, hangup.
                 buttons.bottom = [
                     audioChatToggleButton,
-                    audioDevicePickerButton,
                     audioMuteButton,
+                    audioDevicePickerButton,
                     audioHangupButton,
                 ];
             }
@@ -8002,14 +8560,19 @@ class ConferenceBox extends Component {
 			  paddingTop: this.props.isFolded ? 30 : 0,
 			};
 
-			// Participant list container — same dimensions in both
-			// orientations now that landscape uses the same toggle
-			// behavior as portrait. The previous 50%/100% landscape
-			// values were left over from a half-implemented
-			// side-by-side layout and rendered nothing legible.
+			// Participant list container — size to content rather
+			// than a fixed audioHeight. With ≥6 tiles the previous
+			// `height: audioHeight` (capped at 5 rows = 430 px)
+			// kept the container short, but with no overflow:hidden
+			// the extra tiles painted DOWNWARD past the container,
+			// overrunning the bottom action bar / Record pill. The
+			// outer ScrollView (inside participantsListColumn's
+			// flex:1 + overflow:hidden frame) now does its job: it
+			// is bounded by the action bar above and below, and
+			// scrolls when the natural list height exceeds the
+			// available frame.
 		    mediaContainer = {
 			  width: '100%',
-			  height: audioHeight,
 	          borderWidth: debugBorderWidth,
 			  borderColor: 'green'
 			};
@@ -8215,45 +8778,80 @@ class ConferenceBox extends Component {
 					    zeros during ringing. In landscape the action
 					    bar is reorganised into the navbar, but the
 					    side-by-side layout still applies. */}
-					{/* PORTRAIT speedometer — above the participants list,
-					    centered. Rendered as a sibling of the column
-					    wrapper below (NOT inside it) because the wrapper
-					    has overflow:'hidden' for ScrollView clipping,
-					    which would also clip a child speedometer with
-					    a negative top margin. Only shows once the call
-					    is flowing so the dial doesn't sit on zeros
-					    during ringing, and only in the participants
-					    tab so it doesn't appear over the chat. */}
+					{/* PORTRAIT speedometer — above the participants list.
+					    Two render modes driven by `_thumbVisible`:
+					      • Thumb HIDDEN (current behaviour): speedometer
+					        centred across the full width.
+					      • Thumb VISIBLE (new): speedometer aligned to
+					        the LEFT and paired with an Add Participant
+					        button stacked below it. The right half is
+					        reserved for the fixed-position self-mirror
+					        PIP (rendered absolutely above, anchored
+					        top-right via the same `_fixedTopLayout`
+					        gate). The audioListTopActionBar's own
+					        Add Participant entry is suppressed in that
+					        mode so we don't render it twice. */}
 					{!this.state.isLandscape
 					 && !this.state.audioChatView
 					 && !this.props.isFolded
 					 && this.state.call
 					 && (this.state.call.state === 'established'
-					     || this.state.call.state === 'accepted') ? (
+					     || this.state.call.state === 'accepted') ? (() => {
+						const _thumbVisible = this.audioOnlyView
+						    && !this.state.cameraStartPreviewVisible
+						    && this.state.videoEnabled
+						    && this.state.enableMyVideo;
+						return (
+						// DEBUG border: purple = portrait speedometer
+						// row (the dial block above the participants
+						// list).
 						<View style={{
-							alignItems: 'center',
-							// Speedometer sits 30 px below the conference
-							// overlay navbar per user request. Same value
-							// on both platforms — the previous platform-
-							// gated negative margin (Android -20 / iOS 0)
-							// pulled the dial up into the appbar; flat
-							// +30 keeps a comfortable gap below the
-							// navbar on both.
-							// Folded (cover-display) mode hides this
-							// block entirely (the !this.props.isFolded
-							// gate above) — the dial doesn't fit the
-							// narrow cover screen and the user asked
-							// for it gone there.
-							marginTop: 30,
+							alignItems: _thumbVisible ? 'flex-start' : 'center',
+							// 20 dp top margin between the conference
+							// navbar/strip and the speedometer dial.
+							marginTop: 20,
 							paddingBottom: 6,
+							// Leave room on the right for the fixed-
+							// position thumbnail when visible.
+							// paddingLeft 36 = original 16 + 20 dp
+							// rightward shift per user request so
+							// the speedometer column sits a touch
+							// further from the screen edge.
+							paddingLeft: _thumbVisible ? 36 : 0,
+							// Reserve room for the audio-mode thumb
+							// (now sized to match the speedometer
+							// height — width=92). Was this._PIP_W
+							// (120) when the thumb used the larger
+							// video-PIP dimensions.
+							paddingRight: _thumbVisible ? (92 + 24) : 0,
 							zIndex: 2,
+							borderWidth: debugBorderWidth,
+							borderColor: 'purple',
 						}}>
-							<AudioSpeedometer
-								call={this.state.call}
-								isFolded={false}
-							/>
+							{/* Speedometer + Add Participant rendered as a
+							    tight vertical group when the
+							    thumbnail is in the fixed top-right
+							    slot. alignItems:'center' on this
+							    inner column centres the Add Part
+							    button under the speedometer dial so
+							    the pair reads as one stacked unit. */}
+							<View style={{
+								flexDirection: 'column',
+								alignItems: 'center',
+							}}>
+								<AudioSpeedometer
+									call={this.state.call}
+									isFolded={false}
+								/>
+								{/* Add Participant button removed from
+								    here — it now lives permanently in
+								    the top action bar (audioListTop-
+								    ActionBar) alongside Raise hand and
+								    Mute all, per user request. */}
+							</View>
 						</View>
-					) : null}
+						);
+					})() : null}
 
 					{(() => {
 					// Audio-view body.
@@ -8310,8 +8908,35 @@ class ConferenceBox extends Component {
 					// was confirmed visually.
 					const _listMarginTop = this.props.isFolded ? 10 : 0;
 					const participantsListColumn = (
-						<View style={{flex: 1, overflow: 'hidden', marginTop: _listMarginTop}}>
-							<ScrollView>
+						// DEBUG borders: red = participantsListColumn
+						// (the flex:1 frame between top bar and bottom
+						// bar); magenta = inner ScrollView; cyan = SIP
+						// group; orange = invited group. mediaContainer
+						// already gets its green border from
+						// debugBorderWidth above.
+						<View style={{
+						    flex: 1,
+						    overflow: 'hidden',
+						    marginTop: _listMarginTop,
+						    // Reserve room at the BOTTOM for the
+						    // absolutely-positioned call-buttons
+						    // action bar (Record is now inline in
+						    // that bar, so no separate pill to
+						    // clear), PLUS a 10 dp visual gap
+						    // between the list's last tile and
+						    // the top of the bar per user request.
+						    //  • Android: bar top at bottom 98 +
+						    //    10 dp gap = reserve 120 dp.
+						    //  • iOS: bar top at bottom 58 +
+						    //    10 dp gap = reserve 80 dp.
+						    marginBottom: Platform.OS === 'ios' ? 80 : 120,
+						    borderWidth: debugBorderWidth,
+						    borderColor: 'red',
+						}}>
+							<ScrollView style={{
+							    borderWidth: debugBorderWidth,
+							    borderColor: 'magenta',
+							}}>
 								<View style={mediaContainer}>
 									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
 										{audioParticipants}
@@ -8321,12 +8946,18 @@ class ConferenceBox extends Component {
 								    ConferenceAudioParticipantList so
 								    the (portrait-grid / landscape-stack)
 								    rule above applies uniformly. */}
-								<View style={sipAudioParticipants && sipAudioParticipants.length > 0 ? styles.sipParticipantsGroup : null}>
+								<View style={[
+								    sipAudioParticipants && sipAudioParticipants.length > 0 ? styles.sipParticipantsGroup : null,
+								    {borderWidth: debugBorderWidth, borderColor: 'cyan'},
+								]}>
 									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
 										{sipAudioParticipants}
 									</ConferenceAudioParticipantList>
 								</View>
-								<View style={invitedTiles && invitedTiles.length > 0 ? styles.invitedParticipantsGroup : null}>
+								<View style={[
+								    invitedTiles && invitedTiles.length > 0 ? styles.invitedParticipantsGroup : null,
+								    {borderWidth: debugBorderWidth, borderColor: 'orange'},
+								]}>
 									<ConferenceAudioParticipantList isLandscape={_listIsLandscape}>
 										{invitedTiles}
 									</ConferenceAudioParticipantList>
@@ -8346,25 +8977,53 @@ class ConferenceBox extends Component {
 					// full width — with the speedometer hidden, the
 					// left half would otherwise be a permanently empty
 					// column eating the narrow cover screen.
-					const participantsColumn = (this.state.isLandscape && !this.props.isFolded) ? (
+					const _thumbVisibleLandscape = this.audioOnlyView
+						&& !this.state.cameraStartPreviewVisible
+						&& this.state.videoEnabled
+						&& this.state.enableMyVideo;
+						const participantsColumn = (this.state.isLandscape && !this.props.isFolded) ? (
 						<View style={{flex: 1, flexDirection: 'row'}}>
-							<View style={{flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4}}>
-								{speedometerLive ? (
-									// transform translateY:-50 lifts the
-									// dial 50 px from its center-justified
-									// resting position. History on this
-									// knob: -10 → -100 → -50 ("less 50px"
-									// from -100). Translate is a pure
-									// paint shift, so the surrounding
-									// flexbox row math is undisturbed —
-									// the right column's participant list
-									// stays in place. Landscape only.
-									<View style={{transform: [{translateY: -50}]}}>
-										<AudioSpeedometer
-											call={this.state.call}
-											isFolded={false}
-										/>
-									</View>
+							{/* LEFT half. When the thumbnail is visible the
+							    half is sub-divided into TWO horizontal sub-
+							    columns: speedometer + Add Participant on the
+							    LEFT sub-col, the fixed-position thumbnail on
+							    the RIGHT sub-col. (The thumb itself is
+							    positioned absolutely above this layout — we
+							    just leave horizontal room for it via a
+							    flex:1 placeholder sub-col.) Without the
+							    thumb the half is the single centred-speedo
+							    column as before. The RIGHT half stays the
+							    participants list. */}
+							<View style={{flex: 1, flexDirection: 'row'}}>
+								<View style={{flex: 1, alignItems: 'center',
+								    /* When the thumbnail is visible the
+								       speedo sits at the TOP of the
+								       sub-col (not vertically centred). */
+								    justifyContent: _thumbVisibleLandscape ? 'flex-start' : 'center',
+								    paddingHorizontal: 4}}>
+									{speedometerLive ? (
+										<View style={{transform: [{translateX: _thumbVisibleLandscape ? 20 : 0}, {translateY: _thumbVisibleLandscape ? 30 : -50}]}}>
+											<View style={{flexDirection: 'column', alignItems: 'center'}}>
+												<AudioSpeedometer
+													call={this.state.call}
+													isFolded={false}
+												/>
+												{/* Add Participant removed from
+												    here too — single canonical
+												    home is the top action bar. */}
+											</View>
+										</View>
+									) : null}
+								</View>
+								{_thumbVisibleLandscape ? (
+									// RIGHT sub-column of the LEFT half —
+									// blank placeholder; the absolutely
+									// positioned thumbnail paints into
+									// this slot via _fixedLeft adjusted
+									// below. DEBUG: 3 dp MAGENTA border so
+									// the user can see the sub-column's
+									// bounds versus the floating thumbnail.
+									<View style={{flex: 1}} />
 								) : null}
 							</View>
 							{participantsListColumn}
@@ -8398,6 +9057,7 @@ class ConferenceBox extends Component {
 									renderBubble={this.renderBubble}
 									renderMessageImage={this.renderMessageImage}
 									renderMessageVideo={this.renderMessageVideo}
+									renderMessageAudio={this.renderMessageAudio}
 									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
 									alwaysShowSend={true}
 									scrollToBottom
@@ -8441,6 +9101,7 @@ class ConferenceBox extends Component {
 									renderBubble={this.renderBubble}
 									renderMessageImage={this.renderMessageImage}
 									renderMessageVideo={this.renderMessageVideo}
+									renderMessageAudio={this.renderMessageAudio}
 									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
 									alwaysShowSend={true}
 									scrollToBottom
@@ -8532,30 +9193,110 @@ class ConferenceBox extends Component {
 				    entirely. Camera state is unchanged (the track
 				    keeps doing whatever it was doing); only the
 				    local preview is hidden. */}
-				{this.state.videoEnabled && this.state.enableMyVideo ? (() => {
-				    // Re-clamp on every render so an orientation
-				    // change (or any other window-size shift) can't
-				    // strand the PIP off-screen. Either dimension
-				    // overflow falls back to the default placement,
-				    // and otherwise the saved drag position is
-				    // honoured unchanged.
+				{/* Restrict to audio view. The gate previously fired on
+				    videoEnabled && enableMyVideo alone, which meant
+				    that in a VIDEO conference with no participants
+				    yet, this PIP and the fullscreen solo
+				    ConferenceParticipantSelf (rendered via the
+				    showMyself / myselfContainer path) both displayed
+				    the local stream — the user saw their own video
+				    twice (small floating mirror over the fullscreen
+				    self-tile). The component's own header comment
+				    states this PIP is "Floating self-PIP for AUDIO
+				    view", so add the audioOnlyView gate to match the
+				    documented intent. The video layout's self-PIP is
+				    the showMyself one further down (line ~9628).
+				    Also suppress while the StartCameraPreviewModal
+				    is up — during that flow viewMode is still
+				    'audio' (audioOnlyView=true) but the camera track
+				    has been enabled to feed the modal's preview
+				    card; rendering this PIP at the same time means
+				    the user sees their own video twice (preview
+				    card + this PIP). The showMyself path is gated
+				    on the same flag to cover the video-view path. */}
+				{this.audioOnlyView
+				 && !this.state.cameraStartPreviewVisible
+				 && this.state.videoEnabled
+				 && this.state.enableMyVideo ? (() => {
+				    // _fixedTopLayout: place the thumbnail in a FIXED
+				    // top-right slot in BOTH portrait and landscape
+				    // when the user is in audio view with the
+				    // thumbnail visible. PanResponder is gated off in
+				    // that mode (drag code preserved). Still falls
+				    // back to the floating draggable layout in
+				    // chat-view or folded (cover-display) modes
+				    // where the two-column arrangement doesn't fit.
+				    const _fixedTopLayout = !this.state.audioChatView
+				        && !this.props.isFolded;
 				    const _winDims = Dimensions.get('window');
+				    // Audio-mode thumb dimensions — locked to match
+				    // the speedometer's CONTENT_HEIGHT (122) per
+				    // user request. Kept separate from the video
+				    // mode _PIP_W / _PIP_H constants so the video
+				    // floating PIP stays at its original 120×160.
+				    const _AUDIO_PIP_W = 92;
+				    const _AUDIO_PIP_H = 122;
 				    const _saved = this.state.pipPosition;
 				    const _valid = _saved
 				        && _saved.x >= 0
 				        && _saved.y >= 0
-				        && _saved.x + this._PIP_W <= _winDims.width
-				        && _saved.y + this._PIP_H <= _winDims.height;
+				        && _saved.x + _AUDIO_PIP_W <= _winDims.width
+				        && _saved.y + _AUDIO_PIP_H <= _winDims.height;
 				    const _pipPos = _valid ? _saved : this._getDefaultPipPosition();
+				    // Fixed-layout coords: anchor top-right under the
+				    // navbar/safe-area. Sits to the RIGHT of the
+				    // speedometer column.
+				    const _topInset = (this.state.insets && this.state.insets.top) || 0;
+				    // Portrait: align the thumb's TOP with the
+				    // speedometer row's top.
+				    // The app.js SafeAreaView ALREADY pads the iOS
+				    // root by topInset, so absolute coords inside
+				    // it are measured from below the status bar.
+				    // We therefore only need `conferenceHeaderHeight
+				    // + 20` (navbar + speedo's marginTop) — adding
+				    // _topInset double-counted the safe-area
+				    // padding and pushed the thumb ~50 dp too low
+				    // on iOS. On Android the SafeAreaView is
+				    // edges:[] (no padding), and _topInset is 0
+				    // there anyway, so the same expression lands
+				    // on the speedo too.
+				    // Landscape: vertically centred within the visible
+				    // area between the navbar and the screen bottom,
+				    // then lifted 30 dp (per user "a bit low") so the
+				    // thumb sits a touch above true centre.
+				    const _fixedTop = this.state.isLandscape
+				        ? Math.max(0, Math.round((_winDims.height + _topInset + conferenceHeaderHeight - _AUDIO_PIP_H) / 2) - 30)
+				        // Net +25 dp from the navbar+20 baseline
+				        // (+20 then +5 per iterative user
+				        // requests). Total = navbar + 45.
+				        : conferenceHeaderHeight + 45;
+				    // PORTRAIT: net -40 dp from the original 12 dp
+				    // right margin per the user's iterative
+				    // adjustments.
+				    // LANDSCAPE: anchor to the RIGHT sub-column of
+				    // the LEFT half. Sub-col centre is at
+				    // width*0.375. After iterative user nudges
+				    // the net offset from the maths-centred
+				    // position is -20 dp (was -40, +20 right
+				    // per "thumb is 20 px too far left").
+				    const _fixedLeft = this.state.isLandscape
+				        ? Math.max(0, Math.round(_winDims.width * 0.375 - _AUDIO_PIP_W / 2) - 40)
+				        : Math.max(0, _winDims.width - _AUDIO_PIP_W - 12 - 40);
 				    return (
 				<View
-				    {...this._pipPanResponder.panHandlers}
+				    {...(_fixedTopLayout ? {} : this._pipPanResponder.panHandlers)}
 				    style={{
 				        position: 'absolute',
-				        left: _pipPos.x,
-				        top: _pipPos.y,
-				        width: this._PIP_W,
-				        height: this._PIP_H,
+				        left: _fixedTopLayout ? _fixedLeft : _pipPos.x,
+				        top: _fixedTopLayout ? _fixedTop : _pipPos.y,
+				        // Audio-view thumb height matches the
+				        // AudioSpeedometer CONTENT_HEIGHT (122 dp)
+				        // so the dial and the mirror read as a
+				        // matched pair across the top of the audio
+				        // conference. Width scaled to keep the
+				        // 3:4 portrait camera aspect.
+				        width: _AUDIO_PIP_W,
+				        height: _AUDIO_PIP_H,
 				        zIndex: 1500,
 				        borderRadius: 8,
 				        overflow: 'hidden',
@@ -8563,6 +9304,14 @@ class ConferenceBox extends Component {
 				        elevation: 8,
 				    }}
 				>
+				    {/* TouchableWithoutFeedback ONLY covers the video
+				        area underneath the buttons — the buttons have
+				        higher zIndex (1600) so their own taps don't
+				        propagate to this handler. That way a tap on
+				        the video toggles controls; a tap on a control
+				        invokes only that control's action. */}
+				    <TouchableWithoutFeedback onPress={this._showAudioPipControls}>
+				    <View style={{flex: 1}}>
 				    {!this.state.videoMuted && this.props.call ? (
 				        <RTCView
 				            streamURL={this.props.call.getLocalStreams()[0] ? this.props.call.getLocalStreams()[0].toURL() : null}
@@ -8575,16 +9324,48 @@ class ConferenceBox extends Component {
 				            <Icon name="video-off" size={36} color="#888" />
 				        </View>
 				    )}
+				    </View>
+				    </TouchableWithoutFeedback>
+				    {/* Swap-cameras icon — TOP-LEFT to match the
+				        video view's self-tile placement. Only
+				        rendered while audioPipControlsVisible is
+				        true (5 s window after a tap), so the small
+				        thumbnail stays clean at rest. */}
+				    {this.state.audioPipControlsVisible ? (
+				    <TouchableOpacity
+				        onPress={() => this.toggleCamera()}
+				        accessibilityLabel="Switch camera"
+				        hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+				        style={{
+				            position: 'absolute',
+				            top: 4,
+				            left: 4,
+				            zIndex: 1600,
+				            width: 20,
+				            height: 20,
+				            borderRadius: 10,
+				            backgroundColor: 'rgba(0,0,0,0.55)',
+				            justifyContent: 'center',
+				            alignItems: 'center',
+				        }}
+				    >
+				        <Icon name="camera-switch" size={13} color="#ffffff" />
+				    </TouchableOpacity>
+				    ) : null}
+				    {/* Mute-video toggle — also gated on the 5 s
+				        visibility window so the bottom strip
+				        disappears with the swap / close icons. */}
+				    {this.state.audioPipControlsVisible ? (
 				    <View style={{
 				        position: 'absolute',
 				        bottom: 0,
 				        left: 0,
-				        right: 0,
 				        flexDirection: 'row',
-				        justifyContent: 'space-evenly',
 				        alignItems: 'center',
+				        paddingHorizontal: 6,
 				        paddingVertical: 4,
-				        backgroundColor: 'rgba(0,0,0,0.45)'
+				        backgroundColor: 'rgba(0,0,0,0.45)',
+				        borderTopRightRadius: 8,
 				    }}>
 				        <TouchableOpacity
 				            onPress={() => this.muteVideo()}
@@ -8593,48 +9374,55 @@ class ConferenceBox extends Component {
 				        >
 				            <Icon
 				                name={this.state.videoMuted ? 'video-off' : 'video'}
-				                size={22}
+				                size={20}
 				                color="white"
 				            />
 				        </TouchableOpacity>
-				        <TouchableOpacity
-				            onPress={() => this.toggleCamera()}
-				            accessibilityLabel="Switch camera"
-				            hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}
-				        >
-				            <Icon name="camera-switch" size={22} color="white" />
-				        </TouchableOpacity>
 				    </View>
-				    {/* Close (×) button at the top-right of the
-				        audio-view mirror PIP. Tap → enableMyVideo
-				        = false → the PIP unrenders on the next
-				        render (it's gated on
-				        state.videoEnabled && state.enableMyVideo).
-				        Bring it back via the kebab's "Show mirror"
-				        item. */}
+				    ) : null}
+				    {/* Close (×) button — TOP-RIGHT. Also gated on
+				        the 5 s visibility window. */}
+				    {this.state.audioPipControlsVisible ? (
 				    <TouchableOpacity
 				        onPress={() => this.setState({enableMyVideo: false})}
 				        accessibilityRole="button"
 				        accessibilityLabel="Close mirror"
-				        hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}
+				        hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
 				        style={{
 				            position: 'absolute',
 				            top: 4,
 				            right: 4,
 				            zIndex: 1600,
-				            width: 22,
-				            height: 22,
-				            borderRadius: 11,
+				            width: 20,
+				            height: 20,
+				            borderRadius: 10,
 				            backgroundColor: 'rgba(0,0,0,0.55)',
 				            justifyContent: 'center',
 				            alignItems: 'center',
 				        }}
 				    >
-				        <Icon name="close" size={16} color="#ffffff" />
+				        <Icon name="close" size={13} color="#ffffff" />
 				    </TouchableOpacity>
+				    ) : null}
 				</View>
 				    );
 				})() : null}
+
+				{/* StartCameraPreviewModal MUST live in the audio
+				    render branch — the user is in viewMode='audio'
+				    when they tap audio→video, so the audio return is
+				    the active branch and the modal needs to be a
+				    descendant of it to actually mount. Previously
+				    the modal was only rendered in the video branch
+				    (around line 9900) and never appeared during the
+				    audio→video confirmation flow. */}
+				<StartCameraPreviewModal
+					visible={this.state.cameraStartPreviewVisible}
+					localStream={this.props.call && this.props.call.getLocalStreams ? this.props.call.getLocalStreams()[0] : null}
+					insets={this.state.insets}
+					onStart={this.onCameraStartPreviewAccept}
+					onCancel={this.onCameraStartPreviewCancel}
+				/>
 			</View>
 			);
         }
@@ -8806,12 +9594,29 @@ class ConferenceBox extends Component {
 				// false, videoMuted: true) — the gates mirror what
 				// the floating PIP getter `showMyself` already
 				// applies so the two surfaces are consistent.
-				if ((visibleCount === 1 || visibleCount === 3)
+				// Matrix self-inclusion: any visible remote AND
+				// NOT threeUpRowLayout. 4+ remotes: self claims a
+				// matrix slot too; overflow goes to the carousel.
+				const _includeSelfInMatrix = visibleCount >= 1
+				    && !this.state.threeUpRowLayout;
+				if (_includeSelfInMatrix
 				    && this.state.enableMyVideo
 				    && !this.state.videoMuted) {
 					videos.push(
 						<ConferenceParticipantSelf
-						  key="myself2"
+						  // aspectRatio NO LONGER in the key. The
+						  // previous key-based remount on toggle was
+						  // a workaround for the native RTCView not
+						  // reactively applying a new `objectFit`.
+						  // Cover and contain now render in entirely
+						  // separate JSX subtrees (different RTCViews
+						  // with hardcoded objectFit), so no remount
+						  // is needed and keeping the key stable
+						  // preserves `state.videoDims` across the
+						  // toggle — without that, contain mode loses
+						  // camAR on first render and silently falls
+						  // through to cover.
+						  key={'myself2-matrix'}
 						  visible={true}
 						  stream={this.props.call.getLocalStreams()[0]}
 						  identity={this.props.call.localIdentity}
@@ -8821,6 +9626,15 @@ class ConferenceBox extends Component {
 						  cameraFacing={this.state.cameraFacing}
 						  big={true}
 						  fullScreen={this.fullScreen}
+						  aspectRatio={this.state.aspectRatio}
+						  onCameraSwap={this.toggleCamera}
+						  /* Any room with at least one OTHER participant
+						     gets the toggle (same rule as the
+						     floating PIP instance). */
+						  onToggleLayout={this.visibleParticipants.length >= 1
+						      ? () => this.setState({threeUpRowLayout: !this.state.threeUpRowLayout})
+						      : undefined}
+						  threeUpRowLayout={this.state.threeUpRowLayout}
 						/>
 					);
 				}
@@ -8875,7 +9689,17 @@ class ConferenceBox extends Component {
 						}
 					}
 					//console.log(p.identity.uri, 'video added');
-					if (!isStalled) {
+					// Skip the tile entirely when status is "No media"
+					// (100% loss). The participant stays in the drawer
+					// roster (which is pushed unconditionally below) so
+					// the user knows they're still in the room, but the
+					// matrix and the side carousel both drop them — a
+					// black square with a "No media" label is more
+					// confusing than just rebalancing the grid around
+					// the remaining live tiles. Same rule the
+					// activeSpeakers branch (line ~8817) and the side-
+					// list branch (line ~8895) already apply.
+					if (!isStalled && status !== 'No media') {
 						// videoBandwidth Map is populated by
 						// getConnectionStats every second from
 						// the inbound-rtp stats — kbps per peer.
@@ -8897,7 +9721,17 @@ class ConferenceBox extends Component {
 							/>
 						);
 
-						if (idx >= 4 || idx >= 2 && this.props.isTablet === false) {
+						// Push to the side carousel only when the
+						// participant is a TRUE overflow (matrix can
+						// hold up to 4 tiles). The legacy
+						// `idx >= 2 && !isTablet` rule was for an old
+						// 1×2 phone matrix and now leaves a redundant
+						// empty (pauseVideo=true) tile floating at the
+						// bottom-right when there are exactly 3
+						// remotes — the user reported it as "another
+						// floating white thumbnail at bottom-right,
+						// always there" in 3-participant view.
+						if (idx >= 4) {
 							participants.push(
 								<ConferenceParticipant
 									key={p.id}
@@ -8985,16 +9819,14 @@ class ConferenceBox extends Component {
 
 		buttonsContainer = {
 			position: 'absolute',
-			// Floating call-bar moved from `top: conferenceHeader.height`
-			// (just under the navbar) to `bottom: 50` so it matches
-			// every other surface's bar height — the audio-conference
-			// action bar (audioViewActionBar uses bottom:50), the 1:1
-			// AudioCall and VideoCall portrait button containers, and
-			// the LocalMedia / pre-call bars all sit at bottom:50.
-			// The video conference is now consistent with the rest;
-			// the user no longer has to look in a different place
-			// when switching between call modes.
-			bottom: 50,
+			// iOS portrait has no Android-style system navigation
+			// bar at the bottom, so the action bar can sit much
+			// closer to the screen edge. Lowered to 10 dp on iOS
+			// portrait (per user request); Android + landscape keep
+			// the 50 dp baseline that matches the audio-conference
+			// bar / 1:1 call portrait bars / LocalMedia / pre-call
+			// bars.
+			bottom: (Platform.OS === 'ios' && !this.state.isLandscape) ? 10 : 50,
 			height: conferenceHeaderHeight,
 			left: 0,
 			right: 0,
@@ -9009,6 +9841,15 @@ class ConferenceBox extends Component {
 			borderColor: 'magenta'      // magenta = buttonsContainer (floating)
 		};
 
+		// Visible-navbar offset: in portrait the conference header
+		// is 60 dp Paper Appbar + 34 dp brand strip (overflow:visible
+		// pushes the strip ABOVE the 60 dp box). In landscape only
+		// the 60 dp Appbar shows. Applied to the mediaContainer
+		// below — for absolute children paddingTop on the parent has
+		// no effect; we have to set top: <offset> directly.
+		const _navbarOffset = this.fullScreen
+		    ? 0
+		    : conferenceHeaderHeight + (this.state.isLandscape ? 0 : 34);
 		conferenceContainer = {
 		  flex: 1,
 		  flexDirection: this.state.isLandscape ? 'row' : 'column',
@@ -9027,10 +9868,15 @@ class ConferenceBox extends Component {
 		mediaContainer = {
 		  position: 'absolute',
 		  resizeMode: 'cover',
-		  height:  '100%',
+		  // Drop the absolute media surface below the visible navbar
+		  // so the first matrix tile doesn't render under the
+		  // overlay. top:_navbarOffset + bottom:0 derives the
+		  // height — we no longer need height:'100%' which would
+		  // overflow the bottom when top is non-zero.
+		  top: _navbarOffset,
+		  bottom: 0,
 		  width: '100%',
-		  borderWidth: debugBorderWidth,
-		  borderColor: 'lime',          // lime   = mediaContainer (absolute 100%)
+		  // (debug border removed)
 		};
 					
 		let top = 0;
@@ -9142,10 +9988,21 @@ class ConferenceBox extends Component {
 				mediaContainer = {
 				  position: 'absolute',
 				  resizeMode: 'cover',
-				  height: this.fullScreen ? height : '100%',
+				  // iOS portrait: drop the grid below the navbar
+				  // (top: _navbarOffset) and EXTEND through the
+				  // SafeAreaView bottom padding (bottom: -bottomInset)
+				  // so the matrix fills the strip above the home
+				  // indicator — per user request "I see the bottom
+				  // margin again". The home indicator itself sits
+				  // at the very edge of the physical screen, so
+				  // -bottomInset stops the video exactly there.
+				  // Fullscreen keeps the original full-height
+				  // behaviour because the navbar is hidden.
+				  top: this.fullScreen ? 0 : _navbarOffset,
+				  ...(this.fullScreen
+				      ? { height: height }
+				      : { bottom: -bottomInset }),
 				  width: width,
-				  borderWidth: debugBorderWidth,
-				  borderColor: 'white'
 				};
 			}
 		} else {
@@ -9173,14 +10030,23 @@ class ConferenceBox extends Component {
 				    // which visually read as all thumbnails being shifted
 				    // left relative to their intended corners.
 				    //
-				    // In non-fullscreen the Android nav bar is visible and
-				    // interactive, so we let mediaContainer keep its default
-				    // width:100% and size to the safe-area-clamped parent.
-				    // The video grid therefore stops at the safe-area edge
-				    // just like the PIP thumbnails — nothing important sits
-				    // under the nav bar. (Fullscreen hides the nav bar, so
-				    // the container itself is responsible for spanning the
-				    // whole screen when that mode is enabled.)
+				    // In non-fullscreen the Android nav bar is visible
+				    // and interactive. Extend the outer container
+				    // PAST the left safe-area inset so the navbar
+				    // and grid reach the device's left edge.
+				    //
+				    // BUT clamp the right edge to the safe-area
+				    // boundary (width - rightInset) so the navbar
+				    // and grid don't extend UNDER the Android
+				    // system buttons on the right. iOS doesn't have
+				    // a system nav bar at the right so its
+				    // width:width works as-is; Android needs the
+				    // subtraction.
+				    container = {
+				        ...container,
+				        marginLeft: -leftInset,
+				        width: width - rightInset,
+				    };
 				    corners = {
 						  topLeft: { top: conferenceHeader.height, left: 0 },
 						  topRight: { top: conferenceHeader.height, right: 0 },
@@ -9243,7 +10109,7 @@ class ConferenceBox extends Component {
 				  right: myselfExtendRight,
 				  bottom: 0,
 				  zIndex: 1000,
-				  pointerEvents: 'box-none'
+				  pointerEvents: 'box-none',
 				};
 
 
@@ -9431,18 +10297,37 @@ class ConferenceBox extends Component {
 				    summary. */}
 				{this.state.call ? this._renderBandwidthOverview() : null}
 
-				{/* Fullscreen-only "i" info icon at top-right; tap to
-				    reveal speedometer; tap dials to collapse back.
-				    In landscape (not fullscreen) the speedometer is
-				    rendered inside the navbar via navbarExtras.
-				    In portrait (not fullscreen) nothing is shown — use the
-				    i icon after going fullscreen. */}
-				{this.fullScreen && this.state.call && !this.audioOnlyView ? (
+				{/* "i" info icon anchored at the top-left of the
+				    first participant tile. Renders in BOTH
+				    fullscreen and non-fullscreen (top:_navbarOffset
+				    + 12 keeps it below the visible navbar in non-
+				    fullscreen and at the screen top in fullscreen).
+				    Tap reveals the network speedometer; tap dials
+				    to collapse. */}
+				{this.state.call && !this.audioOnlyView ? (() => {
+					// When the speedometer is EXPANDED (showUsage),
+					// honour state.speedoPosition (drag-set) and
+					// attach the PanResponder. When COLLAPSED
+					// (showUsage=false → only the small i icon),
+					// stay fixed at the top-left anchor and skip
+					// panHandlers so the icon can't drift on a tap.
+					const _spd = this.state.speedoPosition;
+					const _defaultLeft = this.state.isLandscape
+					    ? 12
+					    : (this.state.insets && this.state.insets.left ? this.state.insets.left : 0) + 12;
+					const _defaultTop = _navbarOffset + 12;
+					const _posLeft = (this.state.showUsage && _spd) ? _spd.x : _defaultLeft;
+					const _posTop = (this.state.showUsage && _spd) ? _spd.y : _defaultTop;
+					const _panProps = this.state.showUsage
+					    ? this._speedoPanResponder.panHandlers
+					    : {};
+					return (
 					<View
+						{..._panProps}
 						style={{
 							position: 'absolute',
-							top: (this.state.insets && this.state.insets.top ? this.state.insets.top : 0) + 12,
-							right: (this.state.insets && this.state.insets.right ? this.state.insets.right : 0) + 4,
+							top: _posTop,
+							left: _posLeft,
 							zIndex: 9999,
 						}}
 					>
@@ -9483,7 +10368,8 @@ class ConferenceBox extends Component {
 							</TouchableOpacity>
 						)}
 					</View>
-				) : null}
+					);
+				})() : null}
 
 				{!this.fullScreen && !this.props.isLandscape && !this.state.showDrawer ?
 				<View style={buttonsContainer} pointerEvents="box-none">
@@ -9560,6 +10446,7 @@ class ConferenceBox extends Component {
 					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
+									renderMessageAudio={this.renderMessageAudio}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
 					  alwaysShowSend={true}
 					  scrollToBottom
@@ -9590,6 +10477,7 @@ class ConferenceBox extends Component {
 					  renderBubble={this.renderBubble}
 					  renderMessageImage={this.renderMessageImage}
 					  renderMessageVideo={this.renderMessageVideo}
+									renderMessageAudio={this.renderMessageAudio}
 					  shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
 					  alwaysShowSend={true}
 					  scrollToBottom
@@ -9626,14 +10514,30 @@ class ConferenceBox extends Component {
 				      && _saved.y + this._PIP_H <= _winDims.height;
 				  const _videoPipPos = _valid ? _saved : this._getDefaultPipPosition();
 				  const _isSoloFullscreen = SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0;
+				  // Suppress the non-solo floating PIP wrapper
+				  // entirely when self is meant to sit in the
+				  // matrix (showMyself=false) — the wrapper used
+				  // to render as a dark empty box "floating" over
+				  // the grid. Solo path always renders so the
+				  // fullscreen self-preview still works.
+				  if (!_isSoloFullscreen && !this.showMyself) {
+				    return null;
+				  }
 				  return (
 				<View
 				  // In solo-fullscreen the self-video covers the whole parent,
 				  // which would otherwise intercept taps and hide the floating
-				  // control bar that lives behind it in tree order. We set
-				  // pointerEvents="none" so taps fall through to the button bar
-				  // (and header), keeping the controls tappable and persistent.
-				  pointerEvents={_isSoloFullscreen ? 'none' : 'auto'}
+				  // control bar that lives behind it in tree order. In solo
+				  // fullscreen we use `box-none` (rather than `none`) so the
+				  // wrapper itself doesn't capture taps — taps on empty video
+				  // area fall through to the action bar / header behind, but
+				  // explicit Touchable children inside this wrapper (the
+				  // top-right close-mirror X and the camera-swap icon) still
+				  // receive their own taps. `none` would have blocked the
+				  // child Touchables as well, which is why the swap-cameras
+				  // affordance previously had no effect when the user was
+				  // alone in the room.
+				  pointerEvents={_isSoloFullscreen ? 'box-none' : 'auto'}
 				  // Drag handlers wired to the existing _pipPanResponder
 				  // (shared with the audio-view PIP). PanResponder claims
 				  // the gesture only after a ~5 px move, so quick taps
@@ -9642,29 +10546,81 @@ class ConferenceBox extends Component {
 				  {...(!_isSoloFullscreen ? this._pipPanResponder.panHandlers : {})}
 				  style={
 					_isSoloFullscreen
-					  ? {
-						  // Fill the entire parent edge-to-edge. Parent
-						  // (myselfContainer) is already extended past the
-						  // safe area on Android landscape, so a simple
-						  // 0/0/0/0 rectangle reaches the actual screen
-						  // edges on iOS and Android alike.
-						  position: 'absolute',
-						  top: 0,
-						  bottom: 0,
-						  left: 0,
-						  right: 0,
-						}
+					  ? (() => {
+						  // TOP offset accounts for the visible navbar.
+						  // Portrait navbar = 60 dp Paper Appbar + 34 dp
+						  // brand strip above it (overflow:visible).
+						  // Landscape suppresses the strip. In fullscreen
+						  // the chrome is hidden so the wrapper fills
+						  // the canvas.
+						  //
+						  // BOTTOM: 0 normally. On iOS portrait we push
+						  // it past the SafeAreaView bottom inset
+						  // (-bottomInset) so the lone self-preview
+						  // uses the home-indicator strip too — per
+						  // user "if I am alone on iOS we must use
+						  // the bottom part of the screen too". iOS
+						  // has no Android-style system buttons at the
+						  // bottom to reserve space for.
+						  const _stripHeight = 34;
+						  const _navbarH = conferenceHeaderHeight
+						    + (this.state.isLandscape ? 0 : _stripHeight);
+						  const _bottom = (Platform.OS === 'ios' && !this.state.isLandscape)
+						    ? -bottomInset
+						    : 0;
+						  return {
+						    position: 'absolute',
+						    top: this.fullScreen ? 0 : _navbarH,
+						    bottom: _bottom,
+						    left: 0,
+						    right: 0,
+						  };
+						})()
 					  : {
+						  // Match the audio-mode PIP wrapper recipe
+						  // exactly — that one works fine on Android,
+						  // and the video PIP was previously broken
+						  // because either (a) elevation was dropped
+						  // / mismatched, or (b) the inner CPS
+						  // styles.container had its OWN background
+						  // that hid the wrapper's. Both adjusted.
 						  position: 'absolute',
 						  width: 120,
 						  height: 160,
 						  left: _videoPipPos.x,
 						  top: _videoPipPos.y,
+						  zIndex: 1500,
+						  borderRadius: 8,
+						  overflow: 'hidden',
+						  backgroundColor: '#1a1a1a',
+						  elevation: 8,
 						}
 				  }
 				>
+				  {/* Inner wrapper around ConferenceParticipantSelf. In
+				      solo fullscreen the outer wrapper is `box-none` and
+				      this inner View also uses `box-none` so that:
+				        • taps on EMPTY video area fall through to the
+				          floating action bar / header behind,
+				        • but explicit Touchables INSIDE ConferenceParticipant
+				          Self (the camera-swap icon at top-right of its
+				          Surface) still receive their own taps.
+				      Earlier this was `pointerEvents="none"`, which is the
+				      reason the camera-swap icon rendered but was inert —
+				      `none` blocks the parent AND every descendant. */}
 				  <View
-					style={{ flex: 1 }}
+					pointerEvents={_isSoloFullscreen ? 'box-none' : 'auto'}
+					style={{
+						// Absolute fill — flex:1 wasn't propagating
+						// reliably through the absolutely positioned
+						// chain, leaving the descendant yellow wrapper
+						// shorter than the parent.
+						position: 'absolute',
+						top: 0,
+						bottom: 0,
+						left: 0,
+						right: 0,
+					}}
 				  >
 					{/* Key includes viewMode + enableMyVideo so the
 				    component fully remounts whenever the parent
@@ -9679,8 +10635,23 @@ class ConferenceBox extends Component {
 				    show cycle forced a fresh receiveProps pass).
 				    Keying off the trigger inputs guarantees a
 				    clean mount with the right visible prop. */}
+				{/* aspectRatio is in the key for a different reason than
+				    viewMode / enableMyVideo: the native RTCView under
+				    Paper's Surface does not always redraw when the
+				    objectFit prop changes on an existing instance
+				    (most visible in solo fullscreen — toggling
+				    "Aspect ratio" from the Video... picker did
+				    nothing). Including aspectRatio in the key forces
+				    a clean remount of the RTCView so the new
+				    objectFit takes effect immediately. */}
 				<ConferenceParticipantSelf
-					  key={'myself2-' + this.state.viewMode + '-' + (this.state.enableMyVideo ? '1' : '0')}
+					  // aspectRatio dropped from the key (see matching
+					  // note on the in-matrix instantiation above) so
+					  // state.videoDims survives an aspect-ratio
+					  // toggle and contain mode can compute camAR
+					  // immediately.
+					  key={'myself2-' + this.state.viewMode
+					      + '-' + (this.state.enableMyVideo ? '1' : '0')}
 					  visible={this.showMyself}
 					  stream={this.props.call.getLocalStreams()[0]}
 					  identity={this.props.call.localIdentity}
@@ -9691,40 +10662,33 @@ class ConferenceBox extends Component {
 					  big={SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0}
 					  fullScreen={this.fullScreen}
 					  aspectRatio={this.state.aspectRatio}
+					  onCameraSwap={this.toggleCamera}
+					  isSoloFullscreen={SOLO_SELF_FULLSCREEN && !this.audioOnlyView && this.visibleParticipants.length === 0}
+					  /* onClose passed ONLY on the floating-PIP
+					     instance so the X bubble shows when the self
+					     view is in the small thumbnail. */
+					  onClose={() => this.setState({enableMyVideo: false})}
+					  /* Grid-layout toggle. Only wired when there
+					     are exactly 3 visible remotes — flips the
+					     matrix between the default 2×2 (self in
+					     the 4th slot) and a 3-up row/column with
+					     self in this thumbnail. */
+					  /* Any room with at least one OTHER participant
+					     gets the grid/PIP toggle — user wants the
+					     binary choice (in grid vs floating thumb)
+					     regardless of remote count. */
+					  onToggleLayout={this.visibleParticipants.length >= 1
+					      ? () => this.setState({threeUpRowLayout: !this.state.threeUpRowLayout})
+					      : undefined}
+					  threeUpRowLayout={this.state.threeUpRowLayout}
 					/>
 				  </View>
-				  {/* Close (×) button overlaying the top-right of
-				      the mirror PIP. Tap → enableMyVideo=false →
-				      showMyself returns false → PIP is suppressed
-				      on the next render. Bring it back via the
-				      kebab's "Show mirror" item. The outer wrapper
-				      View handles drag via PanResponder (which only
-				      claims the gesture after ~5 px of movement, so
-				      a quick tap on the X reaches this handler
-				      first). Only rendered when self is actually in
-				      the floating PIP (showMyself=true). */}
-				  {this.showMyself ? (
-				    <TouchableOpacity
-				      onPress={() => this.setState({enableMyVideo: false})}
-				      accessibilityRole="button"
-				      accessibilityLabel="Close mirror"
-				      hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}
-				      style={{
-				        position: 'absolute',
-				        top: 4,
-				        right: 4,
-				        zIndex: 1600,
-				        width: 22,
-				        height: 22,
-				        borderRadius: 11,
-				        backgroundColor: 'rgba(0,0,0,0.55)',
-				        justifyContent: 'center',
-				        alignItems: 'center',
-				      }}
-				    >
-				      <Icon name="close" size={16} color="#ffffff" />
-				    </TouchableOpacity>
-				  ) : null}
+				  {/* Camera-swap, close (X) and aspect-ratio icons all
+				      live INSIDE ConferenceParticipantSelf now, via
+				      onCameraSwap / onClose / onAspectRatioToggle
+				      props. They anchor to the actual video box
+				      (yellow in cover, purple inner box in contain)
+				      so they follow the visible video edge. */}
 				</View>
 				  );
 				})()}

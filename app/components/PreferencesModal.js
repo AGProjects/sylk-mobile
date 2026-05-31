@@ -204,23 +204,14 @@ const CODEC_META = {
 // still exists in CallZrtp.js and the mandatory-fail prompt remains
 // wired, so anyone with an old setting keeps the behaviour they had
 // until they touch the toggle.
-const ENCRYPTION_OPTIONS = [
-    {
-        value: 'zrtp_optional',
-        label: 'Enabled',
-        title: 'zRTP — enabled',
-        subtitle: 'End-to-end encryption; '
-                + 'falls back to DTLS if negotiation fails.',
-    },
-    {
-        value: 'zrtp_mandatory',
-        label: 'Strict',
-        title: 'zRTP — strict',
-        subtitle: 'End-to-end encryption required. '
-                + 'Call shows a prompt to end or continue '
-                + 'if zRTP cannot be negotiated.',
-    },
-];
+// The picker no longer iterates a static options array — the buttons
+// are inlined in the render so the secondary "Mandatory" sub-toggle
+// can be conditionally rendered only when Enabled is selected. State
+// mapping (kept here for reference / for any future caller that wants
+// to surface the same modes):
+//   'zrtp_optional'  → Enabled, Mandatory Off  (default)
+//   'zrtp_mandatory' → Enabled, Mandatory On
+//   'sdes'           → Disabled
 
 // DTMF transmission mode for in-call digit presses. Two choices:
 //   info    — SIP INFO with `application/dtmf-relay` body. Default.
@@ -352,22 +343,48 @@ const PreferencesModal = ({
     // in sync with the persisted value.
     themeMode,
     setThemeMode,
+    // Data Usage — per-network auto-download toggles for incoming
+    // media (images / audio messages / files). Defaults applied in
+    // app.js (ON for Wi-Fi, OFF for Mobile). The file-transfer pipeline
+    // is expected to read state.accountSetting.device.autoDownload*
+    // before kicking off any non-user-initiated download. Toggling
+    // here only updates the preference — already-in-flight transfers
+    // are unaffected, and tapping a file bubble to download manually
+    // still works regardless of either toggle.
+    autoDownloadOnWifi,
+    setAutoDownloadOnWifi,
+    autoDownloadOnMobile,
+    setAutoDownloadOnMobile,
 }) => {
     const currentCodec = preferredVideoCodec || VIDEO_CODECS_DEFAULT;
     const currentVideoProfile = VIDEO_PROFILE_OPTIONS.some(o => o.id === videoProfile)
         ? videoProfile
         : VIDEO_PROFILE_DEFAULT;
     const currentAudioCodec = preferredAudioCodec || AUDIO_CODECS_DEFAULT;
-    // Resolve the saved tri-state encryptionMode into one of the two
-    // UI options. The picker only offers 'zrtp_optional' (Enabled) and
-    // 'sdes' (Disabled); a legacy 'zrtp_mandatory' value from an older
-    // build collapses into "Enabled" so the pill still highlights
-    // correctly without forcing a migration write. Any other unknown
-    // value defaults to Enabled too — same shape as app.js's runtime
-    // default.
-    const currentMode = encryptionMode === 'zrtp_mandatory'
-        ? 'zrtp_mandatory'
-        : 'zrtp_optional';
+    // Two independent UI controls back the single saved tri-state
+    // encryptionMode string:
+    //
+    //   zrtpEnabled    — the primary toggle (Enabled / Disabled).
+    //                    'sdes'          → Disabled
+    //                    everything else → Enabled
+    //
+    //   zrtpMandatory  — secondary toggle, only meaningful when
+    //                    zrtpEnabled. Off (default) = 'zrtp_optional'
+    //                    (handshake attempted, falls back to plain
+    //                    DTLS-SRTP if peer can't speak zRTP). On =
+    //                    'zrtp_mandatory' (call shows a warning prompt
+    //                    if zRTP can't be negotiated).
+    //
+    // Toggling Enabled / Disabled preserves the Mandatory choice in
+    // memory so flipping back to Enabled restores the user's previous
+    // mandatory-vs-optional preference. Toggling Mandatory only writes
+    // when Enabled (otherwise it's a no-op visually since the row is
+    // hidden).
+    const zrtpEnabled  = encryptionMode !== 'sdes';
+    const zrtpMandatory = encryptionMode === 'zrtp_mandatory';
+    const currentMode = encryptionMode === 'sdes'
+        ? 'sdes'
+        : (encryptionMode === 'zrtp_mandatory' ? 'zrtp_mandatory' : 'zrtp_optional');
     const currentDtmf = dtmfMode || DTMF_DEFAULT;
     const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalSec)
         ? locationTickIntervalSec
@@ -1081,6 +1098,80 @@ const PreferencesModal = ({
 
                                 <Divider style={{ marginTop: -8, marginBottom: 8 }} />
 
+                                {/* ───── Data Usage ───────────────────────────────
+                                    Two independent pill toggles — Wi-Fi
+                                    and Mobile — using the same compact
+                                    Button pattern as Chat sounds / zRTP
+                                    / DTMF. Each pill is an independent
+                                    on/off: `contained` mode = on, the
+                                    network's auto-download is enabled;
+                                    `outlined` mode = off, that network's
+                                    incoming media stays unfetched until
+                                    the user taps to download. Defaults
+                                    are applied upstream in app.js
+                                    (Wi-Fi: ON, Mobile: OFF).
+                                    autoDownloadFile reads
+                                    accountSetting.device.autoDownload*
+                                    before scheduling a non-user-
+                                    initiated download. Manual taps on
+                                    a file bubble always download
+                                    regardless of either toggle. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Data Usage
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Auto-download photos, voice messages and files.
+                                    </Text>
+                                    {/* Single-row layout. flexWrap is
+                                        intentionally omitted so the two
+                                        short pills stay side by side on
+                                        every form factor; the labels
+                                        ("Wi-Fi", "Mobile") are short
+                                        enough that wrapping never gets
+                                        triggered even on narrow phones. */}
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <Button
+                                            mode={autoDownloadOnWifi ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={autoDownloadOnWifi ? 'wifi' : 'wifi-off'}
+                                            style={{ marginRight: 6 }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => {
+                                                if (typeof setAutoDownloadOnWifi === 'function') {
+                                                    setAutoDownloadOnWifi(!autoDownloadOnWifi);
+                                                }
+                                            }}
+                                        >
+                                            Wi-Fi
+                                        </Button>
+                                        <Button
+                                            mode={autoDownloadOnMobile ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={autoDownloadOnMobile ? 'signal-cellular-3' : 'signal-cellular-outline'}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => {
+                                                if (typeof setAutoDownloadOnMobile === 'function') {
+                                                    setAutoDownloadOnMobile(!autoDownloadOnMobile);
+                                                }
+                                            }}
+                                        >
+                                            Mobile
+                                        </Button>
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
                                 {/* ───── Encryption ──────────────────────────────
                                     Compact button-row picker, same shape
                                     as the Codecs section above. Two
@@ -1108,24 +1199,73 @@ const PreferencesModal = ({
                                     <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
                                         Used for both audio and video calls.
                                     </Text>
+                                    {/* Primary toggle: Enabled / Disabled.
+                                        Clicking Enabled restores the user's
+                                        previous mandatory choice ('zrtp_
+                                        mandatory' if that was the last state,
+                                        else 'zrtp_optional'). Clicking
+                                        Disabled writes 'sdes' and the
+                                        Mandatory row below disappears. */}
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                                        {ENCRYPTION_OPTIONS.map(opt => {
-                                            const selected = currentMode === opt.value;
-                                            return (
+                                        <Button
+                                            mode={zrtpEnabled ? 'contained' : 'outlined'}
+                                            compact
+                                            style={{ marginRight: 6, marginBottom: 6 }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => setEncryptionMode(
+                                                zrtpMandatory ? 'zrtp_mandatory' : 'zrtp_optional'
+                                            )}
+                                        >
+                                            Enabled
+                                        </Button>
+                                        <Button
+                                            mode={!zrtpEnabled ? 'contained' : 'outlined'}
+                                            compact
+                                            style={{ marginRight: 6, marginBottom: 6 }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => setEncryptionMode('sdes')}
+                                        >
+                                            Disabled
+                                        </Button>
+                                    </View>
+                                    {/* Mandatory sub-toggle. Only meaningful
+                                        when zRTP is Enabled — hidden in
+                                        Disabled mode so users don't see a
+                                        no-op control. When Mandatory is on,
+                                        the call shows an explicit prompt to
+                                        end or continue if zRTP can't be
+                                        negotiated with the peer. */}
+                                    {zrtpEnabled && (
+                                        <View style={{ marginTop: 6 }}>
+                                            <Text style={{ fontSize: FS_CAPTION, color: '#666', marginBottom: 4 }}>
+                                                Mandatory: warn and prompt if zRTP cannot be negotiated.
+                                            </Text>
+                                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                                                 <Button
-                                                    key={opt.value}
-                                                    mode={selected ? 'contained' : 'outlined'}
+                                                    mode={zrtpMandatory ? 'contained' : 'outlined'}
                                                     compact
                                                     style={{ marginRight: 6, marginBottom: 6 }}
                                                     contentStyle={pillContentStyle}
                                                     labelStyle={pillLabelStyle}
-                                                    onPress={() => setEncryptionMode(opt.value)}
+                                                    onPress={() => setEncryptionMode('zrtp_mandatory')}
                                                 >
-                                                    {opt.label}
+                                                    On
                                                 </Button>
-                                            );
-                                        })}
-                                    </View>
+                                                <Button
+                                                    mode={!zrtpMandatory ? 'contained' : 'outlined'}
+                                                    compact
+                                                    style={{ marginRight: 6, marginBottom: 6 }}
+                                                    contentStyle={pillContentStyle}
+                                                    labelStyle={pillLabelStyle}
+                                                    onPress={() => setEncryptionMode('zrtp_optional')}
+                                                >
+                                                    Off
+                                                </Button>
+                                            </View>
+                                        </View>
+                                    )}
                                     {/* Reassurance note: no matter which
                                         pill is chosen, the call is
                                         always encrypted between the
@@ -1283,7 +1423,7 @@ const PreferencesModal = ({
                                         } else if (entry.agreed) {
                                             when = 'agreed (timestamp not recorded)';
                                         } else {
-                                            when = 'not agreed';
+                                            when = 'not yet agreed';
                                         }
                                         return (
                                             <View key={row.key}
@@ -1409,6 +1549,15 @@ PreferencesModal.propTypes = {
     // value is undefined.
     themeMode: PropTypes.oneOf(['system', 'day', 'night']),
     setThemeMode: PropTypes.func,
+    // Data Usage. Both are optional — older callers / tests that
+    // haven't wired the section yet still render the modal without
+    // the section misbehaving (the buttons short-circuit on a missing
+    // setter, and the booleans fall back to the upstream defaults
+    // applied in app.js: Wi-Fi ON, Mobile OFF).
+    autoDownloadOnWifi: PropTypes.bool,
+    setAutoDownloadOnWifi: PropTypes.func,
+    autoDownloadOnMobile: PropTypes.bool,
+    setAutoDownloadOnMobile: PropTypes.func,
 };
 
 export default PreferencesModal;

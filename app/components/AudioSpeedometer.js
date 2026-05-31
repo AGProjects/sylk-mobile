@@ -50,6 +50,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { View, Text, StyleSheet, Animated, TouchableWithoutFeedback } from 'react-native';
 import Svg, { Path, Line, Circle, G, Text as SvgText } from 'react-native-svg';
+import DarkModeManager from '../DarkModeManager';
 
 
 // ---------- dial geometry ---------------------------------------------------
@@ -844,12 +845,19 @@ export default class AudioSpeedometer extends React.Component {
         const innerTip = isSpeed
             ? polar((upClamped   / _dialBwMax)        * 180, R - LOSS_TIP_OFFSET)
             : polar((lossClamped / lossProfile.max)   * 180, R - LOSS_TIP_OFFSET);
-        // Needle colors: outer is blue (RTT) / blue (down). Inner is
-        // white (loss) / green (up). Reusing blue for "outer" in both
-        // modes means the eye doesn't have to relearn which needle
-        // matters when toggling.
-        const outerColor = isSpeed ? '#5eb1ff' : COLOR_RTT;
-        const innerColor = isSpeed ? '#7ed957' : COLOR_LOSS;
+        // Needle colors. Reusing blue for "outer" in both modes
+        // (RTT / Down) means the eye doesn't have to relearn which
+        // needle matters when toggling. Both needles share the same
+        // theme-aware palette as the metric-line text below the
+        // dial so the needle and its numeric readout always read in
+        // the same colour family.
+        const _spDark = !!(DarkModeManager && DarkModeManager.isDark && DarkModeManager.isDark());
+        const _needleRtt  = _spDark ? COLOR_RTT  : '#1565c0';
+        const _needleLoss = _spDark ? COLOR_LOSS : '#000000';
+        const _needleUp   = _spDark ? '#7ed957'  : '#2e7d32';
+        const _needleDown = _spDark ? '#5eb1ff'  : '#1565c0';
+        const outerColor = isSpeed ? _needleDown : _needleRtt;
+        const innerColor = isSpeed ? _needleUp   : _needleLoss;
         // Inner needle visibility: in RTT mode hide loss < 1% (jitter).
         // In speed mode always show — the up needle is the user's
         // own outbound signal, so silence (0) is itself informative.
@@ -958,29 +966,39 @@ export default class AudioSpeedometer extends React.Component {
                     wrapper's marginTop replaces the per-row offsets
                     that used to differ). */}
                 <View style={styles.metricsSlot}>
-                    {!isSpeed ? (
-                    <Text style={styles.metricsLine}>
-                        {/* RTT value coloured to match its needle (blue).
-                            The overall "good vs bad" answer comes from
-                            the ring color, not this number. */}
-                        <Text style={{ color: COLOR_RTT, fontWeight: '700' }}>{rtt.toFixed(0)} ms</Text>
-                        {/* Loss readout hidden when loss ≤ 1% — same
-                            rule as the loss needle (sub-1% is jitter on
-                            a healthy link). */}
-                        {loss > 1 ? (
-                            <>
-                                <Text style={{ color: '#ffffff' }}>   </Text>
-                                <Text style={{ color: COLOR_LOSS, fontWeight: '700' }}>{Math.round(loss)}% loss</Text>
-                            </>
-                        ) : null}
-                    </Text>
-                    ) : (
-                    <Text style={styles.metricsLine}>
-                        <Text style={{ color: '#7ed957', fontWeight: '700' }}>{'↑ ' + _formatBps(up)}</Text>
-                        <Text style={{ color: '#888888' }}>{'   '}</Text>
-                        <Text style={{ color: '#5eb1ff', fontWeight: '700' }}>{'↓ ' + _formatBps(down)}</Text>
-                    </Text>
-                    )}
+                    {/* Theme-aware readout colors. The conference
+                        AudioSpeedometer sits inside a white surface in
+                        Day theme, so the previous high-luminance
+                        values (loss = #ffffff, up = #7ed957 bright
+                        green, down = #5eb1ff light blue) were
+                        effectively invisible. Switch to darker, high-
+                        contrast variants on Day theme; the original
+                        Night-theme palette is preserved unchanged. */}
+                    {(() => {
+                        const _dark = !!(DarkModeManager && DarkModeManager.isDark && DarkModeManager.isDark());
+                        const _cRtt   = _dark ? COLOR_RTT  : '#1565c0';   // darker blue
+                        const _cLoss  = _dark ? COLOR_LOSS : '#000000';   // black instead of white
+                        const _cUp    = _dark ? '#7ed957'  : '#2e7d32';   // darker green
+                        const _cDown  = _dark ? '#5eb1ff'  : '#1565c0';   // darker blue
+                        const _cGap   = _dark ? '#888888'  : '#555555';
+                        return !isSpeed ? (
+                            <Text style={styles.metricsLine}>
+                                <Text style={{ color: _cRtt, fontWeight: '700' }}>{rtt.toFixed(0)} ms</Text>
+                                {loss > 1 ? (
+                                    <>
+                                        <Text style={{ color: _cGap }}>   </Text>
+                                        <Text style={{ color: _cLoss, fontWeight: '700' }}>{Math.round(loss)}% loss</Text>
+                                    </>
+                                ) : null}
+                            </Text>
+                        ) : (
+                            <Text style={styles.metricsLine}>
+                                <Text style={{ color: _cUp,   fontWeight: '700' }}>{'↑ ' + _formatBps(up)}</Text>
+                                <Text style={{ color: _cGap }}>{'   '}</Text>
+                                <Text style={{ color: _cDown, fontWeight: '700' }}>{'↓ ' + _formatBps(down)}</Text>
+                            </Text>
+                        );
+                    })()}
                 </View>
             </View>
         );

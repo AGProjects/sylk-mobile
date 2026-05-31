@@ -254,12 +254,18 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
             text = beautyFileNameForBubble(metadata);
 
             if (metadata.local_url && metadata.error != 'decryption failed') {
+                // Normalise the stored path: collapse stray double slashes
+                // and re-anchor an old iOS/Android container prefix to the
+                // current install. See resolveLocalUrl() — without this,
+                // any image saved in a previous app install opens black
+                // because the absolute path embeds the old container UUID.
+                const _resolved = resolveLocalUrl(metadata.local_url);
                 if (isImage(decrypted_file_name, metadata.filetype)) {
-                    image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                    image = Platform.OS === "android" ? 'file://'+ _resolved : _resolved;
                 } else if (isAudio(decrypted_file_name, metadata.filetype)) {
-                    audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                    audio = Platform.OS === "android" ? 'file://'+ _resolved : _resolved;
                 } else if (isVideo(decrypted_file_name, metadata.filetype)) {
-                    video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+                    video = Platform.OS === "android" ? 'file://'+ _resolved : _resolved;
                 }
             }
 
@@ -346,6 +352,73 @@ function fixLocalUrl(localUrl) {
 		}
 	}
 	return parts.join("/");
+}
+
+// Resolve a stored local_url to a path that's valid in the CURRENT
+// app install. Three real-world failure modes this absorbs:
+//
+//   1. The filename concatenation in app.js (~line 17169) does
+//      `DocumentDirectoryPath + "/" + ... + "/" + filename`. If
+//      filename itself starts with a slash (older code derived basename
+//      from a picker URI without stripping a leading "/"), the result
+//      contains a `//` and points at a file that was never written
+//      there in the first place. Collapse repeated slashes (skipping
+//      the scheme's `://`) so the path matches what was actually
+//      created on disk.
+//
+//   2. iOS regenerates the app container UUID
+//      (`/var/mobile/Containers/Data/Application/<UUID>/Documents/...`)
+//      on every install and on some OS upgrades. Absolute paths stored
+//      in SQL from a previous install no longer resolve. If we spot
+//      the iOS Documents prefix in the stored path, re-anchor the
+//      tail under the CURRENT RNFS.DocumentDirectoryPath.
+//
+//   3. Android equivalent: `/data/user/0/<pkg>/files/...` can change
+//      across reinstalls of an old build / restore-from-backup flows.
+//      Re-anchor under the current DocumentDirectoryPath the same way.
+//
+// Returns the normalised path. Caller is responsible for the RNFS.exists
+// check — a returned value being non-null does NOT guarantee the file
+// is on disk now, only that we tried our best to point at where it
+// *should* be.
+function resolveLocalUrl(localUrl) {
+	if (!localUrl || typeof localUrl !== 'string') return localUrl;
+
+	let p = localUrl;
+
+	// Strip and remember the scheme (file://, content://) so we don't
+	// collapse the `//` that's part of it.
+	let scheme = '';
+	const schemeMatch = p.match(/^([a-z][a-z0-9+.-]*:\/\/)/i);
+	if (schemeMatch) {
+		scheme = schemeMatch[1];
+		p = p.slice(scheme.length);
+	}
+
+	// (1) collapse any run of slashes inside the path to a single slash.
+	p = p.replace(/\/{2,}/g, '/');
+
+	// (2) re-anchor to current DocumentDirectoryPath if the path used to
+	// live under an iOS/Android app-container prefix that's now stale.
+	// We do this only when the CURRENT prefix isn't already in the path
+	// (cheap exact-match check), and when we can find the Documents/
+	// boundary.
+	const currentDocs = RNFS.DocumentDirectoryPath; // contains current UUID/pkg
+	if (currentDocs && p.indexOf(currentDocs) !== 0) {
+		// iOS pattern.
+		const iosMatch = p.match(/^\/var\/mobile\/Containers\/Data\/Application\/[A-F0-9-]+\/Documents\/(.*)$/i);
+		if (iosMatch) {
+			p = currentDocs.replace(/\/$/, '') + '/' + iosMatch[1];
+		} else {
+			// Android pattern: /data/user/N/<pkg>/files/<rest>
+			const androidMatch = p.match(/^\/data\/user\/\d+\/[^/]+\/files\/(.*)$/);
+			if (androidMatch) {
+				p = currentDocs.replace(/\/$/, '') + '/' + androidMatch[1];
+			}
+		}
+	}
+
+	return scheme + p;
 }
 
 function parseSylkConferenceUrl(url) {
@@ -784,10 +857,14 @@ async function sql2GiftedChat(item, content, filter = {}) {
     // Parse file-transfer JSON
     //---------------------------
     if (item.content_type === "application/sylk-file-transfer") {
-        // 'links' is a JS-derived subset of 'text' (see the link
-        // post-filter in ContactsListBox), so it shares the same
-        // "drop file-transfer rows" semantics — same SQL slice
-        // shape, then a body-contains-URL filter narrows further.
+        // No category-reject loop here anymore — the SQL slice in
+        // app.js#getMessages now gates on the persisted `category`
+        // column (v17), so a row with this content_type only
+        // reaches us when the caller actually wants file-transfer
+        // bubbles. The previous text/links short-circuit is
+        // redundant; left as a defensive null-out for callers that
+        // bypass the SQL layer with a hand-built item (rare —
+        // exists in test paths).
         if (category == 'text' || category == 'links') {
 			return null;
         }
@@ -827,7 +904,22 @@ async function sql2GiftedChat(item, content, filter = {}) {
         let filename = metadata.filename;  // <--- ALWAYS LOWERCASE
         text = beautyFileNameForBubble(metadata);
         
-        if (metadata.local_url) {        
+        if (metadata.local_url) {
+            // Re-anchor stale iOS/Android container paths and collapse
+            // any stray `//` from older filename concatenation bugs.
+            // Without this step, every reinstall (which regenerates the
+            // iOS container UUID) instantly orphans every image/audio/
+            // video the user had downloaded, because the next check
+            // requires the stored path to start with the CURRENT
+            // DocumentDirectoryPath — which it no longer does. We
+            // rewrite the path in-place so downstream sites
+            // (sql2GiftedChat consumers, viewers, sharing, etc.) all
+            // see the corrected value.
+            const _resolved = resolveLocalUrl(metadata.local_url);
+            if (_resolved !== metadata.local_url) {
+                metadata.local_url = _resolved;
+            }
+
             if (!metadata.local_url.startsWith(RNFS.DocumentDirectoryPath)) {
 				metadata.local_url = null;
             } else {
@@ -840,7 +932,7 @@ async function sql2GiftedChat(item, content, filter = {}) {
 							metadata.local_url = null;
 						} else {
 							//console.log('FT', item.msg_id, metadata.filename, beautySize(size));
-						
+
 						}
 					} catch (e) {
 						console.log('Error stat file:', e.message);
@@ -897,11 +989,20 @@ async function sql2GiftedChat(item, content, filter = {}) {
                 });
             }
             if (category === "other") {
-                return nullWithLog({
-                    msgId: item.msg_id,
-                    filename,
-                    category
-                });
+                // Keep rows that are NOT image/audio/video — those
+                // are exactly the "other" leftover bucket. The old
+                // implementation unconditionally returned null
+                // here, which silently dropped every row when the
+                // user picked the Other chip (the bug surfaced
+                // once the v17 category column made the SQL slice
+                // honest and actually return 'other' rows).
+                if (isImg || isAud || isVid) {
+                    return nullWithLog({
+                        msgId: item.msg_id,
+                        filename,
+                        category
+                    });
+                }
             }
         }
 
@@ -941,8 +1042,16 @@ async function sql2GiftedChat(item, content, filter = {}) {
         // -------------------------
         // Non-file-transfer behavior
         // -------------------------
-        if (item.image) {
-            image = item.image;
+        if (item.image || metadata.local_url) {
+            // Prefer metadata.local_url over the SQL image column.
+            // updateFileTransferSql only writes the metadata column on
+            // download success — the legacy image column keeps whatever
+            // path was stored on first send/receive, which is often the
+            // truncated/broken pre-repair value. metadata.local_url is
+            // the canonical "this is where the bytes actually live now"
+            // pointer; we still resolveLocalUrl it as belt-and-braces
+            // against stale container UUIDs.
+            image = resolveLocalUrl(metadata.local_url || item.image);
             text = "Photo";
         }
 
@@ -1728,6 +1837,24 @@ const availableAudioDeviceNames = {
 	BUILTIN_SPEAKER: 'Speaker',
 };
                     
+// URL detection used by the persisted `has_link` column and the
+// runtime Links chip JS post-filter. Single source of truth so a
+// change to the URL definition lights up both places. Matches:
+//   • http(s)://… (with non-whitespace tail)
+//   • www.… (bare-www domains people paste informally)
+//   • bare-domain `<word>.<common TLD>(/path)?` — conservative
+//     TLD list to avoid flagging "file.txt" or "v1.2" as a link.
+// Tested against text/plain and the rendered text of text/html
+// bodies (URLs survive linkifyHtml + utils.html2text). Run on the
+// concat of the body + html so HTML bodies whose plaintext flatten
+// happens to drop scheme prefixes still match.
+const _URL_REGEX = /(https?:\/\/\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|app|co|dev|me|gov|edu|info|ai|xyz)(?:\/\S*)?)/i;
+function containsUrl(text, html) {
+    const body = ((text || '') + ' ' + (html || '')).trim();
+    if (!body) return false;
+    return _URL_REGEX.test(body);
+}
+
 // Date-period tags for the chat date filter. Returns a stable
 // identifier per period plus a human-readable label suited for
 // display in a horizontal tag scroller. Used by ContactsListBox to:
@@ -1773,6 +1900,7 @@ function getMessageDateTags(date) {
 }
 
 exports.getMessageDateTags = getMessageDateTags;
+exports.containsUrl = containsUrl;
 exports.formatPGPMessage = formatPGPMessage;
 exports.getErrorMessage = getErrorMessage;
 exports.formatBytes = formatBytes;
@@ -1790,6 +1918,8 @@ exports.generateVideoTrack = generateVideoTrack;
 exports.getWindowHeight = getWindowHeight;
 exports.findContact = findContact;
 exports.sylk2GiftedChat = sylk2GiftedChat;
+exports.fixLocalUrl = fixLocalUrl;
+exports.resolveLocalUrl = resolveLocalUrl;
 exports.sql2GiftedChat = sql2GiftedChat;
 exports.isAnonymous = isAnonymous;
 exports.html2text = html2text;

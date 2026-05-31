@@ -64,7 +64,7 @@ public class ReactEventEmitter {
             SylkLogger.d("[bridge] [event] event " + event);
 
 			if (rc != null && CallEventModule.isRNready()) {
-                SylkLogger.d("[bridge] [event] RN ready → event emitted");
+                //SylkLogger.d("[bridge] [event] RN ready → event emitted");
                 emit(rc, payload);
             } else {
 				CallEventModule.setLastEvent(payload);

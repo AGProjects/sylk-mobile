@@ -18,4 +18,12 @@
 // Reference to the bridge (required to get module instance)
 @property (nonatomic, strong) RCTBridge *bridge;
 
+// Triggers the iOS user-notification permission prompt + APNs
+// registration. Used to be invoked unconditionally in
+// didFinishLaunchingWithOptions, which surfaced the OS prompt before
+// the user had even seen the app's login screen. Now exposed as a
+// JS-callable hook (APNSTokenModule.requestNotificationPermission)
+// so JS can fire it only after the first successful login.
+- (void)requestPushNotificationPermission;
+
 @end

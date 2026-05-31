@@ -110,6 +110,19 @@ export default function ThumbnailGrid({
   // this off so the photo-picker UX (tap-to-toggle once selection
   // mode is active) is preserved.
   tapAlwaysOpens = false,
+  // Optional per-tile "go to chat on this day" affordance. When
+  // provided, each tile renders a small chat-bubble icon overlay
+  // (bottom-right corner). Tap fires onGoToDay(item) so the
+  // caller can drop out of the media grid into the chat narrowed
+  // to that tile's day. No overlay rendered when prop is missing.
+  onGoToDay,
+  // Optional. Invoked from the viewer's missing-file placeholder
+  // when the user taps "Download from server". Receives the full
+  // grid item — caller is expected to use item.metadata (carrying
+  // url + transfer_id + sender + receiver) to kick off a fresh
+  // download via the app's existing file-transfer pipeline. When
+  // omitted the button is hidden, so this prop is purely additive.
+  onRequestDownload,
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
@@ -165,9 +178,133 @@ export default function ThumbnailGrid({
     setViewerVisible(true);
   }, []);
 
+  // Pre-resolved per-image dimensions keyed by id. react-native-image-zoom-viewer
+  // (3.0.1, unmaintained) calls Image.getSize internally to determine layout;
+  // on iOS 26 that call silently fails for the bare absolute paths we use as
+  // local image URIs (utils.sylk2GiftedChat strips the file:// prefix on iOS),
+  // and with no failImageSource configured the library renders an empty wrapper
+  // — i.e. a black screen. We pre-resolve dimensions here with a screen-size
+  // fallback and pass them via imageUrls below; when image.width/height is
+  // populated the library short-circuits its internal getSize and renders.
+  const [imageSizes, setImageSizes] = useState({});
+
+  // Normalise iOS bare paths to file:// URIs for Image.getSize. The thumbnail
+  // FastImage path tolerates either form, but RN's Image.getSize on iOS needs
+  // a real URL scheme.
+  const normalizeUri = useCallback((uri) => {
+    if (!uri) return uri;
+    if (Platform.OS === 'ios' && uri.startsWith('/')) {
+      return 'file://' + uri;
+    }
+    return uri;
+  }, []);
+
+  useEffect(() => {
+    if (!viewerVisible) return;
+    // Only prefetch dimensions for the CURRENT image (plus the immediate
+    // neighbours, since the user may swipe). Earlier this iterated over
+    // every image in the grid and fired Image.getSize for all of them at
+    // once — on iOS 26 the native ImageLoader couldn't keep up and we'd
+    // see "Excessive number of pending callbacks: 501" warnings, with
+    // the unfulfilled callbacks causing our 1.5s timeout to fire and
+    // incorrectly mark perfectly-valid images as missing.
+    const indicesToFetch = [currentIndex - 1, currentIndex, currentIndex + 1]
+      .filter(i => i >= 0 && i < visibleImages.length);
+    indicesToFetch.forEach((i) => {
+      const it = visibleImages[i];
+      if (!it || imageSizes[it.id]) return;
+      let resolved = false;
+      const finish = (dims) => {
+        if (resolved) return;
+        resolved = true;
+        setImageSizes((prev) => ({...prev, [it.id]: dims}));
+      };
+      // Safety net: if getSize never calls back (slow native loader,
+      // resource pressure, etc.), fall back to screen-size dims so the
+      // viewer renders something. We deliberately do NOT mark `missing`
+      // on timeout — slow != missing. The actual "file is gone" signal
+      // comes from getSize's fail callback or <Image>'s onError below.
+      const timer = setTimeout(
+        () => finish({width: SCREEN_WIDTH, height: SCREEN_HEIGHT}),
+        2000,
+      );
+      try {
+        Image.getSize(
+          normalizeUri(it.uri),
+          (w, h) => {
+            clearTimeout(timer);
+            finish({width: w, height: h});
+          },
+          (err) => {
+            clearTimeout(timer);
+            // Build a single JSON-quoted line so Metro doesn't truncate
+            // long URIs mid-string when the multi-arg list overflows
+            // its per-message buffer (seen with image-share filenames
+            // like share-<UUID>.jpg appended to per-account paths).
+            console.log('[image-viewer] missing file (getSize failed) ' +
+              JSON.stringify({
+                msgId: it.id,
+                transferId: it.transferId || null,
+                uri: it.uri,
+                uriLen: it.uri && it.uri.length,
+                err: err && (err.message || String(err)),
+              }));
+            finish({width: SCREEN_WIDTH, height: SCREEN_HEIGHT, missing: true});
+          },
+        );
+      } catch (e) {
+        clearTimeout(timer);
+        console.log('[image-viewer] missing file (getSize threw)',
+          'msgId=', it.id,
+          'transferId=', it.transferId || '(none)',
+          'uri=', it.uri,
+          'err=', e && e.message);
+        finish({width: SCREEN_WIDTH, height: SCREEN_HEIGHT, missing: true});
+      }
+    });
+  }, [viewerVisible, currentIndex, visibleImages, imageSizes, normalizeUri, SCREEN_WIDTH, SCREEN_HEIGHT]);
+
+  // Tracks per-id load failure so the viewer can swap in a friendly
+  // "file not available" placeholder instead of a black void. Keyed by
+  // image id (matches imageSizes). Cleared when the viewer closes so a
+  // re-open re-attempts the load (the user may have re-downloaded).
+  const [missingFiles, setMissingFiles] = useState({});
+
+  // Per-id flag set when the user taps the placeholder's "Download
+  // from server" button — flips the button to a spinner so they don't
+  // hammer it. The actual download runs in the parent's pipeline; when
+  // it completes the message's metadata.local_url updates and the
+  // grid prop change re-renders the tile, which clears the missing
+  // flag implicitly on the next viewer open.
+  const [downloadingIds, setDownloadingIds] = useState({});
+
 useEffect(() => {
+  // If a tile's URI changed (the most common cause being a successful
+  // "Download from server" tap completing — metadata.local_url just
+  // got populated and the parent rebuilt the items), drop any cached
+  // missing/downloading/dimension state for that id so the viewer
+  // re-attempts the load against the fresh URI instead of staying
+  // stuck on the placeholder.
+  const prevByUri = {};
+  visibleImages.forEach(it => { prevByUri[it.id] = it.uri; });
+  const refreshedIds = [];
+  images.forEach(it => {
+	if (prevByUri[it.id] !== undefined && prevByUri[it.id] !== it.uri) {
+	  refreshedIds.push(it.id);
+	}
+  });
   setVisibleImages(images);
-}, [images]);
+  if (refreshedIds.length > 0) {
+	const drop = (prev) => {
+	  const next = {...prev};
+	  refreshedIds.forEach(id => { delete next[id]; });
+	  return next;
+	};
+	setMissingFiles(drop);
+	setDownloadingIds(drop);
+	setImageSizes(drop);
+  }
+}, [images]);  // eslint-disable-line react-hooks/exhaustive-deps
 
 const formatSize = (bytes) => {
   if (!bytes && bytes !== 0) return '';
@@ -215,7 +352,12 @@ const formatTimestamp = (ts) => {
 
 	const closeViewer = useCallback(() => {
 	  setViewerVisible(false);
-	
+	  // Reset missing-file flags so a subsequent open re-attempts the
+	  // load — the file may have come back (re-download, container path
+	  // remap after restart, etc.).
+	  setMissingFiles({});
+	  setDownloadingIds({});
+
 	  if (!onRotateImage) return;
 	
 	  const changed = {};
@@ -340,8 +482,24 @@ const renderItem = useCallback(
 		    against most thumbnails without dominating the tile.
 		    pointerEvents="none" so the overlay never intercepts
 		    the center-tap that follows. */}
-		{showPlayIcon && (() => {
+		{(() => {
 		  const inFlight = item.stage === 'download' || item.stage === 'decrypt';
+		  const notDownloaded = item.downloaded === false;
+		  // Three states drive the overlay:
+		  //   • inFlight        → spinner + percentage
+		  //   • notDownloaded   → cloud-download icon (image/video grids,
+		  //                       both want this on undownloaded tiles)
+		  //   • showPlayIcon    → play triangle (video grid only — image
+		  //                       grid pass false so downloaded tiles
+		  //                       have no overlay; the bitmap is the
+		  //                       affordance)
+		  // None of the three → no overlay at all.
+		  const overlayKind = inFlight
+		      ? 'inflight'
+		      : notDownloaded
+		          ? 'download'
+		          : (showPlayIcon ? 'play' : null);
+		  if (!overlayKind) return null;
 		  const pct = (typeof item.progress === 'number')
 		    ? Math.max(0, Math.min(100, Math.round(item.progress)))
 		    : null;
@@ -361,14 +519,14 @@ const renderItem = useCallback(
 		      <View style={{
 		        // The in-flight disc is a touch larger so the
 		        // spinner + label fit without crowding.
-		        width: inFlight ? 56 : 44,
-		        height: inFlight ? 56 : 44,
-		        borderRadius: inFlight ? 28 : 22,
+		        width: overlayKind === 'inflight' ? 56 : 44,
+		        height: overlayKind === 'inflight' ? 56 : 44,
+		        borderRadius: overlayKind === 'inflight' ? 28 : 22,
 		        backgroundColor: 'rgba(0,0,0,0.55)',
 		        alignItems: 'center',
 		        justifyContent: 'center',
 		      }}>
-		        {inFlight ? (
+		        {overlayKind === 'inflight' ? (
 		          <>
 		            <ActivityIndicator size="small" color="#fff" />
 		            {pct !== null && (
@@ -384,7 +542,7 @@ const renderItem = useCallback(
 		          </>
 		        ) : (
 		          <Icon
-		            name={item.downloaded === false ? 'cloud-download' : 'play'}
+		            name={overlayKind === 'download' ? 'cloud-download' : 'play'}
 		            size={26}
 		            color="#fff"
 		          />
@@ -416,11 +574,36 @@ const renderItem = useCallback(
               toggleSelect(item);
               return;
             }
-            // Default tap routing — onItemPress for callers that
-            // override (video grid → full-screen video Modal),
-            // built-in openViewer otherwise (image grid → zoom
-            // viewer).
-            if (typeof onItemPress === 'function') {
+            // Default tap routing.
+            //   • Not downloaded yet → route to onItemPress only
+            //     when supplied. Image-grid and video-grid both
+            //     pass it to kick off a downloadFile call. Without
+            //     onItemPress the tap quietly no-ops on an
+            //     undownloaded tile (no viewer to open anyway).
+            //   • Downloaded:
+            //       - video grid wants its OWN modal (the embedded
+            //         react-native-video viewer), so onItemPress is
+            //         honoured.
+            //       - image grid wants the built-in zoom viewer
+            //         regardless of whether onItemPress was
+            //         supplied; the image-grid's onItemPress only
+            //         handles the undownloaded case. To express
+            //         that distinction, the image grid sets
+            //         `showPlayIcon={false}` (it's not a video
+            //         tile), which we use here as the discriminator:
+            //         no play icon means "still picture, fall
+            //         through to openViewer for downloaded tiles".
+            const notDownloaded = item.downloaded === false;
+            if (notDownloaded) {
+              if (typeof onItemPress === 'function') {
+                onItemPress(item, index);
+              }
+              return;
+            }
+            // Downloaded: video grid (showPlayIcon=true) routes via
+            // onItemPress; image grid (showPlayIcon=false) opens
+            // the built-in viewer.
+            if (showPlayIcon && typeof onItemPress === 'function') {
               onItemPress(item, index);
             } else {
               openViewer(index, item);
@@ -456,10 +639,33 @@ const renderItem = useCallback(
           : null
           }
 
+          {/* "Go to chat on this day" overlay — bottom-right
+              corner. Sits on top of the size badge slot's
+              opposite side so the two never collide. zIndex >
+              the center touch so the tap reaches us instead of
+              the viewer/download routing. stopPropagation
+              prevents the underlying centerTouch from also
+              firing. */}
+          { typeof onGoToDay === 'function' ?
+          <TouchableOpacity
+            style={styles.gotoDay}
+            onPress={(e) => {
+              if (e && e.stopPropagation) e.stopPropagation();
+              onGoToDay(item);
+            }}
+            hitSlop={{top: 6, left: 6, right: 6, bottom: 6}}
+          >
+            <View style={styles.gotoDayInner}>
+              <Icon name="message-text-outline" size={14} color="#fff" />
+            </View>
+          </TouchableOpacity>
+          : null
+          }
+
       </View>
     );
   },
-  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens],
+  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens, onGoToDay],
 );
 
   if (!images || images.length === 0) {
@@ -474,10 +680,18 @@ const renderItem = useCallback(
 
   // prepare images for optional react-native-image-zoom-viewer which expects {url: '...'} items
 
-const viewerImages = visibleImages.map((it) => ({
-  url: it.uri,
-  props: {},
-}));
+// Provide url, width, and height up front so react-native-image-zoom-viewer
+// skips its internal Image.getSize call (which fails on iOS 26 for our
+// local-file URIs and produces a black screen — see openViewer comment).
+const viewerImages = visibleImages.map((it) => {
+  const dims = imageSizes[it.id];
+  return {
+    url: normalizeUri(it.uri),
+    width: dims ? dims.width : SCREEN_WIDTH,
+    height: dims ? dims.height : SCREEN_HEIGHT,
+    props: {},
+  };
+});
 
 return (
   <View
@@ -615,9 +829,101 @@ return (
 				  renderIndicator={() => null}
 				  saveToLocalByLongPress={false}
 				  onClick={closeViewer}
-				  renderImage={(props) => (
+				  renderImage={(props) => {
+					// Identify the current image by URL match so we can
+					// surface a placeholder when the underlying file is
+					// missing (stale iOS container UUID, picker-temp gone,
+					// etc.). Falls back to the normal Image render in the
+					// common case where the file decodes fine.
+					const _curImg = images[currentIndex];
+					const _isMissing = _curImg
+					  && (missingFiles[_curImg.id]
+						|| (imageSizes[_curImg.id] && imageSizes[_curImg.id].missing));
+					if (_isMissing) {
+					  // Show "Download from server" only when we have a
+					  // way to actually initiate a download (parent wired
+					  // onRequestDownload) AND the item carries a remote
+					  // URL on its metadata. Otherwise the button would
+					  // tap into a dead end.
+					  const _canDownload = typeof onRequestDownload === 'function'
+					    && _curImg && _curImg.metadata && _curImg.metadata.url;
+					  const _isDownloading = _curImg && downloadingIds[_curImg.id];
+					  return (
+						<View style={{
+						  width: SCREEN_WIDTH,
+						  height: SCREEN_HEIGHT,
+						  alignItems: 'center',
+						  justifyContent: 'center',
+						  padding: 24,
+						}}>
+						  <Icon name="image-broken-variant" size={64} color="#888" />
+						  <Text style={{color: '#bbb', marginTop: 12, fontSize: 16, textAlign: 'center'}}>
+							File not available
+						  </Text>
+						  <Text style={{color: '#777', marginTop: 6, fontSize: 12, textAlign: 'center'}}>
+							The image file is missing or could not be opened.
+						  </Text>
+						  {_canDownload && (
+							<TouchableOpacity
+							  disabled={_isDownloading}
+							  onPress={() => {
+								setDownloadingIds((prev) => ({...prev, [_curImg.id]: true}));
+								try { onRequestDownload(_curImg); } catch (e) {
+								  console.log('[image-viewer] onRequestDownload threw', e && e.message);
+								}
+								// Watchdog: even when the download succeeds,
+								// some call sites don't refresh the grid's
+								// `images` prop with a new URI for the
+								// freshly-decrypted file (the media-gallery
+								// view, for instance, holds a snapshot list
+								// that isn't re-derived per render). Without
+								// this, the button stays on "Downloading…"
+								// forever even though the underlying transfer
+								// completed. After 12s, optimistically clear
+								// the missing/downloading/dim caches for this
+								// id — the next dim prefetch will hit the
+								// (now-present) file and the viewer re-renders.
+								const _id = _curImg.id;
+								setTimeout(() => {
+								  setDownloadingIds((prev) => {
+									if (!prev[_id]) return prev;
+									const next = {...prev}; delete next[_id]; return next;
+								  });
+								  setMissingFiles((prev) => {
+									if (!prev[_id]) return prev;
+									const next = {...prev}; delete next[_id]; return next;
+								  });
+								  setImageSizes((prev) => {
+									if (!prev[_id]) return prev;
+									const next = {...prev}; delete next[_id]; return next;
+								  });
+								}, 12000);
+							  }}
+							  style={{
+								marginTop: 20,
+								flexDirection: 'row',
+								alignItems: 'center',
+								backgroundColor: _isDownloading ? '#555' : '#2196F3',
+								paddingHorizontal: 18,
+								paddingVertical: 10,
+								borderRadius: 22,
+							  }}
+							>
+							  {_isDownloading
+								? <ActivityIndicator size="small" color="#fff" />
+								: <Icon name="cloud-download" size={20} color="#fff" />}
+							  <Text style={{color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8}}>
+								{_isDownloading ? 'Downloading…' : 'Download from server'}
+							  </Text>
+							</TouchableOpacity>
+						  )}
+						</View>
+					  );
+					}
+					return (
 					<View
 					  style={{
+						flex: 1,
 						alignItems: "center",
 						justifyContent: "center",
 					  }}
@@ -625,13 +931,24 @@ return (
 					  <Image
 						{...props}
 						key={rotation}
+						onError={(e) => {
+						  if (_curImg) {
+							console.log('[image-viewer] missing file',
+							  'msgId=', _curImg.id,
+							  'transferId=', _curImg.transferId || '(none)',
+							  'uri=', _curImg.uri,
+							  'err=', e && e.nativeEvent && e.nativeEvent.error);
+							setMissingFiles((prev) => ({...prev, [_curImg.id]: true}));
+						  }
+						}}
 						style={[
 						  props.style,
 						  { transform: [{ rotate: `${rotation}deg`}] },
 						]}
 					  />
 					</View>
-				  )}
+					);
+				  }}
 				/>
 			
 				<TouchableOpacity
@@ -792,6 +1109,27 @@ checkmark: {
   color: '#fff',
   fontSize: 14,
   fontWeight: 'bold',
+},
+
+// "Go to chat on this day" affordance — bottom-right corner.
+// Higher zIndex than the centerTouch so the tap reaches the
+// TouchableOpacity instead of routing to the viewer/download
+// path. Small disc with a chat-bubble icon so the affordance
+// reads as "open a conversation surface" without taking real
+// estate from the photo itself.
+gotoDay: {
+  position: 'absolute',
+  bottom: 6,
+  right: 6,
+  zIndex: 3,
+},
+gotoDayInner: {
+  width: 24,
+  height: 24,
+  borderRadius: 12,
+  backgroundColor: 'rgba(0,0,0,0.55)',
+  alignItems: 'center',
+  justifyContent: 'center',
 },
 
 // Tile-wide tap surface. Previously a 50% × 50% center square,

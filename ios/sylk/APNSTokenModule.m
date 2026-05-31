@@ -36,5 +36,17 @@ RCT_EXPORT_METHOD(emitCachedAPNSToken)
   });
 }
 
+// JS-triggered push notification permission prompt. Used to defer the
+// iOS user-notification dialog out of didFinishLaunchingWithOptions —
+// JS calls this once the user has successfully logged in for the first
+// time so the prompt lands inside a context the user understands.
+RCT_EXPORT_METHOD(requestNotificationPermission)
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    AppDelegate *app = (AppDelegate *)[UIApplication sharedApplication].delegate;
+    [app requestPushNotificationPermission];
+  });
+}
+
 @end
 

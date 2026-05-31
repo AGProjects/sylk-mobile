@@ -228,14 +228,31 @@ const ConferenceModal = ({
 	  }
 	}, [selectedContact, show]);
 
-  const sanitizeParticipants = (rawParticipants) => {
+  const sanitizeParticipants = (rawParticipants, roomUri) => {
     const sanitized = [];
+    // Reject anything that looks like the room itself or a focus /
+    // bridge peer. Legacy saved invitee lists (from before the
+    // upstream app.js#_shouldDropInvitee filter landed) can carry
+    // these — stripping at display time means the user doesn't see
+    // a stale "ROOM@conference." or "bridge@…" pre-populated chip
+    // in the Join Conference panel until they manually clean the
+    // saved row in EditConferenceModal.
+    const _roomBare = (roomUri || '').toLowerCase();
+    const _roomLocal = _roomBare.indexOf('@') > -1
+        ? _roomBare.split('@')[0]
+        : _roomBare;
     rawParticipants.forEach((item) => {
       item = item.trim().toLowerCase();
       if (!item || item === accountId) return;
 
       const [username, domain] = item.split('@');
       if (!username) return;
+
+      // Drop self / room / bridge patterns.
+      if (_roomBare && item === _roomBare) return;
+      if (_roomLocal && username === _roomLocal) return;
+      if (domain && domain.indexOf('conference.') === 0) return;
+      if (/bridge/i.test(username)) return;
 
       if (!domain) {
         sanitized.push(username);
@@ -249,9 +266,10 @@ const ConferenceModal = ({
   const handleConferenceTargetChange = (value) => {
     let uri = value;
     let rawParticipants = [];
+    let fullUri = '';
 
     if (uri) {
-      const fullUri = `${uri.replace(/[\s@()]/g, '')}@${defaultConferenceDomain}`;
+      fullUri = `${uri.replace(/[\s@()]/g, '')}@${defaultConferenceDomain}`;
       if (selectedContact?.participants) {
         rawParticipants = selectedContact.participants;
       } else if (myInvitedParties[fullUri]) {
@@ -259,7 +277,7 @@ const ConferenceModal = ({
       }
     }
 
-    setParticipants(sanitizeParticipants(rawParticipants));
+    setParticipants(sanitizeParticipants(rawParticipants, fullUri));
     setTargetUri(uri);
   };
 
