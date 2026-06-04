@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { View } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { Title } from 'react-native-paper';
 import { ListItem } from 'react-native-elements'
 import styles from '../assets/styles/blink/_ConferenceAudioParticipant.scss';
@@ -24,12 +24,28 @@ import styles from '../assets/styles/blink/_ConferenceAudioParticipant.scss';
 // gets shoved off-screen. Two columns doubles the tile count visible
 // at a glance and matches the matrix-view density users already see in
 // the video conference layout.
+// Tile-cell border colour + width for the landscape 2-column grid.
+// First version used StyleSheet.hairlineWidth + 0.12 alpha which read
+// as no visible border on most screens (1 physical pixel against a
+// near-uniform dark background washes out). Bumped to 1.5 dp + 0.35
+// alpha so the row/column rules actually delineate the tiles.
+const TILE_BORDER_COLOR = 'rgba(255,255,255,0.35)';
+const TILE_BORDER_WIDTH = 1.5;
+
 const ConferenceAudioParticipantList = props => {
     const isLandscape = !!props.isLandscape;
 
     const containerStyle = isLandscape
         ? {flexGrow: 0, flexDirection: 'row', flexWrap: 'wrap'}
         : {flexGrow: 0};
+
+    // Pre-compute how many valid children we have so the last-row
+    // cells can drop their bottom border (mirrors how a CSS table
+    // doesn't paint a trailing horizontal rule). Only matters for
+    // landscape — portrait mode renders tiles full-width, no grid.
+    const validChildren = React.Children.toArray(props.children).filter(React.isValidElement);
+    const totalTiles = validChildren.length;
+    const rowsCount = Math.ceil(totalTiles / 2);
 
     return (
         <Fragment>
@@ -51,8 +67,28 @@ const ConferenceAudioParticipantList = props => {
                     // what React uses for reconciliation in the
                     // wrapping View, so reuse the same per-tile key
                     // we computed above.
+                    //
+                    // Cell borders draw the 2-column grid as a
+                    // visual table:
+                    //   • right border on the LEFT column only
+                    //     (even index) — the column divider
+                    //   • bottom border on every row EXCEPT the
+                    //     last — the row divider
+                    // Using hairlineWidth (1 physical pixel on
+                    // hi-DPI screens) keeps the dividers crisp but
+                    // unobtrusive, matching the rest of the call
+                    // UI's understated chrome.
+                    const isLeftColumn = (index % 2) === 0;
+                    const rowIdx = Math.floor(index / 2);
+                    const isLastRow = rowIdx === (rowsCount - 1);
+                    const cellStyle = {
+                        width: '50%',
+                        borderRightWidth: isLeftColumn ? TILE_BORDER_WIDTH : 0,
+                        borderBottomWidth: isLastRow ? 0 : TILE_BORDER_WIDTH,
+                        borderColor: TILE_BORDER_COLOR,
+                    };
                     return (
-                        <View key={key} style={{width: '50%'}}>
+                        <View key={key} style={cellStyle}>
                             {tile}
                         </View>
                     );

@@ -6,7 +6,8 @@ import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
 import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
-import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder  } from 'react-native';
+import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder, DeviceEventEmitter  } from 'react-native';
+import uuid from 'react-native-uuid';
 import { RTCView } from 'react-native-webrtc';
 // RNCamera is used ONLY for the camera-enable modal preview tile —
 // a native AVCaptureSession / CameraX-backed view that is completely
@@ -149,6 +150,18 @@ class VideoBox extends Component {
             remoteVideoShow: true,
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
+            // Conference-request confirmation dialog (Material paper
+            // Dialog rendered in this file's render method). Mirrors
+            // AudioCallBox.state.showConferenceRequestPanel — same
+            // peer-to-peer handshake (application/sylk-message-metadata
+            // with action='conference_request') for escalating a 1-1
+            // video call into a multi-party conference. Replaces the
+            // earlier `EscalateConferenceModal` text-input flow that
+            // never worked correctly on Android (see
+            // EscalateConferenceModal.js for the Platform-import bug).
+            showConferenceRequestPanel: false,
+            conferenceRequestPending: false,
+            conferenceRequestPendingId: null,
             callContact: this.props.callContact,
             selectedContact: this.props.selectedContact,
             selectedContacts: this.props.selectedContacts,
@@ -1401,6 +1414,16 @@ class VideoBox extends Component {
         if (this.state.selectedContacts.length > 0) {
             this.toggleEscalateConferenceModal();
         }
+
+        // Listen for app.js → VideoBox notifications that an
+        // outstanding conference_request was resolved (accept, reject,
+        // or sibling-handled). Clears the "Inviting…" button immediately
+        // instead of waiting on the 60 s self-clear. Same listener
+        // contract as AudioCallBox.
+        this._conferenceRequestResolvedSub = DeviceEventEmitter.addListener(
+            'conferenceRequestResolved',
+            this._handleConferenceRequestResolved
+        );
     }
 
     componentWillUnmount() {
@@ -1454,6 +1477,152 @@ class VideoBox extends Component {
         }
 
         this._detachLocalVideoTrackListeners();
+
+        // Conference-request expiry timer + DeviceEventEmitter
+        // listener cleanup. Same pattern as AudioCallBox: clear the
+        // timer first (so a pending 60 s self-clear setState doesn't
+        // fire on an unmounted instance) then drop the listener.
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+            this._conferenceRequestExpiryTimer = null;
+        }
+        if (this._conferenceRequestResolvedSub) {
+            this._conferenceRequestResolvedSub.remove();
+            this._conferenceRequestResolvedSub = null;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Conference-request handshake (escalate 1-1 video → conference)
+    //
+    // Identical wire-level handshake to AudioCallBox.sendConferenceRequest:
+    // one application/sylk-message-metadata payload with
+    // action='conference_request', a deterministic numeric room URI
+    // (DJB2 of sorted local + remote usernames, mod 1e9), and a 60 s
+    // expires window. The peer's metadata router recognises the same
+    // action shape regardless of which call type initiated it. See
+    // AudioCallBox.js for the full per-line rationale; this is the
+    // video-call entry point for the same flow.
+    _hashUsernamesToRoom(input) {
+        let h = 5381;
+        for (let i = 0; i < input.length; i++) {
+            h = ((h << 5) + h + input.charCodeAt(i)) | 0;
+        }
+        const positive = (h >>> 0);
+        const mod = positive % 1000000000;
+        return mod.toString().padStart(9, '0');
+    }
+
+    _handleConferenceRequestResolved(event) {
+        if (!event || !event.requestId) return;
+        if (this.state.conferenceRequestPendingId !== event.requestId) return;
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+            this._conferenceRequestExpiryTimer = null;
+        }
+        this.setState({
+            conferenceRequestPending: false,
+            conferenceRequestPendingId: null,
+        });
+    }
+
+    toggleConferenceRequestPanel() {
+        this.setState({ showConferenceRequestPanel: !this.state.showConferenceRequestPanel });
+    }
+
+    closeConferenceRequestPanel() {
+        if (this.state.showConferenceRequestPanel) {
+            this.setState({ showConferenceRequestPanel: false });
+        }
+    }
+
+    sendConferenceRequest() {
+        this.closeConferenceRequestPanel();
+
+        const call = this.state.call;
+        if (!call || !call.remoteIdentity) {
+            console.log('[conference-request] no active call, cannot send');
+            return;
+        }
+        const peerUri = call.remoteIdentity.uri;
+        if (!peerUri) {
+            console.log('[conference-request] active call has no remote uri');
+            return;
+        }
+        if (typeof this.props.sendMessage !== 'function') {
+            console.log('[conference-request] sendMessage prop not wired');
+            return;
+        }
+        const myUri = this.props.accountId;
+        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const myUser = (myUri && myUri.split('@')[0]) || 'me';
+        const peerUser = peerUri.split('@')[0] || 'peer';
+        const parts = [myUser, peerUser].map(s => s.toLowerCase()).sort();
+        const room = `${this._hashUsernamesToRoom(parts.join('|'))}@${conferenceDomain}`;
+
+        const requestId = uuid.v4();
+        const now = new Date();
+        const expiresAtIso = new Date(Date.now() + 60 * 1000).toISOString();
+
+        const metadataContent = {
+            action: 'conference_request',
+            messageId: requestId,
+            timestamp: now,
+            uri: peerUri,
+            room,
+            expires: expiresAtIso,
+            requester: myUri,
+            // SIP Call-ID (call._callId / call.callId), NOT call.id —
+            // see AudioCallBox.sendConferenceRequest for the full
+            // rationale. Used by sibling devices to recognise "this
+            // request belongs to a call we're not on".
+            call_id: (call._callId || call.callId || call.id),
+            // Media type of the originating 1-1 call. Both sides use
+            // this to decide whether to start the conference with
+            // video=true or video=false, so escalating from a video
+            // call keeps you in video and escalating from an audio
+            // call keeps you in audio. Echoed back unchanged in the
+            // accept payload. Default downstream is 'audio' when
+            // missing (back-compat with peers running older builds
+            // that didn't include this field).
+            media: 'video',
+        };
+        const metadataMessage = {
+            _id: requestId,
+            key: requestId,
+            createdAt: now,
+            metadata: metadataContent,
+            text: JSON.stringify(metadataContent),
+            user: {},
+        };
+
+        try {
+            this.props.sendMessage(peerUri, metadataMessage, 'application/sylk-message-metadata');
+        } catch (e) {
+            console.log('[conference-request] send failed',
+                e && e.message ? e.message : e);
+            return;
+        }
+
+        this.setState({
+            conferenceRequestPending: true,
+            conferenceRequestPendingId: requestId,
+        });
+        if (this._conferenceRequestExpiryTimer) {
+            clearTimeout(this._conferenceRequestExpiryTimer);
+        }
+        this._conferenceRequestExpiryTimer = setTimeout(() => {
+            this._conferenceRequestExpiryTimer = null;
+            if (this.state.conferenceRequestPendingId === requestId) {
+                this.setState({
+                    conferenceRequestPending: false,
+                    conferenceRequestPendingId: null,
+                });
+            }
+        }, 60 * 1000);
+
+        console.log('[conference-request] sent (video) →', peerUri,
+            'room=', room, 'reqId=', requestId);
     }
 
     // ---------------------------------------------------------------
@@ -1741,9 +1910,13 @@ class VideoBox extends Component {
 		// Variant 3: WhatsApp-style floating icon buttons stacked above the main button
 		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
 			const otherDevices = devices.filter(d => d !== this.props.selectedAudioDevice);
+			// With exactly two devices the menu is overkill — tapping the
+			// button just flips to the other one. The floating list only
+			// appears at 3+.
+			const toggleOnly = devices.length === 2 && otherDevices.length === 1;
 			return (
 				<View style={styles.buttonContainer}>
-					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+					{!toggleOnly && this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
 							bottom: '100%',
@@ -1772,13 +1945,24 @@ class VideoBox extends Component {
 						size={buttonSize}
 						style={[buttonClass]}
 						icon={selectedIcon}
-						onPress={() => this.setState({
-							audioDevicePickerVisible: !this.state.audioDevicePickerVisible,
-							// Collapse the video picker when opening (or
-							// toggling) the audio picker — only one
-							// floating menu should be visible at a time.
-							videoPickerVisible: false
-						})}
+						onPress={() => {
+							if (toggleOnly) {
+								this.props.selectAudioDevice(otherDevices[0]);
+								// Make sure any prior floating panel is collapsed.
+								this.setState({
+									audioDevicePickerVisible: false,
+									videoPickerVisible: false
+								});
+							} else {
+								this.setState({
+									audioDevicePickerVisible: !this.state.audioDevicePickerVisible,
+									// Collapse the video picker when opening (or
+									// toggling) the audio picker — only one
+									// floating menu should be visible at a time.
+									videoPickerVisible: false
+								});
+							}
+						}}
 					/>
 				</View>
 			);
@@ -2341,7 +2525,15 @@ class VideoBox extends Component {
             buttonsContainerClass = this.state.isLandscape ? styles.landscapebuttonsContainer : styles.portraitbuttonsContainer;
         }
 
-        let disablePlus = true;
+        // Allow-by-default with disqualifying conditions setting true.
+        // Previously initialised to `true` while every branch below
+        // also only sets `true` — meaning the account-plus button
+        // never rendered in any video call. Latent bug; the button
+        // shape has been in the code for a while but was effectively
+        // dead. Now: start false, let each disqualifier flip it to
+        // true, and let the else branch below catch the "no
+        // callContact" case explicitly.
+        let disablePlus = false;
         if (this.state.callContact) {
             if (isPhoneNumber) {
                 disablePlus = true;
@@ -2354,6 +2546,21 @@ class VideoBox extends Component {
             if (this.state.callContact.tags.indexOf('conference') > -1) {
                 disablePlus = true;
             }
+
+            // conference_request handshake requires the peer's PGP
+            // publicKey (the metadata payload is E2E-encrypted and
+            // would silently fail without it). Same gating as
+            // AudioCallBox.canEscalate. Without a key, hide the
+            // account-plus button entirely so the user can't open
+            // the confirmation dialog only to have the invite drop
+            // on the floor.
+            if (!this.state.callContact.publicKey) {
+                disablePlus = true;
+            }
+        } else {
+            // No callContact loaded → no key, no escalation. Hide
+            // the button rather than showing it disabled / broken.
+            disablePlus = true;
         }
 
         const show = this.state.callOverlayVisible || this.state.reconnectingCall;
@@ -2372,7 +2579,18 @@ class VideoBox extends Component {
                     <IconButton
                         size={buttonSize}
                         style={buttonClass}
-                        onPress={this.props.inviteToConferenceFunc}
+                        // Opens the new Portal+Dialog confirmation
+                        // below, which fires sendConferenceRequest on
+                        // user confirm (same handshake as AudioCallBox).
+                        // The old inviteToConferenceFunc prop launched
+                        // the broken EscalateConferenceModal text-input
+                        // flow (Platform.OS reference without import →
+                        // empty / black dialog on Android). That prop
+                        // is still received from app.js for backward
+                        // compat with any other call sites; this button
+                        // no longer routes through it.
+                        onPress={this.toggleConferenceRequestPanel}
+                        disabled={this.state.conferenceRequestPending}
                         icon="account-plus"
                     />
                 </View>
@@ -3110,6 +3328,25 @@ class VideoBox extends Component {
                                     Sylk-ZRTP v{zrtpSession.negotiatedVersion || '?'} · {zrtpSession.continuityState || 'first-time'}
                                 </PaperText>
                             )}
+                            {zrtpSession && (
+                                // Per-device keying breadcrumb. Both
+                                // values truncated for screen real
+                                // estate; the full strings are in the
+                                // [zrtp] log lines.
+                                //   this device — our localDeviceId
+                                //     (+sip.instance / device UUID we
+                                //     put on the wire so the peer can
+                                //     pick the right rs1 slot for us).
+                                //   peer        — peerDeviceId from
+                                //     the most recent probe/accept;
+                                //     '<none>' if the peer didn't send
+                                //     it (older stack, sipsimple with
+                                //     settings.instance_id unset).
+                                <PaperText style={{ fontSize: 11, color: '#888', marginBottom: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                                    this device: {(zrtpSession.localDeviceId || '<none>').slice(0, 16)}
+                                    {'\n'}peer: {(zrtpSession.peerDeviceId || '<none>').slice(0, 16)}
+                                </PaperText>
+                            )}
                             <PaperText style={{ marginBottom: 12 }}>
                                 {`Compare these with ${this.state.remoteDisplayName || this.state.remoteUri || 'the other party'}. Both parties must show the same letters AND emojis.`}
                             </PaperText>
@@ -3251,6 +3488,7 @@ class VideoBox extends Component {
 					hideSpeedometers = {this.state.videoEnableDialogVisible}
 					shareLocationFromCall = {this.props.shareLocationFromCall}
 					requestLocationFromCall = {this.props.requestLocationFromCall}
+					showMediaInfo = {this._openMediaInfoPanel}
                 />
 
                 {this.showRemote?
@@ -3407,6 +3645,52 @@ class VideoBox extends Component {
                     close={this.toggleEscalateConferenceModal}
                     escalateToConference={this.escalateToConference}
                 />
+
+                {/* Conference-request confirmation — same Material
+                    paper Dialog as AudioCallBox._renderConferenceRequestPlus,
+                    so the escalation UX is identical across audio and
+                    video calls and renders the same on iOS / Android.
+                    Replaces the old EscalateConferenceModal text-input
+                    flow as the account-plus button's target. */}
+                <Portal>
+                    <Dialog
+                        visible={!!this.state.showConferenceRequestPanel}
+                        onDismiss={this.closeConferenceRequestPanel}
+                    >
+                        <Dialog.Title>Escalate to conference</Dialog.Title>
+                        <Dialog.Content>
+                            <PaperText>
+                                {(() => {
+                                    let peerLabel = '';
+                                    const contact = this.state.callContact;
+                                    if (contact && contact.name) {
+                                        peerLabel = contact.name;
+                                    } else if (this.state.remoteDisplayName) {
+                                        peerLabel = this.state.remoteDisplayName;
+                                    } else if (this.state.remoteUri) {
+                                        peerLabel = this.state.remoteUri.split('@')[0];
+                                    }
+                                    return peerLabel
+                                        ? `Invite ${peerLabel} into a video conference? They will receive a request and can accept or decline.`
+                                        : 'Invite the other party into a video conference? They will receive a request and can accept or decline.';
+                                })()}
+                            </PaperText>
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={this.closeConferenceRequestPanel}>
+                                Cancel
+                            </Button>
+                            <Button
+                                mode="contained"
+                                onPress={this.sendConferenceRequest}
+                                disabled={!!this.state.conferenceRequestPending}
+                                icon="account-multiple-plus"
+                            >
+                                {this.state.conferenceRequestPending ? 'Inviting…' : 'Invite'}
+                            </Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                </Portal>
 
                 {/* Network HUD. Two states:
                     - Hidden behind a small "i" info icon (default).

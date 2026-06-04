@@ -127,7 +127,7 @@ class NavigationBar extends Component {
         super(props);
         autoBind(this);
 
-        this.refetchMessagesForDays = 30;
+        this.refetchMessagesForDays = 0;
 
         // Re-send the live location every N seconds until the expiration
         // time chosen by the user is reached. Default 60 s, overridable
@@ -1409,6 +1409,9 @@ class NavigationBar extends Component {
                 break;
             case 'conference':
                 this.conferenceCall();
+                break;
+            case 'conferenceCallNow':
+                this.conferenceCallNow();
                 break;
             case 'toggleAutoAnswerMode':
                 this.props.toggleAutoAnswerMode();
@@ -5820,6 +5823,60 @@ class NavigationBar extends Component {
         this.props.showConferenceModalFunc();
     }
 
+    // DJB2 hash of an input string → 9-digit zero-padded string. Identical
+    // shape and modulus to VideoBox._hashUsernamesToRoom / AudioCallBox so
+    // a Conference-call menu start lands in the SAME numeric room URI as
+    // the in-call "escalate to conference" handshake would for the same
+    // (local, peer) pair.
+    _hashUsernamesToRoom(input) {
+        let h = 5381;
+        for (let i = 0; i < input.length; i++) {
+            h = ((h << 5) + h + input.charCodeAt(i)) | 0;
+        }
+        const positive = (h >>> 0);
+        const mod = positive % 1000000000;
+        return mod.toString().padStart(9, '0');
+    }
+
+    // Chat-header kebab "Conference call" item for a non-conference contact.
+    //
+    // Derives a deterministic conference-room URI from (my username, peer
+    // username) — same DJB2-of-sorted-lowercased-usernames recipe as the
+    // in-call escalation handshake — so the resulting room is stable for
+    // this (local, peer) pair across invocations and identical to what
+    // both sides would compute via the avatar-panel "Escalate to
+    // conference" flow. Then starts an outgoing VIDEO conference to that
+    // room with the remote party as the auto-invitee, so the peer gets
+    // pulled in without the originator having to type their URI into the
+    // invite field.
+    conferenceCallNow() {
+        const selected = this.props.selectedContact;
+        if (!selected || !selected.uri) {
+            console.log('[conferenceCallNow] no selected contact');
+            return;
+        }
+        const peerUri = selected.uri;
+        const myUri = this.props.accountId || '';
+        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const myUser = (myUri && myUri.split('@')[0]) || 'me';
+        const peerUser = (peerUri && peerUri.split('@')[0]) || 'peer';
+        const parts = [myUser, peerUser].map(s => s.toLowerCase()).sort();
+        const room = `${this._hashUsernamesToRoom(parts.join('|'))}@${conferenceDomain}`;
+
+        console.log('[conferenceCallNow] starting video conference room=', room,
+            'inviting peer=', peerUri);
+
+        if (typeof this.props.startConference !== 'function') {
+            console.log('[conferenceCallNow] startConference prop not wired');
+            return;
+        }
+        this.props.startConference(room, {
+            audio: true,
+            video: true,
+            participants: [peerUri],
+        });
+    }
+
     toggleAddContactModal() {
         this.setState({showAddContactModal: !this.state.showAddContactModal});
     }
@@ -6972,6 +7029,7 @@ class NavigationBar extends Component {
 
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('conferenceCallNow')} icon="account-group" title="Conference call"/> :null}
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
@@ -7126,7 +7184,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/>
+                        { (this.refetchMessagesForDays != 0) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!isConference && !this.props.searchMessages && this.props.publicKey && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
@@ -7257,7 +7315,7 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        { (this.refetchMessagesForDays) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.refetchMessagesForDays != 0 && !this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!this.props.inCall ?
 						<Divider />
@@ -7939,6 +7997,7 @@ NavigationBar.propTypes = {
     toggleCaregiver    : PropTypes.func,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,
+    defaultConferenceDomain : PropTypes.string,
     favoriteUris       : PropTypes.array,
     startCall          : PropTypes.func,
     startConference    : PropTypes.func,

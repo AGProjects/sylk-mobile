@@ -18,9 +18,24 @@
 // not twice).
 
 import React, { Component } from 'react';
-import { View, Platform, ScrollView } from 'react-native';
-import { Dialog, Button, Portal, Text } from 'react-native-paper';
+import {
+    View,
+    Platform,
+    ScrollView,
+    Modal,
+    Pressable,
+    StyleSheet,
+} from 'react-native';
+import { Button, Surface, Text } from 'react-native-paper';
 import PropTypes from 'prop-types';
+// Share the Modal + overlay + Surface shell with AboutModal /
+// EditContactModal / ShareLocationModal / ActiveLocationSharesModal /
+// DeleteHistoryModal so the diagnostic panel uses the same
+// rounded-corner card on a dimmed backdrop as every other dialog in
+// the app. Replaces the old Paper Dialog/Portal wrapper that produced
+// nested-Portal artefacts on iOS (two overlapping cards / scrims when
+// rendered alongside the call-screen's own Portal block).
+import containerStyles from '../assets/styles/ContainerStyles';
 // Surface the qos-stats sampler's latest snapshot inside the modal.
 // The sampler is started by AudioCallBox / ConferenceBox when the call
 // reaches 'established' and updates its cache every 5 s — same numbers
@@ -281,17 +296,91 @@ class MediaInfoPanel extends Component {
         const snap = this.state.snapshot;
         const close = this.props.onClose;
         const mediaStuck = !!this.props.mediaStuck;
+        const isFolded = !!this.props.isFolded;
+        // Folded (cover-display) overrides — the Razr outer screen is
+        // narrow and short; the default modal overlay padding (16)
+        // plus modalSurface borderRadius / title would push the
+        // scrollable content out of view. Compact every wrapper.
+        const overlayStyle = isFolded
+            ? [containerStyles.overlay, { padding: 4 }]
+            : containerStyles.overlay;
+        const surfaceStyle = isFolded
+            ? [containerStyles.modalSurface, { padding: 2 }]
+            : containerStyles.modalSurface;
+        const titleStyle = isFolded
+            ? [containerStyles.title, { fontSize: 13, paddingTop: 4, paddingBottom: 2, marginBottom: 0 }]
+            : containerStyles.title;
         return (
-            <Portal>
-                <Dialog visible={true} onDismiss={close} style={{ maxHeight: '85%' }}>
-                    {/* Top-right "X" hidden per user request — the
-                        Dialog.Actions footer already has an explicit
-                        "Close" button which is the only dismissal
-                        affordance we want to surface. onDismiss
-                        (tap-outside / back-button) still works. */}
-                    <Dialog.Title>Media info</Dialog.Title>
-                    <Dialog.ScrollArea style={{ maxHeight: 520 }}>
-                        <ScrollView>
+            <Modal
+                visible={true}
+                transparent
+                animationType="fade"
+                onRequestClose={close}
+                /* iOS-only — without this, RN's Modal defaults to
+                   supportedOrientations: ['portrait'], which forces the
+                   underlying app to portrait while the modal is presented.
+                   Include both landscape variants so the modal inherits
+                   whichever orientation the user is in. */
+                supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
+            >
+                <View style={overlayStyle}>
+                    {/* Backdrop-as-sibling pattern, mirrored from
+                        SwitchAccountModal: a Pressable that absolute-fills
+                        the overlay, rendered BEFORE the Surface so the
+                        Surface ends up on top in z-order. Tap outside
+                        the Surface → Pressable fires onPress → modal
+                        closes. Tap on the Surface → Surface absorbs the
+                        touch; the Pressable underneath sees nothing.
+
+                        Why this instead of TouchableWithoutFeedback
+                        wrapping the Surface: any tap-handler wrapping
+                        the Surface ends up in a responder fight with
+                        the inner ScrollView on Android. The wrapper
+                        claims the responder on touch start, the
+                        ScrollView tries to take it back on move, and
+                        the hand-off fails — the panel shows a
+                        scrollbar but pan gestures do nothing. The
+                        sibling-backdrop layout leaves the ScrollView
+                        as the only responder candidate inside the
+                        card, so vertical pans always reach it. */}
+                    <Pressable
+                        style={StyleSheet.absoluteFillObject}
+                        onPress={close}
+                        accessibilityLabel="Close"
+                    />
+                    <Surface style={surfaceStyle}>
+                        <Text style={titleStyle}>Media info</Text>
+                        <ScrollView
+                            style={{ maxHeight: isFolded ? 220 : 420 }}
+                            contentContainerStyle={{ paddingHorizontal: isFolded ? 6 : 16, paddingBottom: isFolded ? 4 : 8 }}
+                            keyboardShouldPersistTaps="handled"
+                            /* Same Android gesture-path tightening
+                               SwitchAccountModal / PreferencesModal use:
+                                 nestedScrollEnabled — let the inner
+                                   ScrollView take pans even if the
+                                   ancestor view tree includes scrollables;
+                                 removeClippedSubviews=false — keeps
+                                   off-screen rows mounted so a fast pan
+                                   doesn't get dropped mid-flick by a
+                                   freshly mounted child claiming the
+                                   responder;
+                                 directionalLockEnabled — once the pan is
+                                   vertical, ignore sideways thumb wobble;
+                                 overScrollMode 'always' (Android) — show
+                                   the edge glow so the panel reads as
+                                   scrollable even when content barely
+                                   exceeds maxHeight;
+                                 scrollEventThrottle + decelerationRate —
+                                   snappy feel matching the rest of the
+                                   modal pickers. */
+                            nestedScrollEnabled={true}
+                            showsVerticalScrollIndicator={true}
+                            overScrollMode={Platform.OS === 'android' ? 'always' : undefined}
+                            removeClippedSubviews={false}
+                            directionalLockEnabled={true}
+                            scrollEventThrottle={16}
+                            decelerationRate="normal"
+                        >
                             {mediaStuck && (
                                 <View style={{
                                     backgroundColor: 'rgba(230, 120, 0, 0.12)',
@@ -432,12 +521,17 @@ class MediaInfoPanel extends Component {
                                 </Text>
                             )}
                         </ScrollView>
-                    </Dialog.ScrollArea>
-                    <Dialog.Actions>
-                        <Button onPress={close}>Close</Button>
-                    </Dialog.Actions>
-                </Dialog>
-            </Portal>
+                        <View style={{
+                            flexDirection: 'row',
+                            justifyContent: 'flex-end',
+                            paddingHorizontal: isFolded ? 4 : 8,
+                            paddingVertical: isFolded ? 2 : 8,
+                        }}>
+                            <Button compact={isFolded} onPress={close}>Close</Button>
+                        </View>
+                    </Surface>
+                </View>
+            </Modal>
         );
     }
 }
@@ -447,10 +541,12 @@ MediaInfoPanel.propTypes = {
     visible: PropTypes.bool.isRequired,
     onClose: PropTypes.func.isRequired,
     mediaStuck: PropTypes.bool,
+    isFolded: PropTypes.bool,
 };
 
 MediaInfoPanel.defaultProps = {
     mediaStuck: false,
+    isFolded: false,
 };
 
 export default MediaInfoPanel;

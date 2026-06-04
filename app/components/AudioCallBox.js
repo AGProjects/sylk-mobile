@@ -759,6 +759,7 @@ class AudioCallBox extends Component {
                 visible={!!this.state.mediaInfoPanelVisible}
                 onClose={this._closeMediaInfoPanel}
                 mediaStuck={!!this.state.mediaStuck}
+                isFolded={!!this.props.isFolded}
             />
         );
     }
@@ -1457,6 +1458,14 @@ class AudioCallBox extends Component {
         if (!this.state.vuMetersHaveData) {
             return null;
         }
+        // Hide the meters once the call has ended. AudioCallBox sticks
+        // around for ~5 s of wrap-up UI (call summary, ZRTP fade) but
+        // there's no audio flowing anymore — leaving the meters lit
+        // with the last sampled levels reads as "still in call".
+        const _cs = this.state.call && this.state.call.state;
+        if (_cs === 'terminated') {
+            return null;
+        }
         // VU meter vertical offset in LANDSCAPE only — net 0
         // (history: -30 → +20 → -10 → -10 more = back to natural
         // position). Keeping the conditional in case future
@@ -1930,6 +1939,10 @@ class AudioCallBox extends Component {
             // _initOutgoing message.call_id assignments) and is
             // identical on both sides of the dialogue.
             call_id: (call._callId || call.callId || call.id),
+            // Media type of the originating 1-1 call — see VideoBox
+            // counterpart. Escalation from an audio call lands both
+            // sides in an audio-only conference.
+            media: 'audio',
         };
         const metadataMessage = {
             _id: requestId,
@@ -2135,9 +2148,13 @@ class AudioCallBox extends Component {
 		// Variant 3: WhatsApp-style floating icon buttons stacked above the main button
 		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
 			const otherDevices = devices.filter(d => d !== this.props.selectedAudioDevice);
+			// With exactly two devices the menu is overkill — tapping the
+			// button just flips to the other one (Speaker <-> Earpiece, or
+			// Speaker <-> Headset). The floating list only appears at 3+.
+			const toggleOnly = devices.length === 2 && otherDevices.length === 1;
 			return (
 				<View style={[_slot, {position: 'relative'}]}>
-					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+					{!toggleOnly && this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
 							bottom: '100%',
@@ -2170,7 +2187,13 @@ class AudioCallBox extends Component {
 							size={buttonSize}
 							style={buttonStyle}
 							icon={selectedIcon}
-							onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+							onPress={() => {
+								if (toggleOnly) {
+									this.props.selectAudioDevice(otherDevices[0]);
+								} else {
+									this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible});
+								}
+							}}
 						/>
 					</TouchableHighlight>
 				</View>
@@ -2370,18 +2393,18 @@ class AudioCallBox extends Component {
         if (cs === 'terminated') {
             return null;
         }
-        // In folded (cover-display) layout the record pill is rendered
-        // inline under the avatar inside foldedCallerColumn — see the
-        // isFolded branch in render(). Skip the floating overlay so we
-        // don't draw it twice.
+        // In folded (cover-display) layout recording is exposed as a
+        // red-dot IconButton inline in the call button bar (same as
+        // landscape phone), not as a floating pill — skip the
+        // overlay so the bar's button is the sole affordance.
         if (this.props.isFolded) {
             return null;
         }
-        // Same dedupe in LANDSCAPE: we now render the record-call
-        // pill inline under the URI in the left column of the
-        // landscape two-column layout (see render() landscape
-        // branch). Without this guard the floating overlay below
-        // would also draw, producing two record buttons.
+        // LANDSCAPE on phone: skip the floating overlay — Record and
+        // info "i" are now inline IconButtons in the call button bar
+        // for landscape only (see the inline buttons added inside
+        // the cb-btnbar View in render()). Portrait keeps the
+        // floating overlay so nothing visually changes there.
         if (this.state.isLandscape && !this.props.isTablet) {
             return null;
         }
@@ -2396,7 +2419,17 @@ class AudioCallBox extends Component {
         //   tablet portrait:  bottom 60 + mb 40 + ~56 btn + ~44 gap ≈ 200
         //   tablet landscape: bottom 60 + mb  0 + ~56 btn + ~34 gap ≈ 150
         //   phone portrait:   mb 50 + ~50 btn + ~30 gap ≈ 130 (unchanged)
-        //   phone landscape:  bottom 30 + ~50 btn + ~50 gap ≈ 130 (unchanged)
+        //   phone landscape:  130 → 70 per "lower pills 60px" (after
+        //                     the move-above-call-buttons change the
+        //                     pill sat too high in landscape; drop it
+        //                     60 px closer to the call buttons).
+        //                     70 → 90 per "same for record pil view"
+        //                     — matches the 20 px lift just applied
+        //                     to the landscape call-button bar
+        //                     (styles.landscapeButtonContainer.marginBottom
+        //                     0 → 20) so the pill rides with the
+        //                     buttons instead of leaving an extra
+        //                     20 px gap above them.
         //
         // If a user reports the pill still kisses the buttons on a
         // new device class, bump the matching branch — don't cap the
@@ -2405,6 +2438,8 @@ class AudioCallBox extends Component {
         let bottomOffset = 130;
         if (this.props.isTablet) {
             bottomOffset = this.state.isLandscape ? 150 : 200;
+        } else if (this.state.isLandscape) {
+            bottomOffset = 90;
         }
         return (
             <View
@@ -2584,13 +2619,28 @@ class AudioCallBox extends Component {
 	}
 
     // "+" affordance anchored at the avatar's bottom-right corner +
-    // its drop-up panel. Today the panel surfaces a single action,
-    // "Escalate to conference", which fires sendConferenceRequest.
-    // The whole stack is gated on the call being in flight (no use
-    // showing it while the line is still ringing — there's no peer
-    // session to address a metadata payload to yet) and is rendered
-    // inside a relatively positioned wrapper so the absolute
-    // positioning here pins to the avatar, not the screen.
+    // its confirmation dialog.
+    //
+    // Earlier this was a custom drop-down Surface panel positioned
+    // absolutely under the chip. That broke differently on each
+    // Android version (Android 11: nothing rendered, just a thin
+    // bar; Android 13: black box with the label visible but no
+    // tap-target), and looked nothing like the rest of the app.
+    // Replaced with a Portal-mounted paper Dialog so the confirmation
+    // looks identical on iOS and Android and uses the same Material
+    // dialog shell as ImportPrivateKeyModal / DTMFModal / etc.
+    //
+    // Gating:
+    //   • Call must be live (no peer SIP session yet during ringing,
+    //     so nothing to address a metadata payload to).
+    //   • canEscalate requires the contact's PGP publicKey (the
+    //     conference_request handshake is delivered as an E2E
+    //     encrypted metadata payload — without the peer's key it
+    //     would silently fail) and excludes 'test' tag endpoints
+    //     (echo / IVR / playback — no human on the other end).
+    //     If !canEscalate the "+" chip is hidden entirely; the
+    //     previous behaviour of showing an empty panel was the
+    //     "black view with no button" Adi saw on Android 13.
     _renderConferenceRequestPlus(avatarSize) {
         const c = this.state.call;
         const callLive = c
@@ -2600,24 +2650,12 @@ class AudioCallBox extends Component {
             && !this.state.reconnectingCall;
         if (!callLive) return null;
 
-        // Per-row visibility for the "+" drop-up:
-        //   • Escalate to conference — requires PGP publicKey (the
-        //     conference_request handshake is delivered as an E2E
-        //     encrypted metadata payload, so without the peer's key it
-        //     would silently fail) and excludes 'test' tag endpoints
-        //     (echo/IVR/playback — nobody on the other end to invite).
-        //   • Media info — has no contact dependency. It's a local
-        //     diagnostic about THIS PC's media plane, so it must be
-        //     reachable on every call, including 'test' endpoints and
-        //     contacts with no PGP key. (Previously the whole chip was
-        //     hidden when either gate failed — that buried Media info
-        //     for unkeyed peers and test calls, the exact users most
-        //     likely to need it.)
         const contact = this.state.callContact;
         const tags = (contact && Array.isArray(contact.tags)) ? contact.tags : [];
         const canEscalate = !!contact
                             && tags.indexOf('test') === -1
                             && !!contact.publicKey;
+        if (!canEscalate) return null;
 
         // Chip size: keep it readable but visually subordinate to the
         // avatar. ~24% of the avatar diameter lands at 27 px on the
@@ -2627,17 +2665,24 @@ class AudioCallBox extends Component {
         const chipSize = Math.max(20, Math.round(avatarSize * 0.24));
         const pending = this.state.conferenceRequestPending;
         const showPanel = this.state.showConferenceRequestPanel;
-        // Drop-UP panel: anchored so its bottom-right corner sits
-        // right above the chip. Width is a fixed comfortable value
-        // (190 px) so the single label "Escalate to conference"
-        // doesn't wrap on smaller phones.
-        const panelOffset = chipSize + 6;
+
+        // Pretty peer label for the dialog body. Prefer the contact
+        // display name, fall back to the bare username.
+        let peerLabel = '';
+        if (contact && contact.name) {
+            peerLabel = contact.name;
+        } else if (this.state.remoteDisplayName) {
+            peerLabel = this.state.remoteDisplayName;
+        } else if (this.state.remoteUri) {
+            peerLabel = this.state.remoteUri.split('@')[0];
+        }
 
         return (
             <>
                 <TouchableOpacity
                     onPress={this.toggleConferenceRequestPanel}
-                    accessibilityLabel="More call actions"
+                    accessibilityLabel="Escalate to conference"
+                    disabled={pending}
                     style={{
                         position: 'absolute',
                         right: -2,
@@ -2672,79 +2717,34 @@ class AudioCallBox extends Component {
                     </Text>
                 </TouchableOpacity>
 
-                {showPanel ? (
-                    <View
-                        style={{
-                            position: 'absolute',
-                            right: -2,
-                            bottom: panelOffset,
-                            width: 220,
-                            zIndex: 60,
-                            elevation: 10,
-                        }}
+                <Portal>
+                    <Dialog
+                        visible={showPanel}
+                        onDismiss={this.closeConferenceRequestPanel}
                     >
-                        <Surface
-                            style={{
-                                borderRadius: 8,
-                                paddingVertical: 4,
-                                backgroundColor: 'rgba(40,40,40,0.97)',
-                            }}
-                        >
-                            {canEscalate ? (
-                                <TouchableOpacity
-                                    onPress={this.sendConferenceRequest}
-                                    disabled={pending}
-                                    style={{
-                                        flexDirection: 'row',
-                                        alignItems: 'center',
-                                        paddingHorizontal: 12,
-                                        paddingVertical: 10,
-                                        opacity: pending ? 0.5 : 1,
-                                    }}
-                                >
-                                    <IconButton
-                                        icon="account-multiple-plus"
-                                        size={20}
-                                        style={{ margin: 0, marginRight: 6 }}
-                                        color="#FFFFFF"
-                                    />
-                                    <Text style={{ color: 'white', fontSize: 14, flexShrink: 1 }}>
-                                        {pending ? 'Waiting for response…' : 'Escalate to conference'}
-                                    </Text>
-                                </TouchableOpacity>
-                            ) : null}
-                            {/* Media info — opens the live media-plane
-                                inspector regardless of whether the amber
-                                pill is currently auto-shown. Closes the +
-                                drop-up at the same time so the panel
-                                isn't covered by it. Always rendered (no
-                                contact gate) so it's reachable on every
-                                established call. */}
-                            <TouchableOpacity
-                                onPress={() => {
-                                    this.setState({ showConferenceRequestPanel: false });
-                                    this._openMediaInfoPanel();
-                                }}
-                                style={{
-                                    flexDirection: 'row',
-                                    alignItems: 'center',
-                                    paddingHorizontal: 12,
-                                    paddingVertical: 10,
-                                }}
+                        <Dialog.Title>Escalate to conference</Dialog.Title>
+                        <Dialog.Content>
+                            <Text>
+                                {peerLabel
+                                    ? `Invite ${peerLabel} into a video conference? They will receive a request and can accept or decline.`
+                                    : 'Invite the other party into a video conference? They will receive a request and can accept or decline.'}
+                            </Text>
+                        </Dialog.Content>
+                        <Dialog.Actions>
+                            <Button onPress={this.closeConferenceRequestPanel}>
+                                Cancel
+                            </Button>
+                            <Button
+                                mode="contained"
+                                onPress={this.sendConferenceRequest}
+                                disabled={pending}
+                                icon="account-multiple-plus"
                             >
-                                <IconButton
-                                    icon="chart-line"
-                                    size={20}
-                                    style={{ margin: 0, marginRight: 6 }}
-                                    color="#FFFFFF"
-                                />
-                                <Text style={{ color: 'white', fontSize: 14, flexShrink: 1 }}>
-                                    Media info
-                                </Text>
-                            </TouchableOpacity>
-                        </Surface>
-                    </View>
-                ) : null}
+                                {pending ? 'Inviting…' : 'Invite'}
+                            </Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                </Portal>
             </>
         );
     }
@@ -2819,11 +2819,11 @@ class AudioCallBox extends Component {
         let userIconSize;
         if (this.props.isFolded) {
             // Folded cover-display avatar — was 113, dropped 10% to
-            // 102 per user request ("lower size of avatar 10%"). The
-            // rest of the cover-display layout (foldedTopRow.height
-            // = 140) still accommodates the avatar + name + URI
-            // stack.
-            userIconSize = 102;
+            // 102 per user request ("lower size of avatar 10%"), then
+            // dropped a further 20% per "Make avatar circle 80% size"
+            // (102 × 0.8 ≈ 82). The single-column foldedColumn layout
+            // accommodates the smaller avatar + name + URI + VU stack.
+            userIconSize = 82;
         } else {
             // Portrait avatar — was 113, dropped 10% to 102.
             // Landscape avatar — was 75, dropped 10% to 68.
@@ -3042,56 +3042,71 @@ class AudioCallBox extends Component {
                     <Dialog
                         visible={this.state.zrtpDialogVisible}
                         onDismiss={() => this.setState({ zrtpDialogVisible: false })}
+                        // Compact dialog on cover-display: tighter top
+                        // padding + narrower internal gaps so the Verify
+                        // ZRTP card fits inside the folded viewport
+                        // without scrolling. Unfolded keeps the
+                        // Material default sizing.
+                        style={this.props.isFolded ? { marginVertical: 8 } : null}
                     >
-                        <IconButton
-                            icon="close"
-                            size={22}
-                            onPress={() => this.setState({ zrtpDialogVisible: false })}
-                            accessibilityLabel="Close"
-                            style={{ position: 'absolute', top: 4, right: 4, zIndex: 10, margin: 0 }}
-                        />
-                        <Dialog.Title>Verify zRTP encryption</Dialog.Title>
-                        <Dialog.Content>
+                        {/* Close (X) IconButton removed — Reset / Confirm
+                            actions plus tap-outside dismiss are enough,
+                            and dropping the X frees vertical space on
+                            the folded cover display. */}
+                        <Dialog.Title style={this.props.isFolded ? { paddingTop: 8, paddingBottom: 0, marginBottom: 0, fontSize: 16 } : null}>Verify zRTP encryption</Dialog.Title>
+                        <Dialog.Content style={this.props.isFolded ? { paddingVertical: 4 } : null}>
                             {zrtpSession && (
-                                <Text style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                                <Text style={{ fontSize: this.props.isFolded ? 10 : 12, color: '#666', marginBottom: this.props.isFolded ? 4 : 8 }}>
                                     Sylk-ZRTP v{zrtpSession.negotiatedVersion || '?'} · {zrtpSession.continuityState || 'first-time'}
                                 </Text>
                             )}
-                            <Text style={{ marginBottom: 12 }}>
+                            {zrtpSession && (
+                                // Per-device keying breadcrumb. Both
+                                // values are truncated for screen real
+                                // estate; the full strings are in the
+                                // [zrtp] log lines.
+                                //   this device — our localDeviceId
+                                //     (the +sip.instance / device UUID
+                                //     that we put on the wire so the
+                                //     peer can pick the right rs1 slot
+                                //     for us).
+                                //   peer        — peerDeviceId from
+                                //     the most recent probe/accept;
+                                //     '<none>' if the peer didn't send
+                                //     it (older stack, sipsimple with
+                                //     settings.instance_id unset).
+                                <Text style={{ fontSize: this.props.isFolded ? 9 : 11, color: '#888', marginBottom: this.props.isFolded ? 4 : 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                                    this device: {(zrtpSession.localDeviceId || '<none>').slice(0, 16)}
+                                    {'\n'}peer: {(zrtpSession.peerDeviceId || '<none>').slice(0, 16)}
+                                </Text>
+                            )}
+                            <Text style={{ marginBottom: this.props.isFolded ? 6 : 12, fontSize: this.props.isFolded ? 12 : 14 }}>
                                 Compare these with the other party. Both parties must show the same letters AND emojis.
                             </Text>
                             {zrtpSas ? (
-                                <View style={{ alignItems: 'center', marginVertical: 12 }}>
-                                    <Text style={{ fontSize: 36, fontWeight: 'bold', letterSpacing: 8 }}>{zrtpSas.chars}</Text>
-                                    <Text style={{ fontSize: 32, marginTop: 6, letterSpacing: 6 }}>{zrtpSas.emojis}</Text>
+                                <View style={{ alignItems: 'center', marginVertical: this.props.isFolded ? 4 : 12 }}>
+                                    <Text style={{ fontSize: this.props.isFolded ? 26 : 36, fontWeight: 'bold', letterSpacing: this.props.isFolded ? 6 : 8 }}>{zrtpSas.chars}</Text>
+                                    <Text style={{ fontSize: this.props.isFolded ? 22 : 32, marginTop: this.props.isFolded ? 2 : 6, letterSpacing: this.props.isFolded ? 4 : 6 }}>{zrtpSas.emojis}</Text>
                                 </View>
                             ) : (
                                 <Text>Waiting for handshake to complete…</Text>
                             )}
                             {verificationStatus === 'verified' && stored && (
-                                <Text style={{ color: 'green', marginTop: 8 }}>
+                                <Text style={{ color: 'green', marginTop: this.props.isFolded ? 4 : 8, fontSize: this.props.isFolded ? 11 : 14 }}>
                                     ✓ Verified on {formatVerifiedTimestamp(stored.verifiedAt)}
                                 </Text>
                             )}
                             {verificationStatus === 'mismatch' && stored && (
-                                <Text style={{ color: 'red', marginTop: 8 }}>
+                                <Text style={{ color: 'red', marginTop: this.props.isFolded ? 4 : 8, fontSize: this.props.isFolded ? 11 : 14 }}>
                                     ⚠ The other party's identity key has changed since the last verification on {formatVerifiedTimestamp(stored.verifiedAt)}. They may have reinstalled — or this could be a MITM. Re-verify carefully before tapping Confirm.
                                 </Text>
                             )}
                         </Dialog.Content>
-                        <Dialog.Actions style={{ justifyContent: 'space-between' }}>
-                            <Button onPress={this._onZrtpReset}>Reset</Button>
-                            <Button onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
+                        <Dialog.Actions style={[{ justifyContent: 'space-between' }, this.props.isFolded ? { paddingVertical: 0, paddingHorizontal: 8, minHeight: 36 } : null]}>
+                            <Button compact={this.props.isFolded} onPress={this._onZrtpReset}>Reset</Button>
+                            <Button compact={this.props.isFolded} onPress={this._onZrtpVerifyConfirm} disabled={!zrtpSas}>Confirm</Button>
                         </Dialog.Actions>
                     </Dialog>
-                    {/* Media diagnostic panel — opened by tapping the
-                        amber "Media stuck" pill. Shows the same fields
-                        that get written to metro.log when the DIAGNOSTIC
-                        line fires, but live-updated every poll tick by
-                        the zrtpMediaDiagUpdated listener so the user sees
-                        current packet counts instead of a 5-second-old
-                        freeze frame. */}
-                    {this._renderMediaInfoPanel()}
                     {/* zRTP mandatory-mode handshake failure prompt
                         used to live HERE (inside <Portal>, as a Paper
                         Dialog). That renders above the entire app,
@@ -3133,6 +3148,16 @@ class AudioCallBox extends Component {
                         </Dialog.Actions>
                     </Dialog>
                 </Portal>
+                {/* Media diagnostic panel — opened by tapping the
+                    amber "Media stuck" pill or the "i" pill. Rendered
+                    OUTSIDE the parent <Portal> because MediaInfoPanel
+                    wraps its content in its own <Portal>; nesting the
+                    two caused two overlapping Dialog cards on iOS
+                    (the outer Portal's scrim + the inner Dialog's
+                    scrim both painted, producing a panel-on-panel
+                    look). The component owns its own visibility, so
+                    it's safe to mount unconditionally here. */}
+                {this._renderMediaInfoPanel()}
                 {this.state.zrtpDowngradeBannerVisible && (
                     <View
                         style={{
@@ -3253,186 +3278,93 @@ class AudioCallBox extends Component {
 					shareLocationFromCall = {this.props.shareLocationFromCall}
 					requestLocationFromCall = {this.props.requestLocationFromCall}
 					showDtmfFunc = {this.showDtmfModal}
+					showMediaInfo = {this._openMediaInfoPanel}
                 />
 
 				{this.props.isFolded ? (
 					<>
-						{/* foldedTopRow always uses the same marginTop
-						    (from the stylesheet) — no conditional bump
-						    for the awaiting state — so the avatar's
-						    vertical position never moves between
-						    pre-call and in-call. Right-column content
-						    changes (Start button → speedometer) but is
-						    centered inside its own column, and the
-						    column itself stretches to the avatar
-						    column's height (alignItems:stretch on the
-						    row). Result: the LEFT side and the bottom
-						    row stay put across state transitions. */}
+						{/* Folded (cover-display) layout — single
+						    centered column. Vertical order:
+						        Avatar
+						        Names (display name + URI)
+						        VuMeters
+						        Buttons bar (rendered later in the
+						          shared call button-bar block below)
+						    No speedometer, no record pill — recording
+						    is exposed as a red-dot IconButton in the
+						    button bar instead. */}
 						<View
 							key={'cb-toprow-' + _callRemountKey}
-							style={styles.foldedTopRow}
+							style={styles.foldedColumn}
 						>
-							<View style={styles.foldedCallerColumn}>
-								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
-								<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.foldedDisplayName} numberOfLines={1}>{displayName}</Dialog.Title>
-								<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
-									<Text key={'cb-uri-' + _callRemountKey} style={styles.foldedUri} numberOfLines={1}>{displayUri}</Text>
-								</TouchableWithoutFeedback>
-							</View>
-							<View style={styles.foldedStatsColumn}>
-								{/* In folded outgoing-audio pre-call
-								    state, the Start audio call button +
-								    countdown progress bar live HERE in
-								    the right column (next to the
-								    avatar) rather than as an absolutely-
-								    positioned overlay near the action
-								    bar. On the cover display the overlay
-								    landed on top of the avatar; pulling
-								    it into the column gives both halves
-								    of the top row a clear job: caller
-								    identity on the left, call action on
-								    the right.
+							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.foldedDisplayName} numberOfLines={1}>{displayName}</Dialog.Title>
+							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+								<Text key={'cb-uri-' + _callRemountKey} style={styles.foldedUri} numberOfLines={1}>{displayUri}</Text>
+							</TouchableWithoutFeedback>
 
-								    Once the call is connected the same
-								    slot renders the stats block
-								    (speedometer). renderStatsBlock
-								    returns null while not yet
-								    established, so the two states never
-								    fight for the space. Pass null as
-								    the footer so the ZRTP badge is NOT
-								    rendered here — in folded view it's
-								    hoisted into the bottom row below
-								    alongside the record pill so the two
-								    share a single baseline. */}
-								{this.props.awaitingUserCallStart && this.props.confirmStartCall ? (
-									// flex:1 + alignSelf:'stretch' lets this
-									// wrapper fill the foldedStatsColumn's
-									// height (the column was switched to
-									// justifyContent:'flex-start' so the
-									// speedometer's top would line up with
-									// the avatar). justifyContent:'center'
-									// inside the wrapper then re-centers
-									// the Start-call button + countdown
-									// bar vertically against the avatar
-									// column's mid-line during the
-									// pre-call awaiting state.
+							{/* VuMeters sit directly under the names.
+							    _renderRemoteVuMeter() short-circuits to
+							    null until WebRTC publishes its first
+							    audioLevel sample, so this stays empty
+							    during ringing and only appears once
+							    media is actually flowing. */}
+							<View style={{ alignSelf: 'stretch', marginTop: 6 }}>
+								{this._renderRemoteVuMeter()}
+							</View>
+
+							{/* Outgoing-audio pre-call: Start now button
+							    + countdown bar. Lives inside the same
+							    column so the layout stays a single
+							    vertical stack. */}
+							{this.props.awaitingUserCallStart && this.props.confirmStartCall ? (
+								<View style={{ alignItems: 'center', marginTop: 10 }}>
+									<Button
+										mode="contained"
+										onPress={() => {
+											utils.timestampedLog('[audiocallbox] [countdown] user tapped Start audio call (folded)');
+											this._cancelAutoStartTimer();
+											if (this.props.confirmStartCall) {
+												this.props.confirmStartCall();
+											}
+										}}
+										style={{ minWidth: 180 }}
+									>
+										Start now
+									</Button>
 									<View style={{
-										flex: 1,
-										alignSelf: 'stretch',
-										alignItems: 'center',
-										justifyContent: 'center',
+										flexDirection: 'row',
+										marginTop: 10,
+										height: 6,
+										width: 150,
+										justifyContent: 'space-between',
 									}}>
-										<Button
-											mode="contained"
-											onPress={() => {
-												utils.timestampedLog('[audiocallbox] [countdown] user tapped Start audio call (folded)');
-												this._cancelAutoStartTimer();
-												if (this.props.confirmStartCall) {
-													this.props.confirmStartCall();
-												}
-											}}
-											// minWidth holds the
-											// button at its widest
-											// label so the
-											// button doesn't visibly
-											// shrink as the countdown
-											// ticks down.
-											style={{ marginRight: 12, minWidth: 180 }}
-										>
-											Start now
-										</Button>
-										<View style={{
-											flexDirection: 'row',
-											marginTop: 10,
-											height: 6,
-											// Sized to roughly match the
-											// Start-call button's natural
-											// width on the folded right
-											// column. alignSelf:'stretch'
-											// (full column) was too wide,
-											// 100 px was too narrow, 150
-											// hugs the button.
-											width: 150,
-											justifyContent: 'space-between',
-											// Match the Start button's
-											// right margin so the
-											// countdown bar lines up
-											// with the button width.
-											marginRight: 12,
-										}}>
-											{/* One cell per second of the original
-											    countdown (`autoStartTotal`), filling
-											    from left as `autoStartCountdown` ticks
-											    down. So a 5 s timer = 5 bars max. */}
-											{[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
-												<View
-													key={'autostart-cell-folded-' + i}
-													style={{
-														flex: 1,
-														marginHorizontal: 1,
-														borderRadius: 2,
-														backgroundColor: i < (this.state.autoStartCountdown || 0)
-															? (this.state.autoStartPaused
-																? 'rgba(255,255,255,0.85)'
-																: 'rgba(0,200,90,0.9)')
-															: 'rgba(255,255,255,0.20)',
-													}}
-												/>
-											))}
-										</View>
+										{[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
+											<View
+												key={'autostart-cell-folded-' + i}
+												style={{
+													flex: 1,
+													marginHorizontal: 1,
+													borderRadius: 2,
+													backgroundColor: i < (this.state.autoStartCountdown || 0)
+														? (this.state.autoStartPaused
+															? 'rgba(255,255,255,0.85)'
+															: 'rgba(0,200,90,0.9)')
+														: 'rgba(255,255,255,0.20)',
+												}}
+											/>
+										))}
 									</View>
-								) : (
-									// Folded layout only: lift the ZRTP
-									// pill above its natural slot inside
-									// the stats column. History: first
-									// pass lifted by 70 px to pull the
-									// pill close to the dial; lowered 30
-									// (net -40); user then asked for 20
-									// more up, net -60. The badge's own
-									// outer wrapper has marginTop: 26
-									// (see renderZrtpBadge), so net
-									// effect from the speedometer
-									// baseline is 26 - 60 = -34.
-									this.renderStatsBlock(_callRemountKey, (
-										<View style={{ marginTop: -60 }}>
-											{renderZrtpBadge()}
-										</View>
-									))
-								)}
-							</View>
-						</View>
-
-						{/* Folded bottom row: record-call pill on the left
-						    (directly under the avatar column), ZRTP badge
-						    on the right (under the stats column), both
-						    anchored to the row's top edge so they share
-						    a single baseline.
-
-						    Record pill is intentionally NOT gated on
-						    this.state.call — in the outgoing pre-call
-						    awaiting state there's no call object yet,
-						    but the user must still be able to tap the
-						    pill to "arm" the recorder so it auto-fires
-						    when the call reaches accepted/established.
-						    Same hide rules as
-						    _renderRecordControlOverlay: skip while the
-						    audio-device picker is open, and skip once
-						    the call has terminated. */}
-						<View key={'cb-bottomrow-' + _callRemountKey} style={styles.foldedBottomRow}>
-							{/* Record-call pill in folded mode is lifted
-							    30 px above its row baseline per user
-							    request ("Lift Record Call pill 30px"). A
-							    negative marginTop is used rather than
-							    moving styles.foldedBottomRow's marginTop
-							    so that the now-empty right column doesn't
-							    follow it up — only the pill moves. */}
-							<View style={[styles.foldedBottomLeft, { marginTop: -30 }]}>
-								{(!this.state.audioDevicePickerVisible
-									&& !(this.state.call && this.state.call.state === 'terminated')) ?
-									this._renderRecordControl()
-								: null}
-							</View>
-							<View style={styles.foldedBottomRight} />
+								</View>
+							) : (
+								// ZRTP pill: lifted above its natural
+								// slot per user requests — 10 px, then
+								// another 5 px (net -15 from the
+								// baseline 8). Final marginTop = -7.
+								<View style={{ alignItems: 'center', marginTop: -7 }}>
+									{renderZrtpBadge()}
+								</View>
+							)}
 						</View>
 					</>
 				) : this.state.isLandscape && !this.props.isTablet ? (
@@ -3446,22 +3378,48 @@ class AudioCallBox extends Component {
 						    centerline). Restoring the natural position
 						    lets the row anchor to the vertical centre
 						    again. */}
-						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-							<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+						<View style={{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'flex-start' }}>
+							{/* marginTop matches the visible gap above the
+							    speedometer dial in the right column.
+							    AudioSpeedometer's styles.container has
+							    marginTop: 16, which combined with the
+							    landscape-Android translateY: -18 on the
+							    speedometer wrapper plus the ~18 px of empty
+							    space at the top of the SVG dial box puts the
+							    dial arc ~16 px below the cyan column top.
+							    Mirror that here so the avatar starts at the
+							    same y as the speedometer dial. */}
+							{/* Avatar top margin: started at 16 to mirror the
+							    speedometer's container marginTop; bumped
+							    +20 → 36 per "Add 20px more top avatar
+							    margin" so the avatar sits visibly below
+							    the navbar. */}
+							<View style={{ marginTop: 36 }}>
+								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+							</View>
 							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
 							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
 								<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
 							</TouchableWithoutFeedback>
-							{/* Record-call pill — sits under the URI in
-							    landscape. marginTop history: 50 →
-							    40 → 20 → 25 → 30 → 0 per "raise
-							    record pill 30px". */}
-							<View style={{ marginTop: 0 }}>
-							    {this._renderRecordControl()}
-							</View>
+							{/* Record-call pill + info "i" button no
+							    longer rendered inline here. In landscape
+							    they now ride on the floating overlay
+							    (_renderRecordControlOverlay) so they sit
+							    directly above the Call buttons — same
+							    placement as Portrait. */}
 						</View>
-						<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-							{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
+						<View style={{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'flex-start' }}>
+							{/* zRTP pill lifted 30 px in landscape per user
+							    request — wrap the badge that renderStatsBlock
+							    places below the speedometer in a negative-
+							    marginTop container so it sits closer to the
+							    dial without disturbing the stats block's own
+							    internal layout. */}
+							{this.renderStatsBlock(_callRemountKey, (
+								<View style={{ marginTop: -30 }}>
+									{renderZrtpBadge()}
+								</View>
+							))}
 						</View>
 					</View>
 				) : (
@@ -3528,6 +3486,11 @@ class AudioCallBox extends Component {
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
+                        {/* Floating Record pill + info "i" overlay —
+                            still rendered in portrait (and tablet);
+                            _renderRecordControlOverlay() short-
+                            circuits in landscape phone, where the
+                            buttons live inline in the bar instead. */}
                         {this._renderRecordControlOverlay()}
                         <View key={'cb-btnbar-' + _callRemountKey} style={[buttonContainerClass, extraButtonContainerClass]}>
                             {!disableChat ?
@@ -3580,6 +3543,91 @@ class AudioCallBox extends Component {
                             </View>
 
                             {this.renderAudioDevicePicker(buttonSize, whiteButtonClass, _callRemountKey, slotContainerStyle)}
+
+                            {/* Record + Info IconButtons — inline in
+                                the call button bar ONLY in LANDSCAPE
+                                phone. Portrait keeps the floating
+                                Record-pill overlay above the bar
+                                (see _renderRecordControlOverlay) so
+                                nothing changes there. State-driven
+                                Record look:
+                                  default: white bg, red REC icon —
+                                    "tap to start recording"
+                                  armed:   amber bg, white REC icon —
+                                    "will start on connect"
+                                  active:  red bg, white stop icon —
+                                    "tap to stop"
+                                The animated pulse from the old pill
+                                isn't replicated here; the colour
+                                change is enough at the button-bar
+                                size. */}
+                            {(this.state.isLandscape && !this.props.isTablet) ? (() => {
+                                const isRec = !!this.state.isRecording;
+                                const isArmed = !isRec && !!this.state.recordingArmed;
+                                // Record: per user spec the button is
+                                // a plain red dot ("Rec button must be
+                                // a red dot"). Background is the same
+                                // white-circle as the other action-bar
+                                // buttons; the dot lives inside.
+                                //   default: solid red dot
+                                //   armed:   amber dot ("will record")
+                                //   active:  red dot + visible ring
+                                //            ("recording now")
+                                const dotColor = isArmed ? '#e68c00' : '#dc1e1e';
+                                const dotSize = Math.round(buttonSize * 0.42);
+                                return (
+                                    <>
+                                        <View style={slotContainerStyle}>
+                                            <TouchableHighlight
+                                                style={styles.roundshape}
+                                                onPress={this._toggleCallRecording}
+                                                underlayColor="rgba(0,0,0,0.05)"
+                                            >
+                                                <View style={[styles.roundshape, whiteButtonClass, {
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                }]}>
+                                                    <View style={{
+                                                        width: dotSize,
+                                                        height: dotSize,
+                                                        borderRadius: dotSize / 2,
+                                                        backgroundColor: dotColor,
+                                                        borderWidth: isRec ? 2 : 0,
+                                                        borderColor: '#ffffff',
+                                                    }} />
+                                                </View>
+                                            </TouchableHighlight>
+                                        </View>
+                                        {/* Info: per user spec rendered
+                                            as a black letter "i" on
+                                            the same white circle as
+                                            the other action-bar
+                                            buttons. */}
+                                        <View style={slotContainerStyle}>
+                                            <TouchableHighlight
+                                                style={styles.roundshape}
+                                                onPress={this._openMediaInfoPanel}
+                                                underlayColor="rgba(0,0,0,0.05)"
+                                            >
+                                                <View style={[styles.roundshape, whiteButtonClass, {
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                }]}>
+                                                    <Text style={{
+                                                        color: '#000000',
+                                                        fontSize: Math.round(buttonSize * 0.55),
+                                                        fontWeight: 'bold',
+                                                        fontFamily: Platform.OS === 'ios' ? 'Times New Roman' : 'serif',
+                                                        lineHeight: Math.round(buttonSize * 0.6),
+                                                    }}>
+                                                        i
+                                                    </Text>
+                                                </View>
+                                            </TouchableHighlight>
+                                        </View>
+                                    </>
+                                );
+                            })() : null}
 
                             {/* Dialpad icon — surfaces the DTMF
                                 modal during the call. Shown when:

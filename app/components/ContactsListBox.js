@@ -8412,6 +8412,22 @@ scrollToMessage(id) {
        return false;
     }
 
+	get isAnonymous() {
+	   if (!this.state.selectedContact || !this.state.selectedContact.uri) {
+           return false;
+       } 	   
+	   
+	   if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
+		   return true;
+	   }
+
+	   if (this.state.selectedContact.uri.indexOf('anonymous@') > -1) {
+		   return true;
+	   }
+
+       return false;
+	}
+
     get showReadonlyChat() {
 		if (this.state.messagesCategoryFilter == 'image') {
 			return false;
@@ -9156,7 +9172,7 @@ scrollToMessage(id) {
         let chatMessages = this.state.focusedMessages || messages;
         // remove duplicate messages no mater what
         chatMessages = chatMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
-        let loadEarlier = !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
+        let loadEarlier = !this.isAnonymous && !this.state.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
 
@@ -10199,6 +10215,12 @@ scrollToMessage(id) {
 			      transparent
 			      animationType="fade"
 			      onRequestClose={closeModal}
+			      /* iOS-only — without this, RN's Modal defaults to
+			         supportedOrientations: ['portrait'], which forces the
+			         underlying app to portrait while the modal is presented.
+			         Include both landscape variants so the modal inherits
+			         whichever orientation the user is in. */
+			      supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
 			    >
 			      <TouchableWithoutFeedback onPress={closeModal}>
 			        <View style={{
@@ -10300,6 +10322,12 @@ scrollToMessage(id) {
 			  animationType="slide"
 			  transparent={false}
 			  onRequestClose={this.closeVideoModal}
+			  /* iOS-only — without this, RN's Modal defaults to
+			     supportedOrientations: ['portrait'], which forces the
+			     underlying app to portrait while the modal is presented.
+			     Include both landscape variants so the modal inherits
+			     whichever orientation the user is in. */
+			  supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
 			>
 			  <TouchableOpacity
 				onPress={this.closeVideoModal}
@@ -10345,6 +10373,12 @@ scrollToMessage(id) {
 				visible={true}
 				transparent={true}
 				onRequestClose={() => this.onImagePress(null)}
+				/* iOS-only — without this, RN's Modal defaults to
+				   supportedOrientations: ['portrait'], which forces the
+				   underlying app to portrait while the modal is presented.
+				   Include both landscape variants so the modal inherits
+				   whichever orientation the user is in. */
+				supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
 			  >
 				<ImageViewer
 				  imageUrls={[{ url: _viewerUri, width: _dims.width, height: _dims.height }]}
@@ -10565,6 +10599,12 @@ scrollToMessage(id) {
 						transparent={false}
 						animationType="fade"
 						onRequestClose={_exit}
+						/* iOS-only — without this, RN's Modal defaults to
+						   supportedOrientations: ['portrait'], which forces the
+						   underlying app to portrait while the modal is presented.
+						   Include both landscape variants so the modal inherits
+						   whichever orientation the user is in. */
+						supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
 					>
 						<View
 							style={{

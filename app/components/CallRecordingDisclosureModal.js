@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet } from 'react-native';
+import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet, Dimensions } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
@@ -90,13 +90,29 @@ class CallRecordingDisclosureModal extends Component {
             ? 'Recording a conference captures every attendee at once. The legal exposure is the same as for a 1-to-1 call but the number of people whose consent matters is larger.'
             : null;
 
+        // Landscape phones have only ~390 dp of vertical space, so
+        // the previous fixed maxHeight: 360 on the scroll body plus
+        // the title + buttons + Surface padding overflowed the
+        // screen and clipped the action buttons off the bottom.
+        // Size the scroll body relative to the current window
+        // height so it fits in landscape (≈45% of screen height
+        // leaves room for title, link row, action buttons) and
+        // keeps the original portrait look (still capped at 360
+        // on tall portrait phones).
+        const _winH = Dimensions.get('window').height;
+        const _winW = Dimensions.get('window').width;
+        const _isLandscape = _winW > _winH;
+        const _scrollMaxHeight = _isLandscape
+            ? Math.max(140, Math.floor(_winH * 0.45))
+            : Math.min(360, Math.floor(_winH * 0.55));
+
         const body = (
             <View style={containerStyles.overlay}>
                     <KeyboardAvoidingView
                         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                     >
-                        <Surface style={[containerStyles.modalSurface, { padding: 6 }]}>
+                        <Surface style={[containerStyles.modalSurface, { padding: 6, maxWidth: _isLandscape ? Math.min(560, _winW * 0.85) : undefined, alignSelf: 'center' }]}>
                             {/* Title — override the shared
                                 containerStyles.title (24pt, 14pt
                                 padding) with a tighter version so
@@ -124,7 +140,7 @@ class CallRecordingDisclosureModal extends Component {
                                 keeps the Linking-handled URL tappable
                                 even if a keyboard is up. */}
                             <ScrollView
-                                style={{ maxHeight: 360, paddingHorizontal: 4 }}
+                                style={{ maxHeight: _scrollMaxHeight, paddingHorizontal: 4 }}
                                 nestedScrollEnabled={true}
                                 showsVerticalScrollIndicator={true}
                                 keyboardShouldPersistTaps="handled"
@@ -308,6 +324,15 @@ class CallRecordingDisclosureModal extends Component {
                 transparent
                 animationType="fade"
                 onRequestClose={this.onCancel}
+                /* iOS-only — without this, RN's Modal defaults to
+                   supportedOrientations: ['portrait'], which forces
+                   the app's orientation to portrait whenever the
+                   consent panel appears (the user reported the
+                   landscape app snapping to portrait on Record-
+                   audio). Include both landscape variants so the
+                   panel inherits whichever landscape the user is
+                   currently in. */
+                supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
                 {body}
             </Modal>

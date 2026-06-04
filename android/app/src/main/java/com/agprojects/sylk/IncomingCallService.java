@@ -673,8 +673,8 @@ public class IncomingCallService extends Service {
 
 		String callerName = from_uri;
         String title = mediaType + " call from " + from_uri;
-		
-		if (displayName != null) {
+
+		if (displayName != null && !displayName.trim().isEmpty()) {
 			callerName = displayName;
 		}
 		
@@ -797,6 +797,20 @@ public class IncomingCallService extends Service {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 			if (Build.VERSION.SDK_INT == Build.VERSION_CODES.R) {
 				callerName = title;
+			}
+
+			// CallStyle.forIncomingCall requires a non-empty Person name on
+			// Android 11+; fall back through every plausible source before
+			// using a generic placeholder to avoid an IllegalArgumentException
+			// crash that would tear down the foreground service.
+			if (callerName == null || callerName.trim().isEmpty()) {
+				if (from_uri != null && !from_uri.trim().isEmpty()) {
+					callerName = from_uri;
+				} else if (title != null && !title.trim().isEmpty()) {
+					callerName = title;
+				} else {
+					callerName = "Unknown caller";
+				}
 			}
 
 			Person caller = new Person.Builder()

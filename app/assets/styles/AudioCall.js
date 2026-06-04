@@ -47,7 +47,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginTop: 'auto',
     bottom: 30,
-    marginBottom: 0,
+    // Bumped 0 → 20 per "lift up buttons bar 20px" — pushes the
+    // whole strip 20 px up from the bottom of the screen.
+    marginBottom: 20,
     justifyContent: 'center',
     // Vertical nudge on the landscape call-button strip:
     //   started at translateY:50 (50 px lower) per "lower call
@@ -213,6 +215,18 @@ const styles = StyleSheet.create({
     marginTop: 26,
     paddingHorizontal: 8,
     height: 140,
+  },
+
+  // Single-column folded layout — stack of Avatar, Names, VuMeters
+  // (and pre-call Start button when applicable). Replaces the old
+  // two-column foldedTopRow/foldedBottomRow split per user request.
+  // marginTop: 26 -> 21 per "Remove 5p from below the navbar so
+  // everything shifts up" — folded only.
+  foldedColumn: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginTop: 21,
+    paddingHorizontal: 8,
   },
 
   foldedCallerColumn: {

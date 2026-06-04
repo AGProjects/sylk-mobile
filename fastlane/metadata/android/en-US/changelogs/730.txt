@@ -1,0 +1,6 @@
+Video compatibilty with Safari browser
+Solved sticky Microphone in use notification
+Added Show media info panel to audio and video calls
+Added Media-loss watchdog redialer
+Improve conference layout and chat
+Bug fixes

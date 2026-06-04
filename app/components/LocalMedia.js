@@ -111,19 +111,21 @@ class LocalMedia extends Component {
         // awaitingUserCallStart true on the fresh LocalMedia mount.
         // Without this guard the countdown would re-fire on a call
         // the user has already committed to.
+        /*
         utils.timestampedLog('[localmedia] [countdown] componentDidMount',
             'awaiting=', !!this.props.awaitingUserCallStart,
             'hasConfirmStartCall=', typeof this.props.confirmStartCall === 'function',
             'disableAutoStart=', !!this.props.disableAutoStart,
             'hasCall=', !!this.props.call);
+            */
         if (this.props.awaitingUserCallStart
             && this.props.confirmStartCall
             && !this.props.disableAutoStart
             && !this.props.call) {
-            utils.timestampedLog('[localmedia] [countdown] componentDidMount -> start');
+            //utils.timestampedLog('[localmedia] [countdown] componentDidMount -> start');
             this._startAutoStartTimer();
         } else {
-            utils.timestampedLog('[localmedia] [countdown] componentDidMount -> skip start');
+            //utils.timestampedLog('[localmedia] [countdown] componentDidMount -> skip start');
         }
     }
 
@@ -131,6 +133,7 @@ class LocalMedia extends Component {
         const enteredAwaiting = !prevProps.awaitingUserCallStart && this.props.awaitingUserCallStart;
         const leftAwaiting = prevProps.awaitingUserCallStart && !this.props.awaitingUserCallStart;
         if (enteredAwaiting || leftAwaiting) {
+            /*
             utils.timestampedLog('[localmedia] [countdown] componentDidUpdate',
                 'enteredAwaiting=', enteredAwaiting,
                 'leftAwaiting=', leftAwaiting,
@@ -138,6 +141,7 @@ class LocalMedia extends Component {
                 'curr.awaiting=', !!this.props.awaitingUserCallStart,
                 'prev.call=', !!prevProps.call,
                 'curr.call=', !!this.props.call);
+            */
         }
         // !props.call: same reason as in componentDidMount — a Call
         // remount on activeCall.id change brings LocalMedia back with
@@ -147,16 +151,18 @@ class LocalMedia extends Component {
             && this.props.confirmStartCall
             && !this.props.disableAutoStart
             && !this.props.call) {
-            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> start');
+            //utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> start');
             this._startAutoStartTimer();
         } else if (enteredAwaiting) {
+            /*
             utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> skip start',
                 'hasConfirm=', typeof this.props.confirmStartCall === 'function',
                 'disableAutoStart=', !!this.props.disableAutoStart,
                 'hasCall=', !!this.props.call);
+                */
         }
         if (leftAwaiting) {
-            utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> cancel');
+            //utils.timestampedLog('[localmedia] [countdown] componentDidUpdate -> cancel');
             this._cancelAutoStartTimer();
         }
 
@@ -178,10 +184,12 @@ class LocalMedia extends Component {
     }
 
     componentWillUnmount() {
+        /*
         utils.timestampedLog('[localmedia] [countdown] componentWillUnmount',
             'autoStartCountdown=', this.state.autoStartCountdown,
             'autoStartTotal=', this.state.autoStartTotal,
             'hasTimer=', !!this._autoStartTimer);
+        */
         this._cancelAutoStartTimer();
     }
 

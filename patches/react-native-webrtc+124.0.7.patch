@@ -1395,6 +1395,65 @@ index 996648c..b525a0d 100644
      @ReactMethod
      public void transceiverSetDirection(int id, String senderId, String direction, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
+index acf9998..02c32ef 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
+@@ -10,7 +10,10 @@ import org.webrtc.VideoDecoderFactory;
+ 
+ import java.util.ArrayList;
+ import java.util.Arrays;
++import java.util.Collections;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ /**
+  * This is a custom video decoder factory for WebRTC which behaves similarly
+@@ -60,6 +63,43 @@ public class H264AndSoftwareVideoDecoderFactory implements VideoDecoderFactory {
+             }
+         }
+ 
++        // Synthesise a Constrained High 3.1 entry when the underlying
++        // libwebrtc HardwareVideoDecoderFactory didn't enumerate one.
++        //
++        // Background: libwebrtc-android's HardwareVideoDecoderFactory has a
++        // conservative isH264HighProfileSupported() check that returns
++        // false on most devices, even though the Qualcomm c2.qti.avc.decoder
++        // (and every Adreno/Mali HW H.264 decoder we've seen in the field)
++        // happily accepts High-profile bitstreams when fed — High is a
++        // superset of Baseline at the NAL level and the HW pipe doesn't
++        // distinguish in practice. The conservative check costs us
++        // interop with browsers that prefer High in their offer, most
++        // notably Safari on macOS, whose VideoToolbox HW encoder emits
++        // profile-level-id=640c1f as its first H.264 PT.
++        //
++        // Without this synthetic entry our SDP advertises only
++        // Constrained Baseline (42e01f). Safari and Janus forward the
++        // High-profile RTP anyway; our libwebrtc demuxer has no PT bound
++        // to a decoder for those packets; inbound video freezes to black.
++        // By advertising the High entry — and routing it to the same
++        // hardwareVideoDecoderFactory in createDecoder() — libwebrtc maps
++        // the High PT to the HW decoder, which decodes the stream as if
++        // it were Baseline.
++        //
++        // No-op if HardwareVideoDecoderFactory already returned a High
++        // entry (newer libwebrtc versions, or non-default devices). We
++        // mirror the params shape (level-asymmetry-allowed,
++        // packetization-mode) of the Baseline entry so libwebrtc treats
++        // both PTs symmetrically downstream.
++        if (h264High == null && h264Baseline != null) {
++            Map<String, String> params = new HashMap<>(h264Baseline.params);
++            params.put(VideoCodecInfo.H264_FMTP_PROFILE_LEVEL_ID,
++                       VideoCodecInfo.H264_CONSTRAINED_HIGH_3_1);
++            // Third arg is scalabilityModes (libwebrtc 124+ signature);
++            // H.264 doesn't use SVC modes here, so pass an empty list.
++            h264High = new VideoCodecInfo("H264", params, Collections.emptyList());
++        }
++
+         if (h264High != null) {
+             codecs.add(h264High);
+         }
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
 new file mode 100644
 index 0000000..136b57d

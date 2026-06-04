@@ -175,6 +175,34 @@ discover_devices() {
         | awk '$2=="device" {print $1}'
 }
 
+# Resolve a transport serial (USB serial like ZY22LCXTPW, or wireless
+# host:port like 192.168.4.3:39145) to the device's immutable physical
+# serial reported by `ro.serialno`. Two transports for the SAME physical
+# device — typical when a phone is plugged in over USB AND was previously
+# `adb connect`-ed over Wireless debugging — return identical keys, so
+# the device_watcher can dedupe and avoid running two logcat pipelines
+# (which is what produced the duplicated `[audio] Current device:` lines
+# you saw in metro.log: same physical Razr, two adb streams, every line
+# printed twice).
+#
+# Falls back to the transport serial if `getprop` fails (device offline,
+# unauthorized, slow to respond on a fresh connect). That keeps the
+# watcher progressing — the next tick will retry and likely succeed
+# once the device is fully attached.
+device_physical_key() {
+    local serial="$1"
+    local key
+    key=$(adb -s "$serial" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n[:space:]')
+    if [[ -z "$key" ]]; then
+        # Strip the :port suffix from wireless serials so the fallback
+        # at least normalizes host:port → host (still imperfect, but
+        # better than nothing when getprop is transiently unavailable).
+        printf '%s' "${serial%:*}"
+    else
+        printf '%s' "$key"
+    fi
+}
+
 # `adb mdns services` (requires adb 30.0.0+, ships with platform-tools
 # 30+) prints any nearby device that has Settings → Developer options →
 # Wireless debugging turned on. Output looks like:
@@ -431,6 +459,11 @@ wifi_android_watcher() {
 # cleanly.
 adb_loop() {
     local serial="$1"
+    # Optional second argument: the tag used in the [ADB:<tag>] column.
+    # Defaults to the transport serial for backwards-compatibility, but
+    # device_watcher passes the physical key (ro.serialno) so the log
+    # column stays stable across USB/wireless reconnects.
+    local display="${2:-$1}"
     while true; do
         # Native code now uses a single logcat tag `SYLK_APP` for every
         # Log.x call; the per-class short marker (e.g. [FCM], [Audio])
@@ -475,7 +508,7 @@ adb_loop() {
             | grep --line-buffered -vE '^--------- beginning of' \
             | sed -l -E 's/^.*SYLK_APP: //' \
             | awk '$0 != prev { print; prev = $0; fflush(); }' \
-            | prefix_and_tee "ADB:${serial}"
+            | prefix_and_tee "ADB:${display}"
         log_meta "adb($serial) pipeline exited; respawning in 2s..."
         sleep 2
     done
@@ -486,19 +519,41 @@ adb_loop() {
 # left alone — their loops self-heal on disconnect/reconnect, so we
 # never need to restart them.
 device_watcher() {
-    # Space-padded list of serials we've already started a loop for.
-    # Lives inside this subshell, which is fine — the watcher is the
-    # only thing that needs to consult it.
-    local seen=" "
+    # `seen_physical` tracks physical devices we've already attached a
+    # logcat pipeline to (keyed by ro.serialno, resolved via
+    # device_physical_key). `seen_transports` tracks every transport
+    # serial we've processed (started or skipped) so we don't re-log
+    # the skip notice on every poll tick. Both are space-padded for
+    # substring matching — bash 3.2 (macOS default) has no associative
+    # arrays.
+    local seen_physical=" "
+    local seen_transports=" "
     while true; do
         local current
         current=$(discover_devices)
         for s in $current; do
-            if [[ "$seen" != *" $s "* ]]; then
-                seen="$seen$s "
-                log_meta "device $s attached — starting adb pipeline"
-                adb_loop "$s" &
+            # Avoid the getprop round-trip for transports we've already
+            # accepted or dismissed on a previous tick.
+            if [[ "$seen_transports" == *" $s "* ]]; then
+                continue
             fi
+            local physical
+            physical=$(device_physical_key "$s")
+            if [[ "$seen_physical" == *" $physical "* ]]; then
+                # Same physical device, different transport — skip and
+                # remember so we don't keep announcing it. This is the
+                # USB + wireless dupe case (e.g. ZY22LCXTPW USB and
+                # 192.168.4.3:39145 wireless both being the same Razr,
+                # which used to produce every native log line twice in
+                # metro.log).
+                seen_transports="$seen_transports$s "
+                log_meta "device $s skipped — same physical device ($physical) already logged via another transport"
+                continue
+            fi
+            seen_physical="$seen_physical$physical "
+            seen_transports="$seen_transports$s "
+            log_meta "device $s (physical: $physical) attached — starting adb pipeline"
+            adb_loop "$s" "$physical" &
         done
         sleep 3
     done

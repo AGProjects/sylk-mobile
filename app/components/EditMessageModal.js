@@ -47,6 +47,12 @@ class EditMessageModal extends Component {
                 transparent={true}
                 animationType="slide"
                 onRequestClose={close}
+                /* iOS-only — without this, RN's Modal defaults to
+                   supportedOrientations: ['portrait'], which forces the
+                   underlying app to portrait while the modal is presented.
+                   Include both landscape variants so the modal inherits
+                   whichever orientation the user is in. */
+                supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
                 <KeyboardAvoidingView
                     style={containerStyles.overlay}

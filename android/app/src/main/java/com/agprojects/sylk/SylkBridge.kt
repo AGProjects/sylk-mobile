@@ -74,7 +74,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
     // ---------------------------------------------------------------
     @ReactMethod
     fun setAppActive(active: Boolean) {
-        SylkLogger.d("[bridge] setAppActive: $active")
+        //SylkLogger.d("[bridge] setAppActive: $active")
         prefs.edit().putBoolean("appActive", active).apply()
     }
 

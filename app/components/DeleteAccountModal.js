@@ -921,6 +921,12 @@ class DeleteAccountModal extends Component {
                 transparent
                 animationType="fade"
                 onRequestClose={this.handleCancel}
+                /* iOS-only — without this, RN's Modal defaults to
+                   supportedOrientations: ['portrait'], which forces the
+                   underlying app to portrait while the modal is presented.
+                   Include both landscape variants so the modal inherits
+                   whichever orientation the user is in. */
+                supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
                 <TouchableWithoutFeedback onPress={this.handleCancel}>
                     <View style={containerStyles.overlay}>

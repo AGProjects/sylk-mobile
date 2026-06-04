@@ -486,8 +486,21 @@ class ZrtpSession {
         //                   (fires the moment inbound RTP starts flowing)
         this.mediaStuck = false;
         this.mediaStuckSnapshot = null;
-        this._log('created — local ephem pub (hex prefix):',
-            toHex(this.ephemeral.publicKey).slice(0, 16) + '… call_id=', this.callId);
+        // Session-creation breadcrumb. Includes local_device_id and
+        // local_rs_id_hex so a single grep through release.log answers
+        // "did this handshake actually have per-device keying / a
+        // continuity secret stocked?" without re-deriving from the
+        // payload dump. peer_pgp/local_priv are flagged yes/no (not the
+        // key bytes) so support logs stay safe to ship.
+        this._log('created —',
+            'role=', this.role,
+            'localDeviceId=', this.localDeviceId || '<none>',
+            'localRsIdHex=', this.localRsIdHex || '<none>',
+            'peer_aor=', this.peerUri,
+            'peer_pgp=', this.peerPubKey ? 'yes' : 'no',
+            'local_priv=', this.localPrivKey ? 'yes' : 'no',
+            'ephem_pub_prefix=', toHex(this.ephemeral.publicKey).slice(0, 16) + '…',
+            'call_id=', this.callId);
     }
 
     _log(...args) {
@@ -2944,7 +2957,7 @@ export async function applyVideoEncoderParamsToPc(pc, label) {
                 } else {
                     await s.setParameters(params);
                 }
-                utils.timestampedLog(tag, 'sender encoder params set:',
+                utils.timestampedLog(tag, 'sender [media] encoder params set:',
                           'maxBitrate=', _videoMaxBitrateKbps, 'kbps',
                           'maxFramerate=', _videoTargetFramerate,
                           'scaleResolutionDownBy=', params.encodings[0].scaleResolutionDownBy);

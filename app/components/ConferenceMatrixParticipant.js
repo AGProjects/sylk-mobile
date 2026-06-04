@@ -202,6 +202,43 @@ class ConferenceMatrixParticipant extends Component {
         if (nextProps.hasOwnProperty('audioMuted')) {
             this.setState({audioMuted: nextProps.audioMuted});
         }
+
+        // Re-attach stream when the participant object itself changes.
+        //
+        // Self-pinned-speaker case: applySpeakerLayout setStates
+        // activeSpeakers FIRST with the picker's optimistic stand-in
+        // ({id, publisherId, identity}, NO streams), and the matrix
+        // tile mounts against that — maybeAttachStream runs once,
+        // sees streams undefined, bails. THEN the server echoes
+        // roomConfigured, sylkrtc replaces the entry with a fresh
+        // synthetic {id, publisherId, identity, streams: getLocalStreams()},
+        // ConferenceBox setStates activeSpeakers again. React reuses
+        // this component instance (same key={p.id}), and only this
+        // cWRP fires — componentDidMount won't re-run. Without this
+        // block, state.stream stays null and the RTCView paints
+        // streamURL=null forever. Symptom: user pins themselves as
+        // a speaker, log confirms the pin, but the tile is blank.
+        //
+        // Guard with a !== check so we only do the work on real swaps
+        // (parent prop spread on every render still passes the same
+        // object reference when the participant hasn't changed) and
+        // with a stream-identity check so we don't churn the
+        // trackVersion on every render.
+        if (nextProps.participant
+            && nextProps.participant !== this.props.participant
+            && nextProps.participant.streams
+            && nextProps.participant.streams.length > 0) {
+            const _newStream = nextProps.participant.streams[0];
+            if (_newStream && this.state.stream !== _newStream) {
+                const _hasVideo = _newStream.getVideoTracks
+                    && _newStream.getVideoTracks().length > 0;
+                this.setState((prev) => ({
+                    stream: _newStream,
+                    hasVideo: !!_hasVideo,
+                    trackVersion: prev.trackVersion + 1,
+                }));
+            }
+        }
     }
 
     componentDidMount() {
@@ -321,14 +358,35 @@ class ConferenceMatrixParticipant extends Component {
     }
 
     maybeAttachStream(bumpVersion = false) {
-        // The synthetic "myself" participant fed through the speaker
-        // selection modal (and any isLocal tile) doesn't have a
-        // SylkRTC `streams` getter — it's a plain object with just
-        // {id, publisherId, identity}. Calling .streams.length on
-        // it crashes the render. Bail out for local tiles before
-        // touching the getter.
-        if (this.props.isLocal) return;
-
+        // Two flavours of "isLocal=true" participant land here:
+        //
+        //   1. The picker's optimistic stand-in
+        //        {id, publisherId, identity}                 — no streams
+        //      pushed into state.activeSpeakers by applySpeakerLayout
+        //      BEFORE the server's roomConfigured echo arrives.
+        //
+        //   2. Sylkrtc's post-echo synthetic self
+        //        {id, publisherId, identity, streams: getLocalStreams()}
+        //      built in react-native-sylkrtc/lib/conference.js when the
+        //      server includes call.id in active_participants. This one
+        //      already has a fully-populated `streams` array pointing at
+        //      the local MediaStream.
+        //
+        // The previous code early-returned on `isLocal` to dodge a
+        // (mis-described) crash from case (1) — but that also skipped
+        // case (2), so a self-pinned tile rendered blank even though
+        // the local stream was sitting right there.
+        //
+        // The defensive `if (streams && streams.length > 0)` guard
+        // below already short-circuits the no-streams case safely,
+        // so we don't need a separate isLocal bail-out. The other
+        // isLocal-gated paths (constructor's `.on()` listener
+        // registration, componentDidMount's `.resumeVideo()`,
+        // _scheduleAttachRetry, onParticipantStateChanged,
+        // componentWillUnmount's `.removeListener()`) all stay as
+        // they were — the synthetic self is a plain object with
+        // neither EventEmitter nor resumeVideo, so those skips are
+        // still required.
         const streams = this.props.participant && this.props.participant.streams;
         //console.log('maybeAttachStream', streams);
 
@@ -469,11 +527,67 @@ class ConferenceMatrixParticipant extends Component {
             </View>
         ) : null;
 
+        // Degraded fallback — the participant is held in the matrix
+        // (matrix-inertia strategy 1) but their media is lost.
+        // Render an initials-on-coloured-circle avatar covering the
+        // RTCView so the tile slot stays put without showing a black
+        // square. Driven by the parent's `degraded` prop, set from
+        // ConferenceBox.state.degradedOccupants. When the participant
+        // recovers, parent clears the flag and the RTCView returns.
+        let degradedOverlay = null;
+        if (this.props.degraded) {
+            // Initials: first letter of the label, uppercased. Falls
+            // back to "?" when the label is empty (anonymous /
+            // unknown participant).
+            const _initial = (_label && _label.length > 0)
+                ? _label.charAt(0).toUpperCase()
+                : '?';
+            // Background colour derived from a cheap hash of the
+            // identity URI so the same person gets the same colour
+            // every time. Eight-slot palette of muted Material hues.
+            const _palette = ['#5e7cb2', '#7c5eb2', '#b25e92', '#b27c5e',
+                              '#92b25e', '#5eb27c', '#5eb2b2', '#7c8a99'];
+            const _src = (_identity.uri || _identity.displayName || '?');
+            let _h = 0;
+            for (let i = 0; i < _src.length; i++) {
+                _h = ((_h << 5) - _h + _src.charCodeAt(i)) | 0;
+            }
+            const _bg = _palette[Math.abs(_h) % _palette.length];
+            degradedOverlay = (
+                <View style={{
+                    position: 'absolute',
+                    top: 0, bottom: 0, left: 0, right: 0,
+                    backgroundColor: _bg,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 5,
+                }}>
+                    <View style={{
+                        width: 88,
+                        height: 88,
+                        borderRadius: 44,
+                        backgroundColor: 'rgba(255,255,255,0.18)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    }}>
+                        <Text style={{
+                            color: '#ffffff',
+                            fontSize: 44,
+                            fontWeight: '600',
+                        }}>
+                            {_initial}
+                        </Text>
+                    </View>
+                </View>
+            );
+        }
+
         return (
 			<View style={[{ flex: 1, width: '100%', height: '100%'}]}>
 				{activeIcon}
 				{mainSpeakerTag}
 				{participantInfo}
+				{degradedOverlay}
 				<View style={styles.videoContainer}>
 					<RTCView
 						// Keyed off trackVersion so the RTCView
@@ -587,6 +701,10 @@ ConferenceMatrixParticipant.propTypes = {
     // ConferenceBox.state.aspectRatio so a single toggle flips
     // every tile at once.
     aspectRatio: PropTypes.string,
+    // Matrix-inertia (strategy 1): when true, the participant's
+    // media is lost and we render an initials avatar covering
+    // the RTCView. Tile slot is preserved either way.
+    degraded: PropTypes.bool,
 };
 
 export default ConferenceMatrixParticipant;

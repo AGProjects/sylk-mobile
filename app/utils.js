@@ -1824,7 +1824,7 @@ function deepEqual(a, b) {
 const availableAudioDevicesIconsMap = {
 	BUILTIN_EARPIECE: 'phone-in-talk',
 	WIRED_HEADSET: 'headphones',
-	USB_HEADSET: 'usb',
+	USB_HEADSET: 'headphones',
 	BLUETOOTH_SCO: 'bluetooth-audio',
 	BUILTIN_SPEAKER: 'volume-high',
 };

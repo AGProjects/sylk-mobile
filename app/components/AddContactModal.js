@@ -76,6 +76,12 @@ const AddContactModal = ({
       transparent
       animationType="fade"
       onRequestClose={close} // Android back button
+      /* iOS-only — without this, RN's Modal defaults to
+         supportedOrientations: ['portrait'], which forces the
+         underlying app to portrait while the modal is presented.
+         Include both landscape variants so the modal inherits
+         whichever orientation the user is in. */
+      supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
     >
 
       {/* Dismiss modal when tapping outside */}

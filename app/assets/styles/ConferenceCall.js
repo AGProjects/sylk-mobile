@@ -212,17 +212,15 @@ const styles = StyleSheet.create({
   },
 
   audioViewActionBarButton: {
-    // Equal-width slot per button — matches AudioCall.buttonContainer
-    // so the chat/audio-picker/mute/hangup buttons share the same
-    // horizontal rhythm as the regular AudioCallBox portrait button
-    // row. flex:1 spreads the four slots across the bar's content
-    // width, maxWidth caps each slot so they don't drift apart on
-    // wide screens (landscape phone, tablet).
+    // Equal-width slot per button. Bumped 52 → 57 per user
+    // request (+5 px breathing room between adjacent buttons).
+    // Buttons themselves are 48 dp wide (roundshape), so a
+    // 57-dp slot leaves ~4.5 dp on each side; two adjacent
+    // slots add up to a ~9 dp visible gap between buttons.
     justifyContent: 'center',
     alignItems: 'center',
     flex: 1,
-    borderWidth: 0,
-    maxWidth: 72,
+    maxWidth: 57,
   },
 
   inviteFooterButton: {

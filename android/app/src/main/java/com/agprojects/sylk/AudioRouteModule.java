@@ -111,6 +111,13 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     // back with identical content). Format: "<id> <name> <type>" — a string so
     // we don't have to track three primitive fields.
     private String lastLoggedCommDevice = null;
+    // Same dedupe for the "Current device:" line emitted from getCurrentRouteInfo().
+    // That helper runs inside sendReactNativeEvent(), which we call from many
+    // sources (SCO state change, headset plug, fold transition, manual
+    // getEvent(), every switchAudioRoute hop, etc.). Without dedupe the same
+    // "Current device: <id> <name> <type>" line prints once per event even
+    // when nothing actually changed.
+    private String lastLoggedCurrentDevice = null;
     // When the user requests BT routing before SCO is established, store the target
     // device here and apply it as soon as SCO audio connects.
     private Map<String, String> pendingBtDevice = null;
@@ -596,6 +603,19 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         communicationDeviceListener = new AudioManager.OnCommunicationDeviceChangedListener() {
             @Override
             public void onCommunicationDeviceChanged(AudioDeviceInfo deviceInfo) {
+                // Android fires this callback with a null deviceInfo when the
+                // communication device is cleared (e.g. right after a call
+                // ends). Guard against NPE before touching any getters.
+                if (deviceInfo == null) {
+                    String key = "none";
+                    if (!key.equals(lastLoggedCommDevice)) {
+                        SylkLogger.d("[audio] Communication device cleared");
+                        lastLoggedCommDevice = key;
+                    }
+                    sendReactNativeEvent();
+                    return;
+                }
+
                 String deviceName = deviceInfo.getProductName() != null
                         ? deviceInfo.getProductName().toString()
                         : "UNKNOWN";
@@ -1131,10 +1151,32 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     @ReactMethod
     public void stop(Promise promise) {
-        if (!started) return;
+        // DON'T early-return when !started. Telecom flips the system
+        // audio mode to IN_COMMUNICATION as soon as addNewIncomingCall
+        // runs (we see this in every incoming-call trace, before the
+        // call has even rung in JS). If the call then fails to
+        // establish — e.g. the WSS incoming-call event never arrives,
+        // the call times out in /call waiting for a Sylkrtc Call
+        // object — JS never calls audioManagerStart(), so `started`
+        // stays false. With the old "if (!started) return" guard the
+        // subsequent audioManagerStop() bailed before the
+        // setMode(MODE_NORMAL) restore below, leaving the system
+        // stuck in IN_COMMUNICATION until the next call cleared it.
+        // We saw this surface as "audio mode at push receipt:
+        // IN_COMMUNICATION(3)" on a brand-new incoming-call push,
+        // because the previous failed call had polluted the mode and
+        // we never cleaned up.
+        //
+        // The force-NORMAL contract (see the long comment further
+        // down) says MODE_NORMAL is always the correct end-of-call
+        // state regardless of how we got here. So always run the
+        // restore. The Bluetooth SCO teardown and started=false reset
+        // are also safe to run unconditionally.
+        boolean wasStarted = started;
         started = false;
 
-        SylkLogger.d("[audio] AudioRouteModule stop");
+        SylkLogger.d("[audio] AudioRouteModule stop"
+                + (wasStarted ? "" : " (was not started — forcing audio mode restore anyway)"));
 
         // Connection-leak observability. Log the live SylkTelecom Connection
         // count at stop entry (the "before") and again ~500ms later (the
@@ -1718,7 +1760,14 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 info.put("id", deviceId);
                 info.put("type", typeName);
                 currentRoute = typeName;
-                SylkLogger.d("[audio] Current device: " + deviceId + " " + productName + " " + typeName);
+                // Dedupe: sendReactNativeEvent() fires from many sources for
+                // events that don't change the active device. Only print when
+                // the value differs from the last logged one.
+                String key = deviceId + " " + productName + " " + typeName;
+                if (!key.equals(lastLoggedCurrentDevice)) {
+                    SylkLogger.d("[audio] Current device: " + key);
+                    lastLoggedCurrentDevice = key;
+                }
                 return info;
             }
 
@@ -1867,6 +1916,42 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         stopFoldObserver();
         stopHingeSensor();
         sensorManager = null;
+
+        // CRITICAL: deregister the system-level audio listeners we registered
+        // in the constructor. Without this, every Metro reload in dev mode
+        // (and every legitimate ReactContext recreation in prod) leaks a
+        // listener inside AudioManager. The old instance stays reachable via
+        // the system service's listener map, and on the next device-route
+        // change AudioManager fans the callback out to all of them — the
+        // user-visible symptom is the same "[audio] Communication device
+        // changed to ..." line printed N times in a burst, one per stale
+        // instance (each has its own lastLoggedCommDevice so the dedupe only
+        // catches within-instance repeats).
+        try {
+            stopCommunicationDeviceListener();
+        } catch (Throwable t) {
+            SylkLogger.w("[audio] stopCommunicationDeviceListener on destroy failed: " + t);
+        }
+        try {
+            if (modeChangedListenerRef != null
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    && audioManager != null) {
+                audioManager.removeOnModeChangedListener(
+                        (AudioManager.OnModeChangedListener) modeChangedListenerRef);
+                modeChangedListenerRef = null;
+            }
+        } catch (Throwable t) {
+            SylkLogger.w("[audio] removeOnModeChangedListener on destroy failed: " + t);
+        }
+        try {
+            if (audioFocusListener != null && audioManager != null) {
+                audioManager.abandonAudioFocus(audioFocusListener);
+                audioFocusListener = null;
+            }
+        } catch (Throwable t) {
+            SylkLogger.w("[audio] abandonAudioFocus on destroy failed: " + t);
+        }
+
         try {
             reactContext.removeLifecycleEventListener(this);
         } catch (Throwable ignored) { /* best-effort */ }

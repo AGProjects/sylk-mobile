@@ -359,6 +359,17 @@ class CallOverlay extends React.Component {
                     this.props.showDtmfFunc();
                 }
                 break;
+            case 'showMediaInfo':
+                // Surface the shared MediaInfoPanel diagnostic modal.
+                // Owned by the parent (AudioCallBox / VideoBox) since
+                // the panel needs direct access to the active sylkrtc
+                // `call` and the per-call mediaStuck flag — same shape
+                // as the existing "i" pill / round info button each
+                // parent renders inline.
+                if (typeof this.props.showMediaInfo === 'function') {
+                    this.props.showMediaInfo();
+                }
+                break;
             default:
                 break;
         }
@@ -773,6 +784,23 @@ class CallOverlay extends React.Component {
 						/>
 					)}
 
+					{/* Media info — opens the shared MediaInfoPanel
+						diagnostic modal owned by the parent
+						(AudioCallBox / VideoBox). Same destination as
+						the inline round "i" pill each parent renders
+						near the speedometer; surfacing it in the
+						kebab makes the diagnostic reachable without
+						having to find the small pill on a busy call
+						surface. Shown for both audio and video calls
+						whenever the parent wires up showMediaInfo. */}
+					{typeof this.props.showMediaInfo === 'function' && this.state.callState == "established" && (
+						<Menu.Item
+							onPress={() => this.handleMenu('showMediaInfo')}
+							icon="information-outline"
+							title="Media info..."
+						/>
+					)}
+
 					{/* Chat + Share / Request location group — mirrors
 						the chat-header kebab and the green chat button
 						in the in-call button bar. "Chat..." matches
@@ -931,6 +959,7 @@ CallOverlay.propTypes = {
     // When omitted (e.g. on video calls or while the modal is being
     // wired up by another caller), the menu item is hidden.
     showDtmfFunc: PropTypes.func,
+    showMediaInfo: PropTypes.func,
 };
 
 export default CallOverlay;

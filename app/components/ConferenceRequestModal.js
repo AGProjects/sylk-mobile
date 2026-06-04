@@ -55,6 +55,14 @@ class ConferenceRequestModal extends Component {
                 transparent
                 animationType="fade"
                 onRequestClose={this.onCancel}
+                /* iOS-only — without this, RN's Modal defaults to
+                   supportedOrientations: ['portrait'], which forces
+                   the app's orientation to portrait whenever this
+                   panel appears (the underlying landscape call view
+                   snaps to portrait until dismissed). Include both
+                   landscape variants so the panel inherits whichever
+                   landscape the user is currently in. */
+                supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
                 <TouchableWithoutFeedback onPress={this.onCancel}>
                     <View style={containerStyles.overlay}>

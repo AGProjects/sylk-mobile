@@ -160,12 +160,13 @@ const ChatBubble = memo(
 	  }
 	}
 
-    // MIN_BUBBLE_WIDTH is used as both minWidth AND maxWidth on reply
-    // bubbles (see the `else if (originalMessage)` branch ~ line 593)
-    // and as the minWidth on the reply-preview pane above it. Forcing
-    // both panes to the same explicit width keeps them visually
-    // unified — they look like one bubble with two sections — but
-    // also means short replies get padded out to this width.
+    // MIN_BUBBLE_WIDTH is the minWidth floor for reply bubbles AND
+    // their preview pane (see the `else if (originalMessage)` branch
+    // ~ line 593). The bubble's maxWidth is '80%' so longer replies
+    // flow normally; the preview tracks the bubble's measured width
+    // via `width: bubbleWidth` (= max(measuredBubble, MIN_BUBBLE_WIDTH))
+    // so the two panes stay visually unified as one bubble with two
+    // sections. Short replies sit at the floor; long replies grow.
     //
     // File-transfer reply bubbles need ~220 because the preview hosts
     // a file icon + filename and looks cramped any narrower. Plain
@@ -610,13 +611,13 @@ const ChatBubble = memo(
 			  left: {
 				...leftWrapper,
 				minWidth: bubbleWidth,
-				maxWidth: bubbleWidth,
+				maxWidth: '80%', // grow with content; matches reply-preview maxWidth so they stay visually unified. Preview tracks the bubble's measured width via `width: bubbleWidth`.
 				alignSelf: 'flex-start', // match reply preview alignment
 			  },
 			  right: {
 				...rightWrapper,
 				minWidth: bubbleWidth,
-				maxWidth: bubbleWidth,
+				maxWidth: '80%', // grow with content; matches reply-preview maxWidth so they stay visually unified. Preview tracks the bubble's measured width via `width: bubbleWidth`.
 				alignSelf: 'flex-end', // match reply preview alignment
 			  },
 			  }}

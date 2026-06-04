@@ -430,7 +430,7 @@ class Conference extends React.Component {
 					// inside sylkrtc's own 'accepted' handler
 					// finishes first.
 					setTimeout(() => {
-						applyVideoEncoderParamsToPc(confCall._pc, 'conference-join');
+						applyVideoEncoderParamsToPc(confCall._pc, '[conference]');
 					}, 0);
 				}
 			});

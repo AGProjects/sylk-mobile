@@ -832,6 +832,12 @@ const EditConferenceModal = ({
       transparent
       animationType="fade"
       onRequestClose={close}
+      /* iOS-only — without this, RN's Modal defaults to
+         supportedOrientations: ['portrait'], which forces the
+         underlying app to portrait while the modal is presented.
+         Include both landscape variants so the modal inherits
+         whichever orientation the user is in. */
+      supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
     >
       {/* Layout note. Earlier iterations of this modal used:
             (a) outer TouchableWithoutFeedback onPress={close} +

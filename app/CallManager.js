@@ -100,7 +100,49 @@ export default class CallManager extends events.EventEmitter {
         this.boundRnDisplayIncomingCall = this._displayIncomingCall.bind(this);
         this.boundRnShowIncomingCallUi = this._showIncomingCallUi.bind(this);
 
-		// Safe listener setup in constructor
+		// Safe listener setup in constructor.
+		//
+		// RNCallKeep's event emitter lives on the native side (process-
+		// wide singleton). During Metro Fast Refresh the JS bundle
+		// reloads and we construct a brand-new CallManager — but the
+		// PREVIOUS instance's listeners are still attached natively
+		// because componentWillUnmount / safeRemove doesn't reliably
+		// run on a hot reload. After N reloads, every CallKit event
+		// (answerCall, endCall, didActivate…) fires N+1 times, and
+		// the N stale handlers are bound to N stale CallManager
+		// instances whose internal Maps (_calls / _terminatedCalls)
+		// are empty. The stale acceptCall path then arms its 30s
+		// "did the WS call arrive?" watchdog (acceptCall() else-branch
+		// further down in this file), and 30s later the stale
+		// instance's _calls is still empty, so it fires
+		//     endCall(FAILED) + sylkHangupCall('timeout')
+		// — killing an otherwise-healthy live call. In release builds
+		// there's no hot reload so the bug never reproduces.
+		//
+		// Defensive fix: before we add our handlers, remove ALL
+		// existing subscribers for these events. RNCallKeep's
+		// removeEventListener(eventName) detaches every handler for
+		// that event, which is exactly what we want — only the freshly
+		// constructed CallManager should be wired up.
+		const _ckEvents = [
+			'answerCall',
+			'endCall',
+			'didPerformSetMutedCallAction',
+			'didActivateAudioSession',
+			'didDeactivateAudioSession',
+			'didPerformDTMFAction',
+			'didResetProvider',
+			'didReceiveStartCallAction',
+			'didDisplayIncomingCall',
+			'showIncomingCallUi',
+			'checkReachability',
+		];
+		if (this._RNCallKeep && this._RNCallKeep.removeEventListener) {
+			_ckEvents.forEach(ev => {
+				try { this._RNCallKeep.removeEventListener(ev); } catch (e) { /* listener absent — fine */ }
+			});
+		}
+
 		if (this._RNCallKeep && this._RNCallKeep.addEventListener) {
 			this._RNCallKeep.addEventListener('answerCall', this._boundRnAccept);
 			this._RNCallKeep.addEventListener('endCall', this._boundRnEnd);

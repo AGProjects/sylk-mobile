@@ -178,14 +178,22 @@ class NotificationCenter extends Component {
         return (
             <SafeAreaInsetsContext.Consumer>
                 {(insets) => {
-                    // NotificationCenter is mounted INSIDE app.js's
-                    // SafeAreaView (see render at ~line 30359), so
-                    // absolute bottom:0 already sits ABOVE the iOS
-                    // home-indicator safe area — same anchor as the
-                    // category bar. Earlier we added insets.bottom
-                    // here thinking the parent was unconstrained;
-                    // that pushed the snackbar another ~34dp too
-                    // high on iOS. Reverted to a flat 0.
+                    // Position: the snackbar sits ABOVE the bottom
+                    // category bar (which itself sits above the
+                    // Android navigation gesture area). The category
+                    // bar's pinned height is 36 dp (see ReadyBox's
+                    // navigationContainer / showCategoryBar render at
+                    // ~line 3166) — match it so the snackbar lands
+                    // exactly on top of it.
+                    //
+                    // On routes that don't render the category bar
+                    // (anywhere outside /ready), the snackbar floats
+                    // 36 dp above the bottom edge of the SafeAreaView
+                    // — slightly inside the safe area but never
+                    // colliding with the home indicator (iOS) or the
+                    // gesture pill (Android), because the safe area
+                    // already pads the SafeAreaView from those.
+                    const _categoryBarHeight = 36;
                     return (
                         <View
                             pointerEvents="box-none"
@@ -193,7 +201,7 @@ class NotificationCenter extends Component {
                                 position: 'absolute',
                                 left: 0,
                                 right: 0,
-                                bottom: 0,
+                                bottom: _categoryBarHeight,
                                 height: 36,
                                 backgroundColor: '#333',
                                 paddingHorizontal: 12,

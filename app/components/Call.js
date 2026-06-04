@@ -17,6 +17,21 @@ import { startZrtpForCall, ZRTP_CONTENT_TYPE,
          peerSupportsZrtpFromHeaders, shouldAdvertiseZrtpCapability,
          reapplyVideoEncoderParams, getVideoEncoderTarget } from './CallZrtp';
 
+// Media-loss watchdog. Polls pc.getStats() every MEDIA_LOSS_POLL_MS and
+// sums packetsReceived across all inbound-rtp reports. If the sum has not
+// increased for MEDIA_LOSS_THRESHOLD_MS, the media plane is considered
+// dead. Caller side (direction === 'outgoing') triggers a redial through
+// the existing 'outgoing_connection_failed' path in app.js. Callee side
+// (direction === 'incoming') signals the caller with an in-session
+// MEDIA_LOST_CONTENT_TYPE message every poll while the loss persists;
+// caller redials on receipt of that message via the same hangup path.
+// The 20 s threshold is well above any normal RTP keepalive cadence
+// (Opus DTX comfort-noise frames still tick packetsReceived) so brief
+// network blips don't cause spurious redials.
+export const MEDIA_LOST_CONTENT_TYPE = 'application/sylk-media-lost';
+const MEDIA_LOSS_POLL_MS = 2000;
+const MEDIA_LOSS_THRESHOLD_MS = 20000;
+
 // Build getUserMedia constraints for the audio→video upgrade path
 // that match the initial-video path's profile (set once at app
 // startup via setVideoEncoderTarget in app.js). Previously the
@@ -78,6 +93,21 @@ class Call extends Component {
         this.waitInterval = this.defaultWaitInterval;
 
         this.mediaLost = false;
+
+        // Media-loss watchdog state (see MEDIA_LOST_CONTENT_TYPE comment).
+        // _mediaLossPoller     : setInterval handle
+        // _mediaLossLastPackets: last summed inbound-rtp packetsReceived
+        // _mediaLossLastTickTs : wall-clock ts of the last sum increase
+        // _mediaLossActive     : true while currently in the lost state
+        //                        (drives the per-poll re-emit on the callee)
+        // _mediaLossRedialFired: idempotency guard on the caller so the
+        //                        local watchdog and an incoming
+        //                        sylk-media-lost message don't redial twice
+        this._mediaLossPoller = null;
+        this._mediaLossLastPackets = 0;
+        this._mediaLossLastTickTs = 0;
+        this._mediaLossActive = false;
+        this._mediaLossRedialFired = false;
 
         let callUUID;
         let remoteUri = '';
@@ -318,6 +348,9 @@ class Call extends Component {
         this.ended = true;
         this.answering = false;
         this._cancelUpgradePromptTimer();
+        // Stop the media-loss watchdog before any teardown so a poll
+        // tick can't fire against a half-detached call object.
+        this._stopMediaLossPoller();
 
         // If the user has the upgrade prompt open and navigates away
         // from /call, stop the captured camera track so the indicator
@@ -398,6 +431,24 @@ class Call extends Component {
 
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
+
+        // Media-loss signal from the peer. Caller honors it by triggering
+        // the same redial path as a local watchdog trip. Callee ignores
+        // (the receiver is the one emitting these; we don't expect to
+        // receive our own copy, but be defensive about a future symmetric
+        // policy). Filter early so this never falls through to ZRTP / chat
+        // dispatch below.
+        if (message && message.contentType === MEDIA_LOST_CONTENT_TYPE) {
+            utils.timestampedLog('[call] [media-loss] received sylk-media-lost from peer',
+                'msg_id=', message.id,
+                'direction=', this.state.direction,
+                'peer=', message.sender && message.sender.uri);
+            if (this.state.direction === 'outgoing') {
+                this._triggerMediaLostRedial('peer-signal');
+            }
+            return;
+        }
+
         // Surface ZRTP envelopes that arrive on the call's session-
         // message channel separately so the receive side is visible
         // in applog alongside the [message] [call] [zrtp] send lines.
@@ -410,6 +461,157 @@ class Call extends Component {
                 'msg_id=', message.id,
                 'peer=', message.sender && message.sender.uri,
                 'size=', (message.content ? message.content.length : 0) + 'B');
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Media-loss watchdog
+    // -----------------------------------------------------------------
+
+    _startMediaLossPoller() {
+        if (this._mediaLossPoller) {
+            return;
+        }
+        // Reset accounting on (re)start so a previous loss state doesn't
+        // carry over across mid-call renegotiations.
+        this._mediaLossLastPackets = 0;
+        this._mediaLossLastTickTs = Date.now();
+        this._mediaLossActive = false;
+        utils.timestampedLog('[call] [media-loss] watchdog armed',
+            'threshold=', MEDIA_LOSS_THRESHOLD_MS + 'ms',
+            'direction=', this.state.direction);
+        this._mediaLossPoller = setInterval(() => {
+            this._pollMediaLossOnce();
+        }, MEDIA_LOSS_POLL_MS);
+    }
+
+    _stopMediaLossPoller() {
+        if (this._mediaLossPoller) {
+            clearInterval(this._mediaLossPoller);
+            this._mediaLossPoller = null;
+            utils.timestampedLog('[call] [media-loss] watchdog stopped');
+        }
+        this._mediaLossActive = false;
+    }
+
+    async _pollMediaLossOnce() {
+        if (this.ended) {
+            this._stopMediaLossPoller();
+            return;
+        }
+        const call = this.state.call;
+        const pc = call && call._pc;
+        if (!pc || typeof pc.getStats !== 'function') {
+            return;
+        }
+        let totalPackets = 0;
+        try {
+            const stats = await pc.getStats();
+            stats.forEach((r) => {
+                if (r && r.type === 'inbound-rtp') {
+                    totalPackets += Number(r.packetsReceived || 0);
+                }
+            });
+        } catch (e) {
+            // getStats can throw transiently during teardown / SDP
+            // renegotiation. Don't treat that as media loss — wait for
+            // the next tick.
+            return;
+        }
+
+        const now = Date.now();
+        if (totalPackets > this._mediaLossLastPackets) {
+            // Media is flowing again (or still flowing). Clear any
+            // previously-active loss state and reset the threshold clock.
+            if (this._mediaLossActive) {
+                utils.timestampedLog('[call] [media-loss] media recovered',
+                    'packets=', totalPackets);
+            }
+            this._mediaLossActive = false;
+            this._mediaLossLastPackets = totalPackets;
+            this._mediaLossLastTickTs = now;
+            return;
+        }
+
+        // No new packets this tick. Check if we've crossed the threshold.
+        const stallMs = now - this._mediaLossLastTickTs;
+        if (stallMs < MEDIA_LOSS_THRESHOLD_MS) {
+            return;
+        }
+
+        // Media has been silent for >= MEDIA_LOSS_THRESHOLD_MS.
+        if (!this._mediaLossActive) {
+            this._mediaLossActive = true;
+            utils.timestampedLog('[call] [media-loss] threshold crossed',
+                'stall_ms=', stallMs,
+                'packets=', totalPackets,
+                'direction=', this.state.direction);
+        }
+
+        if (this.state.direction === 'outgoing') {
+            // Caller: redial through the existing outgoing_connection_failed
+            // path (5 s setTimeout + options.reconnect=true in app.js's
+            // changeRoute('/ready', 'outgoing_connection_failed') branch).
+            this._triggerMediaLostRedial('local-watchdog');
+        } else {
+            // Callee: emit sylk-media-lost every poll while still in the
+            // lost state. The caller is responsible for the actual redial;
+            // we just keep nudging until packets resume or the call ends.
+            this._sendMediaLostSignal();
+        }
+    }
+
+    _sendMediaLostSignal() {
+        const call = this.state.call;
+        if (!call || typeof call.sendMessage !== 'function') {
+            return;
+        }
+        try {
+            call.sendMessage('', MEDIA_LOST_CONTENT_TYPE, {}, (err) => {
+                if (err) {
+                    utils.timestampedLog('[call] [media-loss] sendMessage FAILED',
+                        'err=', err && err.message ? err.message : err);
+                } else {
+                    utils.timestampedLog('[call] [media-loss] sylk-media-lost sent to peer');
+                }
+            });
+        } catch (e) {
+            utils.timestampedLog('[call] [media-loss] sendMessage THREW',
+                'err=', e && e.message ? e.message : e);
+        }
+    }
+
+    _triggerMediaLostRedial(reason) {
+        if (this._mediaLossRedialFired) {
+            return;
+        }
+        this._mediaLossRedialFired = true;
+        this._stopMediaLossPoller();
+        const callUUID = this.state.call && this.state.call.id;
+        utils.timestampedLog('[call] [media-loss] triggering redial',
+            'reason=', reason,
+            'callUUID=', callUUID);
+        // Reuse the existing outgoing_connection_failed flow. app.js's
+        // changeRoute('/ready', 'outgoing_connection_failed') branch
+        // (around line 6322) already handles hangup, 5 s delay, and
+        // restart with options.reconnect=true so the "Reconnecting
+        // call..." banner stays consistent with WSS-loss-driven redials.
+        //
+        // Call.js's own hangupCall(reason) takes a single arg and looks
+        // up callUUID from state.call before forwarding to
+        // props.hangupCall(callUUID, reason) — which is the app.js
+        // implementation that actually owns the redial branch. Going
+        // through the component method (not props directly) also flips
+        // this.ended and removes the listeners, so any late watchdog
+        // tick or stateChanged event won't fire setState on a torn-down
+        // component.
+        if (typeof this.hangupCall === 'function') {
+            this.hangupCall('outgoing_connection_failed');
+        } else if (callUUID && this.props && typeof this.props.hangupCall === 'function') {
+            // Defensive fallback: if for some reason the method has been
+            // detached (autoBind/instance shadowing), go straight to the
+            // props.hangupCall — same end behavior in app.js.
+            this.props.hangupCall(callUUID, 'outgoing_connection_failed');
         }
     }
 
@@ -686,6 +888,11 @@ class Call extends Component {
 
         if (newState === 'established') {
             this.setState({reconnectingCall: false});
+            // Arm the media-loss watchdog now that media is supposed to
+            // be flowing. Doing it earlier (e.g. on 'accepted') would
+            // race with the 1-3 s pre-media gap after the 200 OK and
+            // could trip during normal ICE/DTLS settling.
+            this._startMediaLossPoller();
             const currentCall = this.state.call;
 
             // ZRTP simulation: caller-side kick-off. Only the outgoing leg
@@ -743,6 +950,9 @@ class Call extends Component {
 
         if (newState === 'terminated') {
             this.setState({terminatedReason: this.state.terminatedReason});
+            // Stop the media-loss watchdog so no late tick races against
+            // a teardown call._pc that's already being torn down.
+            this._stopMediaLossPoller();
         }
 
         this.forceUpdate();

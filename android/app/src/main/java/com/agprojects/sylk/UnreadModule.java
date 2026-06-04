@@ -62,4 +62,25 @@ public class UnreadModule extends ReactContextBaseJavaModule {
 		promise.resolve(out);
 	}
 
+	// Returns a uri -> count map of every contact with a non-zero
+	// missed_call_<uri> pref entry (bumped by showSuppressedCallNotification
+	// on every FCM-DND drop). Exposed so JS's [badge] log can show the
+	// three counter sources side-by-side: messages (unread_chat_*), missed
+	// calls (missed_call_*), and JS state (contact.unread).
+	@ReactMethod
+	public void getAllMissedCalls(Promise promise) {
+		HashMap<String, Integer> map = MyFirebaseMessagingService.getAllMissedCallsStatic(reactContext);
+		WritableMap out = Arguments.createMap();
+		for (Map.Entry<String, Integer> e : map.entrySet()) {
+			out.putInt(e.getKey(), e.getValue());
+		}
+		promise.resolve(out);
+	}
+
+	@ReactMethod
+	public void getTotalMissedCalls(Promise promise) {
+		int total = MyFirebaseMessagingService.getTotalMissedCallsCountStatic(reactContext);
+		promise.resolve(total);
+	}
+
 }

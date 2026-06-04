@@ -588,19 +588,29 @@ class ConferenceHeader extends React.Component {
 				    as a floating overlay in ConferenceBox, below the
 				    navbar. */}
 				{this.state.isLandscape &&
-				  this.props.buttons.bottom?.map((btn, idx) => (
-					// No extra marginLeft on the wrapper — each btn
-					// already carries its own 5 dp left/right
-					// margin via styles.buttonContainer (margin:5),
-					// so a 10 dp inter-button gap matches portrait.
-					// An earlier 10 dp wrapper-marginLeft stacked
-					// with the per-button margins for an effective
-					// 20 dp gap, which the user reported as "too
-					// much space".
-					<View key={idx}>
-					  {btn}
-					</View>
-				  ))
+				  this.props.buttons.bottom?.map((btn, idx, arr) => {
+					// No extra marginLeft on the wrapper for the
+					// non-terminal buttons — each btn already
+					// carries its own 5 dp left/right margin via
+					// styles.buttonContainer (margin:5), so a 10 dp
+					// inter-button gap matches portrait. An earlier
+					// 10 dp wrapper-marginLeft stacked with the
+					// per-button margins for an effective 20 dp gap,
+					// which the user reported as "too much space".
+					//
+					// All buttons get the same wrapper margin in
+					// landscape per user request — including hangup.
+					// The earlier per-last-button bump (40 dp) made
+					// the destructive button feel visibly separated
+					// from the rest, but the user wants uniform
+					// spacing across the inline cluster.
+					const wrapperStyle = null;
+					return (
+					  <View key={idx} style={wrapperStyle}>
+						{btn}
+					  </View>
+					);
+				  })
 				}
 
 				{this.props.buttons.additional}
@@ -615,142 +625,170 @@ class ConferenceHeader extends React.Component {
 				  </View>
 				) : null}
 
-				{/* Inline view-mode toggle on the navbar so the user
-				    doesn't have to dig through the kebab to switch
-				    layouts. The button renders as a tiny
-				    transition row — [current view glyph] → [arrow]
-				    → [destination view glyph] — so the tap intent
-				    reads as obviously directional. A single glyph
-				    by itself (an earlier iteration) was ambiguous:
-				    the user couldn't tell whether they were seeing
-				    the CURRENT mode or the DESTINATION.
-				       • volume-high glyph = audio view.
-				       • apps glyph (9 solid squares, 3x3) = video
-				         matrix view.
-				       • arrow-right between them shows the
-				         transition direction.
-				    In audio view:  [volume-high] → [apps]
-				    In video view:  [apps] → [volume-high]
+				{/* Three INDEPENDENTLY-clickable navbar glyphs (no
+				    cycling). Each glyph routes directly to its own
+				    view:
+				      chat     → audio layout + audioChatView=true
+				                 (same end-state as the chat
+				                 IconButton in the audio bar)
+				      audio    → audio participants list view
+				      video    → video matrix layout
+				    The active view's glyph is rendered solid white;
+				    the other two are dimmed.
+				    Glyph choices:
+				      chat   → `chat` (speech bubble)
+				      audio  → `account-voice` (person + sound
+				               waves — the only stock icon that
+				               combines "person" and "audio" in a
+				               single shape, so it reads as
+				               "audio participants list" without
+				               colliding with `volume-high` which is
+				               used elsewhere for the speaker output
+				               picker, or `microphone` which is used
+				               for mute).
+				      video  → `view-grid` (2×2 grid — reads as
+				               "participant matrix" more directly
+				               than the camcorder icon, which read
+				               as "start recording" to some users).
 				    Only rendered when ConferenceBox has wired up
 				    toggleViewMode — same gate as the kebab item. */}
 				{typeof this.props.toggleViewMode === 'function' ? (
 				  (() => {
-				    // Audio view ↔ Video view transition pair.
-				    // Video side now uses the classic `video`
-				    // camcorder glyph instead of `apps` (the 3×3
-				    // grid-of-dots). `apps` reads as "app drawer"
-				    // / "launcher" to most users and didn't
-				    // communicate "video view" — the camcorder
-				    // glyph maps directly to what the user is
-				    // toggling. Matches the icon already used by
-				    // the kebab-menu twin of this control just
-				    // below. The audio side stays `volume-high`,
-				    // unchanged.
-				    // Three-state formation:
-				    //   chat view  → [chat] → [volume-high]  (exit to audio)
-				    //   audio view → [volume-high] → [video] (switch to video)
-				    //   video view → [video] → [volume-high] (switch to audio)
-				    // When in chat the onPress routes through toggleChatFunc
-				    // (which already closes the chat overlay and lands the
-				    // user back on the audio participants view); otherwise
-				    // it falls through to toggleViewMode. This replaces the
-				    // standalone "back to audio" group-icon button that used
-				    // to sit above the chat — the navbar formation is the
-				    // single source of truth for view-switch affordances.
-				    // Chat detection.
-				    //   • Audio-only conference: only audioChatView
-				    //     actually means "chat panel is on screen";
-				    //     chatView is initialised to !videoEnabled
-				    //     (i.e. always TRUE in audio conferences)
-				    //     so it can't be used as a signal here.
-				    //     The earlier `audioChatView || chatView`
-				    //     check made the formation render the
-				    //     chat → audio variant even in the
-				    //     participants view, which is what made the
-				    //     audio → video tap appear dead.
-				    //   • Video conference: chatView is the
-				    //     definitive chat-on-screen flag (chat
-				    //     splits alongside the video tiles).
-				    const _inChat = this.props.audioOnly
-				        ? !!this.props.audioChatView
-				        : !!this.props.chatView;
-				    let _fromIcon;
-				    let _toIcon;
-				    let _a11y;
-				    let _onPress;
-				    if (_inChat) {
-				        _fromIcon = 'chat';
-				        _toIcon = 'volume-high';
-				        _a11y = 'Switch to audio view';
-				        _onPress = () => {
-				            // Diagnostic — tracing why the chat → audio
-				            // formation appeared to do nothing. Logs
-				            // which branch (if any) we take when the
-				            // user taps the formation.
-				            console.log('[ConferenceHeader] chat→audio tap'
-				                + ' audioChatView=' + !!this.props.audioChatView
-				                + ' chatView=' + !!this.props.chatView
-				                + ' hasToggleAudioChatViewFunc=' + (typeof this.props.toggleAudioChatViewFunc === 'function')
-				                + ' hasToggleChatFunc=' + (typeof this.props.toggleChatFunc === 'function')
-				                + ' hasToggleViewMode=' + (typeof this.props.toggleViewMode === 'function'));
-				            if (this.props.audioChatView
-				                    && typeof this.props.toggleAudioChatViewFunc === 'function') {
-				                console.log('[ConferenceHeader] → calling toggleAudioChatViewFunc');
-				                this.props.toggleAudioChatViewFunc();
-				            } else if (typeof this.props.toggleChatFunc === 'function') {
-				                console.log('[ConferenceHeader] → calling toggleChatFunc');
-				                this.props.toggleChatFunc();
-				            } else if (typeof this.props.toggleViewMode === 'function') {
-				                console.log('[ConferenceHeader] → calling toggleViewMode');
-				                this.props.toggleViewMode();
-				            } else {
-				                console.log('[ConferenceHeader] → no handler available');
-				            }
-				        };
+				    // Three-state detection: audio participants view,
+				    // video view, or chat view (audio + audioChatView).
+				    let _current;
+				    if (this.props.audioOnly && this.props.audioChatView) {
+				        _current = 'chat';
+				    } else if (this.props.audioOnly) {
+				        _current = 'audio';
 				    } else {
-				        _fromIcon = this.props.audioOnly ? 'volume-high' : 'video';
-				        _toIcon = this.props.audioOnly ? 'video' : 'volume-high';
-				        _a11y = this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view';
-				        _onPress = () => this.props.toggleViewMode();
+				        _current = 'video';
 				    }
+				    const _goChat = () => {
+				        // Land on audio layout + chat panel visible.
+				        if (!this.props.audioOnly) {
+				            this.props.toggleViewMode();
+				        }
+				        if (typeof this.props.toggleAudioChatViewFunc === 'function'
+				                && !this.props.audioChatView) {
+				            this.props.toggleAudioChatViewFunc();
+				        }
+				    };
+				    const _goAudio = () => {
+				        // Land on audio participants (no chat panel).
+				        if (!this.props.audioOnly) {
+				            this.props.toggleViewMode();
+				        }
+				        if (typeof this.props.toggleAudioChatViewFunc === 'function'
+				                && this.props.audioChatView) {
+				            this.props.toggleAudioChatViewFunc();
+				        }
+				    };
+				    const _goVideo = () => {
+				        // Land on the video layout. Hide chat panel
+				        // first so no overlay is left behind.
+				        if (typeof this.props.toggleAudioChatViewFunc === 'function'
+				                && this.props.audioChatView) {
+				            this.props.toggleAudioChatViewFunc();
+				        }
+				        if (this.props.audioOnly) {
+				            this.props.toggleViewMode();
+				        }
+				    };
+				    const _iconSize = 20;
+				    const _activeColor = 'white';
+				    const _dimColor = 'rgba(255,255,255,0.45)';
+				    const _color = (which) => which === _current ? _activeColor : _dimColor;
 				    return (
-				      <TouchableOpacity
-				        onPress={_onPress}
-				        accessibilityRole="button"
-				        accessibilityLabel={_a11y}
-				        // Match the Appbar.Action visual footprint
-				        // so the row sits comfortably inside the
-				        // header's vertical band. hitSlop pads the
-				        // touch target so the transition glyph
-				        // pair is easy to land on without making
-				        // the visual chip wider than necessary.
-				        // Larger left margin in landscape so the
-				        // transition glyph row doesn't crowd the
-				        // inline buttons.bottom call-control icons
-				        // that only appear in landscape (mute,
-				        // hangup, etc., rendered just above this
-				        // block). Portrait keeps a tighter spacing
-				        // because navbarExtras / additional are
-				        // usually empty there.
-				        hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+				      <View
 				        style={{
 				          flexDirection: 'row',
 				          alignItems: 'center',
 				          justifyContent: 'center',
-				          paddingHorizontal: 6,
+				          // Group border wrapping all three view-mode
+				          // glyphs (chat / audio / video) as a single
+				          // pill — one outline around the cluster
+				          // rather than three outlines, one per glyph.
+				          // Padding adds breathing room inside the
+				          // pill so the glyphs don't kiss the border.
+				          paddingHorizontal: 8,
+				          paddingVertical: 4,
+				          borderWidth: 1,
+				          borderColor: 'rgba(255,255,255,0.55)',
+				          borderRadius: 20,
 				          marginLeft: this.state.isLandscape ? 16 : 0,
 				          height: 40,
 				        }}
 				      >
-				        <Icon name={_fromIcon} size={20} color="white" />
-				        <Icon
-				          name="arrow-right"
-				          size={14}
-				          color="white"
-				          style={{ marginHorizontal: 2 }}
-				        />
-				        <Icon name={_toIcon} size={20} color="white" />
-				      </TouchableOpacity>
+				        {/* Chat — switch to chat panel (audio +
+				            audioChatView=true). The unread-message
+				            badge (chatUnreadCount) is absolutely
+				            positioned at the top-right of the chat
+				            glyph so it never shifts the row geometry
+				            as it appears or grows. overflow:'visible'
+				            on the touch target is required on Android
+				            so the badge — which pokes past the icon's
+				            bbox — isn't clipped. */}
+				        <TouchableOpacity
+				          onPress={_goChat}
+				          accessibilityRole="button"
+				          accessibilityLabel="Switch to chat view"
+				          hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+				          style={{ marginHorizontal: 5, overflow: 'visible' }}
+				        >
+				          <Icon name="chat" size={_iconSize} color={_color('chat')} />
+				          {(this.props.chatUnreadCount | 0) > 0 ? (
+				            <View style={{
+				              position: 'absolute',
+				              top: -4,
+				              right: -8,
+				              minWidth: 14,
+				              height: 14,
+				              borderRadius: 7,
+				              backgroundColor: '#e53935',
+				              paddingHorizontal: 3,
+				              alignItems: 'center',
+				              justifyContent: 'center',
+				              borderWidth: 1,
+				              borderColor: 'white',
+				              elevation: 6,
+				              zIndex: 10,
+				            }}>
+				              <Text style={{
+				                color: 'white',
+				                fontSize: 8,
+				                fontWeight: '700',
+				                lineHeight: 10,
+				                includeFontPadding: false,
+				              }}>
+				                {this.props.chatUnreadCount > 99 ? '99+' : String(this.props.chatUnreadCount)}
+				              </Text>
+				            </View>
+				          ) : null}
+				        </TouchableOpacity>
+
+				        {/* Audio — switch to audio participants view. */}
+				        <TouchableOpacity
+				          onPress={_goAudio}
+				          accessibilityRole="button"
+				          accessibilityLabel="Switch to audio view"
+				          hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+				          style={{ marginHorizontal: 5 }}
+				        >
+				          <Icon name="account-voice" size={_iconSize} color={_color('audio')} />
+				        </TouchableOpacity>
+
+				        {/* Video — switch to video matrix layout. */}
+				        <TouchableOpacity
+				          onPress={_goVideo}
+				          accessibilityRole="button"
+				          accessibilityLabel="Switch to video view"
+				          hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+				          style={{ marginHorizontal: 5 }}
+				        >
+				          <Icon name="view-grid" size={_iconSize} color={_color('video')} />
+				        </TouchableOpacity>
+				      </View>
 				    );
 				  })()
 				) : null}
@@ -773,7 +811,7 @@ class ConferenceHeader extends React.Component {
                        Appbar.Action already adds its own internal
                        padding so we only need a few px of nudge
                        between them. */
-                    <View style={{ marginLeft: 4}}>
+                    <View style={{ marginLeft: 0}}>
                         <Appbar.Action
                             ref={this.menuRef}
                             color="white"
@@ -803,225 +841,86 @@ class ConferenceHeader extends React.Component {
                 >
                     <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
                     <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share conference link..." />
-                    {/* PSTN bridge toggle — only shown when a bridge
-                        is actually present in the room (bridgePresent
-                        prop). Title reflects the next action so the
-                        user knows what'll happen on tap: "Show PSTN
-                        bridge" when currently hidden, "Hide PSTN
-                        bridge" when currently shown. Icon mirrors the
-                        bridge avatar used in the participant list. */}
-                    {/* Folded (cover-display) mode also hides this
-                        Show/Hide PSTN bridge toggle per user request —
-                        the bridge controls aren't useful on the cramped
-                        cover screen. */}
-                    {this.props.bridgePresent && !this.props.isFolded ? (
+
+                    {/* Show / Hide PSTN bridge — surfaced only in the
+                        AUDIO PARTICIPANTS view (the participant list
+                        is where the bridge tile shows up). Gated on:
+                          - audioOnly: only in audio-conference view
+                          - !audioChatView: NOT while the chat panel
+                              is on screen — the participant list
+                              isn't visible there, so toggling bridge
+                              visibility would be a no-op the user
+                              couldn't see; per user request, hide
+                              the item in chat mode
+                          - bridgePresent: only when a bridge is
+                              actually in the room
+                          - !isFolded: cover screen is too cramped */}
+                    {this.props.audioOnly
+                            && !this.props.audioChatView
+                            && this.props.bridgePresent
+                            && !this.props.isFolded ? (
                         <Menu.Item
                             onPress={() => this.handleMenu('bridge')}
                             icon="bridge"
                             title={this.props.showBridge ? 'Hide PSTN bridge' : 'Show PSTN bridge'}
                         />
                     ) : null}
-                    {/* Speaker selection only makes sense with 2+
-                        remote VIDEO participants to choose between.
-                        ConferenceBox passes videoParticipantCount =
-                        count of remote participants with an actual
-                        video track (bridges and audio-only remotes
-                        excluded). Falling back to the total
-                        participants > 2 check when the new prop
-                        isn't wired keeps older parents working. */}
-                    {(this.props.videoParticipantCount != null
-                        ? this.props.videoParticipantCount > 1
-                        : this.state.participants > 2)
-                     && !this.state.audioOnly ?
-                    <Menu.Item onPress={() => this.handleMenu('speakers')} icon="account-tie" title="Select speakers..." />
-                    : null}
-                    {/* Hide / Show mirror — toggles enableMyVideo,
-                        which controls both the audio-view self-PIP
-                        AND the video-view floating self-PIP (the
-                        "showMyself" tile that appears when the
-                        visible-remote count puts self off the
-                        matrix: counts 0, 2, 4+). In video view at
-                        counts 1 / 3 the self tile is already in
-                        the matrix and this toggle is a no-op for
-                        that tile — but harmless. Always shown so
-                        the user can suppress their own preview
-                        from either layout. */}
-                    {/* Media-controls group: a single bounded
-                        block of view / audio / video items, fenced
-                        above and below by Dividers so it reads as
-                        one cluster inside the longer kebab list.
-                        Order:
-                          1. Switch to xxx view (audio ↔ video layout)
-                          2. Audio... (opens the audio device picker
-                             overlay anchored to the call-bar button)
-                          3. Video... (opens the camera picker overlay
-                             — front/back camera, Stop/Start video,
-                             Hide/Show mirror, Aspect ratio)
-                        Hide-mirror and Toggle-aspect-ratio used to
-                        live as standalone kebab items here; both
-                        have been folded into the Video... picker so
-                        every video-tile affordance is under one
-                        entry point. */}
-                    {/* Divider above the media-controls group — hidden
-                        in folded mode along with the items it
-                        separates so the menu doesn't show an orphan
-                        rule bracketing nothing. */}
-                    {!this.props.isFolded ? <Divider /> : null}
-                    {/* Switch to video view / Switch to audio view —
-                        hidden in folded mode per user request. The
-                        cover screen has no useful video layout, so
-                        offering the toggle doesn't lead anywhere
-                        meaningful. */}
-                    {!this.props.isFolded && typeof this.props.toggleViewMode === 'function' ? (
-                    <Menu.Item
-                        onPress={() => this.handleMenu('viewMode')}
-                        icon={this.props.audioOnly ? 'video' : 'volume-high'}
-                        title={this.props.audioOnly ? 'Switch to video view' : 'Switch to audio view'}
-                    />
+
+                    {/* Record audio / Stop recording audio —
+                        AUDIO view only (gated on audioOnly), and
+                        only when the native conference-mix recorder
+                        is linked in (conferenceRecordingAvailable).
+                        Icon + title flip with isConferenceRecording
+                        so the row reads as "what this tap will do". */}
+                    {this.props.audioOnly
+                            && !this.props.isFolded
+                            && this.props.conferenceRecordingAvailable
+                            && typeof this.props.toggleConferenceRecordingFunc === 'function' ? (
+                        <Menu.Item
+                            onPress={() => {
+                                this.setState({menuVisible: false});
+                                setTimeout(() => this.props.toggleConferenceRecordingFunc(), 50);
+                            }}
+                            icon={this.props.isConferenceRecording ? 'stop-circle' : 'record-circle'}
+                            title={this.props.isConferenceRecording ? 'Stop recording audio...' : 'Record audio...'}
+                        />
                     ) : null}
 
-                    {/* Audio... — in VIDEO view the call-button-bar
-                        carries an audio device button, so the kebab
-                        item just opens that bar's picker overlay
-                        (one shared visible surface).
-                        In AUDIO view there's no bar button to anchor
-                        to, so we fall back to the classic nested
-                        Paper Menu pattern — devices render as
-                        inline rows inside the kebab.
-                        Folded mode: hide entirely. The cover screen
-                        has no room for the picker overlay and the
-                        user can change the route from the main
-                        display when needed. */}
-                    {!this.props.isFolded && (
-                    this.props.audioOnly ? (
-                        <Menu
-                            visible={this.state.audioMenuVisible}
-                            onDismiss={() => this.setState({audioMenuVisible: false})}
-                            anchor={
-                                <Menu.Item
-                                    title="Audio..."
-                                    icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
-                                    onPress={() => this.setState({audioMenuVisible: true})}
-                                />
-                            }
-                        >
-                            {(this.props.availableAudioDevices || []).map(device => {
-                                const isSelected = device === this.props.selectedAudioDevice;
-                                const deviceTitle = (utils.availableAudioDeviceNames && utils.availableAudioDeviceNames[device]) || device;
-                                return (
-                                    <Menu.Item
-                                        key={device}
-                                        icon={utils.availableAudioDevicesIconsMap[device] || 'volume-high'}
-                                        title={isSelected ? `✓ ${deviceTitle}` : deviceTitle}
-                                        onPress={() => {
-                                            this.props.selectAudioDevice(device);
-                                            this.setState({audioMenuVisible: false, menuVisible: false});
-                                        }}
-                                    />
-                                );
-                            })}
-                        </Menu>
-                    ) : (
+                    {/* Select speakers — surfaced only in the VIDEO
+                        view, and only when there are at least two
+                        remote video participants to choose between.
+                        videoParticipantCount counts remotes with an
+                        actual video track (bridges and audio-only
+                        remotes are excluded); we fall back to the
+                        raw participant count check for older parent
+                        wiring. */}
+                    {!this.props.audioOnly
+                            && !this.props.isFolded
+                            && (this.props.videoParticipantCount != null
+                                ? this.props.videoParticipantCount > 1
+                                : this.state.participants > 2) ? (
                         <Menu.Item
-                            onPress={() => this.handleMenu('audioPicker')}
-                            icon={utils.availableAudioDevicesIconsMap[this.props.selectedAudioDevice] || "volume-high"}
-                            title="Audio..."
+                            onPress={() => this.handleMenu('speakers')}
+                            icon="account-tie"
+                            title="Select speakers..."
                         />
-                    ))}
+                    ) : null}
 
-                    {/* Video... — same audio-vs-video-view split as
-                        Audio... above. In video view, defer to the
-                        camera-picker overlay anchored to the call-
-                        bar video button. In audio view there is no
-                        camera-bar button to anchor to, so render a
-                        classic Paper submenu inline. The audio-view
-                        submenu carries only the controls that are
-                        actionable without a live tile in front of
-                        the user: Stop / Start video, Hide / Show
-                        mirror, Aspect ratio. Camera-front /
-                        camera-rear selection is intentionally
-                        omitted from this submenu — switching
-                        cameras while in audio view has no immediate
-                        visual feedback, and the full picker is
-                        still one tap away after switching to
-                        video view. */}
-                    {/* Folded mode: hide Video... entirely. Same
-                        reasoning as the Audio... gate above. */}
-                    {!this.props.isFolded && (
-                    this.props.audioOnly ? (
-                        <Menu
-                            visible={this.state.videoMenuVisible}
-                            onDismiss={() => this.setState({videoMenuVisible: false})}
-                            anchor={
-                                <Menu.Item
-                                    title="Video..."
-                                    icon="video"
-                                    onPress={() => this.setState({videoMenuVisible: true})}
-                                />
-                            }
-                        >
-                            {typeof this.props.toggleVideoMute === 'function' ? (
-                                <Menu.Item
-                                    icon={this.props.videoMuted ? 'video' : 'video-off'}
-                                    title={this.props.videoMuted ? 'Start video' : 'Stop video'}
-                                    onPress={() => {
-                                        this.props.toggleVideoMute();
-                                        this.setState({videoMenuVisible: false, menuVisible: false});
-                                    }}
-                                />
-                            ) : null}
-                            {typeof this.props.toggleMyVideo === 'function' ? (
-                                <Menu.Item
-                                    icon={this.state.enableMyVideo ? 'eye-off' : 'eye'}
-                                    title={this.state.enableMyVideo ? 'Hide mirror' : 'Show mirror'}
-                                    /* Mirror only makes sense when there's a
-                                       remote tile to see alongside — same
-                                       rule as the camera picker's row in
-                                       ConferenceBox. */
-                                    disabled={!(Array.isArray(this.props.participants) && this.props.participants.length > 0)}
-                                    onPress={() => {
-                                        this.props.toggleMyVideo();
-                                        this.setState({videoMenuVisible: false, menuVisible: false});
-                                    }}
-                                />
-                            ) : null}
-                            {typeof this.props.toggleAspectRatio === 'function' ? (
-                                <Menu.Item
-                                    icon="aspect-ratio"
-                                    title="Toggle aspect ratio"
-                                    onPress={() => {
-                                        this.props.toggleAspectRatio();
-                                        this.setState({videoMenuVisible: false, menuVisible: false});
-                                    }}
-                                />
-                            ) : null}
-                        </Menu>
-                    ) : (
-                        <Menu.Item
-                            onPress={() => this.handleMenu('videoPicker')}
-                            icon="video"
-                            title="Video..."
-                        />
-                    ))}
-                    {/* Divider just below the media-controls group —
-                        suppressed in folded mode along with the items
-                        above it. */}
+                    {/* Single divider before Hangup. Per user
+                        request the kebab is otherwise identical in
+                        every media type:
+                            Invite
+                            Share
+                            (Show PSTN bridge — audio view only)
+                            ───
+                            Hangup
+                        Other previously-conditional items (Speaker
+                        selection, Switch view, Audio... / Video...
+                        submenus, the extra spacer above Hangup) have
+                        been removed. The divider stays suppressed in
+                        folded mode so the menu doesn't show an
+                        orphan rule when Hangup is hidden. */}
                     {!this.props.isFolded ? <Divider /> : null}
-
-                    {/* Extra breathing room above Hangup. Mirrors the
-                        CallOverlay layout — the dropdown items are
-                        tall enough that a fast double-tap after
-                        dismissing one entry can land on the next
-                        one, and for Hangup that means an accidental
-                        conference termination, which is unrecoverable.
-                        The Divider plus a 24-px spacer push Hangup
-                        into its own visual zone at the bottom of
-                        the menu. Both the Divider and the spacer are
-                        also hidden in folded mode since the Hangup
-                        item itself is hidden — leaving the divider
-                        would bracket nothing. */}
-                    {!this.props.isFolded ? <Divider /> : null}
-                    {!this.props.isFolded ? <View style={{ height: 24 }} /> : null}
                     {/* Folded mode: hide Hangup from the kebab. On the
                         cover screen the audio-view bottom bar still
                         carries the hangup button, so removing the

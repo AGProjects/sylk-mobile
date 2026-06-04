@@ -11,15 +11,70 @@ import DarkModeManager from '../DarkModeManager';
 
 import { StyleSheet } from 'react-native';
 
+// Display-name beautification — mirror of the logic used by
+// ContactCard so the audio conference tile's title reads identically
+// to the same person's row in the contacts list. Three rules:
+//
+//   1. Anonymous / guest URIs (@guest.<domain>) render as
+//      "Anonymous" — the same label the contacts list uses for
+//      drive-by callers that have no saved identity.
+//   2. When the remote party supplied a display name we keep it
+//      verbatim (just trim surrounding whitespace). Users / SIP UAs
+//      pick their own capitalisation on purpose ("iPhone of John",
+//      "AG Projects") and we must not rewrite it.
+//   3. Otherwise we fall back to the URI's local part and run it
+//      through prettifyName, which turns 'john.doe' / 'blue_owl' /
+//      'jane-smith' into 'John Doe' / 'Blue Owl' / 'Jane Smith'.
+//      Phone-number-looking strings and bare @-containing local
+//      parts are left alone (just first-letter-capitalised).
+function capitalizeFirstLetter(str) {
+    if (!str) return '';
+    return str[0].toUpperCase() + str.slice(1);
+}
+
+function prettifyName(str) {
+    if (!str) return '';
+    if (str.indexOf('@') > -1) return capitalizeFirstLetter(str);
+    if (/^[+\d][\d\s()-]*$/.test(str)) return str; // phone number — leave as-is
+    const cleaned = str.replace(/[._-]+/g, ' ').trim();
+    if (!cleaned) return capitalizeFirstLetter(str);
+    return cleaned.replace(/\w\S*/g, (txt) =>
+        txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+    );
+}
+
+function beautifyIdentity(identity) {
+    if (!identity) return '';
+    const uri = identity.uri || identity._uri || '';
+    const dn = identity.displayName || identity._displayName || '';
+    if (typeof uri === 'string' && uri.indexOf('@guest.') > -1) {
+        return 'Anonymous';
+    }
+    if (dn && dn.trim() && dn.trim() !== uri) {
+        return dn.trim();
+    }
+    if (uri.indexOf('@') > -1) {
+        return prettifyName(uri.split('@')[0]);
+    }
+    return prettifyName(uri);
+}
+
 const styles = StyleSheet.create({
   tileWrapper: {
     justifyContent: 'center',
     alignItems: 'stretch',
     position: 'relative',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    // Border bumped from 1 dp / 0.18 alpha — that read as no
+    // visible delineation on the dark call-UI background, so the
+    // single-column landscape audio conference view (and any
+    // other path that lays tiles vertically) looked like a wall
+    // of identities with nothing separating them. 1.5 dp at 0.45
+    // alpha gives a crisp visible separator without competing
+    // with the identity / VU-meter content inside the tile.
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.45)',
     borderRadius: 6,
-    marginVertical: 2,
+    marginVertical: 4,
     marginHorizontal: 8,
     overflow: 'hidden',
   },
@@ -485,9 +540,15 @@ class ConferenceAudioParticipant extends Component {
         const _isDark = _tileTheme.isDark;
         const _tileTextColor = _isDark ? '#FFFFFF' : _tileTheme.textPrimary;
         const _tileMutedColor = _isDark ? '#bbbbbb' : _tileTheme.textSecondary;
+        // Per-tile border disabled — focus is on the left column's
+        // speedo / thumb / dial cards for the moment. Setting alpha
+        // to 0 makes the inline override transparent without
+        // touching the tile's layout (width / radius stay the
+        // same). Restore to 0.45 when the tile delineation is
+        // wanted again.
         const _tileBorderColor = _isDark
-            ? 'rgba(255, 255, 255, 0.18)'
-            : 'rgba(0, 0, 0, 0.18)';
+            ? 'rgba(255, 255, 255, 0)'
+            : 'rgba(0, 0, 0, 0)';
         const _tileBgColor = _isDark
             ? 'transparent'
             : _tileTheme.surface;
@@ -623,7 +684,7 @@ class ConferenceAudioParticipant extends Component {
             <View style={_tileWrapperStyle}>
             <List.Item
                 style={isFailure ? styles.cardWithFooter : styles.card}
-                title={identity.displayName||identity.uri}
+                title={beautifyIdentity(identity)}
                 titleStyle={_displayNameStyle}
                 titleNumberOfLines={1}
                 titleEllipsizeMode="tail"

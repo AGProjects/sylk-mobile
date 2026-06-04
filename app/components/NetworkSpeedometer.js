@@ -26,13 +26,15 @@ import Svg, { Path, Line, Circle, G, Text as SvgText, TSpan } from 'react-native
 
 // ---------- dial geometry ---------------------------------------------------
 
-// 20% smaller than the original 80×48 sizing, so two dials sit
-// comfortably to the right of the title without crowding the kebab.
-const W = 64;
-const H = 38;
+// Dial geometry. Bumped ~30% from the previous 64×38 so the
+// asymmetric codec centre label ("⇡VP9  ⇣H264") fits inside the
+// arc without truncation. CY/R stay derived from W/H so the
+// arc-path / needle math doesn't need touching.
+const W = 83;
+const H = 49;
 const CX = W / 2;
-const CY = H - 4;
-const R  = W / 2 - 3;
+const CY = H - 5;
+const R  = W / 2 - 4;
 
 // Polar -> cartesian. 0° = left (9 o'clock), 90° = up, 180° = right (3 o'clock).
 function polar(angleDeg, radius = R) {
@@ -196,7 +198,7 @@ function Dial({ arcColor, needles, caption, centerLabel }) {
                             x={CX}
                             y={CY - R * 0.4}
                             fill="#ffffff"
-                            fontSize={10}
+                            fontSize={13}
                             fontWeight="700"
                             textAnchor="middle"
                             alignmentBaseline="middle"
@@ -266,6 +268,16 @@ function _getCallState(call) {
                 outW: 0, outH: 0,
                 fps: 0,
                 videoCodecMeta: null,
+                // Per-direction codec state. Tracked separately so the
+                // speedometer can display the asymmetric case
+                // (encode-in-H.264 / decode-VP9 with Safari) without
+                // collapsing one side onto the other. videoCodec /
+                // videoCodecMeta / fps above are still populated for
+                // backward compat — they mirror videoCodecOut when
+                // present, falling back to videoCodecIn.
+                videoCodecIn: '',  videoCodecOut: '',
+                videoCodecInMeta: null, videoCodecOutMeta: null,
+                fpsIn: 0, fpsOut: 0,
             },
         };
         _runningState.set(call, s);
@@ -310,6 +322,9 @@ export default class NetworkSpeedometer extends React.Component {
                 videoCodec: '', audioCodec: '',
                 inW: 0,  inH: 0,
                 outW: 0, outH: 0,
+                videoCodecIn: '',  videoCodecOut: '',
+                videoCodecInMeta: null, videoCodecOutMeta: null,
+                fpsIn: 0, fpsOut: 0,
             };
         this._onStats = this._onStats.bind(this);
     }
@@ -481,8 +496,19 @@ export default class NetworkSpeedometer extends React.Component {
             if (!rtp) return '';
             return (rtp.mimeType || rtp.codec || '').toString();
         };
-        const videoCodec = codecOf(videoIn) || codecOf(videoOut) || cs.snapshot.videoCodec;
-        const audioCodec = codecOf(audioIn) || codecOf(audioOut) || cs.snapshot.audioCodec;
+        // Direction-specific codec values. Track in / out separately so
+        // an asymmetric negotiation (encoder sends H.264, decoder gets
+        // VP9 — the Safari interop case after the
+        // pickAnswerVideoCodec+setCodecPreferences fix) is visible in
+        // the dial instead of one side overwriting the other. The
+        // single-codec fields below stay populated for callers
+        // (centerLabel fallback, propTypes, history) that haven't been
+        // taught about the split yet — they mirror "out" first to keep
+        // the existing fast-path numbers stable.
+        const videoCodecIn  = codecOf(videoIn)  || cs.snapshot.videoCodecIn;
+        const videoCodecOut = codecOf(videoOut) || cs.snapshot.videoCodecOut;
+        const videoCodec    = videoCodecOut || videoCodecIn || cs.snapshot.videoCodec;
+        const audioCodec    = codecOf(audioIn) || codecOf(audioOut) || cs.snapshot.audioCodec;
 
         // Frame dimensions. Inbound = what the remote peer sends and we
         // decode; outbound = what we encode and send. Both populated by
@@ -492,7 +518,13 @@ export default class NetworkSpeedometer extends React.Component {
         const inH  = videoIn?.frameHeight  || cs.snapshot.inH  || 0;
         const outW = videoOut?.frameWidth  || cs.snapshot.outW || 0;
         const outH = videoOut?.frameHeight || cs.snapshot.outH || 0;
-        const fps  = videoIn?.framesPerSecond || cs.snapshot.fps || 0;
+        // fps per direction: inbound = received decoded frame rate
+        // (videoIn.framesPerSecond), outbound = our encoder's emit rate
+        // (videoOut.framesPerSecond). Both populated by libwebrtc
+        // inbound-rtp / outbound-rtp records.
+        const fpsIn  = videoIn?.framesPerSecond  || cs.snapshot.fpsIn  || 0;
+        const fpsOut = videoOut?.framesPerSecond || cs.snapshot.fpsOut || 0;
+        const fps    = fpsIn || fpsOut || cs.snapshot.fps || 0;
 
         // Codec metadata (clockRate, channels, sdpFmtpLine) — patched
         // sylkrtc copies these from the WebRTC codec record onto the
@@ -509,7 +541,15 @@ export default class NetworkSpeedometer extends React.Component {
                 fmtp: parseFmtp(rtp.sdpFmtpLine || ''),
             };
         };
-        const videoCodecMeta = pickMeta(videoIn) || pickMeta(videoOut) || cs.snapshot.videoCodecMeta;
+        // Per-direction meta (clockRate, channels, sdpFmtpLine /
+        // parsed fmtp). Lets the renderer print the H.264 profile-level
+        // tokens for one side and the VP9 profile-id for the other.
+        const videoCodecInMeta  = pickMeta(videoIn)  || cs.snapshot.videoCodecInMeta;
+        const videoCodecOutMeta = pickMeta(videoOut) || cs.snapshot.videoCodecOutMeta;
+        // Backward-compatible single-codec meta — same fallback order
+        // we use for videoCodec above so the existing render path
+        // doesn't shift its choice.
+        const videoCodecMeta = videoCodecOutMeta || videoCodecInMeta || cs.snapshot.videoCodecMeta;
 
         // Persist for the next mount: a remounted speedometer reads
         // these via _getCallState() in its constructor and shows the
@@ -519,25 +559,78 @@ export default class NetworkSpeedometer extends React.Component {
             videoCodec, audioCodec,
             inW, inH, outW, outH,
             fps, videoCodecMeta,
+            videoCodecIn, videoCodecOut,
+            videoCodecInMeta, videoCodecOutMeta,
+            fpsIn, fpsOut,
         };
 
         this.setState(cs.snapshot);
     }
 
     render() {
-        const { up, down, rtt, loss, inW, inH, outW, outH, fps, videoCodecMeta } = this.state;
+        const {
+            up, down, rtt, loss, inW, inH, outW, outH, fps, videoCodecMeta,
+            videoCodecInMeta, videoCodecOutMeta, fpsIn, fpsOut,
+        } = this.state;
         // Strip "video/" / "audio/" prefix that sometimes prefixes mimeType.
         const cleanCodec = (c) => (c || '').replace(/^video\//i, '').replace(/^audio\//i, '');
         // Prefer codec extracted from stats; fall back to props if parent
         // happens to know it (e.g. for the very first render before any
         // stats arrive).
-        const vCodec = cleanCodec(this.state.videoCodec || this.props.videoCodec);
+        const vCodec    = cleanCodec(this.state.videoCodec || this.props.videoCodec);
+        const vCodecIn  = cleanCodec(this.state.videoCodecIn);
+        const vCodecOut = cleanCodec(this.state.videoCodecOut);
         const showRes = !!this.props.showResolution;
-        // Codec feature pills (e.g. "30fps · CB 3.1 · pkt1"). Only rendered
-        // in the fullscreen overlay where we have room.
-        const featureTokens = showRes
-            ? buildVideoFeatureTokens(vCodec, videoCodecMeta, fps)
-            : [];
+        // Symmetric when both sides agree on the same codec name (or one
+        // side hasn't produced any inbound/outbound stats yet — typical
+        // during the first 1–2 s of a call, before the first
+        // outbound-rtp report includes the codecId).
+        const codecsSymmetric = (!vCodecIn || !vCodecOut || vCodecIn === vCodecOut);
+        // Codec feature pills. Only rendered in the fullscreen overlay
+        // where we have room.
+        //
+        // - Symmetric:   "30fps · CB 3.1 · pkt1"
+        //                (codec name comes from the dial centre label,
+        //                 so we don't repeat it here — keeps the row
+        //                 narrow on small screens, matches the original
+        //                 single-direction look).
+        //
+        // - Asymmetric:  "⇡ VP9 30fps · p0"
+        //                "⇣ H264 24fps · CB 3.1 · pkt1"
+        //                (each row is self-contained: arrow + codec
+        //                 name + per-side fmtp/fps, so a user reading
+        //                 a single line knows exactly which codec the
+        //                 numbers describe without cross-referencing
+        //                 the centre label).
+        const featureTokens = (() => {
+            if (!showRes) return [];
+            if (codecsSymmetric) {
+                // Now that the dial centre says "Speed" (not the codec
+                // name), the symmetric feature row needs to surface the
+                // codec name on its own so the user still knows what's
+                // negotiated. Prepended ahead of the fps / profile /
+                // pkt-mode tokens; e.g. "H264 · 30fps · CB 3.1 · pkt1".
+                const tokens = buildVideoFeatureTokens(vCodec, videoCodecMeta, fps);
+                if (vCodec) tokens.unshift(vCodec);
+                return tokens;
+            }
+            const outT = buildVideoFeatureTokens(vCodecOut, videoCodecOutMeta, fpsOut);
+            const inT  = buildVideoFeatureTokens(vCodecIn,  videoCodecInMeta,  fpsIn);
+            const join = (codec, tokens) => {
+                const head = codec || '?';
+                return tokens.length ? head + ' ' + tokens.join(' · ') : head;
+            };
+            // Arrow convention (user-confirmed): ⇡ precedes the IN
+            // codec (what we receive — picture "video coming up the
+            // wire into the phone"), ⇣ precedes the OUT codec (what
+            // we send — picture "video going down the wire out of
+            // the phone"). Applied symmetrically to the bandwidth
+            // caption a few lines below so all four readouts in the
+            // dial share the same arrow→direction mapping.
+            const outStr = (vCodecOut || outT.length) ? '⇣ ' + join(vCodecOut, outT) : '';
+            const inStr  = (vCodecIn  || inT.length)  ? '⇡ ' + join(vCodecIn,  inT)  : '';
+            return [outStr, inStr].filter(Boolean);
+        })();
         return (
             <View style={styles.column}>
             <View style={styles.row}>
@@ -547,12 +640,30 @@ export default class NetworkSpeedometer extends React.Component {
                         { value: up,   max: NetworkSpeedometer.BANDWIDTH_MAX_BPS, color: COLOR_UPLOAD   },
                         { value: down, max: NetworkSpeedometer.BANDWIDTH_MAX_BPS, color: COLOR_DOWNLOAD },
                     ]}
-                    centerLabel={vCodec || null}
+                    /* Mirrors the RTT dial's "RTT" label pattern: a
+                       single coloured TSpan matching the dominant
+                       needle colour (upload blue here), so the user
+                       knows at a glance which dial is the bandwidth
+                       one without a legend. The codec (and any
+                       asymmetric send/receive split) lives in the
+                       feature row below the dial. */
+                    centerLabel={[{ text: 'Speed', color: COLOR_UPLOAD }]}
                     caption={
+                        /* Arrows reversed from the original
+                           upload-bias convention so the dial reads
+                           the way the user expects: ⇡ = data coming
+                           IN to the phone (download / decode side),
+                           ⇣ = data going OUT of the phone (upload /
+                           encode side). The `down` stats variable
+                           still holds bytesReceived (inbound) and
+                           `up` still holds bytesSent (outbound) —
+                           only the arrow glyphs change, not the
+                           underlying values, so history/colours stay
+                           consistent. */
                         <Text style={styles.caption}>
-                            <Text style={{ color: COLOR_UPLOAD   }}>⇡{fmtBits(up)}</Text>
+                            <Text style={{ color: COLOR_DOWNLOAD }}>⇡{fmtBits(down)}</Text>
                             <Text> </Text>
-                            <Text style={{ color: COLOR_DOWNLOAD }}>⇣{fmtBits(down)}</Text>
+                            <Text style={{ color: COLOR_UPLOAD   }}>⇣{fmtBits(up)}</Text>
                         </Text>
                     }
                 />
@@ -604,7 +715,15 @@ export default class NetworkSpeedometer extends React.Component {
             ) : null}
             {showRes && featureTokens.length > 0 ? (
                 <Text style={styles.features}>
-                    {featureTokens.join(' · ')}
+                    {/* Symmetric: existing single-line " · " join.
+                        Asymmetric: featureTokens already contains
+                        two pre-formatted strings (one per direction);
+                        join with newline so each side gets its own
+                        row instead of chaining "⇡ ... ⇣ ..." in one
+                        narrow line. */}
+                    {codecsSymmetric
+                        ? featureTokens.join(' · ')
+                        : featureTokens.join('\n')}
                 </Text>
             ) : null}
             </View>
@@ -626,22 +745,22 @@ const styles = StyleSheet.create({
     },
     dial: {
         alignItems: 'center',
-        marginHorizontal: 3,
+        marginHorizontal: 4,
         backgroundColor: 'transparent',
     },
     caption: {
         color: '#fff',
-        fontSize: 8,
+        fontSize: 10,
         marginTop: -2,
     },
     codec: {
         color: '#bbbbbb',
-        fontSize: 8,
+        fontSize: 10,
         fontStyle: 'italic',
     },
     resolution: {
         color: '#bbbbbb',
-        fontSize: 9,
+        fontSize: 12,
         marginTop: 2,
         textAlign: 'center',
     },
@@ -651,7 +770,7 @@ const styles = StyleSheet.create({
     },
     features: {
         color: '#dddddd',
-        fontSize: 9,
+        fontSize: 12,
         marginTop: 1,
         textAlign: 'center',
     },

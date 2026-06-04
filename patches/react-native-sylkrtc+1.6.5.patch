@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/call.js b/node_modules/react-native-sylkrtc/lib/call.js
-index af962e0..1ef1830 100644
+index af962e0..9608487 100644
 --- a/node_modules/react-native-sylkrtc/lib/call.js
 +++ b/node_modules/react-native-sylkrtc/lib/call.js
 @@ -2,6 +2,7 @@
@@ -464,7 +464,7 @@ index af962e0..1ef1830 100644
 +                        // alongside the OUTGOING / INCOMING offer dumps
 +                        // above so the full negotiation round-trip is
 +                        // greppable from a single log file.
-+                        // console.log('[sylkrtc][sdp] OUTGOING answer (call=', this._id, ')\n' + sdp);
++                        console.log('[sylkrtc][sdp] OUTGOING answer (call=', this._id, ')\n' + sdp);
 +                        // DTMF sender becomes available after the
 +                        // local description is set inside
 +                        // createLocalSdp (above). Same one-tick defer
@@ -559,8 +559,8 @@ index af962e0..1ef1830 100644
 +                             utils.getPreferredAudioCodec())
 +            .then((sdp) => {
 +                DEBUG('Local update SDP: %s', sdp);
-+                // console.log('[sylkrtc][sdp] OUTGOING update offer (call=',
-+                //     this._id, ')\n' + sdp);
++                console.log('[sylkrtc][sdp] OUTGOING update offer (call=',
++                    this._id, ')\n' + sdp);
 +                this._sendUpdate(sdp);
 +            })
 +            .catch((reason) => {
@@ -605,8 +605,8 @@ index af962e0..1ef1830 100644
 +        utils.createLocalSdp(this._pc, 'answer', null, answerCodec, answerAudioCodec)
 +            .then((sdp) => {
 +                console.log('Local update answer SDP: %s', sdp);
-+                // console.log('[sylkrtc][sdp] OUTGOING update answer (call=',
-+                //     this._id, ')\n' + sdp);
++                console.log('[sylkrtc][sdp] OUTGOING update answer (call=',
++                    this._id, ')\n' + sdp);
 +                this._sendUpdate(sdp);
 +                // Our local PC is back in 'stable' as soon as
 +                // setLocalDescription resolves inside createLocalSdp.
@@ -641,8 +641,8 @@ index af962e0..1ef1830 100644
 +        // prompts belong in the UI layer.
 +        const remoteSdp = utils.mungeSdp(sdp);
 +        DEBUG('Remote update SDP: %s', remoteSdp);
-+        // console.log('[sylkrtc][sdp] INCOMING update offer (call=',
-+        //     this._id, ')\n' + remoteSdp);
++        console.log('[sylkrtc][sdp] INCOMING update offer (call=',
++            this._id, ')\n' + remoteSdp);
 +        console.log('[sylkrtc][update] _handleRemoteUpdate entry (call=', this._id,
 +            ') sdp_len=', remoteSdp ? remoteSdp.length : 0,
 +            'has_m_video=', /\bm=video\s+[1-9]\d*\b/.test(remoteSdp));
@@ -748,8 +748,8 @@ index af962e0..1ef1830 100644
 +                // it's reachable when triaging codec-negotiation or
 +                // ICE-gathering issues without needing to flip a debug
 +                // flag and rebuild.
-+                // console.log('[sylkrtc][sdp] OUTGOING offer (call=', this._id,
-+                //     'to=', uri, ')\n' + sdp);
++                console.log('[sylkrtc][sdp] OUTGOING offer (call=', this._id,
++                    'to=', uri, ')\n' + sdp);
 +                // DTMF sender becomes available after the local
 +                // description is set inside createLocalSdp (above).
 +                // Same one-tick defer that answer() uses, for the
@@ -771,19 +771,52 @@ index af962e0..1ef1830 100644
                  this._localTerminate(reason);
              });
      }
-@@ -338,6 +975,11 @@ class Call extends EventEmitter {
+@@ -329,15 +966,41 @@ class Call extends EventEmitter {
+     _initIncoming(id, caller, sdp, callId, headers = {}) {
+         this._id = id;
+         this._remoteIdentity = new utils.Identity(caller.uri, caller.display_name);
+-        this._incomingSdp = sdp;
++        // Run the incoming offer through mungeSdp ONCE here, before any
++        // setRemoteDescription downstream sees it. Critical for the
++        // prewarm path (a few lines below in _prewarm: this._pc.
++        // setRemoteDescription(this._incomingSdp)) and for the fallback
++        // accept paths (~line 510 / 513). Both used to set the raw
++        // offer on the PC, so all subsequent SDP transforms
++        // (H.264 profile-level-id rewrite, telephone-event filter, etc.)
++        // never reached the wire — libwebrtc saw the original offer,
++        // generated an answer based on it, and Safari's H.264 High
++        // profile PT 96 ended up dropped from the answer with no codec
++        // bound on our side to decode it. By munging here, every
++        // consumer of _incomingSdp gets the same transformed string
++        // and pc.remoteDescription matches what sdp-dump prints later.
++        try {
++            this._incomingSdp = utils.mungeSdp(sdp);
++        } catch (e) {
++            // Defensive: if mungeSdp somehow fails on a pathological
++            // SDP, fall back to the raw offer rather than terminating
++            // the call. Worst case we're back to the pre-fix behaviour.
++            DEBUG('mungeSdp on incoming offer failed, using raw: %o', e);
++            this._incomingSdp = sdp;
++        }
+         this._direction = 'incoming';
+         this._state = 'incoming';
+         this._callId = callId;
+         this._remoteMediaDirections = Object.assign(
+-            {audio: [], video:[]}, utils.getMediaDirections(sdp)
++            {audio: [], video:[]}, utils.getMediaDirections(this._incomingSdp)
          );
          this._headers = Object.keys(headers).map(key => {return {name: key, value: headers[key]}});
-         DEBUG('Remote SDP: %s', sdp);
+-        DEBUG('Remote SDP: %s', sdp);
++        DEBUG('Remote SDP: %s', this._incomingSdp);
 +        // Surface the offer SDP from the caller in the standard log
 +        // stream (see the OUTGOING-offer console.log above for why we
 +        // duplicate this from DEBUG).
-+        // console.log('[sylkrtc][sdp] INCOMING offer (call=', id,
-+        //     'from=', caller && caller.uri, ')\n' + sdp);
++        console.log('[sylkrtc][sdp] INCOMING offer (call=', id,
++            'from=', caller && caller.uri, ')\n' + this._incomingSdp);
      }
  
      _handleEvent(message) {
-@@ -346,6 +988,21 @@ class Call extends EventEmitter {
+@@ -346,6 +1009,21 @@ class Call extends EventEmitter {
              case 'state':
                  let oldState = this._state;
                  let newState = message.state;
@@ -805,18 +838,18 @@ index af962e0..1ef1830 100644
                  this._state = newState;
  
                  if (newState === 'accepted' || newState === 'early-media' && this._direction === 'outgoing') {
-@@ -356,6 +1013,10 @@ class Call extends EventEmitter {
+@@ -356,6 +1034,10 @@ class Call extends EventEmitter {
                      if (message.sdp !== undefined) {
                          const sdp = utils.mungeSdp(message.sdp);
                          DEBUG('Remote SDP: %s', sdp);
 +                        // Incoming answer for our outgoing call. Last
 +                        // of the four exchange points; pairs with the
 +                        // OUTGOING-offer dump in _initOutgoing above.
-+                        // console.log('[sylkrtc][sdp] INCOMING answer (call=', this._id, ')\n' + sdp);
++                        console.log('[sylkrtc][sdp] INCOMING answer (call=', this._id, ')\n' + sdp);
                          this._remoteMediaDirections = Object.assign(
                              {audio: [], video:[]}, utils.getMediaDirections(sdp)
                          );
-@@ -378,6 +1039,7 @@ class Call extends EventEmitter {
+@@ -378,6 +1060,7 @@ class Call extends EventEmitter {
                              // failure
                              .catch((error) => {
                                  DEBUG('Error accepting call or early media: %s', error);
@@ -824,7 +857,7 @@ index af962e0..1ef1830 100644
                                  this.terminate();
                              });
                      }
-@@ -399,7 +1061,20 @@ class Call extends EventEmitter {
+@@ -399,7 +1082,20 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'message':
@@ -846,7 +879,7 @@ index af962e0..1ef1830 100644
                  const incomingMessage = this._messages.get(message.message_id);
                  if (!incomingMessage) {
                      if (message.content_type === 'text/pgp-private-key') {
-@@ -423,7 +1098,10 @@ class Call extends EventEmitter {
+@@ -423,7 +1119,10 @@ class Call extends EventEmitter {
                      if (message.disposition_notification &&
                          message.disposition_notification.indexOf('positive-delivery') !== -1
                      ) {
@@ -858,7 +891,7 @@ index af962e0..1ef1830 100644
                              message.sender.uri,
                              message.message_id,
                              message.timestamp,
-@@ -433,6 +1111,17 @@ class Call extends EventEmitter {
+@@ -433,6 +1132,17 @@ class Call extends EventEmitter {
                  }
                  break;
              case 'disposition-notification':
@@ -876,7 +909,7 @@ index af962e0..1ef1830 100644
                  const outgoingMessage = this._messages.get(message.message_id);
                  if (outgoingMessage) {
                      if (outgoingMessage.state === 'displayed') {
-@@ -443,31 +1132,116 @@ class Call extends EventEmitter {
+@@ -443,31 +1153,116 @@ class Call extends EventEmitter {
                  const {reason, code} = message;
                  this.emit('messageStateChanged', message.message_id, message.state, {reason, code});
                  break;
@@ -912,8 +945,8 @@ index af962e0..1ef1830 100644
 +                    DEBUG('Remote update answer SDP: %s', sdp);
 +                    console.log('[sylkrtc][update] applying remote answer (call=',
 +                        this._id, '), upgrading was=', this._upgrading);
-+                    // console.log('[sylkrtc][sdp] INCOMING update answer (call=',
-+                    //     this._id, ')\n' + sdp);
++                    console.log('[sylkrtc][sdp] INCOMING update answer (call=',
++                        this._id, ')\n' + sdp);
 +                    this._pc.setRemoteDescription(new RTCSessionDescription({type: 'answer', sdp: sdp}))
 +                        .then(() => {
 +                            this._remoteMediaDirections = Object.assign(
@@ -1011,7 +1044,7 @@ index af962e0..1ef1830 100644
  
      _sendRequest(req, cb) {
          this._account._sendRequest(req, cb);
-@@ -485,12 +1259,14 @@ class Call extends EventEmitter {
+@@ -485,12 +1280,14 @@ class Call extends EventEmitter {
          this._sendRequest(req, (error) => {
              if (error) {
                  DEBUG('Call error: %s', error);
@@ -1026,7 +1059,7 @@ index af962e0..1ef1830 100644
          const req = {
              sylkrtc: 'session-terminate',
              session: this.id
-@@ -498,12 +1274,14 @@ class Call extends EventEmitter {
+@@ -498,12 +1295,14 @@ class Call extends EventEmitter {
          this._sendRequest(req, (error) => {
              if (error) {
                  DEBUG('Error terminating call: %s', error);
@@ -1041,7 +1074,7 @@ index af962e0..1ef1830 100644
                  this._localTerminate('200 OK');
              }
              this._terminated = true;
-@@ -519,6 +1297,7 @@ class Call extends EventEmitter {
+@@ -519,6 +1318,7 @@ class Call extends EventEmitter {
          this._sendRequest(req, (error) => {
              if (error) {
                  DEBUG('Trickle error: %s', error);
@@ -1049,7 +1082,7 @@ index af962e0..1ef1830 100644
                  this._localTerminate(error);
              }
          });
-@@ -534,11 +1313,38 @@ class Call extends EventEmitter {
+@@ -534,11 +1334,38 @@ class Call extends EventEmitter {
          this._sendRequest(req, (error) => {
              if (error) {
                  DEBUG('Answer error: %s', error);
@@ -1088,7 +1121,7 @@ index af962e0..1ef1830 100644
      _closeRTCPeerConnection() {
          DEBUG('Closing RTCPeerConnection');
          if (this._pc !== null) {
-@@ -593,6 +1399,7 @@ class Call extends EventEmitter {
+@@ -593,6 +1420,7 @@ class Call extends EventEmitter {
              return;
          }
          DEBUG('Local terminate');
@@ -1486,7 +1519,7 @@ index 33da09d..a45c8e1 100644
  
      _localTerminate(reason) {
 diff --git a/node_modules/react-native-sylkrtc/lib/connection.js b/node_modules/react-native-sylkrtc/lib/connection.js
-index 2469ceb..017b781 100644
+index 2469ceb..7a911e0 100644
 --- a/node_modules/react-native-sylkrtc/lib/connection.js
 +++ b/node_modules/react-native-sylkrtc/lib/connection.js
 @@ -94,13 +94,38 @@ class Connection extends EventEmitter {
@@ -1530,7 +1563,57 @@ index 2469ceb..017b781 100644
              }
          });
  
-@@ -234,6 +259,22 @@ class Connection extends EventEmitter {
+@@ -153,6 +178,49 @@ class Connection extends EventEmitter {
+         }
+     }
+ 
++    /**
++     * Send an explicit sylkrtc ping and resolve as soon as the server
++     * acks it (or reject on timeout / error / non-ready connection).
++     *
++     * Uses the same `{sylkrtc: 'ping'}` round-trip as the internal
++     * keep-alive watchdog, but on-demand — gives callers a way to
++     * detect a ghost socket (state='ready' but no traffic actually
++     * reaching the server) in seconds instead of the ~45 s the
++     * watchdog needs to accumulate enough missed acks. Useful when an
++     * out-of-band signal (e.g. an FCM push announcing an incoming
++     * call) suggests a WSS message should be in flight but hasn't
++     * arrived: a fast probe failure means reconnect immediately
++     * rather than waiting the watchdog out.
++     *
++     * @param {number} [timeoutMs=2000] – how long to wait for the ack
++     * @returns {Promise<void>} resolves on ack, rejects on
++     *          timeout/error/not-ready
++     */
++    ping(timeoutMs = 2000) {
++        return new Promise((resolve, reject) => {
++            if (this._state !== 'ready') {
++                reject(new Error('Connection is not ready'));
++                return;
++            }
++            let settled = false;
++            const timer = setTimeout(() => {
++                if (settled) return;
++                settled = true;
++                reject(new Error('ping timeout after ' + timeoutMs + ' ms'));
++            }, timeoutMs);
++            this._sendRequest({sylkrtc: 'ping'}, (error) => {
++                if (settled) return;
++                settled = true;
++                clearTimeout(timer);
++                if (error) {
++                    reject(error);
++                } else {
++                    resolve();
++                }
++            });
++        });
++    }
++
+     // Private API
+ 
+     _initialize() {
+@@ -234,6 +302,22 @@ class Connection extends EventEmitter {
          this._delay = INITIAL_DELAY;
          this._setState('connected');
  
@@ -1553,7 +1636,7 @@ index 2469ceb..017b781 100644
          this._missedPings = 0;
          this._pingInterval = setInterval(() => {
              const req = {
-@@ -245,8 +286,9 @@ class Connection extends EventEmitter {
+@@ -245,8 +329,9 @@ class Connection extends EventEmitter {
                  }
              });
              this._missedPings = this._missedPings + 1;
@@ -1565,7 +1648,7 @@ index 2469ceb..017b781 100644
                  clearInterval(this._pingInterval);
                  if (this._sock !== null) {
                      const noop = function() {};
-@@ -257,7 +299,7 @@ class Connection extends EventEmitter {
+@@ -257,7 +342,7 @@ class Connection extends EventEmitter {
                  }
                  this._onClose();
              }
@@ -1574,7 +1657,7 @@ index 2469ceb..017b781 100644
      }
  
      _onClose() {
-@@ -337,9 +379,41 @@ class Connection extends EventEmitter {
+@@ -337,9 +422,41 @@ class Connection extends EventEmitter {
              if (data.req.sylkrtc === 'ping') {
                  this._missedPings = 0;
              }
@@ -1617,7 +1700,7 @@ index 2469ceb..017b781 100644
                  } else {
                      data.cb(new Error(message.error));
                  }
-@@ -347,6 +421,27 @@ class Connection extends EventEmitter {
+@@ -347,6 +464,27 @@ class Connection extends EventEmitter {
          }
      }
  
@@ -1673,28 +1756,288 @@ index ae521ed..8c37edb 100644
  
  
 diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
-index a64c601..dbe8555 100644
+index a64c601..3477505 100644
 --- a/node_modules/react-native-sylkrtc/lib/utils.js
 +++ b/node_modules/react-native-sylkrtc/lib/utils.js
-@@ -54,7 +54,7 @@ class SharedFile {
+@@ -54,7 +54,234 @@ class SharedFile {
  }
  
  
 -function createLocalSdp(pc, type, options, preferredCodec = null) {
++// Reorder the video transceiver's codec preferences so the answerer's
++// preferred codec is first BEFORE createAnswer runs. This makes
++// pc.localDescription agree with the wire SDP we'll later send — without
++// it, mungeSdp re-sorts the m=video payloads but pc.localDescription
++// still holds libwebrtc's natural ordering (typically H.264-first on
++// Android), and libwebrtc's encoder picks based on pc.localDescription.
++// The two ends then disagree on the negotiated codec, the answerer ends
++// up encoding one codec while the offerer waits for another, and video
++// breaks in both directions.
++//
++// We source the codec list from RTCRtpReceiver.getCapabilities('video')
++// — the local platform's own recv capabilities — rather than from the
++// remote offer's m=video. The offer can include codecs this device's
++// libwebrtc can't handle (H265, AV1, VP9 profile-id=2 from Safari's
++// offer); passing those to setCodecPreferences makes libwebrtc throw
++// "Codec is not supported" and the whole reorder no-ops, leaving
++// pc.localDescription in its default H.264-first order. (This was the
++// real cause of the Sony XQ-EC72 regression: the H.265 entry in
++// Safari's offer poisoned the list.) Capabilities from
++// RTCRtpReceiver.getCapabilities are guaranteed to be acceptable to
++// setCodecPreferences — they're the same descriptors libwebrtc
++// generates from the platform's encoder/decoder factories.
++//
++// Sort order: real preferred codec first, every other real codec in
++// original order, then any rtx entries last. Keeping rtx at the end
++// preserves NACK/RTX support without giving rtx itself the negotiation
++// preference (rtx is paired via apt=, not chosen as a primary).
++//
++// Returns true when the reorder was actually applied to at least one
++// video transceiver, false when nothing changed (no transceiver yet, no
++// setCodecPreferences support, preferred codec absent from local
++// capabilities, or setCodecPreferences threw). Callers should consult
++// this and only ask mungeSdp to promote the same codec in the WIRE SDP
++// when the function returned true — otherwise pc.localDescription stays
++// in its default order while the wire SDP gets reordered, the two
++// disagree, and the encoder/decoder pick mismatch breaks video.
++function reorderTransceiverCodecs(pc, preferredCodec) {
++    if (!pc || !preferredCodec) return false;
++    if (typeof pc.getTransceivers !== 'function') return false;
++    try {
++        // Resolve RTCRtpReceiver: prefer the global the react-native-
++        // webrtc module installs at import time; otherwise look on the
++        // peer-connection's constructor namespace for legacy builds.
++        // No capability API → no reorder.
++        const Rx = (typeof global !== 'undefined' && global.RTCRtpReceiver)
++                || (pc.constructor && pc.constructor.RTCRtpReceiver);
++        if (!Rx || typeof Rx.getCapabilities !== 'function') return false;
++
++        const caps = Rx.getCapabilities('video');
++        if (!caps || !Array.isArray(caps.codecs) || caps.codecs.length === 0) return false;
++
++        const wantLower = preferredCodec.toLowerCase();
++        const isPreferred = (c) =>
++            c && c.mimeType && c.mimeType.toLowerCase() === 'video/' + wantLower;
++        const isRtx = (c) =>
++            c && c.mimeType && c.mimeType.toLowerCase() === 'video/rtx';
++
++        const preferredList = caps.codecs.filter(isPreferred);
++        if (preferredList.length === 0) return false; // pref not available locally
++
++        const sorted = [
++            ...preferredList,
++            ...caps.codecs.filter(c => !isPreferred(c) && !isRtx(c)),
++            ...caps.codecs.filter(isRtx),
++        ];
++
++        const transceivers = pc.getTransceivers() || [];
++        let applied = false;
++        for (const t of transceivers) {
++            const trackKind = (t.receiver && t.receiver.track && t.receiver.track.kind)
++                              || (t.sender && t.sender.track && t.sender.track.kind);
++            if (trackKind !== 'video') continue;
++            if (typeof t.setCodecPreferences !== 'function') continue;
++            try {
++                t.setCodecPreferences(sorted);
++                applied = true;
++            } catch (e) {
++                // shouldn't happen now that we're passing platform
++                // capabilities verbatim, but stay defensive
++            }
++        }
++        return applied;
++    } catch (e) {
++        return false;
++    }
++}
++
++
++// ----- codec-negotiation logging --------------------------------------------
++//
++// Diagnostic helper used by createLocalSdp to surface the codec story
++// each time we generate an offer or answer. Four lines, all greppable
++// with `[video] [media] [call]`:
++//
++//   Local [video] [media] [call] supported codecs:  <list>
++//   Local [video] [media] [call] preferred codec:   <pref>
++//   Local [video] [media] [call] sending codec:     <codec> pt=<pt> [<fmtp>]
++//   Remote [video] [media] [call] receiving codec:  <codec> pt=<pt> [<fmtp>]
++//
++// "Supported" is what RTCRtpReceiver.getCapabilities exposes for this
++// device — the same list setCodecPreferences accepts. "Preferred" is
++// whatever the host app pushed in via setPreferredVideoCodec (which
++// comes from the user's Preferences screen, default 'VP9'). "Sending"
++// is the first real codec in the SDP we're about to ship (so after any
++// setCodecPreferences + mungeSdp reordering) — that's the codec the
++// peer will negotiate to and ours will encode in. "Receiving" is the
++// first real codec in the remote SDP's m=video — for an answer that's
++// the codec the offerer would have liked us to send (Safari typically
++// puts H.264 High first), useful for spotting the High-vs-Baseline
++// gap that shows up as a black-window interop bug.
++//
++// Each codec line includes fmtp params (profile-level-id +
++// packetization-mode for H.264; profile-id for VP9) so a quick grep
++// makes the High vs Baseline vs VP9-profile-0 vs profile-2 distinction
++// obvious. Skips rtx / red / ulpfec / flexfec entries — those are
++// retransmit / FEC plumbing, not the user-facing codec choice.
++// Walks an SDP's m=video, returns one descriptor per real codec PT
++// (skipping rtx / red / ulpfec / flexfec / cn — those are retransmit
++// / FEC plumbing). Each descriptor is the same shape the single-codec
++// helper used to emit: "<NAME> pt=<PT> [<fmtp>]" with fmtp omitted
++// when there's no a=fmtp:<pt> line. PTs are walked in the same order
++// they appear in the m=video payloads list, so the first entry is
++// always the codec the offerer or answerer listed first (i.e. the
++// negotiated codec for the session).
++function _realVideoCodecsFromSdp(sdp) {
++    const out = [];
++    if (!sdp) return out;
++    try {
++        const parsed = transform.parse(sdp);
++        const v = parsed.media && parsed.media.find(m => m.type === 'video');
++        if (!v || !v.payloads || !v.rtp) return out;
++        const ignored = new Set(['rtx', 'red', 'ulpfec', 'flexfec-03', 'cn']);
++        const pts = String(v.payloads).split(' ').map(p => parseInt(p, 10));
++        const fmtpByPt = {};
++        if (v.fmtp) {
++            for (const f of v.fmtp) fmtpByPt[f.payload] = f.config;
++        }
++        for (const pt of pts) {
++            const rtp = v.rtp.find(r => r.payload === pt);
++            if (!rtp || !rtp.codec) continue;
++            if (ignored.has(rtp.codec.toLowerCase())) continue;
++            const fmtp = fmtpByPt[pt];
++            out.push(fmtp
++                ? rtp.codec + ' pt=' + pt + ' [' + fmtp + ']'
++                : rtp.codec + ' pt=' + pt);
++        }
++    } catch (e) { /* fall through */ }
++    return out;
++}
++
++// Back-compat thin wrapper for callers that only care about the
++// first / negotiated codec.
++function _firstRealVideoCodecFromSdp(sdp) {
++    const all = _realVideoCodecsFromSdp(sdp);
++    return all.length > 0 ? all[0] : null;
++}
++
++// console.log shim that mirrors the host app's timestampedLog format
++// ([APPLOG] <iso-ts> ...). Lets these lines grep alongside the rest
++// of the [APPLOG] stream in metro.log without plumbing the host's
++// logger through. Used by _logCodecNegotiation; safe to call from
++// anywhere in this module.
++function _applog() {
++    try {
++        const ts = new Date().toISOString();
++        const args = Array.prototype.slice.call(arguments);
++        // eslint-disable-next-line no-console
++        console.log.apply(console, ['[APPLOG]', ts].concat(args));
++    } catch (e) { /* never throw out of a logger */ }
++}
++
++function _logCodecNegotiation(type, preferredCodec, localSdp, remoteSdp) {
++    try {
++        let supported = [];
++        const Rx = (typeof global !== 'undefined' && global.RTCRtpReceiver)
++                || null;
++        if (Rx && typeof Rx.getCapabilities === 'function') {
++            const caps = Rx.getCapabilities('video');
++            if (caps && Array.isArray(caps.codecs)) {
++                // Compact "<NAME>[fmtp]" entries, skip rtx (it's a wrapper
++                // PT, not a user-facing codec). Multiple H.264 profile
++                // entries become e.g. "H264[42e01f] H264[640c1f]" so the
++                // log shows both Baseline and the synthesised High.
++                supported = caps.codecs
++                    .filter(c => c && c.mimeType
++                        && c.mimeType.toLowerCase() !== 'video/rtx')
++                    .map(c => {
++                        const name = c.mimeType.replace(/^video\//i, '');
++                        return c.sdpFmtpLine
++                            ? name + '[' + c.sdpFmtpLine + ']'
++                            : name;
++                    });
++            }
++        }
++        _applog('Local [video] [media] [call] supported codecs:',
++            supported.length ? supported.join(', ') : '(unknown — getCapabilities unavailable)');
++        _applog('Local [video] [media] [call] preferred codec:',
++            preferredCodec || '(default — libwebrtc natural order)');
++        const sending = _firstRealVideoCodecFromSdp(localSdp);
++        _applog('Local [video] [media] [call] sending codec ('
++            + type + '):', sending || '(none)');
++        // Only meaningful on the answer side — the offer is by definition
++        // generated before there's any remote SDP.
++        //
++        // We list every real video codec the peer offered (not just the
++        // first), in the same order the peer put them in m=video. The
++        // first entry is what the peer would have preferred to negotiate
++        // (typically H.264 High from Safari, VP8 from older Chrome,
++        // etc.); the tail entries show the fallback list — useful for
++        // spotting whether the peer offered a codec our local platform
++        // doesn't recv (in which case our answer dropped it and we
++        // would have ended up on a lower-pref shared codec).
++        if (type === 'answer') {
++            const receiving = _realVideoCodecsFromSdp(remoteSdp);
++            if (receiving.length === 0) {
++                _applog('Remote [video] [media] [call] receiving codecs: (none)');
++            } else {
++                _applog('Remote [video] [media] [call] receiving codecs ('
++                    + receiving.length + '):', receiving.join(', '));
++            }
++        }
++    } catch (e) {
++        // best-effort logging — never throw out of here
++    }
++}
++
++
 +function createLocalSdp(pc, type, options, preferredCodec = null, preferredAudioCodec = null) {
      if (type !== 'offer' && type !== 'answer') {
          return Promise.reject('type must be "offer" or "answer", but "' +type+ '" was given');
      }
-@@ -70,7 +70,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
+@@ -65,12 +292,40 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
+         } else {
+             createFunc = 'createAnswer';
+         }
++        // On the answer side, pin the video transceiver's codec order to
++        // our preferredCodec BEFORE createAnswer fires. Without this,
++        // mungeSdp re-sorts the wire SDP but pc.localDescription keeps
++        // libwebrtc's default order, the local encoder reads the wrong
++        // codec, and the negotiation silently breaks (see notes on
++        // reorderTransceiverCodecs above).
++        //
++        // Critical: we only ask mungeSdp to promote the same codec in
++        // the wire SDP when reorderTransceiverCodecs actually applied
++        // the change to pc.localDescription. If setCodecPreferences
++        // failed (older libwebrtc, missing static API, preferred codec
++        // not in local capabilities) and we still promoted in mungeSdp,
++        // pc.localDescription and the wire SDP would diverge — exactly
++        // the failure mode that breaks Safari interop.
++        let codecPrefApplied = false;
++        if (type === 'answer' && preferredCodec) {
++            codecPrefApplied = reorderTransceiverCodecs(pc, preferredCodec);
++        }
+         pc[createFunc](options)
+             .then((desc) => {
                  return pc.setLocalDescription(desc);
              })
              .then(() => {
 -                resolve(mungeSdp(pc.localDescription.sdp, preferredCodec));
-+                resolve(mungeSdp(pc.localDescription.sdp, preferredCodec, false, preferredAudioCodec));
++                const effectivePref = (type === 'answer' && !codecPrefApplied)
++                    ? null
++                    : preferredCodec;
++                const out = mungeSdp(pc.localDescription.sdp, effectivePref, false, preferredAudioCodec);
++                // Log the full codec story for this offer/answer round
++                // trip. Cheap (one SDP parse) and only fires once per
++                // negotiation, so we leave it on always — saves a lot
++                // of pain when chasing the next interop bug.
++                const remoteSdp = pc.remoteDescription && pc.remoteDescription.sdp;
++                _logCodecNegotiation(type, preferredCodec, out, remoteSdp);
++                resolve(out);
              })
              // failure
              .catch((error) => {
-@@ -81,7 +81,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
+@@ -81,7 +336,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null) {
  }
  
  
@@ -1703,7 +2046,82 @@ index a64c601..dbe8555 100644
      let parsedSdp = transform.parse(sdp);
      let h264payload = null;
      let hasProfileLevelId = false;
-@@ -132,6 +132,55 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
+@@ -110,6 +365,74 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
+         }
+     }
+ 
++    // H.264 profile-level-id rewrite: collapse every non-Baseline
++    // entry to Constrained Baseline at the original level.
++    //
++    // Why this exists: Android libwebrtc's recv codec list only
++    // includes H.264 Constrained Baseline (42e01f, packetization-mode=1).
++    // Adding the High-profile entry synthetically in the Java
++    // H264AndSoftwareVideoDecoderFactory makes RTCRtpReceiver.
++    // getCapabilities report it, but libwebrtc's answer-generation
++    // logic queries an internal C++ codec database that the synthetic
++    // Java entry doesn't reach — so the answer drops Safari's PT 96
++    // (H.264 High, profile-level-id=640c1f) anyway. Janus is a
++    // passthrough SFU; it keeps forwarding Safari's PT 96 stream
++    // regardless of what our answer said. Our libwebrtc demuxer has
++    // no codec mapped to PT 96 → "RX codec=? frames=0/0", black
++    // window, watchdog tripping.
++    //
++    // The trick: rewrite every H.264 profile-level-id in the offer
++    // (and any other SDP we munge) so it looks like Constrained
++    // Baseline. libwebrtc then sees PT 96 as "H.264 Baseline pkt1",
++    // matches it against its local capability, includes it in the
++    // answer, and adds PT 96 to its session codec table pointing at
++    // the H.264 decoder. The peer keeps sending PT 96 (Safari) /
++    // pt=96 (Janus forwards) with the actual High-profile bitstream;
++    // our libwebrtc routes those bytes to the H.264 decoder; the
++    // Qualcomm c2.qti.avc.decoder (and every other Snapdragon /
++    // Adreno / Mali HW H.264 decoder we've tested) accepts
++    // High-profile NALs transparently — profile_idc in the SDP is
++    // advisory, the actual decode pipeline doesn't enforce it.
++    //
++    // Side effect on the outbound side: the answer we ship also
++    // carries the rewritten profile-level-id, so the peer thinks
++    // we'll be sending Baseline. We do — Android's HW H.264 encoder
++    // only emits Baseline regardless of what the SDP says. Peers
++    // that strictly honour the negotiated profile-level-id will
++    // re-encode in Baseline rather than High; slightly less
++    // efficient than the High path that the iOS-build of this app
++    // already gets natively (libwebrtc on iOS does honour the
++    // synthetic Java entry), but interoperable.
++    //
++    // Format reminder: profile-level-id is six hex digits — two for
++    // profile_idc, two for profile_iop (constraint flags), two for
++    // level_idc. We replace profile_idc+iop with "42e0" (Constrained
++    // Baseline) and keep level_idc verbatim so the level the offerer
++    // requested is preserved.
++    for (let media of parsedSdp.media) {
++        if (media.type !== 'video' || !media.rtp || !media.fmtp) continue;
++        const h264Pts = new Set();
++        for (const r of media.rtp) {
++            if (r.codec && r.codec.toLowerCase() === 'h264') {
++                h264Pts.add(r.payload);
++            }
++        }
++        if (h264Pts.size === 0) continue;
++        for (const f of media.fmtp) {
++            if (!h264Pts.has(f.payload)) continue;
++            f.config = String(f.config).replace(
++                /profile-level-id=([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/,
++                (match, pIdc, _pIop, lIdc) => {
++                    // Already Constrained Baseline → leave it alone
++                    // so we don't churn the SDP on calls that never
++                    // had High in the offer to begin with.
++                    if (pIdc.toLowerCase() === '42') return match;
++                    return 'profile-level-id=42e0' + lIdc;
++                }
++            );
++        }
++    }
++
+     if (fixmsid === true) {
+         const randomNumber = Math.floor(100000 + Math.random() * 900000);
+         for (let media of parsedSdp.media) {
+@@ -132,6 +455,55 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
          }
      }
  
@@ -1759,7 +2177,7 @@ index a64c601..dbe8555 100644
      if (preferredCodec !== null) {
          const videoMLine = parsedSdp.media.find(m => m.type === 'video');
          let payloadType = null;
-@@ -156,6 +205,72 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
+@@ -156,6 +528,72 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false) {
          }
      }
  
@@ -1832,7 +2250,7 @@ index a64c601..dbe8555 100644
      return transform.write(parsedSdp);
  }
  
-@@ -360,6 +475,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -360,6 +798,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -1841,7 +2259,7 @@ index a64c601..dbe8555 100644
                      }
                  }
  
-@@ -388,6 +505,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -388,6 +828,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -1850,7 +2268,7 @@ index a64c601..dbe8555 100644
                      }
                  }
  
-@@ -435,6 +554,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -435,6 +877,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -1859,7 +2277,7 @@ index a64c601..dbe8555 100644
                      }
                  }
  
-@@ -469,6 +590,8 @@ export function parseStats(stats, previousStats, options = {}) {
+@@ -469,6 +913,8 @@ export function parseStats(stats, previousStats, options = {}) {
                          codecInfo.clockRate = codec.clockRate;
                          codecInfo.mimeType = codec.mimeType;
                          codecInfo.payloadType = codec.payloadType;
@@ -1868,7 +2286,7 @@ index a64c601..dbe8555 100644
                      }
                  }
  
-@@ -506,4 +629,103 @@ export function map2obj(stats) {
+@@ -506,4 +952,145 @@ export function map2obj(stats) {
      return o;
  }
  
@@ -1893,26 +2311,68 @@ index a64c601..dbe8555 100644
 +    return _preferredVideoCodec;
 +}
 +
-+// SDP-correct answer-side codec selection: the answerer should not name a
-+// codec the offerer didn't include — picking from the offer's video m-line
-+// is the only safe way. We pick the first listed real codec (skipping rtx
-+// / red / ulpfec / flexfec / cn) and use that as the answer's preferred
-+// codec. Falls back to the local default if the offer can't be parsed.
++// Answer-side codec selection driven by the user's Preferences.
 +//
-+// Why this matters: if the answer comes back with a codec the offerer
-+// didn't put first, the two sides end up disagreeing on the negotiated
-+// codec. With E2EE on, the FrameEncryptor's per-codec unencrypted-prefix
-+// then differs (VP8=3, VP9=3, H264=2, AV1=1) and decryption silently
-+// fails — audio works, video freezes both ways.
++// Pick order:
++//   1. The codec the user explicitly chose in Preferences
++//      (setPreferredVideoCodec, surfaced from rtp.preferredVideoCodec
++//      in app.js). If the offerer advertised that codec at any
++//      position in its m=video, return it. createLocalSdp's
++//      setCodecPreferences call then promotes the matching codec to
++//      first in pc.localDescription, and mungeSdp does the same to the
++//      wire SDP — so both views agree.
++//   2. Otherwise, the offerer's first real codec (skipping rtx / red
++//      / ulpfec / flexfec / cn). This is the safety net for offers
++//      that don't include our preferred codec at all — rare in
++//      practice, since VP8/VP9/H264 are nearly universal.
++//   3. Otherwise, the local preference verbatim. Only reached when
++//      the offer can't be parsed.
++//
++// Why honour Preferences instead of just mirroring the offerer's
++// first codec: Safari's macOS HW encoder lists H.264 High profile
++// (profile-level-id=640c1f, PT 96) as its first video PT, but Android
++// libwebrtc only handles Constrained Baseline 42e01f. With strict
++// mirroring the answer promotes H.264 → Janus keeps forwarding the
++// High-profile stream → our receiver has no decoder for it → inbound
++// video freezes to a black window. Letting Preferences win pushes
++// the negotiation onto VP9 (or whatever the user picked), which both
++// ends decode natively.
++//
++// E2EE note: when two sylk peers are both using their own
++// preferredVideoCodec, the answer ends up first-listing the
++// answerer's preference rather than the offerer's. CallZrtp reads
++// pc.remoteDescription on each side to compute the FrameEncryptor's
++// per-codec prefix, so the caller sees the answerer's pref (from the
++// answer) and the callee sees the offerer's pref (from the offer).
++// As long as both ends have the same preferredVideoCodec — and the
++// app-wide default 'VP9' guarantees they do unless explicitly
++// changed — the two views agree and E2EE keeps working.
 +function pickAnswerVideoCodec(offerSdp) {
-+    const fallback = getPreferredVideoCodec();
-+    if (!offerSdp) return fallback;
++    const wanted = getPreferredVideoCodec();
++    if (!offerSdp) return wanted;
 +    try {
 +        const parsed = transform.parse(offerSdp);
 +        const videoMLine = parsed.media && parsed.media.find(m => m.type === 'video');
-+        if (!videoMLine || !videoMLine.payloads) return fallback;
++        if (!videoMLine || !videoMLine.payloads) return wanted;
 +        const payloadOrder = String(videoMLine.payloads).split(' ').map(p => parseInt(p, 10));
 +        const ignored = new Set(['rtx', 'red', 'ulpfec', 'flexfec-03', 'cn']);
++
++        // Pass 1: the user's Preference, if the offer advertises it.
++        if (wanted) {
++            const want = String(wanted).toLowerCase();
++            for (const pt of payloadOrder) {
++                const rtp = videoMLine.rtp && videoMLine.rtp.find(r => r.payload === pt);
++                if (!rtp || !rtp.codec) continue;
++                if (ignored.has(rtp.codec.toLowerCase())) continue;
++                if (rtp.codec.toLowerCase() === want) {
++                    return rtp.codec;
++                }
++            }
++        }
++
++        // Pass 2: the offerer's first real codec (legacy mirror
++        // behaviour). Only reached when the user's preferred codec
++        // isn't in the offer at all.
 +        for (const pt of payloadOrder) {
 +            const rtp = videoMLine.rtp && videoMLine.rtp.find(r => r.payload === pt);
 +            if (!rtp || !rtp.codec) continue;
@@ -1922,7 +2382,7 @@ index a64c601..dbe8555 100644
 +    } catch (e) {
 +        // fall through to local default
 +    }
-+    return fallback;
++    return wanted;
 +}
 +
 +// ----- preferred audio codec ------------------------------------------------

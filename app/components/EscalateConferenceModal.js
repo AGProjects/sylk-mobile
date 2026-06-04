@@ -5,7 +5,16 @@ import autoBind from 'auto-bind';
 import { Portal, Dialog, Paragraph, TextInput, Surface, Button } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 
-const DialogType = Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog;
+// Use the keyboard-aware dialog on BOTH platforms. The previous code
+// path was `Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog`
+// without importing `Platform`, which on Android silently fell
+// through to the raw paper `Dialog`. Inside that raw Dialog the
+// nested <Surface> container collapsed to a thin bar with no visible
+// body or "Start now" button on Android 11. Same fix as
+// ImportPrivateKeyModal: always wrap in KeyboardAwareDialog so the
+// dialog body lays out correctly on both platforms and the
+// "Accounts" TextInput gets proper keyboard lift.
+const DialogType = KeyboardAwareDialog;
 
 import styles from '../assets/styles/blink/_EscalateConferenceModal.scss';
 

@@ -80,6 +80,37 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	// fresh.
 	public static final String REJECTED_CALLS_CHANNEL_ID = "rejected_calls_channel_v2";
 
+	// Fixed notification ID for missed-call notifications. Combined with a
+	// per-URI tag in notify(tag, id, …) it gives us:
+	//   1. Per-contact dedup: subsequent missed calls from the same URI
+	//      replace the prior notification rather than stacking (a contact
+	//      that calls 3 times during DND used to contribute 3 launcher-
+	//      badge slots — now contributes 1).
+	//   2. A stable handle resetUnreadForContact uses to cancel the
+	//      missed-call notification when JS opens that contact in-app, so
+	//      the launcher badge actually decrements on tap (was Adi's
+	//      "i still have 3 native after clicking the contact" report).
+	public static final int MISSED_CALL_NOTIF_ID = 0x434B;
+	private static final String MISSED_CALL_PREFIX = "missed_call_";
+
+	// MUST stay in sync with `unreadCounterTypes` in app/app.js (~line 851).
+	// Native-side allowlist of content types that may bump the per-contact
+	// unread badge counter. Without this filter, native FCM incremented the
+	// counter for EVERY message — including PGP key exchanges, IMDN
+	// receipts, typing indicators, and sylk-message-metadata rows — while
+	// JS only counts text/html, text/plain, and application/sylk-file-
+	// transfer. The result was a launcher badge that ran +1 ahead of the
+	// in-app contact unread, surfacing as recurring [badge] DRIFT lines.
+	// If you ever change one list, change the other.
+	private static final Set<String> UNREAD_COUNTER_TYPES;
+	static {
+		HashSet<String> set = new HashSet<>();
+		set.add("text/html");
+		set.add("text/plain");
+		set.add("application/sylk-file-transfer");
+		UNREAD_COUNTER_TYPES = Collections.unmodifiableSet(set);
+	}
+
 	private void createNotificationChannel() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 			NotificationManager manager = getSystemService(NotificationManager.class);
@@ -272,12 +303,50 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		}
 		String body = who;
 
+		// Tap target: launching MainActivity so the user lands in the app
+		// (the missed-call chat row + contact-on-top badge are JS-owned and
+		// only refresh when the app is foregrounded). Without a contentIntent,
+		// setAutoCancel(true) is a no-op — tapping does nothing and the
+		// notification stays on the shade, which means the launcher icon
+		// badge stays at 1 forever (Adi's "i cannot clear the Android badge"
+		// report). With a contentIntent + setAutoCancel(true), tap → open
+		// app → notification auto-cancels → badge clears.
+		Intent tapIntentTarget = new Intent(context, MainActivity.class);
+		tapIntentTarget.setAction(Intent.ACTION_VIEW);
+		tapIntentTarget.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+		// Per-uri request code so distinct missed-call notifications don't
+		// share / overwrite a single PendingIntent (FLAG_UPDATE_CURRENT
+		// would otherwise mutate the older entry's extras).
+		int reqCode = (who.hashCode() & 0x7fffffff);
+		PendingIntent tapIntent = PendingIntent.getActivity(
+				context,
+				reqCode,
+				tapIntentTarget,
+				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+		);
+
+		// Per-URI count so a contact who triggers DND-drop N times shows
+		// "N missed calls (Do not disturb)" instead of repeatedly posting
+		// "Missed call" with no indication that the previous misses were
+		// from the same caller. Stored alongside the existing per-contact
+		// prefs so resetUnreadForContact can clear it on contact-open.
+		SharedPreferences notifPrefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+		int missedCount = notifPrefs.getInt(MISSED_CALL_PREFIX + who, 0) + 1;
+		notifPrefs.edit().putInt(MISSED_CALL_PREFIX + who, missedCount).apply();
+
+		if (missedCount > 1) {
+			// "Missed call (Do not disturb)" → "3 missed calls (Do not disturb)"
+			title = missedCount + " " + title.substring(0, 1).toLowerCase() + title.substring(1);
+		}
+
 		NotificationCompat.Builder builder = new NotificationCompat.Builder(context, REJECTED_CALLS_CHANNEL_ID)
 				.setSmallIcon(R.drawable.ic_notification)
 				.setContentTitle(title)
 				.setContentText(body)
+				.setNumber(missedCount)
 				.setPriority(NotificationCompat.PRIORITY_LOW)
 				.setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+				.setContentIntent(tapIntent)
 				.setAutoCancel(true)
 				.setSound(null)
 				.setVibrate(new long[]{0L});
@@ -286,8 +355,13 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			builder.setSilent(true);
 		}
 
-		NotificationManagerCompat.from(context).notify((int) System.currentTimeMillis(), builder.build());
-		SylkLogger.d("[call] [fcm] Posted silent missed-call notification: " + title + " — " + body);
+		// Tag by URI + fixed id so subsequent missed calls from the same
+		// caller REPLACE this notification (rather than stacking N entries
+		// each contributing to the launcher badge). resetUnreadForContact
+		// cancels with the same tag+id when JS opens the contact in-app.
+		NotificationManagerCompat.from(context).notify(who, MISSED_CALL_NOTIF_ID, builder.build());
+		SylkLogger.d("[call] [fcm] Posted silent missed-call notification: " + title + " — " + body
+				+ " (tag=" + who + " count=" + missedCount + ")");
 	}
 
 	// Instance overload kept so the existing FCM-path call sites don't change.
@@ -1165,15 +1239,47 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	public static int getTotalUnreadCountStatic(Context context) {
 		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
 		int total = 0;
+		int skipped = 0;
 		Map<String, ?> all = prefs.getAll();
 		for (Map.Entry<String, ?> entry : all.entrySet()) {
 			String key = entry.getKey();
 			if (key.startsWith("unread_chat_")) {
 				Object value = entry.getValue();
+				// Defensive: handle the value coming back as something other
+				// than an Integer. Adi saw a case where getTotalUnread() = 2
+				// while getAllUnread() = {fluke33:2, living233:2} (sum 4) —
+				// meaning one entry was being silently dropped from the sum
+				// because it didn't pass the `instanceof Integer` check.
+				// Accept any Number subtype (Long, Short) and coerce String
+				// digits, so a stale-type pref entry doesn't under-count the
+				// launcher badge total. Log + count skips so we can spot any
+				// remaining edge case in applog.
 				if (value instanceof Integer) {
 					total += (Integer) value;
+				} else if (value instanceof Number) {
+					total += ((Number) value).intValue();
+					SylkLogger.d("[fcm] getTotalUnreadCountStatic: coerced non-Integer pref "
+							+ key + " type=" + value.getClass().getSimpleName()
+							+ " value=" + value);
+				} else if (value instanceof String) {
+					try {
+						total += Integer.parseInt(((String) value).trim());
+						SylkLogger.d("[fcm] getTotalUnreadCountStatic: coerced String pref "
+								+ key + " value=\"" + value + "\"");
+					} catch (NumberFormatException nfe) {
+						skipped++;
+						SylkLogger.d("[fcm] getTotalUnreadCountStatic: SKIP non-numeric pref "
+								+ key + " value=\"" + value + "\"");
+					}
+				} else {
+					skipped++;
+					SylkLogger.d("[fcm] getTotalUnreadCountStatic: SKIP pref " + key
+							+ " unexpected type=" + (value == null ? "null" : value.getClass().getSimpleName()));
 				}
 			}
+		}
+		if (skipped > 0) {
+			SylkLogger.d("[fcm] getTotalUnreadCountStatic: total=" + total + " skipped=" + skipped);
 		}
 		return total;
 	}
@@ -1188,6 +1294,58 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		final String prefix = "unread_chat_";
 		for (Map.Entry<String, ?> entry : all.entrySet()) {
 			String key = entry.getKey();
+			if (!key.startsWith(prefix)) continue;
+			Object value = entry.getValue();
+			// Same defensive coercion that getTotalUnreadCountStatic uses —
+			// the previous strict `instanceof Integer && > 0` check was
+			// silently dropping Long / String pref entries, producing the
+			// "native messages total=1 perContact={}" log Adi reported.
+			// Accept any Number subtype, parse numeric Strings, and log
+			// anything else so we can hunt the writer.
+			int n;
+			if (value instanceof Integer) {
+				n = (Integer) value;
+			} else if (value instanceof Number) {
+				n = ((Number) value).intValue();
+				SylkLogger.d("[fcm] getAllUnreadStatic: coerced non-Integer pref "
+						+ key + " type=" + value.getClass().getSimpleName() + " value=" + value);
+			} else if (value instanceof String) {
+				try {
+					n = Integer.parseInt(((String) value).trim());
+					SylkLogger.d("[fcm] getAllUnreadStatic: coerced String pref "
+							+ key + " value=\"" + value + "\"");
+				} catch (NumberFormatException nfe) {
+					SylkLogger.d("[fcm] getAllUnreadStatic: SKIP non-numeric pref "
+							+ key + " value=\"" + value + "\"");
+					continue;
+				}
+			} else {
+				SylkLogger.d("[fcm] getAllUnreadStatic: SKIP pref " + key
+						+ " unexpected type="
+						+ (value == null ? "null" : value.getClass().getSimpleName()));
+				continue;
+			}
+			if (n > 0) {
+				result.put(key.substring(prefix.length()), n);
+			}
+		}
+		return result;
+	}
+
+	// Returns the per-uri missed-call counts (the missed_call_<uri> prefs
+	// bumped by showSuppressedCallNotification on every FCM-DND drop). JS
+	// uses this in the [badge] / foreground DRIFT log so the three
+	// independent counter sources can be inspected side-by-side:
+	//   • messages (unread_chat_<uri>) — getAllUnreadStatic
+	//   • missed calls (missed_call_<uri>) — this method
+	//   • JS contact.unread — JS side
+	public static java.util.HashMap<String, Integer> getAllMissedCallsStatic(Context context) {
+		SharedPreferences prefs = context.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE);
+		java.util.HashMap<String, Integer> result = new java.util.HashMap<>();
+		Map<String, ?> all = prefs.getAll();
+		final String prefix = MISSED_CALL_PREFIX;
+		for (Map.Entry<String, ?> entry : all.entrySet()) {
+			String key = entry.getKey();
 			if (key.startsWith(prefix)) {
 				Object value = entry.getValue();
 				if (value instanceof Integer && ((Integer) value) > 0) {
@@ -1196,6 +1354,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 		}
 		return result;
+	}
+
+	public static int getTotalMissedCallsCountStatic(Context context) {
+		int total = 0;
+		for (Integer v : getAllMissedCallsStatic(context).values()) {
+			total += v;
+		}
+		return total;
 	}
 
 	public static void refreshGlobalBadge(Context context) {
@@ -1269,28 +1435,44 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	public static void resetUnreadForContact(Context context, String uri) {
 		SharedPreferences prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
 		// Silent no-op when the contact was already at zero AND has no
-		// pending notification throttle entry — there's nothing to reset.
-		// JS's reconcile loop hits this method once per contact, so without
-		// this guard we'd log/rewrite/refresh the badge for every contact
-		// in the address book on every contacts-array reassignment.
+		// pending notification throttle entry AND no missed-call counter —
+		// there's nothing to reset. JS's reconcile loop hits this method
+		// once per contact, so without this guard we'd log/rewrite/refresh
+		// the badge for every contact in the address book on every
+		// contacts-array reassignment.
 		int prev = prefs.getInt("unread_chat_" + uri, 0);
 		boolean hasThrottle = prefs.contains(LAST_NOTIF_PREFIX + uri);
-		if (prev == 0 && !hasThrottle) {
+		int missedCallCount = prefs.getInt(MISSED_CALL_PREFIX + uri, 0);
+		if (prev == 0 && !hasThrottle && missedCallCount == 0) {
 			return;
 		}
-		SylkLogger.d("[fcm] resetUnreadForContact " + uri + " (was " + prev + ")");
+		SylkLogger.d("[fcm] resetUnreadForContact " + uri + " (was unread=" + prev
+				+ " missedCalls=" + missedCallCount + ")");
 
 		// Reset unread counter and clear the notification throttle so the next
 		// incoming message from this sender produces a notification immediately.
+		// Also clear the missed-call counter so the next DND-drop starts at 1.
 		prefs.edit()
 				.putInt("unread_chat_" + uri, 0)
 				.remove(LAST_NOTIF_PREFIX + uri)
+				.remove(MISSED_CALL_PREFIX + uri)
 				.apply();
 
 		// Cancel the per-contact loud notification (and any stale per-contact
 		// silent badge from earlier builds — same id).
 		int notificationId = uri.hashCode();
 		NotificationManagerCompat.from(context).cancel(notificationId);
+
+		// Cancel the missed-call notification for this URI (posted by
+		// showSuppressedCallNotification with tag=uri, id=MISSED_CALL_NOTIF_ID).
+		// Without this, opening the contact in-app leaves the missed-call
+		// notification in the shade and the launcher badge stays inflated —
+		// the "i still have N native after clicking the contact" report.
+		if (missedCallCount > 0) {
+			NotificationManagerCompat.from(context).cancel(uri, MISSED_CALL_NOTIF_ID);
+			SylkLogger.d("[fcm] resetUnreadForContact " + uri
+					+ " cancelled missed-call notification (count was " + missedCallCount + ")");
+		}
 
 		// Remove dynamic shortcut
 		String shortcutId = "chat_" + uri.replaceAll("[^a-zA-Z0-9_]", "_");
@@ -1448,6 +1630,18 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				// for the second push the way iOS CallKit does — the
 				// foreground-background distinction isn't needed here.
 				String sipBridgeDomain = readSipBridgeDomainForAccount(lookupAccount);
+				// Diagnostic: always log the dedupe input state at push
+				// receipt time so we can tell the two failure modes apart
+				// in adb logcat — (a) the per-account row never got
+				// conference.sipBridge written (fresh-enrollment race
+				// where applySipBridgeDomain ran before state.accountId
+				// was set), vs (b) value present but fromUri host didn't
+				// match. Without this line the null branch is a silent
+				// no-op and the only symptom is the duplicate ring.
+				SylkLogger.d("[call] [fcm] sipBridge dedupe check: account=" + lookupAccount
+						+ " configuredSipBridge=" + (sipBridgeDomain == null ? "<null>"
+						        : (sipBridgeDomain.isEmpty() ? "<empty>" : "'" + sipBridgeDomain + "'"))
+						+ " fromUri=" + fromUri + " callId=" + callId);
 				if (sipBridgeDomain != null && !sipBridgeDomain.isEmpty()) {
 					int atIdx = fromUri.indexOf('@');
 					if (atIdx >= 0 && atIdx + 1 < fromUri.length()) {
@@ -1463,8 +1657,14 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 								IncomingCallService.handledCalls.add(callId);
 							}
 							return;
+						} else {
+							SylkLogger.d("[call] [fcm] sipBridge dedupe miss: fromUri host '" + host
+									+ "' != configured sipBridge '" + sipBridgeDomain + "' (callId=" + callId + ")");
 						}
 					}
+				} else {
+					SylkLogger.w("[call] [fcm] sipBridge dedupe disabled: no conference.sipBridge persisted for "
+							+ lookupAccount + " — duplicate conference-invite push will ring (callId=" + callId + ")");
 				}
 			}
 		}
@@ -1812,10 +2012,25 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// message via setUnreadForContact and we would otherwise double-count.
 			// (appInForeground was computed above for the activeChat stale-pref check.)
 			if (appInForeground) {
-				SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri);
-			} else {
-				// increase unread badge counter
+				SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri
+						+ " (contentType=" + contentType + ")");
+			} else if (contentType != null && UNREAD_COUNTER_TYPES.contains(contentType)) {
+				// Allowlist match — bump the per-contact native badge so the
+				// launcher icon picks it up while the app is backgrounded.
+				SylkLogger.d("[message] [fcm] incrementing unread badge for " + fromUri
+						+ " (contentType=" + contentType + ", messageId=" + messageId + ")");
 				incrementUnreadForContact(fromUri);
+			} else {
+				// Allowlist miss — skip the badge bump so we stay in lockstep
+				// with JS's unreadCounterTypes gate in app.js. This is the
+				// fix for the recurring [badge] DRIFT: native used to bump
+				// for EVERY contentType (PGP key exchanges, IMDN receipts,
+				// typing indicators, sylk-message-metadata), while JS only
+				// counted text/html, text/plain, and application/sylk-file-
+				// transfer. Keep the log so subsequent drift signals are
+				// still attributable to a specific content type.
+				SylkLogger.d("[message] [fcm] SKIP unread badge bump for " + fromUri
+						+ " (contentType=" + contentType + " not in allowlist, messageId=" + messageId + ")");
 			}
 
 			// IMPORTANT: setNumber on a per-contact notification must be the

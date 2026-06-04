@@ -9,7 +9,7 @@ import debug from 'react-native-debug';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
-import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu } from 'react-native-paper';
+import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu, Dialog, Button } from 'react-native-paper';
 import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated, Easing} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
@@ -70,6 +70,8 @@ import { applyVideoEncoderParamsToPc } from './CallZrtp';
 import ShareConferenceLinkModal from './ShareConferenceLinkModal';
 import UpgradeVideoModal from './UpgradeVideoModal';
 import StartCameraPreviewModal from './StartCameraPreviewModal';
+import AudioWaveform from './AudioWaveform';
+import ChatBubble from './ChatBubble';
 import KeyboardSpacer from 'react-native-keyboard-spacer';
 import InCallManager from 'react-native-incall-manager';
 
@@ -137,12 +139,15 @@ function useLogChanges(label, value) {
 
 const conferenceHeaderHeight = 60;
 
-  const availableAudioDevicesIconsMap = {
-	BUILTIN_EARPIECE: 'phone-in-talk',
-	WIRED_HEADSET: 'headphones',
-	BLUETOOTH_SCO: 'bluetooth-audio',
-	BUILTIN_SPEAKER: 'volume-high',
-  };
+  // Audio-device icon map — use the shared utils map so this picker
+  // stays in lockstep with AudioCallBox / VideoBox / LocalMedia /
+  // ConferenceHeader / CallOverlay. The previous local map was missing
+  // USB_HEADSET, which made USB headsets render with the generic
+  // earpiece fallback icon (and look like an "extra earpiece" row),
+  // producing the "I joined a conference and only see earpiece +
+  // speaker, my headset isn't listed" report. Adding new device types
+  // (e.g. HEARING_AID) now only requires editing utils.js in one place.
+  const availableAudioDevicesIconsMap = utils.availableAudioDevicesIconsMap;
 
 // Audio device picker style:
 //   'cycle'    - legacy: tap cycles through available devices
@@ -161,6 +166,34 @@ const SOLO_SELF_FULLSCREEN = true;
 // flows again. Tuned to ride out short hiccups without blanking the
 // grid on every brief stall.
 const PARTICIPANT_STALL_MS = 20000;
+
+// Matrix-inertia timers (strategy 1).
+//
+// The matrix grid should NOT reshape on every event — every join,
+// every brief stall, every 100%-loss blip. The user experience of
+// "tile count flapping every couple of seconds" is what these two
+// constants address.
+//
+//   ARRIVAL_WARMUP_MS — a freshly-joined participant doesn't enter
+//     state.matrixOccupants (and therefore doesn't claim a tile slot
+//     in the grid) until they've been in the room this long, OR
+//     until their video stream lands (streamAdded). Whichever fires
+//     first promotes them.
+//
+//   DEGRADE_GRACE_MS — when a participant in the matrix loses media
+//     (becomes part of stalledParticipants, or reaches 100% packet
+//     loss), they're flagged as `degraded` and rendered with an
+//     avatar fallback. We DON'T immediately remove their tile —
+//     that would shrink the grid and reflow everyone else. Only
+//     after this much continuous "no media" do we actually drop the
+//     id from matrixOccupants and let the layout shrink.
+//
+// Pinned speakers (state.activeSpeakers) bypass auto-removal —
+// they keep their slot indefinitely even past the grace timer.
+// The user explicitly asked for that layout; we don't undo it
+// because the peer hiccuped.
+const ARRIVAL_WARMUP_MS = 5000;
+const DEGRADE_GRACE_MS = 30000;
 
 
 // Tiny opacity-pulse wrapper used to draw attention to muted-state
@@ -305,6 +338,42 @@ class ConferenceBox extends Component {
         // resume) so the next stop cycle re-arms it correctly.
         this._userExplicitlyStoppedVideo = false;
 
+        // Rehydrate the three "user has already decided" latches
+        // from the call object. ConferenceBox is unmounted and
+        // remounted whenever the user navigates away from the
+        // conference screen (e.g. tabbing to contacts/chat, or
+        // entering/leaving certain in-conference sub-views) and
+        // back — see the matching note in Conference.js around
+        // `confCall._sipParticipants` which uses the same trick
+        // for sipParticipants and _conferenceDurationAtJoin. Without
+        // this rehydration the constructor above resets each latch
+        // to its first-mount default, the auto-escalate detector
+        // re-fires the moment a remote sends another byte of video,
+        // and the "Enable your camera?" preview reappears even
+        // though the user already accepted or cancelled it earlier
+        // in the same call. Mirror writes (below at the few sites
+        // that set each latch true) keep the persisted copy in
+        // sync. Reads use `=== true` so a missing/undefined property
+        // never accidentally latches us; only an earlier explicit
+        // write counts.
+        if (this.props.call) {
+            if (this.props.call._autoEscalatedToVideo === true) {
+                this._autoEscalatedToVideo = true;
+            }
+            if (this.props.call._cameraStartPromptShown === true) {
+                this._cameraStartPromptShown = true;
+                // The user-initiated prompt and the auto-escalate
+                // prompt share the same modal surface; once either
+                // has been resolved we silence both for the rest of
+                // the session, matching the in-constructor pairing
+                // above for _joinedAsVideo.
+                this._autoEscalatedToVideo = true;
+            }
+            if (this.props.call._userExplicitlyStoppedVideo === true) {
+                this._userExplicitlyStoppedVideo = true;
+            }
+        }
+
         // Per-participant VU-meter audio levels (0..1). Keyed by
         // participant id for remote participants and by the literal
         // string 'myself' for the local microphone. Same map shape
@@ -418,8 +487,21 @@ class ConferenceBox extends Component {
             //     SOLO_SELF_FULLSCREEN path). Without this, an
             //     inFocus=false race at mount time was leaving the
             //     track disabled and neither party saw any frames.
-            videoMuted: this.props.audioOnly === true,
-            videoMutedbyUser: !!this.props.audioOnly,
+            // videoMuted: restore from the call._lastViewState
+            // snapshot if a previous mount stashed it (back→return
+            // round-trip — without this the camera would always
+            // come up muted when re-entering the conference, even
+            // if it had been enabled before pressing Back).
+            videoMuted: (this.props.call
+                    && this.props.call._lastViewState
+                    && typeof this.props.call._lastViewState.videoMuted === 'boolean')
+                ? this.props.call._lastViewState.videoMuted
+                : this.props.audioOnly === true,
+            videoMutedbyUser: (this.props.call
+                    && this.props.call._lastViewState
+                    && typeof this.props.call._lastViewState.videoMutedbyUser === 'boolean')
+                ? this.props.call._lastViewState.videoMutedbyUser
+                : !!this.props.audioOnly,
             // Track which camera is active so the self-thumbnail and
             // large self-view only mirror when the front camera is in
             // use. We used to hardcode 'front' here on the assumption
@@ -449,7 +531,33 @@ class ConferenceBox extends Component {
             })(),
             messages: this.props.messages,
             participants: participants,
-            audioChatView: false,
+            // Initial audioChatView: restore from the snapshot
+            // stashed on the call object by a previous unmount
+            // (back→return round-trip preserves the chat-panel
+            // state for the SAME live call). Same pattern as the
+            // other `_xxx` properties this file attaches to
+            // this.props.call (e.g. _autoEscalatedToVideo,
+            // _cameraStartPromptShown). Otherwise start hidden.
+            audioChatView: !!(this.props.call
+                && this.props.call._lastViewState
+                && this.props.call._lastViewState.audioChatView),
+            // Unread-message counter for the navbar chat-icon badge.
+            // Incremented in messageReceived whenever an INCOMING
+            // chat message arrives AND no chat surface is currently
+            // on screen (audioChatView=false && chatView=false).
+            // Reset to 0 the instant the user opens chat via either
+            // toggleAudioChatView or toggleChat. No per-sender map —
+            // single total counter only.
+            chatUnreadCount: 0,
+            // Confirmation dialog before tearing the conference down.
+            // Both entry points — the hangup IconButton in the audio
+            // action bar AND the kebab menu's "Hangup" item — now
+            // route through requestHangup(), which sets this flag
+            // true and shows a Portal+Dialog modeled on the
+            // "Escalate to conference" confirmation panel
+            // (Cancel / Hangup). confirmHangup() runs the real
+            // hangup; cancelHangup() just dismisses the dialog.
+            hangupConfirmVisible: false,
             // Local raised-hand status — derived in onRaisedHands by
             // checking the server-sent list against the local URI.
             // The button onPress (toggleRaisedHand) calls
@@ -509,7 +617,16 @@ class ConferenceBox extends Component {
             inFocus:  this.props.inFocus,
             reconnectingCall: this.props.reconnectingCall,
             terminated: this.props.terminated,
-            chatView: !videoEnabled,
+            // chatView: prefer the snapshot stashed on the call
+            // object (back→return round-trip). Same pattern as
+            // _lastViewState above. Otherwise fall back to the
+            // original !videoEnabled default (chat shown in
+            // audio-only conferences, hidden in video ones).
+            chatView: (this.props.call
+                    && this.props.call._lastViewState
+                    && typeof this.props.call._lastViewState.chatView === 'boolean')
+                ? this.props.call._lastViewState.chatView
+                : !videoEnabled,
             audioView: !videoEnabled,
             isLandscape: this.props.isLandscape,
             selectedContacts: this.props.selectedContacts,
@@ -526,13 +643,49 @@ class ConferenceBox extends Component {
             // the user can flip it on via the kebab's "Show mirror"
             // item if they want a preview. A Video start keeps the
             // mirror enabled, mirroring the previous behaviour.
-            enableMyVideo: !this.props.audioOnly,
+            // enableMyVideo: restore from the call._lastViewState
+            // snapshot if a previous mount stashed it (back→return
+            // round-trip — drives both the audio-view self-PIP and
+            // the video-view floating self-tile; without this the
+            // user would re-enter the matrix without their own
+            // tile even though they had it visible before pressing
+            // Back).
+            enableMyVideo: (this.props.call
+                    && this.props.call._lastViewState
+                    && typeof this.props.call._lastViewState.enableMyVideo === 'boolean')
+                ? this.props.call._lastViewState.enableMyVideo
+                : !this.props.audioOnly,
             offset          : 0,
             statistics: [],
             // IDs of participants whose inbound video has been silent for
             // PARTICIPANT_STALL_MS. Tile hidden + grid recalculated until
             // data resumes.
             stalledParticipants: new Set(),
+
+            // ===== Matrix-inertia state (strategy 1) =====
+            //
+            // matrixOccupants — ordered array of remote participant ids
+            // that currently claim a slot in the video matrix. Reshapes
+            // ONLY through the timer-gated transitions in onParticipantJoined
+            // / onParticipantLeft / the stalled-set CDU + _scheduleArrival /
+            // _scheduleDegradeRemoval. Render iterates state.participants
+            // for the drawer roster as before, but uses .indexOf on this
+            // array to decide whether to push a matrix tile — and to
+            // compute the layout count in getVideoLayout. Self is rendered
+            // separately via ConferenceParticipantSelf and is NOT tracked
+            // here.
+            //
+            // Initial seeding from props.call.participants happens in
+            // componentDidMount once sylkrtc has populated the list.
+            // Seeding from constructor would race with the participant
+            // joined events fired right after.
+            matrixOccupants: [],
+            // degradedOccupants — Set of ids in matrixOccupants whose
+            // media is currently lost (stalled or 100% loss). Rendered
+            // with the avatar fallback. Distinct from stalledParticipants
+            // because the matrix can hold a tile in this set even past
+            // the 20 s stall threshold, up to DEGRADE_GRACE_MS.
+            degradedOccupants: new Set(),
             // Multi-track conference recording state. Sibling to
             // AudioCallBox's isRecording/recordingElapsedSec, but the
             // file model is different: one .wav per source (mic +
@@ -649,7 +802,15 @@ class ConferenceBox extends Component {
 			// so the user-explicit "Hide mirror" path still works,
 			// videoMuted is false so the conference's own self-tile
 			// surfaces immediately.
-			viewMode: this.props.audioOnly === false ? 'video' : 'audio',
+			// Initial viewMode: prefer the snapshot stashed on the
+			// call object by a previous unmount (back→return round-
+			// trip preserves which view the user was looking at for
+			// the SAME live call). Otherwise fall back to the
+			// audioOnly-driven default.
+			viewMode: (this.props.call
+					&& this.props.call._lastViewState
+					&& this.props.call._lastViewState.viewMode)
+				|| (this.props.audioOnly === false ? 'video' : 'audio'),
 			// "Start your camera?" prompt shown when the first
 			// remote participant sends video (see _autoEscalatedToVideo
 			// + the inbound-video branch in getConnectionStats).
@@ -835,6 +996,12 @@ class ConferenceBox extends Component {
             this.lookupContact(this.props.call.localIdentity._uri, this.props.call.localIdentity._displayName);
         }
 
+        // Matrix-inertia timer registries. Per-participant timeouts,
+        // keyed by participant.id. Cleared on participant-leave and
+        // in componentWillUnmount.
+        this._arrivalTimers = new Map();
+        this._degradeTimers = new Map();
+
         [
             'error',
             'warning',
@@ -1000,6 +1167,32 @@ class ConferenceBox extends Component {
         for (let p of this.state.participants) {
             p.on('stateChanged', this.onParticipantStateChanged);
             p.attach();
+        }
+
+        // Matrix-inertia: seed the initial matrixOccupants from the
+        // participants already in the room when ConferenceBox mounts.
+        // No arrival warmup is applied to the initial set — the user
+        // joining an in-progress room expects to see who's there
+        // immediately, not after 5 s. Bridge participants are excluded
+        // (audio-only plumbing, never get a tile). Self isn't tracked
+        // here either — the self tile is rendered separately by
+        // ConferenceParticipantSelf and has no flap risk.
+        const _initialOccupants = (this.state.participants || [])
+            .filter((p) => p && !this._isBridgeParticipant(p))
+            .map((p) => p.id);
+        if (_initialOccupants.length > 0) {
+            console.log('[conference] [matrix-inertia] initial seed —',
+                _initialOccupants.length, 'occupants');
+            this.setState({ matrixOccupants: _initialOccupants });
+        }
+        // Also wire the streamAdded early-promote listener for the
+        // initial set (onParticipantJoined wires it for late joiners).
+        for (let p of this.state.participants) {
+            if (this._isBridgeParticipant(p)) continue;
+            const _onStreamAdded = () => {
+                this._admitToMatrix(p.id, 'streamAdded-initial');
+            };
+            try { p.on('streamAdded', _onStreamAdded); } catch (e) {}
         }
 
         this.keyboardDidShowListener = Keyboard.addListener(
@@ -1985,6 +2178,40 @@ class ConferenceBox extends Component {
     }
 
     componentWillUnmount() {
+        // Snapshot the user's current view selection ONTO the call
+        // object so the next mount of ConferenceBox (back→return
+        // round-trip via the pulsating navbar pill) reads it from
+        // the constructor and lands the user back in the same
+        // viewMode + audioChatView + chatView they left. The call
+        // object outlives ConferenceBox mount/unmount, so the
+        // snapshot dies with the call — same pattern this file
+        // already uses for other call-scoped flags like
+        // _autoEscalatedToVideo, _cameraStartPromptShown, etc.
+        if (this.props.call) {
+            try {
+                this.props.call._lastViewState = {
+                    viewMode: this.state.viewMode,
+                    audioChatView: !!this.state.audioChatView,
+                    chatView: !!this.state.chatView,
+                    // Camera state — preserves the user's
+                    // enabled-camera selection across the
+                    // back→return round-trip. Without these two,
+                    // the constructor's default (audioOnly-based)
+                    // re-mutes the camera even though the user
+                    // had it on.
+                    videoMuted: !!this.state.videoMuted,
+                    videoMutedbyUser: !!this.state.videoMutedbyUser,
+                    // Self-tile / self-PIP visibility — drives
+                    // the floating self-thumbnail in video view
+                    // and the avatar PIP in audio view. Default
+                    // (!audioOnly) would drop the user off the
+                    // matrix on re-entry; preserving this keeps
+                    // them visible exactly where they were.
+                    enableMyVideo: !!this.state.enableMyVideo,
+                };
+            } catch (e) { /* best effort */ }
+        }
+
         // Cancel all 60s "no-update" invite timers. The persisted
         // invitedParticipants map outlives ConferenceBox, but the
         // setTimeout handles are instance-scoped and would otherwise
@@ -1994,6 +2221,22 @@ class ConferenceBox extends Component {
                 try { clearTimeout(tid); } catch (e) {}
             }
             this._inviteTimers.clear();
+        }
+
+        // Matrix-inertia timers: same cleanup pattern. Without this,
+        // a queued arrival promotion or degrade removal would fire
+        // setState on a torn-down instance and React would warn.
+        if (this._arrivalTimers) {
+            for (const tid of this._arrivalTimers.values()) {
+                try { clearTimeout(tid); } catch (e) {}
+            }
+            this._arrivalTimers.clear();
+        }
+        if (this._degradeTimers) {
+            for (const tid of this._degradeTimers.values()) {
+                try { clearTimeout(tid); } catch (e) {}
+            }
+            this._degradeTimers.clear();
         }
         // Cancel any in-flight audio-PIP controls auto-hide timer.
         if (this._audioPipHideTimer) {
@@ -2410,18 +2653,51 @@ class ConferenceBox extends Component {
      *  just the same layout horsepower so attachments stop being
      *  cramped. */
     renderBubble = (props) => {
-        const w = Dimensions.get('window').width;
-        // Cap at 88% of the viewport (vs GiftedChat's default ~60-80%).
-        // Same value on both `left` (incoming) and `right` (outgoing)
-        // so file rows stretch consistently regardless of direction.
-        const max = Math.round(w * 0.88);
+        // Use the SAME ChatBubble component the read-only chat
+        // surface in ContactsListBox uses, so a conference message
+        // looks identical whether it's rendered inside the live
+        // conference chat panel or via the contact's read-only chat
+        // view. Without ChatBubble, gifted-chat's default Bubble
+        // gave us different bubble bg colors, no reply/reaction
+        // visuals, and a minimal audio bubble — which is what made
+        // the two surfaces visibly diverge.
+        //
+        // ChatBubble has many optional state-driven props
+        // (mediaLabels, replyMessages, bubbleWidths, …) — we don't
+        // have those state machines wired in the conference path,
+        // so we pass empty defaults. ChatBubble already coerces
+        // missing props to {} / [] internally, so this is safe.
         return (
-            <Bubble
+            <ChatBubble
                 {...props}
-                wrapperStyle={{
-                    left:  { maxWidth: max },
-                    right: { maxWidth: max },
-                }}
+                currentMessage={props.currentMessage}
+                messages={this.state.renderMessages}
+                previousMessage={props.previousMessage}
+                nextMessage={props.nextMessage}
+                position={props.position}
+                mediaLabels={{}}
+                replyMessages={{}}
+                bubbleWidths={{}}
+                videoMetaCache={{}}
+                imageLoadingState={{}}
+                transferProgress={{}}
+                visibleMessageIds={[]}
+                handleBubbleLayout={() => {}}
+                scrollToMessage={() => {}}
+                fullSize={false}
+                renderMessageImage={this.renderMessageImage}
+                renderMessageVideo={this.renderMessageVideo}
+                renderMessageAudio={this.renderMessageAudio}
+                renderMessageText={undefined}
+                focusedMessageId={null}
+                replyTargetId={null}
+                isDimmedByReplyTarget={false}
+                imageGroups={{}}
+                groupOfImage={{}}
+                thumbnailGridSize={{}}
+                selectedImages={{}}
+                sortOrder={'date'}
+                styles={{}}
             />
         );
     };
@@ -2482,20 +2758,74 @@ class ConferenceBox extends Component {
      *  pulling its state machine into the conference path. */
     renderMessageAudio = (props) => {
         const { currentMessage } = props;
-        const _name = (currentMessage && currentMessage.metadata && currentMessage.metadata.name)
-            ? currentMessage.metadata.name
-            : 'Recording';
+        if (!currentMessage) return null;
+        const md = currentMessage.metadata || {};
+        const _name = md.name || 'Recording';
+        const peaks = md.peaks;
+        const hasR = peaks && Array.isArray(peaks.r) && peaks.r.length > 0;
+        const hasL = peaks && Array.isArray(peaks.l) && peaks.l.length > 0;
+        const stereo = hasL && hasR;
+        // Match the regular-chat waveform width — 220 dp keeps the
+        // audio bubble similar in width to the read-only chat view
+        // even though the conference chat panel has no scrub state
+        // machine wired up.
+        const _wfWidth = 220;
+
         return (
             <View style={{
-                flexDirection: 'row',
-                alignItems: 'center',
                 paddingVertical: 8,
-                paddingHorizontal: 12,
+                paddingHorizontal: 10,
+                minWidth: _wfWidth + 20,
             }}>
-                <Icon name="microphone-outline" size={20} color="#ffffff" style={{marginRight: 8}} />
-                <Text style={{color: '#ffffff', fontSize: 14}} numberOfLines={1} ellipsizeMode="middle">
-                    {_name}
-                </Text>
+                {/* Header row: mic icon + filename / duration label. */}
+                <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 6,
+                }}>
+                    <Icon name="microphone-outline" size={18} color="#ffffff" style={{marginRight: 6}} />
+                    <Text style={{color: '#ffffff', fontSize: 13, flex: 1}} numberOfLines={1} ellipsizeMode="middle">
+                        {_name}
+                    </Text>
+                </View>
+
+                {/* Static waveform — same component the read-only
+                    chat uses. progress={0} keeps the played-region
+                    empty (no playback state wired in the conference
+                    chat panel; the user just sees the recording's
+                    shape). When the user navigates to the contact
+                    list and opens the read-only chat surface, the
+                    full play/pause/scrub bubble is available there. */}
+                {hasR ? (
+                    <AudioWaveform
+                        peaks={peaks}
+                        progress={0}
+                        width={_wfWidth}
+                        height={28}
+                        barCount={60}
+                        channel="r"
+                        label={stereo
+                            ? (md.is_conference ? 'Participants' : 'Remote')
+                            : null}
+                        labelColor="rgba(255,255,255,0.55)"
+                        playedColor="#3498db"
+                        unplayedColor="rgba(52, 152, 219, 0.45)"
+                    />
+                ) : null}
+                {hasL ? (
+                    <AudioWaveform
+                        peaks={peaks}
+                        progress={0}
+                        width={_wfWidth}
+                        height={28}
+                        barCount={60}
+                        channel="l"
+                        label={stereo ? 'Local' : null}
+                        labelColor="rgba(255,255,255,0.55)"
+                        playedColor="#2ecc71"
+                        unplayedColor="rgba(46, 204, 113, 0.45)"
+                    />
+                ) : null}
             </View>
         );
     };
@@ -2998,6 +3328,57 @@ class ConferenceBox extends Component {
         }
     }
 
+    // Close-X handler for an invited-participant tile. Two scenarios
+    // it has to cover, distinguished by the entry's current status:
+    //
+    //   1. STILL RINGING — the invite is in flight (status "Invited"
+    //      / "Waiting ...NN" / a 1xx provisional like "180 Ringing")
+    //      and the callee's phone is still ringing. We need to tell
+    //      the conference focus to CANCEL the outgoing INVITE, which
+    //      the gateway does by forwarding a REFER ;method=BYE for the
+    //      target. Sylkserver's conference application looks the
+    //      pending invite up in its IncomingReferralHandler registry
+    //      (room.terminate_sessions → cancel_pending_invites) and
+    //      calls session.end() on the still-early SIP leg, which sends
+    //      CANCEL to the SIP UA. Without this RPC the local tile
+    //      would disappear but the callee's phone would keep ringing
+    //      and, if answered, they'd silently end up in the room.
+    //
+    //   2. ALREADY SETTLED — the invite ended with a 3xx/4xx/5xx/6xx
+    //      ("408 No answer", "486 Busy here", …) or "No answer" set
+    //      by the local invite-window timer. The server has already
+    //      released the leg, so a REFER ;method=BYE would either find
+    //      nothing to cancel (server-side 200 with zero matches) or
+    //      land on a focus that no longer has an in-flight session.
+    //      Skip the SIP round-trip and just dismiss the tile.
+    //
+    // After the optional REFER, both paths fall through to
+    // removeInvitedParticipant for the local cleanup (map entry,
+    // invite-timer cancellation, re-render). The close action is
+    // intentionally single-tap (no Alert confirmation) because
+    // cancelling your own pending invitation is non-destructive —
+    // unlike kickParticipant() which kicks someone already in the
+    // room and so guards behind a destructive-action dialog.
+    cancelInvitedParticipant(uri) {
+        const entry = this.invitedParticipants.get(uri);
+        const _statusStr = (entry && typeof entry.status === 'string') ? entry.status : '';
+        const _isFailureCode = /^[3-6]\d\d\b/.test(_statusStr);
+        const _isSettled = _isFailureCode || _statusStr === 'No answer';
+        if (!_isSettled && this.props.call && typeof this.props.call.removeParticipants === 'function') {
+            console.log('[ConferenceBox] [conference] cancelInvitedParticipant: sending BYE-REFER for pending invite to ' + uri +
+                        ' (status=' + _statusStr + ')');
+            try {
+                this.props.call.removeParticipants([uri]);
+            } catch (e) {
+                console.log('[ConferenceBox] [conference] cancelInvitedParticipant: removeParticipants threw: ' + (e && e.message));
+            }
+        } else {
+            console.log('[ConferenceBox] [conference] cancelInvitedParticipant: settled invite (' + _statusStr +
+                        '), local cleanup only for ' + uri);
+        }
+        this.removeInvitedParticipant(uri);
+    }
+
     // Kick an already-joined participant out of the conference. Opens
     // a confirmation dialog first — the kick is irreversible (the
     // kicked party gets BYE'd / Janus-kicked and would have to rejoin
@@ -3281,6 +3662,30 @@ class ConferenceBox extends Component {
 
         this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [giftedChatMessage])});
         this.saveConferenceMessage(this.state.remoteUri, giftedChatMessage);
+
+        // Drive the navbar chat-icon unread badge.
+        //
+        // Conference messages don't carry a `direction` field on the
+        // sylkMessage delivered by the `message` event. The flip-to-
+        // outgoing block above (`if (sylkMessage.direction ===
+        // 'incoming' && ...)`) is therefore a no-op for conference
+        // traffic. Compute direction defensively from sender URI vs
+        // accountId — anything not from us is considered incoming.
+        //
+        // _chatVisible is gated on which conference type we're in:
+        //   • audio conference: only audioChatView truly means
+        //     "chat is on screen" (chatView is initialised to
+        //     !videoEnabled = TRUE in audio conferences and stays
+        //     that way, so it can't be used as a signal here)
+        //   • video conference: chatView IS the on-screen flag
+        const _senderUri = sylkMessage.sender && sylkMessage.sender.uri;
+        const _isOutgoing = !!_senderUri && _senderUri === this.state.accountId;
+        const _chatVisible = this.state.videoEnabled
+            ? !!this.state.chatView
+            : !!this.state.audioChatView;
+        if (!_isOutgoing && !_chatVisible) {
+            this.setState((s) => ({ chatUnreadCount: (s.chatUnreadCount || 0) + 1 }));
+        }
     }
 
     onSendMessage(messages) {
@@ -3353,7 +3758,14 @@ class ConferenceBox extends Component {
                 // used for history item
                 this.props.saveParticipant(this.props.call.id, this.state.remoteUri, p.identity._uri);
             }
-            const dn = p.identity._uri + ' joined';
+            // Strip the `sip:` scheme prefix before writing the join
+            // line into the chat — the persistent log is read by the
+            // user, not parsed as a URI, and seeing the bare address
+            // (alice@domain) reads better than the protocol-prefixed
+            // form (sip:alice@domain). Symmetric strip on the leave
+            // line below.
+            const _joinUri = (p.identity._uri || '').replace(/^sip:/i, '');
+            const dn = _joinUri + ' joined';
             // save=true so the join lands in the persistent conference
             // chat thread via saveConferenceMessage — was previously
             // dropped after the call ended, which is why the chat
@@ -3378,6 +3790,22 @@ class ConferenceBox extends Component {
             // shows reflects the participant we just added.
             this._dumpParticipantRoster('participant joined');
         });
+
+        // Matrix-inertia: schedule arrival promotion. Bridge
+        // participants don't get a matrix slot at all (they're
+        // audio-only plumbing), so skip them entirely.
+        if (!_isBridgeJoin) {
+            this._scheduleArrival(p.id);
+            // Early-promote on streamAdded so a fast-publishing
+            // participant doesn't wait the full warmup window for no
+            // reason. The listener is per-participant; clean up
+            // in onParticipantLeft via p.removeAllListeners (sylkrtc
+            // handles that via p.detach inside the leave path).
+            const _onStreamAdded = () => {
+                this._admitToMatrix(p.id, 'streamAdded');
+            };
+            try { p.on('streamAdded', _onStreamAdded); } catch (e) {}
+        }
         // this.changeResolution();
         this.fullScreenTimer();
 
@@ -3663,6 +4091,13 @@ class ConferenceBox extends Component {
 												&& this.state.viewMode === 'audio'
 												&& !this.state.cameraStartPreviewVisible) {
 											this._autoEscalatedToVideo = true;
+											// Mirror onto the call object so this decision
+											// survives a ConferenceBox remount — see the
+											// constructor's rehydration block for the full
+											// rationale.
+											if (this.props.call) {
+												this.props.call._autoEscalatedToVideo = true;
+											}
 											// Also flip the audio→video tap
 											// latch so the same modal session
 											// is bookended by the same accept
@@ -3674,6 +4109,9 @@ class ConferenceBox extends Component {
 											// straight into gate 2 (the actual
 											// view-mode switch + track enable).
 											this._cameraStartPromptShown = true;
+											if (this.props.call) {
+												this.props.call._cameraStartPromptShown = true;
+											}
 											// Force the camera track OFF before
 											// surfacing the modal. The user may
 											// have JOINED the conference as
@@ -3890,6 +4328,14 @@ class ConferenceBox extends Component {
 					this._dumpParticipantRoster('stalled set changed');
 				});
 
+				// Matrix-inertia: stalled-set transitions feed degraded
+				// flag + the 30 s grace timer. Newly stalled occupants
+				// flip to degraded (avatar) and arm the auto-remove
+				// timer. Newly recovered occupants clear the flag and
+				// cancel the timer — keeping their tile in place.
+				_added.forEach((id) => { this._markDegraded(id); });
+				_dropped.forEach((id) => { this._clearDegraded(id); });
+
 				// Best-effort recovery for newly-stalled video streams.
 				// Audio for these peers is still flowing (the user
 				// confirmed audio is fine, only video stalls), so
@@ -3961,6 +4407,11 @@ class ConferenceBox extends Component {
         console.log('[conference] [grid] participant left', p.identity && p.identity.uri,
             'remote-count', _prev, '->', Math.max(0, _prev - 1));
 
+        // Matrix-inertia: immediate removal. A peer leaving is not
+        // a transient blip we want to wait out — they're gone. The
+        // helper clears any pending arrival / degrade timers too.
+        this._removeFromMatrix(p.id, 'participant-left');
+
         const participants = this.state.participants.slice();
 
         this.latency.delete(p.id);
@@ -4007,7 +4458,12 @@ class ConferenceBox extends Component {
             console.log('[conference] [chat] suppressing bridge leave from chat log:',
                 p.identity && p.identity.uri);
         } else {
-            this.postChatSystemMessage(p.identity.uri + ' left', true);
+            // Strip the `sip:` scheme prefix — see the matching strip
+            // on the join line in onParticipantJoined for the
+            // rationale (chat log is read by humans, bare address
+            // looks cleaner than the protocol-prefixed form).
+            const _leaveUri = (p.identity.uri || '').replace(/^sip:/i, '');
+            this.postChatSystemMessage(_leaveUri + ' left', true);
         }
 
         // Conference recording: finalise this participant's WAV file
@@ -4016,6 +4472,159 @@ class ConferenceBox extends Component {
         // align the truncated track against the rest of the timeline.
         if (this.state.isConferenceRecording) {
             CallRecorder.removeConferenceParticipant(p).catch(() => {});
+        }
+    }
+
+    // =================================================================
+    // Matrix-inertia transition helpers (strategy 1).
+    //
+    // The matrix grid is driven by state.matrixOccupants (an ordered
+    // array of participant ids). The five helpers below are the ONLY
+    // mutators of that array + state.degradedOccupants. Keeping the
+    // mutators centralised here means every state transition logs
+    // under a single [matrix-inertia] prefix and the timer maps stay
+    // consistent with the state.
+    // =================================================================
+
+    /** Schedule a participant's promotion into matrixOccupants. Called
+     *  from onParticipantJoined. Fires after ARRIVAL_WARMUP_MS unless
+     *  cancelled (because the participant left, or _admitToMatrix was
+     *  called early after a streamAdded). Idempotent — calling twice
+     *  for the same id clears the previous timer. */
+    _scheduleArrival(id) {
+        if (!id) return;
+        if (this._arrivalTimers.has(id)) {
+            clearTimeout(this._arrivalTimers.get(id));
+            this._arrivalTimers.delete(id);
+        }
+        const handle = setTimeout(() => {
+            this._arrivalTimers.delete(id);
+            // Double-check the participant is still in the room
+            // before promoting; they could have left during the
+            // warmup window.
+            const stillPresent = this.state.participants.some(p => p.id === id);
+            if (!stillPresent) return;
+            this._admitToMatrix(id, 'arrival-timer');
+        }, ARRIVAL_WARMUP_MS);
+        this._arrivalTimers.set(id, handle);
+        console.log('[conference] [matrix-inertia] arrival warmup armed for', id,
+            '(', ARRIVAL_WARMUP_MS, 'ms)');
+    }
+
+    /** Promote a participant into matrixOccupants. Idempotent. The
+     *  `reason` is logged so flap traces show what triggered the
+     *  admission (streamAdded vs arrival-timer vs initial-seed). */
+    _admitToMatrix(id, reason) {
+        if (!id) return;
+        // Clear a pending arrival timer if any — we're admitting now.
+        if (this._arrivalTimers.has(id)) {
+            clearTimeout(this._arrivalTimers.get(id));
+            this._arrivalTimers.delete(id);
+        }
+        if (this.state.matrixOccupants.indexOf(id) !== -1) {
+            // Already in. The early-promote case (streamAdded after
+            // arrival timer fired) is a legitimate re-call — keep
+            // quiet, don't re-log.
+            return;
+        }
+        const next = this.state.matrixOccupants.slice();
+        next.push(id);
+        console.log('[conference] [matrix-inertia] +admit', id, 'reason=', reason,
+            'matrix-count', next.length);
+        this.setState({ matrixOccupants: next });
+    }
+
+    /** Remove a participant from matrixOccupants and clean up any
+     *  related state. Called immediately from onParticipantLeft and
+     *  deferred from the degrade-grace timer. */
+    _removeFromMatrix(id, reason) {
+        if (!id) return;
+        // Clear pending timers for this id either way — they'd
+        // otherwise fire on a participant we've already removed.
+        if (this._arrivalTimers.has(id)) {
+            clearTimeout(this._arrivalTimers.get(id));
+            this._arrivalTimers.delete(id);
+        }
+        if (this._degradeTimers.has(id)) {
+            clearTimeout(this._degradeTimers.get(id));
+            this._degradeTimers.delete(id);
+        }
+        const idx = this.state.matrixOccupants.indexOf(id);
+        if (idx === -1) {
+            // Not in matrix (still in arrival warmup, or already removed).
+            // Still clear the degraded flag defensively.
+            if (this.state.degradedOccupants.has(id)) {
+                const nextDeg = new Set(this.state.degradedOccupants);
+                nextDeg.delete(id);
+                this.setState({ degradedOccupants: nextDeg });
+            }
+            return;
+        }
+        const next = this.state.matrixOccupants.slice();
+        next.splice(idx, 1);
+        const nextDeg = new Set(this.state.degradedOccupants);
+        nextDeg.delete(id);
+        console.log('[conference] [matrix-inertia] -remove', id, 'reason=', reason,
+            'matrix-count', next.length);
+        this.setState({ matrixOccupants: next, degradedOccupants: nextDeg });
+    }
+
+    /** Flag an occupant as degraded (media lost). Renders avatar
+     *  fallback. Schedules auto-removal after DEGRADE_GRACE_MS unless
+     *  the participant is a pinned speaker — pinned slots are sticky. */
+    _markDegraded(id) {
+        if (!id) return;
+        if (this.state.matrixOccupants.indexOf(id) === -1) return;
+        if (!this.state.degradedOccupants.has(id)) {
+            const nextDeg = new Set(this.state.degradedOccupants);
+            nextDeg.add(id);
+            console.log('[conference] [matrix-inertia] degrade', id);
+            this.setState({ degradedOccupants: nextDeg });
+        }
+        // Pinned speakers: don't schedule auto-removal. The user
+        // explicitly asked for that slot and we hold it indefinitely;
+        // the avatar fallback communicates the connectivity issue.
+        const isPinned = (this.state.activeSpeakers || []).some(s => s && s.id === id);
+        if (isPinned) {
+            // Make sure any prior degrade timer is cleared.
+            if (this._degradeTimers.has(id)) {
+                clearTimeout(this._degradeTimers.get(id));
+                this._degradeTimers.delete(id);
+            }
+            return;
+        }
+        // Re-arm the grace timer on every degrade call — most calls
+        // come from CDU on the stalled set when an additional poll
+        // tick confirms the stall, and re-arming is idempotent w.r.t.
+        // the user-visible behaviour (avatar shown the whole window).
+        if (this._degradeTimers.has(id)) {
+            clearTimeout(this._degradeTimers.get(id));
+        }
+        const handle = setTimeout(() => {
+            this._degradeTimers.delete(id);
+            // Only remove if STILL degraded; if media recovered in
+            // the meantime, _clearDegraded would have unflagged us.
+            if (this.state.degradedOccupants.has(id)) {
+                this._removeFromMatrix(id, 'degrade-grace-expired');
+            }
+        }, DEGRADE_GRACE_MS);
+        this._degradeTimers.set(id, handle);
+    }
+
+    /** Clear the degraded flag — media has recovered. Cancels the
+     *  pending auto-removal so the tile stays in the matrix at its
+     *  current position. */
+    _clearDegraded(id) {
+        if (!id) return;
+        if (this._degradeTimers.has(id)) {
+            clearTimeout(this._degradeTimers.get(id));
+            this._degradeTimers.delete(id);
+        }
+        if (this.state.degradedOccupants.has(id)) {
+            const nextDeg = new Set(this.state.degradedOccupants);
+            nextDeg.delete(id);
+            console.log('[conference] [matrix-inertia] recover', id);
+            this.setState({ degradedOccupants: nextDeg });
         }
     }
 
@@ -4274,9 +4883,39 @@ class ConferenceBox extends Component {
         const self = roster[0];
         const remotes = roster.slice(1);
         const out = [];
+
+        // Pinned-speakers mode (state.activeSpeakers non-empty)
+        // overrides the by-remote-count layout entirely — same as
+        // getVideoLayout / the matrix render loop. Count stalled-out
+        // entries so the ASCII matches what the user actually sees.
+        const stalled = this.state.stalledParticipants || new Set();
+        const activeSpeakersAll = this.state.activeSpeakers || [];
+        const pinned = activeSpeakersAll.filter(p => p && !stalled.has(p.id));
+        const pinnedCount = pinned.length;
+
+        // Resolve each pinned entry to the same compact label the
+        // roster uses, so the ASCII tile label matches what shows up
+        // in the per-participant log lines just above. Self in the
+        // pin set gets the trailing `*` marker. Decorate every pinned
+        // cell with `[pin]` so it's unambiguous on a quick read.
+        const myAccountId = this.state.accountId || '';
+        const pinnedLabels = pinned.map((p) => {
+            const _identity = p && p.identity;
+            const _uri = (_identity && (_identity.uri || _identity._uri)) || '';
+            const _isSelf = !!(myAccountId && _uri && _uri === myAccountId);
+            return this._shortLabel(_uri || '?', _isSelf) + ' [pin]';
+        });
+
         const header = (this.state.viewMode === 'audio' ? 'AUDIO' : 'VIDEO')
             + ' view, ' + orientation
-            + ', visible=' + remotes.length;
+            + ', visible=' + remotes.length
+            + ', pinned=' + pinnedCount
+            + (pinnedCount > 0
+                ? (pinned.some((p) => {
+                      const _uri = (p && p.identity && (p.identity.uri || p.identity._uri)) || '';
+                      return myAccountId && _uri === myAccountId;
+                  }) ? ' (self pinned)' : '')
+                : '');
         out.push('layout — ' + header);
 
         // Cell width tracks the max label length (~20 chars in
@@ -4297,6 +4936,71 @@ class ConferenceBox extends Component {
                 ? '(mirror PIP shown right-middle)'
                 : '(mirror PIP hidden)';
             out.push(pipNote);
+            return out;
+        }
+
+        // Pinned-speakers branch — overrides the by-remote-count
+        // layout when the user has pinned 1 or 2 speakers via the
+        // SpeakerSelectionModal. Mirrors getVideoLayout's
+        // pinnedCount path (1 pin = full screen, 2 pins = 50/50
+        // split — landscape side-by-side, portrait top/bottom).
+        // showMyself returns false in this mode, so no floating
+        // PIP — the self-pinned case has self IN the matrix as a
+        // proper tile (via the ConferenceMatrixParticipant
+        // maybeAttachStream path that now also attaches the
+        // sylkrtc synthetic self's local stream). Unpinned remotes
+        // disappear from the matrix entirely; they're still visible
+        // in the drawer roster — note that here so the ASCII
+        // matches what a viewer with 6 participants sees when only
+        // 2 are pinned.
+        if (pinnedCount > 0) {
+            if (pinnedCount === 1) {
+                out.push(rule1);
+                out.push('| ' + this._cell('', CW) + ' |');
+                out.push('| ' + this._cell(pinnedLabels[0], CW) + ' |');
+                out.push('| ' + this._cell('', CW) + ' |');
+                out.push(rule1);
+            } else {
+                // pinnedCount >= 2 → take the first two (matches the
+                // matrix render which caps the tile count at the
+                // pinned set length, max 4, in practice always 1 or 2
+                // from SpeakerSelectionModal).
+                if (orientation === 'landscape') {
+                    out.push(rule2);
+                    out.push('| ' + this._cell(pinnedLabels[0], CW)
+                        + ' | ' + this._cell(pinnedLabels[1], CW) + ' |');
+                    out.push(rule2);
+                } else {
+                    out.push(rule1);
+                    out.push('| ' + this._cell(pinnedLabels[0], CW) + ' |');
+                    out.push(rule1);
+                    out.push('| ' + this._cell(pinnedLabels[1], CW) + ' |');
+                    out.push(rule1);
+                }
+            }
+            // Off-matrix remotes summary. With pinned mode, every
+            // unpinned remote is hidden from the matrix (no side
+            // strip either — the side carousel only kicks in for
+            // the unpinned 4+-remotes case). Surface the count so
+            // "6 in the room but I see 2 on screen" reads correctly.
+            const pinnedUris = new Set();
+            pinned.forEach((p) => {
+                const _uri = (p && p.identity && (p.identity.uri || p.identity._uri)) || '';
+                if (_uri) pinnedUris.add(_uri);
+            });
+            // Self is counted separately if not pinned (no self tile
+            // anywhere in this mode → "(self off-matrix)" note).
+            const selfIsPinned = !!(myAccountId && pinnedUris.has(myAccountId));
+            const offMatrixRemotes = remotes.length - pinned.filter((p) => {
+                const _uri = (p && p.identity && (p.identity.uri || p.identity._uri)) || '';
+                return _uri && _uri !== myAccountId;
+            }).length;
+            if (offMatrixRemotes > 0) {
+                out.push('(off-matrix remotes: ' + offMatrixRemotes + ')');
+            }
+            if (!selfIsPinned) {
+                out.push('(self off-matrix — PIP suppressed while pinned mode is on)');
+            }
             return out;
         }
 
@@ -4720,6 +5424,13 @@ class ConferenceBox extends Component {
         // again later in the same session for the same trigger
         // (remote sending video while we're in audio view).
         this._autoEscalatedToVideo = true;
+        // Persist on the call object — see the constructor's
+        // latch-rehydration block. Without this mirror the
+        // decision is lost on the next ConferenceBox remount.
+        if (this.props.call) {
+            this.props.call._autoEscalatedToVideo = true;
+            this.props.call._cameraStartPromptShown = true;
+        }
         this.setState({cameraStartPreviewVisible: false}, () => {
             if (this.state.viewMode === 'audio') {
                 this.toggleViewMode();
@@ -4749,6 +5460,14 @@ class ConferenceBox extends Component {
         // choice ("View only, no camera"), so the auto-prompt
         // shouldn't second-guess them.
         this._autoEscalatedToVideo = true;
+        // Persist on the call object — see the constructor's
+        // latch-rehydration block. The _cameraStartPromptShown
+        // copy is mirrored here too because the comment below
+        // notes it stays TRUE across the rest of the session.
+        if (this.props.call) {
+            this.props.call._autoEscalatedToVideo = true;
+            this.props.call._cameraStartPromptShown = true;
+        }
         // Belt-and-braces: defensively force the webrtc video track
         // to disabled. Gate 1 doesn't enable it (RNCamera owns the
         // preview), but the auto-escalate force-off path may have
@@ -4769,6 +5488,9 @@ class ConferenceBox extends Component {
         // track back on. The flag is cleared by an explicit Start
         // video / kebab action later.
         this._userExplicitlyStoppedVideo = true;
+        if (this.props.call) {
+            this.props.call._userExplicitlyStoppedVideo = true;
+        }
         // _cameraStartPromptShown stays TRUE — the modal is a
         // once-per-conference-session decision. After View only,
         // the user manages their camera via the kebab Video... menu
@@ -4891,6 +5613,11 @@ class ConferenceBox extends Component {
         // latch in the parent app.
         if (this.state.videoMuted && !this._cameraStartPromptShown) {
             this._cameraStartPromptShown = true;
+            // Persist on the call object so the latch survives a
+            // ConferenceBox remount — see the constructor.
+            if (this.props.call) {
+                this.props.call._cameraStartPromptShown = true;
+            }
             // DO NOT touch track.enabled here. The modal's preview
             // is rendered via RNCamera (react-native-camera) with
             // its OWN native capture handle — completely independent
@@ -5143,7 +5870,13 @@ class ConferenceBox extends Component {
                 this.setState({audioView: !this.state.audioView});
             }
         }
-        this.setState({chatView: !this.state.chatView});
+        const _willShowChat = !this.state.chatView;
+        this.setState({
+            chatView: _willShowChat,
+            // Clear the navbar chat-icon unread badge the instant
+            // chat becomes visible — the user is now reading.
+            chatUnreadCount: _willShowChat ? 0 : this.state.chatUnreadCount,
+        });
     }
 
     toggleAudioParticipants(event) {
@@ -5164,7 +5897,14 @@ class ConferenceBox extends Component {
     // Participants and that toggled audioView instead of the chat
     // overlay, so tapping chat→audio appeared to do nothing.
     toggleAudioChatView() {
-        this.setState({audioChatView: !this.state.audioChatView});
+        const _willShowChat = !this.state.audioChatView;
+        this.setState({
+            audioChatView: _willShowChat,
+            // Clear the navbar chat-icon unread badge the instant
+            // the audio chat panel becomes visible — the user is
+            // now reading the queued messages.
+            chatUnreadCount: _willShowChat ? 0 : this.state.chatUnreadCount,
+        });
     }
 
     /** Toggle visibility of the audio-view PIP's controls (swap,
@@ -5413,6 +6153,9 @@ class ConferenceBox extends Component {
                     // "user-explicitly-stopped" latch so future
                     // audio→video view toggles can auto-resume.
                     this._userExplicitlyStoppedVideo = false;
+                    if (this.props.call) {
+                        this.props.call._userExplicitlyStoppedVideo = false;
+                    }
                 }
             }] : [{
                 key: 'mute',
@@ -5680,6 +6423,9 @@ class ConferenceBox extends Component {
             // "user-explicitly-stopped" latch — subsequent view
             // toggles can auto-resume again if applicable.
             this._userExplicitlyStoppedVideo = false;
+            if (this.props.call) {
+                this.props.call._userExplicitlyStoppedVideo = false;
+            }
         } else {
             this.setState({videoMutedbyUser: true});
             this._muteVideo();
@@ -5688,6 +6434,9 @@ class ConferenceBox extends Component {
             // camera. The user has to come back through the
             // explicit Start video kebab item.
             this._userExplicitlyStoppedVideo = true;
+            if (this.props.call) {
+                this.props.call._userExplicitlyStoppedVideo = true;
+            }
         }
     }
 
@@ -5742,6 +6491,25 @@ class ConferenceBox extends Component {
         }
         this.props.hangup('user_hangup_conference');
     }
+
+    /** Both Hangup entry points (action-bar IconButton and kebab
+     *  menu item) call this. Shows the confirmation dialog instead
+     *  of tearing the conference down immediately. */
+    requestHangup = () => {
+        this.setState({ hangupConfirmVisible: true });
+    };
+
+    /** Confirm path of the dialog — dismiss it and run the real
+     *  hangup. */
+    confirmHangup = () => {
+        this.setState({ hangupConfirmVisible: false });
+        this.hangup();
+    };
+
+    /** Cancel path of the dialog — just dismiss, no hangup. */
+    cancelHangup = () => {
+        this.setState({ hangupConfirmVisible: false });
+    };
 
     fullScreenTimer() {
         // Audio view has no fullscreen overlay to dismiss, regardless
@@ -6241,8 +7009,16 @@ class ConferenceBox extends Component {
             return false;
         }
 
+        // Chat-view hides the self thumbnail per user request — both
+        // the video-conference chat split (chatView && !audioOnlyView)
+        // and the audio-conference chat panel (audioChatView) suppress
+        // the self PIP so the user has more room to read / type
+        // without their own preview floating over the messages.
         if (this.state.chatView && !this.audioOnlyView) {
-			return true;
+			return false;
+        }
+        if (this.state.audioChatView) {
+			return false;
         }
 
 		// When the user has pinned one or two speakers via the
@@ -6304,7 +7080,15 @@ class ConferenceBox extends Component {
 		// We render a 50/50 split when there's exactly ONE remote
 		// participant (us + them = 2 tiles). For 0 remotes we still
 		// fill the screen with the lone tile (just us / placeholder).
-		const remoteCount = this.visibleParticipants.length;
+		//
+		// Matrix-inertia (strategy 1): tile count comes from
+		// state.matrixOccupants — the stable, timer-gated set —
+		// rather than visibleParticipants (which flaps with every
+		// stall/recover cycle). Degraded occupants ARE counted
+		// because they still claim a tile (avatar fallback). This
+		// is what stops the grid from reshaping every couple of
+		// seconds when a participant's video stalls briefly.
+		const remoteCount = (this.state.matrixOccupants || []).length;
 		// Effective tile count:
 		//   • pinnedCount > 0 → exactly that many tiles in the matrix
 		//   • 1 remote        → 2 tiles (self + remote)
@@ -6514,6 +7298,10 @@ class ConferenceBox extends Component {
 		// instead.
 		if (AUDIO_DEVICE_PICKER_MODE === 'floating') {
 			const otherDevices = devices.filter(d => d !== this.state.selectedAudioDevice);
+			// With exactly two devices the menu is overkill — tapping the
+			// button just flips to the other one. The floating list only
+			// appears at 3+.
+			const toggleOnly = devices.length === 2 && otherDevices.length === 1;
 			return (
 				<View style={styles.buttonContainer} key="audioDevice">
 					{/* Outside-tap dismiss for the floating audio
@@ -6530,7 +7318,7 @@ class ConferenceBox extends Component {
 					    trigger button again, which was non-obvious
 					    when the picker was opened from the kebab's
 					    Audio... entry. */}
-					{this.state.audioDevicePickerVisible && (
+					{!toggleOnly && this.state.audioDevicePickerVisible && (
 					    <TouchableWithoutFeedback
 					        onPress={() => this.setState({audioDevicePickerVisible: false})}
 					    >
@@ -6542,7 +7330,7 @@ class ConferenceBox extends Component {
 					        }} />
 					    </TouchableWithoutFeedback>
 					)}
-					{this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
+					{!toggleOnly && this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
 							// Portrait: anchor ABOVE the trigger
@@ -6583,7 +7371,13 @@ class ConferenceBox extends Component {
 							size={buttonSize}
 							style={buttonClass}
 							icon={selectedIcon}
-							onPress={() => this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible})}
+							onPress={() => {
+								if (toggleOnly) {
+									this.props.selectAudioDevice(otherDevices[0]);
+								} else {
+									this.setState({audioDevicePickerVisible: !this.state.audioDevicePickerVisible});
+								}
+							}}
 						/>
 					</TouchableHighlight>
 				</View>
@@ -6652,7 +7446,19 @@ class ConferenceBox extends Component {
         // already reflects the active camera with a red X overlay
         // for muted, so no separate icon variable is needed.
         const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
-        
+
+        // When the local mic is muted, swap the round button's white
+        // background for the same red used by the hangup button so
+        // the muted state reads as a vivid red disc and not just a
+        // dimmed white one. Paired with the surrounding PulsingView
+        // opacity loop, the button now pulses RED while muted.
+        // iconColor flips to white so the microphone-off glyph
+        // remains legible against the red fill.
+        const muteButtonStyle = this.state.audioMuted
+            ? [buttonClass, {backgroundColor: '#E53935'}]
+            : buttonClass;
+        const muteButtonIconColor = this.state.audioMuted ? '#ffffff' : undefined;
+
         let unselectItem = {id: 'none', publisherId: null, identity: {uri: 'none', displayName: 'No speaker'}};
 
         // Populate the speaker-selection list with ONLY valid video
@@ -6837,44 +7643,11 @@ class ConferenceBox extends Component {
             */
         }
 
-        // Add-participant button pushed FIRST so it lands on the
-        // leftmost slot of the centred floating button row.
-        // Hands off to `props.inviteToConferenceFunc` (the parent
-        // wires the contact-picker that the kebab "Invite..." item
-        // also uses) rather than `toggleInviteModal` — the latter
-        // toggles ShareConferenceLinkModal which is the "copy a
-        // share URL" sheet, NOT the invite-by-contact flow the user
-        // expects from the + button.
-        floatingButtons.push(
-              // Uniform spacing in BOTH orientations now — no extra
-              // marginRight on this end-cap. Portrait gets its 10 dp
-              // gap from styles.buttonContainer (margin:5 each side);
-              // landscape gets the same 10 dp from ConferenceHeader's
-              // wrapper marginLeft.
-              <View
-                style={styles.buttonContainer}
-                key="Invite">
-                  <TouchableHighlight style={styles.roundshape}>
-            <IconButton
-                size={25}
-                style={buttonClass}
-                title="Add participant"
-                onPress={() => {
-                    if (typeof this.props.inviteToConferenceFunc === 'function') {
-                        this.props.inviteToConferenceFunc();
-                    } else {
-                        // Fallback — older parents without the
-                        // contact-picker plumbing still get a
-                        // working button via the share modal.
-                        this.toggleInviteModal();
-                    }
-                }}
-                icon="account-plus"
-                key="addParticipantButton"
-            />
-                  </TouchableHighlight>
-              </View>
-        );
+        // Add-participant button removed from the video-view
+        // floating bar per user request. The same flow is still
+        // reachable from the kebab menu's "Invite participants..."
+        // entry, which routes to inviteToConferenceFunc the same
+        // way.
 
         // Speaker selector — pushed RIGHT AFTER Add Participant per
         // user request. Only meaningful in video layout with 2+
@@ -6914,7 +7687,8 @@ class ConferenceBox extends Component {
                   <TouchableHighlight style={styles.roundshape}>
             <IconButton
                 size={this.state.videoEnabled ? 25 : 25}
-                style={buttonClass}
+                style={muteButtonStyle}
+                iconColor={muteButtonIconColor}
                 title="Mute/unmute audio"
                 onPress={this.muteAudio}
                 icon={muteButtonIcon}
@@ -6962,7 +7736,7 @@ class ConferenceBox extends Component {
                   size={25}
                   style={[buttonClass, styles.hangupButton]}
                   title="Leave conference"
-                  onPress={this.hangup}
+                  onPress={this.requestHangup}
                   icon="phone-hangup"
                   key="hangupButton"
               />
@@ -7034,7 +7808,7 @@ class ConferenceBox extends Component {
                 size={25}
                 style={[buttonClass, styles.hangupButton]}
                 title="Leave conference"
-                onPress={this.hangup}
+                onPress={this.requestHangup}
                 icon="phone-hangup"
                 key="hangupButton"
             />
@@ -7189,16 +7963,25 @@ class ConferenceBox extends Component {
             );
             const audioDevicePickerButton = this.renderAudioDevicePicker(audioBarButtonSize, buttonClass);
             const audioMuteButton = (
-                <TouchableHighlight style={styles.roundshape} key="bar-mute-wrap">
+                // PulsingView fades the wrapped button between full
+                // opacity and ~0.35 on a 600 ms loop while audioMuted
+                // is true, matching the visual treatment of the
+                // floating-bar mute button (line ~6987) so the muted
+                // state is visible in both the audio-mode bottom bar
+                // and the video-mode floating bar.
+                <PulsingView active={!!this.state.audioMuted} key="bar-mute-wrap">
+                  <TouchableHighlight style={styles.roundshape}>
                     <IconButton
                         size={audioBarButtonSize}
-                        style={buttonClass}
+                        style={muteButtonStyle}
+                        iconColor={muteButtonIconColor}
                         title="Mute/unmute audio"
                         onPress={this.muteAudio}
                         icon={muteButtonIcon}
                         key="bar-mute"
                     />
-                </TouchableHighlight>
+                  </TouchableHighlight>
+                </PulsingView>
             );
             const audioHangupButton = (
                 <TouchableHighlight style={styles.roundshape} key="bar-hangup-wrap">
@@ -7206,7 +7989,7 @@ class ConferenceBox extends Component {
                         size={audioBarButtonSize}
                         style={[buttonClass, styles.hangupButton]}
                         title="Leave conference"
-                        onPress={this.hangup}
+                        onPress={this.requestHangup}
                         icon="phone-hangup"
                         key="bar-hangup"
                     />
@@ -7238,24 +8021,14 @@ class ConferenceBox extends Component {
             if (this.state.isConferenceRecording) {
                 this._ensureRecordPulse();
             }
-            const audioRecordButton = CallRecorder.conferenceAvailable() ? (
-                <Animated.View
-                    key="bar-record-anim"
-                    style={{ opacity: this.state.isConferenceRecording ? this._recordPulse : 1 }}>
-                    <TouchableHighlight style={styles.roundshape} key="bar-record-wrap">
-                        <IconButton
-                            size={_recordIconSize}
-                            style={buttonClass}
-                            title={this.state.isConferenceRecording ? 'Stop recording' : 'Record conference'}
-                            onPress={this._toggleConferenceRecording}
-                            icon="record"
-                            color="#e53935"
-                            iconColor="#e53935"
-                            key="bar-record"
-                        />
-                    </TouchableHighlight>
-                </Animated.View>
-            ) : null;
+            // Inline Record-conference button removed from the
+            // audio action bar per user request — toggling is now
+            // exposed only via the ConferenceHeader kebab menu's
+            // "Record audio... / Stop recording audio..." item.
+            // Variable kept (set to null) so the JSX below that
+            // references audioRecordButton resolves cleanly without
+            // wider edits.
+            const audioRecordButton = null;
 
             // Conference recording pill — visually identical to the
             // 1-to-1 AudioCallBox recording pill, rendered as an
@@ -7303,19 +8076,18 @@ class ConferenceBox extends Component {
             const _iosLowerActionBar = Platform.OS === 'ios' ? {bottom: 10} : null;
             var audioViewActionBar = (this.state.isLandscape || this.state.audioChatView) ? null : (
                 <View style={[styles.audioViewActionBar, _audioActionBarFoldedOverride, _iosLowerActionBar]}>
-                    <View style={styles.audioViewActionBarButton}>
-                        {audioChatToggleButton}
-                    </View>
-                    {/* Canonical order across every surface:
-                        MIC (mute audio) → SPEAKER (audio device) →
-                        CAMERA (video picker, video mode only).
-                        Audio mode has no camera, so the bar is
-                        [chat, mic, speaker, hangup]. */}
-                    <View style={styles.audioViewActionBarButton}>
-                        {audioMuteButton}
-                    </View>
+                    {/* Chat toggle button removed from the audio
+                        action bar per user request. The same
+                        affordance lives in the navbar's three-icon
+                        cluster (the `chat` glyph routes to the
+                        audio + audioChatView=true end state). */}
+                    {/* Canonical order: SPEAKER (audio device) →
+                        MIC (mute audio) → hangup. */}
                     <View style={styles.audioViewActionBarButton}>
                         {audioDevicePickerButton}
+                    </View>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioMuteButton}
                     </View>
                     {/* Record-conference button — sits between the
                         speaker picker and the hangup so the
@@ -7329,12 +8101,11 @@ class ConferenceBox extends Component {
                     ) : null}
                     {/* Hangup slot picks up an extra marginLeft so the
                         destructive button sits visibly to the right
-                        of the safe controls. Bumped from 30 → 50 dp
-                        per user request to widen the gap so the
-                        audio bar matches the more obvious separation
-                        the video bar's combined 24 dp button-end-cap
-                        + extra wrapper margin gives. */}
-                    <View style={[styles.audioViewActionBarButton, {marginLeft: 50}]}>
+                        of the safe controls. Trimmed back from 50 →
+                        30 dp per user request, matching the video
+                        call action bar (see VideoBox: `<View style=
+                        {[styles.buttonContainer, {marginLeft: 30}]}>`). */}
+                    <View style={[styles.audioViewActionBarButton, {marginLeft: 30}]}>
                         {audioHangupButton}
                     </View>
                 </View>
@@ -7545,16 +8316,19 @@ class ConferenceBox extends Component {
             if (this.state.isLandscape) {
                 // ConferenceHeader renders buttons.bottom inline in
                 // the navbar's right-aligned cluster when landscape.
-                // Order matches the portrait action bar so the muscle
-                // memory carries over: chat-toggle, audio picker,
-                // mute, hangup.
-                // Canonical order: chat, MIC, SPEAKER, hangup.
+                // Order: SPEAKER, MIC, RECORD, hangup.
+                // chat-toggle removed per user request — the chat
+                // affordance is now on the navbar's three-icon
+                // cluster. audioRecordButton may be null when
+                // CallRecorder.conferenceAvailable() is false (build
+                // without the native conference-mix path linked in);
+                // .filter(Boolean) drops it cleanly in that case.
                 buttons.bottom = [
-                    audioChatToggleButton,
-                    audioMuteButton,
                     audioDevicePickerButton,
+                    audioMuteButton,
+                    audioRecordButton,
                     audioHangupButton,
-                ];
+                ].filter(Boolean);
             }
 
             // selfTileButtons used to carry the "Invite participants"
@@ -8296,16 +9070,12 @@ class ConferenceBox extends Component {
 
                 const _isInviteFailure = /^[3-6]\d\d\b/.test(String(p.status || ''));
 
-                // Failed / reinvite tile gets a refresh button in the
-                // right-slot extraButtons cluster (so the retry stays
-                // next to the duration area) and the close-X chip in
-                // the top-right kickButton overlay (replaces the old
-                // trash icon — same visual as a per-participant kick).
-                // For failed-invite tiles we also suppress the
-                // mediaContainer so the right slot only carries the
-                // retry button; the status text is already shown in
-                // the VU-meter slot via progressText.
-                let _inviteKickButton = null;
+                // Failed / reinvite tile additionally gets a refresh
+                // button in the right-slot extraButtons cluster (so
+                // the retry stays next to the duration area) and the
+                // mediaContainer is suppressed so the right slot only
+                // carries the retry button; the failure text is
+                // already shown in the VU-meter slot via progressText.
                 if (p.status === 'reinvite' || _isInviteFailure) {
                     extraButtons = [
                       <View style={[styles.buttonContainer, {marginRight: 20}]} key={`invitee-reinvite-${_uri}`}>
@@ -8319,17 +9089,32 @@ class ConferenceBox extends Component {
                         </TouchableHighlight>
                       </View>
                     ];
-                    _inviteKickButton = (
-                        <TouchableOpacity
-                            key={`invitee-delete-${_uri}`}
-                            style={styles.kickCircle}
-                            onPress={() => this.removeInvitedParticipant(_uri)}
-                            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
-                        >
-                            <Icon name="close" size={11} color="#ffffff" />
-                        </TouchableOpacity>
-                    );
                 }
+                // Close-X chip in the top-right kickButton overlay —
+                // now rendered for every invited tile, not just the
+                // failed / reinvite branch above. Previously the chip
+                // only appeared after a 3xx-6xx response or the local
+                // 45 s invite-window timeout, which meant the user
+                // could see the callee's phone ringing on the tile
+                // but had no way to call the invite off before it
+                // resolved. The tap is routed through
+                // cancelInvitedParticipant, which sends a REFER
+                // ;method=BYE to the focus (sylkserver's conference
+                // app then walks its pending-invite registry and
+                // CANCELs the still-early SIP leg) for pending
+                // invites, and falls back to a local-only cleanup
+                // when the entry has already settled (failure code or
+                // "No answer").
+                let _inviteKickButton = (
+                    <TouchableOpacity
+                        key={`invitee-delete-${_uri}`}
+                        style={styles.kickCircle}
+                        onPress={() => this.cancelInvitedParticipant(_uri)}
+                        hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+                    >
+                        <Icon name="close" size={11} color="#ffffff" />
+                    </TouchableOpacity>
+                );
                 // Combined progress/result text for the 3rd-line slot
                 // (where the VU meter normally lives). During the
                 // 45-second invite window this is "Waiting ...NN";
@@ -8513,10 +9298,18 @@ class ConferenceBox extends Component {
 			  elevation: 10,
 		    };
 
-            if (Platform.OS === 'ios' ) {
-                if (this.state.isLandscape) {
-					conferenceHeader.width = width - rightInset - leftInset;
-                }
+            // Navbar spans edge-to-edge of the physical screen — cancel
+            // the parent container's safe-area left inset with a
+            // negative marginLeft and explicitly size to the full
+            // window width. Mirrors the pattern the video-call
+            // container uses (search for marginLeft:-leftInset around
+            // line 10489) so the navbar isn't visibly indented from
+            // the device edge on landscape phones with a left notch
+            // or punch-hole. Same rule on both platforms — the iOS
+            // landscape-only width override below is now superseded.
+            if (this.state.isLandscape) {
+                conferenceHeader.marginLeft = -leftInset;
+                conferenceHeader.width = width;
             }
 
 			// conferenceContainer is always a column: action bar on
@@ -8668,10 +9461,18 @@ class ConferenceBox extends Component {
 						callState={this.props.callState}
 						toggleAudioParticipantsFunc={this.toggleAudioParticipants}
 						toggleChatFunc={this.toggleChat}
-						hangUpFunc={this.hangup}
+						hangUpFunc={this.requestHangup}
 						audioView={this.state.audioView}
 						chatView={this.state.chatView}
 						audioChatView={this.state.audioChatView}
+						/* Conference recording state + toggle handler
+						   forwarded so the audio-view kebab menu can
+						   surface a Record audio... / Stop recording
+						   audio... item. */
+						isConferenceRecording={this.state.isConferenceRecording}
+						toggleConferenceRecordingFunc={this._toggleConferenceRecording}
+						conferenceRecordingAvailable={CallRecorder.conferenceAvailable()}
+						chatUnreadCount={this.state.chatUnreadCount}
 						toggleAudioChatViewFunc={this.toggleAudioChatView}
 						toggleDrawer={this.toggleDrawer}
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
@@ -8914,7 +9715,7 @@ class ConferenceBox extends Component {
 						// group; orange = invited group. mediaContainer
 						// already gets its green border from
 						// debugBorderWidth above.
-						<View style={{
+						<View style={[{
 						    flex: 1,
 						    overflow: 'hidden',
 						    marginTop: _listMarginTop,
@@ -8929,10 +9730,37 @@ class ConferenceBox extends Component {
 						    //    10 dp gap = reserve 120 dp.
 						    //  • iOS: bar top at bottom 58 +
 						    //    10 dp gap = reserve 80 dp.
-						    marginBottom: Platform.OS === 'ios' ? 80 : 120,
+						    //
+						    // Landscape: the action bar is folded INTO
+						    // the ConferenceHeader (see audioView-
+						    // ActionBar null-gate around line ~9667),
+						    // so there is no floating bar at the
+						    // bottom to clear. Reserving 120 / 80 dp
+						    // in landscape leaves the participants
+						    // list visually stopping ~half-way down
+						    // the screen with empty space underneath
+						    // — exactly the "part list fills 50% /
+						    // 30% empty below" symptom. Skip the
+						    // reservation in landscape so flex:1
+						    // stretches the list to the bottom edge
+						    // of its parent.
+						    marginBottom: this.state.isLandscape
+						        ? 0
+						        : (Platform.OS === 'ios' ? 80 : 120),
 						    borderWidth: debugBorderWidth,
 						    borderColor: 'red',
-						}}>
+						},
+						// Right-side participants column border disabled
+						// — focus is on the LEFT column (speedo card +
+						// dial wrapper + thumb placeholder) for the
+						// moment. Keep the marginLeft so the column's
+						// left edge still sits clear of where the left
+						// half ends. Restore the borderWidth + cyan
+						// borderColor when revisiting the right side.
+						this.state.isLandscape && !this.props.isFolded ? {
+						    marginLeft: 4,
+						} : null,
+						]}>
 							<ScrollView style={{
 							    borderWidth: debugBorderWidth,
 							    borderColor: 'magenta',
@@ -8993,57 +9821,192 @@ class ConferenceBox extends Component {
 							    flex:1 placeholder sub-col.) Without the
 							    thumb the half is the single centred-speedo
 							    column as before. The RIGHT half stays the
-							    participants list. */}
-							<View style={{flex: 1, flexDirection: 'row'}}>
+							    participants list.
+
+							    The speedometer and thumb sub-columns now
+							    carry their own individual borders (see
+							    inside) so this outer LEFT-half wrapper
+							    is unbordered — otherwise we'd nest a
+							    card-in-a-card and the doubled outlines
+							    would read as visual noise. marginRight
+							    leaves the gap to the participants
+							    column's left border on the other side. */}
+							<View style={{
+							    flex: 1,
+							    flexDirection: 'row',
+							    marginRight: 4,
+							}}>
+								{/* Speedometer sub-column. ID border: LIME so
+								    you can tell at a glance which container
+								    is the speedometer.
+								    Orange dial wrapper inside is centred in
+								    BOTH axes regardless of thumbnail
+								    visibility — previously this used
+								    justifyContent: 'flex-start' when the
+								    thumbnail was visible to push the dial
+								    to the top, but per user request the
+								    dial now sits centred in its lime card
+								    just like the magenta thumbnail sits
+								    centred in the adjacent one. */}
 								<View style={{flex: 1, alignItems: 'center',
-								    /* When the thumbnail is visible the
-								       speedo sits at the TOP of the
-								       sub-col (not vertically centred). */
-								    justifyContent: _thumbVisibleLandscape ? 'flex-start' : 'center',
-								    paddingHorizontal: 4}}>
+								    justifyContent: 'center',
+								    paddingHorizontal: 4,
+								    // Lime ID border hidden (debug off).
+								    // Restore: borderWidth 1.5, borderColor '#7CFC00'.
+								    borderWidth: 0,
+								    borderRadius: 6,
+								    marginRight: _thumbVisibleLandscape ? 4 : 0}}>
 									{speedometerLive ? (
-										<View style={{transform: [{translateX: _thumbVisibleLandscape ? 20 : 0}, {translateY: _thumbVisibleLandscape ? 30 : -50}]}}>
-											<View style={{flexDirection: 'column', alignItems: 'center'}}>
-												<AudioSpeedometer
-													call={this.state.call}
-													isFolded={false}
-												/>
-												{/* Add Participant removed from
-												    here too — single canonical
-												    home is the top action bar. */}
-											</View>
+										// Transform wrapper removed — it
+										// previously applied
+										//   translateX = thumb ? 20 : 0
+										//   translateY = thumb ? 30 : -50
+										// from a now-defunct layout where
+										// the speedometer was visually
+										// nudged out of its container.
+										// The parent sub-column already
+										// does alignItems:'center' +
+										// justifyContent:'center' (or
+						 				// flex-start when the thumb is
+						 				// visible), which centers the
+						 				// dial properly on its own — the
+						 				// transform was fighting that and
+						 				// pulling the dial off-centre in
+						 				// both axes.
+										// marginTop:-16 cancels AudioSpeedometer's
+										// own container marginTop:16 (see
+										// AudioSpeedometer.js:1026, "6 base
+										// + 10 to lower the dial") that was
+										// added for some other consumer's
+										// layout. Without this compensation
+										// the dial sits 16 dp below the
+										// landscape card's vertical centre
+										// even with justifyContent: 'center'
+										// on the parent. Local override
+										// keeps AudioCallBox / Conference
+										// uses of AudioSpeedometer
+										// unaffected.
+										//
+										// ID border on the dial wrapper:
+										// ORANGE, distinguishing the
+										// speedometer dial itself from its
+										// containing card (lime) so the
+										// dial's bounds are visible. Small
+										// padding so the border doesn't
+										// hug the AudioSpeedometer's
+										// internal SVG strokes.
+										<View style={{
+										    flexDirection: 'column',
+										    alignItems: 'center',
+										    marginTop: -16,
+										    // Orange ID border hidden (debug off).
+										    // Restore: borderWidth 1.5, borderColor '#FFA500'.
+										    borderWidth: 0,
+										    borderRadius: 6,
+										    padding: 4,
+										}}>
+											<AudioSpeedometer
+												call={this.state.call}
+												isFolded={false}
+											/>
+											{/* Add Participant removed from
+											    here too — single canonical
+											    home is the top action bar. */}
 										</View>
 									) : null}
 								</View>
 								{_thumbVisibleLandscape ? (
 									// RIGHT sub-column of the LEFT half —
-									// blank placeholder; the absolutely
-									// positioned thumbnail paints into
-									// this slot via _fixedLeft adjusted
-									// below. DEBUG: 3 dp MAGENTA border so
-									// the user can see the sub-column's
-									// bounds versus the floating thumbnail.
-									<View style={{flex: 1}} />
+									// blank placeholder for the
+									// absolutely-positioned thumbnail.
+									// Magenta ID border hidden (debug off).
+									// Restore: borderWidth 1.5, borderColor '#FF00FF'.
+									<View style={{
+									    flex: 1,
+									    borderRadius: 6,
+									}} />
 								) : null}
 							</View>
 							{participantsListColumn}
 						</View>
 					) : participantsListColumn;
 
-					// Original KAV config restored — behavior='height'
-					// on Android (so the input bar lifts above the
-					// keyboard) and keyboardVerticalOffset set to
-					// the navbar + status-bar inset distance. The
-					// chat's vertical positioning relative to the
-					// navbar is now controlled by the negative
-					// marginTop on chatContainer above, not by
-					// fighting the KAV config.
-					const chatColumn = (Platform.OS === 'android'
+					// Keyboard-avoidance config — mirrors the working
+					// 1-to-1 chat in ContactsListBox.
+					//
+					// iOS: NO KeyboardAvoidingView wrapper. GiftedChat
+					// already wraps its own KAV internally
+					// (isKeyboardInternallyHandled=true by default);
+					// adding our own KAV on top stacked the padding
+					// against GiftedChat's internal lift and produced
+					// a ~2× keyboard jump. Plain GiftedChat lets the
+					// internal handler do the work alone.
+					// bottomOffset={bottomInset} compensates for the
+					// home-indicator safe area — without it
+					// GiftedChat's internal KAV lifts the input by
+					// the full keyboard height, which on home-
+					// indicator iPhones includes the ~34 dp safe-area
+					// bottom and leaves the input that far above the
+					// keyboard top.
+					//
+					// Android: AndroidManifest sets
+					// android:windowSoftInputMode="adjustResize", so
+					// when the soft keyboard opens the system already
+					// shrinks the window down to the area above the
+					// keyboard. A non-zero keyboardVerticalOffset on
+					// top of that stacks and pushes the input BELOW
+					// the keyboard on Android 11 (the pre-edge-to-
+					// edge resize is smaller than on Android 16 so
+					// the offset overshoots). Leaving offset at 0
+					// lets adjustResize do all the work, same across
+					// API 30 (Android 11) → API 35+ (Android 16).
+					const chatColumn = Platform.OS === 'ios'
 						? (
+							<View
+								key={this.state.isLandscape ? 'landscape' : 'portrait'}
+								style={chatContainer}
+							>
+								<GiftedChat
+									key={this.state.isLandscape ? 'landscape' : 'portrait'}
+									bottomOffset={bottomInset}
+									messages={renderMessages}
+									isTyping={this.state.isTyping}
+									onLongPress={this.onLongMessagePress}
+									onSend={this.onSendMessage}
+									renderCustomView={this.renderCustomView}
+									renderSend={this.renderSend}
+									renderBubble={this.renderBubble}
+									renderMessageImage={this.renderMessageImage}
+									renderMessageVideo={this.renderMessageVideo}
+									renderMessageAudio={this.renderMessageAudio}
+									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
+									alwaysShowSend={true}
+									scrollToBottom
+									lockStyle={styles.lock}
+									inverted={true}
+									timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
+									infiniteScroll
+								/>
+							</View>
+						)
+						: (
 							<KeyboardAvoidingView
 								key={this.state.isLandscape ? 'landscape' : 'portrait'}
 								style={chatContainer}
-								behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+								behavior="height"
+								/* Restored the non-zero offset the
+								   user remembers working — matches
+								   the 1-to-1 chat pattern in
+								   ContactsListBox where `behavior:
+								   'height'` is paired with offset =
+								   navigatorBarHeight + topInset on
+								   Android phones. For the audio-view
+								   conference chat the equivalent
+								   reservation is conferenceHeader
+								   Height (60) + topInset. With
+								   offset:0 the input bar fell under
+								   the keyboard on this user's
+								   Android device. */
 								keyboardVerticalOffset={conferenceHeaderHeight + topInset}
 							>
 								<GiftedChat
@@ -9067,52 +10030,7 @@ class ConferenceBox extends Component {
 									infiniteScroll
 								/>
 							</KeyboardAvoidingView>
-						)
-						: (
-							// iOS path. Wrapped in KAV with
-							// behavior='padding' so the input bar
-							// lifts above the soft keyboard. The
-							// keyboardVerticalOffset is set to the
-							// bottom safe-area inset so the
-							// padding-bottom KAV applies when the
-							// keyboard rises equals
-							// (keyboard_height - bottomInset). That
-							// closes the ~34 dp gap the user saw
-							// between the input bar and the keyboard
-							// on iPhones with a home indicator —
-							// without the offset, GiftedChat's
-							// default safe-area handling left the
-							// input bar bottomInset above the
-							// keyboard top.
-							<KeyboardAvoidingView
-								key={this.state.isLandscape ? 'landscape' : 'portrait'}
-								style={chatContainer}
-								behavior="padding"
-								keyboardVerticalOffset={bottomInset}
-							>
-								<GiftedChat
-									key={this.state.isLandscape ? 'landscape' : 'portrait'}
-									messages={renderMessages}
-									isTyping={this.state.isTyping}
-									onLongPress={this.onLongMessagePress}
-									onSend={this.onSendMessage}
-									renderCustomView={this.renderCustomView}
-									renderSend={this.renderSend}
-									renderBubble={this.renderBubble}
-									renderMessageImage={this.renderMessageImage}
-									renderMessageVideo={this.renderMessageVideo}
-									renderMessageAudio={this.renderMessageAudio}
-									shouldUpdateMessage={(props, nextProps) => { return (!_.isEqual(props.currentMessage, nextProps.currentMessage)); }}
-									alwaysShowSend={true}
-									scrollToBottom
-									lockStyle={styles.lock}
-									inverted={true}
-									timeTextStyle={{ left: { color: 'white' }, right: { color: 'black' } }}
-									infiniteScroll
-								/>
-							</KeyboardAvoidingView>
-						)
-					);
+						);
 
 					// Same toggle behavior in both orientations:
 					// exactly one of {participants, chat} is on
@@ -9234,8 +10152,61 @@ class ConferenceBox extends Component {
 				    // user request. Kept separate from the video
 				    // mode _PIP_W / _PIP_H constants so the video
 				    // floating PIP stays at its original 120×160.
-				    const _AUDIO_PIP_W = 92;
-				    const _AUDIO_PIP_H = 122;
+				    // Thumb dimensions per layout flavour:
+				    //
+				    //   LANDSCAPE audio conference — the thumb FILLS
+				    //     the magenta sub-column entirely (per user
+				    //     request "fill up the column with my thumb").
+				    //     The magenta column geometry, accounting for
+				    //     safe-area insets that the audio view
+				    //     respects:
+				    //       audio_w = window.width - leftInset - rightInset
+				    //       LEFT half  = audio_w / 2
+				    //       LEFT half splits into speedo + thumb
+				    //         (flex:1 each, with marginRight:4 between)
+				    //         → each sub-col ≈ (LEFT_half - 4) / 2
+				    //         → ≈ audio_w / 4 - 2
+				    //       vertical extent ≈ window.height - navbar
+				    //
+				    //     Subtract a generous inner buffer so the thumb's
+				    //     border doesn't hug the magenta card border
+				    //     1:1 AND so a few dp of layout-rounding slop
+				    //     doesn't push the right edge past the
+				    //     participants column (the overflow Adi saw).
+				    //
+				    //   PORTRAIT / chat-view / folded — keep the
+				    //     previous 115×153 box. There's no magenta
+				    //     column to fill in those layouts, so the
+				    //     thumb stays a compact floating PIP.
+				    let _AUDIO_PIP_W;
+				    let _AUDIO_PIP_H;
+				    if (this.state.isLandscape && !this.state.audioChatView && !this.props.isFolded) {
+				        const _safeLeft = (this.state.insets && this.state.insets.left) || 0;
+				        const _safeRight = (this.state.insets && this.state.insets.right) || 0;
+				        const _audioW = Math.max(0, _winDims.width - _safeLeft - _safeRight);
+				        // Target = 80% of the magenta sub-column's full
+				        // bounds, then centred inside it (see _fixedLeft /
+				        // _fixedTop below). 80% gives a clear inset so
+				        // the thumb's border is visible inside the
+				        // magenta card border on both axes, and the
+				        // 20% slack absorbs any flex-layout rounding
+				        // that was previously pushing the right edge
+				        // over into the participants column.
+				        const _fullSubColW = Math.max(60, Math.round(_audioW / 4) - 12);
+				        const _fullSubColH = Math.max(80, _winDims.height - conferenceHeaderHeight - 24);
+				        _AUDIO_PIP_W = Math.max(60, Math.round(_fullSubColW * 0.8));
+				        _AUDIO_PIP_H = Math.max(80, Math.round(_fullSubColH * 0.8));
+				    } else {
+				        // Portrait / chat-view / folded: keep the
+				        // original compact floating PIP — same 92×122
+				        // box that pairs with AudioSpeedometer's
+				        // CONTENT_HEIGHT (122 dp) and the historic
+				        // positioning math below. Reverted from the
+				        // earlier 115×153 25%-bump because that bump
+				        // was only intended for landscape.
+				        _AUDIO_PIP_W = 92;
+				        _AUDIO_PIP_H = 122;
+				    }
 				    const _saved = this.state.pipPosition;
 				    const _valid = _saved
 				        && _saved.x >= 0
@@ -9260,27 +10231,67 @@ class ConferenceBox extends Component {
 				    // edges:[] (no padding), and _topInset is 0
 				    // there anyway, so the same expression lands
 				    // on the speedo too.
-				    // Landscape: vertically centred within the visible
-				    // area between the navbar and the screen bottom,
-				    // then lifted 30 dp (per user "a bit low") so the
-				    // thumb sits a touch above true centre.
+				    // Landscape: anchor the thumb to the magenta
+				    // sub-column's top-left so it FILLS the column.
+				    //   top  = just below the navbar with a small
+				    //          buffer matching the audio area's top
+				    //          padding.
+				    //   left = end of the speedo sub-column
+				    //          ≈ window.width / 4 (LEFT half / 2)
+				    //          + a small buffer so the thumb's border
+				    //          doesn't kiss the speedo card's right
+				    //          border.
+				    // Portrait keeps the original right-edge anchor
+				    // (compact floating PIP).
 				    const _fixedTop = this.state.isLandscape
-				        ? Math.max(0, Math.round((_winDims.height + _topInset + conferenceHeaderHeight - _AUDIO_PIP_H) / 2) - 30)
+				        ? (() => {
+				            // Centre the 80% thumb VERTICALLY inside the
+				            // magenta sub-column. The visible column
+				            // extends from the navbar's bottom to the
+				            // screen's bottom — MINUS any bottom safe
+				            // area (Android nav bar / iOS home indicator)
+				            // that eats actual real estate. Without
+				            // subtracting the bottom inset the math
+				            // treats window.height as the column's
+				            // bottom and lands the thumb too far down,
+				            // producing Adi's "gap below thumb is half
+				            // the gap above" symptom.
+				            //   col_h = window.height - navbar - bottomInset
+				            //   top   = navbar + (col_h - thumb_h) / 2
+				            const _safeBottom = (this.state.insets && this.state.insets.bottom) || 0;
+				            const _colH = Math.max(0, _winDims.height - conferenceHeaderHeight - _safeBottom);
+				            return Math.max(conferenceHeaderHeight,
+				                conferenceHeaderHeight + Math.round((_colH - _AUDIO_PIP_H) / 2));
+				        })()
 				        // Net +25 dp from the navbar+20 baseline
 				        // (+20 then +5 per iterative user
 				        // requests). Total = navbar + 45.
 				        : conferenceHeaderHeight + 45;
-				    // PORTRAIT: net -40 dp from the original 12 dp
-				    // right margin per the user's iterative
-				    // adjustments.
-				    // LANDSCAPE: anchor to the RIGHT sub-column of
-				    // the LEFT half. Sub-col centre is at
-				    // width*0.375. After iterative user nudges
-				    // the net offset from the maths-centred
-				    // position is -20 dp (was -40, +20 right
-				    // per "thumb is 20 px too far left").
 				    const _fixedLeft = this.state.isLandscape
-				        ? Math.max(0, Math.round(_winDims.width * 0.375 - _AUDIO_PIP_W / 2) - 40)
+				        ? (() => {
+				            // Centre the 80% thumb HORIZONTALLY inside
+				            // the magenta sub-column. Same double-count
+				            // fix as the vertical axis above: the
+				            // absolute container ALREADY sits past the
+				            // safe-area left inset, so the previous
+				            // `_safeLeft +` prefix shifted the thumb
+				            // ~40 dp too far right. Position purely in
+				            // the parent's coordinate system:
+				            //   audio_w   = parent width
+				            //              (≈ window.width - insets,
+				            //               approximated as window.width
+				            //               since the parent has already
+				            //               cropped to that range)
+				            //   col_left  = audio_w / 4 (end of speedo)
+				            //   col_w     = audio_w / 4
+				            //   thumb_left = col_left + (col_w - thumb_w) / 2
+				            const _safeLeft = (this.state.insets && this.state.insets.left) || 0;
+				            const _safeRight = (this.state.insets && this.state.insets.right) || 0;
+				            const _audioW = Math.max(0, _winDims.width - _safeLeft - _safeRight);
+				            const _colLeft = Math.round(_audioW / 4);
+				            const _colW = Math.max(0, Math.round(_audioW / 4));
+				            return Math.max(0, _colLeft + Math.round((_colW - _AUDIO_PIP_W) / 2));
+				        })()
 				        : Math.max(0, _winDims.width - _AUDIO_PIP_W - 12 - 40);
 				    return (
 				<View
@@ -9423,6 +10434,42 @@ class ConferenceBox extends Component {
 					onStart={this.onCameraStartPreviewAccept}
 					onCancel={this.onCameraStartPreviewCancel}
 				/>
+
+				{/* Hangup confirmation dialog. Triggered by the
+				    audio action-bar hangup button, the floating
+				    audio-bar hangup button, and the kebab menu's
+				    "Hangup" entry — all three route through
+				    requestHangup() which sets hangupConfirmVisible
+				    true. Previously rendered only in the video
+				    branch (around line ~11668), which meant the
+				    dialog never appeared in audio view — the
+				    Hangup buttons did nothing visible because the
+				    Portal had no host in the active render tree. */}
+				<Portal>
+					<Dialog
+						visible={!!this.state.hangupConfirmVisible}
+						onDismiss={this.cancelHangup}
+					>
+						<Dialog.Title>Leave conference</Dialog.Title>
+						<Dialog.Content>
+							<Text>
+								Are you sure you want to hang up the conference?
+							</Text>
+						</Dialog.Content>
+						<Dialog.Actions>
+							<Button onPress={this.cancelHangup}>
+								Cancel
+							</Button>
+							<Button
+								mode="contained"
+								onPress={this.confirmHangup}
+								icon="phone-hangup"
+							>
+								Hangup
+							</Button>
+						</Dialog.Actions>
+					</Dialog>
+				</Portal>
 			</View>
 			);
         }
@@ -9518,6 +10565,13 @@ class ConferenceBox extends Component {
 						} else if (activeSpeakersCount === 2) {
 							_speakerLabel = `Speaker ${_visibleIdx + 1}`;
 						}
+						// Matrix-inertia degraded flag — same as the
+						// unpinned matrix path. Pinned speakers stay
+						// in their slot indefinitely (no auto-removal
+						// — see _markDegraded); the avatar communicates
+						// the connectivity issue without collapsing
+						// the layout the user explicitly chose.
+						const _pinnedDegraded = this.state.degradedOccupants.has(p.id);
 						videos.push(
 							<ConferenceMatrixParticipant
 								key={p.id}
@@ -9529,6 +10583,7 @@ class ConferenceBox extends Component {
 								speakerLabel={_speakerLabel}
 								isLandscape={this.state.isLandscape}
 								isFullScreen={this.fullScreen}
+								degraded={_pinnedDegraded}
 							/>
 						);
 						_visibleIdx += 1;
@@ -9689,17 +10744,26 @@ class ConferenceBox extends Component {
 						}
 					}
 					//console.log(p.identity.uri, 'video added');
-					// Skip the tile entirely when status is "No media"
-					// (100% loss). The participant stays in the drawer
-					// roster (which is pushed unconditionally below) so
-					// the user knows they're still in the room, but the
-					// matrix and the side carousel both drop them — a
-					// black square with a "No media" label is more
-					// confusing than just rebalancing the grid around
-					// the remaining live tiles. Same rule the
-					// activeSpeakers branch (line ~8817) and the side-
-					// list branch (line ~8895) already apply.
-					if (!isStalled && status !== 'No media') {
+					// Matrix-inertia gate (strategy 1):
+					//   Tile is pushed iff the participant is currently
+					//   in state.matrixOccupants. matrixOccupants is
+					//   maintained by the transition machine in
+					//   _admitToMatrix / _removeFromMatrix — a new
+					//   joiner only enters after ARRIVAL_WARMUP_MS (or
+					//   their streamAdded, whichever fires first), and
+					//   a participant whose media is lost stays in
+					//   matrixOccupants (degraded, rendered with the
+					//   avatar fallback) for up to DEGRADE_GRACE_MS
+					//   before being dropped. This is the single point
+					//   that controls "does this participant get a
+					//   tile this render?", so the grid count is stable
+					//   across transient stalls.
+					//
+					// Previously: gated on `!isStalled && status !== 'No media'`,
+					// which flapped the count on every poll-tick state
+					// transition.
+					const _inMatrix = this.state.matrixOccupants.indexOf(p.id) !== -1;
+					if (_inMatrix) {
 						// videoBandwidth Map is populated by
 						// getConnectionStats every second from
 						// the inbound-rtp stats — kbps per peer.
@@ -9710,6 +10774,13 @@ class ConferenceBox extends Component {
 						const _bwKbps = (this.videoBandwidth && this.videoBandwidth.get)
 							? this.videoBandwidth.get(p.id)
 							: undefined;
+						// Degraded flag — read from matrix-inertia state.
+						// Drives the avatar fallback inside the matrix
+						// tile (see ConferenceMatrixParticipant) so a
+						// participant whose media is lost still claims
+						// their slot but shows initials instead of a
+						// black RTCView.
+						const _degraded = this.state.degradedOccupants.has(p.id);
 						videos.push(
 							<ConferenceMatrixParticipant
 								key = {p.id}
@@ -9718,6 +10789,7 @@ class ConferenceBox extends Component {
 								videoBandwidth={_bwKbps}
 								aspectRatio={this.state.aspectRatio}
 								status={status}
+								degraded={_degraded}
 							/>
 						);
 
@@ -10200,10 +11272,18 @@ class ConferenceBox extends Component {
 						callState={this.props.callState}
 						toggleAudioParticipantsFunc={this.toggleAudioParticipants}
 						toggleChatFunc={this.toggleChat}
-						hangUpFunc={this.hangup}
+						hangUpFunc={this.requestHangup}
 						audioView={this.state.audioView}
 						chatView={this.state.chatView}
 						audioChatView={this.state.audioChatView}
+						/* Conference recording state + toggle handler
+						   forwarded so the audio-view kebab menu can
+						   surface a Record audio... / Stop recording
+						   audio... item. */
+						isConferenceRecording={this.state.isConferenceRecording}
+						toggleConferenceRecordingFunc={this._toggleConferenceRecording}
+						conferenceRecordingAvailable={CallRecorder.conferenceAvailable()}
+						chatUnreadCount={this.state.chatUnreadCount}
 						toggleAudioChatViewFunc={this.toggleAudioChatView}
 						toggleDrawer={this.toggleDrawer}
 						toggleSpeakerSelection={this.toggleSpeakerSelection}
@@ -10414,24 +11494,25 @@ class ConferenceBox extends Component {
 					<KeyboardAvoidingView
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'} // re-layout when rotate or keyboard changes
 					  style={chatContainer}
-					  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-					  // In the VIDEO render path the conferenceHeader is
-					  // absolute-positioned (overlay) — see
-					  // `conferenceHeader.position: 'absolute'` ~3386 and
-					  // the matching mediaContainer at 3428 — so the
-					  // chat KAV starts at the top of the
-					  // conferenceContainer (y ≈ 0 in fullscreen,
-					  // y ≈ topInset otherwise) rather than below a
-					  // header that takes layout space. The audio
-					  // branch's offset (`conferenceHeaderHeight +
-					  // topInset`) reserves space the video chat
-					  // doesn't owe, and the extra 60 px is exactly
-					  // what was lifting the input row above the
-					  // keyboard — matching the user-reported
-					  // "hovering up" with a flush-to-keyboard input
-					  // working fine in audio-only conferences (same
-					  // KAV pattern but the audio header IS in flow
-					  // so the offset is correct there).
+					  behavior="height"
+					  // VIDEO-view chat: the conferenceHeader is an
+					  // absolute overlay (not part of the layout
+					  // flow), so the KAV's reference frame starts
+					  // at y=0 of the conference container. Reserve
+					  // topInset only — non-fullscreen — so the
+					  // input bar lifts to clear the keyboard
+					  // without leaving extra space.
+					  // Restored from offset:0 per user request
+					  // ("we fixed this but undid it").
+					  // AndroidManifest declares
+					  // windowSoftInputMode="adjustResize", so the
+					  // window already shrinks to the area above the
+					  // keyboard when the soft input opens. A non-
+					  // zero keyboardVerticalOffset stacks on top of
+					  // that and pushed the input bar BELOW the
+					  // keyboard on Android 11 (the pre-edge-to-edge
+					  // resize is smaller than on Android 16, so the
+					  // extra offset overshoots).
 					  keyboardVerticalOffset={this.fullScreen ? 0 : topInset}
 					>
 
@@ -10466,8 +11547,21 @@ class ConferenceBox extends Component {
 				}
 
 				{this.state.chatView && Platform.OS === 'ios' ?
+					// iOS: plain GiftedChat (no KAV wrapper).
+					// GiftedChat wraps its own KAV internally on
+					// iOS (isKeyboardInternallyHandled=true) and
+					// stacking ours on top produced a ~2× keyboard
+					// jump. bottomOffset={bottomInset} compensates
+					// for the home-indicator safe area —
+					// GiftedChat's internal KAV otherwise lifts the
+					// input by the full keyboard height (which
+					// includes the safe-area bottom on home-
+					// indicator iPhones), leaving the input that
+					// far above the keyboard top. Matches the
+					// working 1-to-1 chat in ContactsListBox.
 					<GiftedChat
 					  key={this.state.isLandscape ? 'landscape' : 'portrait'}
+					  bottomOffset={bottomInset}
 					  messages={renderMessages}
 					  isTyping={this.state.isTyping}
 					  onLongPress={this.onLongMessagePress}
@@ -10771,6 +11865,40 @@ class ConferenceBox extends Component {
 				onReject={this.onCameraPromptReject}
 				onHide={this.onCameraPromptReject}
 			/>
+
+			{/* Hangup confirmation dialog. Triggered by the audio
+			    action-bar hangup button, the floating-bar hangup
+			    button, and the kebab menu's "Hangup" entry — all
+			    three now call requestHangup() instead of hangup()
+			    directly so the user gets a chance to bail out
+			    before the conference is torn down. Same Portal +
+			    Dialog shape as the "Escalate to conference"
+			    confirmation panel for visual consistency. */}
+			<Portal>
+				<Dialog
+					visible={!!this.state.hangupConfirmVisible}
+					onDismiss={this.cancelHangup}
+				>
+					<Dialog.Title>Leave conference</Dialog.Title>
+					<Dialog.Content>
+						<Text>
+							Are you sure you want to hang up the conference?
+						</Text>
+					</Dialog.Content>
+					<Dialog.Actions>
+						<Button onPress={this.cancelHangup}>
+							Cancel
+						</Button>
+						<Button
+							mode="contained"
+							onPress={this.confirmHangup}
+							icon="phone-hangup"
+						>
+							Hangup
+						</Button>
+					</Dialog.Actions>
+				</Dialog>
+			</Portal>
 		</View>
         );
     }

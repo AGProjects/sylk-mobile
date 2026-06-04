@@ -405,8 +405,9 @@ class RegisterForm extends Component {
 	    }   
 
 	    if (prevState.accountId != this.state.accountId) {
-			console.log('RF accountId changed', this.state.accountId);
-	    }   
+			// per-keystroke trace removed — was firing on every
+			// character typed into the username field
+	    }
 	    
 	    if (prevState.SylkServerDiscoveryResult != this.state.SylkServerDiscoveryResult) {
 			console.log('SylkServerDiscoveryResult', prevState.SylkServerDiscoveryResult, '->', this.state.SylkServerDiscoveryResult);
@@ -527,7 +528,6 @@ class RegisterForm extends Component {
 
     handleAccountIdChange(value) {
 		const trimmed = value.trim();
-		console.log('handleAccountIdChange');
 
 		// Resolve a typed username to a candidate accountId and look up
 		// the cached password. The autofill is gated on the cached
@@ -1030,6 +1030,12 @@ class RegisterForm extends Component {
                     transparent
                     animationType="fade"
                     onRequestClose={this.closeServerListModal}
+                    /* iOS-only — without this, RN's Modal defaults to
+                       supportedOrientations: ['portrait'], which forces the
+                       underlying app to portrait while the modal is presented.
+                       Include both landscape variants so the modal inherits
+                       whichever orientation the user is in. */
+                    supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
                 >
                     <TouchableWithoutFeedback onPress={this.closeServerListModal}>
                         <View style={containerStyles.overlay}>
