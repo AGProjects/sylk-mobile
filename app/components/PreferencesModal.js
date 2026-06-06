@@ -170,7 +170,7 @@ const CODEC_META = {
 };
 
 // UI-level zRTP toggle. Surfaced as a two-pill Enabled / Disabled
-// picker, defaulting to Enabled. Under the hood it still writes to
+// picker, defaulting to Disabled (opt-in). Under the hood it still writes to
 // the same accountSetting.rtp.encryptionMode string (consumed by
 // CallZrtp.setEncryptionMode) — only the user-facing surface
 // changed:
@@ -209,9 +209,9 @@ const CODEC_META = {
 // can be conditionally rendered only when Enabled is selected. State
 // mapping (kept here for reference / for any future caller that wants
 // to surface the same modes):
-//   'zrtp_optional'  → Enabled, Mandatory Off  (default)
+//   'sdes'           → Disabled  (default)
+//   'zrtp_optional'  → Enabled, Mandatory Off
 //   'zrtp_mandatory' → Enabled, Mandatory On
-//   'sdes'           → Disabled
 
 // DTMF transmission mode for in-call digit presses. Two choices:
 //   info    — SIP INFO with `application/dtmf-relay` body. Default.
@@ -256,6 +256,19 @@ const DTMF_OPTIONS = [
     },
 ];
 const DTMF_DEFAULT = 'info';
+
+// File Encryption — max outgoing attachment size that gets PGP-encrypted
+// before upload. Files larger than the chosen ceiling (and videos that
+// compress above it) are sent unencrypted. Values are raw bytes so the
+// preference can be handed straight through setAccountSetting without
+// conversion; the upload path reads device.maxEncryptFileSize directly.
+const ENCRYPT_SIZE_OPTIONS = [
+    { value:  5 * 1000 * 1000, label: '5 MB'  },
+    { value: 10 * 1000 * 1000, label: '10 MB' },
+    { value: 20 * 1000 * 1000, label: '20 MB' },
+    { value: 50 * 1000 * 1000, label: '50 MB' },
+];
+const ENCRYPT_SIZE_DEFAULT = 20 * 1000 * 1000;
 
 const PreferencesModal = ({
     show,
@@ -355,8 +368,20 @@ const PreferencesModal = ({
     setAutoDownloadOnWifi,
     autoDownloadOnMobile,
     setAutoDownloadOnMobile,
+    // File Encryption — ceiling (in bytes) under which outgoing attachments
+    // are PGP-encrypted before upload. Persisted via setAccountSetting(
+    // 'device.maxEncryptFileSize'). Defaults applied in app.js; this modal
+    // just renders the picker.
+    maxEncryptFileSize,
+    setMaxEncryptFileSize,
 }) => {
-    const currentCodec = preferredVideoCodec || VIDEO_CODECS_DEFAULT;
+    // zRTP works with VP9 and VP8 but NOT H.264. When zRTP is enabled both VP9
+    // and VP8 stay selectable (VP9 is the default the account setter sets the
+    // first time zRTP turns on; the user can then toggle VP9<->VP8). Only H.264
+    // is disabled. Guard the display in case a stale H.264 value is stored.
+    const zrtpOn = (encryptionMode !== 'sdes');
+    const storedCodec = preferredVideoCodec || VIDEO_CODECS_DEFAULT;
+    const currentCodec = (zrtpOn && storedCodec === 'H264') ? 'VP9' : storedCodec;
     const currentVideoProfile = VIDEO_PROFILE_OPTIONS.some(o => o.id === videoProfile)
         ? videoProfile
         : VIDEO_PROFILE_DEFAULT;
@@ -386,6 +411,9 @@ const PreferencesModal = ({
         ? 'sdes'
         : (encryptionMode === 'zrtp_mandatory' ? 'zrtp_mandatory' : 'zrtp_optional');
     const currentDtmf = dtmfMode || DTMF_DEFAULT;
+    const currentEncryptSize = ENCRYPT_SIZE_OPTIONS.some(o => o.value === maxEncryptFileSize)
+        ? maxEncryptFileSize
+        : ENCRYPT_SIZE_DEFAULT;
     const currentTickInterval = LOCATION_TICK_INTERVAL_STOPS.some(s => s.value === locationTickIntervalSec)
         ? locationTickIntervalSec
         : LOCATION_TICK_INTERVAL_DEFAULT;
@@ -806,11 +834,15 @@ const PreferencesModal = ({
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                                         {VIDEO_CODECS.map(codec => {
                                             const selected = currentCodec === codec;
+                                            // Only H.264 is disabled under zRTP (no E2EE path).
+                                            // VP9 and VP8 both remain selectable.
+                                            const disabled = zrtpOn && codec === 'H264';
                                             return (
                                                 <Button
                                                     key={codec}
                                                     mode={selected ? 'contained' : 'outlined'}
                                                     compact
+                                                    disabled={disabled}
                                                     style={{ marginRight: 6, marginBottom: 6 }}
                                                     contentStyle={pillContentStyle}
                                                     labelStyle={pillLabelStyle}
@@ -821,6 +853,12 @@ const PreferencesModal = ({
                                             );
                                         })}
                                     </View>
+                                    {zrtpOn && (
+                                        <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 4 }}>
+                                            H.264 isn't available while zRTP is enabled (no end-to-end
+                                            encryption). Choose VP9 or VP8.
+                                        </Text>
+                                    )}
 
                                     {/* Quality profile picker. Three
                                         pills — same compact styling as
@@ -1173,6 +1211,54 @@ const PreferencesModal = ({
                                         >
                                             Mobile
                                         </Button>
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
+                                {/* ───── File Encryption ──────────────────────────
+                                    Max outgoing attachment size that gets PGP-
+                                    encrypted before upload. Larger files (and
+                                    videos that compress above this) are sent
+                                    unencrypted. Persisted under
+                                    accountSetting.device.maxEncryptFileSize; the
+                                    upload path in app.js reads it before deciding
+                                    whether to encrypt. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        File Encryption
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Encrypt attachments up to this size before sending.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                        {ENCRYPT_SIZE_OPTIONS.map(opt => {
+                                            const selected = currentEncryptSize === opt.value;
+                                            return (
+                                                <Button
+                                                    key={opt.value}
+                                                    mode={selected ? 'contained' : 'outlined'}
+                                                    compact
+                                                    style={{ marginRight: 6, marginBottom: 6 }}
+                                                    contentStyle={pillContentStyle}
+                                                    labelStyle={pillLabelStyle}
+                                                    onPress={() => {
+                                                        if (typeof setMaxEncryptFileSize === 'function') {
+                                                            setMaxEncryptFileSize(opt.value);
+                                                        }
+                                                    }}
+                                                >
+                                                    {opt.label}
+                                                </Button>
+                                            );
+                                        })}
                                     </View>
                                 </View>
 

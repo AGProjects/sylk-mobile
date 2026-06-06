@@ -3100,6 +3100,13 @@ class ReadyBox extends Component {
 		const hasImages = sharedContent.some(
 		  file => typeof file.mimeType === 'string' && file.mimeType.startsWith('image/')
 		);
+		// The "Full size" toggle is relevant for anything the upload pipeline
+		// can shrink — images AND videos — not just images. Without this, a
+		// shared video gave the user no way to control compression.
+		const hasCompressible = sharedContent.some(
+		  file => typeof file.mimeType === 'string'
+		    && (file.mimeType.startsWith('image/') || file.mimeType.startsWith('video/'))
+		);
 
         // The legacy `fileTransfersDisabled` flag — true for contacts
         // tagged `test`, for `@videoconference` URIs, and for
@@ -3877,24 +3884,17 @@ class ReadyBox extends Component {
 					  </View>
 					  :  null}
 
-					  { (this.props.shareToContacts && hasImages) ?
+					  { (this.props.shareToContacts && hasCompressible) ?
 					  <View style={{borderColor: 'white', 
 					        borderWidth: 0.25, 
 					        flexDirection: 'row',
 							justifyContent: 'center',
 							padding: 5,
 							alignItems: 'center'}}>
-								{Platform.OS === 'ios' ? (
-								  <Switch
-									value={!this.props.resizeContent}
-									onValueChange={() => this.props.toggleResizeContent()}
-								  />
-								) : (
-								  <Checkbox
-									status={!this.props.resizeContent ? 'checked' : 'unchecked'}
-									onPress={() => this.props.toggleResizeContent()}
-								  />
-								)}
+								<Switch
+								  value={!this.props.resizeContent}
+								  onValueChange={() => this.props.toggleResizeContent()}
+								/>
 
 							<Text style={styles.resize}>Full size</Text>
 					  </View>

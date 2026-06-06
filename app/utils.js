@@ -127,6 +127,27 @@ function isAnonymous(uri) {
     return false;
 }
 
+// Collapse every flavour of unidentified guest/anonymous caller URI into a
+// single canonical contact, so saved chat and call history from anonymous
+// peers don't fan out into many throwaway rows. Matches:
+//   - anything@guest.<host>        (Sylk guest callers)
+//   - anything@anonymous.<host>    (also catches the malformed double-@
+//                                   form "x@@anonymous...", since "@anonymous."
+//                                   is still a substring)
+// and returns "anonymous@anonymous.invalid". The match is case-insensitive.
+// Any other URI is returned unchanged. Safe to call repeatedly (idempotent):
+// the canonical value itself contains "@anonymous." and maps back to itself.
+function normalizeAnonymousUri(uri) {
+    if (!uri || typeof uri !== 'string') {
+        return uri;
+    }
+    const lower = uri.toLowerCase();
+    if (lower.indexOf('@guest.') > -1 || lower.indexOf('@anonymous.') > -1) {
+        return 'anonymous@anonymous.invalid';
+    }
+    return uri;
+}
+
 
 function appendLeadingZeroes(n){
     if (n <= 9) {
@@ -1546,19 +1567,22 @@ function radix64(t) {
 	return r;
 }
 
-function isFileEncryptable(file_transfer) {
+// maxSize is the user-configurable ceiling (Preferences → File Encryption).
+// Falls back to the built-in default when not provided or invalid. Applies to
+// videos too: a clip compressed under the limit is encrypted like any other
+// attachment; only larger files are sent in the clear.
+function isFileEncryptable(file_transfer, maxSize) {
     try {
-		if (file_transfer.filesize > ENCRYPTABLE_FILE_SIZE) {
-			return false;
-		}
-	
-		if (isVideo(file_transfer.filename, file_transfer.filetype)) {
+		const limit = (typeof maxSize === 'number' && maxSize > 0)
+		    ? maxSize
+		    : ENCRYPTABLE_FILE_SIZE;
+		if (file_transfer.filesize > limit) {
 			return false;
 		}
     } catch (e) {
 		console.log('isFileEncryptable e', e)
     }
-    
+
     return true;
 }
 
@@ -1588,6 +1612,46 @@ function getPGPCheckSum(base64_content) {
                                    String.fromCharCode((checksum >> 8) & 0xFF)+
                                    String.fromCharCode(checksum & 0xFF);
         return radix64(str);
+}
+
+// ---- Streaming OpenPGP CRC-24 (for chunked armoring) ----------------------
+// Same model as polycrc.crc24 (width 24, poly 0x864CFB, init 0xB704CE, no
+// reflection) but folded incrementally so an armored message can be built
+// chunk-by-chunk without ever holding the whole file in memory. Verified
+// byte-identical to getPGPCheckSum's one-shot result. Table-driven for speed
+// (one lookup per byte instead of 8 bit-iterations).
+let _crc24Table = null;
+function _crc24BuildTable() {
+    const t = new Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n << 16;
+        for (let k = 0; k < 8; k++) {
+            c <<= 1;
+            if (c & 0x1000000) c ^= 0x1864CFB;
+        }
+        t[n] = c & 0xFFFFFF;
+    }
+    return t;
+}
+function crc24Init() {
+    return 0xB704CE;
+}
+// Fold the raw bytes represented by a base64 chunk into the running CRC.
+// Decodes the chunk with the same atob path base64ToArrayBuffer uses.
+function crc24UpdateFromBase64(crc, base64) {
+    if (!_crc24Table) _crc24Table = _crc24BuildTable();
+    const bin = atob(base64);
+    for (let i = 0; i < bin.length; i++) {
+        crc = ((crc << 8) ^ _crc24Table[((crc >> 16) ^ bin.charCodeAt(i)) & 0xFF]) & 0xFFFFFF;
+    }
+    return crc;
+}
+// Final 24-bit CRC -> 4-char radix64 checksum (same encoding as getPGPCheckSum).
+function crc24Checksum(crc) {
+    const str = String.fromCharCode((crc >> 16) & 0xFF)
+              + String.fromCharCode((crc >> 8) & 0xFF)
+              + String.fromCharCode(crc & 0xFF);
+    return radix64(str);
 }
 
 
@@ -1922,6 +1986,7 @@ exports.fixLocalUrl = fixLocalUrl;
 exports.resolveLocalUrl = resolveLocalUrl;
 exports.sql2GiftedChat = sql2GiftedChat;
 exports.isAnonymous = isAnonymous;
+exports.normalizeAnonymousUri = normalizeAnonymousUri;
 exports.html2text = html2text;
 exports.isEmailAddress = isEmailAddress;
 exports.isPhoneNumber = isPhoneNumber;
@@ -1934,6 +1999,9 @@ exports.beautySize = beautySize;
 exports.HUGE_FILE_SIZE = HUGE_FILE_SIZE;
 exports.getPGPCheckSum = getPGPCheckSum;
 exports.isFileEncryptable = isFileEncryptable;
+exports.crc24Init = crc24Init;
+exports.crc24UpdateFromBase64 = crc24UpdateFromBase64;
+exports.crc24Checksum = crc24Checksum;
 exports.fileChecksum = fileChecksum;
 exports.deepEqual = deepEqual;
 exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;

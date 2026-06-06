@@ -31,6 +31,7 @@ import Svg, { Polyline as SvgPolyline, Circle as SvgCircle, Polygon as SvgPolygo
 // timeline" — onSeekStart/Change/Release callbacks expose the
 // dragged percentage, which we map to a trail index here.
 import AudioProgressSlider from './AudioProgressSlider';
+import DarkModeManager from '../DarkModeManager';
 import * as storage from '../storage';
 
 // Per-sharing-entity zoom override. LOCAL setting — this is a viewer
@@ -190,6 +191,69 @@ function centroid(points) {
         latitude: lat / valid.length,
         longitude: lng / valid.length,
     };
+}
+
+// Convert a theme colour into an rgba() string at the given alpha. Handles
+// the two shapes the theme actually ships: 3/6-digit hex ('#111B21',
+// '#fff') and already-rgb/rgba strings (returned with the new alpha
+// applied). Named CSS colours (e.g. 'green') can't be parsed to channels
+// here, so we fall back to a neutral translucent grey that stays legible
+// on both light and dark bubbles. Used to derive the muted secondary text
+// colour from whichever primary bubble-text colour the active theme gives
+// us, instead of the old hard-coded black/white that broke in Day theme.
+function _toRgba(color, alpha) {
+    if (typeof color !== 'string') return `rgba(0,0,0,${alpha})`;
+    const c = color.trim();
+    const hexMatch = c.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+    if (hexMatch) {
+        let hex = hexMatch[1];
+        if (hex.length === 3) {
+            hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+        }
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${r},${g},${b},${alpha})`;
+    }
+    const rgbMatch = c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (rgbMatch) {
+        return `rgba(${rgbMatch[1]},${rgbMatch[2]},${rgbMatch[3]},${alpha})`;
+    }
+    // Unparseable (named colour) — neutral translucent grey reads on both.
+    return `rgba(128,128,128,${alpha})`;
+}
+
+// Is the supplied bubble-background colour dark enough that white overlay
+// UI (the trail scrubber) reads on top of it? Parses hex / rgb to relative
+// luminance; unparseable named colours (the themes only ship 'green' for
+// the Night incoming bubble, which is dark) default to dark/true so the
+// white-on-green Night look is preserved. Lets the scrubber pick white vs
+// blue based on the ACTUAL bubble colour instead of message direction,
+// which is what left the slider white-on-white on Day-theme incoming
+// bubbles.
+function _isDarkColor(color) {
+    if (typeof color !== 'string') return true;
+    const c = color.trim();
+    let r, g, b;
+    const hexMatch = c.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+    if (hexMatch) {
+        let hex = hexMatch[1];
+        if (hex.length === 3) {
+            hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+        }
+        r = parseInt(hex.slice(0, 2), 16);
+        g = parseInt(hex.slice(2, 4), 16);
+        b = parseInt(hex.slice(4, 6), 16);
+    } else {
+        const rgbMatch = c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!rgbMatch) return true; // named colour (e.g. 'green') → treat as dark
+        r = Number(rgbMatch[1]);
+        g = Number(rgbMatch[2]);
+        b = Number(rgbMatch[3]);
+    }
+    // Perceived luminance (ITU-R BT.601). < 0.55 → dark bubble.
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance < 0.55;
 }
 
 // Format a distance for display. Metres under 1 km, kilometres above.
@@ -1148,8 +1212,31 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     const toDestLabel = (toDestMeters != null && isFinite(toDestMeters))
         ? formatDistance(toDestMeters)
         : null;
-    const textColor = isIncoming ? '#fff' : '#000';
-    const subColor = isIncoming ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.7)';
+    // Bubble text colour must follow the active theme, not the message
+    // direction alone. The old `isIncoming ? '#fff' : '#000'` assumed an
+    // incoming bubble was always dark (Night theme: incoming = green), but
+    // in Day theme the incoming bubble is white (theme.bubbleIncoming =
+    // '#FFFFFF'), so white text rendered white-on-white and vanished. Pull
+    // the contrasting colour from the active theme's bubble-text keys
+    // (bubbleIncomingText / bubbleOutgoingText) so the title/footer text
+    // stays readable on either bubble in either mode — same approach the
+    // image bubble's footer uses.
+    const _bubbleTheme = DarkModeManager.getTheme();
+    const textColor = isIncoming
+        ? _bubbleTheme.bubbleIncomingText
+        : _bubbleTheme.bubbleOutgoingText;
+    // Secondary (muted) text: a translucent version of the primary colour
+    // so it reads as de-emphasised against whichever bubble background the
+    // theme provides. Derived from textColor's RGB with reduced alpha
+    // rather than a hard-coded black/white, which is what previously broke.
+    const subColor = _toRgba(textColor, 0.7);
+    // Does the active bubble background read as dark? Drives the trail
+    // scrubber's white-vs-blue colouring below so the slider contrasts
+    // with the real bubble colour rather than assuming incoming == dark.
+    const _bubbleBg = isIncoming
+        ? _bubbleTheme.bubbleIncoming
+        : _bubbleTheme.bubbleOutgoing;
+    const bubbleIsDark = _isDarkColor(_bubbleBg);
 
     const openMap = () => {
         // Guard: without coords (placeholder "Locating…" state) there's
@@ -1463,8 +1550,8 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                     // timeline UI" instead of competing with the
                     // owner-avatar red, which previously made the
                     // bar look like an extension of the avatar.
-                    color={isIncoming ? 'rgba(255,255,255,0.9)' : '#2E86DE'}
-                    unfilledColor={isIncoming
+                    color={bubbleIsDark ? 'rgba(255,255,255,0.9)' : '#2E86DE'}
+                    unfilledColor={bubbleIsDark
                         ? 'rgba(255,255,255,0.35)'
                         : 'rgba(46,134,222,0.25)'}
                     onSeekStart={() => {

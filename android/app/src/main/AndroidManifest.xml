@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agprojects.sylk">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools" package="com.agprojects.sylk">
 
   <queries>
     <intent>
@@ -76,7 +76,8 @@
       android:roundIcon="@mipmap/ic_launcher_round"
       android:allowBackup="false"
       android:theme="@style/AppTheme"
-      android:requestLegacyExternalStorage="true">
+      android:requestLegacyExternalStorage="true"
+      tools:replace="android:allowBackup">
 
       <!-- Foldable support: tells the OS the app correctly handles size changes
            (e.g. Razr fold/unfold, cover↔main display transitions). Combined with

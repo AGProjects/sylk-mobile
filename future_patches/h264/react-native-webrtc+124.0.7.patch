@@ -98,10 +98,10 @@ index 0000000..49fb9ea
 +)
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
 new file mode 100644
-index 0000000..18e3971
+index 0000000..97d6914
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,930 @@
 +// MediaEncryptorJni.cpp — Sylk ZRTP FrameEncryptor / FrameDecryptor.
 +//
 +// Phase 2 noop classes (passthrough) are kept for diagnostics + the
@@ -130,15 +130,23 @@ index 0000000..18e3971
 +
 +#include "sylk_webrtc_compat.h"
 +
-+#define LOG_TAG "SylkZRTP"
++// Use SYLK_APP so these lines are captured by metro-adb-logs.sh (which runs
++// `logcat -s SYLK_APP:V '*:S'` — every other tag is silenced).
++#define LOG_TAG "SYLK_APP"
 +#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 +#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
 +#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 +
-+// Bump this any time the wire format / prefix size / framing logic changes.
-+// Both phones' native libs MUST report the same value or the asymmetric
-+// behaviour we're chasing is from version skew, not from the codec.
-+#include "sylk_e2ee_build.h"   // single source of truth for SYLK_E2EE_BUILD
++// The wire-format build tag now lives in sylk_e2ee_build.h (single source of
++// truth, also included by sylk_e2ee.cpp where nativeGetBuild() reports it).
++// Bump it THERE on any wire-format / framing / prefix change.
++//
++// 2026-06-04: added the NAL-aware H.264 path (per-NAL AES-GCM, start codes +
++// NAL headers kept in plaintext, ciphertext emulation-prevention-escaped so
++// libwebrtc's H264 packetizer can still walk the frame). Selected per-track
++// by the isH264 flag the JS install passes for an H264-negotiated video
++// track. VP8/VP9/AV1/audio still use the v1 whole-frame scheme below.
++#include "sylk_e2ee_build.h"
 +
 +// ---- JNI cache: SylkE2EE class + AES-GCM method IDs -----------------------
 +//
@@ -204,6 +212,106 @@ index 0000000..18e3971
 +    out[9]  = (uint8_t)((counter >> 16) & 0xff);
 +    out[10] = (uint8_t)((counter >>  8) & 0xff);
 +    out[11] = (uint8_t)( counter        & 0xff);
++}
++
++// ===========================================================================
++// NAL-aware H.264 helpers
++// ===========================================================================
++//
++// Why this exists: the v1 scheme above AES-GCMs the whole encoded frame after
++// a fixed plaintext prefix. libwebrtc then RUNS THE H264 PACKETIZER ON THE
++// ENCRYPTED OUTPUT — RtpPacketizerH264 calls H264::FindNaluIndices() which
++// scans the buffer for Annex-B start codes (00 00 01) to split it into NAL
++// units (STAP-A aggregates small NALs, FU-A fragments big ones). v1 encrypts
++// those start codes + NAL headers, so the packetizer reads garbage and the
++// receiver can't reassemble — H264 video froze.
++//
++// The NAL-aware scheme keeps the frame a VALID Annex-B byte stream end to end:
++//   * every start code is copied through verbatim
++//   * every 1-byte NAL header is copied through verbatim (packetizer reads the
++//     NAL type from it to decide STAP-A vs FU-A)
++//   * only each NAL's *body* (the bytes after the 1-byte header) is encrypted
++//   * the per-NAL ciphertext blob is emulation-prevention-escaped so it can
++//     never contain a false 00 00 01 that would fool FindNaluIndices()
++//
++// Per-NAL wire layout, written in place of the original NAL body:
++//
++//   [start code]            (verbatim, 00 00 01 / 00 00 00 01)
++//   [NAL header : 1B]       (verbatim)
++//   EPB( [v|keyId : 1B] [counter : 4B BE] [ptlen : 4B BE] [ciphertext] [GCM tag : 16B] )
++//
++// IV  = salt(8) || counter(4)                       (12 B, per-NAL unique)
++// AAD = (v|keyId)(1) || counter(4) || NAL header(1) (6 B, authenticated only)
++//
++// The explicit ptlen (plaintext length == ciphertext length) is REQUIRED:
++// WebRTC's H264 depacketizer reassembles every NAL with a 4-byte start code
++// (00 00 00 01) regardless of what we emitted, so the byte before each start
++// code (one extra 0x00) gets absorbed into the previous NAL's body by a
++// scan-to-next-start-code delimiter. Without ptlen the decryptor would feed
++// that trailing 0x00 into AES-GCM, misaligning the tag and failing every
++// multi-NAL frame. With ptlen we extract exactly [ciphertext][tag] and ignore
++// any trailing start-code padding.
++//
++// v = 3 here (v1 = whole-frame; v2 = the first, length-less NAL scheme that
++// hit the bug above) so mismatched builds never cross-decode.
++
++static constexpr uint8_t kNalVersion = 3;
++static constexpr size_t  kNalHeaderLen = 1;
++static constexpr size_t  kNalLenLen    = 4;   // ptlen field width (BE)
++// Per-NAL blob header BEFORE the ciphertext: v|keyId(1) + counter(4) + ptlen(4).
++static constexpr size_t  kNalBlobHdr   = 1 + 4 + 4;
++// Per-NAL overhead BEFORE emulation-prevention expansion: blob header + tag.
++static constexpr size_t  kNalOverheadRaw = kNalBlobHdr + 16 /*tag*/;
++
++// Find the next Annex-B start code (00 00 01) at or after `from`. Returns the
++// index of its leading 0x00, or `n` if none. A 4-byte start code (00 00 00 01)
++// is reported at the position of its last three bytes; the extra leading 0x00
++// is treated as belonging to the preceding NAL body (which round-trips fine —
++// it comes back as a trailing/leading zero byte that the decoder tolerates).
++inline size_t FindStartCode(const uint8_t* d, size_t n, size_t from) {
++    if (n < 3) return n;
++    for (size_t i = from; i + 3 <= n; ++i) {
++        if (d[i] == 0x00 && d[i + 1] == 0x00 && d[i + 2] == 0x01) {
++            return i;
++        }
++    }
++    return n;
++}
++
++// H.264 Annex-B emulation prevention: insert an emulation_prevention_three_byte
++// (0x03) so the output never contains 00 00 00 / 00 00 01 / 00 00 02 / 00 00 03.
++// Applied to our whole per-NAL blob so the packetizer's start-code scan can't
++// trip over random ciphertext bytes.
++inline void EpbEscape(const uint8_t* in, size_t n, std::vector<uint8_t>& out) {
++    out.clear();
++    out.reserve(n + (n >> 1) + 4);
++    size_t zeros = 0;
++    for (size_t i = 0; i < n; ++i) {
++        const uint8_t b = in[i];
++        if (zeros >= 2 && b <= 0x03) {
++            out.push_back(0x03);
++            zeros = 0;
++        }
++        out.push_back(b);
++        zeros = (b == 0x00) ? (zeros + 1) : 0;
++    }
++}
++
++// Inverse of EpbEscape: drop each 0x03 that follows 00 00 and precedes a byte
++// <= 0x03. Exactly inverts EpbEscape for any input EpbEscape produced.
++inline void EpbUnescape(const uint8_t* in, size_t n, std::vector<uint8_t>& out) {
++    out.clear();
++    out.reserve(n);
++    size_t zeros = 0;
++    for (size_t i = 0; i < n; ++i) {
++        const uint8_t b = in[i];
++        if (zeros >= 2 && b == 0x03 && (i + 1 < n) && in[i + 1] <= 0x03) {
++            zeros = 0;          // emulation_prevention_three_byte — skip it
++            continue;
++        }
++        out.push_back(b);
++        zeros = (b == 0x00) ? (zeros + 1) : 0;
++    }
 +}
 +
 +// Helper: call SylkE2EE.aesGcm(En|De)crypt(key, iv, aad, data) and return
@@ -343,13 +451,14 @@ index 0000000..18e3971
 +    MediaEncryptor(const uint8_t key[kKeyLen],
 +                   const uint8_t salt[kSaltLen],
 +                   uint8_t keyId,
-+                   uint8_t videoPrefix)
-+        : keyId_(keyId & 0x0f), videoPrefix_(videoPrefix),
++                   uint8_t videoPrefix,
++                   bool isH264)
++        : keyId_(keyId & 0x0f), videoPrefix_(videoPrefix), isH264_(isH264),
 +          counter_(0), ref_count_(0) {
 +        std::memcpy(key_, key, kKeyLen);
 +        std::memcpy(salt_, salt, kSaltLen);
-+        LOGI("MediaEncryptor ctor %p keyId=%u videoPrefix=%u",
-+             this, (unsigned)keyId_, (unsigned)videoPrefix_);
++        LOGI("MediaEncryptor ctor %p keyId=%u videoPrefix=%u isH264=%d",
++             this, (unsigned)keyId_, (unsigned)videoPrefix_, (int)isH264_);
 +    }
 +
 +    // Number of leading plaintext bytes left UN-encrypted on video frames.
@@ -369,6 +478,9 @@ index 0000000..18e3971
 +                rtc::ArrayView<const uint8_t> frame,
 +                rtc::ArrayView<uint8_t> encrypted_frame,
 +                size_t* bytes_written) override {
++        if (isH264_ && media_type == cricket::MEDIA_TYPE_VIDEO) {
++            return EncryptH264(frame, encrypted_frame, bytes_written);
++        }
 +        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
 +        if (frame.size() < prefix) return -1;
 +        const size_t need = frame.size() + kFrameOverhead;
@@ -425,7 +537,14 @@ index 0000000..18e3971
 +        return 0;
 +    }
 +
-+    size_t GetMaxCiphertextByteSize(cricket::MediaType, size_t frame_size) override {
++    size_t GetMaxCiphertextByteSize(cricket::MediaType media_type, size_t frame_size) override {
++        if (isH264_ && media_type == cricket::MEDIA_TYPE_VIDEO) {
++            // Per-NAL overhead (21 B) + worst-case emulation-prevention
++            // expansion (~+50%). 2x + 1KB is comfortably above any realistic
++            // H264 frame's NAL count; EncryptH264 bails safely if a
++            // pathological frame ever exceeds it.
++            return frame_size * 2 + 1024;
++        }
 +        return frame_size + kFrameOverhead;
 +    }
 +
@@ -442,11 +561,137 @@ index 0000000..18e3971
 +    ~MediaEncryptor() override { LOGI("MediaEncryptor dtor %p", this); }
 +
 + private:
++    // NAL-aware encrypt: walk the Annex-B stream, copy start codes + NAL
++    // headers verbatim, AES-GCM each NAL body, EPB-escape the result. See the
++    // helper-block comment above for the wire layout.
++    int EncryptH264(rtc::ArrayView<const uint8_t> frame,
++                    rtc::ArrayView<uint8_t> encrypted_frame,
++                    size_t* bytes_written) {
++        const uint8_t* in  = frame.data();
++        const size_t   n   = frame.size();
++        uint8_t*       out = encrypted_frame.data();
++        const size_t   cap = encrypted_frame.size();
++        size_t w = 0;
++        int nNal = 0, nEnc = 0, nSkip = 0; uint8_t firstType = 0;  // instrumentation
++
++        auto putRaw = [&](const uint8_t* p, size_t len) -> bool {
++            if (w + len > cap) return false;
++            if (len) std::memcpy(out + w, p, len);
++            w += len;
++            return true;
++        };
++
++        bool didAttach = false;
++        JNIEnv* env = AttachThread(&didAttach);
++        if (!env) return -1;
++
++        std::vector<uint8_t> blob;     // [v|keyId][counter][ct+tag]
++        std::vector<uint8_t> escaped;  // EPB(blob)
++
++        size_t i = 0;
++        int rc = 0;
++        while (i < n) {
++            const size_t sc = FindStartCode(in, n, i);
++            if (sc == n) {                       // no more start codes
++                if (!putRaw(in + i, n - i)) { rc = -1; }
++                break;
++            }
++            const size_t headerPos = sc + 3;     // NAL header byte index
++            if (headerPos >= n) {                // dangling start code at EOF
++                if (!putRaw(in + i, n - i)) { rc = -1; }
++                break;
++            }
++            // Copy verbatim from i through the NAL header byte (inclusive):
++            // any leading bytes + the 3-byte start code + the 1-byte header.
++            if (!putRaw(in + i, (headerPos - i) + 1)) { rc = -1; break; }
++
++            const size_t bodyStart = headerPos + 1;
++            const size_t nextSc     = FindStartCode(in, n, bodyStart);
++            const size_t bodyEnd    = (nextSc == n) ? n : nextSc;
++            const size_t bodyLen    = bodyEnd - bodyStart;
++            const uint8_t nalHeader = in[headerPos];
++
++            // Only encrypt VCL slice NALs (nal_unit_type 1..5). Leave
++            // parameter sets / metadata (SEI=6, SPS=7, PPS=8, AUD=9, and any
++            // other non-VCL type) in CLEAR. WebRTC's H264 depacketizer parses
++            // the SPS for width/height BEFORE our FrameDecryptor runs; an
++            // encrypted SPS makes it fail to parse and drop the keyframe, so
++            // the decoder never gets a valid IDR and video freezes (audio and
++            // packet flow look normal). Parameter sets carry only resolution /
++            // profile config, not picture content, so leaving them clear is the
++            // standard trade-off for WebRTC video E2EE.
++            const uint8_t nalType = nalHeader & 0x1f;
++            if (nNal == 0) firstType = nalType;
++            nNal++;
++            if (nalType < 1 || nalType > 5) {
++                nSkip++;
++                if (!putRaw(in + bodyStart, bodyLen)) { rc = -1; break; }
++                i = bodyEnd; continue;
++            }
++
++            const uint32_t counter = counter_.fetch_add(1, std::memory_order_relaxed);
++            uint8_t iv[kIvLen];
++            BuildIV(salt_, counter, iv);
++            const uint8_t vByte = static_cast<uint8_t>((kNalVersion << 4) | (keyId_ & 0x0f));
++            uint8_t aad[6];
++            aad[0] = vByte;
++            std::memcpy(aad + 1, iv + kSaltLen, kCounterLen);  // counter BE
++            aad[5] = nalHeader;
++
++            jbyteArray jResult = CallAesGcm(env, g_aesGcmEncryptMid,
++                key_, kKeyLen, iv, kIvLen, aad, sizeof(aad),
++                in + bodyStart, bodyLen);
++            if (!jResult) { LOGE("EncryptH264: aesGcmEncrypt null"); rc = -1; break; }
++            const jsize ctLen = env->GetArrayLength(jResult);
++            if ((size_t)ctLen != bodyLen + kTagLen) {
++                LOGE("EncryptH264: bad GCM out len %d", (int)ctLen);
++                env->DeleteLocalRef(jResult);
++                rc = -1; break;
++            }
++
++            blob.resize(kNalBlobHdr + bodyLen + kTagLen);
++            blob[0] = vByte;
++            std::memcpy(blob.data() + 1, iv + kSaltLen, kCounterLen);  // counter BE
++            // ptlen (BE) = plaintext length == ciphertext length == bodyLen.
++            blob[5] = (uint8_t)((bodyLen >> 24) & 0xff);
++            blob[6] = (uint8_t)((bodyLen >> 16) & 0xff);
++            blob[7] = (uint8_t)((bodyLen >>  8) & 0xff);
++            blob[8] = (uint8_t)( bodyLen        & 0xff);
++            env->GetByteArrayRegion(jResult, 0, ctLen,
++                reinterpret_cast<jbyte*>(blob.data() + kNalBlobHdr));
++            env->DeleteLocalRef(jResult);
++
++            EpbEscape(blob.data(), blob.size(), escaped);
++            if (encFrames_.load() < 8 && nEnc == 0 && escaped.size() >= 4) {
++                LOGI("[encH264?] vByte=0x%02x nalHdr=0x%02x bodyLen=%zu blob[0..3]=%02x%02x%02x%02x esc[0..3]=%02x%02x%02x%02x escN=%zu",
++                     (unsigned)vByte, (unsigned)nalHeader, bodyLen,
++                     blob[0], blob[1], blob[2], blob[3],
++                     escaped[0], escaped[1], escaped[2], escaped[3], escaped.size());
++            }
++            if (!putRaw(escaped.data(), escaped.size())) { rc = -1; break; }
++            nEnc++;
++
++            i = bodyEnd;
++        }
++
++        const uint32_t fn = encFrames_.fetch_add(1, std::memory_order_relaxed);
++        if (fn < 5 || (fn % 100) == 0) {
++            LOGI("[encH264] frame#=%u in=%zu out=%zu nals=%d enc=%d skip=%d firstType=%d%s",
++                 fn, n, w, nNal, nEnc, nSkip, (int)firstType, (rc != 0) ? " RC_FAIL" : "");
++        }
++        DetachThread(didAttach);
++        if (rc != 0) return rc;
++        *bytes_written = w;
++        return 0;
++    }
++
 +    uint8_t  key_[kKeyLen];
 +    uint8_t  salt_[kSaltLen];
 +    uint8_t  keyId_;
 +    uint8_t  videoPrefix_;   // bytes left plaintext at start of each video frame
++    bool     isH264_;        // when true, video frames use the NAL-aware path
 +    mutable std::atomic<uint32_t> counter_;
++    mutable std::atomic<uint32_t> encFrames_{0};   // instrumentation
 +    mutable std::atomic<int>      ref_count_;
 +};
 +
@@ -455,12 +700,14 @@ index 0000000..18e3971
 +    MediaDecryptor(const uint8_t key[kKeyLen],
 +                   const uint8_t salt[kSaltLen],
 +                   uint8_t keyId,
-+                   uint8_t videoPrefix)
-+        : expectedKeyId_(keyId & 0x0f), videoPrefix_(videoPrefix), ref_count_(0) {
++                   uint8_t videoPrefix,
++                   bool isH264)
++        : expectedKeyId_(keyId & 0x0f), videoPrefix_(videoPrefix),
++          isH264_(isH264), ref_count_(0) {
 +        std::memcpy(key_, key, kKeyLen);
 +        std::memcpy(salt_, salt, kSaltLen);
-+        LOGI("MediaDecryptor ctor %p keyId=%u videoPrefix=%u",
-+             this, (unsigned)expectedKeyId_, (unsigned)videoPrefix_);
++        LOGI("MediaDecryptor ctor %p keyId=%u videoPrefix=%u isH264=%d",
++             this, (unsigned)expectedKeyId_, (unsigned)videoPrefix_, (int)isH264_);
 +    }
 +
 +    // Permissive decrypt:
@@ -484,6 +731,9 @@ index 0000000..18e3971
 +                   rtc::ArrayView<const uint8_t> /*additional_data*/,
 +                   rtc::ArrayView<const uint8_t> encrypted_frame,
 +                   rtc::ArrayView<uint8_t> frame) override {
++        if (isH264_ && media_type == cricket::MEDIA_TYPE_VIDEO) {
++            return DecryptH264(encrypted_frame, frame);
++        }
 +        const size_t prefix = UnencryptedPrefixForMediaType(media_type);
 +
 +        // Passthrough helper.
@@ -577,10 +827,141 @@ index 0000000..18e3971
 +    ~MediaDecryptor() override { LOGI("MediaDecryptor dtor %p", this); }
 +
 + private:
++    // NAL-aware decrypt: walk the reassembled Annex-B stream, copy start codes
++    // + NAL headers verbatim, EPB-unescape each NAL body, AES-GCM-decrypt it.
++    // Permissive per NAL: a body that doesn't carry our (v=2, keyId) header, or
++    // whose tag fails, is emitted verbatim — so a peer still sending plaintext
++    // H264 during the two-phase install renders unchanged.
++    Result DecryptH264(rtc::ArrayView<const uint8_t> encrypted_frame,
++                       rtc::ArrayView<uint8_t> frame) {
++        const uint8_t* in  = encrypted_frame.data();
++        const size_t   n   = encrypted_frame.size();
++        uint8_t*       out = frame.data();
++        const size_t   cap = frame.size();
++        size_t w = 0;
++        int nNal = 0, nDec = 0; uint8_t firstType = 0;  // instrumentation
++
++        auto putRaw = [&](const uint8_t* p, size_t len) -> bool {
++            if (w + len > cap) return false;
++            if (len) std::memcpy(out + w, p, len);
++            w += len;
++            return true;
++        };
++
++        bool didAttach = false;
++        JNIEnv* env = AttachThread(&didAttach);
++
++        std::vector<uint8_t> unesc;   // EPB-unescaped body
++        size_t i = 0;
++        bool fail = false;            // output buffer overflow → kFailedToDecrypt
++
++        while (i < n && !fail) {
++            const size_t sc = FindStartCode(in, n, i);
++            if (sc == n) { if (!putRaw(in + i, n - i)) fail = true; break; }
++            const size_t headerPos = sc + 3;
++            if (headerPos >= n) { if (!putRaw(in + i, n - i)) fail = true; break; }
++
++            // Verbatim: leading bytes + start code + NAL header.
++            if (!putRaw(in + i, (headerPos - i) + 1)) { fail = true; break; }
++
++            const size_t bodyStart = headerPos + 1;
++            const size_t nextSc    = FindStartCode(in, n, bodyStart);
++            const size_t bodyEnd   = (nextSc == n) ? n : nextSc;
++            const size_t bodyLen   = bodyEnd - bodyStart;
++            const uint8_t nalHeader = in[headerPos];
++            if (nNal == 0) firstType = nalHeader & 0x1f;
++            nNal++;
++
++            // Re-emit this NAL body verbatim (used for every non-decryptable case).
++            auto passNal = [&]() -> bool { return putRaw(in + bodyStart, bodyLen); };
++
++            EpbUnescape(in + bodyStart, bodyLen, unesc);
++            // Need at least the blob header + a tag.
++            if (unesc.size() < kNalBlobHdr + kTagLen) {
++                if (!passNal()) fail = true;
++                i = bodyEnd; continue;
++            }
++            const uint8_t vByte   = unesc[0];
++            const uint8_t version = (vByte >> 4) & 0x0f;
++            const uint8_t keyId   = vByte & 0x0f;
++            if (version != kNalVersion || keyId != expectedKeyId_ || !env) {
++                if (decFrames_.load() < 8 && nNal == 1) {
++                    const uint8_t* rb = in + bodyStart;  // raw received body (pre-unescape)
++                    LOGI("[decH264?] PASS ver/keyId: nalHdr=0x%02x bodyLen=%zu unescN=%zu vByte=0x%02x expKeyId=%u raw[0..3]=%02x%02x%02x%02x u[0..3]=%02x%02x%02x%02x",
++                         (unsigned)nalHeader, bodyLen, unesc.size(), (unsigned)vByte, (unsigned)expectedKeyId_,
++                         bodyLen>0?rb[0]:0, bodyLen>1?rb[1]:0, bodyLen>2?rb[2]:0, bodyLen>3?rb[3]:0,
++                         unesc.size()>0?unesc[0]:0, unesc.size()>1?unesc[1]:0,
++                         unesc.size()>2?unesc[2]:0, unesc.size()>3?unesc[3]:0);
++                }
++                if (!passNal()) fail = true;
++                i = bodyEnd; continue;
++            }
++            const uint8_t* ctr = unesc.data() + 1;
++            const uint32_t counter = ((uint32_t)ctr[0] << 24) | ((uint32_t)ctr[1] << 16)
++                                   | ((uint32_t)ctr[2] <<  8) |  (uint32_t)ctr[3];
++            // ptlen tells us exactly how many ciphertext bytes precede the tag,
++            // so trailing start-code padding the depacketizer added is ignored.
++            const uint8_t* pl = unesc.data() + 1 + kCounterLen;
++            const size_t   ptLen = ((size_t)pl[0] << 24) | ((size_t)pl[1] << 16)
++                                 | ((size_t)pl[2] <<  8) |  (size_t)pl[3];
++            const size_t   ctLen = ptLen + kTagLen;            // ciphertext + tag
++            if (kNalBlobHdr + ctLen > unesc.size()) {          // truncated / wrong
++                if (!passNal()) fail = true;
++                i = bodyEnd; continue;
++            }
++            uint8_t iv[kIvLen];
++            BuildIV(salt_, counter, iv);
++            uint8_t aad[6];
++            aad[0] = vByte;
++            std::memcpy(aad + 1, ctr, kCounterLen);
++            aad[5] = nalHeader;
++
++            const uint8_t* ctPtr = unesc.data() + kNalBlobHdr;
++
++            jbyteArray jResult = CallAesGcm(env, g_aesGcmDecryptMid,
++                key_, kKeyLen, iv, kIvLen, aad, sizeof(aad), ctPtr, ctLen);
++            if (!jResult) {                 // tag mismatch → treat as plaintext NAL
++                if (decFrames_.load() < 8 && nNal == 1) {
++                    LOGI("[decH264?] TAG fail: nalHdr=0x%02x vByte=0x%02x counter=%u ptLen=%zu unescN=%zu bodyLen=%zu",
++                         (unsigned)nalHeader, (unsigned)vByte, counter, ptLen, unesc.size(), bodyLen);
++                }
++                if (!passNal()) fail = true;
++                i = bodyEnd; continue;
++            }
++            const jsize plainLen = env->GetArrayLength(jResult);
++            if ((size_t)plainLen != ptLen) {
++                env->DeleteLocalRef(jResult);
++                if (!passNal()) fail = true;
++                i = bodyEnd; continue;
++            }
++            if (w + (size_t)plainLen > cap) {
++                env->DeleteLocalRef(jResult);
++                fail = true; break;
++            }
++            env->GetByteArrayRegion(jResult, 0, plainLen,
++                reinterpret_cast<jbyte*>(out + w));
++            w += plainLen;
++            nDec++;
++            env->DeleteLocalRef(jResult);
++            i = bodyEnd;
++        }
++
++        const uint32_t fn = decFrames_.fetch_add(1, std::memory_order_relaxed);
++        if (fn < 5 || (fn % 100) == 0) {
++            LOGI("[decH264] frame#=%u in=%zu out=%zu nals=%d dec=%d pass=%d firstType=%d%s",
++                 fn, n, w, nNal, nDec, nNal - nDec, (int)firstType, fail ? " FAIL" : "");
++        }
++        DetachThread(didAttach);
++        if (fail) return Result(Status::kFailedToDecrypt, 0);
++        return Result(Status::kOk, w);
++    }
++
 +    uint8_t  key_[kKeyLen];
 +    uint8_t  salt_[kSaltLen];
 +    uint8_t  expectedKeyId_;
 +    uint8_t  videoPrefix_;   // bytes left plaintext at start of each video frame
++    bool     isH264_;        // when true, video frames use the NAL-aware path
++    mutable std::atomic<uint32_t> decFrames_{0};   // instrumentation
 +    mutable std::atomic<int> ref_count_;
 +};
 +
@@ -606,7 +987,8 @@ index 0000000..18e3971
 +
 +extern "C" JNIEXPORT jlong JNICALL
 +Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateMediaEncryptor(
-+        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix) {
++        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix,
++        jboolean isH264) {
 +    EnsureJniCache(env);
 +    if (env->GetArrayLength(jKey)  < (jsize)sylke2ee::kKeyLen)  return 0;
 +    if (env->GetArrayLength(jSalt) < (jsize)sylke2ee::kSaltLen) return 0;
@@ -614,14 +996,16 @@ index 0000000..18e3971
 +    uint8_t salt[sylke2ee::kSaltLen];
 +    env->GetByteArrayRegion(jKey,  0, sylke2ee::kKeyLen,  reinterpret_cast<jbyte*>(key));
 +    env->GetByteArrayRegion(jSalt, 0, sylke2ee::kSaltLen, reinterpret_cast<jbyte*>(salt));
-+    auto* enc = new sylke2ee::MediaEncryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix);
++    auto* enc = new sylke2ee::MediaEncryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix,
++                                             isH264 == JNI_TRUE);
 +    enc->AddRef();
 +    return reinterpret_cast<jlong>(static_cast<webrtc::FrameEncryptorInterface*>(enc));
 +}
 +
 +extern "C" JNIEXPORT jlong JNICALL
 +Java_com_oney_WebRTCModule_SylkE2EE_nativeCreateMediaDecryptor(
-+        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix) {
++        JNIEnv* env, jclass, jbyteArray jKey, jbyteArray jSalt, jint keyId, jint videoPrefix,
++        jboolean isH264) {
 +    EnsureJniCache(env);
 +    if (env->GetArrayLength(jKey)  < (jsize)sylke2ee::kKeyLen)  return 0;
 +    if (env->GetArrayLength(jSalt) < (jsize)sylke2ee::kSaltLen) return 0;
@@ -629,7 +1013,8 @@ index 0000000..18e3971
 +    uint8_t salt[sylke2ee::kSaltLen];
 +    env->GetByteArrayRegion(jKey,  0, sylke2ee::kKeyLen,  reinterpret_cast<jbyte*>(key));
 +    env->GetByteArrayRegion(jSalt, 0, sylke2ee::kSaltLen, reinterpret_cast<jbyte*>(salt));
-+    auto* dec = new sylke2ee::MediaDecryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix);
++    auto* dec = new sylke2ee::MediaDecryptor(key, salt, (uint8_t)keyId, (uint8_t)videoPrefix,
++                                             isH264 == JNI_TRUE);
 +    dec->AddRef();
 +    return reinterpret_cast<jlong>(static_cast<webrtc::FrameDecryptorInterface*>(dec));
 +}
@@ -649,7 +1034,7 @@ index 0000000..18e3971
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
 new file mode 100644
-index 0000000..c4b4828
+index 0000000..d9cc149
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
 @@ -0,0 +1,29 @@
@@ -664,10 +1049,10 @@ index 0000000..c4b4828
 +#include <jni.h>
 +#include <android/log.h>
 +
-+#define LOG_TAG "SylkZRTP"
-+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-+
 +#include "sylk_e2ee_build.h"   // single source of truth for SYLK_E2EE_BUILD
++
++#define LOG_TAG "SYLK_APP"   // captured by metro-adb-logs.sh (logcat -s SYLK_APP:V)
++#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 +
 +extern "C" JNIEXPORT jint JNICALL
 +Java_com_oney_WebRTCModule_SylkE2EE_nativeHello(JNIEnv* /*env*/, jclass /*clazz*/) {
@@ -684,28 +1069,25 @@ index 0000000..c4b4828
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee_build.h b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee_build.h
 new file mode 100644
-index 0000000..bfa939e
+index 0000000..b5fa8ca
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee_build.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,17 @@
 +// sylk_e2ee_build.h — SINGLE SOURCE OF TRUTH for the Sylk E2EE build tag.
 +//
-+// Included by both MediaEncryptorJni.cpp and sylk_e2ee.cpp; nativeGetBuild()
++// Both MediaEncryptorJni.cpp and sylk_e2ee.cpp include this; nativeGetBuild()
 +// (in sylk_e2ee.cpp) reports it and app.js compares the report against its own
-+// SYLK_E2EE_BUILD constant. Keep it here only — never reintroduce a second
-+// copy in a .cpp (a drifted duplicate once made the app report an old build
-+// while running new code).
++// SYLK_E2EE_BUILD constant. Previously the literal was duplicated in two .cpp
++// files and drifted — the reported build said one thing while the crypto code
++// was another. Don't reintroduce a second copy; bump it HERE only.
 +//
-+// Current scheme: whole-frame AES-128-GCM for audio + VP8/VP9 video (the
-+// fixed-prefix FrameEncryptor). H.264 is NOT end-to-end encrypted — see
-+// future_patches/h264/ for the NAL-aware attempt and why it can't work with
-+// the prebuilt libwebrtc. Bump on any wire-format change and update the
-+// matching constant in app/app.js.
++// Bump on ANY change to the wire format / framing / prefix logic, and update
++// the matching constant in app/app.js so the startup build-check passes.
 +
 +#ifndef SYLK_E2EE_BUILD_H_
 +#define SYLK_E2EE_BUILD_H_
 +
-+#define SYLK_E2EE_BUILD "build-2026-05-02-public-aesgcm"
++#define SYLK_E2EE_BUILD "build-2026-06-06-h264-clear-params"
 +
 +#endif  // SYLK_E2EE_BUILD_H_
 diff --git a/node_modules/react-native-webrtc/android/src/main/cpp/sylk_webrtc_compat.h b/node_modules/react-native-webrtc/android/src/main/cpp/sylk_webrtc_compat.h
@@ -889,10 +1271,10 @@ index 0000000..0dbf6d9
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
 new file mode 100644
-index 0000000..4aa61c7
+index 0000000..7556dab
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,184 @@
 +// SylkE2EE.java — Java side of the Sylk ZRTP FrameEncryptor / FrameDecryptor
 +// JNI bridge. Phase 3: real AES-128-GCM. The C++ side calls back into the
 +// aesGcmEncrypt / aesGcmDecrypt static helpers below for each frame —
@@ -947,8 +1329,8 @@ index 0000000..4aa61c7
 +    static native String nativeGetBuild();
 +    static native long nativeCreateNoopEncryptor();
 +    static native long nativeCreateNoopDecryptor();
-+    static native long nativeCreateMediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix);
-+    static native long nativeCreateMediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix);
++    static native long nativeCreateMediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix, boolean isH264);
++    static native long nativeCreateMediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix, boolean isH264);
 +    static native void nativeReleaseEncryptor(long ptr);
 +    static native void nativeReleaseDecryptor(long ptr);
 +
@@ -1023,10 +1405,13 @@ index 0000000..4aa61c7
 +        /**
 +         * Phase 3: AES-128-GCM with the given key (16 bytes) + salt (8 bytes).
 +         * videoPrefix is the number of bytes left UN-encrypted at the start of
-+         * each video frame (codec-dependent: VP8=1, VP9=3, H264=2, AV1=1, audio=0).
++         * each video frame (codec-dependent: VP8=1, VP9=3, AV1=1, audio=0).
++         * When isH264 is true the video path instead uses the NAL-aware scheme
++         * (per-NAL AES-GCM, start codes + NAL headers in plaintext); videoPrefix
++         * is then unused for video.
 +         */
-+        public MediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix) {
-+            this.nativePtr = nativeCreateMediaEncryptor(key, salt, keyId, videoPrefix);
++        public MediaEncryptor(byte[] key, byte[] salt, int keyId, int videoPrefix, boolean isH264) {
++            this.nativePtr = nativeCreateMediaEncryptor(key, salt, keyId, videoPrefix, isH264);
 +        }
 +
 +        @Override
@@ -1053,12 +1438,12 @@ index 0000000..4aa61c7
 +        }
 +
 +        /**
-+         * Phase 3: AES-128-GCM. videoPrefix must match what the peer's
-+         * encryptor used; mismatch makes the decrypt's permissive
-+         * passthrough kick in for every frame.
++         * Phase 3: AES-128-GCM. videoPrefix / isH264 must match what the peer's
++         * encryptor used; mismatch makes the decrypt's permissive passthrough
++         * kick in for every frame.
 +         */
-+        public MediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix) {
-+            this.nativePtr = nativeCreateMediaDecryptor(key, salt, keyId, videoPrefix);
++        public MediaDecryptor(byte[] key, byte[] salt, int keyId, int videoPrefix, boolean isH264) {
++            this.nativePtr = nativeCreateMediaDecryptor(key, salt, keyId, videoPrefix, isH264);
 +        }
 +
 +        @Override
@@ -1075,7 +1460,7 @@ index 0000000..4aa61c7
 +    }
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-index 996648c..b525a0d 100644
+index 996648c..c816c46 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 @@ -38,12 +38,23 @@ import java.util.concurrent.ExecutionException;
@@ -1228,7 +1613,7 @@ index 996648c..b525a0d 100644
 +     *  to leave at the start of each video frame (VP8=1, VP9=3, H264=2,
 +     *  AV1=1; audio always uses 0 internally). */
 +    @ReactMethod
-+    public void senderInstallMediaEncryption(int id, String senderId, String keyHex, String saltHex, int keyId, int videoPrefix, Promise promise) {
++    public void senderInstallMediaEncryption(int id, String senderId, String keyHex, String saltHex, int keyId, int videoPrefix, boolean isH264, Promise promise) {
 +        ThreadUtils.runOnExecutor(() -> {
 +            try {
 +                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
@@ -1252,10 +1637,10 @@ index 996648c..b525a0d 100644
 +                    return;
 +                }
 +                SylkE2EE.touch();
-+                SylkE2EE.MediaEncryptor enc = new SylkE2EE.MediaEncryptor(key, salt, keyId, videoPrefix);
++                SylkE2EE.MediaEncryptor enc = new SylkE2EE.MediaEncryptor(key, salt, keyId, videoPrefix, isH264);
 +                sender.setFrameEncryptor(enc);
 +                // libwebrtc's scoped_refptr now owns the only reference.
-+                Log.i(TAG, "[SylkZRTP] installed AES-GCM encryptor on sender " + senderId + " keyId=" + keyId + " videoPrefix=" + videoPrefix);
++                Log.i(TAG, "[SylkZRTP] installed AES-GCM encryptor on sender " + senderId + " keyId=" + keyId + " videoPrefix=" + videoPrefix + " isH264=" + isH264);
 +                promise.resolve(null);
 +            } catch (Throwable t) {
 +                Log.e(TAG, "[SylkZRTP] senderInstallMediaEncryption failed", t);
@@ -1268,7 +1653,7 @@ index 996648c..b525a0d 100644
 +     *  videoPrefix must match the peer's encryptor — both sides agree
 +     *  on the codec via SDP and compute the same prefix in JS. */
 +    @ReactMethod
-+    public void receiverInstallMediaDecryption(int id, String receiverId, String keyHex, String saltHex, int keyId, int videoPrefix, Promise promise) {
++    public void receiverInstallMediaDecryption(int id, String receiverId, String keyHex, String saltHex, int keyId, int videoPrefix, boolean isH264, Promise promise) {
 +        ThreadUtils.runOnExecutor(() -> {
 +            try {
 +                PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
@@ -1295,9 +1680,9 @@ index 996648c..b525a0d 100644
 +                    return;
 +                }
 +                SylkE2EE.touch();
-+                SylkE2EE.MediaDecryptor dec = new SylkE2EE.MediaDecryptor(key, salt, keyId, videoPrefix);
++                SylkE2EE.MediaDecryptor dec = new SylkE2EE.MediaDecryptor(key, salt, keyId, videoPrefix, isH264);
 +                target.setFrameDecryptor(dec);
-+                Log.i(TAG, "[SylkZRTP] installed AES-GCM decryptor on receiver " + receiverId + " keyId=" + keyId + " videoPrefix=" + videoPrefix);
++                Log.i(TAG, "[SylkZRTP] installed AES-GCM decryptor on receiver " + receiverId + " keyId=" + keyId + " videoPrefix=" + videoPrefix + " isH264=" + isH264);
 +                promise.resolve(null);
 +            } catch (Throwable t) {
 +                Log.e(TAG, "[SylkZRTP] receiverInstallMediaDecryption failed", t);
@@ -2534,10 +2919,10 @@ index 0000000..ad044aa
 +@end
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm
 new file mode 100644
-index 0000000..a18f6ff
+index 0000000..479d24a
 --- /dev/null
 +++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.mm
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,231 @@
 +// WebRTCModule+SylkZRTP.mm
 +//
 +// React Native bridge methods (RCT_EXPORT_METHOD) for the iOS noop
@@ -2664,9 +3049,15 @@ index 0000000..a18f6ff
 +                  : (nonnull NSString *)keyHex saltHex
 +                  : (nonnull NSString *)saltHex keyId
 +                  : (nonnull NSNumber *)keyId videoPrefix
-+                  : (nonnull NSNumber *)videoPrefix resolver
++                  : (nonnull NSNumber *)videoPrefix isH264
++                  : (nonnull NSNumber *)isH264 resolver
 +                  : (RCTPromiseResolveBlock)resolve rejecter
 +                  : (RCTPromiseRejectBlock)reject) {
++    // NOTE: isH264 is accepted so the JS bridge arity matches Android's (the
++    // shared TS setMediaEncryption now passes it). The iOS NAL-aware H264 path
++    // is not implemented yet — until it is, an H264-negotiated call on iOS
++    // still uses the whole-frame scheme below and the JS layer should keep H264
++    // video E2EE gated off for iOS peers. TODO(ios-h264): honor isH264.
 +    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
 +    if (!peerConnection) {
 +        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
@@ -2714,9 +3105,12 @@ index 0000000..a18f6ff
 +                  : (nonnull NSString *)keyHex saltHex
 +                  : (nonnull NSString *)saltHex keyId
 +                  : (nonnull NSNumber *)keyId videoPrefix
-+                  : (nonnull NSNumber *)videoPrefix resolver
++                  : (nonnull NSNumber *)videoPrefix isH264
++                  : (nonnull NSNumber *)isH264 resolver
 +                  : (RCTPromiseResolveBlock)resolve rejecter
 +                  : (RCTPromiseRejectBlock)reject) {
++    // isH264 accepted for bridge-arity parity with Android; iOS NAL-aware
++    // path not yet implemented. TODO(ios-h264): honor isH264.
 +    RTCPeerConnection *peerConnection = self.peerConnections[pcId];
 +    if (!peerConnection) {
 +        reject(@"E_NO_PC", @"Peer Connection not initialized", nil);
@@ -3206,10 +3600,10 @@ index 0000000..d13f070
 +    }
 +}
 diff --git a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts b/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
-index 228fce0..1c0a030 100644
+index 228fce0..1b57ea8 100644
 --- a/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
 +++ b/node_modules/react-native-webrtc/src/RTCRtpReceiver.ts
-@@ -46,6 +46,30 @@ export default class RTCRtpReceiver {
+@@ -46,6 +46,31 @@ export default class RTCRtpReceiver {
          );
      }
  
@@ -3222,7 +3616,7 @@ index 228fce0..1c0a030 100644
 +     *   must be 16 hex chars (8 bytes). `keyId` must match the peer's
 +     *   encryptor.
 +     */
-+    async setMediaDecryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number): Promise<void> {
++    async setMediaDecryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number, isH264?: boolean): Promise<void> {
 +        if (typeof keyHex === 'string' && typeof saltHex === 'string') {
 +            await WebRTCModule.receiverInstallMediaDecryption(
 +                this._peerConnectionId,
@@ -3231,6 +3625,7 @@ index 228fce0..1c0a030 100644
 +                saltHex,
 +                keyId ?? 0,
 +                videoPrefix ?? 3,
++                isH264 ?? false,    // H264 video → NAL-aware path (native build-2026-06-04+)
 +            );
 +            return;
 +        }
@@ -3241,7 +3636,7 @@ index 228fce0..1c0a030 100644
          return this._rtpParameters;
      }
 diff --git a/node_modules/react-native-webrtc/src/RTCRtpSender.ts b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
-index 4366b32..bada906 100644
+index 4366b32..1cfc847 100644
 --- a/node_modules/react-native-webrtc/src/RTCRtpSender.ts
 +++ b/node_modules/react-native-webrtc/src/RTCRtpSender.ts
 @@ -1,6 +1,7 @@
@@ -3264,7 +3659,7 @@ index 4366b32..bada906 100644
  
      constructor(info: {
          peerConnectionId: number,
-@@ -54,6 +60,31 @@ export default class RTCRtpSender {
+@@ -54,6 +60,32 @@ export default class RTCRtpSender {
          this._rtpParameters = new RTCRtpSendParameters(newParameters);
      }
  
@@ -3278,7 +3673,7 @@ index 4366b32..bada906 100644
 +     *   must be 16 hex chars (8 bytes). `keyId` is the 4-bit ID placed in
 +     *   the per-frame header (must match the peer's decryptor).
 +     */
-+    async setMediaEncryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number): Promise<void> {
++    async setMediaEncryption(keyHex?: string, saltHex?: string, keyId?: number, videoPrefix?: number, isH264?: boolean): Promise<void> {
 +        if (typeof keyHex === 'string' && typeof saltHex === 'string') {
 +            await WebRTCModule.senderInstallMediaEncryption(
 +                this._peerConnectionId,
@@ -3287,6 +3682,7 @@ index 4366b32..bada906 100644
 +                saltHex,
 +                keyId ?? 0,
 +                videoPrefix ?? 3,   // safe default if caller forgets
++                isH264 ?? false,    // H264 video → NAL-aware path (native build-2026-06-04+)
 +            );
 +            return;
 +        }
@@ -3296,7 +3692,7 @@ index 4366b32..bada906 100644
      getStats() {
          return WebRTCModule.senderGetStats(this._peerConnectionId, this._id).then(data =>
              /* On both Android and iOS it is faster to construct a single
-@@ -75,4 +106,28 @@ export default class RTCRtpSender {
+@@ -75,4 +107,28 @@ export default class RTCRtpSender {
      get id() {
          return this._id;
      }

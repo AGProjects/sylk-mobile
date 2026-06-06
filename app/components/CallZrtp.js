@@ -1840,38 +1840,39 @@ class ZrtpSession {
         const videoCodec = this._negotiatedVideoCodec();
         const audioCodec = this._negotiatedAudioCodec();
         const videoPrefix = ZrtpSession.unencryptedVideoPrefixForCodec(videoCodec);
-        const skipVideoForH264 = _shouldSkipVideoZrtpForCodec(this.call);
-        // Strict-mode + H264 video: refuse the video media entirely. We
-        // can't E2E-encrypt H264 with our fixed-prefix scheme, and
-        // 'zrtp_mandatory' means the user wants encryption-or-nothing.
-        // Drop the video sender / receiver and tell the UI to suppress
-        // camera prompts. Audio still gets E2E installed normally.
-        this._maybeStrictDropH264Video(skipVideoForH264);
+        // H.264 video can't be end-to-end encrypted with our FrameEncryptor:
+        // libwebrtc's H.264 depacketizer parses the slice bitstream we'd
+        // encrypt and drops the frames before decode (full diagnosis archived
+        // in future_patches/h264/). So we do NOT install video E2EE for H.264:
+        //   - zrtp_optional  → skip video encryption; H.264 video flows over
+        //                      plain DTLS-SRTP (hop-by-hop) for maximum
+        //                      interop. Audio stays end-to-end encrypted.
+        //   - zrtp_mandatory → refuse video entirely (_maybeStrictDropH264Video).
+        // 1-to-1 calls prefer VP9 (app.js pins it whenever zRTP is enabled), so
+        // H.264 only reaches here when the peer requires it.
+        const isH264 = (videoCodec === 'H264');
+        if (isH264) this._maybeStrictDropH264Video(true);  // no-op unless mandatory
         this._log('PHASE A install receivers; role=' + this.role +
                   ' recv.key=' + _keyPrefixForLog(k.recvKey) + '… '
                   + 'videoCodec=' + videoCodec + ' videoPrefix=' + videoPrefix
                   + ' audioCodec=' + (audioCodec || '?')
-                  + (skipVideoForH264 ? ' (video receivers will be SKIPPED — H264 STAP-A limit)' : ''));
+                  + (isH264 ? ' (H264: video E2EE skipped for interop)' : ''));
         const receivers = pc.getReceivers();
         let installSuccesses = 0;
         let installFailures = 0;
         for (const r of receivers) {
             if (!r.track) continue;
+            if (r.track.kind === 'video' && isH264) {
+                this._log('[video] receiver decryption SKIPPED — H264 negotiated'
+                    + (_encryptionMode === 'zrtp_mandatory'
+                        ? ' (strict mode: video dropped)'
+                        : ' (zrtp optional: video over DTLS-SRTP for interop; audio stays E2EE)'));
+                continue;
+            }
             // Honest per-track codec for logging — the previous code
             // logged `codec=<videoCodec>` even for audio senders, which
             // was misleading (and showed VP8 on calls that had no VP8).
             const trackCodec = r.track.kind === 'audio' ? (audioCodec || '?') : videoCodec;
-            // H264 video can't be safely E2E-encrypted with our fixed-
-            // prefix FrameEncryptor (STAP-A multi-NAL). Audio still
-            // installs and is fully encrypted; video just falls back to
-            // plain SRTP/DTLS. Without this branch we'd install the
-            // decryptor on the video receiver but the peer wouldn't be
-            // encrypting it (or, with the symmetric fix on python3-
-            // sipsimple side, would encrypt and produce broken frames).
-            if (skipVideoForH264 && r.track.kind === 'video') {
-                this._log('[video] receiver decryption SKIPPED — H264 negotiated (STAP-A); audio remains E2E encrypted');
-                continue;
-            }
             try {
                 // Per-track prefix: audio carries no codec-metadata
                 // header in its RTP payload (the Opus frame starts at
@@ -2069,29 +2070,33 @@ class ZrtpSession {
         const videoCodec = this._negotiatedVideoCodec();
         const audioCodec = this._negotiatedAudioCodec();
         const videoPrefix = ZrtpSession.unencryptedVideoPrefixForCodec(videoCodec);
-        const skipVideoForH264 = _shouldSkipVideoZrtpForCodec(this.call);
+        // See _installReceivers: H.264 video is never E2EE'd (depacketizer
+        // parses the slice bitstream). Optional → plain DTLS-SRTP video for
+        // interop; mandatory → video dropped. Audio is always E2EE.
+        const isH264 = (videoCodec === 'H264');
+        if (isH264) this._maybeStrictDropH264Video(true);  // no-op unless mandatory
         this._log('PHASE B install senders; role=' + this.role +
                   ' send.key=' + _keyPrefixForLog(k.sendKey) + '… '
                   + 'videoCodec=' + videoCodec + ' videoPrefix=' + videoPrefix
                   + ' audioCodec=' + (audioCodec || '?')
-                  + (skipVideoForH264 ? ' (video senders will be SKIPPED — H264 STAP-A limit)' : ''));
+                  + (isH264 ? ' (H264: video E2EE skipped for interop)' : ''));
         const senders = pc.getSenders();
         let installSuccesses = 0;
         let installFailures = 0;
         for (const s of senders) {
             if (!s.track) continue;
+            if (s.track.kind === 'video' && isH264) {
+                this._log('[video] sender encryption SKIPPED — H264 negotiated'
+                    + (_encryptionMode === 'zrtp_mandatory'
+                        ? ' (strict mode: video dropped)'
+                        : ' (zrtp optional: video over DTLS-SRTP for interop; audio stays E2EE)'));
+                continue;
+            }
             // Honest per-track codec — was previously logging the video
             // codec for audio senders too, producing the misleading
             // "audio sender ... codec= VP8" line on calls that had no
             // VP8 in them.
             const trackCodec = s.track.kind === 'audio' ? (audioCodec || '?') : videoCodec;
-            // Same H264-skip rule as in _installReceivers above. Audio is
-            // installed; video isn't because the STAP-A packetizer would
-            // break under our fixed-prefix encryptor.
-            if (skipVideoForH264 && s.track.kind === 'video') {
-                this._log('[video] sender encryption SKIPPED — H264 negotiated (STAP-A); audio remains E2E encrypted');
-                continue;
-            }
             try {
                 // Symmetric per-track prefix fix — see the matching
                 // comment in _installReceivers. Audio MUST be 0 so the
@@ -2532,30 +2537,21 @@ function _peekNegotiatedVideoCodec(call) {
     return null;
 }
 
-// H.264 with E2EE doesn't work on our current video FrameEncryptor. The
-// H.264 RTP packetizer uses STAP-A (multi-NAL aggregation) for small
-// frames; our fixed N-byte unencrypted prefix only protects the first
-// NAL's header, leaving the size fields and subsequent NAL headers
-// encrypted — depacketizer reads garbage, decoder drops the packet, video
-// freezes both ways. Audio works because Opus has no equivalent layer.
+// H.264 video CAN now be end-to-end encrypted: the native FrameEncryptor /
+// FrameDecryptor wires through a NAL-aware path (per-NAL AES-GCM blocks,
+// start codes + NAL headers kept in plaintext so libwebrtc's H.264
+// packetizer can still walk the frame and STAP-A-aggregate small NALs).
+// This used to be the early gate that suppressed video E2EE entirely on
+// H.264 calls — leaving plain SRTP/DTLS for the video plane. Both sides
+// running the build-2026-06-04-h264-nal-aware native binary handle the
+// new scheme; older binaries fail the SYLK_E2EE_BUILD compatibility
+// check at handshake time, so no silent corruption.
 //
-// PRE-FIX: This function was used as an early-return gate at the start of
-// startZrtpForCall / dispatchIncomingZrtp, which meant the H.264 case
-// skipped EVERYTHING — including the audio handshake. That dropped audio
-// E2EE for any call that had H264 video, even though Opus audio E2EE
-// works fine.
-//
-// NOW: the function is renamed to indicate it only suppresses VIDEO
-// E2EE install, and the early-return gates are gone. The handshake
-// completes, audio install proceeds normally, and only the per-video-
-// track install/decrypt is skipped inside _installReceivers /
-// _installSenders. Audio frames are still AES-128-GCM end-to-end; video
-// continues to flow plain SRTP/DTLS until a NAL-aware encryptor ships.
-function _shouldSkipVideoZrtpForCodec(call) {
-    const codec = _peekNegotiatedVideoCodec(call);
-    if (codec === 'H264') {
-        return true;
-    }
+// Kept here as a one-liner that always returns false so callers that
+// still reference it (and any third-party patches that test the old
+// behaviour) keep compiling. Safe to inline / delete once those
+// references are cleaned up.
+function _shouldSkipVideoZrtpForCodec(/*call*/) {
     return false;
 }
 

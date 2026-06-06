@@ -528,10 +528,50 @@ const ChatBubble = memo(
         />
       );
     } else if (currentMessage.video) {
+      // Mirror the image-preview treatment: in preview mode strip the
+      // bubble frame (background, border radius, margins, padding) so the
+      // video thumbnail fills the width edge-to-edge with no bubble around
+      // it and the Full-size toggle sits on its own bar below — identical
+      // to how an attached image previews.
+      const isPreview = currentMessage.metadata?.preview === true;
+
+      const previewWrapper = isPreview
+        ? {
+            backgroundColor: 'transparent',
+            borderRadius: 0,
+            borderTopLeftRadius: 0,
+            borderTopRightRadius: 0,
+            borderBottomLeftRadius: 0,
+            borderBottomRightRadius: 0,
+            marginTop: 0,
+            marginRight: 0,
+            marginBottom: 0,
+            marginLeft: 0,
+            padding: 0,
+            alignSelf: 'stretch',
+            width: '100%'
+          }
+        : null;
+
+      const previewContainer = isPreview
+        ? { margin: 0, marginLeft: 0, marginRight: 0, padding: 0 }
+        : null;
+
       content = (
         <Bubble
           {...bubbleProps}
-          wrapperStyle={{ left: { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 }, right: { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 } }}
+          wrapperStyle={{
+            left: isPreview
+              ? { ...leftWrapper, ...previewWrapper }
+              : { ...leftWrapper, alignSelf: 'stretch', marginRight: 0 },
+            right: isPreview
+              ? { ...rightWrapper, ...previewWrapper }
+              : { ...rightWrapper, alignSelf: 'stretch', marginLeft: 0 }
+          }}
+          containerStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          containerToPreviousStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          containerToNextStyle={isPreview ? { left: previewContainer, right: previewContainer } : undefined}
+          {...(isPreview ? { bottomContainerStyle: { left: previewContainer, right: previewContainer } } : {})}
           textProps={{ style: { color: position === 'left' ? leftBodyTextColor : rightBodyTextColor } }}
           textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
@@ -822,6 +862,19 @@ const ChatBubble = memo(
 	  // render a grid (id is a key of imageGroups). Text bubbles
 	  // don't care about selectedImages and stay cached.
 	  if (next.imageGroups && id in next.imageGroups) {
+		// Re-render when the group's MEMBERSHIP changes — e.g. a new
+		// image was just sent and joined this group, so the ThumbnailGrid
+		// must grow from N to N+1 tiles. The comparator previously only
+		// watched selectedImages, so a freshly-sent image was swallowed
+		// into the group's leader bubble without re-rendering it, and the
+		// new tile only appeared after navigating away and back.
+		const prevGroup = (prev.imageGroups && prev.imageGroups[id]) || [];
+		const nextGroup = next.imageGroups[id] || [];
+		if (prevGroup.length !== nextGroup.length
+				|| prevGroup.join(',') !== nextGroup.join(',')) {
+		  locTrace(false, 'imageGroup membership changed for grouped bubble');
+		  return false;
+		}
 		if (prev.selectedImages !== next.selectedImages) {
 		  locTrace(false, 'selectedImages changed for grouped bubble');
 		  return false;

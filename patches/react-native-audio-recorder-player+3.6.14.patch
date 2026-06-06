@@ -1,7 +1,8 @@
 diff --git a/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift b/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
+index 344ddd4..efb9013 100644
 --- a/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
 +++ b/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorderPlayer.swift
-@@ -243,26 +243,60 @@
+@@ -243,26 +243,60 @@ class RNAudioRecorderPlayer: RCTEventEmitter, AVAudioRecorderDelegate {
          }
  
          func startRecording() {
@@ -70,7 +71,7 @@ diff --git a/node_modules/react-native-audio-recorder-player/ios/RNAudioRecorder
  
                      if !isRecordStarted {
                          reject("RNAudioPlayerRecorder", "Error occured during initiating recorder", nil)
-@@ -276,8 +310,14 @@
+@@ -276,8 +310,14 @@ class RNAudioRecorderPlayer: RCTEventEmitter, AVAudioRecorderDelegate {
                  }
  
                  reject("RNAudioPlayerRecorder", "Error occured during initiating recorder", nil)

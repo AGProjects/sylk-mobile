@@ -75,9 +75,15 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
             }
 
 			//SylkLogger.d("[call] [action] phoneLocked: " + phoneLocked);
-			if (action.startsWith("ACTION_ACCEPT")) {
-				ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
-            }
+			// Emit to the JS layer for BOTH accept and reject. Previously only
+			// ACTION_ACCEPT was forwarded, so a reject from the push/CallKeep
+			// notification never reached JS — the call was rejected natively
+			// and JS only learned about it via the server's terminated (487)
+			// round-trip seconds later. Meanwhile the prewarmed peer
+			// connection kept gathering ICE ("Collecting ICE candidates…")
+			// for up to ~45s. Forwarding the reject lets callEventHandler ->
+			// callKeepRejectCall cancel the prewarm immediately.
+			ReactEventEmitter.sendEventToReact(action, callUUID, from_uri, to_uri, phoneLocked,  event, (ReactApplication) context.getApplicationContext());
 
 			// 2. Close the IncomingCallActivity layout
 			Intent closeActivityIntent = new Intent("ACTION_CLOSE_INCOMING_CALL_ACTIVITY");

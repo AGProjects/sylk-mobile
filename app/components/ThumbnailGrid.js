@@ -224,9 +224,18 @@ export default function ThumbnailGrid({
       // viewer renders something. We deliberately do NOT mark `missing`
       // on timeout — slow != missing. The actual "file is gone" signal
       // comes from getSize's fail callback or <Image>'s onError below.
+      // NOTE: `fallback: true` marks these as a guess, NOT a real
+      // measurement. viewerImages below deliberately does NOT forward
+      // fallback dims to the zoom viewer — feeding the library a
+      // screen-shaped width/height for a (say) landscape photo gets
+      // baked in permanently (the lib measures each image once) and
+      // then cover-crops it. Instead we omit the dims so the viewer
+      // resolves the true size via its own Image.getSize on the
+      // file:// URL. Bumped to 4s so large photos get a fair chance
+      // to measure before we fall back.
       const timer = setTimeout(
-        () => finish({width: SCREEN_WIDTH, height: SCREEN_HEIGHT}),
-        2000,
+        () => finish({width: SCREEN_WIDTH, height: SCREEN_HEIGHT, fallback: true}),
+        4000,
       );
       try {
         Image.getSize(
@@ -685,12 +694,31 @@ const renderItem = useCallback(
 // local-file URIs and produces a black screen — see openViewer comment).
 const viewerImages = visibleImages.map((it) => {
   const dims = imageSizes[it.id];
-  return {
-    url: normalizeUri(it.uri),
-    width: dims ? dims.width : SCREEN_WIDTH,
-    height: dims ? dims.height : SCREEN_HEIGHT,
-    props: {},
-  };
+  const entry = { url: normalizeUri(it.uri), props: {} };
+
+  if (dims && dims.missing) {
+    // Missing file: we MUST pass dimensions so the viewer marks the
+    // image 'success' and calls our renderImage — that's where the
+    // "File not available" placeholder (with the Download button)
+    // lives. Without width/height the library would mark it 'fail'
+    // and swap in its own (empty) failImageSource instead. Screen
+    // size is fine here; renderImage ignores the bitmap anyway.
+    entry.width = SCREEN_WIDTH;
+    entry.height = SCREEN_HEIGHT;
+  } else if (dims && !dims.fallback && dims.width > 0 && dims.height > 0) {
+    // Real, getSize-resolved dimensions → hand them over so the
+    // viewer lays out and computes zoom bounds against the photo's
+    // TRUE aspect ratio (no crop, full-resolution pan/zoom).
+    entry.width = dims.width;
+    entry.height = dims.height;
+  }
+  // Otherwise: omit width/height entirely. The zoom viewer then
+  // resolves the real size itself via Image.getSize on the file://
+  // URL (reliable now that the URL is normalised), instead of us
+  // baking in a wrong, screen-shaped aspect ratio that the library
+  // would lock in for good and cover-crop.
+
+  return entry;
 });
 
 return (
@@ -937,6 +965,14 @@ return (
 					  <Image
 						{...props}
 						key={rotation}
+						// contain (not the RN default 'cover') so the whole
+						// photo is shown letterboxed inside its box rather
+						// than centre-cropped — fixes "I only see part of
+						// the image". With the true dimensions now passed
+						// to the viewer the box already matches the photo's
+						// aspect, so this is also a belt-and-braces guard
+						// against any residual size mismatch.
+						resizeMode="contain"
 						onError={(e) => {
 						  if (_curImg) {
 							console.log('[image-viewer] missing file',

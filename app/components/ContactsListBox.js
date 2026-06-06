@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter, Vibration} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -53,6 +53,8 @@ import EmojiPicker from './EmojiPicker';
 // (replyMessage + onSendMessage), so a reaction is just a reply whose
 // body is the emoji — no new wire format.
 import ReactionBar from './ReactionBar';
+import MessageContextMenu from './MessageContextMenu';
+import SwipeReplyRow from './SwipeReplyRow';
 
 import moment from 'moment';
 import momenttz from 'moment-timezone';
@@ -269,6 +271,16 @@ class ContactsListBox extends Component {
             // Whether the in-app EmojiPicker is currently displayed.
             // Driven by the smiley button in renderComposer.
             emojiPickerVisible: false,
+            // Long-press contextual menu state. When set, the
+            // MessageContextMenu overlay (reaction strip + primary
+            // action row + secondary bottom sheet) renders for this
+            // message. Shape:
+            //   { message, options, icons, callback, reactable } | null
+            // `options`/`icons`/`callback` are exactly what we used to
+            // hand gifted-chat's ActionSheet — the menu just re-presents
+            // them; selecting an item calls callback(originalIndex) so
+            // the existing per-action logic runs unchanged.
+            messageMenu: null,
             keyboardVisible: false,
             // Pixels by which the IME visibly overlaps our window —
             // computed in _keyboardDidShow as max(0, windowBottom -
@@ -484,6 +496,10 @@ class ContactsListBox extends Component {
         // the picker AFTER closing the bar). If a future flow ever
         // has both open simultaneously, closing the picker first is
         // the right user model.
+        if (this.state.messageMenu) {
+            this.closeMessageMenu();
+            return true;
+        }
         if (this.state.emojiPickerVisible) {
             this.closeEmojiPicker();
             // Also clear any pending reaction target so a stale "+"
@@ -1156,7 +1172,11 @@ class ContactsListBox extends Component {
     }
 
     async libraryCallback(result) {
-		this.setState({fullSize: false, gettingSharedAsset: false});
+		// Keep the "Processing content..." overlay up — assetSharingCallback
+		// below runs file2GiftedChat per asset (thumbnailing / copying), which
+		// takes a few seconds. Clearing the flag here left that window with no
+		// feedback. The error / empty / cancel branches clear it explicitly.
+		this.setState({fullSize: false, gettingSharedAsset: true});
 
 		if (result.errorCode) {
 			console.log("Picker error:", result.errorMessage);
@@ -1174,41 +1194,81 @@ class ContactsListBox extends Component {
 		this.assetSharingCallback(result.assets);
     }
 
+    // Generate a poster thumbnail for a video uri, mirroring the platform
+    // split renderMessageVideo uses (createThumbnailSafe on Android,
+    // createThumbnail on iOS). Returns a path or null on failure.
+    async _generateVideoThumbnail(uri) {
+        try {
+            if (Platform.OS === 'android') {
+                return await createThumbnailSafe({ url: uri, timeMs: 1000 });
+            }
+            const { path } = await createThumbnail({ url: uri, timeStamp: 1000 });
+            return path;
+        } catch (e) {
+            console.log('Thumbnail generation failed (preview):', e);
+            return null;
+        }
+    }
+
     async assetSharingCallback(assets) {
         console.log('assetSharingCallback', assets.length);
-		this.setState({scrollToBottom: true, gettingSharedAsset: false});
+		// Show the overlay while we build the preview messages — the
+		// file2GiftedChat loop below is the slow part the user was waiting
+		// on with no feedback. Cleared in the final setState (and the
+		// empty-guard return just below).
+		this.setState({scrollToBottom: true, gettingSharedAsset: true});
 		this.scrollToBottom();
-		
+
         if (!assets || assets.length === 0) {
+            this.setState({gettingSharedAsset: false});
             return;
         }
-        
+
         let messages = [];
         let msg;
         let assetType = 'file';
+        const thumbCacheAdditions = {};
 
         for (const asset of assets) {
 			asset.preview = true;
 			msg = await this.props.file2GiftedChat(asset);
-			messages.push(msg);
 			if (msg.video) {
 				assetType = 'movie';
+				// Build the thumbnail NOW, before the preview is shown, so the
+				// video bubble renders complete in a single step. Previously
+				// renderMessageVideo generated it lazily on first render — that
+				// async pass is what made the asset look like it needed a
+				// second tap to reach the preview. The "Processing content..."
+				// overlay covers this extra moment.
+				if (!msg.thumbnail) {
+					const thumb = await this._generateVideoThumbnail(msg.video);
+					if (thumb) {
+						msg.thumbnail = thumb;
+						if (msg.metadata) { msg.metadata.thumbnail = thumb; }
+						thumbCacheAdditions[msg._id] = { thumbnail: thumb, width: 512, height: 512 };
+					}
+				}
 			} else if (msg.image) {
 				assetType = 'photo';
 			} else if (msg.audio) {
 				assetType = 'audio';
 			}
+			messages.push(msg);
 
 			console.log('Build temporary', assetType, 'message', msg._id);
         }
 
-        this.setState({ sharingAssets: assets,
+        this.setState(prev => ({ sharingAssets: assets,
                         sharingMessages: messages,
                         renderMessages: GiftedChat.append(messages, []),
 						fullSize: false,
+						gettingSharedAsset: false,
+						// Seed the thumbnail cache so renderMessageVideo finds the
+						// thumbnail immediately and skips its lazy-generation path.
+						videoMetaCache: { ...prev.videoMetaCache, ...thumbCacheAdditions },
                         //placeholder: 'Send ' + assetType + ' of ' + utils.beautySize(msg.metadata.filesize)
 						placeholder: 'Add a note, or just click Send...'
-                        });
+                        }));
     }
 
     renderCustomActions = props =>
@@ -1300,12 +1360,51 @@ class ContactsListBox extends Component {
         });
     }
 
+	renderFullSizeToggle = (currentMessage) => {
+	  const sm = this.state.sharingMessages || [];
+	  const _noun = (list) => {
+	    const hasVid = list.some(m => m.video);
+	    const hasImg = list.some(m => m.image);
+	    if (hasVid && !hasImg) return 'videos';
+	    if (hasVid && hasImg) return 'items';
+	    return 'images';
+	  };
+	  let label;
+	  if (sm.length > 1) {
+	    const total = sm.reduce((acc, m) => acc + ((m.metadata && m.metadata.filesize) || 0), 0);
+	    const noun = _noun(sm);
+	    label = total > 0
+	      ? `Full size of ${formatFileSize(total)} (${sm.length} ${noun})`
+	      : `Full size (${sm.length} ${noun})`;
+	  } else {
+	    label = currentMessage.metadata?.filesize
+	      ? 'Full size of ' + formatFileSize(currentMessage.metadata.filesize)
+	      : 'Full size';
+	  }
+	  return (
+	    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+	      <Switch
+	        value={!!this.state.fullSize}
+	        onValueChange={() => this.setState(prev => ({ fullSize: !prev.fullSize }))}
+	        trackColor={{ false: '#767577', true: '#34C759' }}
+	        thumbColor={'#ffffff'}
+	        ios_backgroundColor="#767577"
+	        style={Platform.OS === 'ios' ? { transform: [{ scale: 0.8 }] } : {}}
+	      />
+	      <Text style={[styles.checkboxLabel, { marginTop: 0, marginLeft: 6, color: 'white' }]}>
+	        {label}
+	      </Text>
+	    </View>
+	  );
+	};
+
 	renderBubbleWithMessages = (props) => {
 	  return this.renderBubble({ ...props, messages: this.state.filteredMessages });
 	};
 
 	renderBubble(props) {
-	  return (
+	  const message = props.currentMessage;
+	  const bubble = (
 		<ChatBubble
 		  {...props}
 		  currentMessage={props.currentMessage}
@@ -1358,6 +1457,38 @@ class ContactsListBox extends Component {
 		  sortOrder={this.state.orderBy}
 		  styles={styles}
 		/>
+	  );
+	  // Swipe-to-reply is applied one level up, around the whole message
+	  // ROW (see renderMessageRow), not here. Wrapping an individual
+	  // bubble fought each bubble type's own width/alignment (text was
+	  // fine, but image bubbles overflowed the left edge). The Message
+	  // component already aligns every bubble type correctly, so we wrap
+	  // that instead and leave the bubble untouched.
+	  return bubble;
+	}
+
+	// Wrap each gifted-chat message ROW in a lightweight swipe-to-reply
+	// gesture (SwipeReplyRow = Gesture.Pan + GestureDetector). Unlike
+	// react-native-gesture-handler's <Swipeable>, it renders no action
+	// panes and animates nothing until a row is actually being dragged, so
+	// it doesn't bog down the chat. Wrapping the ROW (not the bubble) keeps
+	// gifted-chat's per-type alignment intact and preserves vertical
+	// scrolling and bubble tap / long-press. Skipped in read-only chats and
+	// for system messages.
+	renderMessageRow(messageNode, message) {
+	  const canReply = !!(message && message._id)
+	      && !this._chatIsReadOnly()
+	      && message.system !== true;
+	  if (!canReply) {
+	      return messageNode;
+	  }
+	  return (
+	      <SwipeReplyRow
+	          onReply={() => this.replyMessage(message)}
+	          onHaptic={() => { try { Vibration.vibrate(10); } catch (e) { /* optional */ } }}
+	      >
+	          {messageNode}
+	      </SwipeReplyRow>
 	  );
 	}
 
@@ -1572,10 +1703,10 @@ class ContactsListBox extends Component {
 				style={{
 				  position: 'absolute',
 				  top: 5,
-				  right: 15,
+				  right: 8,
 				  zIndex: 10,
-				  transform: [{ translateX: 35 }] 
 				}}
+				hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
 				activeOpacity={0.9}
 			  >
 				<View style={styles.closeButtonCircle}>
@@ -3110,7 +3241,11 @@ class ContactsListBox extends Component {
 		  placeholder: this.default_placeholder,
 		  sharingMessages: [],
 		  sharingAssets: [],
-		  renderMessages: {...renderMessages},
+		  // Restore the contact's message list. Must stay an ARRAY — an
+		  // object spread ({...arr}) turns it into {0:…,1:…}, after which
+		  // the render path's messages.filter(...) throws and takes down
+		  // the whole tree.
+		  renderMessages: Array.isArray(renderMessages) ? [...renderMessages] : [],
 		  text: ''
 		}));
 		
@@ -3562,8 +3697,21 @@ class ContactsListBox extends Component {
 	  // 🧠 Try to get cached size
 	  let imageAspectRatio = 1;
       
+	  const _md = currentMessage.metadata || {};
 	  if (this.imageSizeCache[uri]) {
 	      imageAspectRatio = this.imageSizeCache[uri].aspectRatio;
+	  } else if (_md.width > 0 && _md.height > 0) {
+	      // Dimensions captured at send time and shipped in the
+	      // file-transfer metadata (so both sender and receiver have them).
+	      // Use them so the FIRST render already hugs the image instead of
+	      // flashing the square 1:1 default. onLoad still corrects later if
+	      // these are ever missing or wrong.
+	      imageAspectRatio = _md.width / _md.height;
+	      this.imageSizeCache[uri] = {
+	          width: _md.width,
+	          height: _md.height,
+	          aspectRatio: imageAspectRatio,
+	      };
 	  } else {
 		  // First time seeing this image
 		  Image.getSize(
@@ -3652,6 +3800,18 @@ class ContactsListBox extends Component {
 			onRotateImage={this.onRotateImage}
 			numColumns={numColumns}
 			showTimestamp={false}
+			// Size the grid to ≈78% of the screen so it matches a single
+			// image bubble. flex:1 / width:'100%' don't work here: the
+			// bubble shrinks to the grid's content (circular sizing), so
+			// the grid collapsed to ~50%. An explicit pixel width forces
+			// the grid — and therefore the bubble — to the intended width.
+			containerStyle={{
+			    width: Math.round(
+			        (this.state.isLandscape
+			            ? Dimensions.get('window').height
+			            : Dimensions.get('window').width) * 0.78
+			    ),
+			}}
 			selectMode={!isPreview}
 			// ThumbnailGrid enters controlled-selection mode whenever
 			// onSelectionChange is provided — `selectedIds` then becomes
@@ -3770,6 +3930,29 @@ class ContactsListBox extends Component {
 			  }}
 			  resizeMode={FastImage.resizeMode.contain}
 			  onLoadStart={() => this.handleImageLoadStart(id)}
+			  // FastImage knows the image's real pixel dimensions once it
+			  // loads. Use them to set the bubble's aspectRatio — Image.getSize
+			  // (used above as the initial guess) is unreliable for local
+			  // files on Android and falls back to 1:1 (square), which
+			  // letterboxes a wide image with white bands above/below. Taking
+			  // the natural size here makes the bubble hug the image. Guard
+			  // with a small epsilon so we only re-render when the ratio
+			  // actually changes (no forceUpdate loop).
+			  onLoad={(e) => {
+				const ne = e && e.nativeEvent;
+				const w = ne && ne.width;
+				const h = ne && ne.height;
+				if (w > 0 && h > 0) {
+					const ar = w / h;
+					const cached = this.imageSizeCache[uri];
+					if (!cached
+							|| !isFinite(cached.aspectRatio)
+							|| Math.abs(cached.aspectRatio - ar) > 0.01) {
+						this.imageSizeCache[uri] = { width: w, height: h, aspectRatio: ar };
+						this.forceUpdate?.();
+					}
+				}
+			  }}
 			  onLoadEnd={() => this.handleImageLoadEnd(id)}
 			/>
 		  </View>
@@ -3980,68 +4163,20 @@ class ContactsListBox extends Component {
             this.closeEmojiPicker();
         }
 
-        // Quick-reaction gestures. Apply to text bubbles AND image
-        // bubbles — for images the dedicated "fullscreen" IconButton
-        // is the explicit path to open the image full size, so the
-        // bubble's body tap is free to react. Other file types
-        // (PDFs, audio, generic attachments) keep their tap-to-open
-        // behaviour so taps stay snappy on media.
-        //
-        //   • Double-tap → quickReact with the default emoji
-        //     (recentReactions[0]). The first tap stamps _lastTap*; the
-        //     second tap inside 320 ms detects double and fires.
-        //   • Single tap → open the floating ReactionBar after a 320 ms
-        //     delay (so a follow-up tap can still promote to double).
-        //
-        // The full contextual menu remains on long-press (untouched).
+        // One press opens the contextual menu (reaction strip + actions)
+        // for both text AND image bubbles. `isPlainText` is true for any
+        // message without an attachment filename — i.e. regular text and
+        // inline images (image bubbles carry no metadata.filename). File
+        // types (PDFs, audio, video, generic attachments) are NOT covered
+        // here: they keep their natural tap-to-open / play behaviour and
+        // reach the menu via long-press / the kebab icon. Full screen for
+        // an image is reached via the FS icon or the menu's "Full screen"
+        // action, not a plain body tap.
         const hasImage = !!message.image;
         const isPlainText = !(message.metadata && message.metadata.filename);
-        const isReactable = isPlainText || hasImage;
-        if (isReactable) {
-            const now = Date.now();
-            const isDouble = this._lastTapId === message._id
-                && (now - (this._lastTapAt || 0)) < 320;
-            this._lastTapAt = now;
-            this._lastTapId = message._id;
 
-            if (isDouble) {
-                this._lastTapAt = 0;
-                this._lastTapId = null;
-                const defaultEmoji = (this.state.recentReactions
-                    && this.state.recentReactions[0]) || '❤️';
-                this.quickReact(message, defaultEmoji);
-                return;
-            }
-
-            // Skip the floating ReactionBar entirely when the chat
-            // is read-only. Same predicate (`_chatIsReadOnly`)
-            // governs whether the bottom input toolbar is replaced
-            // with the inert `noChatInputToolbar` / `noKeyInputToolbar`
-            // variant a few hundred lines below, so the two surfaces
-            // stay in lockstep: if the user can't send a message
-            // they can't add a reaction either, and surfacing the
-            // emoji bar implied an action that would silently fail.
-            // Cases this catches:
-            //   • no private key loaded (encryption gate)
-            //   • viewing a videoconference room's chat history
-            //     outside of an active conference (read-only — the
-            //     real conference chat is in ConferenceBox)
-            //   • searchMessages mode
-            //   • no chat panel is open at all
-            if (this._chatIsReadOnly()) {
-                return;
-            }
-
-            // Defer the bar so the second half of a double-tap pre-empts
-            // it. If by the time this fires the tap was promoted to a
-            // double or the user tapped a different bubble, do nothing.
-            setTimeout(() => {
-                if (this._lastTapId === message._id
-                    && this._lastTapAt
-                    && Date.now() - this._lastTapAt >= 290) {
-                    this.setState({ reactionTarget: message });
-                }
-            }, 320);
+        if (isPlainText || hasImage) {
+            this.onLongMessagePress(null, message);
             return;
         }
 
@@ -4195,50 +4330,15 @@ class ContactsListBox extends Component {
 
     onLongMessagePress(context, currentMessage) {
 		Keyboard.dismiss();
-		this.setState({actionSheetDisplayed: true});
+		// NOTE: do NOT setState({actionSheetDisplayed}) here — openMessageMenu
+		// sets it together with messageMenu in a single setState, so a tap
+		// only triggers ONE re-render instead of two. (The old extra
+		// setState plus a now-removed location-parse diagnostic that ran
+		// regex on the body of every tapped message were adding latency to
+		// "tap → menu opens".)
 
         if (!currentMessage.metadata) {
             currentMessage.metadata = {};
-        }
-
-        // Diagnostic dump for the "Meet me there..." parser. Logs
-        // (a) the bubble's contentType so we know which branch the
-        // long-press will take, (b) a 200-char snippet of the body
-        // (text first, falling back to html), (c) the result of
-        // parseSharedLocationUrl on that body. The most common reason
-        // "Meet me there..." doesn't appear on a Google-Maps-link
-        // message is that the body uses a URL shape we don't
-        // recognise yet (e.g. shortened maps.app.goo.gl, or an
-        // unusual query-param order). The snippet + parse result
-        // gives us everything we need to extend the regex set in one
-        // round-trip. APPLOG'd so it lands in the on-device log file
-        // (Show logs / "Support needed…") rather than the dev console.
-        try {
-            const _bodyForParse = currentMessage.text || currentMessage.html || '';
-            const _snippet = String(_bodyForParse).slice(0, 200);
-            const _parsed = utils.parseSharedLocationUrl(_bodyForParse);
-            // Also probe the broader extractLocationLink so we can
-            // see when the short-URL recogniser kicks in even though
-            // parseSharedLocationUrl returned null.
-            const _link = utils.extractLocationLink(_bodyForParse);
-            const _linkDesc = _link
-                ? (_link.type === 'direct'
-                    ? ('direct ' + _link.coords.latitude.toFixed(5) + ',' + _link.coords.longitude.toFixed(5))
-                    : ('short ' + _link.url))
-                : 'null';
-            /*
-            utils.timestampedLog('[location] long-press diag —',
-                'contentType=', currentMessage.contentType || '(none)',
-                'parseResult=', _parsed
-                    ? (_parsed.latitude.toFixed(5) + ',' + _parsed.longitude.toFixed(5))
-                    : 'null',
-                'extractLink=', _linkDesc,
-                'canSend=', this.props.canSend && this.props.canSend(),
-                'body[0..200]=', JSON.stringify(_snippet));
-                */
-        } catch (e) {
-            console.log('[location] long-press diag failed',
-                e && e.message ? e.message : e);
         }
 
         // Live-location messages are a different beast from text/file
@@ -4341,8 +4441,13 @@ class ContactsListBox extends Component {
                 icons.push(<Icon name="map-marker-account" size={20} />);
             }
 
+            // Reply is hidden for failed messages — there's nothing to
+            // reply to yet (the message never made it out); the useful
+            // action there is Resend, which is surfaced instead.
+            const _replyFailed = !!currentMessage.failed
+                || !!(currentMessage.metadata && currentMessage.metadata.error);
             //if (currentMessage.direction == 'incoming' && !this.hideItem) {
-            if (!this.hideItem && !isLiveLocation) {
+            if (!this.hideItem && !isLiveLocation && !_replyFailed) {
 				options.push('Reply');
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
@@ -4409,15 +4514,21 @@ class ContactsListBox extends Component {
 
 			// Edit is meaningless for live-location bubbles — their body is
 			// auto-generated (a tick timestamp), not user-authored text.
+			// For image / video bubbles the editable text is the caption,
+			// not a message body, so label it "Edit caption" to make that
+			// clear (handled together with 'Edit' in the callback below).
 			if (this.isMessageEditable(currentMessage) && !isLiveLocation) {
-				options.push('Edit');
+				const _editLabel = (currentMessage.image || currentMessage.video)
+					? 'Edit caption'
+					: 'Edit';
+				options.push(_editLabel);
 				icons.push(<Icon name="file-document-edit" size={20} />);
 			}
 			
 			if (currentMessage.image) {
-			    if (!(currentMessage._id in this.state.imageGroups)) {  
-                    options.push('Preview')
-                    icons.push(<Icon name="image" size={20} />);
+			    if (!(currentMessage._id in this.state.imageGroups)) {
+                    options.push('Full screen')
+                    icons.push(<Icon name="fullscreen" size={20} />);
                 }
 			}
 
@@ -4490,16 +4601,19 @@ class ContactsListBox extends Component {
                 }
             }
 
-            let showResend = currentMessage.metadata && currentMessage.metadata.error;
-            showResend = true;
-
-            if (this.state.targetUri.indexOf('@videoconference') === -1) {
-                if (currentMessage.direction === 'outgoing') {
-                    if (showResend && !this.hideItem && !isLiveLocation) {
-                        options.push('Resend')
-                        icons.push(<Icon name="send" size={20} />);
-                    }
-                }
+            // Resend is for OUTGOING messages only — you can't resend what
+            // you received. On the receiver, a file you already downloaded
+            // gets "Download again" instead (see the file-transfer block
+            // below); a not-yet-downloaded one gets "Download". Still excluded:
+            // conference rooms (no per-message resend) and live-location.
+            const canResend =
+                this.state.targetUri.indexOf('@videoconference') === -1
+                && !this.hideItem
+                && !isLiveLocation
+                && currentMessage.direction === 'outgoing';
+            if (canResend) {
+                options.push('Resend');
+                icons.push(<Icon name="send" size={20} />);
             }
 
             // Pin / Unpin is now also offered for live-location
@@ -4559,16 +4673,14 @@ class ContactsListBox extends Component {
 					if (!currentMessage.metadata.local_url) {
 						options.push('Download');
 						icons.push(<Icon name="cloud-download" size={20} />);
-					} else {
-						//options.push('Download again');
-						//icons.push(<Icon name="cloud-download" size={20} />);
-
-					/*
-					if (currentMessage.metadata.local_url && currentMessage.metadata.local_url.endsWith('.asc')) {
-						options.push('Decrypt');
-						icons.push(<Icon name="table-key" size={20} />);
-					}*/
-
+					} else if (currentMessage.direction !== 'outgoing') {
+						// Already downloaded a RECEIVED file — offer a re-download
+						// (e.g. the local copy was removed externally, or the user
+						// wants a fresh fetch). The menu handler routes any
+						// 'Download…' label through downloadFile(). Not shown for
+						// our own outgoing files, where local_url is the source.
+						options.push('Download again');
+						icons.push(<Icon name="cloud-download" size={20} />);
 					}
 				} else {
 					options.push('Email');
@@ -4579,9 +4691,11 @@ class ContactsListBox extends Component {
             options.push('Cancel');
             icons.push(<Icon name="cancel" size={20} />);
 
-            let l = options.length - 1;
-            
-            context.actionSheet().showActionSheetWithOptions({options, l, l, icons, textStyle: styles.actionSheetText}, (buttonIndex) => {
+            // Selection handler — identical body to the old
+            // ActionSheet callback. The new MessageContextMenu calls
+            // this with the chosen option's index, so every branch
+            // below keeps working verbatim.
+            const _menuCallback = (buttonIndex) => {
                 let action = options[buttonIndex];
                 if (action === 'Cancel') {
                     this.setState({actionSheetDisplayed: false});
@@ -4702,7 +4816,7 @@ class ContactsListBox extends Component {
                     this.props.unpinMessage(currentMessage._id);
                 } else if (action === 'Info') {
                     this.setState({message: currentMessage, showMessageModal: true});
-                } else if (action === 'Edit') {
+                } else if (action === 'Edit' || action === 'Edit caption') {
                     this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action === 'Preview') {
                     this.onImagePress(currentMessage);
@@ -4776,6 +4890,16 @@ class ContactsListBox extends Component {
                         this.props.meetMeAt(this.state.targetUri, _link);
                     }
                 } else if (action === 'Full screen') {
+                    if (currentMessage.image) {
+                        // Image bubble → open the zoomable full-screen
+                        // image viewer (same path as the FS icon and the
+                        // old "Preview" action). Single-press no longer
+                        // opens it, so this menu action is how you get
+                        // there from a body tap.
+                        this.setState({actionSheetDisplayed: false});
+                        this.onImagePress(currentMessage);
+                        return;
+                    }
                     // Open the location bubble in a full-screen modal.
                     // Mirrors the image-bubble fullscreen pattern below
                     // (expandedImage + ImageViewer modal): we hide the
@@ -4851,7 +4975,96 @@ class ContactsListBox extends Component {
                         this.props.postSystemNotification(error.message);
                     });
                 }
-            });
+            };
+
+            this.openMessageMenu(currentMessage, options, icons, _menuCallback);
+        }
+    };
+
+    // Decide whether the redesigned context menu should show the
+    // reaction strip for this message, then stash everything the
+    // overlay needs in state. Mirrors onMessagePress's reactability
+    // predicate (text or image bubble, not a file, chat not read-only,
+    // not a live-location stream) so the strip only appears where a
+    // reaction can actually be sent.
+    openMessageMenu(currentMessage, options, icons, callback) {
+        console.log('[reaction-menu] open',
+            'id=', currentMessage && currentMessage._id,
+            'contentType=', (currentMessage && currentMessage.contentType) || '(none)',
+            'direction=', (currentMessage && currentMessage.direction) || '(none)',
+            'state={',
+            'pending=', !!(currentMessage && currentMessage.pending),
+            'sent=', !!(currentMessage && currentMessage.sent),
+            'delivered(received)=', !!(currentMessage && currentMessage.received),
+            'read(displayed)=', !!(currentMessage && currentMessage.displayed),
+            'failed=', !!(currentMessage && currentMessage.failed),
+            '}',
+            'options=[', (options || []).join(' | '), ']');
+        const isLiveLocation =
+            currentMessage.contentType === 'application/sylk-live-location';
+        // A failed send can't carry a reaction (the message itself
+        // never made it out), so suppress the emoji strip for it.
+        const failed = !!currentMessage.failed
+            || !!(currentMessage.metadata && currentMessage.metadata.error);
+        // Reactions are offered on every message type now — text,
+        // image, file, audio, video — because the long-press reaction
+        // strip is the unified reaction entry point that replaced the
+        // old single-tap floating bar. Only live-location bubbles stay
+        // excluded: their body is a constantly-updating tick, so a
+        // reaction reply pinned to it would be misleading. Read-only
+        // chats still suppress the strip (can't send → can't react),
+        // and failed messages do too.
+        const reactable = !isLiveLocation && !this._chatIsReadOnly() && !failed;
+
+        // For video bubbles, hand the menu the cached thumbnail so its
+        // echo can show the video's poster frame instead of nothing.
+        // Same source order renderMessageVideo uses: the message's own
+        // thumbnail first, then the videoMetaCache entry; normalise an
+        // object-shaped thumbnail to its string and file://-prefix on
+        // Android so <Image> can load a local path.
+        let previewImage = null;
+        if (currentMessage.video) {
+            const id = currentMessage._id;
+            const cache = this.state.videoMetaCache || {};
+            let thumb = currentMessage.thumbnail
+                || (cache[id] && cache[id].thumbnail);
+            if (thumb && typeof thumb === 'object') {
+                thumb = thumb.thumbnail;
+            }
+            if (thumb && typeof thumb === 'string') {
+                if (Platform.OS === 'android' && thumb.indexOf('file://') === -1) {
+                    thumb = 'file://' + thumb;
+                }
+                previewImage = thumb;
+            }
+        }
+
+        // (`failed` computed above — drives Resend/Delete promotion in
+        // the menu's floating row and suppresses the reaction strip.)
+        this.setState({
+            actionSheetDisplayed: true,
+            messageMenu: {
+                message: currentMessage, options, icons, callback,
+                reactable, previewImage, failed,
+            },
+        });
+    }
+
+    // Tear down the overlay. Routes through here from every dismissal
+    // path (scrim tap, action chosen, reaction sent) so actionSheetDisplayed
+    // is always cleared in lockstep with the menu.
+    closeMessageMenu = () => {
+        this.setState({ messageMenu: null, actionSheetDisplayed: false });
+    };
+
+    // An action button was tapped. Run the original callback with the
+    // option's index, then close. Mirrors the old ActionSheet contract
+    // (callback then auto-dismiss).
+    onMessageMenuSelect = (index) => {
+        const menu = this.state.messageMenu;
+        this.closeMessageMenu();
+        if (menu && typeof menu.callback === 'function') {
+            menu.callback(index);
         }
     };
 
@@ -5045,6 +5258,22 @@ class ContactsListBox extends Component {
             return true;
         }
 
+        // Image-group membership changed. When a newly-sent image joins
+        // an existing group, computeImageGroups does setState({imageGroups})
+        // but the group LEADER's message object in renderMessages doesn't
+        // change — so without a trigger here gifted-chat's Message skips
+        // the leader and its ThumbnailGrid keeps showing the old N tiles
+        // until the chat is navigated away from and back. Same pattern as
+        // selectedImages above: force a single pass on the transition and
+        // let ChatBubble's own memo (which now compares group membership)
+        // decide which leader actually re-renders. _previousImageGroups is
+        // refreshed in componentDidUpdate alongside _previousSelectedImages.
+        const prevGroups = this._previousImageGroups;
+        const currGroups = this.state.imageGroups;
+        if (prevGroups !== undefined && prevGroups !== currGroups) {
+            return true;
+        }
+
         return false;
     }
 
@@ -5208,6 +5437,12 @@ class ContactsListBox extends Component {
       // new selection so the next prop diff catches it as "this
       // pass differs from the previous pass".
       this._previousSelectedImages = this.state.selectedImages;
+
+      // Same idea for imageGroups: track the previous reference so the
+      // next shouldUpdateMessage cycle can detect a group membership
+      // change (new image joined a group) and force the leader bubble to
+      // re-render its ThumbnailGrid with the added tile.
+      this._previousImageGroups = this.state.imageGroups;
 
       // Scroll each calendar-bar row to keep the active pill in
       // view whenever its selection transitions. Fires for both
@@ -6192,7 +6427,10 @@ class ContactsListBox extends Component {
 				style={{
 				  width: '100%',
 				  height: '100%',
-				  resizeMode: 'cover',
+				  // 'contain' so the whole frame fits inside the 16:9 box
+				  // (letterboxed on the black surface) instead of cropping
+				  // the top/bottom of portrait clips.
+				  resizeMode: 'contain',
 				}}
 			  />
 			) : (
@@ -6242,7 +6480,10 @@ class ContactsListBox extends Component {
 		let values = [1, 2, 3];
 	
 		const prevGrid = prevState.thumbnailGridSize || {};
-		const images = this.state.imageGroups[id];
+		// Guard: the group id can be stale (e.g. the leader bubble was
+		// deleted / re-created by a resend), leaving imageGroups[id]
+		// undefined — reading .length off it crashed the render.
+		const images = this.state.imageGroups[id] || [];
 		let default_val = 1;
 		if (images.length > 1) {
 			if (images.length < 5) {
@@ -6576,50 +6817,19 @@ class ContactsListBox extends Component {
                 : _vidTheme.bubbleOutgoingText;
 
 			if (currentMessage.metadata.preview) {
+				// Same layout as the image preview below — just the
+				// "Full size of …" toggle, on a bar with some height.
 				return (
 					<View style={[{flexDirection: 'row', alignItems: 'center',
-					justifyContent: 'space-between', // distribute items evenly,  
-					paddingHorizontal: 8}, styles.photoMenuContainer, extraStyles]}>
+						justifyContent: 'flex-start',
+						paddingHorizontal: 10,
+						paddingTop: 12,
+						minHeight: 56}, styles.photoMenuContainer, extraStyles]}>
 
-					  <View
-						style={[
-						  styles.photoMenuText,
-						  {
-							flex: 1,
-							paddingHorizontal: 6,
-							justifyContent: 'center',
-							borderColor: 'red',
-							borderWidth: 0
-						  },
-						]}
-					  >
-						<Text
-						  style={{
-							color: '#000',
-							fontSize: 14,
-							flexShrink: 1,
-							textAlignVertical: 'center',
-							includeFontPadding: false,
-							marginBottom: 6
-						  }}
-						  numberOfLines={1}
-						  ellipsizeMode="tail"
-						>
-						  {mediaLabel}
-						</Text>
-		
-					  </View>
-	
-					  <IconButton
-						style={styles.deleteButton}
-						type="font-awesome"
-						size={20}
-						icon="delete"
-						iconColor='red'
-						onPress={() => this.deleteSharingAssets()}
-					  />				  
-						</View>
-					); 
+					{this.renderFullSizeToggle(currentMessage)}
+
+					</View>
+				);
 				} else {
 					return (
 					<View style={[{flexDirection: 'row', alignItems: 'flex-start', borderWidth: 0, borderColor: 'red',
@@ -6659,6 +6869,8 @@ class ContactsListBox extends Component {
 						  >
 							{/* Label text on the left */}
 							<Text
+							  numberOfLines={1}
+							  ellipsizeMode="tail"
 							  style={{
 								color: fontColor,
 								fontSize: 14,
@@ -6668,17 +6880,17 @@ class ContactsListBox extends Component {
 								marginTop: 6,
 							  }}
 							>
-							  {mediaLabel}
+							  {isTransfering ? '' : mediaLabel}
 							</Text>
 
 							{isTransfering && (
-					        <View style={{ marginTop: 8, alignItems: 'flex-start' }}>
+					        <View style={{ marginTop: 8, alignItems: 'flex-start', width: 140 }}>
 							  <Progress.Bar
 								progress={progress}
 								indeterminate={isStarting}
-								width={60}         // smaller width for inline look
-								height={6}
-								borderRadius={3}
+								width={120}        // longer bar for visibility
+								height={7}
+								borderRadius={4}
 								borderWidth={0}
 								color={isTransfering ? "#007AFF" : "orange"}
 								unfilledColor="#e0e0e0"
@@ -6686,14 +6898,16 @@ class ContactsListBox extends Component {
 							  />
 
 							  <Text
+								numberOfLines={1}
 								style={{
 								  fontSize: 12,
 								  color: 'orange',
 								  marginTop: 2,
 								  marginLeft: 2,
+								  width: 138,
 								}}
 							  >
-								{isStarting ? '…' : Math.round(progress * 100) + '%'}
+								{(stage ? stage + ' ' : '') + (isStarting ? '…' : Math.round(progress * 100) + '%')}
 							  </Text>
 							  </View>
 							)}
@@ -6845,65 +7059,11 @@ class ContactsListBox extends Component {
 					<View style={[{flexDirection: 'row', alignItems: 'center',
 						justifyContent: 'flex-start',
 						paddingHorizontal: 10,
-						paddingTop: 12}, styles.photoMenuContainer, extraStyles]}>
+						paddingTop: 12,
+						minHeight: 56}, styles.photoMenuContainer, extraStyles]}>
 
 
-					<View style={{flexDirection: 'row', alignItems: 'center',  borderWidth: 0, borderColor: 'red'}}>
-
-					{ Platform.OS === "android" ?
-					   <Checkbox
-						 color="white"
-						 uncheckedColor="white"
-						 status={this.state.fullSize ? 'checked' : 'unchecked'}
-						 onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));
-						 }}
-						/>
-					:
-
-					<View
-					  style={{
-						borderWidth: this.state.fullSize ? 0.5 : 2,
-						borderColor: 'white',
-						borderRadius: 2,
-						padding: 0,
-						transform: [{ scale: 0.5 }]
-					  }}
-					>
-						<Checkbox
-						  color="white"
-						  uncheckedColor="white"
-						  status={this.state.fullSize ? 'checked' : 'unchecked'}
-						  onPress={() => {this.setState(prev => ({ fullSize: !prev.fullSize }));
-						 }}
-						/>
-					 </View>
-					 }
-					  <Text style={[styles.checkboxLabel, {marginTop: 0, color: 'white'}]}>
-					    {(() => {
-					        // When uploading a batch of images the user sees one
-					        // preview bubble per image. Pre-fix, the "Full size of …"
-					        // label only reflected the size of the bubble it lived
-					        // on (typically the last one), making it look like the
-					        // whole upload was tiny. Sum filesizes across all
-					        // sharingMessages when there's more than one so the
-					        // label reflects the entire payload the user is about
-					        // to send.
-					        const sm = this.state.sharingMessages || [];
-					        if (sm.length > 1) {
-					            const total = sm.reduce(
-					                (s, m) => s + ((m.metadata && m.metadata.filesize) || 0),
-					                0
-					            );
-					            return total > 0
-					                ? `Full size of ${formatFileSize(total)} (${sm.length} images)`
-					                : `Full size (${sm.length} images)`;
-					        }
-					        return currentMessage.metadata?.filesize
-					            ? 'Full size of ' + formatFileSize(currentMessage.metadata.filesize)
-					            : 'Full size';
-					    })()}
-					  </Text>
-					  </View>
+					{this.renderFullSizeToggle(currentMessage)}
 
 					{/* Delete button has moved to the left side of the input
 					    toolbar (see CustomActions / ChatActions.js) so the
@@ -8542,8 +8702,11 @@ scrollToMessage(id) {
 	      return;
 	  }
 	
-	  let messages = this.state.renderMessages;
-	  if (this.state.sharingMessages.length > 0) {
+	  // Guard against a teardown race: during unmount / fast-refresh a final
+	  // render can run after state has been partially cleared, leaving these
+	  // momentarily undefined and crashing the .filter below.
+	  let messages = Array.isArray(this.state.renderMessages) ? this.state.renderMessages : [];
+	  if ((this.state.sharingMessages || []).length > 0) {
 		  messages = this.state.sharingMessages;
 	  }
 	  
@@ -8873,9 +9036,15 @@ scrollToMessage(id) {
         items.forEach((item) => {
             const fromDomain = '@' + item.uri.split('@')[1];
 
-            if (item.uri === 'anonymous@anonymous.invalid' && this.state.filter !== 'blocked') {
-                return;
-            }
+            // NOTE: the anonymous@anonymous.invalid row used to be hidden from
+            // every view except 'blocked'. That meant accepted/missed calls
+            // from guest callers (which collapse into this one canonical
+            // contact) silently vanished from the Calls list. It now flows
+            // through the normal filters like any other contact, so the
+            // single collapsed "Anonymous" entry is visible in Calls/Contacts.
+            // Conference-invite mode still excludes it below (it has no inbox
+            // to invite), and blocked-tagging still routes it to the Blocked
+            // view as usual.
 
             if (this.state.periodFilter === 'recent') {
                 if(item.timestamp < recentStart ) {
@@ -9429,13 +9598,90 @@ scrollToMessage(id) {
 			  // not grouped → show
 			  if (!groupId) return true;
 
-			  // show only first image of group
-			  return this.state.imageGroups[groupId][0] === msg._id;
+			  // show only first image of group. Guard a stale group id
+			  // (the group's members can be deleted/re-created — e.g. by
+			  // a resend — leaving groupOfImage pointing at a group that
+			  // no longer exists); show the message rather than crash.
+			  const _group = this.state.imageGroups[groupId];
+			  if (!_group || _group.length === 0) return true;
+			  return _group[0] === msg._id;
 			});
 		})();
 			
 		//console.log('visibleMessages', visibleMessages.length);
 		//console.log('chatMessages', chatMessages.length);
+
+		// Debug: dump the last 10 bubbles as a vertical stack in the
+		// same order they appear on the phone (top = oldest, bottom =
+		// newest), outgoing indented to the right to mirror the bubble
+		// alignment. visibleMessages is newest-first, so we take the
+		// first 10 and reverse. Guarded by a signature so it logs only
+		// when the last-10 set actually changes (new/deleted message,
+		// contact switch) instead of on every render.
+		// Off by default — console.log over Metro is slow, and this runs
+		// in render(). Flip to true only when actively debugging ordering.
+		const _DEBUG_BUBBLE_STACK = false;
+		try {
+			if (_DEBUG_BUBBLE_STACK) {
+			const _last10 = visibleMessages.slice(0, 10);
+			const _sig = _last10.map(m => m._id).join(',');
+			if (this._lastStackSig !== _sig) {
+				this._lastStackSig = _sig;
+				const _rows = _last10.slice().reverse();
+				// HH:MM:SS from a Date / ISO / ms createdAt.
+				const _hms = (v) => {
+					const d = v instanceof Date ? v : new Date(v);
+					if (isNaN(d.getTime())) return '--:--:--';
+					const p = (n) => String(n).padStart(2, '0');
+					return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+				};
+				// Media category for file-transfer bubbles. Uses the
+				// GiftedChat media fields first, then the metadata
+				// mime/filename, falling back to 'file' / 'text'.
+				const _cat = (m) => {
+					if (m.image) return 'image';
+					if (m.video) return 'video';
+					if (m.audio) return 'audio';
+					const md = m.metadata || {};
+					if (md.filename || md.filetype) {
+						const ft = (md.filetype || '').toLowerCase();
+						const fn = (md.filename || '').toLowerCase();
+						if (ft.indexOf('image') === 0 || /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/.test(fn)) return 'image';
+						if (ft.indexOf('video') === 0 || /\.(mp4|mov|avi|mkv|webm|3gp|m4v)$/.test(fn)) return 'video';
+						if (ft.indexOf('audio') === 0 || /\.(mp3|wav|ogg|m4a|aac|opus|amr|flac)$/.test(fn)) return 'audio';
+						return 'file';
+					}
+					return 'text';
+				};
+				console.log('[bubble-stack] last ' + _rows.length
+					+ ' messages (top=oldest, bottom=newest):');
+				_rows.forEach((m) => {
+					const out = m.direction === 'outgoing';
+					let body = m.text
+						|| (m.image ? '[image]'
+							: m.video ? '[video]'
+							: m.audio ? '[audio]'
+							: (m.metadata && m.metadata.filename)
+								? '[file] ' + m.metadata.filename
+								: '');
+					body = String(body).replace(/\s+/g, ' ').slice(0, 50);
+					// Same failed definition the menu uses: the bubble's
+					// own `failed` flag OR a file-transfer metadata.error.
+					// Failed → FAILED, otherwise OK.
+					const _failed = m.failed || (m.metadata && m.metadata.error);
+					const flags = _failed ? 'FAILED' : 'OK';
+					const cat = _cat(m);
+					const catTag = cat !== 'text' ? ' (' + cat + ')' : '';
+					const line = _hms(m.createdAt) + ' '
+						+ (out ? 'OUT' : 'IN ') + ' [' + flags + ']' + catTag
+						+ ' ' + body + '  id=' + m._id;
+					console.log('[bubble-stack] ' + (out ? '                         ' : '') + line);
+				});
+			}
+			}
+		} catch (e) {
+			console.log('[bubble-stack] failed', e && e.message);
+		}
 		  		  
 		// Pick the keyboard-handling strategy by device class:
 		//
@@ -9934,18 +10180,24 @@ scrollToMessage(id) {
                       // screen edges.
                       const isPreview = props.currentMessage?.metadata?.preview === true;
                       if (!isPreview) {
-                          return <Message {...props} />;
+                          return this.renderMessageRow(
+                              <Message {...props} />,
+                              props.currentMessage
+                          );
                       }
                       const previewRowStyle = { marginLeft: 0, marginRight: 0 };
-                      return (
-                          <Message
-                              {...props}
-                              renderAvatar={null}
-                              containerStyle={{
-                                  left: previewRowStyle,
-                                  right: previewRowStyle
-                              }}
-                          />
+                      return this.renderMessageRow(
+                          (
+                              <Message
+                                  {...props}
+                                  renderAvatar={null}
+                                  containerStyle={{
+                                      left: previewRowStyle,
+                                      right: previewRowStyle
+                                  }}
+                              />
+                          ),
+                          props.currentMessage
                       );
                   }}
                   renderBubble={this.renderBubbleWithMessages}
@@ -10724,6 +10976,34 @@ scrollToMessage(id) {
                 show={this.state.showShareMessageModal}
                 message={this.state.message}
                 close={this.toggleShareMessageModal}
+            />
+
+            <MessageContextMenu
+                visible={!!this.state.messageMenu}
+                message={this.state.messageMenu && this.state.messageMenu.message}
+                options={(this.state.messageMenu && this.state.messageMenu.options) || []}
+                icons={(this.state.messageMenu && this.state.messageMenu.icons) || []}
+                reactable={!!(this.state.messageMenu && this.state.messageMenu.reactable)}
+                previewImage={this.state.messageMenu && this.state.messageMenu.previewImage}
+                failed={!!(this.state.messageMenu && this.state.messageMenu.failed)}
+                reactions={this.state.recentReactions}
+                isDark={DarkModeManager.getTheme().isDark}
+                onSelect={this.onMessageMenuSelect}
+                onDismiss={this.closeMessageMenu}
+                onReact={(emoji) => {
+                    const target = this.state.messageMenu && this.state.messageMenu.message;
+                    this.closeMessageMenu();
+                    if (target) {
+                        this.quickReact(target, emoji);
+                    }
+                }}
+                onPickerOpen={() => {
+                    const target = this.state.messageMenu && this.state.messageMenu.message;
+                    this.closeMessageMenu();
+                    if (target) {
+                        this.openReactionPicker(target);
+                    }
+                }}
             />
 
             </SafeAreaView>

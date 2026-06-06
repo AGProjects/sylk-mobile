@@ -32,12 +32,21 @@ public class AndroidSettingsModule extends ReactContextBaseJavaModule {
         reactContext.startActivity(intent);
     }
 
+    // Resolves true when the OS has granted notification-policy (DND /
+    // "Modes" / Priority modes) access. Implemented as a Promise rather
+    // than a plain value-returning @ReactMethod: the RN bridge ignores
+    // return values from a normal @ReactMethod, so the previous boolean
+    // signature always resolved to `undefined` on the JS side — making
+    // the app believe access was never granted. Mirrors isOsDndOn below.
     @ReactMethod
-    public boolean hasDndAccess() {
-        NotificationManager nm =
-            (NotificationManager) reactContext.getSystemService(Context.NOTIFICATION_SERVICE);
-
-        return nm != null && nm.isNotificationPolicyAccessGranted();
+    public void hasDndAccess(Promise promise) {
+        try {
+            NotificationManager nm =
+                (NotificationManager) reactContext.getSystemService(Context.NOTIFICATION_SERVICE);
+            promise.resolve(nm != null && nm.isNotificationPolicyAccessGranted());
+        } catch (Throwable t) {
+            promise.resolve(false);
+        }
     }
 
     // True when the system Do Not Disturb interruption filter is anything

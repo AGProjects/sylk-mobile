@@ -510,10 +510,24 @@ class NavigationBar extends Component {
     _warmupSubtitle() {
         const call = this.props.call;
         if (!call) return null;
-        const cs = this.state._warmupCallState || call.state;
+        // Prefer the LIVE call state for terminal states. The cached
+        // _warmupCallState can be stale (e.g. frozen at 'incoming' if the
+        // 'terminated' stateChanged didn't reach our listener after a push
+        // reject), and `_warmupCallState || call.state` would let that stale
+        // value mask a real 'terminated'/'established' — leaving a "Collecting
+        // ICE candidates…" label up long after the call ended.
+        const _liveState = call.state;
+        const cs = (_liveState === 'terminated' || _liveState === 'established')
+            ? _liveState
+            : (this.state._warmupCallState || _liveState);
         if (!cs || cs === 'established' || cs === 'terminated') {
             return null;
         }
+        // No live peer connection means no ICE work is in progress. The poller
+        // freezes its last sample when _pc goes away (closed on reject/
+        // terminate), so ignore those stale ICE/gather/conn values rather than
+        // showing a phantom "Collecting ICE candidates…".
+        const _pcLive = !!call._pc;
         // Local media not yet acquired — for an outgoing call this is
         // the first thing the user is waiting on; for an incoming call
         // it gates between tapping Accept and the answer SDP firing.
@@ -526,9 +540,9 @@ class NavigationBar extends Component {
                 return 'Acquiring mic…';
             }
         }
-        const ice = this.state._warmupIceConn;
-        const gather = this.state._warmupGather;
-        const conn = this.state._warmupConn;
+        const ice = _pcLive ? this.state._warmupIceConn : null;
+        const gather = _pcLive ? this.state._warmupGather : null;
+        const conn = _pcLive ? this.state._warmupConn : null;
         // PC reports a failure — surface it rather than the optimistic
         // SIP state.
         if (ice === 'failed' || conn === 'failed') {
@@ -7715,6 +7729,8 @@ class NavigationBar extends Component {
                     setAutoDownloadOnWifi={this.props.setAutoDownloadOnWifi}
                     autoDownloadOnMobile={this.props.autoDownloadOnMobile}
                     setAutoDownloadOnMobile={this.props.setAutoDownloadOnMobile}
+                    maxEncryptFileSize={this.props.maxEncryptFileSize}
+                    setMaxEncryptFileSize={this.props.setMaxEncryptFileSize}
                 />
 
                 { this.state.showEditConferenceModal ?

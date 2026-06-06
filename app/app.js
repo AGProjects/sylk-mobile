@@ -3,6 +3,7 @@
 import React, { Component, Fragment } from 'react';
 import { Alert, View, Dimensions, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid, Image, PixelRatio, InteractionManager} from 'react-native';
 import { DeviceEventEmitter, BackHandler } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Provider as PaperProvider, DefaultTheme, ActivityIndicator, Modal, Title} from 'react-native-paper';
 import { registerGlobals } from 'react-native-webrtc';
 import { Router, Route, Link, Switch } from 'react-router-native';
@@ -22,6 +23,7 @@ import Proximity from 'react-native-proximity';
 
 import { Appearance } from 'react-native';
 import ImageResizer from 'react-native-image-resizer';
+import { Video as VideoCompressor } from 'react-native-compressor';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import debug from 'react-native-debug';
 
@@ -61,10 +63,9 @@ import * as sylkrtc from 'react-native-sylkrtc';
 // Both phones MUST log the same value, otherwise asymmetric video is
 // almost certainly version skew rather than a codec issue.
 //
-// Must match SYLK_E2EE_BUILD in:
-//   node_modules/react-native-webrtc/android/src/main/cpp/MediaEncryptorJni.cpp
-//   node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee.cpp
-//   node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm
+// Must match SYLK_E2EE_BUILD in (single source of truth on the native side):
+//   node_modules/react-native-webrtc/android/src/main/cpp/sylk_e2ee_build.h
+//   node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.mm  (iOS, separate)
 // (those are tracked via patches/react-native-webrtc+124.0.7.patch).
 //
 // At app boot we call WebRTCModule.getSylkE2EEBuild() to ask native what
@@ -139,12 +140,13 @@ export const VIDEO_PROFILE = { ...VIDEO_PROFILES[VIDEO_PROFILE_DEFAULT_ID] };
 //           H.264 land reliably across Android, iOS, and Safari/Chrome
 //           browser peers — Safari's High-profile pt=96 stream now
 //           decodes via the Snapdragon HW pipe on Android, and iOS
-//           already routes correctly via its native libwebrtc.
-//           Caveat: disables E2EE (STAP-A multi-NAL packetization
-//           isn't compatible with our fixed-prefix FrameEncryptor).
-//           The UI tags this codec "(no E2EE)" and the ZRTP
-//           simulation refuses to install when H.264 is the
-//           negotiated codec.
+//           already routes correctly via its native libwebrtc. As of
+//           build-2026-06-04-h264-nal-aware the FrameEncryptor uses
+//           a per-NAL AES-GCM scheme (each NAL header kept plaintext
+//           so libwebrtc's H.264 packetizer can still STAP-A-aggregate
+//           small NALs while every NAL payload is end-to-end
+//           encrypted), so H.264 + zRTP works in both directions with
+//           no UI carve-out.
 //   VP9   — alternative. Best compression, broad hw decode in 2026.
 //           Verified cross-platform with E2EE (Android↔iOS). Use
 //           this when E2EE matters more than interop with H.264-only
@@ -176,6 +178,12 @@ const PREFERRED_VIDEO_CODEC = 'H264';
 //           + PSTN destinations.
 //   PCMA  — 8 kHz A-law (G.711A). Same as PCMU but the European variant.
 const PREFERRED_AUDIO_CODEC = 'opus';
+
+// Default ceiling for PGP-encrypting outgoing file transfers. User-overridable
+// in Preferences → File Encryption (persisted at device.maxEncryptFileSize).
+// Keep in sync with ENCRYPTABLE_FILE_SIZE in utils.js, which is the fallback
+// when no preference is set.
+const ENCRYPTABLE_FILE_SIZE_DEFAULT = 20 * 1000 * 1000;
 
 // ---------- per-account settings (SQL: accounts.settings) -------------------
 // PER-ACCOUNT settings — stored in the SQL `accounts` table under the
@@ -216,7 +224,7 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // Codec preferences depend on this device's hardware encoder /
         // decoder availability. Two devices logged into the same SIP
         // account legitimately want different choices.
-        preferredVideoCodec: PREFERRED_VIDEO_CODEC,   // 'VP9'
+        preferredVideoCodec: PREFERRED_VIDEO_CODEC,   // 'H264' (default; zRTP off)
         preferredAudioCodec: PREFERRED_AUDIO_CODEC,   // 'opus'
         // Conference video codec — the user's preferred codec for
         // outgoing conferences. USER WINS: this preference always
@@ -230,7 +238,9 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // every release.
         conferenceVideoCodec: 'VP8',
         // ZRTP key-agreement mode for outgoing calls.
-        encryptionMode: 'zrtp_optional',
+        // Default: 'sdes' (zRTP disabled). Users opt-in via Preferences →
+        // Encryption → Enabled, which switches this to 'zrtp_optional'.
+        encryptionMode: 'sdes',
         // DTMF transmission. 'info' = SIP INFO (Janus-side), 'rfc4733'
         // = out-of-band telephone-event RTP. 'inband' is no longer
         // offered.
@@ -1553,7 +1563,11 @@ class Sylk extends Component {
             // devMode → state.accountSetting.device.devMode
             // autoAnswerMode → state.accountSetting.account.autoAnswerMode
             // (Both migrated out of standalone state into accountSetting.)
-            resizeContent: false,
+            // Default to COMPRESS for externally-shared media (the "Full size"
+            // checkbox on the share/contact-selection screen starts unchecked),
+            // matching the in-chat attach default. true => fullSize is false
+            // => the upload pipeline compresses + encrypts like a normal attach.
+            resizeContent: true,
             hasAutoAnswerContacts: false,
             allContacts: [],
             accounts: {},
@@ -2332,26 +2346,31 @@ class Sylk extends Component {
 
 	  const hasAccess = await AndroidSettings.hasDndAccess();
 
-	  if (!hasAccess) {
-		const asked = !!(this.state.accountSetting
-		    && this.state.accountSetting.disclaimers
-		    && this.state.accountSetting.disclaimers.askedDndPermission);
-		if (asked) {
-		  //console.log('Already asked the user to allow bypass DND')
-		  return; // user already went to the Modes access screen
-		}
-
-		Alert.alert(
-		  "Allow Priority Notifications",
-		  "To receive messages or calls during Do Not Disturb / Bedtime mode, Sylk needs permission.",
-		  [
-			{ text: "Cancel", style: "cancel" },
-			{ text: "Open Settings", onPress: () => AndroidSettings.openDndAccessSettings() }
-		  ]
-		);
-	  } else {
-	   console.log('Already allow bypass DND')
+	  // Access is genuinely granted — nothing to prompt. Don't touch the
+	  // asked-flag here so a later OS-level revoke can re-prompt once.
+	  if (hasAccess) {
+		//console.log('Already allow bypass DND')
+		return;
 	  }
+
+	  // Not granted. Prompt at most once per account, tracked by the
+	  // disclaimer flag so we don't nag on every incoming message.
+	  const asked = !!(this.state.accountSetting
+	      && this.state.accountSetting.disclaimers
+	      && this.state.accountSetting.disclaimers.askedDndPermission);
+	  if (asked) {
+		//console.log('Already asked the user to allow bypass DND')
+		return; // user already went to the Modes access screen
+	  }
+
+	  Alert.alert(
+		"Allow Priority Notifications",
+		"To receive messages or calls during Do Not Disturb / Bedtime mode, Sylk needs permission.",
+		[
+		  { text: "Cancel", style: "cancel" },
+		  { text: "Open Settings", onPress: () => AndroidSettings.openDndAccessSettings() }
+		]
+	  );
 	  await this.setAccountSetting('disclaimers.askedDndPermission', true);
 
 	}
@@ -3008,7 +3027,7 @@ class Sylk extends Component {
 	  return "unknown";
 	}
 
-    async saveLastSyncId(id, force=false, messageTimestamp=null) {
+    async saveLastSyncId(id, force=false, messageTimestamp=null, allowClear=false) {
         if (!force) {
             if (!this.state.keys || !this.state.keys.private) {
                console.log('Skip saving last sync id until we have a private key');
@@ -3016,29 +3035,62 @@ class Sylk extends Component {
             }
         }
 
+        if (!id) {
+            // A null/undefined id must ONLY ever come from the explicit
+            // "refetch" menu (resetStorage → allowClear=true). The cursor
+            // is otherwise always the last synced message's id, so any
+            // OTHER null reaching here is a race / bug — e.g. a sync
+            // completion path firing with an empty batch, or two account
+            // contexts overlapping. Do NOT touch the stored cursor in that
+            // case (keep both id and timestamp so we can't trigger a full
+            // re-download) and log the caller's stack so the offending
+            // path can be found and fixed.
+            if (!allowClear) {
+                const _stack = (new Error('saveLastSyncId(null)')).stack || '';
+                utils.timestampedLog('[journal] BLOCKED accidental saveLastSyncId(null)'
+                    + ' — cursor preserved (account=' + this.state.accountId + '). caller:\n'
+                    + _stack.split('\n').slice(2, 7).join('\n'));
+                return;
+            }
+
+            // Explicit refetch: clear the id but PRESERVE the per-account
+            // last_sync_timestamp. The id may point at a message we just
+            // deleted locally; the durable timestamp must survive so a
+            // later sync still resumes with a `since` delta instead of
+            // re-downloading the entire journal. (Only an explicit full
+            // user reset clears the timestamp, elsewhere.)
+            await this.ExecuteQuery(
+                "update accounts set last_sync_id = NULL where account = ?",
+                [this.state.accountId]
+            ).then(() => {
+                this.setState({lastSyncId: null});
+            }).catch((error) => {
+                console.log('Clear last sync id SQL error:', error);
+            });
+            return;
+        }
+
         // Persist the timestamp of the message that lastSyncId points at,
         // not the wall-clock time of the save. The server uses this as a
         // fallback "since" when the lastSyncId is no longer present on the
         // server (e.g. after server-side pruning) so we can still continue
         // the sync from where we left off in time.
-        let timestamp = null;
-        if (id) {
-            if (messageTimestamp) {
-                // Accept a Date, moment, or ISO string. Normalise to Date.
-                try {
-                    timestamp = messageTimestamp instanceof Date
-                        ? messageTimestamp
-                        : new Date(messageTimestamp);
-                    if (isNaN(timestamp.getTime())) timestamp = new Date();
-                } catch (e) {
-                    timestamp = new Date();
-                }
-            } else {
+        let timestamp;
+        if (messageTimestamp) {
+            // Accept a Date, moment, or ISO string. Normalise to Date.
+            try {
+                timestamp = messageTimestamp instanceof Date
+                    ? messageTimestamp
+                    : new Date(messageTimestamp);
+                if (isNaN(timestamp.getTime())) timestamp = new Date();
+            } catch (e) {
                 timestamp = new Date();
             }
+        } else {
+            timestamp = new Date();
         }
 
-        let params = [id, timestamp ? JSON.stringify(timestamp) : '', this.state.accountId];
+        let params = [id, JSON.stringify(timestamp), this.state.accountId];
 
         await this.ExecuteQuery("update accounts set last_sync_id = ?, last_sync_timestamp = ?  where account = ?", params).then((result) => {
             this.setState({lastSyncId: id, lastSyncTimestamp: timestamp});
@@ -3154,8 +3206,11 @@ class Sylk extends Component {
 				console.log('SQL resetStorage error:', error);
 			});
         }
- 
-        this.saveLastSyncId(null);
+
+        // Explicit user refetch path — the ONLY place allowed to null the
+        // cursor id (allowClear=true). The per-account timestamp is still
+        // preserved inside saveLastSyncId.
+        this.saveLastSyncId(null, false, null, true);
     }
 
     // All five privacy toggles now route through
@@ -7046,14 +7101,14 @@ class Sylk extends Component {
             const uri_els = elem.uri.split('@');
             let username = uri_els[0];
 
-            if (elem.uri.indexOf('@guest.') > -1) {
-                if (!elem.displayName) {
-                    elem.uri = 'guest@' + elem.uri.split('@')[1];
-                } else {
-                    elem.uri = elem.displayName.toLowerCase().replace(/\s|\-|\(|\)/g, '')
-                        + '@' + elem.uri.split('@')[1];
-                }
-            }
+            // Collapse every guest/anonymous caller to the single canonical
+            // contact, identically to the live call path (addHistoryEntry).
+            // Previously this rewrote guests to <displayname>@guest.<host>,
+            // which produced a DIFFERENT URI than the websocket/push path
+            // (anonymous@anonymous.invalid) — so the same caller showed up
+            // under multiple identities depending on the source. Multiple
+            // guest entries now dedupe into one via the known[] check below.
+            elem.uri = utils.normalizeAnonymousUri(elem.uri);
 
             if (utils.isPhoneNumber(elem.uri)) {
                 username = username.replace(/\s|\-|\(|\)/g, '').replace(/^00/, '+');
@@ -8317,7 +8372,14 @@ class Sylk extends Component {
 			payload.action === 'ACTION_ACCEPT'
 		) {
 			this.callKeepAcceptCall(payload.callUUID, options);
-		} else if (payload.action === 'REJECT') {
+		} else if (payload.action === 'REJECT' || payload.action === 'ACTION_REJECT_CALL') {
+			// 'ACTION_REJECT_CALL' is the native action name emitted when the
+			// user taps Reject on the push/CallKeep notification (the older
+			// 'REJECT' string is kept for any legacy emitter). Routing it
+			// through callKeepRejectCall lets JS cancel the prewarmed peer
+			// connection (and its ICE gathering) immediately, instead of
+			// waiting for the server's terminated (487) round-trip — which
+			// was leaving "Collecting ICE candidates…" up for up to ~45s.
 			this.callKeepRejectCall(payload.callUUID);
 		}
 	
@@ -11108,6 +11170,31 @@ class Sylk extends Component {
         }
         const stored = parseAccountSettingsBlob(raw);
         const props = applyAccountSettingDefaults(stored);
+
+        // Enforce the zRTP <-> codec invariant at load time. The off->on
+        // transition in setAccountSetting only corrects NEW enables; an account
+        // that already had zRTP enabled with H.264 stored (e.g. enabled before
+        // this coupling shipped, or via a mandatory toggle) would otherwise
+        // keep H.264 — and first-list it in the offer/answer, producing
+        // asymmetric/H.264 negotiation on what should be an encrypted call.
+        // H.264 has no zRTP path, so move it to VP9 here and persist the fix.
+        if (props.rtp
+            && (props.rtp.encryptionMode === 'zrtp_optional' || props.rtp.encryptionMode === 'zrtp_mandatory')
+            && props.rtp.preferredVideoCodec === 'H264') {
+            props.rtp = { ...props.rtp, preferredVideoCodec: 'VP9' };
+            // Persist using the accountId param (this.state.accountId may not be
+            // committed yet at load time), so the correction is durable.
+            try {
+                this.ExecuteQuery(
+                    'UPDATE accounts SET settings = ? WHERE account = ?',
+                    [JSON.stringify(props), accountId]
+                );
+            } catch (e) {
+                console.log('[encryptionMode] codec-invariant persist failed:', e && e.message);
+            }
+            console.log('[preferredVideoCodec] corrected H264 -> VP9 (zRTP enabled) for', accountId);
+        }
+
         this.setState({ accountSetting: props });
 
         const rtp = props.rtp || {};
@@ -11119,7 +11206,7 @@ class Sylk extends Component {
         if (sylkrtc.utils && sylkrtc.utils.setPreferredAudioCodec) {
             sylkrtc.utils.setPreferredAudioCodec(audioCodec);
         }
-        setEncryptionMode(rtp.encryptionMode || 'zrtp_optional');
+        setEncryptionMode(rtp.encryptionMode || 'sdes');
 
         // Resolve the persisted video profile id (480p / 720p / 1080p)
         // and push it into the CallZrtp module's encoder/bitrate
@@ -11235,15 +11322,35 @@ class Sylk extends Component {
             console.log('setAccountSetting: invalid path', path);
             return;
         }
-        const current = this.state.accountSetting || {};
-        const nextSection = { ...(current[section] || {}) };
-        if (value === null || value === undefined) {
-            delete nextSection[key];
-        } else {
-            nextSection[key] = value;
-        }
-        const next = { ...current, [section]: nextSection };
-        this.setState({ accountSetting: next });
+        // Previous value of this key (read before the async setState commits),
+        // used by side effects that need to detect a transition (e.g. zRTP
+        // off->on to default the video codec exactly once).
+        const prevValue = (this.state.accountSetting && this.state.accountSetting[section])
+            ? this.state.accountSetting[section][key]
+            : undefined;
+        // Race-safe read-modify-write. Multiple setAccountSetting calls fire
+        // back-to-back without awaiting (e.g. the serverPstnSettings burst of
+        // 7 writes on every startup). Reading this.state.accountSetting here
+        // would hand each call the SAME stale snapshot: setState is async, so
+        // none of the prior calls' changes are visible yet. The last persist
+        // then wins and silently drops the others — and if any call runs
+        // before _applyAccountSettings has committed the loaded blob, it
+        // persists ACCOUNT_SETTINGS_DEFAULTS over the user's saved values.
+        // That is exactly what reverted rtp.encryptionMode to 'sdes' on every
+        // restart. Use the functional updater so each call builds on the
+        // latest queued state, and persist the committed, fully-merged blob.
+        const next = await new Promise((resolve) => {
+            this.setState((prev) => {
+                const current = prev.accountSetting || {};
+                const nextSection = { ...(current[section] || {}) };
+                if (value === null || value === undefined) {
+                    delete nextSection[key];
+                } else {
+                    nextSection[key] = value;
+                }
+                return { accountSetting: { ...current, [section]: nextSection } };
+            }, () => resolve(this.state.accountSetting));
+        });
         await this._persistAccountSettings(next);
 
         if (path === 'rtp.preferredVideoCodec'
@@ -11259,7 +11366,22 @@ class Sylk extends Component {
                 value || PREFERRED_AUDIO_CODEC);
         }
         if (path === 'rtp.encryptionMode') {
-            setEncryptionMode(value || 'zrtp_optional');
+            setEncryptionMode(value || 'sdes');
+            // Codec coupling. zRTP works with VP9 and VP8 but NOT H.264. The
+            // FIRST time zRTP transitions off->on we default the 1-to-1 video
+            // codec to VP9; after that the user can freely toggle VP9<->VP8, so
+            // we do NOT override their choice on later optional<->mandatory
+            // toggles. We only step in otherwise if the stored codec is H.264,
+            // which has no zRTP path. Conferences are unaffected (they use
+            // conferenceVideoCodec via _applyConferenceVideoCodec).
+            const nowEnabled  = (value === 'zrtp_optional' || value === 'zrtp_mandatory');
+            const wasDisabled = (prevValue == null || prevValue === 'sdes');
+            const curCodec = this.state.accountSetting
+                && this.state.accountSetting.rtp
+                && this.state.accountSetting.rtp.preferredVideoCodec;
+            if (nowEnabled && (wasDisabled || curCodec === 'H264')) {
+                this.setAccountSetting('rtp.preferredVideoCodec', 'VP9');
+            }
         }
         if (path === 'device.videoProfile') {
             // Re-resolve VIDEO_PROFILE, push to CallZrtp's
@@ -11381,6 +11503,16 @@ class Sylk extends Component {
         }
         console.log('[conferenceVideoCodec] applied =', codec,
             '(source=' + (userPref ? 'user' : (serverRecommend ? 'server' : 'default')) + ')');
+
+        // Conferences never run zRTP — they go through the SylkServer/Janus
+        // SFU (DTLS-SRTP hop-by-hop), not an in-dialog 1-1 handshake, and the
+        // server picks the codec (often H.264) which has no zRTP path anyway.
+        // Force the runtime encryption mode to sdes for the conference's
+        // duration; changeRoute() restores the account default via
+        // _restoreEncryptionMode on exit. Called at every conference-entry
+        // point (all three sites call _applyConferenceVideoCodec first).
+        setEncryptionMode('sdes');
+        console.log('[encryptionMode] -> conference = sdes (zRTP disabled for conferences)');
     }
 
     /**
@@ -11469,7 +11601,7 @@ class Sylk extends Component {
     _restoreEncryptionMode() {
         const mode = (this.state.accountSetting
             && this.state.accountSetting.rtp
-            && this.state.accountSetting.rtp.encryptionMode) || 'zrtp_optional';
+            && this.state.accountSetting.rtp.encryptionMode) || 'sdes';
         setEncryptionMode(mode);
         console.log('[encryptionMode] -> account =', mode);
     }
@@ -12693,6 +12825,18 @@ class Sylk extends Component {
                     this.updateLoading(null, 'incoming_call');
                 }
 
+                // Clear the incomingCall OBJECT too when the call that just
+                // terminated is the one we're holding as "incoming". Without
+                // this, state.incomingCall lingered after a reject/cancel and
+                // NavigationBar's `call` prop (currentCall || incomingCall)
+                // stayed pointed at the dead call — so the "Incoming call…"
+                // warmup subtitle never reset and inCall stayed true. The
+                // incomingCallUUID guard above didn't cover this because on a
+                // fast push reject incomingCallUUID may never have been set.
+                if (this.state.incomingCall && this.state.incomingCall.id === callUUID) {
+                    this.setState({incomingCall: null});
+                }
+
                 this._terminatedCalls.set(callUUID, true);
 
                 if (direction === 'incoming' && this.timeoutIncomingTimer) {
@@ -12858,49 +13002,20 @@ class Sylk extends Component {
                 // missed_call_<uri> native pref is still bumped
                 // immediately for the launcher badge — only the JS-
                 // side persist is moved off this frame.
-                const _missedBump = (() => {
-                    if (direction !== 'incoming') return null;
-                    if (this.isConference(call)) return null;
-                    if (oldState === 'accepted' || oldState === 'established') return null;
-                    const _sipCallId = call._callId || call.callId || callUUID;
-                    const _missedContact = this.lookupContact(uri);
-                    if (!_missedContact) {
-                        utils.timestampedLog('[call] foreground missed call from',
-                            uri, '— no Sylk contact in roster, badge skipped',
-                            '(oldState=' + oldState + ')');
-                        return null;
-                    }
-                    if (!Array.isArray(_missedContact.unread)) {
-                        _missedContact.unread = [];
-                    }
-                    if (!Array.isArray(_missedContact.tags)) {
-                        _missedContact.tags = [];
-                    }
-                    let _missedChanged = false;
-                    if (_missedContact.unread.indexOf(_sipCallId) === -1) {
-                        _missedContact.unread.push(_sipCallId);
-                        _missedChanged = true;
-                    }
-                    if (_missedContact.tags.indexOf('missed') === -1) {
-                        _missedContact.tags.push('missed');
-                        _missedChanged = true;
-                    }
-                    const _mc = Array.isArray(this.state.missedCalls)
-                        ? this.state.missedCalls.slice()
-                        : [];
-                    if (_mc.indexOf(_sipCallId) === -1) {
-                        _mc.push(_sipCallId);
-                        this.setState({missedCalls: _mc});
-                        _missedChanged = true;
-                    }
-                    if (_missedChanged) {
-                        utils.timestampedLog('[call] foreground missed call from',
-                            uri, '— bumping unread badge (Call-ID',
-                            _sipCallId + ', oldState=' + oldState + ')');
-                        return _missedContact;
-                    }
-                    return null;
-                })();
+                // Was this a missed 1-1 incoming call? Detection ONLY here —
+                // the actual unread/badge bump is applied in the deferred
+                // block below, AFTER addHistoryEntry has created+saved+indexed
+                // the contact (normalized, e.g. anonymous@anonymous.invalid for
+                // guest callers). The previous version did lookupContact(uri)
+                // on the RAW URI and did NOT create the contact, so a missed
+                // call from a brand-new or anonymous caller found nothing and
+                // the badge was silently skipped.
+                const _missedSipCallId = (
+                    direction === 'incoming'
+                    && !this.isConference(call)
+                    && oldState !== 'accepted'
+                    && oldState !== 'established'
+                ) ? (call._callId || call.callId || callUUID) : null;
 
                 // Persist the unique roster of this conference run into
                 // the room contact, merged with whatever was saved from
@@ -12947,6 +13062,9 @@ class Sylk extends Component {
                 if (this._prewarmedMicCallUUID === callUUID) {
                     this._closePrewarmedMicStream('terminated');
                 }
+                // Same for the prewarmed peer connection (keyed by callUUID;
+                // no-op if this call had no prewarm or it was already closed).
+                this._closePrewarmedCall(callUUID, 'terminated');
 
                 //this._notificationCenter.postSystemNotification('Call ended:', {body: reason});
 
@@ -13168,21 +13286,52 @@ class Sylk extends Component {
                 //
                 // Capture all locals the closure reads so reason/msg
                 // reassignments below the case don't bleed in.
-                const _deferredUri = uri;
+                const _deferredUri = utils.normalizeAnonymousUri(uri);
                 const _deferredDirection = direction;
                 const _deferredCallUUID = callUUID;
                 const _deferredMsg = msg;
                 const _deferredMissed = missed;
                 const _deferredDiff = diff;
-                const _deferredMissedContact = _missedBump;
+                const _deferredMissedSipCallId = _missedSipCallId;
                 _termMark('before-scheduling-deferred');
                 InteractionManager.runAfterInteractions(() => {
                     _termMark('deferred:start');
                     this.addHistoryEntry(_deferredUri, _deferredCallUUID, _deferredDirection);
                     _termMark('deferred:addHistoryEntry');
-                    if (_deferredMissedContact) {
-                        this.saveSylkContact(_deferredUri, _deferredMissedContact, 'missedCallForeground');
-                        _termMark('deferred:missedSaveSylkContact');
+                    // Missed-call badge bump. addHistoryEntry just created and
+                    // saved the (normalized) contact, so it's now in the roster
+                    // and we can mark this Call-ID unread + tag 'missed'. The
+                    // native badge total is the sum of every contact's unread[],
+                    // so this is what actually moves the badge for a missed call
+                    // from a brand-new or anonymous caller.
+                    if (_deferredMissedSipCallId) {
+                        const _mcContact = this.lookupContact(_deferredUri);
+                        if (_mcContact) {
+                            if (!Array.isArray(_mcContact.unread)) _mcContact.unread = [];
+                            if (!Array.isArray(_mcContact.tags)) _mcContact.tags = [];
+                            let _missedChanged = false;
+                            if (_mcContact.unread.indexOf(_deferredMissedSipCallId) === -1) {
+                                _mcContact.unread.push(_deferredMissedSipCallId);
+                                _missedChanged = true;
+                            }
+                            if (_mcContact.tags.indexOf('missed') === -1) {
+                                _mcContact.tags.push('missed');
+                                _missedChanged = true;
+                            }
+                            const _mc = Array.isArray(this.state.missedCalls)
+                                ? this.state.missedCalls.slice() : [];
+                            if (_mc.indexOf(_deferredMissedSipCallId) === -1) {
+                                _mc.push(_deferredMissedSipCallId);
+                                this.setState({missedCalls: _mc});
+                            }
+                            if (_missedChanged) {
+                                utils.timestampedLog('[call] foreground missed call from',
+                                    _deferredUri, '— bumping unread badge (Call-ID',
+                                    _deferredMissedSipCallId + ')');
+                                this.saveSylkContact(_deferredUri, _mcContact, 'missedCallForeground');
+                                _termMark('deferred:missedSaveSylkContact');
+                            }
+                        }
                     }
                     if (_deferredMsg) {
                         this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed);
@@ -14122,6 +14271,62 @@ class Sylk extends Component {
         this._prewarmedMicCallUUID = null;
     }
 
+    // Tear down the prewarmed PEER CONNECTION started during ringing
+    // (call.prewarm()) for a SPECIFIC callUUID. Without this, a declined call
+    // left its prewarmed PC's ICE running until it timed out (~45s) — the
+    // "Collecting ICE candidates…" / "wait 45 seconds" hang on Decline.
+    //
+    // Keyed by callUUID via this._prewarmedPcCalls (a Map). Previously a single
+    // _prewarmedPcCall slot was used, which broke on rapid/overlapping incoming
+    // calls: a newer call's prewarm overwrote the slot, so rejecting an older
+    // call found the wrong entry (or none) and that older call's PC was left to
+    // time out. The map closes exactly the call that was rejected.
+    //
+    // Safety: never touch a call the user actually answered (accepted /
+    // established) — that PC IS the live call. For anything else we close the
+    // prewarmed peer connection immediately to stop ICE gathering.
+    //
+    // We must NOT gate the PC-close on state === 'incoming'. On a push reject
+    // the native layer rejects at the server first, so the server's
+    // 'terminated' (487) event often lands in JS BEFORE this runs — i.e. the
+    // call is already 'terminated' here. The library's terminated path does not
+    // close a prewarmed-but-never-answered PC, so we close it for every
+    // non-answered state. terminate() is only sent while still ringing (to
+    // signal the decline). _closeRTCPeerConnection guards _pc against
+    // double-close, so it's a safe no-op when the lib already closed it.
+    _closePrewarmedCall(callUUID, reason) {
+        if (!this._prewarmedPcCalls || !callUUID) {
+            return;
+        }
+        const _call = this._prewarmedPcCalls.get(callUUID);
+        if (!_call) {
+            return;
+        }
+        this._prewarmedPcCalls.delete(callUUID);
+        let _state;
+        try {
+            _state = _call.state;
+            if (_state === 'accepted' || _state === 'established') {
+                // Answered call — leave its peer connection alone.
+                return;
+            }
+            if (_state === 'incoming') {
+                // Still ringing — send the decline/bye to the server/caller.
+                _call.terminate();
+            }
+            // Close the prewarmed PC NOW regardless of whether the server's
+            // terminated event has already landed. Stops ICE immediately.
+            if (typeof _call._closeRTCPeerConnection === 'function') {
+                _call._closeRTCPeerConnection();
+            }
+            utils.timestampedLog('[call] [ice] call_id=' + callUUID,
+                'prewarm_pc_closed reason=' + reason + ' state=' + _state);
+        } catch (e) {
+            utils.timestampedLog('[call] [ice] call_id=' + callUUID,
+                'prewarm_pc_close_threw:', (e && e.message) || String(e));
+        }
+    }
+
     getLocalMedia(mediaConstraints={audio: true, video: true}, nextRoute=null, callUUID=null) {    // eslint-disable-line space-infix-ops
         // DEBUG: very first line of the function — if this doesn't log,
         // the new build hasn't actually loaded.
@@ -15000,6 +15205,7 @@ class Sylk extends Component {
         utils.timestampedLog('CallKeep will reject [call]', callUUID);
         this.hideInternalAlertPanel('reject');
         this._closePrewarmedMicStream('rejected');
+        this._closePrewarmedCall(callUUID, 'rejected');
         this.callKeeper.rejectCall(callUUID);
     }
 
@@ -15088,6 +15294,7 @@ class Sylk extends Component {
         utils.timestampedLog('User rejected [call]', callUUID);
         this.hideInternalAlertPanel('reject');
         this._closePrewarmedMicStream('rejected');
+        this._closePrewarmedCall(callUUID, 'rejected');
 
         if (!this.state.currentCall) {
             this.changeRoute('/ready', 'rejected');
@@ -15096,6 +15303,14 @@ class Sylk extends Component {
         if (this.state.incomingCall && this.state.incomingCall.id === callUUID) {
             utils.timestampedLog('Sylkrtc terminate [call]', callUUID, 'in', this.state.incomingCall.state, 'state');
             this.state.incomingCall.terminate();
+            // Clear the incoming-call UI state NOW instead of waiting for the
+            // server's 'terminated' round-trip (several seconds on the push-
+            // reject path). props.call = currentCall || incomingCall, so until
+            // this clears the NavigationBar keeps showing "Incoming call…"
+            // after the user already rejected. The terminated handler clears
+            // the same fields later (idempotent).
+            this.setState({incomingCall: null, incomingCallUUID: null, incomingContact: null});
+            this.updateLoading(null, 'rejected');
         }
     }
 
@@ -16868,17 +17083,24 @@ class Sylk extends Component {
         if (typeof call.prewarm === 'function') {
             const cid = call._callId || call.callId || call.id;
             const _iceServers = this.state.iceServers || [];
-            utils.timestampedLog('[call] [ui] call_id=' + cid,
-                '00 prewarm_pc_started during ringing (iceServers count='
+            // Remember the prewarmed call (keyed by callUUID) so Decline/
+            // teardown can cancel its peer connection precisely, even with
+            // overlapping incoming calls.
+            if (!this._prewarmedPcCalls) {
+                this._prewarmedPcCalls = new Map();
+            }
+            this._prewarmedPcCalls.set(callUUID, call);
+            utils.timestampedLog('[call] [ice] call_id=' + cid,
+                'prewarm_pc_started during ringing (iceServers count='
                 + _iceServers.length + ')');
             call.prewarm({iceServers: _iceServers})
                 .then(() => {
-                    utils.timestampedLog('[call] [ui] call_id=' + cid,
-                        '00 prewarm_pc_ok (remote SDP applied during ringing)');
+                    utils.timestampedLog('[call] [ice] call_id=' + cid,
+                        'prewarm_pc_ok (remote SDP applied during ringing)');
                 })
                 .catch((err) => {
-                    utils.timestampedLog('[call] [ui] call_id=' + cid,
-                        '00 prewarm_pc_failed — answer() will rebuild from scratch:',
+                    utils.timestampedLog('[call] [ice] call_id=' + cid,
+                        'prewarm_pc_failed — answer() will rebuild from scratch:',
                         (err && err.message) || String(err));
                 });
         }
@@ -17524,6 +17746,8 @@ class Sylk extends Component {
         const updateSql = hasLastCallTimestamp
             ? "UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, last_call_timestamp = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?"
             : "UPDATE contacts set uri = ?, uris = ?, photo = ?, email = ?, last_message = ?, last_message_id = ?, timestamp = ?, name = ?, organization = ?, unread_messages = ?, public_key = ?, tags = ?, participants = ?, direction = ?, last_call_media = ?, conference = ?, last_call_id = ?, last_call_duration = ?, properties = ?, local_properties = ? where contact_id = ? and account = ?";
+
+		console.log('SQL will update contact', contact.id, uri, 'by', origin);
 
         await this.ExecuteQuery(updateSql, params).then((result) => {
             if (result.rowsAffected === 1) {
@@ -18380,6 +18604,123 @@ class Sylk extends Component {
 		  }
 		}
 
+    // Transcode a video to a WhatsApp-like clip before upload. The camera/
+    // library hands us the original capture (often 1080p/4K, HEVC or high-
+    // bitrate H.264), which uploads many times larger than it needs to for
+    // chat. react-native-compressor re-encodes natively (AVFoundation on iOS,
+    // MediaCodec on Android) — no FFmpeg.
+    //
+    // We use 'auto' (the WhatsApp/Telegram algorithm): it scales the longest
+    // edge down to maxSize and derives the target bitrate FROM THE SOURCE
+    // (source bitrate scaled by the downscale ratio × 0.8, capped ~1.67 Mbps).
+    // This is the key difference from a fixed 'manual' bitrate: a hardcoded
+    // 2 Mbps was HIGHER than some source clips' own bitrate, so re-encoding
+    // INFLATED them (e.g. 16 MB -> 24 MB) and the size guard below then kept
+    // the original. 'auto' never inflates and reliably shrinks.
+    // Returns {uri, size} on success, or null so the caller falls back to
+    // sending the original untouched.
+    // Heuristic: is this video worth re-compressing, or is it already compact?
+    // The picker stamps width/height/duration on the file_transfer (see
+    // file2GiftedChat); from those + filesize we derive resolution and average
+    // bitrate without any extra native call. A clip that's already at/below our
+    // target resolution AND already at/below our target bitrate (e.g. a
+    // forwarded WhatsApp/Telegram video, or something we compressed earlier)
+    // gains nothing from another transcode pass and would only cost time and a
+    // quality generation-loss — so we skip it. When the dimensions/duration are
+    // unknown (some share-intent / document-picker sources), we default to
+    // compressing, since the size guard in uploadFile still keeps the original
+    // if the result isn't smaller.
+    shouldCompressVideo(file_transfer) {
+        try {
+            // Already handled once (by us, or marked compact on a previous
+            // pass) — the flag travels with the metadata, so forwarding a
+            // file we (or the sender) compressed short-circuits instantly
+            // without even re-measuring.
+            if (file_transfer.compressed === true) {
+                console.log('[upload] video marked compressed, skipping compression',
+                    'transfer_id=', file_transfer.transfer_id);
+                return false;
+            }
+
+            const w = Number(file_transfer.width) || 0;
+            const h = Number(file_transfer.height) || 0;
+            const durationSec = Number(file_transfer.duration) || 0;
+            const sizeBytes = Number(file_transfer.filesize) || 0;
+            const longEdge = Math.max(w, h);
+            const bitrate = durationSec > 0 ? (sizeBytes * 8) / durationSec : 0; // bps
+
+            // ~1000px ≈ our 960 target (a hair of slack so a 1024-wide clip
+            // isn't transcoded for a trivial downscale); ~1.6 Mbps ≈ auto's
+            // bitrate cap, below which re-encoding can't reliably shrink.
+            const COMPACT_EDGE = 1000;
+            const COMPACT_BITRATE = 1600000;
+
+            if (longEdge > 0 && bitrate > 0 &&
+                longEdge <= COMPACT_EDGE && bitrate <= COMPACT_BITRATE) {
+                console.log('[upload] video already compact, skipping compression',
+                    'longEdge=', longEdge,
+                    'bitrate=', Math.round(bitrate / 1000) + 'kbps',
+                    'size=', sizeBytes, 'durationSec=', durationSec);
+                // Record the determination so it persists with the metadata
+                // and any forward of this file skips straight away.
+                file_transfer.compressed = true;
+                return false;
+            }
+        } catch (e) {
+            console.log('[upload] shouldCompressVideo error', e && e.message);
+        }
+        return true;
+    }
+
+    async compressVideoBeforeUpload(file_transfer, localUrl) {
+        try {
+            let _lastPct = -1;
+            const compressedUri = await VideoCompressor.compress(
+                localUrl,
+                {
+                    compressionMethod: 'auto',
+                    // 960 (≈540p) rather than 1280: at 720p an already-
+                    // efficiently-encoded (often HEVC) source re-encodes to
+                    // H.264 at roughly the same or larger size, so there's no
+                    // gain. Forcing a real downscale guarantees a smaller file
+                    // on typical phone captures while staying perfectly legible
+                    // in a chat bubble. The size guard in uploadFile still
+                    // keeps the original whenever compression doesn't help.
+                    maxSize: 960,
+                    minimumFileSizeForCompress: 0,  // always compress
+                },
+                (progress) => {
+                    // progress is 0..1. Drive the same transfer progress bar
+                    // the encrypt/upload/download stages use, via a 'compress'
+                    // stage — the bubble renders it as "Compressing...". Cap at
+                    // 99 so the bar doesn't briefly hit 100% (which reads as
+                    // "done") between transcode and the encrypt stage, and only
+                    // push on whole-percent changes to avoid setState churn.
+                    try {
+                        const pct = Math.min(99, Math.round(progress * 100));
+                        if (pct !== _lastPct) {
+                            _lastPct = pct;
+                            this.updateTransferProgress(
+                                file_transfer.transfer_id, pct, 'compress');
+                        }
+                    } catch (e) {}
+                }
+            );
+
+            // The native module may hand back a file:// URI; RNFS wants a
+            // bare path.
+            const outPath = String(compressedUri).replace(/^file:\/\//, '');
+            const stat = await RNFS.stat(outPath);
+            console.log('[upload] video compressed',
+                'from', localUrl, 'to', outPath,
+                'newSize=', stat.size, 'origSize=', file_transfer.filesize);
+            return { uri: outPath, size: Number(stat.size) };
+        } catch (err) {
+            console.error('Video compress failed:', err);
+            return null;
+        }
+    }
+
     async uploadFile(file_transfer, cancel=false) {
         if (!this.state.fileTransferUrl) {
 			console.log('[upload] No fileTransferUrl');
@@ -18480,8 +18821,39 @@ class Sylk extends Component {
 					}
 				}
             }
+        } else if (utils.isVideo(file_transfer.filename, file_transfer.filetype)) {
+            // Transcode before upload, unless the user asked to send the
+            // original (fullSize) OR the clip is already compact (e.g. a
+            // forwarded/already-compressed video) — recompressing those just
+            // wastes time for no gain. mirrors the image branch above and
+            // WhatsApp's "send as document/HD" opt-out.
+            if (!file_transfer.fullSize && this.shouldCompressVideo(file_transfer)) {
+                // Kick the progress bar to 0% / "Compressing..." before the
+                // first native callback lands so the bubble shows motion
+                // immediately on big clips.
+                this.updateTransferProgress(file_transfer.transfer_id, 0, 'compress');
+                const compressed = await this.compressVideoBeforeUpload(file_transfer, local_url);
+                // Only swap in the compressed file if it actually came out
+                // smaller — for an already-tiny clip the transcode can be a
+                // wash (or larger), so keep the original in that case.
+                if (compressed && compressed.size > 0 &&
+                    (!file_transfer.filesize || compressed.size < file_transfer.filesize)) {
+                    try {
+                        file_transfer.filesize = compressed.size;
+                        file_transfer.filetype = 'video/mp4';
+                        file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.mp4');
+                        file_transfer.path = compressed.uri;
+                        local_url = compressed.uri;
+                        // Mark it so this file (and any forward of it) won't be
+                        // transcoded again — the flag persists with the metadata.
+                        file_transfer.compressed = true;
+                    } catch (e) {
+                        console.log('error video compress swap', e);
+                    }
+                }
+            }
         }
-        
+
         if (!file_transfer.filetype) {
             file_transfer.filetype = 'application/octet-stream';
             try {
@@ -18530,7 +18902,12 @@ class Sylk extends Component {
 
         const contact = this.lookupContact(uri);
 
-        const _encryptable = utils.isFileEncryptable(file_transfer);
+        const _maxEncryptFileSize = Number(
+            this.state.accountSetting
+            && this.state.accountSetting.device
+            && this.state.accountSetting.device.maxEncryptFileSize
+        ) || ENCRYPTABLE_FILE_SIZE_DEFAULT;
+        const _encryptable = utils.isFileEncryptable(file_transfer, _maxEncryptFileSize);
         console.log('[upload] encryption decision',
             'transfer_id=', file_transfer.transfer_id,
             'isEncryptable=', _encryptable,
@@ -18550,7 +18927,10 @@ class Sylk extends Component {
 			}
 
 			try {
-				this.updateTransferProgress(file_transfer.transfer_id, 5, 'encrypt');
+				// No synthetic ramp. The native encryptFile gives no progress
+				// events, so the bar simply holds at 10% while it runs; the
+				// streaming armor pass below then drives REAL progress 10 -> 100.
+				this.updateTransferProgress(file_transfer.transfer_id, 10, 'encrypt');
 				console.log('[upload] OpenPGP.encryptFile start',
 				    'transfer_id=', file_transfer.transfer_id,
 				    'in=', local_url, 'out=', encrypted_file);
@@ -18564,18 +18944,44 @@ class Sylk extends Component {
 				file_transfer.encrypted = true;
 				utils.timestampedLog('[message] Outgoing file', file_transfer.transfer_id, 'encrypted', 'keys length', public_keys.length, 'to', file_transfer.receiver && file_transfer.receiver.uri);
 				//this.updateFileTransferBubble(file_transfer, 'Calculating checksum...');
-				let base64_content = await RNFS.readFile(encrypted_file, 'base64');
-				let checksum = utils.getPGPCheckSum(base64_content);
+				// ---- Streaming ASCII-armor (memory-flat, real progress) ----
+				// encryptFile wrote a BINARY OpenPGP message; we must wrap it as
+				// armored ASCII for the wire. Rather than read the whole file
+				// into a base64 string (the old OOM driver), we stream it: read
+				// raw bytes in chunks that are a multiple of 45 (so each chunk's
+				// base64 is a multiple of 60 chars and the 60-char armor lines
+				// align across chunk boundaries), fold a rolling CRC-24 over the
+				// raw bytes, and append the armored lines to a sibling file.
+				// Peak memory is ~one chunk regardless of file size. Output is
+				// byte-identical to the old whole-file armoring (verified).
+				const _binStat = await RNFS.stat(encrypted_file);
+				const _binSize = Number(_binStat.size) || 0;
+				const _armoredFile = encrypted_file + '.armor';
+				try { await RNFS.unlink(_armoredFile); } catch (e) {}
+				await RNFS.writeFile(_armoredFile, "-----BEGIN PGP MESSAGE-----\n\n", 'utf8');
 
-				const lines = base64_content.match(/.{1,60}/g) ?? [];
-				let content = "";
-
-				lines.forEach((line) => {
-					content = content + line + "\n";
-				});
-
-				content = "-----BEGIN PGP MESSAGE-----\n\n"+content+"="+checksum+"\n-----END PGP MESSAGE-----\n";
-				await RNFS.writeFile(encrypted_file, content, 'utf8');
+				const _RAW_CHUNK = 45 * 3072; // 138240 B -> 184320 b64 chars (3072 lines)
+				let _crc = utils.crc24Init();
+				let _off = 0;
+				while (_off < _binSize) {
+					const _len = Math.min(_RAW_CHUNK, _binSize - _off);
+					const _b64 = await RNFS.read(encrypted_file, _len, _off, 'base64');
+					_crc = utils.crc24UpdateFromBase64(_crc, _b64);
+					const _armoredChunk = (_b64.match(/.{1,60}/g) || []).join("\n") + "\n";
+					await RNFS.appendFile(_armoredFile, _armoredChunk, 'utf8');
+					_off += _len;
+					// Real progress: 10 -> 99 across the armor pass (the only
+					// part of Encrypting we can actually measure).
+					const _pct = 10 + Math.round((_off / Math.max(1, _binSize)) * 89);
+					this.updateTransferProgress(
+						file_transfer.transfer_id, Math.min(99, _pct), 'encrypt');
+				}
+				const _checksum = utils.crc24Checksum(_crc);
+				await RNFS.appendFile(_armoredFile,
+					"=" + _checksum + "\n-----END PGP MESSAGE-----\n", 'utf8');
+				// Swap the armored file in for the binary one (keep the .asc name).
+				try { await RNFS.unlink(encrypted_file); } catch (e) {}
+				await RNFS.moveFile(_armoredFile, encrypted_file);
 				//this.updateFileTransferBubble(file_transfer, 'File encrypted');
 				file_transfer.filetype = file_transfer.filetype;
 				local_url = local_url + ".asc";
@@ -18925,9 +19331,132 @@ class Sylk extends Component {
         }
     }
 
+    // Find a local copy of a file-transfer's payload that ACTUALLY exists
+    // on disk, so a resend has something real to upload. Order: the
+    // canonical local_url (decrypted twin if it's a .asc blob), then the
+    // original pick path, then the displayable image path. Returns a
+    // file-system path (no file:// prefix) or null if nothing is present.
+    async _resolveResendSource(message) {
+        const md = message.metadata || {};
+        const candidates = [];
+        if (md.local_url) {
+            candidates.push(md.local_url.endsWith('.asc')
+                ? md.local_url.slice(0, -4)
+                : md.local_url);
+        }
+        if (md.path) candidates.push(md.path);
+        if (message.image) candidates.push(String(message.image));
+        for (let c of candidates) {
+            if (!c) continue;
+            const p = c.replace(/^file:\/\//, '');
+            try {
+                if (await RNFS.exists(p)) return p;
+            } catch (e) { /* try next candidate */ }
+        }
+        return null;
+    }
+
     async reSendMessage(message, uri) {
+        const md = message.metadata || {};
+        const isFileTransfer = !!md.filename;
+
+        if (isFileTransfer) {
+            // sent=true means the SERVER received the original transfer;
+            // failed=true is a failure on the RECEIVING end. So we do NOT
+            // re-push the same transfer — we mint a brand-new file transfer
+            // (new message _id AND new transfer_id) from the original file
+            // and metadata.
+            //
+            // Sequence (order matters): find a local copy of the file →
+            // COPY it to a stable staging path → build the new transfer →
+            // DESTROY the old bubble → send the new one. Staging the copy
+            // BEFORE the destroy means deleting the old message (which
+            // removes its transfer-id directory, often where the source
+            // file lives) can't pull the file out from under the new send.
+            const source = await this._resolveResendSource(message);
+            if (!source) {
+                this.renderSystemMessage(uri,
+                    'Cannot resend: the file is no longer available on this device');
+                return;
+            }
+
+            // A file transfer's message _id and its transfer_id MUST be
+            // the same value in this app (the original had
+            // oldMsgId === oldTransferId). The upload pipeline keys the
+            // saved bubble off the transfer_id; using a different _id makes
+            // it create a SECOND bubble (one keyed by _id, one by
+            // transfer_id) → the duplicate. So use ONE new id for both.
+            const newId = uuid.v4();
+            const newTransferId = newId;
+            const newMsgId = newId;
+
+            utils.timestampedLog('[resend] file transfer',
+                'oldMsgId=', message._id,
+                'oldTransferId=', md.transfer_id,
+                'newMsgId=', newMsgId,
+                'newTransferId=', newTransferId,
+                'source=', source,
+                'hasImage=', !!message.image,
+                'filename=', md.filename);
+
+            // 1) Copy the file to a stable staging path, independent of the
+            //    old message's directory.
+            let stagedPath = source;
+            try {
+                const dot = (md.filename || '').lastIndexOf('.');
+                const ext = dot > -1 ? md.filename.slice(dot) : '';
+                stagedPath = RNFS.CachesDirectoryPath + '/resend_' + newTransferId + ext;
+                await RNFS.copyFile(source, stagedPath);
+            } catch (e) {
+                console.log('[resend] staging copy failed, using source directly:', e && e.message);
+                stagedPath = source;
+            }
+
+            // 2) Build the new transfer from the original metadata. Drop
+            //    the old transfer's derived fields so sendMessage rebuilds
+            //    them for the new transfer_id, and copies the file fresh.
+            const newMetadata = { ...md, transfer_id: newTransferId, path: stagedPath };
+            delete newMetadata.local_url;
+            delete newMetadata.url;
+            delete newMetadata.error;
+            if ('messageId' in newMetadata) newMetadata.messageId = newMsgId;
+
+            const newMessage = {
+                ...message,
+                _id: newMsgId,
+                key: newMsgId,
+                metadata: newMetadata,
+                failed: false,
+                pending: true,
+                sent: false,
+                received: false,
+                createdAt: new Date(),
+            };
+            // Point the preview at the staged copy so it still renders
+            // after the old message's directory is removed.
+            if (message.image) {
+                newMessage.image = stagedPath.startsWith('file://')
+                    ? stagedPath
+                    : 'file://' + stagedPath;
+            }
+
+            // 3) Destroy the old failed bubble (and its remote/broken copy).
+            await this.deleteMessage(message._id, uri).catch((e) => {
+                console.log('[resend] failed to delete old message:', e && e.message);
+            });
+
+            // 4) Send the brand-new transfer from scratch.
+            this.sendMessage(uri, newMessage, 'application/sylk-file-transfer');
+            return;
+        }
+
+        // Plain text: delete the old bubble and re-send as a fresh one.
         await this.deleteMessage(message._id, uri).then((result) => {
             message._id = uuid.v4();
+            message.failed = false;
+            message.pending = true;
+            message.sent = false;
+            message.received = false;
             this.sendMessage(uri, message);
         }).catch((error) => {
             console.log('Failed to delete old messages');
@@ -25375,7 +25904,23 @@ class Sylk extends Component {
         // account history without bounding the sync to an arbitrary
         // recent slice.
         if (lastId == null && (!options || !options.since)) {
-            options = { ...(options || {}), since: moment().subtract(5, 'years').toDate() };
+            // A null cursor does NOT mean "re-download everything". If we
+            // still hold the durable per-account last_sync_timestamp,
+            // resume from there (a `since` delta) — the id may simply have
+            // been pruned server-side. Only when there's genuinely no
+            // timestamp either (a true first sync for this account) do we
+            // fall back to the wide 5-year window. This is what stops the
+            // "whole journal re-downloaded again and again" behaviour.
+            if (this.state.lastSyncTimestamp) {
+                utils.timestampedLog('[journal] null cursor — resuming from stored last_sync_timestamp',
+                    (this.state.lastSyncTimestamp instanceof Date
+                        ? this.state.lastSyncTimestamp.toISOString()
+                        : this.state.lastSyncTimestamp));
+                options = { ...(options || {}), since: this.state.lastSyncTimestamp };
+            } else {
+                utils.timestampedLog('[journal] no cursor and no timestamp — first full sync (5y window)');
+                options = { ...(options || {}), since: moment().subtract(5, 'years').toDate() };
+            }
         }
         utils.timestampedLog('Request [journal] from', lastId, 'since', (options && options.since) ? (options.since instanceof Date ? options.since.toISOString() : options.since) : 'n/a');
         if (!this.state.account) {
@@ -25953,7 +26498,16 @@ class Sylk extends Component {
 					jlabel = 'Apply ' + i +  ' out of ' + cachedJournals.length + ' journals';
 					this._notificationCenter.postSystemNotification(jlabel);
 				}
-				if (lastMessage && this.state.lastSyncId) {
+				// Checkpoint after EVERY applied journal file, including
+				// during the first sync (when lastSyncId is still null).
+				// Journal files are named by message timestamp and sorted
+				// ascending, so they apply oldest→newest and each save
+				// moves the per-account cursor (id + timestamp) strictly
+				// forward. This means an interrupted first sync resumes
+				// from the last applied file instead of restarting the
+				// whole backfill. (Previously gated on this.state.lastSyncId,
+				// so a first sync never checkpointed mid-way.)
+				if (lastMessage && lastMessage.id) {
 					this.saveLastSyncId(lastMessage.id, true, lastMessage.timestamp);
 				}
 			} catch (e) {
@@ -32320,10 +32874,8 @@ class Sylk extends Component {
         let unix_timestamp = Math.floor(timestamp / 1000);
         let id = uuid.v4();
 
-		if (uri.indexOf('@guest.') > -1) {
-			uri = "anonymous@anonymous.invalid";
-		}
-		
+		uri = utils.normalizeAnonymousUri(uri);
+
 		console.log('saveSystemMessage', uri, content);
 
         // System messages are surfaced as text bubbles; classify as 'text'
@@ -34562,6 +35114,17 @@ class Sylk extends Component {
             file_transfer.duration = fileObject.duration;
         }
 
+        // Capture the image's pixel dimensions at send time. The picker
+        // (react-native-image-picker) gives us width/height; stashing them
+        // in the file-transfer metadata means the bubble's aspect ratio is
+        // known on the FIRST render — no square-default letterbox flash —
+        // and, because metadata ships with the transfer, the RECEIVER gets
+        // the correct shape on first render too.
+        if (fileObject.width && fileObject.height) {
+            file_transfer.width = fileObject.width;
+            file_transfer.height = fileObject.height;
+        }
+
         if (fileObject.fileType) {
             file_transfer.filetype = fileObject.fileType;
         } else {
@@ -35251,6 +35814,13 @@ class Sylk extends Component {
                         try {
                             const { size } = await ReactNativeBlobUtil.fs.stat(file_transfer.path);
                             file_transfer.size = size;
+                            // Canonical field the rest of the pipeline reads
+                            // (isFileEncryptable, the video compress heuristic,
+                            // the size guard, bubble size label). The in-chat
+                            // path sets this via file2GiftedChat; the share path
+                            // only set `.size`, so encryption/compression saw an
+                            // undefined size.
+                            file_transfer.filesize = size;
                         } catch (e) {
                             console.log('Error stat file', file_transfer.path, e.message);
                             this._notificationCenter.postSystemNotification('Cannot access file', file_transfer.path);
@@ -35260,6 +35830,17 @@ class Sylk extends Component {
                     await this.sendMessage(uri, msg, contentType);
                 }
             }
+        }
+
+        // Re-load the now-selected chat AFTER every send has been awaited.
+        // endShareContent() (called at the top of this method) set
+        // selectedContact, which fired a componentDidUpdate getMessages that
+        // raced ~100ms ahead of these SQL writes and missed the just-shared
+        // rows — so the shared bubble only appeared after a manual back-and-
+        // forth to the contact. Reloading here, after the writes, makes it
+        // show immediately.
+        if (this.state.selectedContact) {
+            this.getMessages(this.state.selectedContact, {origin: 'shareContent done'});
         }
     }
 
@@ -35416,21 +35997,17 @@ class Sylk extends Component {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
 
-		if (uri.indexOf('@guest.') > -1) {
-			uri = "anonymous@anonymous.invalid";
-		}
+		// Collapse all guest/anonymous caller URIs (incl. @anonymous. and the
+		// malformed @@anonymous form) into one canonical contact.
+		uri = utils.normalizeAnonymousUri(uri);
 
-        if (this.state.accountSetting.privacy.rejectAnonymous && uri.indexOf('anonymous@') > -1) {
-			console.log('skip history entry from anonymous address', uri);                
-			return;
-		}
-
-        if (this.state.accountSetting.privacy.rejectNonContacts && direction == 'incoming') {
-            if (contacts.length == 0) {
-				console.log('skip history entry from unknown address', uri);                
-				return;
-            }
-        }
+		// addHistoryEntry records EVERY call. The rejectAnonymous /
+		// rejectNonContacts privacy settings govern whether an incoming call
+		// is auto-declined at admission time — they must NOT suppress the
+		// history row, otherwise accepted/placed calls silently vanish from
+		// the Calls list. (The old rejectNonContacts guard also referenced
+		// `contacts` before it was declared below — a temporal-dead-zone
+		// ReferenceError that crashed this method whenever the setting was on.)
 
 		let contacts = this.lookupContacts(uri);
         //console.log('Found contacts', contacts);
@@ -35542,9 +36119,7 @@ class Sylk extends Component {
         if (uri.indexOf('@') === -1) {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
-        if (uri.indexOf('@guest.') > -1) {
-            uri = 'anonymous@anonymous.invalid';
-        }
+        uri = utils.normalizeAnonymousUri(uri);
         if (this.state.accountSetting
             && this.state.accountSetting.privacy
             && this.state.accountSetting.privacy.rejectAnonymous
@@ -35573,6 +36148,12 @@ class Sylk extends Component {
         if (uri.indexOf('@') === -1) {
             uri = uri + '@videoconference.' + this.state.defaultDomain;
         }
+
+        // Collapse guest/anonymous callers to the canonical contact, exactly
+        // as addHistoryEntry does. Without this, the call-end duration update
+        // looked up the raw <random>@guest.<host> URI and missed the
+        // anonymous@anonymous.invalid row addHistoryEntry just created.
+        uri = utils.normalizeAnonymousUri(uri);
 
         // Build the contacts-list subtitle for this call. Format:
         //   • "Incoming call (00:10)"  for an established call
@@ -35840,6 +36421,7 @@ const _appBgImage = DarkModeManager.getTheme().isDark
     : backgroundImageLight;
 
 return (
+  <GestureHandlerRootView style={{ flex: 1 }}>
   <SafeAreaProvider initialMetrics={initialWindowMetrics}>
     <PaperProvider theme={theme}>
       <Router history={history}>
@@ -36062,6 +36644,7 @@ return (
       </Router>
     </PaperProvider>
   </SafeAreaProvider>
+  </GestureHandlerRootView>
 );
 
     }
@@ -36666,7 +37249,7 @@ return (
                     setPreferredAudioCodec = {(codec) => this.setAccountSetting('rtp.preferredAudioCodec', codec)}
                     enableAudioRecording = {!!this.state.accountSetting.rtp.enableAudioRecording}
                     setEnableAudioRecording = {(v) => this.setAccountSetting('rtp.enableAudioRecording', !!v)}
-                    encryptionMode = {this.state.accountSetting.rtp.encryptionMode || 'zrtp_optional'}
+                    encryptionMode = {this.state.accountSetting.rtp.encryptionMode || 'sdes'}
                     setEncryptionMode = {(mode) => this.setAccountSetting('rtp.encryptionMode', mode)}
                     dtmfMode = {this.state.accountSetting.rtp.dtmfMode || 'info'}
                     setDtmfMode = {(mode) => this.setAccountSetting('rtp.dtmfMode', mode)}
@@ -36709,6 +37292,15 @@ return (
                             || this.state.accountSetting.device.autoDownloadOnMobile !== false
                     }
                     setAutoDownloadOnMobile = {(v) => this.setAccountSetting('device.autoDownloadOnMobile', !!v)}
+                    /* File Encryption: max attachment size that gets PGP-
+                       encrypted before upload. Larger files (and videos that
+                       compress above this) are sent unencrypted. Persisted at
+                       device.maxEncryptFileSize; default 20 MB. */
+                    maxEncryptFileSize = {Number(
+                        this.state.accountSetting.device
+                            && this.state.accountSetting.device.maxEncryptFileSize
+                    ) || ENCRYPTABLE_FILE_SIZE_DEFAULT}
+                    setMaxEncryptFileSize = {(bytes) => this.setAccountSetting('device.maxEncryptFileSize', bytes)}
                     buildId = {this.buildId}
                     getTransferedFiles = {this.getTransferedFiles}
                     transferedFiles = {this.state.transferedFiles}
