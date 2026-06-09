@@ -602,6 +602,7 @@ import ConferenceRequestModal from './components/ConferenceRequestModal';
 // Android long ago moved to FCM/CallKeep for incoming-call alerting.
 // import IncomingCallModal from './components/IncomingCallModal';
 import LogsModal from './components/LogsModal';
+import QosSummaryModal from './components/QosSummaryModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
@@ -626,10 +627,14 @@ import {
     setServerEmail as apiSetServerEmail,
     requestDeleteAccount,
     cancelDeleteAccount,
+    getSipTrace,
+    getMediaTrace,
+    getQosSummary,
     validateCallerId,
     validateSipPassword,
     isPlaceholderCallerId,
 } from './accountInfo';
+import { getQosResult, loadQosResultFromDisk } from '../qos/qos-stats';
 import { readAcknowledged as readLocationDisclosure } from './locationDisclosure';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
@@ -1274,6 +1279,21 @@ class Sylk extends Component {
             enrollmentUrl: 'https://blink.sipthor.net/enrollment-sylk-mobile.phtml',
             iceServers: [{"urls":"stun:stun.sipthor.net:3478"}],
             serverSettingsUrl: 'https://mdns.sipthor.net/sip_settings.phtml',
+            // Base CDRTool SIP-trace page URL the server publishes
+            // (configuration.traceURL), e.g.
+            //   http://mdns.sipthor.net/CDRTool/sip_trace.phtml?cdr_source=sip_trace_thor
+            // It already carries ?cdr_source=…; the per-call
+            // callid/fromtag/totag/proxyIP are appended at click time
+            // (see buildCallTraceUrl / openCallTrace). Empty until
+            // initConfiguration runs.
+            traceURL: '',
+            // Base URL of the server-side QoS capture daemon (sylk-qos-server),
+            // published by the server as configuration.qosServerUrl, e.g.
+            //   https://webrtc-gateway.sipthor.net:9810
+            // Used at call end to fetch the per-call qos summary by Call-ID and
+            // reconcile it with the client's own measured packet counts. Empty
+            // until initConfiguration runs.
+            qosServerUrl: '',
             // Populated by refreshAccountInfo() — null until the first
             // successful fetch. Shape: see app/accountInfo.js JSDoc.
             accountInfo: null,
@@ -1469,6 +1489,13 @@ class Sylk extends Component {
             // surfaced inline instead of only dropped as a system
             // message link in the chat history.
             showPaymentInfoModal: false,
+            // QoS summary modal (opened from a call system message's "QoS"
+            // link). qosSummaryReport is the formatted text shown + sent to
+            // support; qosSummaryCallid labels the modal header.
+            showQosSummaryModal: false,
+            qosSummaryReport: '',
+            qosSummaryCallid: '',
+            qosSummaryTraceUrl: '',
             // 'donate' (kebab) or 'credit' (PSTN error). Drives the
             // copy at the top of the modal — same bank details,
             // different framing per entry point.
@@ -4660,6 +4687,7 @@ class Sylk extends Component {
                                      disposition_notification TEXT,
                                      category TEXT,
                                      has_link INTEGER,
+                                     call_id TEXT,
                                      PRIMARY KEY (account, msg_id))
                                     `;
 
@@ -5168,6 +5196,11 @@ class Sylk extends Component {
             this.ensureColumn('messages', 'category', 'TEXT');
             // v18 has_link self-heal — same idempotent pattern.
             this.ensureColumn('messages', 'has_link', 'INTEGER');
+            // call_id self-heal. Links a message to a specific call
+            // (the SIP Call-ID) so the live "call ended" system message
+            // and the server call-history system message converge onto
+            // one row (see saveCallSystemMessages upsert).
+            this.ensureColumn('messages', 'call_id', 'TEXT');
 
             // Backfill the category column for rows that pre-date
             // v17. Runs at most once per install (guarded by an
@@ -6375,6 +6408,13 @@ class Sylk extends Component {
            this.scheduleBackToForeground('changeRoute:/call');
         }
 
+        // Media-loss reconnect: we tear down the dead call and redial, but
+        // we want to STAY on the call/conference screen (showing the in-call
+        // "Reconnecting…" spinner) instead of bouncing out to chat and back.
+        // Set in the reconnect branch below, consulted at the navigation
+        // point at the end of changeRoute to suppress the history.push('/ready').
+        let keepCallRouteForReconnect = false;
+
         if (route === '/ready' && reason !== 'back to home') {
             Vibration.cancel();
 
@@ -6384,6 +6424,16 @@ class Sylk extends Component {
             }
 
             if (this.state.currentCall && reason === 'outgoing_connection_failed' && this.state.currentCall.direction === 'outgoing') {
+                // If the media-loss trip happened while we're already on the
+                // call/conference screen, keep the user there through the
+                // reconnect instead of flashing the chat screen. The redial
+                // scheduled below re-establishes a fresh call on the SAME
+                // route. (When the reconnect is driven from elsewhere — not
+                // on a call screen — we fall through to the normal /ready
+                // navigation as before.)
+                keepCallRouteForReconnect = (this.currentRoute === '/call' || this.currentRoute === '/conference');
+                utils.timestampedLog('[app] [media-loss] reconnect branch: currentRoute=', this.currentRoute,
+                    'keepCallRouteForReconnect=', keepCallRouteForReconnect, '(BUILD: stay-on-call v1)');
                 let target_uri = this.state.currentCall.remoteIdentity.uri.toLowerCase();
                 let options = {audio: true, video: true, participants: []}
 
@@ -6569,8 +6619,20 @@ class Sylk extends Component {
             }
         }
 
-        this.currentRoute = route;
-        history.push(route);
+        if (keepCallRouteForReconnect) {
+            // Media-loss reconnect on a call/conference screen: the teardown
+            // above already released the dead call's media and the 5 s redial
+            // is scheduled. Deliberately skip the history.push('/ready') so
+            // AudioCallBox/Conference stays mounted (showing its own
+            // "Reconnecting…" spinner) instead of unmounting → flashing chat
+            // → remounting. currentRoute is left untouched ('/call' or
+            // '/conference'); the redial re-attaches the fresh call here.
+            utils.timestampedLog('[app] Route kept at', this.currentRoute,
+                '(media-loss reconnect — staying on call screen):', reason);
+        } else {
+            this.currentRoute = route;
+            history.push(route);
+        }
 
     }
 
@@ -7037,6 +7099,37 @@ class Sylk extends Component {
             + cachedIds.size + ' cached / '
             + newIds.size + ' new sessionId(s)');
 
+        // For every NEW call, retrieve its SIP + media trace from the
+        // server and store them per-contact on disk. This is done here
+        // — BEFORE the contact-load deferral / contact de-dupe below —
+        // for two reasons:
+        //   • trace fetch only needs sessionId + remoteParty, not the
+        //     loaded contact index, so it can run even at cold start;
+        //   • the contact de-dupe in the filter keeps only ONE entry
+        //     per contact, but we want a trace for EVERY new call, so
+        //     we iterate the raw blocks here instead.
+        // fetchAndStoreNewCallTraces is idempotent (skips calls already
+        // on disk) so the deferred-replay path can't double-fetch.
+        try {
+            if (newIds.size > 0) {
+                const newEntries = [];
+                const collectNew = (arr) => {
+                    if (!Array.isArray(arr)) return;
+                    for (const e of arr) {
+                        if (e && typeof e.sessionId === 'string' && newIds.has(e.sessionId)) {
+                            newEntries.push(e);
+                        }
+                    }
+                };
+                collectNew(data.received);
+                collectNew(data.placed);
+                // Fire-and-forget — never block history processing on traces.
+                this.fetchAndStoreNewCallTraces(newEntries);
+            }
+        } catch (e) {
+            console.log('[trace] failed to schedule trace retrieval:', e && e.message);
+        }
+
         // The contact index is built from state.allContacts, which
         // loadSylkContacts populates. refreshAccountInfo (which
         // calls us) runs at app start and may win the race against
@@ -7054,6 +7147,34 @@ class Sylk extends Component {
             return;
         }
         this._pendingCallHistory = null;
+
+        // Emit one clickable system message per NEW call (placed +
+        // received, NOT contact-deduped — we want a row for every
+        // call). Done on this non-deferred path so it runs exactly
+        // once per snapshot: by the time we persist the sessionId
+        // cache at the end, these ids are no longer "new", so a later
+        // snapshot won't re-create them. Each message carries the
+        // trace params under metadata.trace so a tap opens the CDRTool
+        // SIP-trace page (see openCallTrace / buildCallTraceUrl).
+        try {
+            const newCallEntries = [];
+            const collectNewCalls = (arr, direction) => {
+                if (!Array.isArray(arr)) return;
+                for (const e of arr) {
+                    if (e && typeof e.sessionId === 'string' && newIds.has(e.sessionId)) {
+                        e.direction = direction;
+                        newCallEntries.push(e);
+                    }
+                }
+            };
+            collectNewCalls(data.received, 'incoming');
+            collectNewCalls(data.placed, 'outgoing');
+            if (newCallEntries.length > 0) {
+                this.saveCallSystemMessages(newCallEntries);
+            }
+        } catch (e) {
+            console.log('[history] failed to create call system messages:', e && e.message);
+        }
 
         let history = [];
         if (Array.isArray(data.received)) {
@@ -7211,6 +7332,777 @@ class Sylk extends Component {
                 });
             }
         }
+    }
+
+    /**
+     * For each NEW server call-history entry, fetch its SIP + media
+     * trace from sylk_settings.phtml and store them on disk under the
+     * contact:
+     *
+     *   <Documents>/<account>/<contact-uri>/calls/<timestamp>-<callid>.sip
+     *   <Documents>/<account>/<contact-uri>/calls/<timestamp>-<callid>.media
+     *
+     * .sip is a human-readable SIP trace (the raw SIP messages, like
+     * the server's "TEXT" trace view); .media is the pretty-printed
+     * JSON media-session record. Every filename written is logged to
+     * the console.
+     *
+     * Idempotent: skips any call whose .sip already exists on disk, and
+     * de-dupes concurrent fetches via an in-memory in-flight set, so
+     * the deferred-replay path in processServerCallHistory can't
+     * double-fetch. Runs in the background (fire-and-forget); per-call
+     * failures are logged and never block history processing.
+     *
+     * `entries` is the list of raw call_history records (each with
+     * sessionId / remoteParty / startTime). Conference rooms are
+     * skipped — they aren't contacts.
+     */
+    async fetchAndStoreNewCallTraces(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) return;
+
+        const account  = this.state.accountId;
+        const password = this.state.password;
+        const url      = this.state.serverSettingsUrl;
+        if (!account || !password || !url) {
+            console.log('[trace] skipping trace retrieval — no account/password/serverSettingsUrl');
+            return;
+        }
+
+        if (!this._callTraceInFlight) this._callTraceInFlight = new Set();
+
+        console.log('[trace] retrieving traces for', entries.length, 'new call(s)');
+
+        for (const elem of entries) {
+            const callid = elem && elem.sessionId;
+            if (!callid || typeof callid !== 'string') continue;
+
+            // Skip conference / videoconference rooms — not contacts.
+            const remoteParty = elem.remoteParty || '';
+            if (remoteParty.indexOf('@conference.') > -1
+                || remoteParty.indexOf('@videoconference.') > -1) {
+                continue;
+            }
+
+            if (this._callTraceInFlight.has(callid)) continue;
+
+            // Derive the contact folder URI the same way
+            // processServerCallHistory does (lowercase, anonymous
+            // collapse, phone-number canonicalisation), so traces land
+            // next to that contact's other per-contact storage.
+            let contactUri = remoteParty.toLowerCase();
+            contactUri = utils.normalizeAnonymousUri(contactUri);
+            if (utils.isPhoneNumber(contactUri)) {
+                contactUri = contactUri.split('@')[0]
+                    .replace(/\s|\-|\(|\)/g, '').replace(/^00/, '+');
+            }
+            if (!contactUri) continue;
+
+            // Filename pieces: timestamp = call start time reduced to
+            // digits (YYYYMMDDhhmmss — sortable, filesystem-safe);
+            // callid sanitised to [A-Za-z0-9._-].
+            const tsRaw = elem.startTime != null ? String(elem.startTime) : '';
+            const ts = (tsRaw.replace(/[^0-9]/g, '').slice(0, 14)) || String(Date.now());
+            const safeCid = callid.replace(/[^A-Za-z0-9._-]/g, '_');
+            const base = `${ts}-${safeCid}`;
+
+            // Per-contact calls/ directory. Strip path separators from
+            // the contact uri defensively (the file-transfer path uses
+            // receiver.uri verbatim, so '@' etc. are known-safe here).
+            const safeContact = contactUri.replace(/[\/\\]/g, '_');
+            const dir = `${RNFS.DocumentDirectoryPath}/${account}/${safeContact}/calls`;
+            const sipPath   = `${dir}/${base}.sip`;
+            const mediaPath = `${dir}/${base}.media`;
+
+            // Idempotency: if this call's SIP trace is already stored,
+            // don't fetch again.
+            try {
+                if (await RNFS.exists(sipPath)) continue;
+            } catch (e) { /* fall through and try to (re)write */ }
+
+            this._callTraceInFlight.add(callid);
+            try {
+                await RNFS.mkdir(dir);  // creates intermediate dirs
+
+                // SIP trace -> readable text file.
+                try {
+                    const sip = await getSipTrace({ account, password, url, callid });
+                    const text = this._formatSipTraceText(sip, callid);
+                    await RNFS.writeFile(sipPath, text, 'utf8');
+                    console.log('[trace] saved SIP trace ->', sipPath,
+                        '(' + ((sip && sip.count) || 0) + ' packets)');
+                } catch (e) {
+                    console.log('[trace] SIP trace fetch/save failed for', callid, '-', e && e.message);
+                }
+
+                // Media trace -> pretty-printed JSON file.
+                try {
+                    const mt = await getMediaTrace({ account, password, url, callid });
+                    const media = (mt && mt.media != null) ? mt.media : null;
+                    await RNFS.writeFile(mediaPath, JSON.stringify(media, null, 2) + '\n', 'utf8');
+                    console.log('[trace] saved media trace ->', mediaPath,
+                        media ? '' : '(no media)');
+                } catch (e) {
+                    console.log('[trace] media trace fetch/save failed for', callid, '-', e && e.message);
+                }
+
+                // Server-side QoS summary (sylk-qos-server) -> <base>.qos.json,
+                // reconciled against our own measured packet counts.
+                const qosUrl = this.state.qosServerUrl;
+                if (qosUrl) {
+                    const qosPath = `${dir}/${base}.qos.json`;
+                    const qosFetchUrl = qosUrl.replace(/\/+$/, '') + '/call/' + encodeURIComponent(callid) + '/summary';
+                    console.log('[qos] fetching server qos summary from', qosFetchUrl);
+                    try {
+                        const summary = await getQosSummary({ url: qosUrl, callid });
+                        if (summary && summary.artifacts) delete summary.artifacts;
+                        // Prefer the in-memory client result; fall back to the
+                        // on-disk copy (survives a JS reload / relaunch between
+                        // call-end and now — the reason iOS showed "no client
+                        // data" for reconciliation).
+                        const client = getQosResult(callid) || await loadQosResultFromDisk(callid);
+                        const reconciliation = this._reconcileQos(callid, summary, client);
+                        const _dir = elem.direction || elem.callDirection || null;
+                        const _localUri = account;
+                        const _remoteUri = remoteParty || contactUri || '';
+                        const record = {
+                            call_id: callid,
+                            date: elem.startTime != null ? String(elem.startTime) : (summary && summary.ended_at) || null,
+                            direction: _dir,
+                            from_uri: _dir === 'incoming' ? _remoteUri : _localUri,
+                            to_uri: _dir === 'incoming' ? _localUri : _remoteUri,
+                            local_uri: _localUri,
+                            remote_uri: _remoteUri,
+                            sip_trace_url: this.buildCallTraceUrl({
+                                callid,
+                                fromtag: elem.fromTag,
+                                totag: elem.toTag,
+                                proxyIP: elem.proxyIP,
+                            }) || '',
+                            server: summary,
+                            client: client || null,
+                            reconciliation,
+                        };
+                        await RNFS.writeFile(qosPath, JSON.stringify(record, null, 2) + '\n', 'utf8');
+                        console.log('[qos] saved server qos summary ->', qosPath);
+                        // applog a compact, grep-able [qos] [summary] line so it
+                        // ships with the user's support logs.
+                        utils.timestampedLog('[qos] [summary]', this._qosSummaryLine(record));
+                    } catch (e) {
+                        console.log('[qos] qos summary fetch/save failed for', callid, 'from', qosFetchUrl, '-', e && e.message);
+                    }
+                }
+            } catch (e) {
+                console.log('[trace] could not store traces for', callid, '-', e && e.message);
+            } finally {
+                this._callTraceInFlight.delete(callid);
+            }
+        }
+    }
+
+    /**
+     * Reconcile the server-side qos summary with the client's own measured
+     * packet counts (from qos-stats.js) and log the differences + both
+     * verdicts. Returns the reconciliation object (also saved in .qos.json).
+     *
+     * Direction semantics:
+     *   uplink   (client -> server): client sent N, server NIC received M
+     *            -> N-M packets lost on the way up.
+     *   downlink (server -> client): server NIC sent P, client received Q
+     *            -> P-Q packets lost on the way down.
+     */
+    _reconcileQos(callid, summary, client) {
+        const num = (v) => (typeof v === 'number' ? v : (v == null ? 0 : (parseInt(v, 10) || 0)));
+        const legs = (summary && summary.legs) || {};
+        const w = legs.webrtc || {};
+        const srvFromClient = num(w.packets_client_to_server);   // server received from client (uplink)
+        const srvToClient   = num(w.packets_server_to_client);   // server sent to client (downlink)
+        const serverVerdict = (summary && (summary.evaluation_text || summary.evaluation)) || 'unknown';
+        const serverOk      = summary ? summary.media_ok === true : null;
+
+        const haveClient = !!(client && client.packetsSent != null);
+        const cliSent = haveClient ? num(client.packetsSent) : null;       // uplink
+        const cliRecv = haveClient ? num(client.packetsReceived) : null;   // downlink
+        const clientVerdict = haveClient
+            ? (client.domain + (client.reason ? ' (' + client.reason + ')' : ''))
+            : 'no client data';
+        const clientOk = haveClient ? (client.domain === 'OK') : null;
+
+        const uplinkLost   = (cliSent != null) ? (cliSent - srvFromClient) : null;
+        const downlinkLost = (cliRecv != null) ? (srvToClient - cliRecv) : null;
+        const agree = (clientOk != null && serverOk != null) ? (clientOk === serverOk) : null;
+
+        const recon = {
+            uplink:   { client_sent: cliSent, server_received: srvFromClient, lost_client_to_server: uplinkLost },
+            downlink: { server_sent: srvToClient, client_received: cliRecv, lost_server_to_client: downlinkLost },
+            client_verdict: clientVerdict,
+            server_verdict: serverVerdict,
+            agree,
+        };
+
+        console.log(`[qos] reconcile call ${callid}`);
+        console.log(`[qos] reconcile   uplink   client_sent=${cliSent} server_recv=${srvFromClient} lost(c->s)=${uplinkLost}`);
+        console.log(`[qos] reconcile   downlink server_sent=${srvToClient} client_recv=${cliRecv} lost(s->c)=${downlinkLost}`);
+        console.log(`[qos] reconcile   client verdict: ${clientVerdict}`);
+        console.log(`[qos] reconcile   server verdict: ${serverVerdict}`);
+        console.log(`[qos] reconcile   agreement: ${agree == null ? 'n/a' : (agree ? 'AGREE' : 'DISAGREE')}`);
+        return recon;
+    }
+
+    /**
+     * One compact, grep-able line summarising a qos record — used for the
+     * applog ([qos] [summary]) so it ships with support logs.
+     */
+    _qosSummaryLine(record) {
+        const r = (record && record.reconciliation) || {};
+        const up = r.uplink || {};
+        const down = r.downlink || {};
+        const srv = (record && record.server) || {};
+        const cli = record && record.client;
+        return [
+            `call=${record && record.call_id}`,
+            `media=${(srv.media_types || []).join('/') || '?'}`,
+            `client[sent=${up.client_sent} recv=${down.client_received} verdict=${(cli && cli.domain) || 'n/a'}]`,
+            `server[c->s=${up.server_received} s->c=${down.server_sent} verdict=${srv.evaluation || 'n/a'}]`,
+            `lost[c->s=${up.lost_client_to_server} s->c=${down.lost_server_to_client}]`,
+            `agreement=${r.agree == null ? 'n/a' : (r.agree ? 'AGREE' : 'DISAGREE')}`,
+        ].join(' ');
+    }
+
+    /**
+     * Render a saved qos record into a readable multi-line text report for the
+     * QoS summary modal and the "Send to support" body.
+     */
+    _formatQosReport(record) {
+        const srv = (record && record.server) || {};
+        const cli = (record && record.client) || {};
+        const r = (record && record.reconciliation) || {};
+        const up = r.uplink || {};
+        const down = r.downlink || {};
+        const legs = srv.legs || {};
+        const w = legs.webrtc || {};
+        const s = legs.sip || {};
+        const L = [];
+        L.push('QoS call report');
+        L.push('Call-ID: ' + ((record && record.call_id) || '?'));
+        if (srv.sylk_session_id) L.push('Sylk session: ' + srv.sylk_session_id);
+        const _date = (record && record.date) || srv.ended_at || null;
+        if (_date) {
+            let _d = _date;
+            const _n = Number(_date);
+            // numeric epoch (s or ms) -> ISO; otherwise show the string as-is
+            if (Number.isFinite(_n) && _n > 0) {
+                _d = new Date(_n < 1e12 ? _n * 1000 : _n).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+            }
+            L.push('Date: ' + _d);
+        }
+        const ua = (srv.user_agents) || {};
+        // There are only TWO endpoints in a call: the local party and the
+        // remote party. Janus and MediaProxy are RELAYS in between — they have
+        // no SIP user agent. (Earlier this printed "iPhone <-> iPhone" on the
+        // WebRTC leg because user_agent_local IS the local device, not Janus.)
+        if (record && (record.from_uri || record.to_uri)) {
+            L.push('From: ' + (record.from_uri || '?'));
+            L.push('To:   ' + (record.to_uri || '?'));
+        }
+        L.push('Local device  : ' + (ua.local || USER_AGENT || '?') + '  (this device)');
+        L.push('Remote device : ' + (ua.remote || '?'));
+        L.push('Media: ' + ((srv.media_types || []).join(', ') || '?'));
+        L.push('Duration: ' + (srv.duration_s != null ? srv.duration_s + 's' : '?'));
+        L.push('');
+        L.push('SERVER (sylk-qos-server): ' + (srv.evaluation_text || srv.evaluation || 'n/a'));
+        L.push('  WebRTC leg  ' + (w.client || '?') + '  <->  Janus:' + (w.janus_port || '?') + '   (relay)');
+        L.push('    client -> server : ' + (w.packets_client_to_server != null ? w.packets_client_to_server : '?') + ' pkts');
+        L.push('    server -> client : ' + (w.packets_server_to_client != null ? w.packets_server_to_client : '?') + ' pkts');
+        if (s && Object.keys(s).length) {
+            L.push('  SIP leg     Janus:' + (s.janus || '?') + '  <->  MediaProxy:' + (s.mediaproxy || '?') + '   (relays)');
+            if (Array.isArray(s.streams) && s.streams.length) {
+                L.push('    streams : ' + s.streams.map((x) => (x.media || '?') + ' ' + (x.remote_ip || '?') + ':' + (x.remote_port || '?')).join(', '));
+            }
+            L.push('    Janus -> MediaProxy : ' + (s.packets_janus_to_mediaproxy != null ? s.packets_janus_to_mediaproxy : '?') + ' pkts');
+            L.push('    MediaProxy -> Janus : ' + (s.packets_mediaproxy_to_janus != null ? s.packets_mediaproxy_to_janus : '?') + ' pkts');
+        }
+        L.push('');
+        L.push('CLIENT (this device): ' + (cli.domain ? cli.domain + (cli.reason ? ' — ' + cli.reason : '') : 'no data'));
+        if (cli.packetsSent != null) {
+            L.push('    sent : ' + cli.packetsSent + ' pkts    received : ' + cli.packetsReceived + ' pkts');
+            L.push('    ice : ' + (cli.iceState || '?') + '    dtls : ' + (cli.dtlsState || '?') + '    rtt : ' + (cli.rttMs != null ? cli.rttMs + 'ms' : '?'));
+        }
+        const fmt = (v, unit) => (v != null && v !== '?') ? (v + (unit || '')) : '?';
+        if (cli.lossIn != null || cli.concealPct != null || cli.jbDelayMs != null) {
+            L.push('    loss in : ' + fmt(cli.lossIn, '%') + '    loss out : ' + fmt(cli.lossOut, '%')
+                   + '    audible loss (conceal) : ' + fmt(cli.concealPct, '%'));
+            L.push('    jitter buffer : ' + fmt(cli.jbDelayMs, 'ms') + '    flushes : ' + fmt(cli.jbFlushes)
+                   + '    pps recv : ' + fmt(cli.ppsRecv));
+        }
+        L.push('');
+        L.push('RECONCILIATION');
+        // Reconciliation needs BOTH sides. Say so plainly instead of printing
+        // a row full of nulls.
+        const haveClient = !!(record && record.client && (record.client.domain
+            || record.client.packetsSent != null || record.client.packetsReceived != null));
+        const haveServer = !!(srv && (srv.evaluation || (srv.legs && Object.keys(srv.legs).length)));
+        if (!haveClient && !haveServer) {
+            L.push('    not possible — neither client nor server data available');
+        } else if (!haveClient) {
+            L.push('    not possible without client data');
+        } else if (!haveServer) {
+            L.push('    not possible without server data');
+        } else {
+            L.push('    uplink   (client->server): client sent ' + up.client_sent + ', server received ' + up.server_received + '  ->  lost ' + up.lost_client_to_server);
+            L.push('    downlink (server->client): server sent ' + down.server_sent + ', client received ' + down.client_received + '  ->  lost ' + down.lost_server_to_client);
+            L.push('    verdict: client=' + (r.client_verdict || '?'));
+            L.push('             server=' + (r.server_verdict || '?'));
+            L.push('    agreement: ' + (r.agree == null ? 'n/a' : (r.agree ? 'client and server AGREE' : 'client and server DISAGREE')));
+        }
+        return L.join('\n');
+    }
+
+    /**
+     * Open the QoS summary modal for a call. `meta` = {callid, uri}. Loads the
+     * saved <ts>-<callid>.qos.json from the contact's calls/ folder; if not yet
+     * on disk, fetches it live from the qos-server. applogs the summary line.
+     */
+    async openQosSummary(meta) {
+        const callid = meta && meta.callid;
+        const uri = meta && meta.uri;
+        if (!callid) return;
+        const account = this.state.accountId;
+        let record = null;
+
+        // 1. Prefer the on-disk record (carries the reconciliation we computed).
+        try {
+            if (uri && account) {
+                const safeContact = uri.replace(/[\/\\]/g, '_');
+                const dir = `${RNFS.DocumentDirectoryPath}/${account}/${safeContact}/calls`;
+                const safeCid = callid.replace(/[^A-Za-z0-9._-]/g, '_');
+                const files = await RNFS.readDir(dir).catch(() => []);
+                const match = files.find((f) => f.name.endsWith('-' + safeCid + '.qos.json'));
+                if (match) {
+                    record = JSON.parse(await RNFS.readFile(match.path, 'utf8'));
+                }
+            }
+        } catch (e) { /* fall through to live fetch */ }
+
+        // 2. Fall back to a live fetch from the qos-server.
+        if (!record && this.state.qosServerUrl) {
+            try {
+                const summary = await getQosSummary({ url: this.state.qosServerUrl, callid });
+                if (summary && summary.artifacts) delete summary.artifacts;
+                const client = getQosResult(callid) || await loadQosResultFromDisk(callid);
+                const _dir = (meta && meta.direction) || null;
+                const _localUri = account;
+                const _remoteUri = (meta && meta.uri) || '';
+                record = {
+                    call_id: callid,
+                    date: (meta && meta.startTime) || (summary && summary.ended_at) || null,
+                    direction: _dir,
+                    from_uri: _dir === 'incoming' ? _remoteUri : _localUri,
+                    to_uri: _dir === 'incoming' ? _localUri : _remoteUri,
+                    local_uri: _localUri,
+                    remote_uri: _remoteUri,
+                    sip_trace_url: this.buildCallTraceUrl({
+                        callid,
+                        fromtag: meta && meta.fromtag,
+                        totag: meta && meta.totag,
+                        proxyIP: meta && meta.proxyIP,
+                    }) || '',
+                    server: summary,
+                    client: client || null,
+                    reconciliation: this._reconcileQos(callid, summary, client),
+                };
+            } catch (e) {
+                console.log('[qos] openQosSummary live fetch failed for', callid, '-', e && e.message);
+            }
+        }
+
+        if (!record) {
+            this.setState({
+                showQosSummaryModal: true,
+                qosSummaryCallid: callid,
+                qosSummaryReport: 'No QoS data available for this call.\n\nThe server-side capture may not have run, or it has aged out.',
+            });
+            return;
+        }
+        const report = this._formatQosReport(record);
+        utils.timestampedLog('[qos] [summary]', this._qosSummaryLine(record));
+        // Dump the full report to the console (and the applog) when the panel
+        // opens. Log it LINE BY LINE: a single console.log carrying embedded
+        // "\n" only gets the timestamp prefix on its first line and the applog
+        // (log2file) / Metro on iOS drops everything after the first newline,
+        // so the body never appeared. One log call per line guarantees the
+        // whole report lands in the console and the support log.
+        console.log('[qos] report for ' + callid);
+        String(report).split('\n').forEach((ln) => console.log('[qos] ' + ln));
+        this.setState({
+            showQosSummaryModal: true,
+            qosSummaryCallid: callid,
+            qosSummaryReport: report,
+            qosSummaryTraceUrl: (record && record.sip_trace_url) || '',
+        });
+    }
+
+    /**
+     * Render a sylk_settings.phtml get_sip_trace envelope into a
+     * human-readable SIP trace, mirroring the server's "TEXT" view
+     * (SIPTrace::showText): one block per packet with a header line
+     * and the raw SIP message. Returns a note when there are no
+     * packets (trace aged out / not available).
+     */
+    _formatSipTraceText(sip, callid) {
+        const packets = (sip && Array.isArray(sip.packets)) ? sip.packets : [];
+        const header = [
+            '# SIP trace for call ' + callid,
+            '# cdr_source=' + ((sip && sip.cdr_source) || '?')
+                + ' proxy_ip=' + ((sip && sip.proxy_ip) || '?')
+                + ' packets=' + packets.length,
+            '',
+        ];
+        if (packets.length === 0) {
+            header.push('SIP trace is not available (it may have been purged on the server).');
+            return header.join('\n') + '\n';
+        }
+        const blocks = packets.map((p, i) => {
+            const meta = 'Packet ' + (i + 1) + '/' + packets.length
+                + ' at ' + (p.date || '?')
+                + ' ' + (p.fromip || '?') + ':' + (p.fromport || '?')
+                + ' -> ' + (p.toip || '?') + ':' + (p.toport || '?')
+                + ' (' + (p.direction || '?') + ' ' + (p.transport || '?') + ')';
+            return meta + '\n' + (p.msg || '') + '\n---';
+        });
+        return header.join('\n') + blocks.join('\n') + '\n';
+    }
+
+    /**
+     * Build the navigable CDRTool SIP-trace page URL for one call by
+     * appending the per-call identifiers to the server-published
+     * traceURL base. The base already carries ?cdr_source=… (e.g.
+     * http://mdns.sipthor.net/CDRTool/sip_trace.phtml?cdr_source=sip_trace_thor),
+     * so we just add callid/fromtag/totag/proxyIP:
+     *
+     *   <traceURL>&callid=<id>&fromtag=<x>&totag=<y>&proxyIP=<ip>
+     *
+     * Returns '' when no traceURL was published or the callid is
+     * missing. Tolerates a base with or without an existing query
+     * string.
+     */
+    buildCallTraceUrl({ callid, fromtag, totag, proxyIP }) {
+        const base = this.state.traceURL;
+        if (!base || !callid) return '';
+        const sep = base.indexOf('?') === -1 ? '?' : '&';
+        return base
+            + sep + 'callid=' + encodeURIComponent(callid)
+            + '&fromtag='     + encodeURIComponent(fromtag || '')
+            + '&totag='       + encodeURIComponent(totag   || '')
+            + '&proxyIP='     + encodeURIComponent(proxyIP || '');
+    }
+
+    /**
+     * Open the CDRTool SIP-trace page for a call in the device's
+     * default browser. `meta` carries the per-call identifiers under
+     * either the wire names (callid/fromtag/totag) or the call_history
+     * names (sessionId/fromTag/toTag), plus proxyIP. No-op (logged)
+     * when traceURL isn't configured or the callid is missing.
+     */
+    openCallTrace(meta) {
+        const params = {
+            callid:  (meta && (meta.callid  || meta.sessionId)) || '',
+            fromtag: (meta && (meta.fromtag || meta.fromTag))   || '',
+            totag:   (meta && (meta.totag   || meta.toTag))     || '',
+            proxyIP: (meta && meta.proxyIP) || '',
+        };
+        const url = this.buildCallTraceUrl(params);
+        if (!url) {
+            console.log('[trace] openCallTrace: no traceURL configured or missing callid (callid='
+                + params.callid + ')');
+            return;
+        }
+        console.log('[trace] opening SIP trace page:', url);
+        Linking.openURL(url).catch((e) =>
+            console.log('[trace] Linking.openURL failed:', e && e.message));
+    }
+
+    /**
+     * Create one clickable system message per server call. Each carries
+     * metadata.trace = {callid, fromtag, totag, proxyIP} so a body tap
+     * opens the CDRTool SIP-trace page (see openCallTrace). Conference
+     * rooms are skipped. `entries` are raw call_history rows with
+     * `direction` already set by the caller.
+     */
+    async saveCallSystemMessages(entries) {
+        if (!Array.isArray(entries)) return;
+        for (const e of entries) {
+            const callid = e && e.sessionId;
+            if (!callid) continue;
+
+            const remoteParty = e.remoteParty || '';
+            if (remoteParty.indexOf('@conference.') > -1
+                || remoteParty.indexOf('@videoconference.') > -1) {
+                continue;
+            }
+
+            // Contact uri — same normalisation the history pipeline
+            // uses, so the message lands in that contact's chat.
+            let uri = remoteParty.toLowerCase();
+            uri = utils.normalizeAnonymousUri(uri);
+            if (utils.isPhoneNumber(uri)) {
+                uri = uri.split('@')[0].replace(/\s|\-|\(|\)/g, '').replace(/^00/, '+');
+            }
+            if (!uri) continue;
+
+            // Known contacts only — same gate saveHistory applies. A
+            // call to/from someone not in the address book doesn't get
+            // a trace system message (no chat to put it in anyway).
+            if (typeof this.lookupContact === 'function' && !this.lookupContact(uri)) {
+                continue;
+            }
+
+            const direction = e.direction === 'incoming' ? 'incoming' : 'outgoing';
+            const missed = direction === 'incoming' && !e.duration;
+            const dur = this._formatCallDuration(e.duration);
+            // Call time from the server entry (start time in the call's
+            // timezone). Used to (a) stamp the message at the call's
+            // moment so it sorts into the correct day, and (b) prefix
+            // the label with HH:MM:SS — system bubbles have no time
+            // footer, so without this the user can't see WHEN the call
+            // was. Matches the live "HH:MM:SS - …" breadcrumb style.
+            const callMoment = (e.startTime && e.timezone)
+                ? momenttz.tz(String(e.startTime), String(e.timezone))
+                : null;
+            const callDate = (callMoment && callMoment.isValid()) ? callMoment.toDate() : null;
+            const timePrefix = (callMoment && callMoment.isValid())
+                ? (callMoment.format('HH:mm:ss') + ' - ') : '';
+            const label = timePrefix + (missed
+                ? 'Missed call'
+                : ((direction === 'incoming' ? 'Incoming call' : 'Outgoing call')
+                    + (dur ? ' (' + dur + ')' : '')));
+
+            const metadata = {
+                trace: {
+                    callid:  String(callid),
+                    fromtag: e.fromTag != null ? String(e.fromTag) : '',
+                    totag:   e.toTag   != null ? String(e.toTag)   : '',
+                    proxyIP: e.proxyIP != null ? String(e.proxyIP) : '',
+                },
+            };
+            // QoS link (opens the server-side qos summary), only when a QoS
+            // server is configured. `uri` lets openQosSummary find the saved
+            // <ts>-<callid>.qos.json; the trace params let it rebuild the full
+            // SIP-trace URL for the report.
+            if (this.state.qosServerUrl) {
+                metadata.qos = {
+                    callid:  String(callid),
+                    uri,
+                    fromtag: e.fromTag != null ? String(e.fromTag) : '',
+                    totag:   e.toTag   != null ? String(e.toTag)   : '',
+                    proxyIP: e.proxyIP != null ? String(e.proxyIP) : '',
+                };
+            }
+
+            // Converge with the live "call ended" system message. That
+            // message (saveSystemMessage from the terminated path) is
+            // stamped with the same session id in the call_id column.
+            // If such a row already exists, ENRICH it with the trace
+            // params (so the existing breadcrumb becomes tappable)
+            // instead of inserting a second row. Only insert a fresh
+            // message when there's no live one — e.g. the call happened
+            // on another device.
+            let existing = null;
+            try {
+                existing = await this.ExecuteQuery(
+                    "SELECT msg_id, content FROM messages WHERE account = ? AND call_id = ? LIMIT 1",
+                    [this.state.accountId, String(callid)]
+                );
+            } catch (err) {
+                console.log('[trace] converge lookup failed for', callid, '-', err && err.message);
+            }
+
+            if (existing && existing.rows && existing.rows.length > 0) {
+                try {
+                    // Rewrite the duration in the existing "…call ended
+                    // after MM:SS" breadcrumb to the AUTHORITATIVE server
+                    // duration — the live message used the locally-
+                    // measured value, which can be off by a second or
+                    // two. Only touches the duration token; leaves the
+                    // timestamp prefix and the rest of the line intact.
+                    const _oldContent = String(existing.rows.item(0).content || '');
+                    const _clock = this._formatCallDurationClock(e.duration);
+                    let _newContent = _oldContent;
+                    if (_clock && /ended after\s+\d{1,2}:\d{2}(?::\d{2})?/i.test(_oldContent)) {
+                        _newContent = _oldContent.replace(
+                            /(ended after\s+)\d{1,2}:\d{2}(?::\d{2})?/i,
+                            '$1' + _clock
+                        );
+                    }
+                    await this.ExecuteQuery(
+                        "UPDATE messages SET metadata = ?, content = ? WHERE account = ? AND call_id = ?",
+                        [JSON.stringify(metadata), _newContent, this.state.accountId, String(callid)]
+                    );
+                    this._enrichInMemoryCallMessage(uri, String(callid), metadata, _newContent);
+                    console.log('[trace] converged: enriched existing call message', callid,
+                        '(server duration', e.duration + 's ->', _clock + ')');
+                } catch (err) {
+                    console.log('[trace] converge update failed for', callid, '-', err && err.message);
+                }
+            } else {
+                // No row carries this call_id. Before inserting a fresh
+                // message, try a FALLBACK match by contact + time: an
+                // outgoing call cancelled before it was answered never
+                // gets a client-side Call-ID (Janus doesn't surface it
+                // on calling/ringing/proceeding), so its live "call
+                // ended (Call cancelled)" breadcrumb has a NULL call_id
+                // and can't match by id. Find the closest unconverged
+                // call-ended message for this contact around the server
+                // call's start time and converge onto THAT instead of
+                // duplicating.
+                let matched = null;
+                try {
+                    // e.startTime may be EITHER the raw server wall-clock
+                    // string ("YYYY-MM-DD HH:mm:ss") OR an already-converted
+                    // JS Date. saveCallSystemMessages runs un-awaited and
+                    // shares object references with the history.filter() pass
+                    // below, which rewrites elem.startTime into a Date (see
+                    // the momenttz.tz(...).toDate() conversion). A Date is
+                    // already an absolute instant — only a string needs the
+                    // timezone to resolve to one. Stringifying a Date into
+                    // moment.tz produces "Mon Jun 08 2026 ... GMT+0300", which
+                    // isn't ISO/RFC2822 and triggers moment's deprecation
+                    // warning, so branch on the type.
+                    let startEpoch = null;
+                    if (e.startTime && e.timezone) {
+                        const _v = (e.startTime instanceof Date)
+                            ? e.startTime.valueOf()
+                            : momenttz.tz(String(e.startTime), String(e.timezone)).valueOf();
+                        startEpoch = isNaN(_v) ? null : Math.floor(_v / 1000);
+                    }
+                    if (startEpoch && !isNaN(startEpoch)) {
+                        const fb = await this.ExecuteQuery(
+                            "SELECT msg_id, content FROM messages "
+                            + "WHERE account = ? AND (from_uri = ? OR to_uri = ?) AND system = 1 "
+                            + "AND (call_id IS NULL OR call_id = '') "
+                            + "AND direction = ? "
+                            + "AND content LIKE '%call ended%' "
+                            + "AND ABS(unix_timestamp - ?) <= 90 "
+                            + "ORDER BY ABS(unix_timestamp - ?) ASC LIMIT 1",
+                            [this.state.accountId, uri, uri, direction, startEpoch, startEpoch]
+                        );
+                        if (fb && fb.rows && fb.rows.length > 0) {
+                            matched = {
+                                msg_id: fb.rows.item(0).msg_id,
+                                content: String(fb.rows.item(0).content || ''),
+                            };
+                        }
+                    }
+                } catch (err) {
+                    console.log('[trace] fallback match failed for', callid, '-', err && err.message);
+                }
+
+                if (matched) {
+                    // Enrich the matched orphan breadcrumb: stamp the
+                    // now-known call_id, attach trace metadata, rewrite
+                    // the duration.
+                    const _clock = this._formatCallDurationClock(e.duration);
+                    let _newContent = matched.content;
+                    if (_clock && /ended after\s+\d{1,2}:\d{2}(?::\d{2})?/i.test(matched.content)) {
+                        _newContent = matched.content.replace(
+                            /(ended after\s+)\d{1,2}:\d{2}(?::\d{2})?/i, '$1' + _clock);
+                    }
+                    try {
+                        await this.ExecuteQuery(
+                            "UPDATE messages SET call_id = ?, metadata = ?, content = ? WHERE account = ? AND msg_id = ?",
+                            [String(callid), JSON.stringify(metadata), _newContent, this.state.accountId, matched.msg_id]
+                        );
+                        this._enrichInMemoryCallMessage(uri, String(callid), metadata, _newContent, matched.msg_id);
+                        console.log('[trace] converged (fallback by time): call', callid, '-> msg', matched.msg_id);
+                    } catch (err) {
+                        console.log('[trace] fallback converge update failed for', callid, '-', err && err.message);
+                    }
+                } else {
+                    // No live breadcrumb at all — create one, stamped
+                    // with call_id so a later live event / re-sync
+                    // converges on it, and at the CALL's time so it
+                    // sorts correctly and shows when it happened.
+                    await this.saveSystemMessage(uri, label, direction, missed, 1, metadata, String(callid), callDate);
+                }
+            }
+        }
+    }
+
+    /**
+     * Find the in-memory call system message for `callid` in the
+     * given contact's chat and merge `metadata` onto it, so a bubble
+     * that's currently on screen becomes tappable immediately (the
+     * SQL row was just enriched; this mirrors it into state without a
+     * reload). No-op when that chat isn't loaded.
+     */
+    _enrichInMemoryCallMessage(uri, callid, metadata, newText = null, matchMsgId = null) {
+        try {
+            const all = this.state.messages || {};
+            const list = all[uri];
+            if (!Array.isArray(list) || list.length === 0) return;
+            let changed = false;
+            const next = list.map((m) => {
+                // Match by call_id (normal converge) OR by msg_id (the
+                // fallback path, where the orphan message's callId is
+                // still null until we set it here).
+                const isMatch = (matchMsgId && m && m._id === matchMsgId)
+                             || (m && m.callId && m.callId === callid);
+                if (isMatch) {
+                    changed = true;
+                    // traceReady is a scalar the chat list's change
+                    // detector (ContactsListBox CWRP `fields`) watches,
+                    // so a metadata-only enrich is actually picked up
+                    // and the bubble re-renders into its tappable +
+                    // underlined state without a chat reload. `text` is
+                    // also watched, so the server-duration rewrite shows
+                    // immediately too.
+                    const patched = {
+                        ...m,
+                        // Stamp the now-known call_id (fallback path: the
+                        // orphan message had none until this converge).
+                        callId: String(callid),
+                        metadata: { ...(m.metadata || {}), ...metadata },
+                        traceReady: true,
+                    };
+                    if (newText != null && newText !== '') {
+                        patched.text = newText;
+                    }
+                    return patched;
+                }
+                return m;
+            });
+            if (changed) {
+                this.setState({ messages: { ...all, [uri]: next } });
+            }
+        } catch (e) {
+            console.log('[trace] in-memory enrich failed:', e && e.message);
+        }
+    }
+
+    /**
+     * Zero-padded clock duration (MM:SS, or HH:MM:SS past an hour) for
+     * a count of seconds — matches the format the live "…call ended
+     * after MM:SS" breadcrumb uses, so a server-duration rewrite slots
+     * in seamlessly. Returns '' for 0 / absent.
+     */
+    _formatCallDurationClock(seconds) {
+        const s = Math.max(0, parseInt(seconds, 10) || 0);
+        if (s < 1) return '';
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        const pad = (n) => (n < 10 ? '0' + n : '' + n);
+        return h > 0 ? (pad(h) + ':' + pad(m) + ':' + pad(sec)) : (pad(m) + ':' + pad(sec));
+    }
+
+    /** mm:ss (or h:mm:ss) for a duration in seconds; '' when 0 / absent. */
+    _formatCallDuration(seconds) {
+        const s = parseInt(seconds, 10);
+        if (!s || s < 1) return '';
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        const pad = (n) => (n < 10 ? '0' + n : '' + n);
+        return h > 0 ? (h + ':' + pad(m) + ':' + pad(sec)) : (m + ':' + pad(sec));
     }
 
     /**
@@ -7888,6 +8780,11 @@ class Sylk extends Component {
 			               // pointing at sylk_settings.phtml (the
 			               // JSON-and-HTML endpoint).
 			               serverSettingsUrl: configuration.serverSettingsUrl || '',
+			               // CDRTool SIP-trace page base (already carries
+			               // ?cdr_source=…); per-call params appended on click.
+			               traceURL: configuration.traceURL || '',
+			               // Server-side QoS capture daemon base URL (sylk-qos-server).
+			               qosServerUrl: configuration.qosServerUrl || '',
 			               passwordRecoveryUrl: configuration.passwordRecoveryUrl,
 			               deleteAccountUrl: configuration.deleteAccountUrl,
 			               callHistoryUrl: callHistoryUrl,
@@ -13228,9 +14125,14 @@ class Sylk extends Component {
                             }
                             _msg = _label + ' (' + _dur + ')';
                         }
-                        this._notificationCenter.postSystemNotification(_msg);
+                        // Don't post a snackbar for outgoing calls.
+                        if (direction !== 'outgoing') {
+                            this._notificationCenter.postSystemNotification(_msg);
+                        }
                     } else {
-                        this._notificationCenter.postSystemNotification(reason);
+                        if (direction !== 'outgoing') {
+                            this._notificationCenter.postSystemNotification(reason);
+                        }
                     }
                 }
 
@@ -13293,6 +14195,12 @@ class Sylk extends Component {
                 const _deferredMissed = missed;
                 const _deferredDiff = diff;
                 const _deferredMissedSipCallId = _missedSipCallId;
+                // Convergence key = the value the server call_history
+                // reports as sessionId. The logs prove that is the SIP
+                // Call-ID (call._callId / call.callId), NOT the local
+                // callUUID (call.id). Stamp the call-ended message with
+                // it so the server-history sync converges onto this row.
+                const _deferredSipCallId = (call && (call._callId || call.callId)) || null;
                 _termMark('before-scheduling-deferred');
                 InteractionManager.runAfterInteractions(() => {
                     _termMark('deferred:start');
@@ -13334,7 +14242,14 @@ class Sylk extends Component {
                         }
                     }
                     if (_deferredMsg) {
-                        this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed);
+                        // Stamp the call-ended breadcrumb with the SIP
+                        // Call-ID (call._callId) — the value the server
+                        // call_history reports as sessionId — so the
+                        // server-history sync converges onto this same
+                        // row (7th arg = call_id). The local callUUID
+                        // (call.id) is a DIFFERENT id and must NOT be
+                        // used here.
+                        this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed, 1, null, _deferredSipCallId);
                         _termMark('deferred:saveSystemMessage');
                     }
                     this.updateHistoryEntry(_deferredUri, _deferredCallUUID, _deferredDiff, _terminatedMediaType, _deferredDirection);
@@ -13342,6 +14257,25 @@ class Sylk extends Component {
                     this.requestDisplayOverOtherAppsPermission();
                     _termMark('deferred:requestDisplayOverlay');
                 });
+
+                // 5 s after the call ends, force a server account-info +
+                // call-history fetch. By then the proxy has written this
+                // call's CDR, so the snapshot includes it and
+                // processServerCallHistory converges onto the live
+                // "call ended" breadcrumb — enriching it with the trace
+                // params (tappable + underlined) and the authoritative
+                // server duration. Single timer so back-to-back calls
+                // don't stack multiple fetches; force bypasses the
+                // once-per-session gate.
+                if (this._postCallHistoryFetchTimer) {
+                    clearTimeout(this._postCallHistoryFetchTimer);
+                }
+                this._postCallHistoryFetchTimer = setTimeout(() => {
+                    this._postCallHistoryFetchTimer = null;
+                    if (this.unmounted) return;
+                    console.log('[history] post-call (+5s) — forcing server history fetch');
+                    this.refreshAccountInfo({ force: true }).catch(() => {});
+                }, 5000);
 
                 break;
             default:
@@ -13767,7 +14701,7 @@ class Sylk extends Component {
         // it. resetState deliberately preserves the URL so the
         // same-server path can reuse it; we're the only branch
         // that needs the wipe.
-        this.setState({ serverSettingsUrl: '' });
+        this.setState({ serverSettingsUrl: '', traceURL: '' });
 
         setTimeout(() => {
             console.log('[switch] cross-server path: rearming signIn, targetDomain=', targetDomain);
@@ -17080,7 +18014,37 @@ class Sylk extends Component {
         // host candidate; ICE picks whichever pair actually works.
         // The 500-1500 ms STUN setup cost is the price of admission
         // for reliable cellular calls.
-        if (typeof call.prewarm === 'function') {
+        // PC prewarm is DISABLED. Its "full-prewarm fast path" (build the PC +
+        // apply the remote offer + createAnswer during ringing, then
+        // replaceTrack the mic in at accept) breaks INCOMING-call downlink
+        // audio on iOS: RTP arrives and decodes (recv climbs, 0% loss/conceal,
+        // opus negotiated) but the remote audio track from the prewarmed PC is
+        // never rendered — the callee hears nothing. Outgoing calls don't use
+        // this path and are unaffected. Confirmed 2026-06-09 by bisection:
+        // disabling prewarm restores incoming audio.
+        //
+        // Functional cost of disabling: answer() rebuilds the PC from scratch
+        // at accept time — but still WITH iceServers — so cellular calls still
+        // gather STUN candidates, just ~0.5-1.5s later. No loss of correctness,
+        // only a little setup latency.
+        //
+        // PC prewarm is DISABLED ON iOS ONLY. Its "full-prewarm fast path"
+        // breaks INCOMING-call downlink audio on iOS: RTP arrives and decodes
+        // (recv climbs, 0% loss/conceal, opus negotiated) but the remote audio
+        // from the prewarmed PeerConnection is never rendered — the callee
+        // hears nothing. Outgoing calls don't use this path and are unaffected.
+        // Confirmed by bisection 2026-06-09 (disabling restores iOS audio); a
+        // streamAdded-re-emit + audio-track re-kick at accept did NOT fix it,
+        // so the cause is lower in the iOS render/audio-unit path and needs
+        // on-device investigation. Android is NOT affected (prewarm verified
+        // working there), so it stays enabled on Android for the cellular-ICE
+        // / setup-latency benefit.
+        //
+        // Cost of disabling on iOS: answer() rebuilds the PC at accept (still
+        // WITH iceServers), so cellular calls still gather STUN, just ~0.5-1.5s
+        // later. No loss of correctness, only setup latency.
+        const PC_PREWARM_ENABLED = Platform.OS !== 'ios';
+        if (PC_PREWARM_ENABLED && typeof call.prewarm === 'function') {
             const cid = call._callId || call.callId || call.id;
             const _iceServers = this.state.iceServers || [];
             // Remember the prewarmed call (keyed by callUUID) so Decline/
@@ -19110,7 +20074,7 @@ class Sylk extends Component {
     //      file into the per-conversation directory and calls
     //      uploadFile(), which encrypts the file with the support key
     //      and POSTs it to the file-transfer service.
-    async requestSupportFromLogs(logsBody, account) {
+    async requestSupportFromLogs(logsBody, account, subject = 'Request for support') {
         const SUPPORT_URI = 'support@sylk.link';
         const myAccount = account || this.state.accountId;
 
@@ -19267,7 +20231,7 @@ class Sylk extends Component {
             const requestMsg = {
                 _id: requestId,
                 key: requestId,
-                text: 'Request for support',
+                text: subject,
                 createdAt: new Date(),
                 direction: 'outgoing',
                 user: {},
@@ -24242,10 +25206,27 @@ class Sylk extends Component {
 								}
 							}
 
-							const tsRaw = (best.value.timestamp != null)
-								? best.value.timestamp
-								: best.timestamp;
-							const createdAt = tsRaw ? new Date(tsRaw) : new Date();
+							// Anchor `createdAt` to the ORIGIN tick (the
+							// earliest entry in the trail), NOT to `best`
+							// (the latest valid coords). The chat list is
+							// sorted by `createdAt`; deriving it from the
+							// newest tick would re-synthesise the bubble at
+							// the bottom of the conversation on every chat
+							// re-entry / restart. `best` is still used for
+							// the bubble's coords/metadata below.
+							let originTs = Infinity;
+							for (const e of arr) {
+								if (!e || e.action !== 'location') continue;
+								const v = e.value;
+								const tsRaw = (v && v.timestamp != null)
+									? v.timestamp
+									: e.timestamp;
+								const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+								if (ts > 0 && ts < originTs) originTs = ts;
+							}
+							const createdAt = (originTs !== Infinity)
+								? new Date(originTs)
+								: new Date();
 							const bubble = {
 								_id: messageId,
 								key: messageId,
@@ -32869,8 +33850,12 @@ class Sylk extends Component {
         }
     }
 
-    async saveSystemMessage(uri, content, direction, missed=false, system=1) {
-        let timestamp = new Date();
+    async saveSystemMessage(uri, content, direction, missed=false, system=1, metadata=null, callId=null, ts=null) {
+        // `ts` lets the caller stamp the message at a specific time —
+        // e.g. server-synced call messages use the CALL's time, not the
+        // sync time, so they sort into the right day and show the right
+        // moment. Defaults to now for live notes.
+        let timestamp = (ts instanceof Date) ? ts : (ts ? new Date(ts) : new Date());
         let unix_timestamp = Math.floor(timestamp / 1000);
         let id = uuid.v4();
 
@@ -32883,10 +33868,20 @@ class Sylk extends Component {
         const _cat = this._classifyMessageCategory('text/plain', null, null);
         // System messages are plaintext at insert time.
         const _hl = this._hasLinkInText('text/plain', content);
-        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl];
+        // Optional metadata blob (e.g. call system messages carry
+        // {trace:{callid,fromtag,totag,proxyIP}} so a tap can open the
+        // CDRTool SIP-trace page). Persisted in the messages.metadata
+        // column and re-hydrated by utils.sql2GiftedChat on reload.
+        const _meta = (metadata && typeof metadata === 'object')
+            ? JSON.stringify(metadata) : null;
+        // call_id links this message to a specific call (the SIP
+        // Call-ID), so the live call-ended message and the server
+        // call-history message converge onto one row.
+        const _callId = callId ? String(callId) : null;
+        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', _meta, direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl, _callId];
 
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, pending, system, direction, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            this.renderSystemMessage(uri, content, direction, timestamp, system);
+        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, pending, system, direction, category, has_link, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+            this.renderSystemMessage(uri, content, direction, timestamp, system, metadata, _callId, id);
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -33049,7 +34044,7 @@ class Sylk extends Component {
 		this.setState({ messages: renderMessages });
 	}
 
-    async renderSystemMessage(uri, content, direction, timestamp, system=true) {
+    async renderSystemMessage(uri, content, direction, timestamp, system=true, metadata=null, callId=null, msgId=null) {
 
         if (utils.isPhoneNumber(uri) && uri.indexOf('@') > -1) {
             uri = uri.split('@')[0];
@@ -33060,7 +34055,11 @@ class Sylk extends Component {
             let msg;
 
             msg = {
-                _id: uuid.v4(),
+                // Use the SQL msg_id as the bubble _id (when provided)
+                // so a later in-memory enrich can find this exact bubble
+                // by id — and so it matches what sql2GiftedChat produces
+                // after a reload.
+                _id: msgId || uuid.v4(),
                 text: utils.cleanHtml(content),
                 createdAt: timestamp || new Date(),
                 direction: direction || 'outgoing',
@@ -33068,6 +34067,14 @@ class Sylk extends Component {
                 system: system,
                 pending: false,
                 failed: false,
+                // Carry the optional metadata blob (e.g. call trace
+                // params) onto the live bubble so a tap can act on it
+                // without waiting for a reload-from-SQL round-trip.
+                metadata: (metadata && typeof metadata === 'object') ? metadata : {},
+                // SIP Call-ID this message belongs to (when any), so the
+                // server-history converge step can find this live bubble
+                // in memory and enrich it with trace params.
+                callId: callId || null,
                 user: direction == 'incoming' ? {_id: uri, name: uri} : {}
                 }
 
@@ -36405,7 +37412,17 @@ class Sylk extends Component {
         if (this.state.syncConversations) {
             //loadingLabel = 'Sync conversations';
 
-        } else if (this.state.reconnectingCall) {
+        } else if (this.state.reconnectingCall && this.currentRoute !== '/call' && this.currentRoute !== '/conference') {
+            // Only raise the full-screen app-level "Reconnecting call..."
+            // overlay during the brief pre-/call window (e.g. still on the
+            // chat/ready screen right after a media-loss trip). Once we're
+            // on the call/conference screen, AudioCallBox/VideoBox render
+            // their OWN reconnect spinner (AudioCallBox.js:3483) plus the
+            // CallOverlay "Reconnecting call..." subtitle — raising this
+            // LoadingScreen on top of that put TWO stacked spinners on the
+            // call screen. Gating on currentRoute keeps the single spinner
+            // in each phase: app-level on the chat screen, in-call spinner
+            // once AudioCallBox owns the UI.
             loadingLabel = 'Reconnecting call...';
         } else if (this.signOut) {
             //loadingLabel = 'Signing out...';
@@ -36569,6 +37586,16 @@ return (
                               ? this.state.attachedLogUri
                               : null
                       }
+                    />
+
+                    <QosSummaryModal
+                      show={this.state.showQosSummaryModal}
+                      callid={this.state.qosSummaryCallid}
+                      report={this.state.qosSummaryReport}
+                      traceUrl={this.state.qosSummaryTraceUrl}
+                      account={this.state.accountId}
+                      requestSupportFromLogs={this.requestSupportFromLogs}
+                      close={() => this.setState({ showQosSummaryModal: false })}
                     />
 
                     <LoadingScreen
@@ -37518,6 +38545,17 @@ return (
                     refreshHistory = {this.state.refreshHistory}
                     refreshFavorites = {this.state.refreshFavorites}
                     saveHistory = {this.saveHistory}
+                    /* Open the CDRTool SIP-trace page for a tapped call
+                       system message (metadata.trace). Arrow-wrapped so
+                       `this` is preserved inside openCallTrace. */
+                    openCallTrace = {(meta) => this.openCallTrace(meta)}
+                    /* Open the QoS summary modal for a tapped call system
+                       message (metadata.qos). */
+                    openQosSummary = {(meta) => this.openQosSummary(meta)}
+                    /* Force a server account-info + call-history fetch.
+                       Triggered by an over-pull past the newest message
+                       in the chat (pull-up-to-refresh at the bottom). */
+                    fetchServerHistory = {() => this.refreshAccountInfo({ force: true })}
                     /* Fall back to the local part of the account
                        URI when the user hasn't set a display name.
                        Without this, every avatar pin (location
@@ -37851,9 +38889,25 @@ return (
         if (call) {
             this._lastActiveCallId = call.id;
         }
+        // During a media-loss reconnect we deliberately STAY on /call
+        // (no /ready bounce), so React would keep the SAME <Call> mounted
+        // and its componentDidMount — which is what fires the outgoing
+        // INVITE (startCallWhenReady → start → account.call) — would never
+        // re-run, leaving the redial with no new INVITE and the stale
+        // AudioCallBox showing no reconnect spinner. Keying the no-live-call
+        // window on the freshly-allocated outgoingCallUUID forces ONE clean
+        // remount the moment callKeepStartCall sets the new UUID: the fresh
+        // <Call> mounts with call=null + the new callUUID and places the
+        // INVITE exactly like a normal outgoing call, and the fresh
+        // AudioCallBox shows the reconnect spinner. When the live call then
+        // arrives the key flips to call.id (one more remount, harmless —
+        // componentDidMount's !call guard skips a duplicate INVITE). Gated
+        // on reconnectingCall so the normal first-dial path is unchanged.
         const _callMountKey = call
             ? call.id
-            : (this._lastActiveCallId || 'no-call');
+            : ((this.state.reconnectingCall && this.state.outgoingCallUUID)
+                ? ('reconnect-' + this.state.outgoingCallUUID)
+                : (this._lastActiveCallId || 'no-call'));
 
         return (
             <Fragment>

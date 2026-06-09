@@ -49,15 +49,10 @@ import ConferenceAudioParticipant from './ConferenceAudioParticipant';
 // theming choice lives next to the components it styles.
 import DarkModeManager from '../DarkModeManager';
 
-// QoS instrumentation — see qos/qos-stats.js and qos/README.md.
-// Previously gated on __DEV__; temporarily ungated so [qos] lines also
-// appear in release-build logcat while debugging intermittent ZRTP-call
-// media failures with qos/qos-test.sh. Re-add the __DEV__ guard once
-// that's resolved.
-import {
-    startQosLogging,
-    stopQosLogging,
-} from '../../qos/qos-stats';
+// QoS instrumentation is intentionally NOT imported here. It targets
+// 1-to-1 calls (a single bidirectional PeerConnection); conference media
+// flows through an SFU with a send-only publisher PC, so its transport
+// verdict doesn't apply. See AudioCallBox for the 1-to-1 integration.
 
 import { applyVideoEncoderParamsToPc } from './CallZrtp';
 // Note: `ContactsListBox` does NOT export `renderBubble` as a named
@@ -577,13 +572,6 @@ class ConferenceBox extends Component {
             // list). Tile renderers read from this set to decide
             // whether to show the yellow hand badge.
             raisedHandsByPid: new Set(),
-            // Seed sipParticipants from the long-lived call object so
-            // navigating to the contact list and back doesn't lose the
-            // SIP-side roster between ConferenceBox remounts. The call
-            // is owned by Conference.js / app.js and persists across
-            // routes while the conference is alive; we cache the last
-            // snapshot we received on it.
-            sipParticipants: (props.call && Array.isArray(props.call._sipParticipants)) ? props.call._sipParticipants : [],
             // Server-authoritative conference duration captured once on
             // join (seconds). Used by ConferenceHeader to seed its
             // running meter to "conference has been going N seconds" —
@@ -593,15 +581,6 @@ class ConferenceBox extends Component {
             conferenceDurationAtJoin: (props.call && typeof props.call._conferenceDurationAtJoin === 'number')
                 ? props.call._conferenceDurationAtJoin
                 : null,
-            // Per-participant live audio levels keyed by participant_id.
-            // Re-populated every audio_level_notify_period (default
-            // ~250ms) from the sipConferenceAudioLevels event. Tiles
-            // look up their own participant_id in this map and render
-            // a VU bar from `.rx_peak` (mean of µ-law averages is too
-            // smooth to drive a meter usefully — peak is bursty enough
-            // to track speech).
-            sipAudioLevels: {},
-            sipAudioLevelsTs: null,
             showInviteModal: false,
             showDrawer: false,
             keyboardHeight: 0,
@@ -1059,6 +1038,20 @@ class ConferenceBox extends Component {
             this._sampleConferenceAudioLevels();
         }, 200);
 
+        // SIP-tile VU repaint. The WebRTC VU sampler above only forces a
+        // re-render when a WebRTC/local getStats level actually changes, so
+        // a SIP caller speaking while everyone else is silent would update
+        // Participant.audioLevel without anything repainting their tile.
+        // This lightweight tick re-renders at ~4 Hz whenever there are SIP
+        // surrogates in the room so their meters track the live levels the
+        // sylkrtc library routes onto each Participant.
+        this._sipVuTimer = setInterval(() => {
+            if (this.unmounted) return;
+            if (this._sipParticipantList().length > 0) {
+                this.forceUpdate();
+            }
+        }, 250);
+
         this.props.getMessages(this.state.remoteUri.split('@')[0]);
 
         setTimeout(() => {
@@ -1107,7 +1100,7 @@ class ConferenceBox extends Component {
 	         return true;
 	     }).length;
 	     const _roomCount = (_webrtcRealCount + 1)
-	         + ((this.state.sipParticipants || []).filter((sp) => sp && sp.type === 'sip').length);
+	         + ((this._sipParticipantList() || []).filter((sp) => sp && sp.type === 'sip').length);
 	     const _raiseHandVisible = _roomCount > 2;
 	     // In-flight guard: fire toggleHand at most ONCE per
 	     // raisedHand=true → false transition. componentDidUpdate
@@ -1156,13 +1149,16 @@ class ConferenceBox extends Component {
             }
         } catch (e) { /* best effort */ }
 
-        // [qos] — start the QoS sampler against the conference's own
-        // PeerConnection. Mirrors the AudioCallBox integration; emits
-        // [qos] CONNECT / STATS / DISCONNECT into metro.log so
-        // qos/qos.sh and qos/qos-probe.py can pick it up.
-        if (this.props.call && this.props.call._pc) {
-            startQosLogging(this.props.call._pc);
-        }
+        // [qos] — intentionally NOT started for conferences. QoS logging
+        // and its transport verdict are designed for 1-to-1 calls where a
+        // single PeerConnection carries a bidirectional peer leg. In a
+        // conference the media flows differently: this `_pc` is the
+        // publisher connection, which only SENDS our media to the SFU —
+        // incoming media arrives on separate per-participant subscriber
+        // connections. Sampling the publisher PC would always see
+        // sent>0/recv=0 and the analyzer would wrongly conclude "the
+        // gateway is not relaying the peer leg". So conference QoS is left
+        // off entirely (see AudioCallBox for the 1-to-1 integration).
 
         for (let p of this.state.participants) {
             p.on('stateChanged', this.onParticipantStateChanged);
@@ -1206,6 +1202,20 @@ class ConferenceBox extends Component {
 
         this.props.call.on('participantJoined', this.onParticipantJoined);
         this.props.call.on('participantLeft', this.onParticipantLeft);
+        // SIP surrogates already present at join arrive via
+        // initial-publishers, which does NOT emit participantJoined, so
+        // wire their muteChanged listeners here (later joiners get theirs
+        // in onParticipantJoined). The ~5 Hz VU tick repaints audio
+        // levels; this covers a mute toggle landing while the room is
+        // otherwise silent so the mic icon flips without waiting for the
+        // next audio sample.
+        try {
+            ((this.props.call && this.props.call.participants) || []).forEach((p) => {
+                if (p && p.type === 'sip') {
+                    p.on('muteChanged', this._onSipParticipantUpdated);
+                }
+            });
+        } catch (e) {}
         this.props.call.on('roomConfigured', this.onConfigureRoom);
         this.props.call.on('fileSharing', this.onFileSharing);
         this.props.call.on('composingIndication', this.composingIndicationReceived);
@@ -1237,147 +1247,6 @@ class ConferenceBox extends Component {
                 this.onRaisedHands(Array.isArray(_seedList) ? _seedList : []);
             } catch (e) { /* best effort */ }
         }
-
-        this.props.call.on('sipConferenceParticipants', (participants, duration) => {
-            // Verbose JSON dump silenced — was useful while pinning
-            // down the muted-state serialization issue, now too
-            // chatty per NOTIFY. Re-enable by uncommenting the
-            // JSON.stringify line if a future shape question comes up.
-            // console.log('[ConferenceBox] sipConferenceParticipants duration=' + duration + ':\n' +
-            //             JSON.stringify(participants, null, 2));
-            const _list = Array.isArray(participants) ? participants : [];
-            // Diagnostic — proves the listener is actually firing and
-            // shows the size + types of the snapshot so we can match
-            // it against the Conference.js "SIP conference participants:"
-            // log line which is on the same emit. If this line is
-            // missing while Conference.js's is present, the
-            // ConferenceBox listener never got wired up (timing /
-            // remount race) and we'll need to defer the attach.
-            try {
-                const _summary = _list.map((sp) => {
-                    if (!sp) return '?';
-                    const _muted = (sp.endpoints && sp.endpoints[0]
-                        && sp.endpoints[0].muted) ? '[muted]' : '';
-                    return (sp.type || '?') + ':' + (sp.uri || '?') + _muted;
-                }).join(', ');
-                console.log('[ConferenceBox] sipConferenceParticipants tick:',
-                    'size=', _list.length,
-                    'primed=', !!this._sipRosterPrimed,
-                    'prev=', (this._prevSipUris ? Array.from(this._prevSipUris).join(',') : '∅'),
-                    'curr=[', _summary, ']');
-            } catch (e) {
-                console.log('[ConferenceBox] sipConferenceParticipants tick log failed:',
-                    e && e.message);
-            }
-
-            // Diff the SIP roster so PSTN / SIP callers get the same
-            // join/leave chat-log entries the WebRTC participants get
-            // via onParticipantJoined / onParticipantLeft. The
-            // videoroom's `participantJoined` event only fires for
-            // WebRTC peers; SIP / PSTN callers come through the audio
-            // bridge and only ever show up in the
-            // sipConferenceParticipants snapshot we're processing
-            // here. Without this, you'd see "X was invited" in the
-            // chat but no matching "X joined" when they connected,
-            // and no "X left" when they hung up — exactly the
-            // symptom you described.
-            //
-            // _prevSipUris is the participant URI set from the
-            // previous tick. New URIs → joins, removed URIs → leaves.
-            // Bridge entries are skipped (sp.type === 'bridge') so
-            // the plumbing doesn't show up in the chat audit log,
-            // matching what we do for WebRTC bridge tiles.
-            try {
-                const _prevSet = this._prevSipUris || new Set();
-                const _currSet = new Set();
-                const _currByUri = new Map();
-                for (const sp of _list) {
-                    if (!sp || !sp.uri) continue;
-                    if (sp.type === 'bridge') continue;
-                    const _u = String(sp.uri);
-                    _currSet.add(_u);
-                    _currByUri.set(_u, sp);
-                }
-                // Only post join/leave messages once the FIRST snapshot
-                // has been seen — otherwise the very first snapshot
-                // (which already has the existing participants in it)
-                // would generate a spurious "joined" for everyone who
-                // was in the room before we did. After the first
-                // snapshot, _prevSipUris is populated and the diff
-                // produces the right thing.
-                if (this._sipRosterPrimed) {
-                    for (const _u of _currSet) {
-                        if (!_prevSet.has(_u)) {
-                            this.postChatSystemMessage(_u + ' joined', true);
-                            // Auto-unmute workaround. The server-side
-                            // _auto_mute_new_sip_participants in
-                            // sylkserver/webrtcgateway/handler.py
-                            // muted every new SIP arrival before we
-                            // added the room-size gate; in any
-                            // deployment that hasn't been restarted
-                            // since (or where the gate misfires) the
-                            // PSTN caller still arrives muted. When
-                            // the WebRTC roster is just me (no other
-                            // WebRTC publishers) and a new SIP caller
-                            // appears, schedule an unmute REFER 1s
-                            // later so the small 1-on-1 case (the
-                            // most surprising one — you dialled a
-                            // PSTN number and can't hear them)
-                            // recovers automatically.
-                            this._maybeAutoUnmuteNewSipParticipant(_u, _currByUri.get(_u));
-                        }
-                    }
-                    for (const _u of _prevSet) {
-                        if (!_currSet.has(_u)) {
-                            this.postChatSystemMessage(_u + ' left', true);
-                        }
-                    }
-                }
-                this._prevSipUris = _currSet;
-                this._sipRosterPrimed = true;
-            } catch (e) {
-                console.log('[conference] [chat] sip roster diff failed:', e && e.message);
-            }
-
-            // Cache on the call object so a subsequent ConferenceBox
-            // remount can seed state.sipParticipants from it instead
-            // of starting empty. Conference.js also attaches its own
-            // early-bound cache listener (so the FIRST snapshot —
-            // which often arrives before ConferenceBox mounts — isn't
-            // lost on the floor). This assignment just keeps the same
-            // cache fresh on every later delta.
-            if (this.props.call) {
-                this.props.call._sipParticipants = _list;
-            }
-            const _update = {sipParticipants: _list};
-            // Server-authoritative conference duration anchor (seconds
-            // since the videoroom was created on the webrtcgateway).
-            // Stored once on first NON-ZERO arrival — the running
-            // counter in ConferenceHeader is driven by local elapsed
-            // time from that anchor; we don't keep ratcheting it
-            // from each NOTIFY to avoid jitter.
-            //
-            // A 0 reading from the session-accept conferenceDuration
-            // event (fires when the gateway hasn't yet computed the
-            // room age) used to lock the anchor at 0 and cause
-            // ConferenceHeader.serverDurationApplied to flip
-            // permanently, ignoring every later non-zero value. We
-            // now wait for the first duration > 0.
-            const _haveRealAnchor = typeof this.state.conferenceDurationAtJoin === 'number'
-                                    && this.state.conferenceDurationAtJoin > 0;
-            if (typeof duration === 'number' && duration > 0 && !_haveRealAnchor) {
-                _update.conferenceDurationAtJoin = duration;
-                if (this.props.call) {
-                    this.props.call._conferenceDurationAtJoin = duration;
-                }
-                // Surface the very first non-zero duration sample
-                // from the server so the operator can confirm the
-                // anchor matches the focus's clock at startup.
-                console.log('[ConferenceBox] conference duration anchor (from server, first sample): '
-                    + duration + 's');
-            }
-            this.setState(_update);
-        });
 
         // Diagnostic — show what the server told us about the
         // running conference duration at the moment ConferenceBox
@@ -1411,22 +1280,6 @@ class ConferenceBox extends Component {
             this.setState({conferenceDurationAtJoin: _cacheDur});
         }
 
-        // Race-window backfill: the constructor seeded
-        // state.sipParticipants from props.call._sipParticipants, but a
-        // snapshot landing in the cache BETWEEN constructor and
-        // componentDidMount would miss that seed. Re-read the cache
-        // here, and push to state if it's non-empty and state is
-        // still empty. The listener attached above handles every
-        // future delta.
-        if (this.props.call
-            && Array.isArray(this.props.call._sipParticipants)
-            && this.props.call._sipParticipants.length > 0
-            && this.state.sipParticipants.length === 0) {
-            console.log('[ConferenceBox] backfilling sipParticipants from cache at mount, count=' +
-                        this.props.call._sipParticipants.length);
-            this.setState({sipParticipants: this.props.call._sipParticipants});
-        }
-
         // The webrtcgateway also stamps the initial session-accept
         // event with the gateway-side conference duration. Catch that
         // path too so the meter is correct from the very first frame
@@ -1448,26 +1301,6 @@ class ConferenceBox extends Component {
                 }
                 this.setState({conferenceDurationAtJoin: duration});
             }
-        });
-
-        // Real-time per-participant audio levels (mean+peak), pushed by
-        // the webrtcgateway every audio_level_notify_period (default
-        // 250ms). Indexed by participant_id so a tile component renders
-        // the matching VU bar in one O(1) lookup. We replace the whole
-        // map on every event — the snapshot already carries every
-        // participant in the room, so a diff would add no value.
-        this.props.call.on('sipConferenceAudioLevels', ({levels, ts}) => {
-            const map = {};
-            for (const entry of (levels || [])) {
-                if (!entry || !entry.participant_id) continue;
-                map[entry.participant_id] = {
-                    tx: entry.tx || 0,
-                    rx: entry.rx || 0,
-                    tx_peak: entry.tx_peak || 0,
-                    rx_peak: entry.rx_peak || 0,
-                };
-            }
-            this.setState({sipAudioLevels: map, sipAudioLevelsTs: ts || null});
         });
 
         this.props.call.on('inviteStatus', (status) => {
@@ -1583,31 +1416,62 @@ class ConferenceBox extends Component {
      *  against sipParticipants[type==='bridge'] catches the cases
      *  where the display name is missing. */
     _isBridgeParticipant(p) {
-        if (!p || !p.identity) return false;
+        if (!p) return false;
+        // The server now classifies the audio bridge authoritatively as
+        // type==='bridge' on the Participant; trust that first. The
+        // display-name / URI heuristics are kept as a fallback for any
+        // entry that predates the typed field.
+        if (p.type === 'bridge') return true;
+        if (!p.identity) return false;
         const dn = p.identity._displayName || p.identity.displayName || '';
         if (/bridge/i.test(dn)) return true;
         const uri = p.identity._uri || p.identity.uri || '';
         if (uri.indexOf('@conference.') > -1) return true;
-        // AOR check — strip scheme + params, compare against the
-        // sipParticipants snapshot for any entry tagged type='bridge'.
-        const _aor = (() => {
-            let s = uri;
-            if (s.indexOf('sip:') === 0) s = s.slice(4);
-            else if (s.indexOf('sips:') === 0) s = s.slice(5);
-            return s.split(';')[0];
-        })();
-        if (_aor && Array.isArray(this.state.sipParticipants)) {
-            for (const sp of this.state.sipParticipants) {
-                if (sp && sp.type === 'bridge') {
-                    let bs = sp.uri || '';
-                    if (bs.indexOf('sip:') === 0) bs = bs.slice(4);
-                    else if (bs.indexOf('sips:') === 0) bs = bs.slice(5);
-                    const _baor = bs.split(';')[0];
-                    if (_baor && _baor === _aor) return true;
-                }
-            }
-        }
         return false;
+    }
+
+    /** Derive the SIP-caller list from the single source of truth —
+     *  call.participants. SIP surrogates carry type==='sip' (the bridge
+     *  itself is type==='bridge' and rendered from the WebRTC roster, not
+     *  here). Recomputed on demand; no parallel state is maintained.
+     *
+     *  Each entry is shaped like the old conference-info dict the audio
+     *  tile builder consumes (uri / display_name / endpoints[]), so the
+     *  render path stays unchanged. The participant's `id` IS the focus
+     *  token used as the mute / audio-level key, exposed as the single
+     *  synthetic endpoint's participant_id; `audioLevel` is carried
+     *  through from the live conference-audio-levels stream. */
+    _sipParticipantList() {
+        const ps = (this.props.call && this.props.call.participants) || [];
+        const out = [];
+        for (const p of ps) {
+            if (!p || p.type !== 'sip') continue;
+            const uri = (p.identity && (p.identity._uri || p.identity.uri)) || '';
+            const dn = (p.identity && (p.identity._displayName || p.identity.displayName)) || '';
+            out.push({
+                type: 'sip',
+                uri: uri,
+                display_name: dn,
+                // The server-side key is the conference focus token, which
+                // the sylkrtc library stores as `publisherId` (Participant.id
+                // is a library-local UUID and is NOT what the mute RPC /
+                // audio-level stream are keyed by). Use publisherId so the
+                // mute target and audio-level join both line up server-side.
+                endpoints: [{participant_id: p.publisherId, muted: p.muted}],
+                audioLevel: p.audioLevel || 0,
+                _participant: p,
+            });
+        }
+        return out;
+    }
+
+    /** Re-render when a SIP surrogate's mute state changes. Audio-level
+     *  changes are already picked up by the ~5 Hz VU-meter re-render
+     *  tick; this covers the lower-frequency muteChanged event so the
+     *  mic icon flips promptly rather than waiting for the next tick. */
+    _onSipParticipantUpdated() {
+        if (this.unmounted) return;
+        this.forceUpdate();
     }
 
     /** When a new SIP/PSTN participant joins, schedule a 1s deferred
@@ -1640,14 +1504,15 @@ class ConferenceBox extends Component {
      *  Also gated on the new arrival's reported muted state at the
      *  +1s tick: if they came in un-muted (e.g. the server gate is
      *  working) we don't send a redundant un-mute REFER. */
-    _maybeAutoUnmuteNewSipParticipant(uri, snapshotEntry) {
-        if (!uri || !snapshotEntry) return;
-        const myPid = snapshotEntry.participant_id;
+    _maybeAutoUnmuteNewSipParticipant(uri, participant) {
+        if (!uri || !participant) return;
+        // publisherId is the conference focus token (Participant.id is a
+        // library-local UUID); the mute RPC is keyed by the focus token.
+        const myPid = participant.publisherId;
         if (!myPid) return;
-        // Skip the bridge itself — already filtered upstream in the
-        // SIP diff (sp.type === 'bridge' is excluded from _currSet)
-        // but belt-and-braces in case the heuristic changes.
-        if (snapshotEntry.type === 'bridge') return;
+        // Skip the bridge itself — belt-and-braces; the caller only
+        // invokes this for type==='sip' participants.
+        if (participant.type === 'bridge') return;
         // Skip if there's already another WebRTC publisher — the mute
         // was probably intentional (moderator running a managed-floor
         // meeting). Counted at SCHEDULE time, then re-checked at
@@ -1671,14 +1536,13 @@ class ConferenceBox extends Component {
                     '— WebRTC roster grew to', _webrtcOthersThen);
                 return;
             }
-            // Re-look-up the participant in the current snapshot —
-            // they may have left during the 1s window, or their pid
-            // may have changed (rare but possible for bridge-renamed
-            // entries). If they're already un-muted server-side
-            // there's nothing to do.
-            const _currentList = this.state.sipParticipants || [];
+            // Re-look-up the participant in the current roster —
+            // they may have left during the 1s window. If they're
+            // already un-muted server-side there's nothing to do.
+            const _currentList = (this.props.call && this.props.call.participants) || [];
             const _current = _currentList.find(
-                (sp) => sp && sp.uri === uri && sp.participant_id);
+                (pp) => pp && pp.type === 'sip'
+                    && pp.identity && (pp.identity._uri || pp.identity.uri) === uri);
             if (!_current) {
                 console.log('[conference] [auto-unmute] cancelled for', uri,
                     '— no longer in SIP roster');
@@ -1686,7 +1550,7 @@ class ConferenceBox extends Component {
             }
             if (!_current.muted) {
                 console.log('[conference] [auto-unmute] already un-muted server-side:',
-                    uri, 'pid=', _current.participant_id);
+                    uri, 'pid=', _current.publisherId);
                 return;
             }
             if (typeof this.props.call.muteParticipant !== 'function') {
@@ -1694,12 +1558,11 @@ class ConferenceBox extends Component {
                 return;
             }
             console.log('[conference] [auto-unmute] sending unmute for', uri,
-                'pid=', _current.participant_id);
+                'pid=', _current.publisherId);
             try {
-                // muteParticipant(pid, false) is the unmute branch —
-                // same RPC the per-tile mute toggle uses (see the
-                // SIP tile mute IconButton around line 7134).
-                this.props.call.muteParticipant(_current.participant_id, false);
+                // muteParticipant(focus-token, false) is the unmute branch
+                // — same RPC the per-tile mute toggle uses.
+                this.props.call.muteParticipant(_current.publisherId, false);
                 this.postChatSystemMessage(
                     'Auto-unmuted ' + uri + ' (you are alone in the room)',
                     true);
@@ -2283,8 +2146,9 @@ class ConferenceBox extends Component {
             }
         }
 
-        // [qos] — stop the sampler started in componentDidMount.
-        stopQosLogging();
+        // [qos] — nothing to stop; conference QoS logging is not started
+        // (see the note in componentDidMount: the publisher PC is send-only
+        // and the verdict logic doesn't apply to conference media flow).
 
         // Audio-mode diagnostic. If the recording playback sounds bad
         // (thin / muffled) it's usually because the system is still
@@ -2343,6 +2207,10 @@ class ConferenceBox extends Component {
         if (this._vuSamplerTimer) {
             clearInterval(this._vuSamplerTimer);
             this._vuSamplerTimer = null;
+        }
+        if (this._sipVuTimer) {
+            clearInterval(this._sipVuTimer);
+            this._sipVuTimer = null;
         }
         this.uploads.forEach((upload) => {
             this.props.notificationCenter().removeNotification(upload[1]);
@@ -3441,8 +3309,8 @@ class ConferenceBox extends Component {
         // invitedParticipants once the invitee actually joins. Without this
         // an invited SIP URI sticks in the Map forever (and the tile keeps
         // rendering) because the AOR never matches the full sip:URI key.
-        if (Array.isArray(this.state.sipParticipants)) {
-            this.state.sipParticipants.forEach((sp) => {
+        if (Array.isArray(this._sipParticipantList())) {
+            this._sipParticipantList().forEach((sp) => {
                 if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
                 const _spUri = sp.uri || '';
                 if (!_spUri) return;
@@ -3727,6 +3595,29 @@ class ConferenceBox extends Component {
     }
 
      onParticipantJoined(p) {
+        // SIP caller behind the audio bridge — an audio-only surrogate
+        // with no Janus feed to attach and no place in the video matrix.
+        // It lives only in call.participants (rendered via the derived
+        // SIP list); here we just post the chat join line, run the
+        // alone-in-room auto-unmute, and force a re-render so the SIP
+        // audio list repaints. Returning early keeps it out of the
+        // WebRTC matrix path below (p.attach() / state.participants /
+        // arrival scheduling), which would otherwise fire a doomed
+        // feed-attach and add a ghost video tile.
+        if (p && p.type === 'sip') {
+            const _sipUri = (p.identity && (p.identity._uri || p.identity.uri)) || '';
+            const _joinUri = _sipUri.replace(/^sip:/i, '');
+            this.postChatSystemMessage(_joinUri + ' joined', true);
+            this.lookupContact(_sipUri, p.identity && p.identity._displayName);
+            if (this.invitedParticipants.has(_sipUri)) {
+                this.invitedParticipants.delete(_sipUri);
+            }
+            this._maybeAutoUnmuteNewSipParticipant(_sipUri, p);
+            // Surface mute changes on this surrogate immediately.
+            try { p.on('muteChanged', this._onSipParticipantUpdated); } catch (e) {}
+            this.forceUpdate();
+            return;
+        }
         // [grid] one-line transition log for the matrix sizing
         // pipeline. Logs the remote-participant count BEFORE and
         // AFTER this join so it's easy to spot which event flipped
@@ -4398,6 +4289,18 @@ class ConferenceBox extends Component {
 	}
 
     onParticipantLeft(p) {
+        // SIP surrogate leaving — mirror of the SIP branch in
+        // onParticipantJoined. Post the chat leave line and re-render so
+        // the derived SIP audio list drops it; nothing to detach or
+        // remove from the matrix (it was never in state.participants).
+        if (p && p.type === 'sip') {
+            try { p.removeListener('muteChanged', this._onSipParticipantUpdated); } catch (e) {}
+            const _sipUri = (p.identity && (p.identity._uri || p.identity.uri)) || '';
+            const _leaveUri = _sipUri.replace(/^sip:/i, '');
+            this.postChatSystemMessage(_leaveUri + ' left', true);
+            this.forceUpdate();
+            return;
+        }
         // [grid] mirror of the join log — see onParticipantJoined.
         // Logs the remote-participant count transition so a
         // "video disappeared" event has a single grep-able marker
@@ -5142,8 +5045,8 @@ class ConferenceBox extends Component {
             return s.split(';')[0];
         };
         const _sipBridgeAors = new Set();
-        if (Array.isArray(this.state.sipParticipants)) {
-            this.state.sipParticipants.forEach((sp) => {
+        if (Array.isArray(this._sipParticipantList())) {
+            this._sipParticipantList().forEach((sp) => {
                 if (sp && sp.type === 'bridge') {
                     const a = _bridgeAorPre(sp.uri || '');
                     if (a) _sipBridgeAors.add(a);
@@ -7545,8 +7448,8 @@ class ConferenceBox extends Component {
         } catch (e) { /* best effort */ }
         const _stripScheme = (u) => (u || '').toString().replace(/^sips?:/, '');
         const _selfBare = _stripScheme(_selfUri);
-        const _sipRoster = Array.isArray(this.state.sipParticipants)
-            ? this.state.sipParticipants
+        const _sipRoster = Array.isArray(this._sipParticipantList())
+            ? this._sipParticipantList()
             : [];
         let _otherSipCount = 0;
         for (const p of _sipRoster) {
@@ -8201,7 +8104,7 @@ class ConferenceBox extends Component {
             // same conference-info plumbing). Hide both affordances
             // when there's only you + 1 other person, because a
             // raised hand or mute-all is meaningless in a 1-on-1.
-            const _sipRealCountForBar = (this.state.sipParticipants || [])
+            const _sipRealCountForBar = (this._sipParticipantList() || [])
                 .filter((sp) => sp && sp.type === 'sip').length;
             const _showMuteAll = (_webrtcTotal + _sipRealCountForBar) > 2;
             // Show the raise-hand button under the SAME criterion as
@@ -8362,7 +8265,7 @@ class ConferenceBox extends Component {
             };
             const _remoteWebrtcCount = (this.state.participants || [])
                 .filter((pp) => !_isBridgeForCount(pp)).length;
-            const _sipCount = (this.state.sipParticipants || [])
+            const _sipCount = (this._sipParticipantList() || [])
                 .filter((sp) => sp && sp.type === 'sip').length;
             const _totalParticipants = 1 + _remoteWebrtcCount + _sipCount;
             const _showKickButton = _totalParticipants > 1;
@@ -8374,17 +8277,18 @@ class ConferenceBox extends Component {
                 else if (s.indexOf('sips:') === 0) s = s.slice(5);
                 return s.split(';')[0];
             };
-            const bridgeAors = new Set();
-            this.state.sipParticipants.forEach((sp) => {
-                if (sp && sp.type === 'bridge') {
-                    const a = _sipAorPre(sp.uri || '');
-                    if (a) bridgeAors.add(a);
-                }
-            });
+            // The audio bridge is a real WebRTC publisher (it carries the
+            // mixed PSTN audio) that the server now tags type==='bridge'.
+            // It therefore lives in state.participants; collect it into
+            // bridgeWebRtcByAor so it renders as a bridge tile rather than
+            // a normal video tile. _looksLikeBridge stays as a heuristic
+            // fallback for entries that predate the typed field.
             const bridgeWebRtcByAor = new Map();
 
             const _looksLikeBridge = (pp) => {
-                if (!pp || !pp.identity) return false;
+                if (!pp) return false;
+                if (pp.type === 'bridge') return true;
+                if (!pp.identity) return false;
                 const _dn = pp.identity._displayName || '';
                 if (/bridge/i.test(_dn)) return true;
                 const _uri = pp.identity._uri || '';
@@ -8393,7 +8297,7 @@ class ConferenceBox extends Component {
             };
             this.state.participants.forEach((p) => {
                 const _pAor = _sipAorPre(p.identity._uri);
-                if ((_pAor && bridgeAors.has(_pAor)) || _looksLikeBridge(p)) {
+                if (_looksLikeBridge(p)) {
                     if (_pAor) bridgeWebRtcByAor.set(_pAor, p);
                     return;
                 }
@@ -8625,13 +8529,13 @@ class ConferenceBox extends Component {
             let _bridgeLoss = 0;
             // First pass: stamp any URIs not yet seen with "now" so the
             // duration counter starts from this NOTIFY for new arrivals.
-            this.state.sipParticipants.forEach((sp) => {
+            this._sipParticipantList().forEach((sp) => {
                 if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
                 const _aorTmp = _sipAor(sp.uri || '');
                 if (!_aorTmp) return;
                 if (!_sipSeenAt.has(_aorTmp)) _sipSeenAt.set(_aorTmp, Date.now());
             });
-            this.state.sipParticipants.forEach((sp) => {
+            this._sipParticipantList().forEach((sp) => {
                 if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
                 const _sipUri = sp.uri || '';
                 const _aor = _sipAor(_sipUri);
@@ -8835,41 +8739,19 @@ class ConferenceBox extends Component {
                     // Passed in as `kickButton` (not extraButtons).
                     const _sipKickButton = _showKickButton ? _sipKickItem : null;
 
-                    // Per-SIP-participant VU meter level.
-                    // sipConferenceAudioLevels (every ~250ms from the
-                    // webrtcgateway, populated into state.sipAudioLevels
-                    // — see the handler at line ~900) carries an entry
-                    // per participant_id with {tx, rx, tx_peak, rx_peak}
-                    // on the Janus 0..127 audio-bridge scale. Each SIP
-                    // participant `sp` carries one or more `endpoints`,
-                    // each with its own participant_id; in practice a
-                    // SIP caller has one endpoint so endpoints[0].
-                    // participant_id is the join key. We take the
-                    // strongest rx_peak across endpoints (the SIP
-                    // caller's voice level, as heard by the gateway),
+                    // Per-SIP-participant VU meter level. The live
+                    // conference-audio-levels stream (every ~250ms from
+                    // the webrtcgateway) is routed by the sylkrtc library
+                    // straight onto each Participant as `audioLevel` (the
+                    // rx_peak value — the SIP caller's voice level into the
+                    // bridge mix, on the Janus 0..127 scale). The derived
+                    // SIP list carries it through as `sp.audioLevel`. We
                     // normalise on 127 and apply the same sqrt boost
-                    // _sampleConferenceAudioLevels uses for WebRTC
-                    // peers so the meter response matches the rest of
-                    // the room. Quiet rooms produce 0; meter stays
-                    // dark until someone speaks. Pre-fix this tile
-                    // rendered with noAudioMetrics=true and no VU,
-                    // leaving SIP callers' tiles permanently dead
-                    // even though their audio levels were already
-                    // arriving on the wire.
-                    let _sipLevel = 0;
-                    const _sipAudioLevels = this.state.sipAudioLevels || {};
-                    // _spEndpoints is hoisted above (alongside the mute
-                    // button setup) so we can reuse it here without
-                    // re-declaring.
-                    for (const _ep of _spEndpoints) {
-                        const _pid = _ep && _ep.participant_id;
-                        if (!_pid) continue;
-                        const _entry = _sipAudioLevels[_pid];
-                        if (!_entry) continue;
-                        const _peak = Math.max(_entry.rx_peak || 0, _entry.rx || 0);
-                        if (_peak > _sipLevel) _sipLevel = _peak;
-                    }
-                    _sipLevel = Math.min(1, Math.sqrt(_sipLevel / 127));
+                    // _sampleConferenceAudioLevels uses for WebRTC peers so
+                    // the meter response matches the rest of the room.
+                    // Quiet rooms produce 0; the meter stays dark until
+                    // someone speaks.
+                    let _sipLevel = Math.min(1, Math.sqrt((sp.audioLevel || 0) / 127));
 
                     tile = (
                         <ConferenceAudioParticipant
@@ -9025,7 +8907,7 @@ class ConferenceBox extends Component {
             };
             const _renderRoomAors = new Set();
             participants_uris.forEach((u) => { const a = _renderNormAor(u); if (a) _renderRoomAors.add(a); });
-            (this.state.sipParticipants || []).forEach((sp) => {
+            (this._sipParticipantList() || []).forEach((sp) => {
                 if (!sp || (sp.type !== 'sip' && sp.type !== 'bridge')) return;
                 const a = _renderNormAor(sp.uri || '');
                 if (a) _renderRoomAors.add(a);

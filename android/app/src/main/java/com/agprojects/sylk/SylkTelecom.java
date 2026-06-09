@@ -1,8 +1,10 @@
 package com.agprojects.sylk;
 
+import android.Manifest;
 import android.annotation.TargetApi;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -90,12 +92,30 @@ public final class SylkTelecom {
             // few OEMs (Honor, some MIUI builds) don't. If isEnabled is
             // false here you'll need the user to flip the switch in
             // Settings → Apps → Default apps → Calling accounts.
-            PhoneAccount readback = tm.getPhoneAccount(handle);
-            SylkLogger.d("[call] [telecom] PhoneAccount registered"
-                    + ", readback=" + (readback != null)
-                    + ", enabled=" + (readback != null && readback.isEnabled()));
+            //
+            // IMPORTANT: getPhoneAccount() is permission-gated — Telecom
+            // enforces READ_PHONE_NUMBERS (API 30+) / READ_PHONE_STATE
+            // (API < 30) and throws SecurityException if the caller hasn't
+            // been granted it. Registration above has already succeeded, so
+            // this readback is purely diagnostic; never let a missing
+            // permission take down the process (it runs at boot from
+            // MainApplication.onCreate). Skip it when we don't hold the
+            // permission rather than rely on the catch below.
+            if (canReadPhoneAccounts(context)) {
+                PhoneAccount readback = tm.getPhoneAccount(handle);
+                SylkLogger.d("[call] [telecom] PhoneAccount registered"
+                        + ", readback=" + (readback != null)
+                        + ", enabled=" + (readback != null && readback.isEnabled()));
+            } else {
+                SylkLogger.d("[call] [telecom] PhoneAccount registered"
+                        + "; skipping readback (READ_PHONE_NUMBERS not granted)");
+            }
         } catch (SecurityException se) {
-            SylkLogger.e("[call] [telecom] PhoneAccount register denied (missing MANAGE_OWN_CALLS?)", se);
+            // Defensive net only — the permission check above should keep us
+            // out of here. The relevant permission is READ_PHONE_NUMBERS
+            // (API 30+) / READ_PHONE_STATE, NOT MANAGE_OWN_CALLS.
+            SylkLogger.e("[call] [telecom] PhoneAccount register denied "
+                    + "(missing READ_PHONE_NUMBERS / READ_PHONE_STATE?)", se);
         } catch (Exception e) {
             SylkLogger.e("[call] [telecom] PhoneAccount register failed", e);
         }
@@ -201,6 +221,23 @@ public final class SylkTelecom {
         } catch (Exception e) {
             SylkLogger.w("[call] [telecom] endCall failed for " + callId, e);
         }
+    }
+
+    /**
+     * Whether we may call permission-gated Telecom read APIs such as
+     * {@link TelecomManager#getPhoneAccount}. Telecom enforces
+     * READ_PHONE_NUMBERS from API 30 (Android 11) on, and READ_PHONE_STATE
+     * on older releases. Both are runtime ("dangerous") permissions, so a
+     * declaration in the manifest is not enough — the user must have granted
+     * them. Returns false when the grant is missing so callers can skip the
+     * read instead of catching a SecurityException.
+     */
+    private static boolean canReadPhoneAccounts(Context context) {
+        String permission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                ? Manifest.permission.READ_PHONE_NUMBERS
+                : Manifest.permission.READ_PHONE_STATE;
+        return context.checkSelfPermission(permission)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     @TargetApi(Build.VERSION_CODES.O)

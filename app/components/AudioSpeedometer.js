@@ -49,8 +49,37 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { View, Text, StyleSheet, Animated, TouchableWithoutFeedback } from 'react-native';
+import { ActivityIndicator } from 'react-native-paper';
 import Svg, { Path, Line, Circle, G, Text as SvgText } from 'react-native-svg';
 import DarkModeManager from '../DarkModeManager';
+
+// Animated <G> so we can revolve the needle group around the dial centre
+// during a media-loss reconnect (see _startSpin / render). react-native-svg
+// honours an Animated.Value on the `rotation` prop with useNativeDriver:false.
+const AnimatedG = Animated.createAnimatedComponent(G);
+
+// ---------- spin clock ------------------------------------------------------
+//
+// The connecting circle's needle steps one second-mark per second at a fixed
+// rate (SPIN_PERIOD_MS per revolution). It "loads" on the -4s mark and steps
+// up to 12 o'clock 4 s later (as the call starts), then KEEPS stepping until
+// the call connects.
+//
+// The step count is anchored to a module-scoped start timestamp rather than
+// to "whenever this instance mounted" so the needle does NOT snap back to -4
+// when the call starts. The pre-call countdown and the dialing/connecting
+// state can be rendered by different instances (a remount across the
+// awaiting→connecting handoff); anchoring the count to _spinStart keeps the
+// needle advancing through 12 o'clock instead of restarting. A spin that
+// begins more than SPIN_RESUME_GAP_MS after the previous one stopped is a
+// new session (e.g. a later reconnect) and resets the anchor.
+const SPIN_PERIOD_MS     = 60000; // 60 s per revolution
+const SPIN_RESUME_GAP_MS = 1500;  // gaps shorter than this = same spin session
+// Lead-in: needle begins SPIN_LEAD_SECONDS before 12 o'clock so it steps up
+// to 12 as the call starts. At 60 s/rev that's 24°.
+const SPIN_LEAD_SECONDS  = 4;
+let _spinStart    = 0; // ms timestamp the current spin session began
+let _spinLastStop = 0; // ms timestamp the last spin stopped (for gap check)
 
 
 // ---------- dial geometry ---------------------------------------------------
@@ -346,8 +375,14 @@ function _getCallState(call) {
 
 export default class AudioSpeedometer extends React.Component {
     static propTypes = {
-        call:       PropTypes.object,
-        audioCodec: PropTypes.string,
+        call:           PropTypes.object,
+        audioCodec:     PropTypes.string,
+        // Outgoing-audio pre-call countdown is running (no call yet). Drives
+        // the needle's -4s lead-in so it reaches 12 o'clock as the call dials.
+        awaitingStart:  PropTypes.bool,
+        connecting:     PropTypes.bool,
+        reconnectingCall: PropTypes.bool,
+        hasCall:        PropTypes.bool,
     };
 
     static RTT_MAX_MS   = RTT_MAX_MS;
@@ -372,6 +407,60 @@ export default class AudioSpeedometer extends React.Component {
         // on every metric tick.
         this._appearAnim = new Animated.Value(seeded && _hasMetrics(seeded.snapshot) ? 1 : 0);
         this._didAppear = !!(seeded && _hasMetrics(seeded.snapshot));
+        // Connecting-circle needle state. The needle advances in discrete
+        // 1-second steps: _spinStartedAt is stamped when the spin begins and
+        // _spinTick is a 1 s interval that forces a re-render so the needle
+        // (and the mm:ss calling timer) step forward one second at a time.
+        this._spinStartedAt = 0;
+        this._spinTick = null;
+    }
+
+    // True when the connecting circle is showing AND there's a reason to spin.
+    //   • awaitingStart — the outgoing-audio pre-call countdown is running
+    //     (no call object yet). We START the needle here so its -4s lead-in
+    //     coincides with the auto-start countdown and reaches 12 o'clock as
+    //     the call actually dials.
+    //   • connecting — the outgoing call is dialing / ringing.
+    // Reconnect is NOT a reason to spin the circle: a media-loss reconnect
+    // shows the plain ActivityIndicator (see the reconnect branch in render),
+    // not the countdown circle.
+    _shouldAnimate() {
+        return !!(this.props.connecting || this.props.awaitingStart)
+            && (!!this.props.hasCall || !!this.props.awaitingStart);
+    }
+
+    // Start / stop the continuous 360° needle revolution used as the
+    // media-loss reconnect indicator. Idempotent.
+    _startSpin() {
+        if (this._spinTick) return;   // already spinning
+        // The needle moves in discrete 1-SECOND increments (like a ticking
+        // clock hand), not a smooth sweep. It "loads" at the -4s mark and
+        // jumps one mark (6° at 60 s/rev) every second: -4 → -3 → -2 → -1 →
+        // 12 o'clock (reached 4 s in, as the call starts), then keeps ticking
+        // until the call connects.
+        const now = Date.now();
+        // Reuse the existing anchor if this start closely follows the last
+        // stop (a remount across the countdown→connecting handoff), so the
+        // step count continues instead of snapping back to -4. Otherwise
+        // begin a fresh session anchored at now.
+        if (!_spinStart || (now - _spinLastStop) > SPIN_RESUME_GAP_MS) {
+            _spinStart = now;
+        }
+        this._spinStartedAt = _spinStart;
+        this._spinTick = setInterval(() => {
+            if (this._isMounted) this.forceUpdate();
+        }, 1000);
+    }
+    _stopSpin() {
+        if (this._spinTick) {
+            clearInterval(this._spinTick);
+            this._spinTick = null;
+        }
+        this._spinStartedAt = 0;
+        // Record when we stopped so a near-instant remount keeps the same
+        // session (continuous step count) while a much-later spin starts
+        // fresh. We deliberately do NOT clear _spinStart here.
+        _spinLastStop = Date.now();
     }
 
     componentDidMount()    {
@@ -380,6 +469,9 @@ export default class AudioSpeedometer extends React.Component {
             _liveInstance.set(this.props.call, this);
         }
         this._attach(this.props.call);
+        if (this._shouldAnimate()) {
+            this._startSpin();
+        }
     }
     componentWillUnmount() {
         this._isMounted = false;
@@ -387,6 +479,7 @@ export default class AudioSpeedometer extends React.Component {
             _liveInstance.delete(this.props.call);
         }
         this._detach(this.props.call);
+        this._stopSpin();
     }
 
     // (Diagnostic console.log statements that helped track down the
@@ -398,6 +491,32 @@ export default class AudioSpeedometer extends React.Component {
         if (prevProps.call !== this.props.call) {
             this._detach(prevProps.call);
             this._attach(this.props.call);
+        }
+        // Tick the needle while the pre-call countdown is running, while
+        // dialing/connecting, and while reconnecting — and KEEP it ticking
+        // until the call actually connects (media flowing → connecting flips
+        // false). _shouldAnimate() (with its hasCall gate) decides when to
+        // START so a truly idle circle stays frozen; but once spinning we
+        // only STOP when the reason to spin is fully gone. This deliberately
+        // does NOT stop during the countdown→dial handoff, where hasCall
+        // briefly reads false — that brief stop/restart was what snapped the
+        // needle back to the -4s mark right at 12 o'clock.
+        const _wantSpin = !!(this.props.connecting || this.props.awaitingStart);
+        if (this._shouldAnimate() && !this._spinTick) {
+            this._startSpin();
+        } else if (!_wantSpin && this._spinTick) {
+            this._stopSpin();
+        }
+        // The countdown just ended — either the user pressed "Start now" or
+        // the auto-start timer reached 0. In both cases the call is dialing
+        // NOW, so snap the needle to 12 o'clock by back-dating the spin
+        // anchor by the lead-in. If the user pressed Start early, the needle
+        // jumps from wherever it was straight to 12; on natural completion it
+        // was already at 12, so this just makes it exact and zeroes the timer.
+        if (prevProps.awaitingStart && !this.props.awaitingStart && this._spinTick) {
+            _spinStart = Date.now() - SPIN_LEAD_SECONDS * 1000;
+            this._spinStartedAt = _spinStart;
+            if (this._isMounted) this.forceUpdate();
         }
         // Fire the slide-down animation exactly once: the first time
         // we transition from "no metrics yet" to "have metrics".
@@ -718,6 +837,26 @@ export default class AudioSpeedometer extends React.Component {
         })();
         const { up, down, rtt, loss } = _renderSnap;
 
+        // Computed early so the no-data placeholder below can't swallow the
+        // calling/reconnecting circle (which has no stats yet, and may have
+        // no call object at all).
+        const _spinning = !!(this.props.connecting || this.props.awaitingStart);
+
+        // Media-loss reconnect: show the plain (red, large) ActivityIndicator
+        // — the "old regular spinner" — NOT the countdown circle. Takes
+        // priority over the dial / placeholder / spin branches so the
+        // component (and its stats listener) stays mounted throughout.
+        if (this.props.reconnectingCall) {
+            const _rcFolded = this.props.isFolded
+                ? { marginTop: -22, marginBottom: 0, paddingTop: 0 }
+                : null;
+            return (
+                <View style={[styles.container, { minHeight: CONTENT_HEIGHT, justifyContent: 'center' }, _rcFolded]}>
+                    <ActivityIndicator animating={true} size={'large'} color={'#D32F2F'} />
+                </View>
+            );
+        }
+
         // Delay the dial until the first stats sample lands. Once
         // hasData latches true (in _onStatsImpl) it stays true for
         // the life of the call — we don't want the dial to flicker
@@ -725,7 +864,7 @@ export default class AudioSpeedometer extends React.Component {
         // with all-zero values. Until then, render a same-footprint
         // empty placeholder so the layout doesn't jump when the
         // dial appears.
-        if (!_renderSnap.hasData) {
+        if (!_renderSnap.hasData && !_spinning) {
             const _foldedZeroMarginPre = this.props.isFolded ? {
                 marginTop: -22,
                 marginBottom: 0,
@@ -863,6 +1002,191 @@ export default class AudioSpeedometer extends React.Component {
         // own outbound signal, so silence (0) is itself informative.
         const showInnerNeedle = isSpeed || loss >= 1;
 
+        // Spin mode: hide the data needles and show a single full-length
+        // needle that the AnimatedG revolves 360° (see _startSpin) — a
+        // "searching for media" loading effect on the dial. Active while the
+        // call is CONNECTING (initial dial, not yet established) OR
+        // RECONNECTING after a media-loss trip. (_spinning is computed near
+        // the top of render so the no-data placeholder can't hide the circle.)
+        // The reconnect needle is the SAME full-length speed needle, just
+        // revolving a complete 360°. A 180° gauge pivots its needle at the
+        // bottom centre (CX, CY≈H-18); spinning a full-length needle there
+        // clips the lower half below the viewBox — the windscreen-wiper look.
+        // So while reconnecting we grow the SVG to a square box and pivot the
+        // needle at ITS centre, giving the whole circle room to be visible.
+        const _spinLen = R - RTT_TIP_OFFSET;   // identical length to the speed needle
+        const _spinBox = 2 * _spinLen + 16;    // square SVG side while reconnecting
+        const _spinCX  = CX;
+        const _spinCY  = _spinBox / 2;
+        const _spinTip = { x: _spinCX, y: _spinCY - _spinLen };
+
+        // ── Connecting / reconnecting: FULL-CIRCLE dial with a needle that
+        // runs a continuous 360°. Built from plain Views + a native Animated
+        // transform (clock-hand technique) instead of an SVG <G rotation>,
+        // whose origin handling produced a windscreen-wiper sweep. Once the
+        // call is established we fall through to the normal half-dial SVG.
+        if (_spinning) {
+            // Full circle uses the SAME radius and centre as the half-dial
+            // arc (R, at CX/CY), drawn in a box of the same W×H footprint and
+            // anchored absolutely so the dial centre is at the identical
+            // screen position in both states — the connected top-half arc
+            // sits exactly over the top half of this circle, no jump. The
+            // lower half overflows downward into the (empty-while-connecting)
+            // metrics area.
+            const _R2 = R;
+            const _D = 2 * _R2;
+            const _needleLen = _R2 - 4;          // hub → tip (full needle length)
+            const _NEEDLE_RED = '#D32F2F';       // needle is red while connecting
+            // Degrees the needle sweeps per second at the current period.
+            const _degPerSec = 360 / (SPIN_PERIOD_MS / 1000);   // 6°/s at 60s/rev
+            // The needle starts SPIN_LEAD_SECONDS before 12 o'clock and steps
+            // one second-mark every second. _leadDeg = 24° at 60 s/rev.
+            const _leadDeg = SPIN_LEAD_SECONDS * _degPerSec;    // 24°
+            // Discrete 1-second step angle: at step 0 the needle sits on the
+            // -4 mark (-24°); each elapsed whole second advances it _degPerSec
+            // (6°), so -4 → -3 → -2 → -1 → 12 o'clock (0°, reached 4 s in as
+            // the call starts), then it keeps ticking until the call connects.
+            const _stepSec = this._spinStartedAt
+                ? Math.floor((Date.now() - this._spinStartedAt) / 1000)
+                : 0;
+            const _angle = -_leadDeg + _stepSec * _degPerSec;
+            // Countdown tick marks at -1, -2, -3, -4 seconds before 12
+            // o'clock — the marks the needle steps across during the pre-call
+            // lead-in. Each STARTS at the ring and extends inward: its outer
+            // tip sits on the circle, so the centre radius is _R2 - _MARK_LEN/2.
+            // Marks are _degPerSec apart, counter-clockwise (negative) from 12
+            // o'clock, each a short radial line rotated to point at the centre.
+            const _MARK_LEN = 9;
+            const _markR = _R2 - _MARK_LEN / 2;       // outer tip on the ring
+            // k=0 is the 12 o'clock mark (the call-start position); k=1..4 are
+            // the -1..-4 second countdown marks to its left.
+            const _marks = [0, 1, 2, 3, 4].map((k) => {
+                const deg = -k * _degPerSec;              // 0, -6, -12, -18, -24
+                const rad = (deg * Math.PI) / 180;
+                const mx = _R2 + _markR * Math.sin(rad);  // local coords in the _D box
+                const my = _R2 - _markR * Math.cos(rad);
+                return { k, deg, mx, my };
+            });
+            // Only label/animate when there's an actual call; with no call the
+            // circle shows a fixed needle at 12 o'clock and no text.
+            const _animate = this._shouldAnimate();
+            // Status text (label + timer) is HIDDEN during the -4..-1
+            // countdown lead-in and appears only once the needle reaches 12
+            // o'clock (the call start), reading 00:00 and counting up from
+            // there. _stepSec >= SPIN_LEAD_SECONDS is exactly "needle at/past
+            // 12 o'clock".
+            const _showText = !!(this.props.hasCall || this.props.awaitingStart)
+                && (_stepSec >= SPIN_LEAD_SECONDS);
+            // Status text shown inside the circle instead of the codec label.
+            // "Ringing…" once the far end is ringing, "Calling…" before that.
+            const _spCs = this.props.call && this.props.call.state;
+            const _label = (_spCs === 'ringing' || _spCs === 'proceeding' || _spCs === 'accepted')
+                ? 'Ringing…' : 'Calling…';
+            // Calling timer (mm:ss) shown in the lower part of the circle.
+            // Derived from the SAME step count that drives the needle, offset
+            // by the lead-in. It's only rendered once _showText is true
+            // (needle at/past 12 o'clock), so it reads 00:00 at the call start
+            // and advances one second per mark from there.
+            const _secs = Math.max(0, _stepSec - SPIN_LEAD_SECONDS);
+            const _timer = String(Math.floor(_secs / 60)).padStart(2, '0')
+                + ':' + String(_secs % 60).padStart(2, '0');
+            return (
+                <View style={[styles.container, { minHeight: CONTENT_HEIGHT }, _foldedZeroMargin]}>
+                    <View style={{ width: W, height: H, overflow: 'visible' }}>
+                        {/* Full-circle dial ring, centred on (CX, CY) */}
+                        <View style={{
+                            position: 'absolute',
+                            left: CX - _R2, top: CY - _R2,
+                            width: _D, height: _D, borderRadius: _R2,
+                            borderWidth: 3, borderColor: '#ffffff',
+                        }} />
+                        {/* Countdown tick marks (-1..-4 s) on the ring, in the
+                            same _D box anchored at (CX-_R2, CY-_R2). */}
+                        <View pointerEvents="none" style={{
+                            position: 'absolute',
+                            left: CX - _R2, top: CY - _R2,
+                            width: _D, height: _D,
+                        }}>
+                            {_marks.map((m) => (
+                                <View
+                                    key={'spin-mark-' + m.k}
+                                    style={{
+                                        position: 'absolute',
+                                        left: m.mx - 1.25,
+                                        top: m.my - _MARK_LEN / 2,
+                                        width: 2.5,
+                                        height: _MARK_LEN,
+                                        borderRadius: 1.25,
+                                        backgroundColor: '#ffffff',
+                                        opacity: 0.85,
+                                        transform: [{ rotate: m.deg + 'deg' }],
+                                    }}
+                                />
+                            ))}
+                        </View>
+                        {/* Needle wrapper centred on (CX, CY); rotated to the
+                            current 1-second step angle (no smooth animation —
+                            it jumps one mark per second). */}
+                        <View style={{
+                            position: 'absolute',
+                            left: CX - _R2, top: CY - _R2,
+                            width: _D, height: _D,
+                            alignItems: 'center',
+                            transform: [{ rotate: _angle + 'deg' }],
+                        }}>
+                            <View style={{
+                                position: 'absolute',
+                                top: _R2 - _needleLen,
+                                width: 3,
+                                height: _needleLen,
+                                borderRadius: 2,
+                                backgroundColor: _NEEDLE_RED,
+                            }} />
+                        </View>
+                        {/* Centre hub */}
+                        <View style={{
+                            position: 'absolute',
+                            left: CX - 4.5, top: CY - 4.5,
+                            width: 9, height: 9, borderRadius: 4.5,
+                            backgroundColor: '#fff',
+                        }} />
+                        {/* Label + timer only once a real call exists. During
+                            the pre-call countdown (and with no call at all)
+                            the circle shows just the needle + countdown marks. */}
+                        {(_animate && _showText) ? (
+                          <>
+                            {/* Status label inside the circle (replaces the
+                                codec label shown on the connected half-dial). */}
+                            <View pointerEvents="none" style={{
+                                position: 'absolute',
+                                left: 0, right: 0,
+                                top: CY - _R2 * 0.5 - 6,
+                                alignItems: 'center',
+                            }}>
+                                <Text style={{ color: '#ffffff', fontSize: 14, fontWeight: '400' }}>
+                                    {_label}
+                                </Text>
+                            </View>
+                            {/* Calling timer — lower part of the circle (RTT
+                                slot on the connected half-dial). */}
+                            <View pointerEvents="none" style={{
+                                position: 'absolute',
+                                left: 0, right: 0,
+                                top: CY + _R2 * 0.22,
+                                alignItems: 'center',
+                            }}>
+                                {/* Same colour as the RTT readout. */}
+                                <Text style={{ color: _needleRtt, fontSize: 12, fontWeight: '400' }}>
+                                    {_timer}
+                                </Text>
+                            </View>
+                          </>
+                        ) : null}
+                    </View>
+                </View>
+            );
+        }
+
         // Render the dial directly in a plain View instead of an
         // Animated.View. The previous code wrapped the dial in an
         // Animated.View whose opacity faded from 0 → 1 the first
@@ -931,29 +1255,34 @@ export default class AudioSpeedometer extends React.Component {
                                 {featuresLine}
                             </SvgText>
                         ) : null}
-                        {/* Outer needle:
-                            • RTT mode: blue, RTT value vs RTT_MAX_MS
-                            • Speed mode: blue, down vs BANDWIDTH_MAX_BPS */}
-                        <Line
-                            x1={CX} y1={CY}
-                            x2={outerTip.x} y2={outerTip.y}
-                            stroke={outerColor}
-                            strokeWidth={2.6}
-                            strokeLinecap="round"
-                        />
-                        {/* Inner needle:
-                            • RTT mode: white, loss vs codec profile (hidden < 1%)
-                            • Speed mode: green, up vs BANDWIDTH_MAX_BPS (always shown) */}
-                        {showInnerNeedle ? (
+                        {/* Connected half-dial needles. (The connecting/
+                            reconnecting full-circle spinner returns earlier,
+                            so this branch only renders the live data dial.) */}
+                        <G>
+                            {/* Outer needle:
+                                • RTT mode: blue, RTT value vs RTT_MAX_MS
+                                • Speed mode: blue, down vs BANDWIDTH_MAX_BPS */}
                             <Line
                                 x1={CX} y1={CY}
-                                x2={innerTip.x} y2={innerTip.y}
-                                stroke={innerColor}
+                                x2={outerTip.x} y2={outerTip.y}
+                                stroke={outerColor}
                                 strokeWidth={2.6}
                                 strokeLinecap="round"
                             />
-                        ) : null}
-                        <Circle cx={CX} cy={CY} r={3.6} fill="#fff" />
+                            {/* Inner needle:
+                                • RTT mode: white, loss vs codec profile (hidden < 1%)
+                                • Speed mode: green, up vs BANDWIDTH_MAX_BPS (always shown) */}
+                            {showInnerNeedle ? (
+                                <Line
+                                    x1={CX} y1={CY}
+                                    x2={innerTip.x} y2={innerTip.y}
+                                    stroke={innerColor}
+                                    strokeWidth={2.6}
+                                    strokeLinecap="round"
+                                />
+                            ) : null}
+                            <Circle cx={CX} cy={CY} r={3.6} fill="#fff" />
+                        </G>
                     </G>
                 </Svg>
                 </View>

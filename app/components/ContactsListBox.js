@@ -387,6 +387,9 @@ class ContactsListBox extends Component {
 		    sharingAssets: [],
             sharingMessages: [],
             showScrollSideButtons: false,
+            // Pull-up-to-refresh (server history) spinner state for the
+            // inverted chat list's bottom RefreshControl.
+            serverHistoryRefreshing: false,
             actionSheetDisplayed: false,
             // Location-bubble fullscreen viewer. When set to a message
             // object, a modal renders the same LocationBubble at full
@@ -644,7 +647,12 @@ class ContactsListBox extends Component {
 			  "audio",
 			  "playing",
 			  "consumed",
-			  "position"
+			  "position",
+			  // Flipped true when the server-history sync enriches a
+			  // call system message with trace params. Watching it here
+			  // makes the metadata-only change propagate into
+			  // renderMessages so the bubble becomes tappable/underlined.
+			  "traceReady"
 			];
 			
 			// Detect individual changes
@@ -4172,6 +4180,22 @@ class ContactsListBox extends Component {
         // reach the menu via long-press / the kebab icon. Full screen for
         // an image is reached via the FS icon or the menu's "Full screen"
         // action, not a plain body tap.
+        // Call system messages: a body tap opens the CDRTool SIP-trace
+        // page for that call in the browser. The per-call params live
+        // under metadata.trace ({callid,fromtag,totag,proxyIP}); app.js
+        // builds the URL and Linking.openURL's it via openCallTrace.
+        // Checked before the plain-text→menu fallback below so the tap
+        // performs the trace action rather than opening the action sheet.
+        if (message.metadata && message.metadata.trace
+                && message.metadata.trace.callid) {
+            if (typeof this.props.openCallTrace === 'function') {
+                this.props.openCallTrace(message.metadata.trace);
+            } else {
+                console.log('[trace] openCallTrace prop missing — cannot open trace');
+            }
+            return;
+        }
+
         const hasImage = !!message.image;
         const isPlainText = !(message.metadata && message.metadata.filename);
 
@@ -5165,6 +5189,16 @@ class ContactsListBox extends Component {
             return true;
         }
 
+        // Call system messages: always re-render so the convergence
+        // enrich (metadata.trace arriving from the server-history sync)
+        // flips the bubble to its tappable + underlined state without a
+        // chat reload. Same rationale as audio above — prev/next can
+        // already point at the same ref here, so a field diff misses it.
+        if (cmAny && (cmAny.traceReady
+                || (cmAny.metadata && cmAny.metadata.trace && cmAny.metadata.trace.callid))) {
+            return true;
+        }
+
         // Reply mapping landed (or changed) for this message. The
         // componentDidUpdate handler that reacts to messagesMetadata
         // changes stamps `replyId` onto the message in renderMessages
@@ -5765,13 +5799,13 @@ class ContactsListBox extends Component {
 				// bubble and a newer tick landed, bump `text` (a field
 				// ChatBubble's memo comparator watches) and refresh the
 				// embedded metadata so the LocationBubble renders the
-				// new coords. We also bump `createdAt` to the new tick's
-				// timestamp so the bubble's footer time (HH:MM under the
-				// bubble) reflects the latest update — users expect the
-				// shown time to read "now-ish", not the origin time
-				// from when the share started. `_id` stays anchored to
-				// the origin so subsequent merges and metadata lookups
-				// keep finding the same row.
+				// new coords. `createdAt` is intentionally LEFT UNTOUCHED
+				// so the bubble keeps the original timestamp from when the
+				// share started. The chat is sorted by `createdAt`, so
+				// bumping it on each tick would re-sort the live-location
+				// bubble to the bottom of the conversation on every update.
+				// `_id` stays anchored to the origin so subsequent merges
+				// and metadata lookups keep finding the same row.
 				const newLocation = msg.contentType === 'application/sylk-live-location'
 					? locationData?.[msg._id]
 					: null;
@@ -5822,29 +5856,16 @@ class ContactsListBox extends Component {
 						: newLocation;
 					const textChanged = tickMarker !== msg.text;
 					const metaChanged = mergedMetadata !== msg.metadata;
-					// Pull a Date out of the new tick — prefer the tick's
-					// own value.timestamp (when the GPS fix was taken),
-					// fall back to the metadataContent timestamp, then
-					// to "now" if neither is present.
-					const tickInner = newLocation && newLocation.value
-						? newLocation.value.timestamp
-						: null;
-					const tickOuter = newLocation && newLocation.timestamp
-						? newLocation.timestamp : null;
-					const newCreatedAt = tickInner
-						? new Date(tickInner)
-						: (tickOuter ? new Date(tickOuter) : new Date());
-					const _existingCreatedMs = msg.createdAt
-						? new Date(msg.createdAt).getTime()
-						: 0;
-					const _newCreatedMs = newCreatedAt.getTime();
-					const createdAtChanged = _newCreatedMs > _existingCreatedMs;
-					if (textChanged || metaChanged || createdAtChanged) {
+					// NOTE: `createdAt` is deliberately NOT recomputed from
+					// the tick here. The bubble must keep its original
+					// timestamp (set at injection) so it stays in place in
+					// the createdAt-sorted message list. The latest tick's
+					// time still lives in the metadata for map rendering.
+					if (textChanged || metaChanged) {
 						return {
 							...msg,
 							text: tickMarker,
 							metadata: mergedMetadata,
-							createdAt: createdAtChanged ? newCreatedAt : msg.createdAt,
 						};
 					}
 				}
@@ -7667,18 +7688,77 @@ class ContactsListBox extends Component {
 	      alignSelf: 'center',
 	      maxWidth: '85%',
 	  };
+	  // Call system messages carry metadata.trace ({callid,fromtag,
+	  // totag,proxyIP}); make those tappable to open the CDRTool
+	  // SIP-trace page (gifted-chat's SystemMessage has no onPress of
+	  // its own, so we wrap it). Non-call system messages render as
+	  // before — plain, non-interactive centered text.
+	  const _smTrace = props.currentMessage
+	      && props.currentMessage.metadata
+	      && props.currentMessage.metadata.trace;
+	  const _smHasTrace = !!(_smTrace && _smTrace.callid);
+	  // QoS link — opens the server-side qos summary modal (metadata.qos).
+	  const _smQos = props.currentMessage
+	      && props.currentMessage.metadata
+	      && props.currentMessage.metadata.qos;
+	  const _smHasQos = !!(_smQos && _smQos.callid && typeof this.props.openQosSummary === 'function');
 	  const _smTextStyle = {
 	      color: _smIsDark ? '#FFFFFF' : '#444444',
 	      fontSize: 12,
 	      fontWeight: '400',
 	      textAlign: 'center',
 	  };
+	  // Plain (non-call) system note: centered muted text, as before.
+	  if (!_smHasTrace && !_smHasQos) {
+	      return (
+	          <SystemMessage
+	              {...props}
+	              wrapperStyle={_smWrapperStyle}
+	              textStyle={_smTextStyle}
+	          />
+	      );
+	  }
+	  // Call message with a trace: render custom so that ONLY the word
+	  // "call" is an underlined blue link that opens the SIP trace —
+	  // the rest of the line (timestamp, duration, etc.) stays plain.
+	  // Tapping the call opens the QoS panel (which itself links to the full
+	  // SIP trace). When no QoS summary is available (e.g. no qos-server
+	  // configured), fall back to opening the SIP trace directly.
+	  const _openCall = () => {
+	      if (_smHasQos && typeof this.props.openQosSummary === 'function') {
+	          this.props.openQosSummary(_smQos);
+	      } else if (typeof this.props.openCallTrace === 'function') {
+	          this.props.openCallTrace(_smTrace);
+	      } else {
+	          console.log('[qos] no openQosSummary/openCallTrace prop — cannot open');
+	      }
+	  };
+	  const _smText = (props.currentMessage && props.currentMessage.text) || '';
+	  const _smMatch = /call/i.exec(_smText);
+	  const _smLinkStyle = { color: '#2f80c8', textDecorationLine: 'underline' };
+	  if (!_smMatch) {
+	      // No "call" word to highlight — make the whole line tappable.
+	      return (
+	          <View style={_smWrapperStyle}>
+	              <Text style={[_smTextStyle, _smLinkStyle]} onPress={_openCall} suppressHighlighting={true}>
+	                  {_smText}
+	              </Text>
+	          </View>
+	      );
+	  }
+	  const _smBefore = _smText.slice(0, _smMatch.index);
+	  const _smWord = _smText.slice(_smMatch.index, _smMatch.index + _smMatch[0].length);
+	  const _smAfter = _smText.slice(_smMatch.index + _smMatch[0].length);
 	  return (
-	      <SystemMessage
-	          {...props}
-	          wrapperStyle={_smWrapperStyle}
-	          textStyle={_smTextStyle}
-	      />
+	      <View style={_smWrapperStyle}>
+	          <Text style={_smTextStyle}>
+	              {_smBefore}
+	              <Text style={_smLinkStyle} onPress={_openCall} suppressHighlighting={true}>
+	                  {_smWord}
+	              </Text>
+	              {_smAfter}
+	          </Text>
+	      </View>
 	  );
 	};
 
@@ -8488,11 +8568,16 @@ scrollToMessage(id) {
 	onScroll = (event) => {
 	  const offsetY = event.nativeEvent.contentOffset.y;
 	  //console.log('onScroll offsetY', offsetY);
-	
+
 	  // adjust threshold as needed
 	  this.setState({
 		showScrollSideButtons: offsetY > 300,
 	  });
+	};
+
+	// Pull-up-to-refresh handler — intentionally a no-op. Swiping up at
+	// the bottom of the chat no longer fetches server history.
+	_onChatPullRefresh = () => {
 	};
 
 	scrollToBottom() {
@@ -10137,6 +10222,14 @@ scrollToMessage(id) {
 				            this.closeEmojiPicker();
 				        }
 				    },
+				    // Pull-up-to-refresh at the bottom of the (inverted)
+				    // chat: the RefreshControl sits at the newest-message
+				    // end, so pulling up past the last message fires
+				    // onRefresh → force a server history fetch. Reliable
+				    // on Android, where stretch over-scroll reports no
+				    // negative scroll offset.
+				    refreshing: this.state.serverHistoryRefreshing,
+				    onRefresh: this._onChatPullRefresh,
 				  }}
 				  
 				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}

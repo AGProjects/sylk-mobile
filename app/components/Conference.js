@@ -435,58 +435,14 @@ class Conference extends React.Component {
 				}
 			});
 
-			// Early cache for the SIP conference-info snapshot. sylkrtc
-			// emits `sipConferenceParticipants` the moment the SIP-side
-			// videoroom focus replies with a `conference-participants`
-			// NOTIFY — and that reply lands during the join handshake,
-			// BEFORE ConferenceBox mounts and attaches its own listener
-			// in componentDidMount. Without this early cache the first
-			// snapshot is dropped on the floor: ConferenceBox sees no
-			// SIP participants until a later delta arrives (someone
-			// joining mid-call), even though the navbar count — which
-			// is derived from confCall.participants — already shows
-			// them. We attach a tiny listener here that mirrors every
-			// snapshot onto confCall._sipParticipants. ConferenceBox's
-			// initial state seeds from that same field, so by the time
-			// it mounts the snapshot is already waiting.
-			//
-			// The listener stays attached for the life of the call so
-			// the cache also stays fresh across ConferenceBox
-			// remounts (e.g. navigating to the contacts tab and back).
-			confCall._sipParticipants = confCall._sipParticipants || [];
-			confCall.on('sipConferenceParticipants', (participants, duration) => {
-				const _list = Array.isArray(participants) ? participants : [];
-				confCall._sipParticipants = _list;
-				if (typeof duration === 'number') {
-					confCall._sipConferenceDuration = duration;
-					// First-touch capture of the conference-duration
-					// anchor (seconds since the videoroom was created
-					// on the webrtcgateway). ConferenceBox's
-					// constructor seeds state.conferenceDurationAtJoin
-					// from this exact field, so populating it here —
-					// at conference-create time, BEFORE ConferenceBox
-					// mounts — guarantees the navbar's elapsed-time
-					// meter starts at the right offset even when the
-					// first NOTIFY lands during the join handshake.
-					//
-					// Treat 0 as "no anchor yet" — the
-					// conferenceDuration event fires on session-accept
-					// with duration=0 when the gateway hasn't yet
-					// computed the room age. If we locked that in,
-					// later sipConferenceParticipants events carrying
-					// the REAL duration would be ignored
-					// (ConferenceHeader.serverDurationApplied flips
-					// once and stays). So we hold off until a
-					// non-zero value arrives.
-					if (duration > 0
-						&& (typeof confCall._conferenceDurationAtJoin !== 'number'
-							|| confCall._conferenceDurationAtJoin === 0)) {
-						confCall._conferenceDurationAtJoin = duration;
-						console.log('[Conference] initial conference duration from server (via sipConferenceParticipants) =',
-									duration, 'seconds');
-					}
-				}
-			});
+			// The SIP-side roster is no longer cached here. SIP callers
+			// behind the audio bridge now arrive through the native
+			// sylkrtc participant primitives (initial-publishers /
+			// publishers-joined, type==='sip'), so they live in
+			// confCall.participants like every other participant and
+			// ConferenceBox derives its SIP audio list from there. The
+			// conference-duration anchor is captured below from the
+			// `conferenceDuration` event (stamped on session-accept).
 
 			// The webrtcgateway also stamps a `conferenceDuration` event
 			// on session-accept for the case where the SIP-side

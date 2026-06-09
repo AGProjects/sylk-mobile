@@ -65,6 +65,10 @@ class MainApplication : Application(), ReactApplication {
     // Initialise the native log sink before anything else so calls
     // from boot-time SylkTelecom.register, FCM, etc. land on disk.
     SylkLogger.init(this)
+    // Capture uncaught exceptions through SylkLogger so native crashes
+    // appear in metro.log / the in-app log view (our logcat capture
+    // filters to the SYLK_APP tag and would otherwise drop them).
+    SylkLogger.installCrashHandler()
     SoLoader.init(this, false)
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
       // If you opted-in for the New Architecture, we load the native entry point for this app.

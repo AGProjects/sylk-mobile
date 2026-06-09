@@ -4330,6 +4330,9 @@ class ReadyBox extends Component {
 						refreshFavorites={this.props.refreshFavorites}
 						localHistory={this.props.localHistory}
 						saveHistory={this.props.saveHistory}
+						openCallTrace={this.props.openCallTrace}
+						openQosSummary={this.props.openQosSummary}
+						fetchServerHistory={this.props.fetchServerHistory}
 						myDisplayName={this.props.myDisplayName}
 						myPhoneNumber={this.props.myPhoneNumber}
 						saveConference={this.props.saveConference}

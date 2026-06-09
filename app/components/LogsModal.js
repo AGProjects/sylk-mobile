@@ -5,7 +5,6 @@ import {
     View,
     ScrollView,
     TouchableOpacity,
-    Clipboard,
     Modal,
     TouchableWithoutFeedback,
     KeyboardAvoidingView,
@@ -546,10 +545,6 @@ class ShowLogsModal extends Component {
         this._stopLiveTail();
     }
 
-    copyToClipboard = async () => {
-        await Clipboard.setString(this.state.logs);
-    }
-
     // Send the (optionally anonymized) log text to support@sylk.link as
     // a PGP-encrypted file attachment over the regular Blink file-transfer
     // pipeline. The orchestration (write temp .txt, autocreate the
@@ -744,10 +739,9 @@ class ShowLogsModal extends Component {
                             >
                                 {/* `selectable` enables long-press text
                                     selection + the system Copy menu on
-                                    both iOS and Android, so the user
-                                    can grab a specific snippet from the
-                                    log without sending the whole thing
-                                    via the Copy button. */}
+                                    both iOS and Android, which is how the
+                                    user copies a snippet from the log
+                                    (there's no in-app Copy button). */}
                                 <Text
                                     selectable={true}
                                     selectionColor="rgba(46,125,50,0.35)"
@@ -1141,15 +1135,10 @@ class ShowLogsModal extends Component {
                             backgroundColor: '#fff',
                         }}>
                             <View style={contentStyles.buttonRow}>
-                                <Button
-                                    mode="contained"
-                                    style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                    onPress={this.copyToClipboard}
-                                    accessibilityLabel="Copy"
-                                    icon="content-copy"
-                                >
-                                    Copy
-                                </Button>
+                                {/* No in-app Copy button — selecting text in
+                                    the log above surfaces the native
+                                    Copy / Select-All menu on both iOS and
+                                    Android, which covers copying. */}
                                 {!_isViewingOthersLogs ? (
                                     <Button
                                         mode="contained"
@@ -1203,7 +1192,7 @@ class ShowLogsModal extends Component {
                                             disabled={this.state.sendingSupport}
                                             loading={this.state.sendingSupport}
                                         >
-                                            {this.state.sendingSupport ? 'Sending…' : 'Request support'}
+                                            {this.state.sendingSupport ? 'Sending…' : 'Send to support'}
                                         </Button>
                                     </View>
                                 </React.Fragment>

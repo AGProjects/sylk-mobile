@@ -28,6 +28,8 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -71,6 +73,47 @@ object SylkLogger {
     fun init(context: Context) {
         if (appContext == null) {
             appContext = context.applicationContext
+        }
+    }
+
+    @Volatile
+    private var crashHandlerInstalled = false
+
+    /**
+     * Install a process-wide uncaught-exception handler that records the
+     * FULL stack trace through this logger (Logcat tag SYLK_APP + on-disk
+     * buffer) BEFORE delegating to the previously-installed handler, so
+     * Android still produces its tombstone / crash dialog / restart.
+     * Idempotent; safe to call from every process entry point.
+     *
+     * Why this exists: native crashes are logged by Android only under the
+     * `AndroidRuntime` tag in the `crash` buffer. Our logcat capture
+     * (metro-adb-logs.sh) filters to `-s SYLK_APP:V '*:S'`, which drops
+     * that tag entirely — so a crash never reaches metro.log or the in-app
+     * log view, only a mysterious gap followed by a process restart.
+     * Routing the trace through SylkLogger makes crashes visible exactly
+     * where we already look.
+     */
+    @JvmStatic
+    @Synchronized
+    fun installCrashHandler() {
+        if (crashHandlerInstalled) return
+        crashHandlerInstalled = true
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val sw = StringWriter()
+                throwable.printStackTrace(PrintWriter(sw))
+                // append() collapses newlines to " \n " so the whole trace
+                // stays on one greppable line ([crash]).
+                e("[crash] FATAL uncaught exception on thread '"
+                        + thread.name + "': " + sw.toString())
+            } catch (t: Throwable) {
+                Log.e(TAG, "[SylkLogger] crash handler failed", t)
+            }
+            // Chain to the platform handler so Android still records the
+            // tombstone, shows the crash dialog, and restarts as usual.
+            previous?.uncaughtException(thread, throwable)
         }
     }
 

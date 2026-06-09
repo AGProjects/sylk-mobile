@@ -1,0 +1,20 @@
+  * Added swipe gesture for messages
+  * Sync mute button with webrtc state
+  * Qos sending report
+  * Added getQos Summary from server
+  * Keep location bubble at its timestamp origin
+  * Improve call reconnect experience
+  * Capture exception if phone number permission is not granted
+  * Fix sharing files from outside
+  * Show progress for encryption of files
+  * Prevent memory exhaustion on pgp encrypt files 
+  * Improve sharing video files
+  * Force VPx codecs when zRTP is enabled
+  * Fix race condition with saving account settings at start
+  * Added outgoing video files compression
+  * Fix requesting Modes permission on Android
+  * Close ICE gathering on Call reject
+  * Fixed increase missed call badge for anonymous
+  * Fixed saving anonymous calls
+  * Fix image group rendering
+  * Improve Edit message modal

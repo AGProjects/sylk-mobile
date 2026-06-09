@@ -386,6 +386,19 @@ class CallOverlay extends React.Component {
         // TODO: consider using window.requestAnimationFrame
 
         this.timer = setInterval(() => {
+            // Guard against a missing/invalid startTime. During a media-loss
+            // reconnect the fresh call's callsState.startTime isn't seeded
+            // yet, so this.state.startTime is null — and `new Date() - null`
+            // evaluates to the current epoch in ms, i.e. a ~56000-year
+            // "duration" that then renders as a giant call timer AND a bogus
+            // "Call ended after …" final duration (finalDuration captures
+            // this.duration at termination). Skip the tick until we have a
+            // real start time; render falls through to "Reconnecting call…".
+            if (!this.state.startTime) {
+                this.duration = null;
+                if (this.props.show) this.forceUpdate();
+                return;
+            }
             const duration = moment.duration(new Date() - this.state.startTime);
             // Was comparing the previous tick's STRING ("00:00", null,
             // etc.) against 3600 — always false, so we'd never switch
@@ -418,7 +431,7 @@ class CallOverlay extends React.Component {
                 callDetail = this.duration;
             } else {
                 if (this.state.reconnectingCall) {
-                    callDetail = 'Reconnecting call...';
+                    callDetail = 'Media lost. Reconnecting...';
                 } else if (this.state.callState === 'terminated') {
                     if (this.finalDuration) {
                         callDetail = 'Call ended after ' + this.finalDuration;

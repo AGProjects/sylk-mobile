@@ -25,12 +25,12 @@ import { startZrtpForCall, ZRTP_CONTENT_TYPE,
 // (direction === 'incoming') signals the caller with an in-session
 // MEDIA_LOST_CONTENT_TYPE message every poll while the loss persists;
 // caller redials on receipt of that message via the same hangup path.
-// The 20 s threshold is well above any normal RTP keepalive cadence
+// The 15 s threshold is well above any normal RTP keepalive cadence
 // (Opus DTX comfort-noise frames still tick packetsReceived) so brief
 // network blips don't cause spurious redials.
 export const MEDIA_LOST_CONTENT_TYPE = 'application/sylk-media-lost';
 const MEDIA_LOSS_POLL_MS = 2000;
-const MEDIA_LOSS_THRESHOLD_MS = 20000;
+const MEDIA_LOSS_THRESHOLD_MS = 15000;
 
 // Build getUserMedia constraints for the audio→video upgrade path
 // that match the initial-video path's profile (set once at app
@@ -591,6 +591,12 @@ class Call extends Component {
         utils.timestampedLog('[call] [media-loss] triggering redial',
             'reason=', reason,
             'callUUID=', callUUID);
+        // Flip reconnectingCall=true BEFORE the hangup so the overlay shows
+        // "Media lost. Reconnecting..." immediately. Without this, the call
+        // terminates first (callState='terminated', finalDuration captured)
+        // and the overlay flashes "Call ended after <duration>" for the
+        // render(s) before app.js's reconnect branch sets reconnectingCall.
+        try { this.setState({reconnectingCall: true}); } catch (e) { /* mid-teardown */ }
         // Reuse the existing outgoing_connection_failed flow. app.js's
         // changeRoute('/ready', 'outgoing_connection_failed') branch
         // (around line 6322) already handles hangup, 5 s delay, and

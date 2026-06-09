@@ -7263,7 +7263,7 @@ class NavigationBar extends Component {
                             small and self-contained so we leave it
                             unconditional. */}
                         <Divider />
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Logs…" />
 
                     </Menu>
                 :
@@ -7431,7 +7431,7 @@ class NavigationBar extends Component {
                             (with or without a selected contact, folded
                             or not), since the user can need help at any
                             point — including from inside an open chat. */}
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Help…" />
+                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Logs…" />
 
                         {/* Donate… — opens PaymentInfoModal with the
                             bank-transfer details users need to top up

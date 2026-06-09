@@ -900,6 +900,17 @@ async function sql2GiftedChat(item, content, filter = {}) {
                 reason: "invalid-json"
             });
         }
+    } else if (item.metadata && typeof item.metadata === 'string' && item.metadata.length > 0) {
+        // Non-file-transfer rows can also carry a JSON metadata blob —
+        // e.g. call system messages store {trace:{callid,fromtag,totag,
+        // proxyIP}} so a tap can open the CDRTool SIP-trace page. Parse
+        // it best-effort; a bad blob just yields no metadata rather than
+        // dropping the whole message.
+        try {
+            Object.assign(metadata, JSON.parse(item.metadata));
+        } catch (e) {
+            // leave metadata as-is; not fatal for a text/system bubble
+        }
     }
 
     let must_check_category = true;
@@ -1115,6 +1126,9 @@ async function sql2GiftedChat(item, content, filter = {}) {
         received,
         pending,
         system: item.system === 1,
+        // SIP Call-ID this message belongs to (call system messages),
+        // carried through so the converge step can match in memory.
+        callId: item.call_id || null,
         failed,
         pinned: item.pinned === 1,
         user: item.direction === "incoming"

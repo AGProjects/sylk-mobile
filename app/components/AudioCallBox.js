@@ -337,7 +337,10 @@ class AudioCallBox extends Component {
                     // qos pipeline can correlate stats from the
                     // already-running call.
                     if (this.state.call._pc) {
-                        startQosLogging(this.state.call._pc);
+                        startQosLogging(
+                            this.state.call._pc,
+                            this.state.call._callId || this.state.call.callId || this.state.call.id,
+                        );
                     }
                     break;
                 case 'incoming':
@@ -1458,12 +1461,12 @@ class AudioCallBox extends Component {
         if (!this.state.vuMetersHaveData) {
             return null;
         }
-        // Hide the meters once the call has ended. AudioCallBox sticks
-        // around for ~5 s of wrap-up UI (call summary, ZRTP fade) but
-        // there's no audio flowing anymore — leaving the meters lit
-        // with the last sampled levels reads as "still in call".
-        const _cs = this.state.call && this.state.call.state;
-        if (_cs === 'terminated') {
+        // Only show the meters while the call is CONNECTED (established).
+        // Gated here, inside the renderer, so EVERY callsite is covered —
+        // the meters can't leak during ringing/connecting/reconnect/ended.
+        const _cs = (this.state.call && this.state.call.state)
+            || (this.props.call && this.props.call.state);
+        if (_cs !== 'established' || this.state.reconnectingCall) {
             return null;
         }
         // VU meter vertical offset in LANDSCAPE only — net 0
@@ -1641,8 +1644,14 @@ class AudioCallBox extends Component {
 			this.setState({userStartedCall: nextProps.userStartedCall});
 		}
 
+        // Prefer the real track state over the incoming `muted` prop.
+        // nextProps.muted is the "command" state from app.js; the
+        // track's `enabled` flag is what audio is actually doing. Show
+        // the truth when we can read it, and only fall back to the prop
+        // when the track isn't available yet.
+        const _enabled = this._readLocalAudioEnabled();
         this.setState({
-            audioMuted: nextProps.muted,
+            audioMuted: (_enabled === null) ? nextProps.muted : !_enabled,
             info: nextProps.info,
             packetLossQueue: nextProps.packetLossQueue,
             audioBandwidthQueue: nextProps.audioBandwidthQueue,
@@ -1693,7 +1702,7 @@ class AudioCallBox extends Component {
             // Start [qos] CONNECT / STATS sampler against the same
             // PeerConnection — see qos/qos-stats.js.
             if (this.state.call && this.state.call._pc) {
-                startQosLogging(this.state.call._pc);
+                startQosLogging(this.state.call._pc, _cid);
             }
             // One-shot: log the audio codecs proposed in our outgoing
             // offer (m=audio payload-type list with the rtpmap names).
@@ -1999,8 +2008,31 @@ class AudioCallBox extends Component {
         this.props.hangupCall('user_cancel_call');
     }
 
+    // Single source of truth for the mic state: read the actual
+    // local audio track's `enabled` flag rather than trusting the
+    // React `muted` prop, which can drift from the real stream
+    // (e.g. after the iOS CallKit audio-session race, or any path
+    // that flips the track without routing through app.js state).
+    // Returns true/false for the track state, or null when the
+    // track can't be read yet (call/stream not ready).
+    _readLocalAudioEnabled() {
+        try {
+            const call = this.props.call;
+            const stream = call && call.getLocalStreams && call.getLocalStreams()[0];
+            const track = stream && stream.getAudioTracks()[0];
+            return track ? track.enabled : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     muteAudio() {
-        this.props.toggleMute(this.props.call.id, !this.state.audioMuted);
+        // Decide the toggle direction from the ACTUAL track state when
+        // we can read it, so the button always does the right thing
+        // even if the UI state had drifted from the stream.
+        const enabled = this._readLocalAudioEnabled();
+        const currentMuted = (enabled === null) ? this.state.audioMuted : !enabled;
+        this.props.toggleMute(this.props.call.id, !currentMuted);
     }
 
     statistics(stats) {
@@ -2012,6 +2044,22 @@ class AudioCallBox extends Component {
         // nothing when data is empty). Be defensive instead: fall back
         // to whatever stats are available so the bar-chart and the
         // speedometer always see something to draw.
+        // Keep the mic icon honest: reconcile the UI mute state against
+        // the real local audio track on every stats tick. This runs
+        // BEFORE the early-return below so it still fires on builds
+        // where inbound/outbound rtp records aren't surfaced. `.enabled`
+        // emits no events, so polling here (the stats callback already
+        // ticks ~1s) is how we observe drift.
+        const _audioEnabled = this._readLocalAudioEnabled();
+        if (_audioEnabled !== null) {
+            const _actualMuted = !_audioEnabled;
+            if (_actualMuted !== this.state.audioMuted) {
+                utils.timestampedLog('[mute-sync] UI/stream drift: ui=', this.state.audioMuted,
+                                     'stream=', _actualMuted, '— correcting UI to match stream');
+                this.setState({ audioMuted: _actualMuted });
+            }
+        }
+
         const { audio, connection } = stats.data || {};
         const remoteAudio   = stats.data?.remote?.audio;
         const inboundAudio  = audio?.inbound?.[0];
@@ -2049,6 +2097,36 @@ class AudioCallBox extends Component {
             packetRateInbound: inboundAudio?.packetRate || 0,
             audioCodec
         };
+
+        // --- no-audio (CallKit audio-unit race) detector -------------
+        // The iOS CallKit audio-session race leaves a live, UNMUTED call
+        // whose audio unit never started: nothing is captured/sent even
+        // though the track is enabled, so the mute-sync above sees no
+        // drift (track says unmuted, and it genuinely is). The only
+        // fingerprint is outbound audio sitting flat at ~0 packets/s.
+        // Watch for that across a few ticks while not muted (when muted,
+        // zero outbound is expected) and warn — this is the case where
+        // a mute/unmute toggle "fixes" the call by restarting the unit.
+        try {
+            const _muted = (_audioEnabled === null) ? this.state.audioMuted : !_audioEnabled;
+            const _outRate = addData.packetRateOutbound || 0;
+            const _inRate  = addData.packetRateInbound  || 0;
+            if (!_muted && _outRate < 1) {
+                this._noAudioZeroTicks = (this._noAudioZeroTicks || 0) + 1;
+                // ~3 ticks (~3s) of silence after setup = a real stall,
+                // not first-second warmup. Then re-warn every 5 ticks.
+                if (this._noAudioZeroTicks === 3 ||
+                    (this._noAudioZeroTicks > 3 && this._noAudioZeroTicks % 5 === 0)) {
+                    utils.timestampedLog('[no-audio] call', this.props.call?.id,
+                        'unmuted but no outbound audio for', this._noAudioZeroTicks, 'ticks —',
+                        'outPkts/s=', _outRate, 'inPkts/s=', _inRate,
+                        'outKbps=', addData.outgoingBitrate, 'inKbps=', addData.incomingBitrate,
+                        '— likely CallKit audio-session race; mute/unmute would restart the audio unit');
+                }
+            } else {
+                this._noAudioZeroTicks = 0;
+            }
+        } catch (e) { /* never let diagnostics break stats */ }
 
         this.setState(state => ({
             audioGraphData: [...state.audioGraphData, addData].slice(-MAX_POINTS)
@@ -2330,39 +2408,7 @@ class AudioCallBox extends Component {
                     </Text>
                 </TouchableOpacity>
                 </Animated.View>
-                {/* Round "i" info button — opens the Media info panel.
-                    Rendered to the RIGHT of the record pill, only when
-                    the call is in accepted/established (this whole
-                    method early-returns null otherwise). Stops touch
-                    propagation so tapping it doesn't also trigger the
-                    record pill or any wrapping container. */}
-                <TouchableOpacity
-                    accessibilityLabel="Media info"
-                    onPress={(e) => {
-                        if (e && e.stopPropagation) e.stopPropagation();
-                        this._openMediaInfoPanel();
-                    }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    style={{
-                        marginLeft: 24,
-                        width: 28,
-                        height: 28,
-                        borderRadius: 14,
-                        backgroundColor: 'rgba(33, 150, 243, 0.95)',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        elevation: 4,
-                    }}
-                >
-                    <Text style={{
-                        color: 'white',
-                        fontSize: 15,
-                        fontWeight: 'bold',
-                        lineHeight: 17,
-                    }}>
-                        i
-                    </Text>
-                </TouchableOpacity>
+                {/* Round "i" info button removed per request. */}
             </View>
         );
     }
@@ -2477,13 +2523,32 @@ class AudioCallBox extends Component {
         // badge that normally rides along with the stats is still
         // rendered (without the dial) so the user sees verification
         // state during ringing.
-        const cs = this.state.call && this.state.call.state;
-        const isConnected = cs === 'established' || cs === 'accepted';
-        if (!isConnected) {
-            return footer || null;
-        }
+        // Use props.call as a fallback — this.state.call can lag the parent.
+        const callObj = this.state.call || this.props.call;
+        const cs = callObj && callObj.state;
+        const established = cs === 'established';
+        // "Connected" = established AND audio actually flowing. In this Janus
+        // setup 'established' can fire early (WebRTC leg up before real media),
+        // so we hold the revolving circle until the first audio sample lands
+        // (vuMetersHaveData), THEN switch to the half-dial + VU meters.
+        const mediaFlowing = established
+            && !!this.state.vuMetersHaveData
+            && !this.state.reconnectingCall;   // stale vuData lingers across a drop
+        const spinning = !mediaFlowing;
+        // The connecting circle is an OUTGOING-call affordance (the -4s
+        // countdown sweeping up to the call start). Don't show it while an
+        // INCOMING call is ringing/connecting — that screen has its own
+        // accept/decline UI and no countdown. (Reconnect is handled via the
+        // reconnectingCall prop and still applies in both directions.)
+        const isIncoming = !!(callObj && callObj.direction === 'incoming');
+        // The connecting circle is for the initial OUTGOING connect only. A
+        // media-loss reconnect shows the plain ActivityIndicator instead (see
+        // AudioSpeedometer's reconnect branch), so exclude it here too.
+        const connecting = spinning && !isIncoming && !this.state.reconnectingCall;
 
-        const showOld = this.state.showOldStats;
+        // While connecting/reconnecting always show the speedometer dial
+        // (revolving needle), never the bar-chart view.
+        const showOld = spinning ? false : this.state.showOldStats;
         // Both stats views share the SAME slot width AND height so
         // flipping between graph and speedo never resizes the
         // column — width was 170 (BarChart's natural width) but
@@ -2555,8 +2620,19 @@ class AudioCallBox extends Component {
                         call={this.state.call}
                         audioCodec={this.props.audioCodec}
                         isFolded={this.props.isFolded}
+                        reconnectingCall={this.state.reconnectingCall}
+                        connecting={connecting}
+                        /* Outgoing-audio pre-call countdown: start the
+                           circle's needle on its -4s lead-in so it reaches
+                           12 o'clock as the auto-start timer dials the call.
+                           Replaces the old sliding countdown bar. */
+                        awaitingStart={this.props.awaitingUserCallStart}
+                        hasCall={!!callObj}
                     />
-                    {!showOld ? this._renderRemoteVuMeter() : null}
+                    {/* VU meters ONLY when media is actually flowing
+                        (mediaFlowing) — i.e. below the half-dial, never while
+                        the calling/reconnecting circle is shown. */}
+                    {(!showOld && mediaFlowing) ? this._renderRemoteVuMeter() : null}
                 </View>
                 {/* Footer (zRTP pill) rendered ONCE as a sibling of
                     both stats views, so its container width is the
@@ -3303,14 +3379,11 @@ class AudioCallBox extends Component {
 								<Text key={'cb-uri-' + _callRemountKey} style={styles.foldedUri} numberOfLines={1}>{displayUri}</Text>
 							</TouchableWithoutFeedback>
 
-							{/* VuMeters sit directly under the names.
-							    _renderRemoteVuMeter() short-circuits to
-							    null until WebRTC publishes its first
-							    audioLevel sample, so this stays empty
-							    during ringing and only appears once
-							    media is actually flowing. */}
+							{/* VuMeters sit directly under the names — shown only
+							    once the call is connected (established). */}
 							<View style={{ alignSelf: 'stretch', marginTop: 6 }}>
-								{this._renderRemoteVuMeter()}
+								{(this.state.call && this.state.call.state === 'established')
+									? this._renderRemoteVuMeter() : null}
 							</View>
 
 							{/* Outgoing-audio pre-call: Start now button
@@ -3332,29 +3405,9 @@ class AudioCallBox extends Component {
 									>
 										Start now
 									</Button>
-									<View style={{
-										flexDirection: 'row',
-										marginTop: 10,
-										height: 6,
-										width: 150,
-										justifyContent: 'space-between',
-									}}>
-										{[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
-											<View
-												key={'autostart-cell-folded-' + i}
-												style={{
-													flex: 1,
-													marginHorizontal: 1,
-													borderRadius: 2,
-													backgroundColor: i < (this.state.autoStartCountdown || 0)
-														? (this.state.autoStartPaused
-															? 'rgba(255,255,255,0.85)'
-															: 'rgba(0,200,90,0.9)')
-														: 'rgba(255,255,255,0.20)',
-												}}
-											/>
-										))}
-									</View>
+{/* Countdown bar hidden — the connecting circle's needle
+									    now provides the visual lead-in (sweeps up to
+									    12 o'clock as the call starts). */}
 								</View>
 							) : (
 								// ZRTP pill: lifted above its natural
@@ -3479,10 +3532,11 @@ class AudioCallBox extends Component {
 					</>
 				)}
 
-                {!this.state.isLandscape && this.state.reconnectingCall ?
-                    <ActivityIndicator style={styles.activity} animating={true} size={'large'} color={'#D32F2F'} />
-                    : null
-                }
+                {/* Reconnect is shown by the plain (red, large)
+                    ActivityIndicator that AudioSpeedometer renders in
+                    renderStatsBlock while reconnectingCall is true — the
+                    countdown circle is reserved for the initial outgoing
+                    connect. No separate spinner needed here. */}
 
                 {this.state.call && ((this.state.call.state === 'accepted' || this.state.call.state === 'established' || this.state.call.state === 'early-media') && !this.state.reconnectingCall) ?
                         <>
@@ -3867,45 +3921,10 @@ class AudioCallBox extends Component {
                                         Start now
                                     </Button>
 
-                                    {/* Sliding bar — width inherited
-                                        from the wrapper (= Start button
-                                        width). One cell per second of
-                                        the original countdown
-                                        (`autoStartTotal`), so the
-                                        rightmost cell is fully filled
-                                        at start regardless of whether
-                                        the timer was armed for 4 s, 5 s,
-                                        10 s, etc. */}
-                                    <View style={{
-                                        flexDirection: 'row',
-                                        marginTop: 10,
-                                        height: 6,
-                                        alignSelf: 'stretch',
-                                        justifyContent: 'space-between',
-                                    }}>
-                                        {/* One cell per second of the original
-                                            countdown (`autoStartTotal`), filling
-                                            from left as `autoStartCountdown` ticks
-                                            down. So a 5 s timer = 5 bars max. */}
-                                        {[...Array(this.state.autoStartTotal || 0)].map((_, i) => (
-                                            <View
-                                                key={'autostart-cell-' + i}
-                                                style={{
-                                                    flex: 1,
-                                                    marginHorizontal: 1,
-                                                    borderRadius: 2,
-                                                    // Paused → white filled cells (frozen).
-                                                    // Running → green filled cells (active
-                                                    // countdown). Empty → dim translucent.
-                                                    backgroundColor: i < (this.state.autoStartCountdown || 0)
-                                                        ? (this.state.autoStartPaused
-                                                            ? 'rgba(255,255,255,0.85)'
-                                                            : 'rgba(0,200,90,0.9)')
-                                                        : 'rgba(255,255,255,0.20)',
-                                                }}
-                                            />
-                                        ))}
-                                    </View>
+                                    {/* Countdown bar hidden — the connecting circle's
+                                        needle now provides the visual
+                                        lead-in (sweeps up to 12 o'clock
+                                        as the call starts). */}
                                 </View>
                             </View>
                             )}

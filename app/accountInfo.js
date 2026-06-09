@@ -441,6 +441,65 @@ export function cancelDeleteAccount({
     });
 }
 
+/**
+ * Fetch the server-side SIP trace for one call.
+ *
+ * `callid` is the call's session id as it appears in the snapshot's
+ * call_history (entry.sessionId). The server re-derives fromtag /
+ * totag / proxyIP from the authenticated account's own history and
+ * refuses ids that don't belong to this subscriber, so only the id
+ * is needed here.
+ *
+ * Returns the parsed envelope:
+ *   { ok: true, callid, cdr_source, proxy_ip, count, packets: [ ... ] }
+ * `packets` is empty when the trace has aged out (sip_trace is kept
+ * ~7 days). Throws on auth / network errors.
+ */
+export function getSipTrace({ account, password, url, callid }) {
+    const body = 'action=get_sip_trace'
+               + '&callid=' + encodeURIComponent(callid || '');
+    return digestRequest({ account, password, url, method: 'POST', body });
+}
+
+/**
+ * Fetch the server-side RTP media trace for one call. Same id /
+ * ownership semantics as getSipTrace.
+ *
+ * Returns:
+ *   { ok: true, callid, cdr_source, proxy_ip, media: {duration, streams} | null }
+ * `media` is null when no RTP streams were established or the record
+ * has aged out. Throws on auth / network errors.
+ */
+export function getMediaTrace({ account, password, url, callid }) {
+    const body = 'action=get_media_trace'
+               + '&callid=' + encodeURIComponent(callid || '');
+    return digestRequest({ account, password, url, method: 'POST', body });
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// qos-serverd (the WebRTC/Janus-host QoS capture daemon) HTTP client.
+//
+// Unlike the CDRTool traces above (digest-authed against the SIP server),
+// these talk to qos-serverd, which captures the media plane per call into
+// /var/log/sylk-qos/<call-id>/ and serves it keyed by SIP Call-ID. Auth is a
+// shared bearer token. `url` is the daemon base, e.g.
+// "https://janus.example.com:9810".
+// ───────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch just the per-call summary JSON from the qos-server, by SIP Call-ID or
+ * Sylk session id. The per-call endpoint needs no token (the id is the
+ * capability). Returns the parsed summary object (totals, per-leg packet
+ * counts, evaluation). Throws on network errors; 404 when the call is unknown
+ * (e.g. the server wasn't capturing, or it aged out).
+ */
+export async function getQosSummary({ url, callid }) {
+    const u = url.replace(/\/+$/, '') + '/call/' + encodeURIComponent(callid || '') + '/summary';
+    const resp = await fetch(u, { method: 'GET', headers: { 'Accept': 'application/json' } });
+    if (!resp.ok) throw new Error('qos summary fetch failed: HTTP ' + resp.status);
+    return resp.json();
+}
+
 export default {
     getAccountInfo,
     setCallerId,
@@ -448,5 +507,8 @@ export default {
     setServerEmail,
     requestDeleteAccount,
     cancelDeleteAccount,
+    getSipTrace,
+    getMediaTrace,
+    getQosSummary,
     isPlaceholderCallerId,
 };

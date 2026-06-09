@@ -192,7 +192,7 @@ index 0000000..d3e3cc9
 Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/cd2ff7117aac726db7c1221125d02907/transformed/bundleLibRuntimeToDirDebug/bundleLibRuntimeToDirDebug_dex/io/wazo/callkeep/VoiceConnectionService.dex differ
 diff --git a/node_modules/react-native-callkeep/android/build/.transforms/cd2ff7117aac726db7c1221125d02907/transformed/bundleLibRuntimeToDirDebug/desugar_graph.bin b/node_modules/react-native-callkeep/android/build/.transforms/cd2ff7117aac726db7c1221125d02907/transformed/bundleLibRuntimeToDirDebug/desugar_graph.bin
 new file mode 100644
-index 0000000..dbb49bb
+index 0000000..7c4b0d6
 Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/.transforms/cd2ff7117aac726db7c1221125d02907/transformed/bundleLibRuntimeToDirDebug/desugar_graph.bin differ
 diff --git a/node_modules/react-native-callkeep/android/build/generated/source/buildConfig/debug/io/wazo/callkeep/BuildConfig.java b/node_modules/react-native-callkeep/android/build/generated/source/buildConfig/debug/io/wazo/callkeep/BuildConfig.java
 new file mode 100644
@@ -382,11 +382,11 @@ new file mode 100644
 index 0000000..e69de29
 diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties b/node_modules/react-native-callkeep/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties
 new file mode 100644
-index 0000000..9803fdd
+index 0000000..03cd365
 --- /dev/null
 +++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties
 @@ -0,0 +1 @@
-+#Thu May 07 18:44:12 EEST 2026
++#Sat Jun 06 23:03:09 EEST 2026
 diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/debug/packageDebugResources/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/debug/packageDebugResources/merger.xml
 new file mode 100644
 index 0000000..c0d095b
@@ -452,11 +452,11 @@ index 0000000..edebf59
 \ No newline at end of file
 diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties
 new file mode 100644
-index 0000000..bdb6298
+index 0000000..30abe15
 --- /dev/null
 +++ b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/compile-file-map.properties
 @@ -0,0 +1 @@
-+#Thu May 07 18:15:32 EEST 2026
++#Sat Jun 06 12:21:50 EEST 2026
 diff --git a/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/merger.xml b/node_modules/react-native-callkeep/android/build/intermediates/incremental/release/packageReleaseResources/merger.xml
 new file mode 100644
 index 0000000..28b4cb9
@@ -1022,14 +1022,148 @@ index 0000000..bfa56fa
 +		INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
 +	android:minSdkVersion
 +		INJECTED from /Users/adigeo/work/sylk-mobile/node_modules/react-native-callkeep/android/src/main/AndroidManifest.xml
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$1.class.uniqueId4 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$1.class.uniqueId4
+new file mode 100644
+index 0000000..5d16482
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$1.class.uniqueId4 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$CallStateListener.class.uniqueId5 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$CallStateListener.class.uniqueId5
+new file mode 100644
+index 0000000..fac5f49
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$CallStateListener.class.uniqueId5 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$LegacyCallStateListener.class.uniqueId3 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$LegacyCallStateListener.class.uniqueId3
+new file mode 100644
+index 0000000..f96d7ff
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$LegacyCallStateListener.class.uniqueId3 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$VoiceBroadcastReceiver.class.uniqueId8 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$VoiceBroadcastReceiver.class.uniqueId8
+new file mode 100644
+index 0000000..77fbe62
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule$VoiceBroadcastReceiver.class.uniqueId8 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule.class.uniqueId0 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule.class.uniqueId0
+new file mode 100644
+index 0000000..f371f09
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepModule.class.uniqueId0 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepPackage.class.uniqueId2 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepPackage.class.uniqueId2
+new file mode 100644
+index 0000000..a53c172
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/RNCallKeepPackage.class.uniqueId2 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$1.class.uniqueId1 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$1.class.uniqueId1
+new file mode 100644
+index 0000000..3af0dbe
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$1.class.uniqueId1 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$2.class.uniqueId10 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$2.class.uniqueId10
+new file mode 100644
+index 0000000..f0c485d
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$2.class.uniqueId10 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$3.class.uniqueId6 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$3.class.uniqueId6
+new file mode 100644
+index 0000000..d27d5cf
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$3.class.uniqueId6 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$4.class.uniqueId9 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$4.class.uniqueId9
+new file mode 100644
+index 0000000..87119b1
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService$4.class.uniqueId9 differ
+diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService.class.uniqueId7 b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService.class.uniqueId7
+new file mode 100644
+index 0000000..104d3e9
+Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/compileTransaction/stash-dir/VoiceConnectionService.class.uniqueId7 differ
 diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin
 new file mode 100644
-index 0000000..a576056
+index 0000000..a6ffc21
 Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin differ
 diff --git a/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin b/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin
 new file mode 100644
 index 0000000..3fcd98f
 Binary files /dev/null and b/node_modules/react-native-callkeep/android/build/tmp/compileReleaseJavaWithJavac/previous-compilation-data.bin differ
+diff --git a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
+index 025480a..4fafb89 100644
+--- a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
++++ b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
+@@ -1178,6 +1178,17 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+ 
+         boolean hasPermissions = true;
+         for (String permission : permissions) {
++            // Self-managed accounts place/receive calls through their own
++            // ConnectionService and at the framework level only need
++            // MANAGE_OWN_CALLS (normal, auto-granted) plus RECORD_AUDIO for
++            // the mic. READ_PHONE_NUMBERS / READ_PHONE_STATE and CALL_PHONE
++            // only matter for system-/SIM-managed (PSTN) accounts, so a
++            // missing runtime grant for those must not block a self-managed
++            // VoIP call. (patched)
++            if (isSelfManaged()
++                    && !permission.equals(Manifest.permission.RECORD_AUDIO)) {
++                continue;
++            }
+             int permissionCheck = ContextCompat.checkSelfPermission(context, permission);
+             if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+                 hasPermissions = false;
+diff --git a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java
+index 5d58692..d1cd6d7 100644
+--- a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java
++++ b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java
+@@ -459,16 +459,34 @@ public class VoiceConnectionService extends ConnectionService {
+         connection.setConnectionCapabilities(Connection.CAPABILITY_MUTE | Connection.CAPABILITY_SUPPORT_HOLD);
+ 
+         if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-            Context context = getApplicationContext();
+-            TelecomManager telecomManager = (TelecomManager) context.getSystemService(context.TELECOM_SERVICE);
+-            PhoneAccount phoneAccount = telecomManager.getPhoneAccount(request.getAccountHandle());
++            // Decide whether this connection must be self-managed. The
++            // obvious probe, TelecomManager.getPhoneAccount(), is
++            // permission-gated (READ_PHONE_NUMBERS on API 30+,
++            // READ_PHONE_STATE below) and throws SecurityException when the
++            // user hasn't granted it -- which crashes the outgoing call on
++            // Telecom's binder thread. It can also return null. So try it,
++            // but fall back to CallKeep's own configured `selfManaged`
++            // setting (no permission required) instead of crashing. (patched)
++            boolean isSelfManagedConnection = false;
++            try {
++                Context context = getApplicationContext();
++                TelecomManager telecomManager = (TelecomManager) context.getSystemService(context.TELECOM_SERVICE);
++                PhoneAccount phoneAccount = telecomManager.getPhoneAccount(request.getAccountHandle());
++                if (phoneAccount != null) {
++                    isSelfManagedConnection =
++                        (phoneAccount.getCapabilities() & PhoneAccount.CAPABILITY_SELF_MANAGED) == PhoneAccount.CAPABILITY_SELF_MANAGED;
++                } else {
++                    isSelfManagedConnection = isSelfManagedFromSettings();
++                }
++            } catch (SecurityException e) {
++                isSelfManagedConnection = isSelfManagedFromSettings();
++                Log.w(TAG, "[VoiceConnectionService] getPhoneAccount denied (missing READ_PHONE_NUMBERS); using configured selfManaged=" + isSelfManagedConnection);
++            }
+ 
+-            //If the phone account is self managed, then this connection must also be self managed.
+-            if((phoneAccount.getCapabilities() & PhoneAccount.CAPABILITY_SELF_MANAGED) == PhoneAccount.CAPABILITY_SELF_MANAGED) {
++            if (isSelfManagedConnection) {
+                 Log.d(TAG, "[VoiceConnectionService] PhoneAccount is SELF_MANAGED, so connection will be too");
+                 connection.setConnectionProperties(Connection.PROPERTY_SELF_MANAGED);
+-            }
+-            else {
++            } else {
+                 Log.d(TAG, "[VoiceConnectionService] PhoneAccount is not SELF_MANAGED, so connection won't be either");
+             }
+         }
+@@ -490,6 +508,21 @@ public class VoiceConnectionService extends ConnectionService {
+         return connection;
+     }
+ 
++    // Reads CallKeep's configured `selfManaged` flag without touching any
++    // permission-gated Telecom API. Fallback for createConnection() when
++    // TelecomManager.getPhoneAccount() is unavailable. (patched)
++    private boolean isSelfManagedFromSettings() {
++        try {
++            com.facebook.react.bridge.WritableMap settings =
++                RNCallKeepModule.getSettings(getApplicationContext());
++            return settings != null
++                && settings.hasKey("selfManaged")
++                && settings.getBoolean("selfManaged");
++        } catch (Exception e) {
++            return false;
++        }
++    }
++
+     @Override
+     public void onConference(Connection connection1, Connection connection2) {
+         Log.d(TAG, "[VoiceConnectionService] onConference");
 diff --git a/node_modules/react-native-callkeep/ios/.DS_Store b/node_modules/react-native-callkeep/ios/.DS_Store
 new file mode 100644
 index 0000000..e69de29
@@ -1037,7 +1171,7 @@ diff --git a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m b/no
 index 786045f..0098257 100644
 --- a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
 +++ b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
-@@ -370,6 +370,11 @@ + (void)setup:(NSDictionary *)options {
+@@ -370,6 +370,11 @@ RCT_EXPORT_METHOD(endCall:(NSString *)uuidString)
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][endCall] uuidString = %@", uuidString);
  #endif
@@ -1049,7 +1183,7 @@ index 786045f..0098257 100644
      NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
      CXEndCallAction *endCallAction = [[CXEndCallAction alloc] initWithCallUUID:uuid];
      CXTransaction *transaction = [[CXTransaction alloc] initWithAction:endCallAction];
-@@ -913,34 +918,54 @@ + (CXProviderConfiguration *)getProviderConfiguration:(NSDictionary*)settings
+@@ -913,34 +918,54 @@ RCT_EXPORT_METHOD(getAudioRoutes: (RCTPromiseResolveBlock)resolve
  - (void)configureAudioSession
  {
  #ifdef DEBUG
@@ -1111,7 +1245,7 @@ index 786045f..0098257 100644
  }
  
  + (BOOL)application:(UIApplication *)application
-@@ -1080,6 +1105,10 @@ - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAct
+@@ -1080,6 +1105,10 @@ RCT_EXPORT_METHOD(reportUpdatedCall:(NSString *)uuidString contactIdentifier:(NS
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performAnswerCallAction]");
  #endif
@@ -1122,7 +1256,7 @@ index 786045f..0098257 100644
      [self configureAudioSession];
      [self sendEventWithNameWrapper:RNCallKeepPerformAnswerCallAction body:@{ @"callUUID": [action.callUUID.UUIDString lowercaseString] }];
      [action fulfill];
-@@ -1091,6 +1120,11 @@ - (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)
+@@ -1091,6 +1120,11 @@ RCT_EXPORT_METHOD(reportUpdatedCall:(NSString *)uuidString contactIdentifier:(NS
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performEndCallAction]");
  #endif
