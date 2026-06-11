@@ -1845,7 +1845,10 @@ class ContactsListBox extends Component {
 	renderSend = (props) => {
 	  let chatActionContainer = styles.chatActionContainer;
 	  
-	  let disableAttachments = this.state.selectedContact.tags.indexOf('test') > -1;
+	  // Attachments (camera + paperclip) are now shown for every
+	  // contact, including 'test'-tagged ones. (Previously the 'test'
+	  // tag hid them.)
+	  let disableAttachments = false;
 	  
 	  if (this.state.sharingAssets.length > 0) {
 		return (
@@ -1916,7 +1919,16 @@ class ContactsListBox extends Component {
 		// Active recording + recordingFile cases are handled by the
 		// earlier branches at the top of renderSend.
 		const showSendArrow = this.state.texting || !!this.state.replyingTo;
-		const showMic = !showSendArrow && !this.state.isAudioRecording && !this.state.recordingFile;
+		// Hide AND disable the voice-message mic while a call or
+		// conference is active. this.props.call is set by app.js
+		// (incomingCall || currentCall, 1-to-1 or conference) and
+		// flows down via ReadyBox; it's null when idle. Recording a
+		// voice message would contend with the live call's microphone
+		// capture, so the record affordance must not be offered during
+		// a call. Not rendering the TouchableOpacity removes the tap
+		// target entirely (hidden + disabled in one).
+		const callActive = !!this.props.call;
+		const showMic = !showSendArrow && !this.state.isAudioRecording && !this.state.recordingFile && !callActive;
 		const sendColor = this.state.texting ? '#2196F3' : 'gray';
 
 		return (
@@ -2969,7 +2981,17 @@ class ContactsListBox extends Component {
             this.props.sendMessage(uri, message);
         });
 
-        this.setState({replyingTo: null, renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
+        // Reset the composer-active state after a send. GiftedChat clears
+        // its own internal text on send, but our `texting` flag (and the
+        // mirrored `text`) only update via onInputTextChanged — which
+        // fires on the post-send clear on iOS but NOT reliably on Android.
+        // Left stale-true, `texting` keeps showButtons false, so the
+        // camera/attachment buttons stay hidden and the send arrow stays
+        // up even though the composer is now empty (the symptom was an
+        // Android-only "no camera/attachment in the chat I just messaged
+        // in"). Clearing it here keeps the WhatsApp-style send/mic swap
+        // correct on both platforms.
+        this.setState({replyingTo: null, texting: false, text: '', renderMessages: GiftedChat.append(this.state.renderMessages, messages)});
     }
 
     sharePendingFiles() {

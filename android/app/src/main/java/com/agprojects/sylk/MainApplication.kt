@@ -38,6 +38,7 @@ class MainApplication : Application(), ReactApplication {
               add(UnreadPackage())
               add(SylkCallRecorderPackage())
               add(NativeLoggerPackage())
+              add(AppExitInfoPackage())
 
             }
 

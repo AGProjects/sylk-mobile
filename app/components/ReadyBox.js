@@ -1023,9 +1023,17 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.props.keyboardVisible && this.props.selectedContact) {
+        // Normally the action bar collapses while the keyboard is up in
+        // a selected chat to give the message list maximum room. EXCEPT
+        // during an active call: tapping into the chat from a live call
+        // raises the keyboard on Android (but not iOS), which made the
+        // bar — and the Share-location button it hosts — vanish on
+        // Android while staying visible on iOS. A user on a call who
+        // opens the chat to "send me your location" still needs that
+        // affordance, so keep the bar up during a call on both platforms.
+        if (this.props.keyboardVisible && this.props.selectedContact && !this.props.call) {
             return false;
-        }        
+        }
 
         if (this.state.orderBy === 'size' && this.props.selectedContact) {
             return false;

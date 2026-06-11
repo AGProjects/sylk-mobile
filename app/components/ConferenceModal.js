@@ -126,6 +126,11 @@ const ConferenceModal = ({
   // straight away and let the user untick if they want a word-shaped
   // room name instead.
   const [pstnEnabled, setPstnEnabled] = useState(true);
+  // Tracks whether the room field currently has keyboard focus. Used
+  // only to suppress the placeholder while focused — the user asked
+  // for an empty field on focus, so showing the "123456" hint after
+  // they've tapped in would contradict that.
+  const [roomFocused, setRoomFocused] = useState(false);
   const savedWordRoomRef = useRef(null);
 
   useEffect(() => {
@@ -416,7 +421,11 @@ const ConferenceModal = ({
                       // but the field itself is no longer toggle-
                       // dependent — every room is a numeric room.
                       label={`Enter dial-in room number (${PSTN_ROOM_MIN_DIGITS}–${PSTN_ROOM_MAX_DIGITS} digits)`}
-                      placeholder="123456"
+                      // Hide the placeholder while the field is
+                      // focused so a tapped-in, cleared field reads as
+                      // truly empty rather than showing the "123456"
+                      // hint.
+                      placeholder={roomFocused ? '' : '123456'}
                       keyboardType="number-pad"
                       maxLength={PSTN_ROOM_MAX_DIGITS}
                       value={targetUri}
@@ -428,6 +437,23 @@ const ConferenceModal = ({
                       // text snaps back to normal weight.
                       style={pristineRoom ? { color: '#9aa0a6' } : null}
                       contentStyle={pristineRoom ? { color: '#9aa0a6' } : null}
+                      // Focusing the field while it still holds the
+                      // untouched suggestion clears it outright — the
+                      // user tapped in to type their own room number,
+                      // so we give them an empty field rather than
+                      // dropping the cursor at the end of the greyed-
+                      // out digits (which they'd have to backspace
+                      // away first). Only fires while pristine; once
+                      // the user has typed/edited, re-focusing leaves
+                      // their value untouched.
+                      onFocus={() => {
+                        setRoomFocused(true);
+                        if (pristineRoom) {
+                          setTargetUri('');
+                          setPristineRoom(false);
+                        }
+                      }}
+                      onBlur={() => setRoomFocused(false)}
                       onChangeText={(text) => {
                         // First edit flips the field out of pristine
                         // mode so the muted style above stops applying.
@@ -452,7 +478,7 @@ const ConferenceModal = ({
                       // room name. With PSTN on we keep the same
                       // affordance — clearing lets them type a fresh
                       // number from scratch.
-                      right={targetUri ? (
+                      right={targetUri && !pristineRoom ? (
                         <TextInput.Icon
                           icon="close"
                           onPress={() => {
@@ -563,10 +589,6 @@ const ConferenceModal = ({
                   )}
 
                 </ScrollView>
-
-                  <Text style={containerStyles.note}>
-                    You can invite people once the conference starts
-                  </Text>
 
                 {/* Buttons. Disabled when there's no room name, or
                     when the dial-in box is ticked but the room number

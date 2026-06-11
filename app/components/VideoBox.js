@@ -8,7 +8,7 @@ import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Te
 import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
 import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder, DeviceEventEmitter  } from 'react-native';
 import uuid from 'react-native-uuid';
-import { RTCView } from 'react-native-webrtc';
+import DeferredRTCView from './DeferredRTCView';
 // RNCamera is used ONLY for the camera-enable modal preview tile —
 // a native AVCaptureSession / CameraX-backed view that is completely
 // independent of the webrtc pipeline. This lets us show a live local
@@ -35,6 +35,7 @@ import InCallManager from 'react-native-incall-manager';
 
 //import TrafficStats from './BarChart';
 import utils from '../utils';
+import { startQosLogging, stopQosLogging } from '../../qos/qos-stats';
 
 import styles from '../assets/styles/VideoCall';
 
@@ -682,6 +683,8 @@ class VideoBox extends Component {
         if (newState === 'terminated') {
             this.setState({ zrtpState: null, zrtpDialogVisible: false });
             this._stopVideoStatsProbe();
+            // Emit [qos] DISCONNECT and stop the QoS sampler (mirror AudioCallBox).
+            stopQosLogging();
         }
         if (newState === 'established') {
             // Streams attach to the peer connection on answer. Refresh
@@ -711,6 +714,13 @@ class VideoBox extends Component {
                 remoteStream: rs || this.state.remoteStream,
             });
             this._startVideoStatsProbe();
+            // Start [qos] CONNECT/STATS capture against the call's PeerConnection
+            // so video calls produce client-side stats for reconciliation (the
+            // same telemetry AudioCallBox gathers for audio calls).
+            if (this.props.call && this.props.call._pc) {
+                const _cid = this.props.call._callId || this.props.call.callId || this.props.call.id;
+                startQosLogging(this.props.call._pc, _cid);
+            }
             this._logNegotiatedSdp();
         }
         this.forceUpdate();
@@ -1391,6 +1401,21 @@ class VideoBox extends Component {
             if (this.state.call.state === 'incoming' && this.props.mediaPlaying) {
                 this.props.mediaPlaying();
             }
+
+            // Call.js renders VideoBox only once the call is ALREADY
+            // 'established' (or incoming), so the 'established' stateChanged
+            // event usually fired BEFORE we registered the listener above —
+            // callStateChanged('established') never runs, and the QoS sampler /
+            // video-stats probe never start (that's why video calls had "no
+            // client data"). Mirror AudioCallBox: if we mount mid-call, start
+            // them now.
+            if (this.state.call.state === 'established') {
+                this._startVideoStatsProbe();
+                if (this.state.call._pc) {
+                    const _cid = this.state.call._callId || this.state.call.callId || this.state.call.id;
+                    startQosLogging(this.state.call._pc, _cid);
+                }
+            }
         }
 
         // If the camera-enable prompt is up at mount, temporarily switch
@@ -1464,6 +1489,7 @@ class VideoBox extends Component {
 
         this.unmounted = true;
         this._stopVideoStatsProbe();
+        stopQosLogging();
         if (this.state.call != null) {
             this.state.call.removeListener('stateChanged', this.callStateChanged);
             this.state.call.removeListener('zrtpStateChanged', this.zrtpStateChanged);
@@ -3493,7 +3519,7 @@ class VideoBox extends Component {
 
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer]}>
-					  <RTCView
+					  <DeferredRTCView
 					    // Force a fresh native view on every VideoBox
 					    // mount by keying on `_remoteRtcMountKey` (set
 					    // once per instance in the constructor).
@@ -3506,6 +3532,10 @@ class VideoBox extends Component {
 					    // away from /call and back. Because the key
 					    // changes per mount (not per render), it does
 					    // NOT thrash within a single mount.
+					    // DeferredRTCView holds streamURL back one tick
+					    // on mount so the native createView batch never
+					    // carries a stream — see DeferredRTCView.js for
+					    // the UI-thread deadlock this prevents.
 						key={this._remoteRtcMountKey}
 						objectFit={this.state.aspectRatio}
 						style={styles.video}
@@ -3545,7 +3575,7 @@ class VideoBox extends Component {
 					  }}
 					>
 					  <Surface key={'vb-myself-surf-' + _videoRemountKey} style={mySurfaceContainer}>
-						<RTCView
+						<DeferredRTCView
 							key={'vb-myself-rtc-' + _videoRemountKey}
 							objectFit='cover'
 							style={styles.video}

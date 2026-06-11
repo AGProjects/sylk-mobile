@@ -635,6 +635,7 @@ import {
     isPlaceholderCallerId,
 } from './accountInfo';
 import { getQosResult, loadQosResultFromDisk } from '../qos/qos-stats';
+import { formatQosReport, formatQosReportHtml, reconcileQos, qosSummaryLine } from './qosReport';
 import { readAcknowledged as readLocationDisclosure } from './locationDisclosure';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
@@ -662,9 +663,18 @@ if (Platform.OS === 'android') {
   platform = `iOS ${Platform.Version}`;
 }
 
-const USER_AGENT = `Blink (${getBrand()} ${getModel()} on ${platform})`;
-//const USER_AGENT_LOG = `${getBrand()} ${getModel()} ${platform}`;
-const USER_AGENT_LOG = `${getModel()} ${platform}`;
+// Device label: getModel() often already begins with the brand
+// (e.g. brand "motorola", model "motorola razr 60 ultra"), which would
+// render as "motorola motorola razr 60 ultra". Collapse the duplicate so
+// the brand appears once.
+const _brand = (getBrand() || '').trim();
+const _model = (getModel() || '').trim();
+const DEVICE_LABEL = (_model && _brand && _model.toLowerCase().startsWith(_brand.toLowerCase()))
+    ? _model
+    : `${_brand} ${_model}`.trim();
+const USER_AGENT = `Blink Mobile (${DEVICE_LABEL} on ${platform})`;
+//const USER_AGENT_LOG = `${DEVICE_LABEL} ${platform}`;
+const USER_AGENT_LOG = `${_model} ${platform}`;
   
 const ANDROID_PERMISSIONS = Object.values(
   PermissionsAndroid.PERMISSIONS
@@ -1027,6 +1037,7 @@ if (!console.log.__isWrapped) {
 // the [native] entries together with the rest of that account's
 // in-app log history.
 import replayPersistedNativeLogs from './nativeLogReplay';
+import { flushExitReports } from './appExitReporter';
 
 
 class Sylk extends Component {
@@ -1494,6 +1505,7 @@ class Sylk extends Component {
             // support; qosSummaryCallid labels the modal header.
             showQosSummaryModal: false,
             qosSummaryReport: '',
+            qosSummaryHtml: '',
             qosSummaryCallid: '',
             qosSummaryTraceUrl: '',
             // 'donate' (kebab) or 'credit' (PSTN error). Drives the
@@ -7510,62 +7522,16 @@ class Sylk extends Component {
      *   downlink (server -> client): server NIC sent P, client received Q
      *            -> P-Q packets lost on the way down.
      */
+    // Reconciliation + summary-line logic lives in the leaf module qosReport.js
+    // (pure, no `this`) so editing it Fast-Refreshes instead of full-reloading
+    // this giant app.js module. These stay as thin wrappers to preserve the
+    // existing `this._reconcileQos(...)` / `this._qosSummaryLine(...)` callers.
     _reconcileQos(callid, summary, client) {
-        const num = (v) => (typeof v === 'number' ? v : (v == null ? 0 : (parseInt(v, 10) || 0)));
-        const legs = (summary && summary.legs) || {};
-        const w = legs.webrtc || {};
-        const srvFromClient = num(w.packets_client_to_server);   // server received from client (uplink)
-        const srvToClient   = num(w.packets_server_to_client);   // server sent to client (downlink)
-        const serverVerdict = (summary && (summary.evaluation_text || summary.evaluation)) || 'unknown';
-        const serverOk      = summary ? summary.media_ok === true : null;
-
-        const haveClient = !!(client && client.packetsSent != null);
-        const cliSent = haveClient ? num(client.packetsSent) : null;       // uplink
-        const cliRecv = haveClient ? num(client.packetsReceived) : null;   // downlink
-        const clientVerdict = haveClient
-            ? (client.domain + (client.reason ? ' (' + client.reason + ')' : ''))
-            : 'no client data';
-        const clientOk = haveClient ? (client.domain === 'OK') : null;
-
-        const uplinkLost   = (cliSent != null) ? (cliSent - srvFromClient) : null;
-        const downlinkLost = (cliRecv != null) ? (srvToClient - cliRecv) : null;
-        const agree = (clientOk != null && serverOk != null) ? (clientOk === serverOk) : null;
-
-        const recon = {
-            uplink:   { client_sent: cliSent, server_received: srvFromClient, lost_client_to_server: uplinkLost },
-            downlink: { server_sent: srvToClient, client_received: cliRecv, lost_server_to_client: downlinkLost },
-            client_verdict: clientVerdict,
-            server_verdict: serverVerdict,
-            agree,
-        };
-
-        console.log(`[qos] reconcile call ${callid}`);
-        console.log(`[qos] reconcile   uplink   client_sent=${cliSent} server_recv=${srvFromClient} lost(c->s)=${uplinkLost}`);
-        console.log(`[qos] reconcile   downlink server_sent=${srvToClient} client_recv=${cliRecv} lost(s->c)=${downlinkLost}`);
-        console.log(`[qos] reconcile   client verdict: ${clientVerdict}`);
-        console.log(`[qos] reconcile   server verdict: ${serverVerdict}`);
-        console.log(`[qos] reconcile   agreement: ${agree == null ? 'n/a' : (agree ? 'AGREE' : 'DISAGREE')}`);
-        return recon;
+        return reconcileQos(callid, summary, client);
     }
 
-    /**
-     * One compact, grep-able line summarising a qos record — used for the
-     * applog ([qos] [summary]) so it ships with support logs.
-     */
     _qosSummaryLine(record) {
-        const r = (record && record.reconciliation) || {};
-        const up = r.uplink || {};
-        const down = r.downlink || {};
-        const srv = (record && record.server) || {};
-        const cli = record && record.client;
-        return [
-            `call=${record && record.call_id}`,
-            `media=${(srv.media_types || []).join('/') || '?'}`,
-            `client[sent=${up.client_sent} recv=${down.client_received} verdict=${(cli && cli.domain) || 'n/a'}]`,
-            `server[c->s=${up.server_received} s->c=${down.server_sent} verdict=${srv.evaluation || 'n/a'}]`,
-            `lost[c->s=${up.lost_client_to_server} s->c=${down.lost_server_to_client}]`,
-            `agreement=${r.agree == null ? 'n/a' : (r.agree ? 'AGREE' : 'DISAGREE')}`,
-        ].join(' ');
+        return qosSummaryLine(record);
     }
 
     /**
@@ -7573,88 +7539,11 @@ class Sylk extends Component {
      * QoS summary modal and the "Send to support" body.
      */
     _formatQosReport(record) {
-        const srv = (record && record.server) || {};
-        const cli = (record && record.client) || {};
-        const r = (record && record.reconciliation) || {};
-        const up = r.uplink || {};
-        const down = r.downlink || {};
-        const legs = srv.legs || {};
-        const w = legs.webrtc || {};
-        const s = legs.sip || {};
-        const L = [];
-        L.push('QoS call report');
-        L.push('Call-ID: ' + ((record && record.call_id) || '?'));
-        if (srv.sylk_session_id) L.push('Sylk session: ' + srv.sylk_session_id);
-        const _date = (record && record.date) || srv.ended_at || null;
-        if (_date) {
-            let _d = _date;
-            const _n = Number(_date);
-            // numeric epoch (s or ms) -> ISO; otherwise show the string as-is
-            if (Number.isFinite(_n) && _n > 0) {
-                _d = new Date(_n < 1e12 ? _n * 1000 : _n).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
-            }
-            L.push('Date: ' + _d);
-        }
-        const ua = (srv.user_agents) || {};
-        // There are only TWO endpoints in a call: the local party and the
-        // remote party. Janus and MediaProxy are RELAYS in between — they have
-        // no SIP user agent. (Earlier this printed "iPhone <-> iPhone" on the
-        // WebRTC leg because user_agent_local IS the local device, not Janus.)
-        if (record && (record.from_uri || record.to_uri)) {
-            L.push('From: ' + (record.from_uri || '?'));
-            L.push('To:   ' + (record.to_uri || '?'));
-        }
-        L.push('Local device  : ' + (ua.local || USER_AGENT || '?') + '  (this device)');
-        L.push('Remote device : ' + (ua.remote || '?'));
-        L.push('Media: ' + ((srv.media_types || []).join(', ') || '?'));
-        L.push('Duration: ' + (srv.duration_s != null ? srv.duration_s + 's' : '?'));
-        L.push('');
-        L.push('SERVER (sylk-qos-server): ' + (srv.evaluation_text || srv.evaluation || 'n/a'));
-        L.push('  WebRTC leg  ' + (w.client || '?') + '  <->  Janus:' + (w.janus_port || '?') + '   (relay)');
-        L.push('    client -> server : ' + (w.packets_client_to_server != null ? w.packets_client_to_server : '?') + ' pkts');
-        L.push('    server -> client : ' + (w.packets_server_to_client != null ? w.packets_server_to_client : '?') + ' pkts');
-        if (s && Object.keys(s).length) {
-            L.push('  SIP leg     Janus:' + (s.janus || '?') + '  <->  MediaProxy:' + (s.mediaproxy || '?') + '   (relays)');
-            if (Array.isArray(s.streams) && s.streams.length) {
-                L.push('    streams : ' + s.streams.map((x) => (x.media || '?') + ' ' + (x.remote_ip || '?') + ':' + (x.remote_port || '?')).join(', '));
-            }
-            L.push('    Janus -> MediaProxy : ' + (s.packets_janus_to_mediaproxy != null ? s.packets_janus_to_mediaproxy : '?') + ' pkts');
-            L.push('    MediaProxy -> Janus : ' + (s.packets_mediaproxy_to_janus != null ? s.packets_mediaproxy_to_janus : '?') + ' pkts');
-        }
-        L.push('');
-        L.push('CLIENT (this device): ' + (cli.domain ? cli.domain + (cli.reason ? ' — ' + cli.reason : '') : 'no data'));
-        if (cli.packetsSent != null) {
-            L.push('    sent : ' + cli.packetsSent + ' pkts    received : ' + cli.packetsReceived + ' pkts');
-            L.push('    ice : ' + (cli.iceState || '?') + '    dtls : ' + (cli.dtlsState || '?') + '    rtt : ' + (cli.rttMs != null ? cli.rttMs + 'ms' : '?'));
-        }
-        const fmt = (v, unit) => (v != null && v !== '?') ? (v + (unit || '')) : '?';
-        if (cli.lossIn != null || cli.concealPct != null || cli.jbDelayMs != null) {
-            L.push('    loss in : ' + fmt(cli.lossIn, '%') + '    loss out : ' + fmt(cli.lossOut, '%')
-                   + '    audible loss (conceal) : ' + fmt(cli.concealPct, '%'));
-            L.push('    jitter buffer : ' + fmt(cli.jbDelayMs, 'ms') + '    flushes : ' + fmt(cli.jbFlushes)
-                   + '    pps recv : ' + fmt(cli.ppsRecv));
-        }
-        L.push('');
-        L.push('RECONCILIATION');
-        // Reconciliation needs BOTH sides. Say so plainly instead of printing
-        // a row full of nulls.
-        const haveClient = !!(record && record.client && (record.client.domain
-            || record.client.packetsSent != null || record.client.packetsReceived != null));
-        const haveServer = !!(srv && (srv.evaluation || (srv.legs && Object.keys(srv.legs).length)));
-        if (!haveClient && !haveServer) {
-            L.push('    not possible — neither client nor server data available');
-        } else if (!haveClient) {
-            L.push('    not possible without client data');
-        } else if (!haveServer) {
-            L.push('    not possible without server data');
-        } else {
-            L.push('    uplink   (client->server): client sent ' + up.client_sent + ', server received ' + up.server_received + '  ->  lost ' + up.lost_client_to_server);
-            L.push('    downlink (server->client): server sent ' + down.server_sent + ', client received ' + down.client_received + '  ->  lost ' + down.lost_server_to_client);
-            L.push('    verdict: client=' + (r.client_verdict || '?'));
-            L.push('             server=' + (r.server_verdict || '?'));
-            L.push('    agreement: ' + (r.agree == null ? 'n/a' : (r.agree ? 'client and server AGREE' : 'client and server DISAGREE')));
-        }
-        return L.join('\n');
+        return formatQosReport(record, USER_AGENT);
+    }
+
+    _formatQosReportHtml(record) {
+        return formatQosReportHtml(record, USER_AGENT);
     }
 
     /**
@@ -7720,6 +7609,9 @@ class Sylk extends Component {
                 showQosSummaryModal: true,
                 qosSummaryCallid: callid,
                 qosSummaryReport: 'No QoS data available for this call.\n\nThe server-side capture may not have run, or it has aged out.',
+                qosSummaryHtml: '<!doctype html><meta charset="utf-8"><body style="font-family:-apple-system,sans-serif;margin:16px;color:#444">'
+                    + '<h2>Quality of Service</h2><p>No QoS data available for this call.</p>'
+                    + '<p style="color:#888">The server-side capture may not have run, or it has aged out.</p></body>',
             });
             return;
         }
@@ -7737,6 +7629,7 @@ class Sylk extends Component {
             showQosSummaryModal: true,
             qosSummaryCallid: callid,
             qosSummaryReport: report,
+            qosSummaryHtml: this._formatQosReportHtml(record),
             qosSummaryTraceUrl: (record && record.sip_trace_url) || '',
         });
     }
@@ -11412,11 +11305,19 @@ class Sylk extends Component {
         //console.log('selectContact', contact);
 
         // If the tapped contact is the same one we have an active
-        // conference call with, re-enter the live conference UI
-        // instead of opening the contact's read-only chat surface.
-        // ConferenceBox's constructor reads call._lastViewState so
-        // the user lands back in whichever view (audio / video /
-        // chat) they were in before tapping Back.
+        // call with, re-enter the live call UI instead of opening the
+        // contact's read-only chat surface. The component reads
+        // call._lastViewState so the user lands back in whichever view
+        // (audio / video / chat) they were in before tapping Back.
+        //
+        // Route by call TYPE, not unconditionally: a 1-to-1 Call must
+        // re-enter /call (AudioCallBox); only an actual ConferenceCall
+        // goes to /conference (ConferenceBox). ConferenceBox reads
+        // conference-only getters (participants / activeParticipants /
+        // messages / sharedFiles) that don't exist on a 1-to-1 Call
+        // object, so sending a 1-to-1 call there crashes the render
+        // tree. Use the same discriminator as goBackToCall() — the
+        // ConferenceCall stores _participants, the 1-to-1 Call doesn't.
         if (contact
                 && contact.uri
                 && this.state.currentCall
@@ -11424,7 +11325,8 @@ class Sylk extends Component {
                 && this.state.callContact
                 && this.state.callContact.uri === contact.uri) {
             this.setState({selectedContact: contact, callContact: contact});
-            this.changeRoute('/conference', 'select_active_conference_contact');
+            const _isConferenceCall = this.state.currentCall.hasOwnProperty('_participants');
+            this.changeRoute(_isConferenceCall ? '/conference' : '/call', 'select_active_call_contact');
             return;
         }
 
@@ -11767,6 +11669,25 @@ class Sylk extends Component {
             // post-upgrade. Best-effort — wrap in try/catch so a
             // settings-bridge hiccup doesn't break registration.
             this._logDisclaimerSummary();
+
+            // Best-effort: forward any ANR / crash the OS recorded on a
+            // previous run to support, encrypted, once per session. Deferred
+            // so registration + initial sync settle (and the connection is
+            // comfortably ready for the file transfer) before we dispatch.
+            // Silent: the user launched the app, they didn't ask to open
+            // support, so requestSupportFromLogs runs without switching the
+            // chat UI. See app/appExitReporter.js.
+            if (!this._exitReportFlushed) {
+                this._exitReportFlushed = true;
+                setTimeout(() => {
+                    flushExitReports({
+                        accountId: this.state.accountId,
+                        dispatch: (body, subject) =>
+                            this.requestSupportFromLogs(body, this.state.accountId, subject, { silent: true }),
+                        log: (...args) => utils.timestampedLog(...args),
+                    });
+                }, 8000);
+            }
 
 			// Pass the timestamp of the last synced message as a fallback
 			// `since`. If the server has pruned the lastSyncId we still
@@ -13990,6 +13911,14 @@ class Sylk extends Component {
                 this.stopRingback();
                 _termMark('after-stopRingback');
 
+                // Reliable media type for the chat system message. The track-
+                // list checks above are often empty by teardown, which
+                // mislabelled VIDEO calls as "audio". call.mediaTypes is stamped
+                // on the call and survives, so trust it for the video case.
+                if (call && call.mediaTypes && call.mediaTypes.video) {
+                    mediaType = 'video';
+                }
+
                 let msg;
                 let current_datetime = new Date();
                 let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
@@ -14903,7 +14832,7 @@ class Sylk extends Component {
             }
         }
 
-		let connection = sylkrtc.createConnection({server: this.state.wsUrl});
+		let connection = sylkrtc.createConnection({server: this.state.wsUrl, userAgent: USER_AGENT});
 		console.log('[connect] caller=', caller, 'createConnection -> obj#', Object.id(connection), 'wsUrl=', this.state.wsUrl);
 
 		utils.timestampedLog('[wss]', Object.id(connection), 'was opened');
@@ -19169,6 +19098,17 @@ class Sylk extends Component {
 			console.log('[pgp] [message] savePublicKey autocreating contact for unknown sender', uri);
 			this.lookupContact(uri, true, true);
 			contacts = this.lookupContacts(uri);
+			// Receiving a public key must not float a brand-new contact to the
+			// top of the conversation list (it orders by the contacts.timestamp
+			// column). newContact stamps timestamp=now; backdate the just-minted
+			// row so the peer simply appears in the contact book without
+			// claiming "latest activity" — a real message / call will set a
+			// proper timestamp later. The key-store loop below persists this
+			// (Edit preserves it). Mirrors the autocreated-contact convention
+			// used elsewhere in this file.
+			for (const c of contacts) {
+				c.timestamp = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+			}
 		} else if (contacts.length === 0 && wasSpeculative) {
 			console.log('[pgp] [message] savePublicKey skip autocreate (speculative lookup) for', uri);
 			return;
@@ -19186,10 +19126,17 @@ class Sylk extends Component {
 		        ? contact.publicKey.replace(/\r/g, '').trim()
 		        : '';
 		    if (stored !== key) {
+				// Receiving / storing a public key is housekeeping, not
+				// conversation activity — it must NEVER advance the contact's
+				// sort timestamp (the conversation list orders by it). Capture
+				// the current timestamp and write it back after the key change
+				// so saveSylkContact persists the original, unbumped value.
+				const _tsPreserve = contact.timestamp;
 				contact.publicKey = key;
 				utils.timestampedLog('[message] Public key of', uri, 'saved');
 				console.log('[pgp] [message] savePublicKey STORED new/updated key for', uri,
 					'storedLen=', stored.length, 'newLen=', key.length);
+				contact.timestamp = _tsPreserve;
 				this.saveSylkContact(uri, contact, 'savePublicKey');
 				// Reply with our own public key only for cross-domain
 				// peers, and only once per app run. Same-domain peers
@@ -20074,34 +20021,49 @@ class Sylk extends Component {
     //      file into the per-conversation directory and calls
     //      uploadFile(), which encrypts the file with the support key
     //      and POSTs it to the file-transfer service.
-    async requestSupportFromLogs(logsBody, account, subject = 'Request for support') {
+    async requestSupportFromLogs(logsBody, account, subject = 'Request for support', options = {}) {
         const SUPPORT_URI = 'support@sylk.link';
         const myAccount = account || this.state.accountId;
+        // `silent` is used by the automatic ANR/crash reporter
+        // (app/appExitReporter.js): it still PGP-exchanges keys and uploads
+        // the encrypted report to support, but does NOT yank the chat UI over
+        // to the support conversation or post the "describe the problem"
+        // follow-up nudge — the user never asked to open support, they just
+        // launched the app after a previous crash.
+        const silent = !!options.silent;
 
         utils.timestampedLog('[account] requestSupportFromLogs start',
             'account=', myAccount,
             'bodyLen=', logsBody ? logsBody.length : 0);
 
+        // Returns true only when the encrypted report is actually handed to
+        // the file-transfer service; false on any early abort. The silent
+        // (automatic crash-report) caller uses this to decide whether to
+        // advance its watermark or retry on the next launch.
         if (!myAccount) {
             console.log('[account] no account, cannot send support request');
-            return;
+            return false;
         }
 
         if (myAccount === SUPPORT_URI) {
             console.log('[account] refusing to send support request to self');
-            return;
+            return false;
         }
 
         if (!this.canSend()) {
             console.log('[account] connection not ready, cannot send support request');
-            this.renderSystemMessage(SUPPORT_URI, 'Connection not ready, please try again', 'outgoing');
-            return;
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI, 'Connection not ready, please try again', 'outgoing');
+            }
+            return false;
         }
 
         if (!this.state.fileTransferUrl) {
             console.log('[support-share] no fileTransferUrl configured, cannot upload');
-            this.renderSystemMessage(SUPPORT_URI, 'File transfer service not available', 'outgoing');
-            return;
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI, 'File transfer service not available', 'outgoing');
+            }
+            return false;
         }
 
         // 1. Persist the log text to a temp file. We park it under
@@ -20149,8 +20111,10 @@ class Sylk extends Component {
             console.log('[support-share] wrote temp log file', localPath);
         } catch (e) {
             console.log('[support-share] failed to write log file', e && e.message ? e.message : e);
-            this.renderSystemMessage(SUPPORT_URI, 'Could not save logs to a file', 'outgoing');
-            return;
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI, 'Could not save logs to a file', 'outgoing');
+            }
+            return false;
         }
 
         let filesize = 0;
@@ -20161,6 +20125,45 @@ class Sylk extends Component {
         } catch (_) {
             console.log('[support-share] could not stat log file at', localPath);
         }
+
+        // Silent (automatic crash-report) sends must leave the Support
+        // conversation exactly where it was in the list. The dispatch below
+        // floats it in several ways the silent_support marker can't reach:
+        // the support-contact autocreate stamps timestamp=now, and the PGP
+        // handshake (lookupPublicKey -> savePublicKey, plus its "Public key
+        // received" note) bumps it on first contact / key rotation. Snapshot
+        // the contact's pre-report sort fields here (only if it already
+        // exists — a brand-new support row appearing once is acceptable) and
+        // restore them after the dispatch via _restoreSilentSupportSort().
+        const _silentSort = silent ? (() => {
+            const pre = this.lookupContact(SUPPORT_URI);   // no autocreate
+            return pre
+                ? { existed: true,
+                    timestamp: pre.timestamp,
+                    lastMessage: pre.lastMessage,
+                    lastMessageId: pre.lastMessageId,
+                    direction: pre.direction }
+                : { existed: false };
+        })() : null;
+        const _restoreSilentSupportSort = async () => {
+            if (!_silentSort) return;                      // not a silent send
+            const c = this.lookupContact(SUPPORT_URI);
+            if (!c) return;
+            if (_silentSort.existed) {
+                // Put the pre-existing Support row back exactly where it was.
+                c.timestamp = _silentSort.timestamp;
+                c.lastMessage = _silentSort.lastMessage;
+                c.lastMessageId = _silentSort.lastMessageId;
+                c.direction = _silentSort.direction;
+            } else {
+                // Support contact was created BY this silent report — don't
+                // let it float to the top of a first-time user's list either.
+                // Backdate it (same convention as savePublicKey autocreate).
+                c.timestamp = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+            }
+            await this.saveSylkContact(SUPPORT_URI, c, 'silent-support-sort-restore');
+            console.log('[support-share] normalized Support contact sort position (silent report)');
+        };
 
         // 2. Make sure we have a contact record for support — autocreate +
         //    persist so subsequent runs reuse the same row (and any cached
@@ -20176,7 +20179,7 @@ class Sylk extends Component {
         //     below progresses. selectContact will additionally trigger a
         //     publicKey lookup if the cache is empty — that's redundant
         //     with step 3 below but harmless (idempotent on the wire).
-        if (contact) {
+        if (contact && !silent) {
             this.selectContact(contact, 'support-share');
         }
 
@@ -20213,10 +20216,15 @@ class Sylk extends Component {
             // hint in the support chat so the user knows to retry.
             console.log('[support-share] no public key for', SUPPORT_URI,
                 'after', keyWaitMs, 'ms — aborting before sending anything');
-            this.renderSystemMessage(SUPPORT_URI,
-                'Could not retrieve support public key. Please try again in a moment.',
-                'outgoing');
-            return;
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI,
+                    'Could not retrieve support public key. Please try again in a moment.',
+                    'outgoing');
+            }
+            // The handshake may already have floated Support (autocreate /
+            // key-store) even though we're aborting — put it back.
+            await _restoreSilentSupportSort();
+            return false;
         }
 
         console.log('[support-share] support public key acquired',
@@ -20235,6 +20243,11 @@ class Sylk extends Component {
                 createdAt: new Date(),
                 direction: 'outgoing',
                 user: {},
+                // Silent (automatic crash-report) sends must not float the
+                // Support contact to the top of the conversation list — the
+                // user didn't initiate this. saveOutgoingChatUri skips the
+                // timestamp/lastMessage bump when it sees this marker.
+                ...(silent ? { metadata: { silent_support: true } } : {}),
             };
             console.log('[support-share] sending encrypted request text', requestId);
             await this.sendMessage(SUPPORT_URI, requestMsg, 'text/plain');
@@ -20259,6 +20272,9 @@ class Sylk extends Component {
             direction: 'outgoing',
             filesize: filesize,
             filetype: 'text/plain',
+            // See requestMsg above: keep the silent crash-report upload from
+            // bumping the Support contact's position in the list.
+            ...(silent ? { silent_support: true } : {}),
         };
 
         const fileMsg = {
@@ -20286,12 +20302,24 @@ class Sylk extends Component {
             // reply. Placed inside the try-block so we only post the
             // prompt when the file actually went out — on the failure
             // path the catch below renders a different system note.
-            this.renderSystemMessage(SUPPORT_URI,
-                'Please describe the problem or send screenshots',
-                'outgoing');
+            // Skipped for silent (automatic crash-report) dispatches.
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI,
+                    'Please describe the problem or send screenshots',
+                    'outgoing');
+            }
+            // Report delivered — now undo any list reordering the dispatch
+            // (autocreate / key exchange) caused, so the background report
+            // never moves the Support conversation.
+            await _restoreSilentSupportSort();
+            return true;
         } catch (e) {
             console.log('[support-share] uploading log file failed', e && e.message ? e.message : e);
-            this.renderSystemMessage(SUPPORT_URI, 'Failed to upload log file', 'outgoing');
+            if (!silent) {
+                this.renderSystemMessage(SUPPORT_URI, 'Failed to upload log file', 'outgoing');
+            }
+            await _restoreSilentSupportSort();
+            return false;
         }
     }
 
@@ -21640,6 +21668,17 @@ class Sylk extends Component {
         if (message && message.metadata && message.metadata.call_recording === true) {
             console.log('saveOutgoingChatUri: skipping contact bump for call_recording self-sync',
                 'uri=', uri, 'tid=', message.metadata.transfer_id);
+            return;
+        }
+
+        // Automatic ANR/crash reports (requestSupportFromLogs with
+        // { silent: true }) tag their request + file messages with
+        // silent_support. Skip the bump so a background crash report doesn't
+        // shove the Support contact to the top of the conversation list or
+        // overwrite its lastMessage — the user never opened support.
+        if (message && message.metadata && message.metadata.silent_support === true) {
+            console.log('saveOutgoingChatUri: skipping contact bump for silent support report',
+                'uri=', uri);
             return;
         }
 
@@ -37592,6 +37631,7 @@ return (
                       show={this.state.showQosSummaryModal}
                       callid={this.state.qosSummaryCallid}
                       report={this.state.qosSummaryReport}
+                      html={this.state.qosSummaryHtml}
                       traceUrl={this.state.qosSummaryTraceUrl}
                       account={this.state.accountId}
                       requestSupportFromLogs={this.requestSupportFromLogs}

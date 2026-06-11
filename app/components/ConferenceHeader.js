@@ -927,7 +927,7 @@ class ConferenceHeader extends React.Component {
                         duplicate from the overflow menu cleans up the
                         cramped UI per user request. */}
                     {!this.props.isFolded ? (
-                        <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+                        <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Leave"/>
                     ) : null}
                 </Menu>
 

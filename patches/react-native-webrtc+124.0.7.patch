@@ -1075,10 +1075,15 @@ index 0000000..4aa61c7
 +    }
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-index 996648c..b525a0d 100644
+index 996648c..9e747fb 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-@@ -38,12 +38,23 @@ import java.util.concurrent.ExecutionException;
+@@ -35,15 +35,40 @@ import java.util.Map;
+ import java.util.Objects;
+ import java.util.concurrent.Callable;
+ import java.util.concurrent.ExecutionException;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.TimeoutException;
  
  @ReactModule(name = "WebRTCModule")
  public class WebRTCModule extends ReactContextBaseJavaModule {
@@ -1090,6 +1095,18 @@ index 996648c..b525a0d 100644
 +    }
      static final String TAG = WebRTCModule.class.getCanonicalName();
  
++    // [sylk-leak] Diagnostic counters for the WebRTC native-thread leak
++    // investigation (ANR 2026-06-09, ~200 threads incl. multiple
++    // signaling_thread/worker_thread/network_thread triplets). A healthy
++    // process constructs WebRTCModule — and therefore PeerConnectionFactory —
++    // exactly ONCE. If these counts climb past 1, the RN context (and its
++    // factory) is being recreated without the previous one's native threads
++    // being torn down. Grep logcat for "[sylk-leak]". Remove once diagnosed.
++    static final java.util.concurrent.atomic.AtomicInteger sModuleCount =
++            new java.util.concurrent.atomic.AtomicInteger(0);
++    static final java.util.concurrent.atomic.AtomicInteger sFactoryCount =
++            new java.util.concurrent.atomic.AtomicInteger(0);
++
      PeerConnectionFactory mFactory;
      VideoEncoderFactory mVideoEncoderFactory;
      VideoDecoderFactory mVideoDecoderFactory;
@@ -1102,7 +1119,24 @@ index 996648c..b525a0d 100644
  
      // Need to expose the peer connection codec factories here to get capabilities
      private final SparseArray<PeerConnectionObserver> mPeerConnectionObservers;
-@@ -90,7 +101,20 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -54,6 +79,16 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+     public WebRTCModule(ReactApplicationContext reactContext) {
+         super(reactContext);
+ 
++        // [sylk-leak] One construction per RN ReactContext. In a release build
++        // with no Metro reloads this fires exactly once for the process life;
++        // if it climbs, each increment is a context recreation (Metro live
++        // reload / Fast Refresh in dev, or a headless+foreground context split
++        // in prod) that leaks the previous WebRTCModule's native WebRTC threads.
++        Log.w(TAG, "[sylk-leak] WebRTCModule CONSTRUCTED #" + sModuleCount.incrementAndGet()
++                + " ctx=" + System.identityHashCode(reactContext)
++                + " thread=" + Thread.currentThread().getName()
++                + " liveJvmThreads=" + Thread.activeCount());
++
+         mPeerConnectionObservers = new SparseArray<>();
+         localStreams = new HashMap<>();
+ 
+@@ -90,7 +125,20 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
          }
  
          if (adm == null) {
@@ -1124,7 +1158,58 @@ index 996648c..b525a0d 100644
          }
  
          Log.d(TAG, "Using video encoder factory: " + encoderFactory.getClass().getCanonicalName());
-@@ -591,6 +615,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -102,6 +150,14 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                            .setVideoDecoderFactory(decoderFactory)
+                            .createPeerConnectionFactory();
+ 
++        // [sylk-leak] Each factory owns one signaling_thread / worker_thread /
++        // network_thread triplet. If this count climbs above 1, the ANR dump's
++        // multiple triplets are explained: old factories were never disposed.
++        Log.w(TAG, "[sylk-leak] PeerConnectionFactory CREATED #" + sFactoryCount.incrementAndGet()
++                + " factory=" + System.identityHashCode(mFactory)
++                + " thread=" + Thread.currentThread().getName()
++                + " liveJvmThreads=" + Thread.activeCount());
++
+         // PeerConnectionFactory now owns the adm native pointer, and we don't need it anymore.
+         adm.release();
+ 
+@@ -395,6 +451,17 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+         }
+     }
+ 
++    // Upper bound for the synchronous stream lookup below. This MUST stay well
++    // under the platform input-dispatch ANR threshold (5000ms). getStreamForReactTag
++    // is called on the UI thread while it holds the NativeViewHierarchyManager
++    // monitor; if the single WebRTC executor is busy, an unbounded .get() parks
++    // the UI thread *while holding that lock*, deadlocking against the RN
++    // mqt_native_modules thread (which needs the same lock) and producing an ANR.
++    // Bounding the wait lets the UI thread release the lock and bind the stream
++    // on a later frame instead of hanging the app. See react-native-webrtc UI-thread
++    // deadlock on RTCView mount.
++    private static final long GET_STREAM_TIMEOUT_MS = 750;
++
+     MediaStream getStreamForReactTag(String streamReactTag) {
+         // This function _only_ gets called from WebRTCView, in the UI thread.
+         // Hence make sure we run this code in the executor or we run at the risk
+@@ -418,9 +485,16 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+ 
+                         return null;
+                     })
+-                    .get();
++                    .get(GET_STREAM_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+         } catch (ExecutionException | InterruptedException e) {
+             return null;
++        } catch (TimeoutException e) {
++            // Executor is backed up. Do NOT keep the UI thread parked while it
++            // holds the view-hierarchy lock; return null and let the next
++            // streamURL prop update / frame rebind the stream.
++            Log.w(TAG, "getStreamForReactTag timed out for tag " + streamReactTag
++                    + "; deferring stream bind to a later frame");
++            return null;
+         }
+     }
+ 
+@@ -591,6 +665,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
          }
      }
  
@@ -1309,7 +1394,7 @@ index 996648c..b525a0d 100644
      @ReactMethod
      public void senderSetParameters(int id, String senderId, ReadableMap options, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
-@@ -674,6 +876,110 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -674,6 +926,110 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
          });
      }
  

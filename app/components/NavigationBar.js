@@ -81,7 +81,6 @@ import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
 import PreferencesModal from './PreferencesModal';
-import WebViewURLResolver from './WebViewURLResolver';
 import DeleteAccountModal from './DeleteAccountModal';
 import SwitchAccountModal from './SwitchAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
@@ -250,20 +249,6 @@ class NavigationBar extends Component {
 			// or cancel) so the next casual Share location tap
 			// doesn't accidentally inherit yesterday's destination.
 			pendingShareDestination: null,
-			// Headless WebView URL resolver state. When set to
-			// a string, a hidden <WebViewURLResolver/> is mounted
-			// in render() to expand `webViewResolveUrl` to its
-			// JS-driven destination. Used as a fallback when
-			// `utils.resolveShortLocationUrl`'s plain HTTP fetch
-			// can't follow Google's Firebase Dynamic Link redirect
-			// for `maps.app.goo.gl/<id>` URLs (the destination is
-			// computed at runtime by JS that never runs in our
-			// fetch). When the WebView captures the first
-			// navigation, `webViewResolveCallback` fires with the
-			// final URL string and the slot is cleared.
-			webViewResolveUrl: null,
-			webViewResolveCallback: null,
-			webViewResolveError: null,
 			// Google Play "Prominent Disclosure" gate. Set to a {resolve}
 			// promise resolver while the LocationPrivacyDisclosureModal is
 			// up; cleared back to null when the user taps Continue or
@@ -1785,13 +1770,19 @@ class NavigationBar extends Component {
             this._meetMeAtRunGates(uri);
             const _kickedOffFor = link.url;
             const _isStale = () => this.state.pendingShareDestinationUrl !== _kickedOffFor;
-            // Two-stage resolve: cheap HTTP fetch first (works for
-            // `maps.google.com/?q=lat,lng` style canonical URLs and
-            // for short URLs that redirect via HTTP). If that
-            // doesn't yield coords AND the URL is on a known
-            // JS-driven shortener (Firebase Dynamic Link), fall back
-            // to a headless WebView load to capture the JS-computed
-            // destination URL and re-parse.
+            // Resolve via HTTP only. utils.resolveShortLocationUrl already
+            // (a) follows HTTP redirects (response.url) for
+            // `maps.app.goo.gl/<id>` and `maps.google.com/?q=lat,lng` style
+            // URLs, and (b) scans the returned HTML body for embedded coords.
+            // The previous headless-WebView fallback (for the residual
+            // pure-JS-redirect case) was removed: instantiating
+            // react-native-webview spins up Chromium's process-global
+            // NetworkChangeNotifier, which issues a synchronous
+            // ConnectivityManager.getNetworkInfo() on the UI thread on every
+            // network-capabilities change — a main-thread freeze tripwire when
+            // the platform connectivity service stalls (ANR 2026-06-09). When
+            // HTTP resolve yields no coords we now go straight to the
+            // address-geocode fallback on the original URL.
             utils.resolveShortLocationUrl(link.url)
                 .then((coords) => {
                     if (_isStale()) return;
@@ -1804,54 +1795,34 @@ class NavigationBar extends Component {
                         });
                         return;
                     }
-                    // Plain fetch failed. Try WebView for the
-                    // FDL / shortener URLs we know need JS.
-                    utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords — falling back to WebView for',
-                        link.url);
-                    return this._resolveViaWebView(link.url)
-                        .then((finalUrl) => {
+                    // No inline coords from the HTTP resolve. Last-resort
+                    // fallback: many "share place by name" URLs carry an
+                    // address in `?q=` (e.g.
+                    // `maps.google.com/?q=Atic+Millennium,...`) — geocode that
+                    // via Nominatim. Run it against the original link URL.
+                    const _addr = utils.extractQueryAddress(link.url);
+                    if (_addr) {
+                        utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords — geocoding ?q= address',
+                            JSON.stringify(_addr));
+                        return utils.geocodeAddress(_addr).then((coords2) => {
                             if (_isStale()) return;
-                            utils.timestampedLog('[location] meetMeAt: WebView captured finalUrl=',
-                                finalUrl);
-                            const fromUrl = utils.parseSharedLocationUrl(finalUrl);
-                            if (fromUrl) {
+                            if (coords2) {
+                                utils.timestampedLog('[location] meetMeAt: geocode resolved →',
+                                    coords2.latitude.toFixed(5), ',', coords2.longitude.toFixed(5));
                                 this.setState({
-                                    pendingShareDestination: fromUrl,
+                                    pendingShareDestination: coords2,
                                     pendingShareDestinationStatus: 'resolved',
                                 });
-                                return;
-                            }
-                            // No inline coords. Last-resort fallback:
-                            // many "share place by name" URLs carry
-                            // an address in `?q=` (e.g.
-                            // `maps.google.com/?q=Atic+Millennium,...`)
-                            // — geocode that via Nominatim. The
-                            // resolve chain doesn't fail until even
-                            // the geocode comes back empty.
-                            const _addr = utils.extractQueryAddress(finalUrl);
-                            if (_addr) {
-                                utils.timestampedLog('[location] meetMeAt: no inline coords — geocoding address',
+                            } else {
+                                utils.timestampedLog('[location] meetMeAt: geocode had no match for',
                                     JSON.stringify(_addr));
-                                return utils.geocodeAddress(_addr).then((coords) => {
-                                    if (_isStale()) return;
-                                    if (coords) {
-                                        utils.timestampedLog('[location] meetMeAt: geocode resolved →',
-                                            coords.latitude.toFixed(5), ',', coords.longitude.toFixed(5));
-                                        this.setState({
-                                            pendingShareDestination: coords,
-                                            pendingShareDestinationStatus: 'resolved',
-                                        });
-                                    } else {
-                                        utils.timestampedLog('[location] meetMeAt: geocode had no match for',
-                                            JSON.stringify(_addr));
-                                        this.setState({pendingShareDestinationStatus: 'failed'});
-                                    }
-                                });
+                                this.setState({pendingShareDestinationStatus: 'failed'});
                             }
-                            utils.timestampedLog('[location] meetMeAt: WebView finalUrl had no parseable coords + no q= address —',
-                                finalUrl);
-                            this.setState({pendingShareDestinationStatus: 'failed'});
                         });
+                    }
+                    utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords + no q= address —',
+                        link.url);
+                    this.setState({pendingShareDestinationStatus: 'failed'});
                 })
                 .catch((err) => {
                     if (_isStale()) return;
@@ -1862,36 +1833,6 @@ class NavigationBar extends Component {
             return;
         }
         console.log('[location] meetMeAt: unknown link type', link);
-    }
-
-    // Headless WebView URL resolver. Returns a Promise that resolves
-    // to the FIRST destination URL the page navigates to (typically
-    // the canonical Google Maps URL with @lat,lng baked in), OR
-    // rejects on timeout / error. Used by meetMeAt as a fallback
-    // when `utils.resolveShortLocationUrl`'s plain HTTP fetch
-    // returns no coords. Only one resolution can be in flight at a
-    // time — the second concurrent caller is rejected immediately.
-    _resolveViaWebView(shortUrl) {
-        return new Promise((resolve, reject) => {
-            if (this.state.webViewResolveUrl) {
-                reject(new Error('webview resolver busy'));
-                return;
-            }
-            const callback = (finalUrl, err) => {
-                this.setState({
-                    webViewResolveUrl: null,
-                    webViewResolveCallback: null,
-                    webViewResolveError: null,
-                });
-                if (err) reject(err);
-                else resolve(finalUrl);
-            };
-            this.setState({
-                webViewResolveUrl: shortUrl,
-                webViewResolveCallback: callback,
-                webViewResolveError: null,
-            });
-        });
     }
 
     // Run the permission / disclosure gates as a fire-and-forget
@@ -6487,7 +6428,9 @@ class NavigationBar extends Component {
         // screen has even less vertical room than landscape phones,
         // and the user reported the strip was eating space above
         // the contacts list there.
-        const _showBrandStrip = !this.props.isLandscape && !this.props.isFolded;
+        // Hidden entirely on iOS — the brand bar is an Android-only
+        // affordance there; iOS reclaims the vertical space.
+        const _showBrandStrip = Platform.OS !== 'ios' && !this.props.isLandscape && !this.props.isFolded;
         // 26dp: leaves room for an 18dp logo + 13dp wordmark
         // text without feeling like a second header band above
         // the navbar. The previous 34dp felt too thick.
@@ -7664,37 +7607,6 @@ class NavigationBar extends Component {
                     onSwitch={this.props.switchAccount}
                     accountId={this.props.accountId}
                     accountPasswords={this.props.accountPasswords}
-                />
-
-                {/* Headless WebView URL resolver — used as a
-                    fallback by meetMeAt when the plain HTTP
-                    resolveShortLocationUrl can't expand a
-                    JS-redirect URL like maps.app.goo.gl/<id>.
-                    Mounts only while a resolution is in flight (state
-                    flips webViewResolveUrl to non-null), unmounts
-                    when the callback fires. The WebViewURLResolver
-                    component renders a 0x0 off-screen wrapper so it
-                    has no visual or layout effect. */}
-                <WebViewURLResolver
-                    url={this.state.webViewResolveUrl}
-                    onResolved={(finalUrl) => {
-                        const cb = this.state.webViewResolveCallback;
-                        if (cb) cb(finalUrl, null);
-                    }}
-                    onError={(err) => {
-                        const cb = this.state.webViewResolveCallback;
-                        if (cb) cb(null, err);
-                    }}
-                    /* 15 s timeout. Most resolutions complete within
-                       1–3 s when the URL has inline coords. The
-                       address-only flow (Google geocoding the
-                       sender-supplied place name into lat/lng) needs
-                       the page to actually load + JS to run + a
-                       follow-up navigation to land — that can take
-                       5–10 s on a slow network. 15 s gives a comfy
-                       budget without leaving a stuck spinner forever
-                       if Google's JS hangs. */
-                    timeoutMs={15 * 1000}
                 />
 
                 <PreferencesModal

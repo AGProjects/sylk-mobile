@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { RTCView } from 'react-native-webrtc';
+import DeferredRTCView from './DeferredRTCView';
 import { Button, IconButton, Text as PaperText } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import assert from 'assert';
@@ -1723,7 +1723,7 @@ class Call extends Component {
                             overflow: 'hidden',
                             zIndex: 3000,
                         }}>
-                            <RTCView
+                            <DeferredRTCView
                                 key={'upgrade-preview-' + previewUrl}
                                 streamURL={previewUrl}
                                 objectFit="cover"

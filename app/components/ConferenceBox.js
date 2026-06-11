@@ -409,7 +409,7 @@ class ConferenceBox extends Component {
             const _startTime = this.props.callState && this.props.callState.startTime;
             duration = _startTime ? Math.floor((new Date() - _startTime) / 1000) : 0;
 
-            this.props.call.messages.forEach((sylkMessage) => {
+            (this.props.call.messages || []).forEach((sylkMessage) => {
                 if (sylkMessage.sender.uri.indexOf('@conference.') && sylkMessage.content.indexOf('Welcome!') > -1) {
                     return;
                 }
@@ -435,23 +435,24 @@ class ConferenceBox extends Component {
             });
         }
 
-        const videoEnabled = this.props.call && this.props.call.getLocalStreams()[0].getVideoTracks().length > 0;
+        const _localStream = this.props.call && this.props.call.getLocalStreams && this.props.call.getLocalStreams()[0];
+        const videoEnabled = !!(_localStream && _localStream.getVideoTracks().length > 0);
 
         let participants = [];
         if (props.call) {
-            props.call.participants.forEach((p) => {
+            (props.call.participants || []).forEach((p) => {
                 if (!p.timestamp) {
                     p.timestamp = Date.now();
                 }
             });
-            participants = props.call.participants.slice();
+            participants = (props.call.participants || []).slice();
         }
 
         this.state = {
             callOverlayVisible: true,
             remoteUri: this.props.remoteUri,
             call: this.props.call,
-            accountId: this.props.call ? this.props.call.account.id : null,
+            accountId: (this.props.call && this.props.call.account) ? this.props.call.account.id : null,
             renderMessages: renderMessages,
             ended: false,
             duration: duration,
@@ -587,10 +588,10 @@ class ConferenceBox extends Component {
             showFiles: false,
             shareOverlayVisible: false,
             showSpeakerSelection: false,
-            activeSpeakers: props.call.activeParticipants.slice(),
+            activeSpeakers: ((props.call && props.call.activeParticipants) || []).slice(),
             selfDisplayedLarge: false,
             eventLog: [],
-            sharedFiles: props.call.sharedFiles.slice(),
+            sharedFiles: ((props.call && props.call.sharedFiles) || []).slice(),
             largeVideoStream: null,
             previousParticipants: this.props.previousParticipants,
             inFocus:  this.props.inFocus,
@@ -1475,8 +1476,7 @@ class ConferenceBox extends Component {
     }
 
     /** When a new SIP/PSTN participant joins, schedule a 1s deferred
-     *  unmute IF the WebRTC roster is just me (no other WebRTC
-     *  publishers in this.state.participants).
+     *  unmute so they are never left muted on join.
      *
      *  Why this exists: sylkserver's webrtcgateway runs
      *  _auto_mute_new_sip_participants on every conference-info
@@ -1485,10 +1485,8 @@ class ConferenceBox extends Component {
      *  mute if participants <= 3 and no active speakers), but the
      *  gate only takes effect after sylkserver restart, and there
      *  are deployments where we don't control the restart cadence.
-     *  This client-side workaround undoes the mute for the most
-     *  surprising case: you dialled a PSTN number, you're the only
-     *  one in the room, and you can't hear them because they came
-     *  in muted.
+     *  This client-side workaround undoes the mute so a dialled-in
+     *  PSTN caller is audible to the room immediately.
      *
      *  The 1s delay lets the mute REFER land and propagate first
      *  (otherwise our unmute REFER races the mute REFER and the
@@ -1498,10 +1496,11 @@ class ConferenceBox extends Component {
      *  participant's tile and unmutes their audio stream so we
      *  actually hear them.
      *
-     *  Only fires when alone in the WebRTC sense — multi-WebRTC
-     *  rooms keep the auto-mute behaviour so a moderator's choice
-     *  to mute newcomers isn't undone by everyone else's client.
-     *  Also gated on the new arrival's reported muted state at the
+     *  There is no moderator / managed-floor concept in this client
+     *  or in sylkrtc, so the unmute is unconditional — every newly-
+     *  joined SIP/PSTN participant is unmuted regardless of how many
+     *  WebRTC publishers are in the room.
+     *  Still gated on the new arrival's reported muted state at the
      *  +1s tick: if they came in un-muted (e.g. the server gate is
      *  working) we don't send a redundant un-mute REFER. */
     _maybeAutoUnmuteNewSipParticipant(uri, participant) {
@@ -1513,29 +1512,9 @@ class ConferenceBox extends Component {
         // Skip the bridge itself — belt-and-braces; the caller only
         // invokes this for type==='sip' participants.
         if (participant.type === 'bridge') return;
-        // Skip if there's already another WebRTC publisher — the mute
-        // was probably intentional (moderator running a managed-floor
-        // meeting). Counted at SCHEDULE time, then re-checked at
-        // FIRE time to handle the race where someone else joins in
-        // the 1s window.
-        const _webrtcOthersNow = (this.state.participants || []).length;
-        if (_webrtcOthersNow > 0) {
-            console.log('[conference] [auto-unmute] skipping for', uri,
-                '— there are', _webrtcOthersNow, 'WebRTC publishers');
-            return;
-        }
         setTimeout(() => {
             if (this.unmounted) return;
             if (!this.props.call) return;
-            // Re-check at fire time so a join during the 1s window
-            // doesn't trigger a stale unmute. Same "only me" gate
-            // as above.
-            const _webrtcOthersThen = (this.state.participants || []).length;
-            if (_webrtcOthersThen > 0) {
-                console.log('[conference] [auto-unmute] cancelled for', uri,
-                    '— WebRTC roster grew to', _webrtcOthersThen);
-                return;
-            }
             // Re-look-up the participant in the current roster —
             // they may have left during the 1s window. If they're
             // already un-muted server-side there's nothing to do.
@@ -1564,7 +1543,7 @@ class ConferenceBox extends Component {
                 // — same RPC the per-tile mute toggle uses.
                 this.props.call.muteParticipant(_current.publisherId, false);
                 this.postChatSystemMessage(
-                    'Auto-unmuted ' + uri + ' (you are alone in the room)',
+                    'Auto-unmuted ' + uri,
                     true);
             } catch (e) {
                 console.log('[conference] [auto-unmute] failed:', e && e.message);
@@ -2279,13 +2258,13 @@ class ConferenceBox extends Component {
             });
 
             if (nextProps.call) {
-                this.setState({sharedFiles: nextProps.call.sharedFiles.slice()});
+                this.setState({sharedFiles: (nextProps.call.sharedFiles || []).slice()});
 
                 let giftedChatMessage;
                 let existingMessages;
                 let previousMessages;
 
-                nextProps.call.messages.forEach((sylkMessage) => {
+                (nextProps.call.messages || []).forEach((sylkMessage) => {
                     if (sylkMessage.type === 'status') {
                         return;
                     }
@@ -3252,8 +3231,21 @@ class ConferenceBox extends Component {
     // kicked party gets BYE'd / Janus-kicked and would have to rejoin
     // manually), so a fat-finger guard is warranted. Tapping Cancel
     // is a no-op; tapping Remove proceeds with _kickParticipantNow.
-    kickParticipant(uri, displayName) {
-        if (!uri) return;
+    // `sessionId` is the per-session identifier we actually remove by, and
+    // it MUST be preferred over the URI: when the same account is joined
+    // from two devices both legs share one URI, so a URI-targeted removal
+    // can't pick out a single device (the gateway either no-ops or would
+    // drop both). It is unique per device and takes one of two forms,
+    // both of which the gateway resolves:
+    //   • WebRTC participant → Participant.publisherId (the gateway's
+    //     videoroom session id; the same id the muteParticipant RPC uses)
+    //   • SIP participant    → the focus-assigned participant_id token
+    //     (endpoint.participant_id; the same id the SIP mute uses)
+    // URI is kept only as a label and as a fallback for legs that have no
+    // session id yet (e.g. a not-yet-joined invitee, or a SIP caller whose
+    // participant_id the focus hasn't published).
+    kickParticipant(uri, displayName, sessionId) {
+        if (!uri && !sessionId) return;
         const _label = (displayName && String(displayName).trim()) || uri;
         Alert.alert(
             'Remove from conference?',
@@ -3263,7 +3255,7 @@ class ConferenceBox extends Component {
                 {
                     text: 'Remove',
                     style: 'destructive',
-                    onPress: () => this._kickParticipantNow(uri),
+                    onPress: () => this._kickParticipantNow(uri, sessionId),
                 },
             ],
             { cancelable: true }
@@ -3278,21 +3270,27 @@ class ConferenceBox extends Component {
     // The participant disappears from the participants list on the
     // next NOTIFY / publisher-leaving event — no client-side cache
     // munging needed.
-    _kickParticipantNow(uri) {
-        if (!uri) return;
-        console.log('[ConferenceBox] [conference] kickParticipant uri=' + uri);
+    _kickParticipantNow(uri, sessionId) {
+        // Remove by the per-session publisher id when we have one — that's
+        // what makes kicking one of two same-URI devices possible. Only
+        // fall back to the URI when no session id is available (SIP
+        // surrogate / pending invitee).
+        const _target = sessionId || uri;
+        if (!_target) return;
+        console.log('[ConferenceBox] [conference] kickParticipant target=' + _target
+            + ' (uri=' + uri + ', sessionId=' + (sessionId || '-') + ')');
         if (!this.props.call || typeof this.props.call.removeParticipants !== 'function') {
             console.log('[ConferenceBox] [conference] kickParticipant: call.removeParticipants not available');
             return;
         }
         try {
-            this.props.call.removeParticipants([uri]);
+            this.props.call.removeParticipants([_target]);
         } catch (e) {
             console.log('[ConferenceBox] [conference] kickParticipant: removeParticipants threw: ' + (e && e.message));
             return;
         }
         try {
-            this.postChatSystemMessage(uri + ' was removed', true);
+            this.postChatSystemMessage((uri || _target) + ' was removed', true);
         } catch (e) { /* non-fatal */ }
     }
 
@@ -3540,17 +3538,22 @@ class ConferenceBox extends Component {
         // traffic. Compute direction defensively from sender URI vs
         // accountId — anything not from us is considered incoming.
         //
-        // _chatVisible is gated on which conference type we're in:
-        //   • audio conference: only audioChatView truly means
-        //     "chat is on screen" (chatView is initialised to
-        //     !videoEnabled = TRUE in audio conferences and stays
-        //     that way, so it can't be used as a signal here)
-        //   • video conference: chatView IS the on-screen flag
+        // _chatVisible must mirror what's ACTUALLY rendered, not be
+        // inferred from the static videoEnabled capability flag. The
+        // render path shows a chat surface under exactly two
+        // conditions (see the chat-split / audio-panel gates below):
+        //   • video split:  chatView && !audioOnlyView
+        //   • audio panel:   audioChatView
+        // Keying off videoEnabled was wrong: a video-capable
+        // conference (videoEnabled=true) running in audio view mode
+        // (viewMode==='audio' → audioOnlyView) shows chat via the
+        // audioChatView panel while chatView stays false, so the old
+        // guard checked the wrong flag and let incoming messages bump
+        // the badge even though the user was looking at the chat.
         const _senderUri = sylkMessage.sender && sylkMessage.sender.uri;
         const _isOutgoing = !!_senderUri && _senderUri === this.state.accountId;
-        const _chatVisible = this.state.videoEnabled
-            ? !!this.state.chatView
-            : !!this.state.audioChatView;
+        const _chatVisible = !!this.state.audioChatView
+            || (!!this.state.chatView && !this.audioOnlyView);
         if (!_isOutgoing && !_chatVisible) {
             this.setState((s) => ({ chatUnreadCount: (s.chatUnreadCount || 0) + 1 }));
         }
@@ -6399,7 +6402,9 @@ class ConferenceBox extends Component {
      *  menu item) call this. Shows the confirmation dialog instead
      *  of tearing the conference down immediately. */
     requestHangup = () => {
-        this.setState({ hangupConfirmVisible: true });
+        // Confirmation dialog disabled — hang up immediately on press.
+        // this.setState({ hangupConfirmVisible: true });
+        this.hangup();
     };
 
     /** Confirm path of the dialog — dismiss it and run the real
@@ -8431,7 +8436,7 @@ class ConferenceBox extends Component {
                     <TouchableOpacity
                         key={`webrtc-kick-${_pUri}`}
                         style={styles.kickCircle}
-                        onPress={() => this.kickParticipant(_pUri, _pDn)}
+                        onPress={() => this.kickParticipant(_pUri, _pDn, p.publisherId)}
                         hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
                     >
                         <Icon name="close" size={11} color="#ffffff" />
@@ -8729,7 +8734,7 @@ class ConferenceBox extends Component {
                         <TouchableOpacity
                             key={`sip-kick-${_sipKickUri}`}
                             style={styles.kickCircle}
-                            onPress={() => this.kickParticipant(_sipKickUri, _sipKickDn)}
+                            onPress={() => this.kickParticipant(_sipKickUri, _sipKickDn, _sipMutePid)}
                             hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
                         >
                             <Icon name="close" size={11} color="#ffffff" />
@@ -10335,7 +10340,7 @@ class ConferenceBox extends Component {
 						<Dialog.Title>Leave conference</Dialog.Title>
 						<Dialog.Content>
 							<Text>
-								Are you sure you want to hang up the conference?
+								Are you sure you want to leave the conference?
 							</Text>
 						</Dialog.Content>
 						<Dialog.Actions>
@@ -10347,7 +10352,7 @@ class ConferenceBox extends Component {
 								onPress={this.confirmHangup}
 								icon="phone-hangup"
 							>
-								Hangup
+								Leave
 							</Button>
 						</Dialog.Actions>
 					</Dialog>

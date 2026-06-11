@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Text, Button } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { WebView } from 'react-native-webview';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 
@@ -112,23 +113,38 @@ class QosSummaryModal extends Component {
                         </TouchableOpacity>
                     </View>
 
-                    {/* Report body — monospace, selectable for copy */}
-                    <ScrollView
-                        style={{ flex: 1 }}
-                        contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10 }}
-                    >
-                        <Text
-                            selectable={true}
-                            style={{
-                                fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-                                fontSize: 12,
-                                lineHeight: 17,
-                                color: '#1b1b1b',
-                            }}
+                    {/* Report body — rendered HTML (headers + real tables) via
+                        WebView so the report reads like a proper document and the
+                        wide ip:port rows scroll horizontally instead of wrapping.
+                        Falls back to the monospace text report when no HTML is
+                        provided. */}
+                    {this.props.html ? (
+                        <WebView
+                            style={{ flex: 1 }}
+                            originWhitelist={['*']}
+                            source={{ html: this.props.html }}
+                            showsHorizontalScrollIndicator={true}
+                            scalesPageToFit={false}
+                            javaScriptEnabled={false}
+                        />
+                    ) : (
+                        <ScrollView
+                            style={{ flex: 1 }}
+                            contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10 }}
                         >
-                            {this.props.report || ''}
-                        </Text>
-                    </ScrollView>
+                            <Text
+                                selectable={true}
+                                style={{
+                                    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                                    fontSize: 12,
+                                    lineHeight: 17,
+                                    color: '#1b1b1b',
+                                }}
+                            >
+                                {this.props.report || ''}
+                            </Text>
+                        </ScrollView>
+                    )}
 
                     {/* SIP trace link — opens the CDRTool trace page in a browser */}
                     {this.props.traceUrl ? (
@@ -196,6 +212,7 @@ QosSummaryModal.propTypes = {
     show: PropTypes.bool,
     callid: PropTypes.string,
     report: PropTypes.string,
+    html: PropTypes.string,
     traceUrl: PropTypes.string,
     account: PropTypes.string,
     requestSupportFromLogs: PropTypes.func,
