@@ -62,7 +62,7 @@ class URIInput extends React.Component {
         // address-book load (and the OS contacts-permission prompt
         // if needed) the FIRST time the user actually intends to
         // search — i.e., on click rather than waiting for the first
-        // keystroke. loadAddressBook on the host side is idempotent
+        // keystroke. loadPhoneAddressBook on the host side is idempotent
         // and only re-prompts when permission is not yet granted.
         if (typeof this.props.onSearchFocus === 'function') {
             try {

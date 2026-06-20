@@ -1,0 +1,38 @@
+diff --git a/node_modules/react-native-sylkrtc/lib/account.js b/node_modules/react-native-sylkrtc/lib/account.js
+index 83f09ac..b918ff8 100644
+--- a/node_modules/react-native-sylkrtc/lib/account.js
++++ b/node_modules/react-native-sylkrtc/lib/account.js
+@@ -258,12 +258,20 @@ class Account extends EventEmitter {
+         });
+     }
+ 
+-    removeConversation(uri, cb=null) {
++    removeConversation(uri, timestamp=null, cb=null) {
++        // Back-compat: allow removeConversation(uri, cb).
++        if (typeof timestamp === 'function') {
++            cb = timestamp;
++            timestamp = null;
++        }
+         this._removeConversation(uri);
+         const req = {
+             sylkrtc: 'account-remove-conversation',
+             account: this._id,
+-            contact: uri
++            contact: uri,
++            // The moment the user performed the remove. The server records it and
++            // relays it so a replayed/stale remove never deletes newer data.
++            timestamp: timestamp || new Date().toISOString()
+         };
+         DEBUG('Sending remove conversation: %o', req);
+         this._sendRequest(req, (error) => {
+@@ -420,7 +428,9 @@ class Account extends EventEmitter {
+                     switch(message.action) {
+                         case 'remove':
+                             this._removeConversation(message.content.contact);
+-                            this.emit('removeConversation', message.content.contact);
++                            // Relay the action time so the app only applies the
++                            // remove to data older than it (replay-safe delete).
++                            this.emit('removeConversation', message.content.contact, message.content.timestamp);
+                             break;
+                         case 'read':
+                             this._readConversation(message.content.contact);

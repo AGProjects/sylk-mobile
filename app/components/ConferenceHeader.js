@@ -422,21 +422,31 @@ class ConferenceHeader extends React.Component {
             ? this.state.participantsCount
             : 0;
 
+        // Split the subtitle into a fixed-width COUNTER portion
+        // (the running duration) and a free-flowing LABEL portion
+        // (participant count / status). Rendering them as two
+        // separate Texts — with the counter pinned to a fixed
+        // width and tabular figures — keeps the label anchored so
+        // it doesn't jitter left/right as the digits tick over
+        // (e.g. "0:09" → "0:10", or crossing into the hour mark).
+        let durationText = '';   // fixed-width counter
+        let detailText = '';     // status / participant label
         if (this.state.reconnectingCall) {
-            callDetail = 'Reconnecting call...';
+            detailText = 'Reconnecting call...';
         } else if (this.state.terminated) {
-            callDetail = 'Conference ended';
+            detailText = 'Conference ended';
         } else if (this.duration) {
-            callDetail = this.duration;
+            durationText = this.duration;
             if (otherCount > 0) {
                 const participants = otherCount + 1;
-                callDetail = callDetail +  ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
+                detailText = ' - ' + participants + ' participant' + (participants > 1 ? 's' : '');
             } else {
-                callDetail = callDetail + ' and I am still alone';
+                detailText = ' and alone';
             }
         } else {
-			callDetail = 'Nobody joined yet';
+			detailText = 'Nobody joined yet';
         }
+        callDetail = durationText + detailText;
 
         if (this.state.info && callDetail) {
             //callDetail = callDetail + ' - ' + this.state.info;
@@ -573,12 +583,29 @@ class ConferenceHeader extends React.Component {
 
 				  {displayName}
 				</Text>
-				<Text style={{ fontSize: 14, color: 'white' }}
-				numberOfLines={1}
-				ellipsizeMode="tail"
-				>
-				  {callDetail}
-				</Text>
+				<View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+				  {durationText ? (
+				    <Text style={{
+				        fontSize: 14,
+				        color: 'white',
+				        // Fixed slot + tabular figures: the label that
+				        // follows starts at the same x no matter how
+				        // wide the digits render, so it never shifts.
+				        width: 58,
+				        fontVariant: ['tabular-nums'],
+				    }}
+				    numberOfLines={1}
+				    >
+				      {durationText}
+				    </Text>
+				  ) : null}
+				  <Text style={{ fontSize: 14, color: 'white', flexShrink: 1 }}
+				  numberOfLines={1}
+				  ellipsizeMode="tail"
+				  >
+				    {detailText}
+				  </Text>
+				</View>
 			  </View>
 
 			  {/* Right-aligned buttons */}
@@ -695,7 +722,7 @@ class ConferenceHeader extends React.Component {
 				            this.props.toggleViewMode();
 				        }
 				    };
-				    const _iconSize = 20;
+				    const _iconSize = 23;   // 20 → 23 (≈ +15%)
 				    const _activeColor = 'white';
 				    const _dimColor = 'rgba(255,255,255,0.45)';
 				    const _color = (which) => which === _current ? _activeColor : _dimColor;
@@ -778,7 +805,14 @@ class ConferenceHeader extends React.Component {
 				          <Icon name="account-voice" size={_iconSize} color={_color('audio')} />
 				        </TouchableOpacity>
 
-				        {/* Video — switch to video matrix layout. */}
+				        {/* Video — switch to video matrix layout.
+				            Rendered as a 2×2 grid of camera glyphs
+				            (four cameras) instead of the plain
+				            `view-grid` four-squares icon, so the button
+				            reads as "four video feeds" directly. Each
+				            camcorder sits in a fixed square cell so the
+				            grid stays aligned regardless of the glyph's
+				            aspect ratio. */}
 				        <TouchableOpacity
 				          onPress={_goVideo}
 				          accessibilityRole="button"
@@ -786,7 +820,24 @@ class ConferenceHeader extends React.Component {
 				          hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
 				          style={{ marginHorizontal: 5 }}
 				        >
-				          <Icon name="view-grid" size={_iconSize} color={_color('video')} />
+				          {(() => {
+				            const _camColor = _color('video');
+				            const _cam = 15;        // glyph slightly larger than cell → cameras touch
+				            const _cell = {
+				              width: 13,            // tight cell, no gap between cameras
+				              height: 13,
+				              alignItems: 'center',
+				              justifyContent: 'center',
+				            };
+				            return (
+				              <View style={{ width: 26, height: 26, flexDirection: 'row', flexWrap: 'wrap', overflow: 'hidden' }}>
+				                <View style={_cell}><Icon name="video" size={_cam} color={_camColor} /></View>
+				                <View style={_cell}><Icon name="video" size={_cam} color={_camColor} /></View>
+				                <View style={_cell}><Icon name="video" size={_cam} color={_camColor} /></View>
+				                <View style={_cell}><Icon name="video" size={_cam} color={_camColor} /></View>
+				              </View>
+				            );
+				          })()}
 				        </TouchableOpacity>
 				      </View>
 				    );

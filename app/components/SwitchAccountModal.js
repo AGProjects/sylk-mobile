@@ -9,6 +9,7 @@ import {
     ScrollView,
     Pressable,
     StyleSheet,
+    Dimensions,
 } from 'react-native';
 import { Button, Surface, Divider } from 'react-native-paper';
 
@@ -160,6 +161,17 @@ class SwitchAccountModal extends Component {
         const accountId = this.props.accountId || '';
         const passwords = this.props.accountPasswords || {};
 
+        // Orientation-agnostic sizing: cap the account list relative to the
+        // current window (instead of a fixed 240 that, with the body text and
+        // button row, overflowed in landscape) and centre/limit the card width.
+        const _winH = Dimensions.get('window').height;
+        const _winW = Dimensions.get('window').width;
+        const _isLandscape = _winW > _winH;
+        const _listMaxHeight = _isLandscape
+            ? Math.max(120, Math.floor(_winH * 0.4))
+            : Math.min(240, Math.floor(_winH * 0.4));
+        const _surfaceExtra = _isLandscape ? { alignSelf: 'center', maxWidth: Math.min(560, _winW * 0.85) } : null;
+
         return (
             <Modal
                 style={containerStyles.container}
@@ -205,7 +217,7 @@ class SwitchAccountModal extends Component {
                         onPress={this.handleCancel}
                         accessibilityLabel="Close"
                     />
-                    <Surface style={containerStyles.modalSurface}>
+                    <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
                         {/* No title here on purpose — the
                             "You are signed in as <id>" body
                             line and the destructive Sign out
@@ -225,7 +237,7 @@ class SwitchAccountModal extends Component {
                                     Switch to another account
                                 </Text>
                                 <ScrollView
-                                    style={styles.accountList}
+                                    style={[styles.accountList, { maxHeight: _listMaxHeight }]}
                                     contentContainerStyle={{ paddingBottom: 4 }}
                                     keyboardShouldPersistTaps="handled"
                                     nestedScrollEnabled={true}

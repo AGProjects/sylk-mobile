@@ -1,0 +1,209 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Message Chunking — Design</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+.small{font-size:.9em;color:#57606a}
+</style></head><body>
+
+<h1 id="message-chunking--design">Message Chunking — Design</h1>
+
+<p><strong>Split long text messages into several small messages on the wire, then reassemble them on the receiving client into one message.</strong> This keeps every SIP&nbsp;MESSAGE small enough to traverse the server stack, while the user still sees a single conversation bubble.</p>
+
+<p>The feature is implemented identically in <strong>sylk-mobile</strong> and <strong>sylk-desktop</strong>. It is entirely client-side: no change to SylkServer, OpenSIPS, the SIP MESSAGE format, or the sync protocol.</p>
+
+<hr />
+
+<h2 id="1-why">1. Why</h2>
+
+<p>An outgoing chat message is relayed by SylkServer as a SIP&nbsp;MESSAGE. PJSIP (inside <code>python3-sipsimple</code>) serialises the whole message — request line, all SIP headers, the CPIM wrapper, and the body — into a single fixed buffer of size <code>PJSIP_MAX_PKT_LEN</code>. The build sets this to <strong>262144 bytes (256&nbsp;KB)</strong> (see <code>setup_pjsip.py</code>). If the serialised message does not fit, <code>pjsip_msg_print()</code> fails and the send raises:</p>
+
+<pre><code>PJSIPError: Could not send request: Message too long (PJSIP_EMSGTOOLONG)</code></pre>
+
+<p>The intermediate SIP proxy (OpenSIPS) has its own receive-buffer limit (<code>BUF_SIZE</code>, default ~64&nbsp;KB) that applies in both directions. Rather than depend on any single ceiling, the client caps each message well below all of them and splits anything larger.</p>
+
+<blockquote>
+<p>Images and files are <strong>not</strong> inlined — they go as <code>application/sylk-file-transfer</code> attachments. Chunking applies only to user text (<code>text/plain</code> and <code>text/html</code>).</p>
+</blockquote>
+
+<hr />
+
+<h2 id="2-design-at-a-glance">2. Design at a glance</h2>
+
+<ul>
+<li><strong>Cap.</strong> Each outgoing text message's plaintext is capped at <code>MAX_TEXT_MESSAGE_BYTES = 4096</code> bytes (UTF-8).</li>
+<li><strong>Split, then encrypt each.</strong> Oversized text is split into pieces; each piece is sent as its own message and encrypted independently (PGP). There is no single giant ciphertext.</li>
+<li><strong>Lossless word-boundary split.</strong> Pieces break on whitespace where possible; concatenating them reproduces the original text byte-for-byte.</li>
+<li><strong>Invisible marker.</strong> Each piece is prefixed with a marker built only from zero-width characters encoding <code>{group id, index, total}</code>. It is invisible in every client.</li>
+<li><strong>Reassembly on receive.</strong> The receiver buffers pieces by <code>{sender, group id}</code> and, once all parts are present, stores/renders one combined message.</li>
+<li><strong>Other clients are unaffected.</strong> A client that does not understand the marker simply renders the pieces with a few invisible characters at the front — nothing visible changes.</li>
+</ul>
+
+<hr />
+
+<h2 id="3-constants">3. Constants</h2>
+
+<table>
+<thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>MAX_TEXT_MESSAGE_BYTES</code></td><td><code>4096</code></td><td>Soft cap: plaintext size (UTF-8 bytes) at which splitting kicks in. A plain-text piece never exceeds this; an HTML piece may run a little past it to finish the current element.</td></tr>
+<tr><td><code>CHUNK_MARKER_BUDGET_BYTES</code></td><td><code>160</code></td><td>Bytes reserved per <em>plain-text</em> piece for the marker, so <em>marker + text ≤ cap</em>. Plain text is split at <code>MAX − BUDGET = 3936</code> bytes.</td></tr>
+<tr><td><code>CHUNK_WIRE_LIMIT_BYTES</code></td><td><code>49152</code> (48&nbsp;KB)</td><td>Safe ceiling for a chunk's on-the-wire (encrypted) size, chosen 16&nbsp;KB below OpenSIPS' ~64&nbsp;KB TCP message limit (<code>BUF_SIZE</code>).</td></tr>
+<tr><td><code>PGP_ARMOR_EXPANSION</code></td><td><code>1.4</code></td><td>Approx. size multiplier of ASCII-armored PGP over the plaintext.</td></tr>
+<tr><td><code>CHUNK_HARD_MAX_BYTES</code></td><td><code>≈35108</code></td><td>Plaintext hard cap = <code>WIRE_LIMIT ÷ 1.4 ≈ 35&nbsp;KB</code>, so even the largest piece stays ~48&nbsp;KB on the wire. Only relevant to the HTML splitter's fallback for a single oversized element.</td></tr>
+</tbody>
+</table>
+
+<p class="small">4&nbsp;KB is the <em>plaintext</em> soft cap. After PGP armoring the on-the-wire payload is ~1.4× larger, still far below the 64&nbsp;KB (OpenSIPS TCP) and 256&nbsp;KB (PJSIP) transport limits. The hard cap exists only so a single huge HTML element can't push one chunk past the 64&nbsp;KB OpenSIPS ceiling.</p>
+
+<hr />
+
+<h2 id="4-the-split">4. The split (lossless)</h2>
+
+<p>Both splitters are <strong>lossless</strong> — concatenating the pieces reproduces the input exactly, which is what makes byte-exact reassembly possible — and never split a multi-byte character (iteration is by Unicode code point, so emoji and accented/CJK characters stay intact). The splitter used depends on the content type.</p>
+
+<h3 id="plain-text-split"><code>text/plain</code> — word boundaries</h3>
+
+<p><code>splitTextByBytes(str, maxBytes)</code> returns pieces whose UTF-8 size is each ≤ <code>maxBytes</code>:</p>
+
+<ul>
+<li><strong>Word boundaries preferred.</strong> A piece is broken after the last whitespace; the trailing partial word is carried to the next piece. Whitespace stays on the left piece.</li>
+<li><strong>Hard cut only when unavoidable.</strong> A single token longer than <code>maxBytes</code> (e.g. a very long URL with no spaces) is cut at a character boundary.</li>
+</ul>
+
+<h3 id="html-split"><code>text/html</code> — element boundaries</h3>
+
+<p>Plain whitespace splitting is wrong for HTML: tags are full of spaces, so a cut can land <em>inside</em> a tag (e.g. in the middle of <code>&lt;code style="font-size: …"&gt;</code>), which leaks raw attribute text and breaks the markup. <code>splitHtmlByBytes(str, maxBytes, hardMax)</code> instead splits at <strong>element boundaries</strong>:</p>
+
+<ul>
+<li><strong>Whole "chapters".</strong> It accumulates until the soft cap (<code>maxBytes</code>), then keeps going until the current <strong>top-level element closes</strong> (nesting depth returns to 0) and breaks right after it. Every piece is therefore a whole number of complete elements, so a large document is split into meaningful, self-contained sections.</li>
+<li><strong>Never splits a tag.</strong> A break is only ever placed outside <code>&lt;…&gt;</code>.</li>
+<li><strong>Pieces may exceed the soft cap.</strong> A piece runs past 4&nbsp;KB as far as needed to finish the current element — bounded by <code>hardMax</code> (<code>CHUNK_HARD_MAX_BYTES ≈ 35&nbsp;KB</code> plaintext, ~48&nbsp;KB on the wire).</li>
+<li><strong>Fallback order for an oversized single element.</strong> If one element is larger than <code>hardMax</code>, the break is placed — in order of preference — (1) after a complete top-level element, else (2) right after any closing <code>&gt;</code> tag, else (3) on whitespace, else (4) a character-boundary hard cut as a last resort. Tags are never broken except in case&nbsp;4 (a single unbroken token bigger than the hard cap, which is vanishingly rare).</li>
+</ul>
+
+<p>Void/self-closing elements (<code>&lt;br&gt;</code>, <code>&lt;img&gt;</code>, <code>&lt;… /&gt;</code>) and comments don't change nesting depth, so they never hold a break open.</p>
+
+<hr />
+
+<h2 id="5-the-invisible-marker">5. The invisible marker</h2>
+
+<p>Each piece's text is <code>encodeChunkMarker(gid, idx, total) + piece</code>. The marker is a prefix built from zero-width code points:</p>
+
+<table>
+<thead><tr><th>Role</th><th>Code point(s)</th><th>Name</th></tr></thead>
+<tbody>
+<tr><td>frame open</td><td><code>U+2060 U+2061</code></td><td>WORD JOINER + FUNCTION APPLICATION</td></tr>
+<tr><td>frame close</td><td><code>U+2061 U+2060</code></td><td>FUNCTION APPLICATION + WORD JOINER</td></tr>
+<tr><td>bit 0</td><td><code>U+200B</code></td><td>ZERO WIDTH SPACE</td></tr>
+<tr><td>bit 1</td><td><code>U+200C</code></td><td>ZERO WIDTH NON-JOINER</td></tr>
+<tr><td>field separator</td><td><code>U+200D</code></td><td>ZERO WIDTH JOINER</td></tr>
+</tbody>
+</table>
+
+<p>Layout: <code>FRAME_OPEN · bits(gid) · SEP · bits(idx) · SEP · bits(total) · FRAME_CLOSE</code>, where each integer is its binary representation rendered with the bit-0 / bit-1 code points. <code>gid</code> is a random 24-bit group id generated once per split; <code>idx</code> is the 0-based piece index; <code>total</code> is the piece count.</p>
+
+<p><code>parseChunkMarker(text)</code> returns <code>{ gid, idx, total, body }</code> when <code>text</code> begins with a valid frame (with <code>0 ≤ idx &lt; total</code>), otherwise <code>null</code>. <code>body</code> is the text with the marker stripped. Because the marker requires the exact double-code-point frame, ordinary text never false-matches.</p>
+
+<blockquote>
+<p>The marker lives <strong>inside</strong> the encrypted body (it is part of the plaintext that gets PGP-encrypted), so the ciphertext on the wire is clean PGP and decryption works unchanged on every client.</p>
+</blockquote>
+
+<hr />
+
+<h2 id="6-sending">6. Sending</h2>
+
+<p>Only <code>text/plain</code> / <code>text/html</code> over the cap are split; control payloads (metadata, file transfer, PGP keys) are never touched. Both apps share <code>utils.chunkTextForSend(content, contentType)</code>, which returns the marker-prefixed pieces (routing <code>text/html</code> to <code>splitHtmlByBytes</code> and <code>text/plain</code> to <code>splitTextByBytes</code>) or <code>null</code> when no split is needed. Each piece is sent as an independent message with its own id and a 1&nbsp;ms-staggered timestamp so ordering is preserved.</p>
+
+<h3 id="mobile-send">sylk-mobile</h3>
+<p>The split runs at the top of <code>App.sendMessage()</code> in <code>app/app.js</code>. When <code>chunkTextForSend</code> returns pieces it recurses through the normal <code>sendMessage</code> path per piece (so each is encrypted, saved, and sent on its own).</p>
+
+<h3 id="desktop-send">sylk-desktop</h3>
+<p>Encryption happens inside sylkrtc's <code>account.sendMessage(uri, content, type)</code>, so sending each plaintext piece separately yields "split-then-encrypt-each" for free. <code>Chat.js</code> calls <code>utils.chunkTextForSend(content, type)</code> — which returns the marker-prefixed pieces or <code>null</code> — at both the new-message and edit send sites, then calls <code>account.sendMessage</code> once per piece.</p>
+
+<p class="small">On the sender's own device the long message appears as several bubbles (each piece is stored separately); the recipient sees one reassembled bubble.</p>
+
+<hr />
+
+<h2 id="7-receiving--reassembly">7. Receiving &amp; reassembly</h2>
+
+<p>A push notification only <strong>alerts</strong> that new messages exist; it does not carry the pieces (pushes are throttled, so only the first of a burst registers). The pieces are always delivered in full by one of two paths, and reassembly is wired into both:</p>
+
+<ol>
+<li><strong>Live websocket</strong> — pieces arrive one at a time while the app is connected.</li>
+<li><strong>Journal sync</strong> — on (re)connect the server replays the full set in a batch.</li>
+</ol>
+
+<p>Both paths share one buffer helper that collects pieces by <code>{sender, gid}</code> and fires once when all <code>total</code> parts are present, producing one combined message. A 30&nbsp;second safety timer flushes whatever arrived if a piece never shows up.</p>
+
+<h3 id="mobile-receive">sylk-mobile</h3>
+<ul>
+<li><strong>Live:</strong> <code>dispatchIncomingMessage()</code> sits between decryption and <code>handleIncomingMessage()</code>; chunk pieces are buffered (<code>_bufferChunk('_chunkBuffers', …)</code>) and the full text is handed to <code>handleIncomingMessage</code> once, which stores a single plaintext row.</li>
+<li><strong>Journal:</strong> <code>incomingMessageFromJournal()</code> decrypts each text piece to read the marker, buffers it (<code>_journalChunkBuffers</code>), and on completion stores one reassembled plaintext row via <code>saveincomingMessageFromJournal()</code>. The large <code>getMessages()</code> render path is untouched.</li>
+</ul>
+
+<h3 id="desktop-receive">sylk-desktop</h3>
+<ul>
+<li><strong>Live:</strong> <code>incomingMessage()</code> advances the sync cursor per wire piece, buffers chunks (<code>_bufferChunk('_chunkBuffers', …)</code>), and renders the combined message via <code>_renderIncomingMessage()</code>.</li>
+<li><strong>Journal:</strong> <code>syncConversations()</code> buffers chunk pieces from the batch (<code>_syncChunkBuffers</code>) and stores one combined message via <code>messageStorage.add()</code>; each piece is still acked (delivery notification) so the server stops resending it.</li>
+</ul>
+
+<p>The combined message reuses the first piece's id, sender, and timestamp. On desktop, where stored messages are sylkrtc <code>Message</code> instances, <code>_combinedMessage()</code> wraps the first piece so its <code>content</code> (and <code>toJSON().content</code>) is the reassembled text while every other field resolves through the original via the prototype chain. The marker is stripped during reassembly, so storage and rendering see a normal, whole message.</p>
+
+<hr />
+
+<h2 id="8-delivery--sync-semantics">8. Delivery &amp; sync semantics</h2>
+
+<ul>
+<li><strong>Per-piece acks.</strong> Each piece is its own SIP message with its own id, so a delivery notification is sent for every piece; otherwise the server would keep replaying un-acked pieces on the next sync.</li>
+<li><strong>Sync cursor.</strong> The last-message-id cursor advances for every wire piece, never regressing to the first piece's id when the combined message is stored.</li>
+<li><strong>Idempotent storage.</strong> The combined message is keyed by the first piece's id; message storage de-dups by id, so a re-delivered/re-reassembled group does not create duplicate rows.</li>
+<li><strong>At rest.</strong> The reassembled message is stored as plaintext, consistent with how live-received text is already stored (and how lazily-decrypted journal rows end up after first render).</li>
+</ul>
+
+<hr />
+
+<h2 id="9-compatibility--limitations">9. Compatibility &amp; limitations</h2>
+
+<ul>
+<li><strong>Non-Sylk / older clients.</strong> The marker is zero-width and HTML pieces are whole elements, so a client that does not reassemble shows the pieces as separate, individually-valid messages with a few invisible characters at the front — no visible corruption. Delivery to out-of-network endpoints (e.g. a generic SIP UA) is therefore best-effort, fragmented-but-readable text; that is acceptable by design.</li>
+<li><strong>Reassembly scope.</strong> A message's pieces are expected to arrive fully via one path (all live, or all in the journal batch). Pieces are not designed to be split across both paths.</li>
+<li><strong>Mobile journal cost.</strong> The mobile journal path decrypts each incoming text message to peek for the marker; non-chunk text is otherwise left to its existing lazy-decrypt-at-render behavior, so those are decrypted twice. A future optimization could store the peeked plaintext to decrypt once.</li>
+<li><strong>HTML hard cut.</strong> The HTML splitter never breaks inside a tag except in the single pathological case of one unbroken token larger than the ~35&nbsp;KB hard cap (no closing tag and no whitespace anywhere in it). Because reassembly restores the exact bytes before rendering, even that is invisible to reassembling clients.</li>
+</ul>
+
+<hr />
+
+<h2 id="10-code-map">10. Code map</h2>
+
+<table>
+<thead><tr><th>Concern</th><th>sylk-mobile</th><th>sylk-desktop</th></tr></thead>
+<tbody>
+<tr><td>Helpers (splitters, marker, byte length, <code>chunkTextForSend</code>)</td><td><code>app/app.js</code> (module scope)</td><td><code>src/app/utils.js</code></td></tr>
+<tr><td>Send / split</td><td><code>App.sendMessage()</code> via <code>chunkTextForSend()</code></td><td><code>Chat.js</code> via <code>utils.chunkTextForSend()</code></td></tr>
+<tr><td>Live reassembly</td><td><code>dispatchIncomingMessage()</code>, <code>_bufferChunk()</code></td><td><code>incomingMessage()</code>, <code>_bufferChunk()</code></td></tr>
+<tr><td>Journal reassembly</td><td><code>incomingMessageFromJournal()</code></td><td><code>syncConversations()</code></td></tr>
+<tr><td>Combined-message wrapper</td><td>(plaintext passed to <code>handleIncomingMessage</code>)</td><td><code>_combinedMessage()</code></td></tr>
+</tbody>
+</table>
+
+<p class="small">Shared function names: <code>utf8ByteLength</code>, <code>splitTextByBytes</code>, <code>splitHtmlByBytes</code>, <code>encodeChunkMarker</code>, <code>parseChunkMarker</code>, <code>chunkTextForSend</code>, <code>_bufferChunk</code>.</p>
+
+</body></html>

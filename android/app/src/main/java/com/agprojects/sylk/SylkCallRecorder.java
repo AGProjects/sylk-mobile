@@ -494,7 +494,7 @@ public class SylkCallRecorder {
             System.arraycopy(buf, 0, chunk, 0, got);
             if (!mMicQ.offer(chunk)) {
                 if ((mDropCounter++ & 0x3F) == 0) {
-                    SylkLogger.w("[call] [recorder] MicQ full, dropping chunk");
+                    //SylkLogger.w("[call] [recorder] MicQ full, dropping chunk");
                 }
             }
         }
@@ -1047,7 +1047,7 @@ public class SylkCallRecorder {
             if (chunk == null || chunk.length == 0) return;
             if (!mRemoteQ.offer(chunk)) {
                 if ((mDropCounter++ & 0x3F) == 0) {
-                    SylkLogger.w("[call] [recorder] RemoteQ full, dropping chunk");
+                    //SylkLogger.w("[call] [recorder] RemoteQ full, dropping chunk");
                 }
             }
         }
@@ -1178,8 +1178,7 @@ public class SylkCallRecorder {
             if (chunk == null || chunk.length == 0) return;
             if (owner.queue != null && !owner.queue.offer(chunk)) {
                 if ((mDropCounter++ & 0x3F) == 0) {
-                    SylkLogger.w("[call] [recorder] conf RemoteQ full pid="
-                            + owner.participantId + ", dropping chunk");
+                    //SylkLogger.w("[call] [recorder] conf RemoteQ full pid=" + owner.participantId + ", dropping chunk");
                 }
             }
         }

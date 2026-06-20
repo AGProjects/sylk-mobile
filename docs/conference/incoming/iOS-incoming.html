@@ -1,0 +1,115 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incoming Conference Call Flow (iOS)</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+.bad{color:#b3261e;font-weight:600}
+.good{color:#1a7f37;font-weight:600}
+</style></head><body>
+
+<h1 id="incoming-conference-call-flow-ios">Incoming Conference Call Flow (iOS)</h1>
+
+<h2 id="purpose">Purpose</h2>
+<p>Describe what happens, in order, when a device is <strong>invited to a conference</strong> while the app is backgrounded or killed — from the VoIP push that wakes it, through the CallKit incoming-call UI, to the moment the user is in the room with working audio.</p>
+<p>The central design fact: <strong>a conference is always an <em>outgoing</em> call.</strong> There is no such thing as an "incoming conference call" on the media layer — the invite is a notification, and accepting it means <em>placing</em> an outgoing call into the room. CallKit, however, can only ask the user to accept something it was told is an <em>incoming</em> call. Reconciling those two facts is the whole story of this flow, and the source of a long-standing audio regression that this document also records.</p>
+<p>The guiding rule, after the fix: <strong>the UUID CallKit shows as the incoming call becomes the id of the outgoing conference call. One UUID, one CallKit call, one audio session — nothing to tear down mid-call.</strong></p>
+
+<hr />
+
+<h2 id="actors">Actors</h2>
+<ul>
+<li><strong>SylkServer</strong> — sends the VoIP push (<code>incoming_conference_request</code>) and, over the websocket, the matching conference invite.</li>
+<li><strong>iOS / CallKit (PushKit + CXProvider)</strong> — requires that every VoIP push immediately report an <em>incoming call</em> or the app is killed; owns the AVAudioSession.</li>
+<li><strong>react-native-callkeep (<code>RNCallKeep</code>)</strong> — the JS bridge to CallKit. Surfaces <code>answerCall</code>, <code>endCall</code>, <code>didActivateAudioSession</code>, <code>didDeactivateAudioSession</code>.</li>
+<li><strong><code>CallManager.js</code></strong> — our wrapper around <code>RNCallKeep</code>; owns the call-UUID bookkeeping (<code>_incoming_conferences</code>, <code>_calls</code>, <code>_timeouts</code>, <code>_reusedPushConferences</code>).</li>
+<li><strong><code>app.js</code></strong> — <code>callKeepStartConference()</code>, <code>startConference()</code>, <code>outgoingConference()</code>, and the manual-audio setup at boot.</li>
+<li><strong>react-native-sylkrtc</strong> — <code>account.joinConference(room, options)</code>; honours a caller-supplied <code>options.id</code> as the conference call id (<code>conference.js</code>: <code>this._id = options.id || uuidv4()</code>).</li>
+<li><strong>react-native-webrtc</strong> — runs in <strong>manual audio mode</strong> on iOS (set at boot in <code>app.js</code>); the audio unit only starts when we call <code>RTCAudioSession.setAudioEnabled(true)</code>.</li>
+</ul>
+
+<hr />
+
+<h2 id="the-flow">The flow (current, unified-UUID design)</h2>
+<ol>
+<li><p><strong>Push arrives.</strong> SylkServer sends a VoIP push with <code>event = incoming_conference_request</code> and a <code>session-id</code>. That <code>session-id</code> <strong>is</strong> the call UUID for the rest of the flow. iOS hands it to PushKit, which must report an incoming call to CallKit at once.</p></li>
+
+<li><p><strong><code>handleConference(callUUID, room, …)</code>.</strong> We record the invite in <code>_incoming_conferences</code>, call <code>displayIncomingCall(callUUID, …)</code> to show the native CallKit panel, and arm a <strong>45 s answer timeout</strong> (<code>_timeouts</code>) that ends the call if the user never answers.</p>
+<blockquote>The invite arrives <strong>twice</strong> — once over the websocket and once via the push — so <code>handleConference</code> runs twice for the same UUID. The second run now <strong>clears the first run's timer before arming a new one</strong>; without that, the first timer leaked and fired ~45 s later against a live call. Look for <code>duplicate conference invite … clearing previous answer timer</code> in the log.</blockquote></li>
+
+<li><p><strong>User taps Accept.</strong> CallKit fulfils the answer action and fires <code>answerCall</code> → <code>_rnAccept</code> → <code>acceptCall(callUUID)</code>. The answer timeout is cleared and the UUID is marked accepted.</p></li>
+
+<li><p><strong>The reuse decision (<code>acceptCall</code>, <code>_incoming_conferences</code> branch).</strong> Instead of minting a fresh UUID for the conference, we <strong>reuse the push UUID</strong>:</p>
+<ul>
+<li>The UUID is recorded in <code>_reusedPushConferences</code>.</li>
+<li>It is passed straight into the conference start: <code>conferenceCall(room, {audio:true, video:false, callUUID})</code>.</li>
+<li>Log line: <code>Callkeep: REUSE push UUID &lt;uuid&gt; as outgoing conference to &lt;room&gt; (no placeholder, no 60s endCall)</code>.</li>
+</ul></li>
+
+<li><p><strong>The UUID flows into sylkrtc as the conference call id.</strong> The chain is exact and worth memorising:</p>
+<pre><code>callUUID
+  → callKeepStartConference(room, {callUUID})   // app.js: callUUID = options.callUUID || uuid.v4()
+  → this.state.outgoingCallUUID
+  → &lt;Conference callUUID={outgoingCallUUID}&gt;    // Conference.js
+  → account.joinConference(room, {id: callUUID}) // Conference.js:392
+  → conference._id = options.id                  // sylkrtc conference.js:663
+</code></pre>
+<p>So the sylkrtc conference call's <code>call.id</code> <strong>is</strong> the push UUID.</p></li>
+
+<li><p><strong>Conference reports to CallKit — as the call that already exists.</strong> <code>outgoingConference(call)</code> → <code>CallManager.startOutgoingCall(call)</code>. Because <code>call.id</code> is in <code>_reusedPushConferences</code>, we <strong>do not call <code>startCall()</code></strong> (CallKit already has this UUID as an answered incoming call). We call <code>setCurrentCallActive(callUUID)</code> instead, which reports the existing call connected and keeps its audio session. Log line: <code>reuse incoming push UUID as active conference &lt;uuid&gt; … setCurrentCallActive instead of startCall</code>.</p></li>
+
+<li><p><strong>Media establishes; audio starts deterministically.</strong> The call goes <code>progress → accepted → established</code>. CallKit activates the AVAudioSession → <code>didActivateAudioSession</code> → <code>_rnActiveAudioSession</code> → <code>RTCAudioSession.audioSessionDidActivate()</code> + <code>setAudioEnabled(true)</code>. In manual mode this is the only thing that starts the VoIP audio unit, so audio no longer races CallKit activation.</p></li>
+
+<li><p><strong>The call lives and ends as a single entity.</strong> There is no placeholder and no 60 s cleanup timer. When the user hangs up, the <strong>one</strong> UUID is ended (<code>endCall</code> → <code>terminateCall</code>, which also clears <code>_reusedPushConferences</code>). Only now, with <code>_calls</code> empty, does <code>didDeactivateAudioSession</code> disable the audio unit.</p></li>
+</ol>
+
+<p><strong>Net experience:</strong> push → native incoming-call panel → Accept → in the room with audio → hang up. A single UUID appears from <code>handle conference</code> through <code>active call</code> to the final <code>end [call]</code>.</p>
+
+<hr />
+
+<h2 id="audio-session-rules">Audio-session rules (iOS, manual mode)</h2>
+<p>WebRTC is put in <strong>manual audio mode</strong> at boot (<code>RTCAudioSession.setManualAudio(true)</code>). The audio unit is then driven entirely from CallKit callbacks:</p>
+<table>
+<thead><tr><th>CallKit event</th><th>Handler</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><code>didActivateAudioSession</code></td><td><code>_rnActiveAudioSession</code></td><td><code>audioSessionDidActivate()</code> + <code>setAudioEnabled(true)</code> — start the audio unit.</td></tr>
+<tr><td><code>didDeactivateAudioSession</code></td><td><code>_rnDeactiveAudioSession</code></td><td><strong>Guarded:</strong> if <code>_calls.size &gt; 0</code>, skip and log <code>skip audio deactivate, active calls remain N</code>. Only when no call remains do we <code>setAudioEnabled(false)</code> + <code>audioSessionDidDeactivate()</code>.</td></tr>
+</tbody>
+</table>
+<p>The guard is defence-in-depth: with the unified-UUID design nothing ends mid-conference, so the guard should not need to fire on this path. It still protects any future multi-call scenario where one call ends while another is live.</p>
+
+<hr />
+
+<h2 id="reference">Reference — UUIDs, maps, timers</h2>
+<table>
+<thead><tr><th>Name</th><th>Where</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>session-id</code></td><td>push payload</td><td>The one call UUID; becomes both the CallKit call and the sylkrtc conference id.</td></tr>
+<tr><td><code>_incoming_conferences</code></td><td>CallManager</td><td>Pending conference invites awaiting accept/reject; entry deleted on accept.</td></tr>
+<tr><td><code>_reusedPushConferences</code></td><td>CallManager</td><td>UUIDs whose conference reuses the answered incoming call — tells <code>startOutgoingCall</code> to mark active rather than <code>startCall</code>; cleared in <code>terminateCall</code>.</td></tr>
+<tr><td><code>_calls</code></td><td>CallManager</td><td>Live sylkrtc calls; its size gates the audio-deactivate guard and (on Android) the foreground service.</td></tr>
+<tr><td><code>_timeouts</code></td><td>CallManager</td><td>Per-UUID answer/connect watchdogs; the conference answer timeout is 45 s.</td></tr>
+<tr><td>45 s answer timeout</td><td><code>handleConference</code></td><td>Ends the invite if never answered. Cleared on accept and on a duplicate invite.</td></tr>
+</tbody>
+</table>
+
+<hr />
+<p><em>Related: <code>docs/conference/video/</code> for the in-room video/grid behaviour; <code>app/CallManager.js</code> and <code>app/components/Conference.js</code> for the code paths referenced above.</em></p>
+
+</body></html>

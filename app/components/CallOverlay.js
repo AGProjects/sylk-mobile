@@ -299,6 +299,16 @@ class CallOverlay extends React.Component {
             case 'swapVideo':
                 this.props.swapVideo();
                 break;
+            case 'switchView':
+                // Flip between the video and audio layouts for the same
+                // call (Call.js.toggleCallView). The media isn't touched —
+                // a video call keeps its video tracks live while we render
+                // the audio screen, and switching back re-mounts VideoBox
+                // onto the still-attached senders.
+                if (typeof this.props.switchCallView === 'function') {
+                    this.props.switchCallView();
+                }
+                break;
             case 'aspectRatio':
                 this.props.toggleAspectRatio();
                 break;
@@ -735,9 +745,27 @@ class CallOverlay extends React.Component {
                     <Menu.Item onPress={() => this.handleMenu('aspectRatio')} icon="video" title={myAspectRatio} />
                     <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
                     <Menu.Item onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
+                    {/* Switch to the audio call layout without dropping
+                        video — the call keeps its video tracks; only the
+                        on-screen component changes. */}
+                    {typeof this.props.switchCallView === 'function' && (
+                        <Menu.Item onPress={() => this.handleMenu('switchView')} icon="phone" title={'Switch to audio view'} />
+                    )}
 					<Divider />
 					</>
                     )}
+
+					{/* Audio layout shown over a call that actually carries
+						video (the user picked "Switch to audio view"). Offer
+						the way back to the video layout. callHasVideo is
+						false on a genuine audio-only call, so this stays
+						hidden there. */}
+					{this.state.media !== 'video'
+						&& this.props.callHasVideo
+						&& this.state.callState == "established"
+						&& typeof this.props.switchCallView === 'function' && (
+						<Menu.Item onPress={() => this.handleMenu('switchView')} icon="video" title={'Switch to video view'} />
+					)}
 			
 					<Menu
 						visible={this.state.audioMenuVisible}
@@ -973,6 +1001,12 @@ CallOverlay.propTypes = {
     // wired up by another caller), the menu item is hidden.
     showDtmfFunc: PropTypes.func,
     showMediaInfo: PropTypes.func,
+    // Switch between the audio and video layouts for the same call
+    // without renegotiating media. callHasVideo gates the audio-view
+    // "Switch to video view" item (true only when the call actually
+    // carries video).
+    switchCallView: PropTypes.func,
+    callHasVideo: PropTypes.bool,
 };
 
 export default CallOverlay;

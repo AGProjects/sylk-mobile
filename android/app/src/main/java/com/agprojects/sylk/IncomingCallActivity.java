@@ -123,20 +123,53 @@ public class IncomingCallActivity extends AppCompatActivity {
 
         // Caller name / info
         TextView callerText = findViewById(R.id.callerNameText);
-        callerText.setText(displayName);
-
 		TextView callingLabel = findViewById(R.id.callingLabelText);
-		callingLabel.setText("is calling");
-
-		// Show the full SIP URI under the "is calling" line. Hide it if the
-		// displayed name is already the URI (no contact match) so we don't
-		// duplicate the same string.
 		TextView callerUri = findViewById(R.id.callerUriText);
-		if (from_uri != null && !from_uri.equals(displayName)) {
-			callerUri.setText(from_uri);
-			callerUri.setVisibility(android.view.View.VISIBLE);
+
+		// Reflect Call vs Conference, mirroring the unlocked CallStyle
+		// notification (showIncomingCallNotification): a conference push is an
+		// invitation to a ROOM, not a 1-1 call, so the locked full-screen panel
+		// must say so and show the room — otherwise a conference invite looked
+		// identical to a normal call ("<name> is calling"). Same anonymous/guest
+		// → "Somebody" handling as the notification.
+		boolean isConference = "incoming_conference_request".equals(event);
+		if (isConference) {
+			String inviter = displayName;
+			if (inviter != null && (inviter.toLowerCase().contains("anonymous")
+					|| inviter.toLowerCase().contains("@guest."))) {
+				inviter = "Somebody";
+			}
+			String room = "";
+			if (to_uri != null && to_uri.contains("@")) {
+				room = to_uri.split("@")[0];
+			}
+
+			// Primary line: the conference room (the thing being joined).
+			callerText.setText(room.isEmpty() ? "Conference" : ("Conference " + room));
+			// Secondary line: who is inviting.
+			callingLabel.setText((inviter == null || inviter.trim().isEmpty())
+					? "is inviting you to a conference"
+					: (inviter + " is inviting you to a conference"));
+			// Tertiary line: the room URI, hidden if it adds nothing.
+			if (to_uri != null && !to_uri.isEmpty()) {
+				callerUri.setText(to_uri);
+				callerUri.setVisibility(android.view.View.VISIBLE);
+			} else {
+				callerUri.setVisibility(android.view.View.GONE);
+			}
 		} else {
-			callerUri.setVisibility(android.view.View.GONE);
+			callerText.setText(displayName);
+			callingLabel.setText("is calling");
+
+			// Show the full SIP URI under the "is calling" line. Hide it if the
+			// displayed name is already the URI (no contact match) so we don't
+			// duplicate the same string.
+			if (from_uri != null && !from_uri.equals(displayName)) {
+				callerUri.setText(from_uri);
+				callerUri.setVisibility(android.view.View.VISIBLE);
+			} else {
+				callerUri.setVisibility(android.view.View.GONE);
+			}
 		}
 
 		// Single Accept / Decline pair. Accept honours the call's media-type:

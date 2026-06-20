@@ -112,8 +112,20 @@ function log2file(text) {
 }
 
 function isAnonymous(uri) {
-    if (uri.indexOf('@guest.') > -1 || uri.indexOf('@anonymous.') > -1) {
-        return true
+    if (!uri || typeof uri !== 'string') {
+        return false;
+    }
+
+    // Match every flavour of unidentified caller:
+    //   - <random>@guest.<host>        Sylk guest callers
+    //   - anything@anonymous.<host>    canonical anonymous@anonymous.invalid
+    //                                  and any @anonymous domain
+    //   - anonymous@<anything>         the "anonymous" local part on any host
+    //   - <user>@192.168.* / @10.*     direct LAN-IP calls with no identity
+    if (uri.indexOf('@guest.') > -1
+            || uri.indexOf('@anonymous') > -1
+            || uri.indexOf('anonymous@') > -1) {
+        return true;
     }
 
     if (uri.indexOf('@192.168.') > -1) {
@@ -1244,7 +1256,18 @@ function normalizeUri(uri, defaultDomain) {
         username = targetUri;
         domain = defaultDomain;
     }
-    username = username.replace(/[<>\s()\[\]\'\"\~\!\%\&\*\{\}\|\\]/g, '');
+    if (isPhoneNumber(username)) {
+        // Phone-number usernames: collapse the human-friendly separators
+        // people type or paste — spaces, dashes, underscores and parens —
+        // so +1313131311131, +1-313-1313-11131 and +1313_1313_11131 all
+        // reduce to the same canonical +1313131311131. The leading
+        // '+'/'0' and digits are preserved. (Done before the generic strip
+        // below, which intentionally leaves '-'/'_' intact for ordinary
+        // SIP usernames like 'john-doe'.)
+        username = username.replace(/[\s\-_()]/g, '');
+    } else {
+        username = username.replace(/[<>\s()\[\]\'\"\~\!\%\&\*\{\}\|\\]/g, '');
+    }
     return `${username}@${domain}`;
 }
 
@@ -1395,13 +1418,31 @@ function isPhoneNumber(uri, conferenceDomain) {
     if (conferenceDomain && domain && domain === String(conferenceDomain).toLowerCase()) {
         return false;
     }
-    return username.match(/^(\+|0)([\d|\-\(\)]+)$/);
+    // Allow the human-friendly separators people type or paste inside a
+    // number — spaces, dashes, underscores and parentheses — so forms
+    // like '+1-313-1313', '+1313_1313' and '+1 313 1313' are all still
+    // recognised as phone numbers (normalizeUri then strips them to the
+    // canonical digits).
+    return username.match(/^(\+|0)([\d\-\(\)_\s]+)$/);
 }
 
 function isEmailAddress(uri) {
+    // The previous single regex /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/
+    // backtracks catastrophically: the OPTIONAL separator in ([\.-]?\w+)*
+    // makes it behave like (\w+)*, which is exponential and, on Hermes,
+    // throws "Maximum regex stack depth reached" for some contact values —
+    // aborting the whole addressbook migration. Split on '@' and use linear
+    // patterns (REQUIRED separators, no nesting) plus length/type guards.
+    if (typeof uri !== 'string') return false;
     uri = uri.trim().toLowerCase();
-    let email_reg = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/;
-    return email_reg.test(uri);
+    if (uri.length === 0 || uri.length > 254) return false;
+    const at = uri.indexOf('@');
+    if (at <= 0 || at !== uri.lastIndexOf('@')) return false; // exactly one '@', not leading
+    const local = uri.slice(0, at);
+    const domain = uri.slice(at + 1);
+    const localRe  = /^\w+(?:[.-]\w+)*$/;          // linear: each group consumes a separator
+    const domainRe = /^\w+(?:[.-]\w+)*\.[a-z]{2,}$/; // labels + a 2+ letter TLD
+    return localRe.test(local) && domainRe.test(domain);
 }
 
 function isImage(filename, filetype=null) {

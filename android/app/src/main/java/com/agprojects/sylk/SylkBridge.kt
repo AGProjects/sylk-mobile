@@ -24,7 +24,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
-        SylkLogger.d("[bridge] setActiveChat: $chatId")
+        //SylkLogger.d("[bridge] setActiveChat: $chatId")
         prefs.edit().putString("currentChat", chatId).apply()
     }
 
@@ -36,7 +36,7 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun setActiveCall(target: String?) {
-        SylkLogger.d("[bridge] setActiveCall: $target")
+        //SylkLogger.d("[bridge] setActiveCall: $target")
         prefs.edit().putString("currentCall", target).apply()
     }
 
@@ -137,5 +137,23 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
             prefs.edit().remove("launchMessageUri").apply()
         }
         return uri
+    }
+
+    /**
+     * The original system Configuration.fontWeightAdjustment captured by
+     * MainActivity.attachBaseContext BEFORE the activity neutralises it.
+     * +300 means the user turned on Display → "Bold font"; 0 means off.
+     * (Integer.MAX_VALUE = UNDEFINED on some OEMs / pre-Android-12 — JS
+     * treats anything outside a sane 1..1000 range as "not bold".)
+     *
+     * JS reads this once at startup and, when set, re-applies bold to all
+     * text with an explicit fontWeight that RN can measure correctly — so
+     * the user keeps their bold preference without the OS-level adjustment's
+     * trailing-character clipping. Synchronous so it can run before the
+     * first Text renders.
+     */
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun getSystemFontWeightAdjustment(): Int {
+        return prefs.getInt("systemFontWeightAdjustment", 0)
     }
 }

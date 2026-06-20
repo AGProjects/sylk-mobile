@@ -1,24 +1,12 @@
-# Sylk Mobile
+# Blink Mobile
 
-Sylk Mobile is part of Sylk Suite, a set of real-time communications
-applications using IETF SIP protocol and WebRTC specifications.
-
-Sylk Suite consists of:
-
-* Sylk SIP/WebRTC application server
-* Sylk mobile push notifications server
-* Sylk desktop client for Windows, Linux and MacOS
-* Sylk mobile client for Apple iOS and Google Android
-* Web page for WebRTC enabled browsers
-* Mobile client API development SDK
-* Desktop client API development SDK
-
-[Home page](https://sylkserver.com)
-
+Blink Mobile is using Sylk Suite, a set of real-time communications
+applications using IETF SIP protocol and WebRTC specifications to deliver a
+rich realtime multimedia experience.
 
 ## License
 
-Sylk mobile licensed under GNU General Public License version 3.  A copy of
+Blink Mobile licensed under GNU General Public License version 3.  A copy of
 the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
 
 Copyright 2019-2026 [AG Projects](https://ag-projects.com)
@@ -26,34 +14,38 @@ Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 
 ## Availability
 
-* [SIP2SIP Web page](https://sip2sip.info)
 * [Google Play Store](https://play.google.com/store/apps/details?id=com.agprojects.sylk)
 * [Apple Store](https://apps.apple.com/us/app/id1489960733)
-* [Beta versions](https://sylkserver.com)
 * [Source code](https://github.com/AGProjects/sylk-mobile)
-
 
 ## Features
 
-* 1-to-1 audio and video calls
-* Support for classic teplephony features
-* Messaging and file transfers in real-time and offline
-* Synchronization between multiple devices
-* Advanced messaging features (edit, delete, rections)
-* Location shharing and tracking
+* 1-to-1 audio and video calls (Opus, H.264, VP8, VP9)
+* Receive audio and video calls from web browsers
 * Multiparty conferencing for all media
-* Support for landscape and portrait modes
+* Rich messaging (remote deletion, editing, replies, reactions)
+* File sharing to and from other mobile applications
 * End-to-end enryption for all media (zRTP and PGP)
-* Interoperable with web browsers
-* Interoperable with SIP end points for all media (messeging and file ransfers using MSRP protocol)
-
+* Location sharing (meet-me, caregiver tracking)
+* Support for phones and tablets in landscape and portrait modes
+* Synchronization between multiple devices (media and contacts)
+* History management and data export
 
 ## Encryption
 
 * DTLS-SRTP for audio/video by default
 * zRTP end-to-end encryption using insertable-streams over WebRTC-SFU
 * OpenPGP for messaging and file transfers
-* Interoperability with classic SIP clients (Blink for Linux, Mac and Windows)
+
+## Interoperability
+
+* Interoperable with SIP/RTP end points (audio/video)
+* Interoperable with SIP/MSRP end points (file transfers)
+* Classic teplephony (G.711, G.722, DTMF, auto-answer)
+* Addresbook interoperable with XCAP clients
+* Multiparty conferencing interoperable with audio SIP/PSTN bridge
+* zRTP interoperability with SIP SIMPLE client SDK
+
 
 ## Credits
 
@@ -78,17 +70,19 @@ Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 ## Running dependencies
 
 Generic SIP server infrastructure is required. For a working
-preconfigured example based on OpenSIPS follow:
+preconfigured example based on OpenSIPS see:
 
-* SylkServer https://download.ag-projects.com/SylkServer/INSTALL
+* Sylk Suite Installer from https://github.com/AGProjects/sylk-suite
 
-Edit app/config.js with your server end-points. 
+Sylk Suite consists of:
 
+* SIP/WebRTC application server
+* Mobile push notifications server
+* Web page for WebRTC enabled browsers
+* Mobile client API development SDK
+* Desktop client API development SDK
 
-## Developing dependencies
-
-* [Janus](https://github.com/meetecho/janus-gateway) Gateway
-
+[Home page](https://sylkserver.com)
 
 ## Getting Started
 
@@ -119,7 +113,6 @@ Edit app/config.js with your server end-points.
 
   - sudo gem install concurrent-ruby -v 1.3.4
   - sudo gem install cocoapods
-
 
 
 ### Install

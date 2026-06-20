@@ -108,10 +108,15 @@ class Call extends Component {
         this._mediaLossLastTickTs = 0;
         this._mediaLossActive = false;
         this._mediaLossRedialFired = false;
+        // In-flight guard so a slow getStats can't let watchdog ticks
+        // overlap and leak pending native callbacks.
+        this._mediaLossInFlight = false;
+        this._mediaLossInFlightSince = 0;
 
         let callUUID;
         let remoteUri = '';
         let remoteDisplayName = '';
+        let remoteUserAgent = null;
         let callState = null;
         let direction = null;
         let callEnded = false;
@@ -124,6 +129,10 @@ class Call extends Component {
             // Detect peer ZRTP capability from the caller's INVITE headers,
             // which sylkrtc has already populated on call.headers.
             this._detectPeerZrtpCapability(this.props.call, this.props.call.headers, 'INVITE');
+            // For an incoming call the offer SDP (with its s= session
+            // name) is already on call._incomingSdp; capture the remote
+            // client identity for display on the call screen.
+            remoteUserAgent = this._extractRemoteUserAgent(this.props.call);
             this.props.call.on('stateChanged', this.callStateChanged);
             this.props.call.on('incomingMessage', this.incomingMessage);
             // Mid-call renegotiation events emitted by react-native-sylkrtc
@@ -241,9 +250,23 @@ class Call extends Component {
                       call: this.props.call,
                       targetUri: this.props.targetUri,
                       audioOnly: audioOnly,
+                      // User-initiated view override, independent of the
+                      // negotiated media. When a call carries video
+                      // (audioOnly === false) the user can still choose to
+                      // look at the audio call layout via the CallOverlay
+                      // "Switch to audio view" menu item. The media is NOT
+                      // renegotiated — the video tracks stay live on the
+                      // peer connection — we simply render AudioCallBox
+                      // instead of VideoBox. Toggling back (or the call
+                      // dropping to true audio-only, see onMediaUpdated)
+                      // clears this. Only meaningful while audioOnly is
+                      // false; on a genuine audio call there's nothing to
+                      // switch to.
+                      forceAudioView: false,
                       boo: false,
                       remoteUri: remoteUri,
                       remoteDisplayName: remoteDisplayName,
+                      remoteUserAgent: remoteUserAgent,
                       localMedia: this.props.localMedia,
                       connection: this.props.connection,
                       accountId: this.props.account ? this.props.account.id : null,
@@ -429,6 +452,77 @@ class Call extends Component {
         }
     }
 
+    // Pull the remote party's client identity off the call.
+    //
+    // The obvious source — the SIP User-Agent / Server header — is NOT
+    // reachable from here: Janus's SIP plugin only forwards CUSTOM
+    // (unknown) headers in its event `headers` map, and Sofia-SIP parses
+    // User-Agent/Server into typed fields that never land in that list.
+    // Janus confirms this with `"headers": {}` on the incoming-session
+    // event even when the peer sent a User-Agent.
+    //
+    // What DOES survive the bridge is the SDP session-name (s=) line.
+    // Janus passes it through verbatim from the remote offer/answer, e.g.
+    // `s=Blink 9.3.2 (MacOSX)`. The source SDP differs by direction:
+    //
+    //   INCOMING call: the remote is the CALLER. Its identity is in the
+    //   offer SDP, available immediately as call._incomingSdp (set in
+    //   sylkrtc's _initIncoming).
+    //
+    //   OUTGOING call: the remote is the CALLEE. Its identity is in the
+    //   ANSWER SDP. sylkrtc emits stateChanged('accepted') BEFORE it runs
+    //   setRemoteDescription(answer), so the answer is NOT yet on the PC
+    //   at 'accepted'; it only lands once setRemoteDescription resolves,
+    //   which is exactly when 'established' is emitted. So for outgoing we
+    //   read call._pc.remoteDescription.sdp and must do it at/after
+    //   'established', not at 'accepted'.
+    //
+    // We therefore pick the source by direction: the answer
+    // (remoteDescription) first for an outgoing call, the offer
+    // (_incomingSdp) first for an incoming one, with the other as a
+    // fallback.
+    //
+    // Not every client sets a meaningful s= — RFC 4566 allows a bare
+    // `s=-`, and plain browser WebRTC offers usually do exactly that. We
+    // treat '-', empty, and Janus's own placeholder as "no name" so we
+    // never show a meaningless string.
+    _extractRemoteUserAgent(call) {
+        if (!call) {
+            return null;
+        }
+        const offerSdp = call._incomingSdp || null;
+        // Prefer sylkrtc's RAW answer SDP (call._answerSdp). The native
+        // PC re-serializes SDP on setRemoteDescription and libwebrtc
+        // rewrites the session name to `s=-`, so call._pc.remoteDescription
+        // would have already lost the callee's s= product token. Fall
+        // back to remoteDescription only if the raw answer isn't present.
+        const answerSdp = call._answerSdp
+            || ((call._pc && call._pc.remoteDescription)
+                ? call._pc.remoteDescription.sdp
+                : null);
+
+        // Outgoing → callee's answer first; incoming → caller's offer
+        // first. Fall back to whichever else is present.
+        const outgoing = call.direction === 'outgoing';
+        const candidates = outgoing ? [answerSdp, offerSdp] : [offerSdp, answerSdp];
+
+        for (const sdp of candidates) {
+            if (!sdp || typeof sdp !== 'string') {
+                continue;
+            }
+            const match = sdp.match(/^s=(.*)$/m);
+            if (!match) {
+                continue;
+            }
+            const name = match[1].trim();
+            if (!name || name === '-' || /^janus/i.test(name)) {
+                continue;
+            }
+            return name;
+        }
+        return null;
+    }
+
     incomingMessage(message) {
         console.log('Session message', message.id, message.contentType, 'received');
 
@@ -504,6 +598,16 @@ class Call extends Component {
         if (!pc || typeof pc.getStats !== 'function') {
             return;
         }
+        // In-flight guard: skip this tick if the previous getStats hasn't
+        // resolved. The only await is the getStats below, so the guard
+        // window is exactly that try/finally; everything after runs
+        // synchronously. Stale-timeout re-arms if a promise is lost.
+        if (this._mediaLossInFlight
+                && (Date.now() - this._mediaLossInFlightSince) < 5000) {
+            return;
+        }
+        this._mediaLossInFlight = true;
+        this._mediaLossInFlightSince = Date.now();
         let totalPackets = 0;
         try {
             const stats = await pc.getStats();
@@ -517,6 +621,8 @@ class Call extends Component {
             // renegotiation. Don't treat that as media loss — wait for
             // the next tick.
             return;
+        } finally {
+            this._mediaLossInFlight = false;
         }
 
         const now = Date.now();
@@ -662,6 +768,10 @@ class Call extends Component {
             // newState='accepted', which is when sylkrtc populates the
             // 200 OK headers on the event payload.
             this._detectPeerZrtpCapability(nextProps.call, nextProps.call.headers, 'INVITE');
+            const incomingUa = this._extractRemoteUserAgent(nextProps.call);
+            if (incomingUa) {
+                this.setState({remoteUserAgent: incomingUa});
+            }
             nextProps.call.on('stateChanged', this.callStateChanged);
             nextProps.call.on('incomingMessage', this.incomingMessage);
             // Mid-call upgrade listeners — see the constructor for what
@@ -883,6 +993,17 @@ class Call extends Component {
         // resulting call._peerSupportsZrtp flag before doing anything.
         if (newState === 'accepted' && this.state.call) {
             this._detectPeerZrtpCapability(this.state.call, data && data.headers, '200 OK');
+            // NOTE: do NOT expect the callee's answer SDP here. On an
+            // OUTGOING call sylkrtc emits 'accepted' BEFORE it runs
+            // setRemoteDescription(answer), so call._pc.remoteDescription
+            // is still empty at this point. We try anyway (it's a no-op
+            // until the answer lands), but the real capture happens at
+            // 'established' below, which fires only after the answer has
+            // been applied.
+            const acceptedUa = this._extractRemoteUserAgent(this.state.call);
+            if (acceptedUa) {
+                this.setState({remoteUserAgent: acceptedUa});
+            }
         }
 
         let remoteHasNoVideoTracks;
@@ -900,6 +1021,25 @@ class Call extends Component {
             // could trip during normal ICE/DTLS settling.
             this._startMediaLossPoller();
             const currentCall = this.state.call;
+
+            // Canonical capture point for the OUTGOING case: the callee's
+            // answer SDP (and its s= session name) is now applied as the
+            // PC's remoteDescription, so _extractRemoteUserAgent can read
+            // the callee's client identity. Logged once so the bridge can
+            // be confirmed on a real outgoing call to Blink/SIP.
+            if (!this.state.remoteUserAgent) {
+                const establishedUa = this._extractRemoteUserAgent(currentCall);
+                if (establishedUa) {
+                    this.setState({remoteUserAgent: establishedUa});
+                    utils.timestampedLog('[call] [ua] remote client (callee answer s=):',
+                        establishedUa,
+                        'direction=', this.state.direction);
+                } else {
+                    utils.timestampedLog('[call] [ua] no usable s= session name in'
+                        + ' callee answer (client sent s=- or none)',
+                        'direction=', this.state.direction);
+                }
+            }
 
             // ZRTP simulation: caller-side kick-off. Only the outgoing leg
             // sends the probe; the callee waits for it and replies inside
@@ -1229,12 +1369,35 @@ class Call extends Component {
             });
     }
 
+    // Flip between the video and audio layouts for the *same* call
+    // without touching the media. The video tracks remain attached to
+    // the peer connection; we only change which component renders.
+    // VideoBox reads its streams from call.getLocalStreams()[0] on
+    // mount, so switching back picks the live video sender straight
+    // back up ("the call object is compatible"). No-op on a genuine
+    // audio-only call — there's no video layout to switch to.
+    toggleCallView() {
+        if (this.state.audioOnly) return;
+        this.setState(state => {
+            const next = !state.forceAudioView;
+            utils.timestampedLog('[call] toggleCallView ->', next ? 'audio view' : 'video view');
+            return { forceAudioView: next };
+        });
+    }
+
     onMediaUpdated(payload) {
         utils.timestampedLog('[upgrade] mediaUpdated:', JSON.stringify(payload));
         this._cancelUpgradePromptTimer();
         const nowAudioOnly = !payload || (!payload.hasLocalVideo && !payload.hasRemoteVideo);
         if (this.state.audioOnly !== nowAudioOnly) {
             this.setState({ audioOnly: nowAudioOnly });
+        }
+        // The view-override only makes sense while the call carries
+        // video. If the media just dropped to true audio-only, drop the
+        // override too so a later re-upgrade defaults back to the video
+        // layout instead of staying stuck on the forced audio view.
+        if (nowAudioOnly && this.state.forceAudioView) {
+            this.setState({ forceAudioView: false });
         }
         // Audio→video upgrade just landed. The ZRTP install path
         // already ran (one-shot) back during the initial audio
@@ -1414,11 +1577,17 @@ class Call extends Component {
     render() {
         let box = null;
         if (this.state.localMedia !== null) {
-            if (this.state.audioOnly) {
+            // forceAudioView: user chose the audio layout for a call that
+            // actually carries video (see toggleCallView). Render
+            // AudioCallBox over the live video call; the video senders
+            // stay attached and VideoBox re-mounts onto them when the
+            // user switches back.
+            if (this.state.audioOnly || this.state.forceAudioView) {
                 box = (
                     <AudioCallBox
                         remoteUri = {this.state.remoteUri}
                         remoteDisplayName = {this.state.remoteDisplayName}
+                        remoteUserAgent = {this.state.remoteUserAgent}
                         photo = {this.state.photo}
                         hangupCall = {this.hangupCall}
                         call = {this.state.call}
@@ -1494,6 +1663,14 @@ class Call extends Component {
                         saveCallRecording = {this.props.saveCallRecording}
                         enableAudioRecording = {this.props.enableAudioRecording}
                         startVideo = {this.startVideo}
+                        // View switching: callHasVideo is true when the
+                        // call actually carries video (i.e. we're here
+                        // because the user forced the audio layout, not
+                        // because the call is genuinely audio-only). Only
+                        // then does the CallOverlay expose "Switch to
+                        // video view".
+                        callHasVideo = {!this.state.audioOnly}
+                        switchCallView = {this.toggleCallView}
 					/>
                 );
             } else {
@@ -1513,6 +1690,7 @@ class Call extends Component {
                         <VideoBox
                             remoteUri = {this.state.remoteUri}
                             remoteDisplayName = {this.state.remoteDisplayName}
+                            remoteUserAgent = {this.state.remoteUserAgent}
                             photo = {this.state.photo}
                             hangupCall = {this.hangupCall}
                             call = {this.state.call}
@@ -1563,6 +1741,11 @@ class Call extends Component {
 							disableFullScreen = {this.props.disableFullScreen}
                             shareLocationFromCall = {this.props.shareLocationFromCall}
                             requestLocationFromCall = {this.props.requestLocationFromCall}
+                            // View switching: in VideoBox the call always
+                            // carries video, so "Switch to audio view" is
+                            // always available.
+                            callHasVideo = {true}
+                            switchCallView = {this.toggleCallView}
 						/>
                     );
                 } else {
@@ -1623,6 +1806,7 @@ class Call extends Component {
                 <AudioCallBox
                     remoteUri = {this.state.remoteUri}
                     remoteDisplayName = {this.state.remoteDisplayName}
+                    remoteUserAgent = {this.state.remoteUserAgent}
                     photo = {this.state.photo}
                     hangupCall = {this.hangupCall}
                     call = {this.state.call}

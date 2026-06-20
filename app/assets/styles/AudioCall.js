@@ -16,6 +16,19 @@ const styles = StyleSheet.create({
     width: '50%',
   },
 
+  remoteUserAgentContainer: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginTop: 6,
+  },
+
+  remoteUserAgentText: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+
   tabletUserIconContainer: {
     paddingTop: 60,
     alignSelf: 'center',

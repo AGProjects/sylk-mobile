@@ -1,0 +1,165 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incoming Conference Call Flow (Android)</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+.good{color:#1a7f37;font-weight:600}
+</style></head><body>
+
+<h1 id="incoming-conference-call-flow-android">Incoming Conference Call Flow (Android)</h1>
+
+<h2 id="purpose">Purpose</h2>
+<p>Describe what happens, in order, when an Android device is <strong>invited to a conference</strong> while backgrounded or killed — from the FCM push that wakes the native call service, through the incoming-call UI, to the moment the user is in the room with working audio.</p>
+<p>The same central fact as iOS applies: <strong>a conference is always an <em>outgoing</em> call.</strong> The invite is a notification; accepting it means <em>placing</em> an outgoing call into the room. The reconciliation rule is identical too — <strong>the UUID the incoming notification carries (the push <code>session-id</code>) becomes the id of the outgoing conference call.</strong> One UUID, one call object, one media session, nothing to tear down mid-call.</p>
+<p>What differs from iOS is the platform plumbing: there is <strong>no CallKit and no <code>RTCAudioSession</code></strong>. Instead Android uses a <strong>foreground <code>Service</code></strong> plus a self-managed <code>ConnectionService</code>, and audio routing goes through <code>AudioRouteModule</code> (API 31+) or <code>InCallManager</code> (&lt; 31). See <code>docs/conference/Incoming.html</code> for the iOS counterpart.</p>
+
+<hr />
+
+<h2 id="actors">Actors</h2>
+<ul>
+<li><strong>SylkServer</strong> — sends the FCM data push (<code>incoming_conference_request</code>, with <code>session-id</code>) and the matching conference invite over the websocket.</li>
+<li><strong>Native call service</strong> (<code>[call] [service]</code> in logs) — a foreground <code>Service</code> started by the FCM message. It parses the payload (<code>onStartCommand</code>), shows the incoming UI / full-screen intent, and on accept calls <code>handleAcceptCall</code> and emits an <code>IncomingCallAction</code> event to JS.</li>
+<li><strong>react-native-callkeep (self-managed)</strong> — Android runs in <code>selfManaged</code> mode (<code>options.android.selfManaged = true</code>); we own the call UI. <code>showAlertPanel</code> is a no-op on Android — the native service owns the panel.</li>
+<li><strong><code>CallForegroundServiceModule</code></strong> — the single shared foreground service that backs WebRTC media for <em>all</em> live calls. Started in <code>setCurrentCallActive</code>, stopped in <code>endCall</code> — but only when <code>_calls</code> is empty.</li>
+<li><strong><code>CallManager.js</code></strong> — platform-agnostic UUID bookkeeping; the unified-UUID reuse path is shared with iOS.</li>
+<li><strong><code>AudioRouteModule</code> / <code>InCallManager</code></strong> — audio-mode + routing. Sets <code>MODE_IN_COMMUNICATION</code> during the call and restores <code>MODE_NORMAL</code> after.</li>
+<li><strong>react-native-sylkrtc</strong> — <code>account.joinConference(room, {id})</code> honours the supplied id (<code>conference.js</code>: <code>this._id = options.id || uuidv4()</code>).</li>
+</ul>
+
+<hr />
+
+<h2 id="the-flow">The flow (current, unified-UUID design)</h2>
+<ol>
+<li><p><strong>FCM push arrives.</strong> SylkServer sends a data message with <code>event = incoming_conference_request</code> and a <code>session-id</code>. That <code>session-id</code> <strong>is</strong> the call UUID for the rest of the flow. The native call service receives it, logs the audio mode at receipt, and runs <code>onStartCommand</code> with the payload extras (<code>from_uri</code>, <code>to_uri</code>, <code>session-id</code>, <code>notification-id</code>).</p></li>
+
+<li><p><strong>Incoming UI.</strong> The service posts the incoming-call notification / full-screen intent. (On a locked phone it starts the call activity; if the app is already foreground it skips <code>startActivity</code>.) <code>RNCallKeep.displayIncomingCall</code> is <strong>not</strong> used — <code>showAlertPanel</code> returns early on Android.</p></li>
+
+<li><p><strong>Invite reaches JS — possibly several times.</strong> <code>handleConference(callUUID, room, …)</code> runs once per delivery path: the websocket invite, the FCM prep emit, and the service action can each drive it (observed up to <strong>three</strong> times for one call). Each run records the invite, but the <strong>second and later runs clear the previous answer timer before arming a new one</strong> — without that, leaked 45 s timers would fire against the live call. Look for <code>duplicate conference invite … clearing previous answer timer</code> (it fired twice in the verified run).</p></li>
+
+<li><p><strong>User accepts.</strong> The native service’s <code>handleAcceptCall</code> emits <code>IncomingCallAction</code> (<code>ACTION_ACCEPT_VIDEO</code>) → JS routes to <code>/conference</code> and calls <code>acceptCall(callUUID)</code>. The answer timer is cleared.</p></li>
+
+<li><p><strong>The reuse decision (<code>acceptCall</code>, <code>_incoming_conferences</code> branch).</strong> Identical to iOS: the push UUID is recorded in <code>_reusedPushConferences</code> and passed straight into the conference start (<code>conferenceCall(room, {audio:true, video:false, callUUID})</code>). Log: <code>REUSE push UUID &lt;uuid&gt; as outgoing conference to &lt;room&gt; (no placeholder, no 60s endCall)</code>.</p></li>
+
+<li><p><strong>The UUID becomes the conference call id.</strong> <code>callUUID</code> → <code>callKeepStartConference</code> → <code>outgoingCallUUID</code> → <code>Conference.js</code> → <code>joinConference({id: callUUID})</code> → <code>conference._id</code>. The sylkrtc call’s <code>call.id</code> <strong>is</strong> the push UUID.</p></li>
+
+<li><p><strong>Report active — and start the foreground service.</strong> <code>outgoingConference</code> → <code>startOutgoingCall</code>. Because the UUID is in <code>_reusedPushConferences</code>, we skip <code>startCall()</code> and call <code>setCurrentCallActive(callUUID)</code>. On Android <code>setCurrentCallActive</code> also <strong>starts <code>CallForegroundServiceModule</code></strong> and brings the app forward. Log: <code>reuse incoming push UUID as active conference &lt;uuid&gt; … setCurrentCallActive instead of startCall</code>.</p></li>
+
+<li><p><strong>Media establishes.</strong> <code>progress → accepted → established</code>. <code>AudioRouteModule</code> takes the session to <code>MODE_IN_COMMUNICATION</code> and routes to the selected device.</p></li>
+
+<li><p><strong>Ends as one entity.</strong> No placeholder, no 60 s cleanup. On hang-up the single UUID is ended; <code>terminateCall</code> removes it from <code>_calls</code> and clears <code>_reusedPushConferences</code>. Only because <code>_calls</code> is now empty does <code>endCall</code> stop the foreground service, and <code>AudioRouteModule</code> restores <code>MODE_NORMAL</code>.</p></li>
+</ol>
+
+<hr />
+
+<h2 id="foreground-service-rule">The foreground-service rule (Android’s audio-session analog)</h2>
+<p>On iOS the hazard is CallKit deactivating the shared AVAudioSession when a second call ends. On Android the equivalent hazard is the <strong>shared foreground service</strong>: it backs WebRTC media for every live call and is started once with no reference counting. Tearing it down suspends media under Android’s background-execution limits.</p>
+<p><code>endCall</code> therefore stops the service <strong>only when <code>_calls.size === 0</code></strong>:</p>
+<pre><code>if (Platform.OS === 'android' &amp;&amp; this._calls.size === 0) {
+    NativeModules.CallForegroundServiceModule.stopService();
+}</code></pre>
+<blockquote>This guard predates the unified-UUID change and exists because the old design exhibited the same class of bug: the 60 s <code>endCall(placeholder)</code> hit an <em>unconditional</em> <code>stopService()</code>, killed the service, and Android suspended the still-live conference media — the invitee was dropped from the room ~60 s in. With the unified UUID there is no placeholder <code>endCall</code> at all, so the path that triggered it is gone; the guard remains as defence-in-depth for any genuine multi-call case.</blockquote>
+
+<hr />
+
+<h2 id="verified-run">Verified run</h2>
+<p>Device <em>razr 60 ultra, Android&nbsp;16</em>, call <code>e5aa9cfe…</code> — a single UUID end to end, ran ~90 s and ended only on hang-up:</p>
+<pre><code>09:05:54  handle conference e5aa9cfe …                 (websocket)
+09:05:57  handle conference e5aa9cfe …                 (FCM)  + duplicate conference invite … clearing previous answer timer
+09:06:03  handle conference e5aa9cfe …                 (service action) + duplicate conference invite …
+09:06:03  accept incoming conference e5aa9cfe
+09:06:03  REUSE push UUID e5aa9cfe … (no placeholder, no 60s endCall)
+09:06:04  New outgoing conference … callUUID: e5aa9cfe
+09:06:04  reuse incoming push UUID as active conference e5aa9cfe … setCurrentCallActive instead of startCall
+09:06:04  active call e5aa9cfe                          (no "start call", no 2nd UUID)
+09:06:04  state change: progress → accepted → established
+09:07:35  hangup user_hangup_conference_confirmed       (~1m30s in)
+09:07:36  end [call] e5aa9cfe with reason 2
+09:07:36  audio mode restored to NORMAL                 (only after termination)
+</code></pre>
+<p><span class="good">Checks that passed:</span> one UUID throughout; no <code>Callkeep: start call</code> on accept; foreground service never stopped between <code>active call</code> and hang-up; no errors; audio mode returns to <code>NORMAL</code> only at teardown. The duplicate-invite dedupe absorbed the triple delivery without leaking a timer.</p>
+
+<hr />
+
+<h2 id="locked-screen-accept">Locked-screen accept</h2>
+<p>When the call arrives on a <strong>locked</strong> phone the JS runtime usually isn’t up yet, so the path is different from the foregrounded case — and it had a subtle bug worth recording.</p>
+<ol>
+<li><p><strong>Native shows the call.</strong> The FCM push starts the call service; <code>ConnectionService.onCreateIncomingConnection</code> registers the call and the native <strong><code>IncomingCallActivity</code></strong> is shown <em>over the keyguard</em> (<code>showWhenLocked</code>/<code>turnScreenOn</code>). The early <code>IncomingCallPrep</code> wake is dropped (<code>RN not ready → prep event dropped</code>) — expected, it’s an opportunistic latency optimisation.</p></li>
+
+<li><p><strong>Accept is pressed.</strong> <code>handleAcceptCall</code> runs with <code>phoneLocked: true</code> and emits the <code>ACTION_ACCEPT_VIDEO</code> bridge event. Because the RN context isn’t initialised, <code>ReactEventEmitter</code> <strong>stores</strong> the event for pull (<code>RN not ready → event stored for pull</code>) rather than emitting it.</p></li>
+
+<li><p><strong>The app is launched.</strong> The service calls <code>startActivity(MainActivity)</code> (<code>RN app launched for call</code>). <code>MainActivity</code> is <code>showWhenLocked="true"</code> + <code>turnScreenOn="true"</code>, so it surfaces over the lock screen and wakes the display.</p></li>
+
+<li><p><strong>JS drains the stored accept.</strong> When the RN app mounts it registers the <code>IncomingCallAction</code> listener, calls <code>CallEventModule.markRNready()</code>, and pulls <code>CallEventModule.getLastCallEvent()</code>. The stored accept is handed to <code>callEventHandler</code>, which runs the same <code>acceptCall</code> → unified-UUID conference path as the foregrounded case.</p></li>
+</ol>
+
+<blockquote><strong>The bug (fixed).</strong> The service decided whether to launch <code>MainActivity</code> via <code>isAppInForeground()</code>, which on API&nbsp;Q+ checks <code>ProcessLifecycleOwner … isAtLeast(STARTED)</code>. On a locked screen the native <code>IncomingCallActivity</code> — same process — is itself resumed, so that check returned <strong>true</strong> even though the RN host wasn’t up. The service then took the “skip <code>startActivity</code>” branch, the accept stayed stored and was never drained, and <em>nothing happened</em>. Fix: treat a locked phone as not-foreground — <code>appInForeground = isAppInForeground() &amp;&amp; !phoneLocked</code> — so <code>MainActivity</code> is always launched on a locked accept. (Native change; needs a full Android rebuild, not just a Metro reload.)</blockquote>
+
+<p><strong>Verified</strong> (call <code>fe9bdd10…</code>, locked):</p>
+<pre><code>09:41:22  Accept pressed … phoneLocked: true
+09:41:22  handleAcceptCall … phoneLocked: true
+09:41:22  RN app launched for call: fe9bdd10        ← fix: MainActivity launched (was "skipping startActivity")
+09:41:22  handle conference fe9bdd10
+09:41:22  accept incoming conference fe9bdd10
+09:41:22  REUSE push UUID fe9bdd10 … (no placeholder, no 60s endCall)
+09:41:25  reuse incoming push UUID as active conference fe9bdd10 … setCurrentCallActive
+09:41:25  active call fe9bdd10
+09:41:26  state change: null → progress → accepted → established
+09:42:37  hangup user_hangup_conference_confirmed   (~1m11s in)
+09:42:38  end [call] fe9bdd10 with reason 2
+</code></pre>
+
+<hr />
+
+<h2 id="ios-vs-android">iOS vs Android — same design, different plumbing</h2>
+<table>
+<thead><tr><th></th><th>iOS</th><th>Android</th></tr></thead>
+<tbody>
+<tr><td>Wake mechanism</td><td>PushKit VoIP push → CallKit</td><td>FCM data push → native foreground service</td></tr>
+<tr><td>Incoming UI</td><td><code>RNCallKeep.displayIncomingCall</code> (CallKit panel)</td><td>Native service notification / full-screen intent (<code>showAlertPanel</code> no-op)</td></tr>
+<tr><td>Call framework</td><td>CallKit (<code>CXProvider</code>)</td><td>Self-managed <code>ConnectionService</code></td></tr>
+<tr><td>Media-session backing</td><td>AVAudioSession (CallKit-owned), WebRTC manual audio mode</td><td>Foreground <code>Service</code> + <code>AudioRouteModule</code>/<code>InCallManager</code></td></tr>
+<tr><td>Mid-call hazard if a 2nd call ends</td><td>AVAudioSession deactivated → silence</td><td>Foreground service stopped → media suspended</td></tr>
+<tr><td>Guard</td><td><code>_rnDeactiveAudioSession</code> skips while <code>_calls.size &gt; 0</code></td><td><code>endCall</code> stops service only when <code>_calls.size === 0</code></td></tr>
+<tr><td colspan="3" style="text-align:center"><strong>Shared fix:</strong> reuse the push <code>session-id</code> as the conference call id → one call, nothing to tear down. Hazards above never arise on this path.</td></tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2 id="reference">Reference — UUIDs, maps, timers</h2>
+<table>
+<thead><tr><th>Name</th><th>Where</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>session-id</code></td><td>FCM payload</td><td>The one call UUID; becomes the CallKeep call and the sylkrtc conference id.</td></tr>
+<tr><td><code>_incoming_conferences</code></td><td>CallManager</td><td>Pending conference invites; entry deleted on accept.</td></tr>
+<tr><td><code>_reusedPushConferences</code></td><td>CallManager</td><td>UUIDs whose conference reuses the incoming call — tells <code>startOutgoingCall</code> to mark active (and start the FG service) rather than <code>startCall</code>; cleared in <code>terminateCall</code>.</td></tr>
+<tr><td><code>_calls</code></td><td>CallManager</td><td>Live sylkrtc calls; its size gates the foreground-service stop.</td></tr>
+<tr><td><code>_timeouts</code></td><td>CallManager</td><td>Per-UUID answer watchdog (45 s); cleared on accept and on each duplicate invite.</td></tr>
+<tr><td><code>CallForegroundServiceModule</code></td><td>native</td><td>Shared media-backing service; started in <code>setCurrentCallActive</code>, stopped in <code>endCall</code> at <code>_calls.size === 0</code>.</td></tr>
+<tr><td><code>IncomingCallAction</code></td><td>native → JS</td><td>Accept/reject event from the call service (<code>ACTION_ACCEPT_VIDEO</code> etc.), carrying the <code>session-id</code>.</td></tr>
+<tr><td><code>CallEventModule</code> / <code>getLastCallEvent</code></td><td>native ↔ JS</td><td>Stores the accept when RN isn’t ready; JS pulls it on startup (<code>markRNready</code> + <code>getLastCallEvent</code>) so a locked/cold-start accept isn’t lost.</td></tr>
+<tr><td><code>isAppInForeground()</code> + <code>phoneLocked</code></td><td><code>IncomingCallService</code></td><td>Decides whether to launch <code>MainActivity</code> on accept. Gated with <code>&amp;&amp; !phoneLocked</code> because the lock-screen call activity makes the process look foregrounded.</td></tr>
+</tbody>
+</table>
+
+<hr />
+<p><em>Related: <code>docs/conference/Incoming.html</code> (iOS); <code>app/CallManager.js</code>, <code>app/components/Conference.js</code>, and the native call service for the code paths above.</em></p>
+
+</body></html>

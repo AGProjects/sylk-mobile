@@ -42,6 +42,11 @@ const EditContactModal = ({
   publicKey,
   selectedContact,
   myself,
+  accountId,
+  // Group names already used elsewhere in the address book, offered as
+  // one-tap chips under the "Add group" field so the user can pick an
+  // existing group (Family, Business…) instead of retyping it.
+  existingGroups = [],
   deletePublicKey: deletePublicKeyProp,
   myuuid,
   rejectNonContacts,
@@ -132,7 +137,40 @@ const EditContactModal = ({
     }
     return raw;
   };
-  const [uri, setUri] = useState(_displayUriFromProp(propUri));
+  // Multi-URI editor. uris[0] is the default (primary) address shown first,
+  // exactly like before; a contact with several uris renders one row each.
+  const _initUris = () => {
+    const primary = _displayUriFromProp(propUri);
+    const extra = (selectedContact && Array.isArray(selectedContact.uris))
+      ? selectedContact.uris.map(_displayUriFromProp) : [];
+    const out = []; const seen = new Set();
+    for (const u of [primary, ...extra]) {
+      const v = (u || '').trim();
+      if (!v) continue;
+      const k = v.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k); out.push(v);
+    }
+    return out.length ? out : [''];
+  };
+  const [uris, setUris] = useState(_initUris());
+  // Primary (default) address — first row. Kept as a derived value so the
+  // existing single-URI reads (subtitle, validation, encryption entity) work.
+  const uri = uris[0] || '';
+  // Per-row input refs + a pending-focus index, so pressing "+" moves the
+  // keyboard focus to the freshly-added (empty) address field.
+  const uriRefs = useRef([]);
+  const [focusUriIndex, setFocusUriIndex] = useState(null);
+  // Collapse the per-contact call overrides (video/audio codec + zRTP) under
+  // an "Advanced" toggle so the common fields stay uncluttered.
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  useEffect(() => {
+    if (focusUriIndex != null) {
+      const el = uriRefs.current[focusUriIndex];
+      if (el && el.focus) el.focus();
+      setFocusUriIndex(null);
+    }
+  }, [focusUriIndex, uris]);
   const [displayName, setDisplayName] = useState(propDisplayName || '');
   const [organization, setOrganization] = useState(propOrg || '');
   const [email, setEmail] = useState(propEmail || '');
@@ -195,6 +233,11 @@ const EditContactModal = ({
   // OFF by default so the modal stays calm and users don't fat-
   // finger a tag away while just inspecting the contact.
   const [editingTags, setEditingTags] = useState(false);
+  // Whether the free-text "Add group" field is revealed. Hidden by
+  // default — in edit mode the user sees the existing-group pills plus
+  // a trailing "+"; tapping the "+" reveals this input for creating a
+  // brand-new group, tapping it again hides it.
+  const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   // Per-contact encryption mode override.
   // null  → follow the device default (set in Preferences → Encryption)
@@ -228,10 +271,21 @@ const EditContactModal = ({
       : null
   );
 
+  // Diagnostic: log the self-detection inputs whenever the panel opens, so
+  // we can see why `myself` is/ isn't true for the own contact.
+  useEffect(() => {
+    if (show) {
+      console.log('[edit-contact] open myself=', myself,
+        'accountId=', accountId,
+        'propUri=', propUri,
+        'selectedContact.uri=', selectedContact && selectedContact.uri);
+    }
+  }, [show]);
+
   // Reset all form fields whenever modal opens or props change
   useEffect(() => {
     if (show) {
-      setUri(_displayUriFromProp(propUri));
+      setUris(_initUris());
       setDisplayName(propDisplayName || '');
       setOrganization(propOrg || '');
       setEmail(propEmail || '');
@@ -253,6 +307,7 @@ const EditContactModal = ({
       setTagsText(initialTags.join(', '));
       setNewTagText('');
       setEditingTags(false);
+      setShowNewGroupInput(false);
       setContactEncryption(
         (selectedContact && selectedContact.localProperties
           && selectedContact.localProperties.encryptionMode) || null
@@ -273,7 +328,14 @@ const EditContactModal = ({
           : null
       );
     }
-  }, [show, propUri, propDisplayName, propOrg, propEmail, selectedContact, myPhoneNumber, currentPassword]);
+  // Reset ONLY when the modal opens (show) or a DIFFERENT contact is loaded
+  // (propUri = the contact identity). It must NOT depend on the contact's
+  // mutable fields (propDisplayName/propOrg/propEmail/selectedContact): a
+  // background addressbook sync re-applies the server's values mid-edit and
+  // re-running this effect would wipe whatever the user just typed before save
+  // ("organization does not save"). myPhoneNumber/currentPassword come from
+  // accountInfo fetched once at app start (not on open), so they're stable.
+  }, [show, propUri]);
 
   // accountInfo is fetched once on app start (App.loadAccount) and
   // again whenever the user taps the refresh icon next to the info
@@ -335,30 +397,35 @@ const EditContactModal = ({
 	  setTags(prev => prev.filter(t => t !== tag));
 	};
 
-	// Reduce arbitrary user input to a strict-ASCII tag token. Tags
-	// must be simple ASCII words (lowercase letters, digits, and the
-	// punctuation characters '-', '_', '*') with no spaces — they're
-	// stored comma-separated in SQL and compared with substring /
-	// whole-word matchers across the app, so anything else (commas,
-	// accented letters, emoji, other punctuation, internal
-	// whitespace) would either corrupt the SQL row or silently fail
-	// to match. This sanitizer:
-	//   • lowercases + trims
-	//   • collapses any whitespace run into a single dash
-	//   • drops every character that isn't [a-z 0-9 - _ *]
-	//   • collapses repeat dashes and trims leading/trailing dashes
-	//     so the final tag never starts or ends with '-'
+	// Display label for a tag — show the canonical GROUP name (the internal
+	// tag value is kept as-is). chat→Messages, favorite→Favorites, etc.;
+	// custom tags are shown Capitalized.
+	const tagLabel = (tag) => {
+	  const map = { chat: 'Messages', favorite: 'Favorites', blocked: 'Blocked',
+	                tel: 'Tel', autoanswer: 'Caregivers', calls: 'Calls',
+	                conference: 'Conference', test: 'Test' };
+	  const t = (tag || '').trim();
+	  if (map[t.toLowerCase()]) return map[t.toLowerCase()];
+	  return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+	};
+
+	// Normalize user input into a tag. Tags MAY now contain spaces (so a tag
+	// can be a real multi-word group name, e.g. "Blink Support"). They are
+	// stored comma-separated in SQL, so the one hard rule is: no commas.
+	// This sanitizer:
+	//   • trims and collapses any whitespace run into a single space
+	//   • drops commas (CSV separator) and control/odd characters, keeping
+	//     letters, digits, spaces, and '-', '_', '*'
+	//   • preserves the user's capitalization (group names are shown as typed)
 	const sanitizeTag = (raw) => {
 	  if (!raw) {
 		return '';
 	  }
 	  return raw
-		.trim()
-		.toLowerCase()
-		.replace(/\s+/g, '-')
-		.replace(/[^a-z0-9_*-]/g, '')
-		.replace(/-{2,}/g, '-')
-		.replace(/^-+|-+$/g, '');
+		.replace(/\s+/g, ' ')
+		.replace(/,/g, '')
+		.replace(/[^A-Za-z0-9 _*-]/g, '')
+		.trim();
 	};
 
 	// Commit whatever's in the "Add tag" buffer to the chip list,
@@ -406,8 +473,18 @@ const getTotalPrettyStorage = (entity) => {
   };
 
   const handleSave = async () => {
+    // Collect all URI rows: clean, drop empties, dedupe (case-insensitive,
+    // first wins). uris[0] is the default/primary address.
+    const cleanUris = [];
+    const seenUris = new Set();
+    for (const u of uris) {
+      const v = (u || '').trim().toLowerCase().replace(/\s|\(|\)/g, '');
+      if (!v || seenUris.has(v)) continue;
+      seenUris.add(v); cleanUris.push(v);
+    }
     const contact = {
-      uri: uri.trim().toLowerCase(),
+      uri: cleanUris[0] || '',
+      uris: cleanUris,
       displayName: displayName.trim(),
       organization: organization.trim(),
       email: email.toLowerCase(),
@@ -417,6 +494,14 @@ const getTotalPrettyStorage = (entity) => {
       // and treats null/undefined as "delete this key", so passing
       // null is the canonical reset.
       localProperties: {
+        // Caregiver is a dual-state attribute: a 'caregiver' tag plus a
+        // localProperties.caregiver mirror (the latter is what app.js logs,
+        // replicates and reads back from the server). The Caregiver group
+        // toggle below only flips the tag in local state, so mirror it here
+        // on save. true when the tag is set, false otherwise — never null,
+        // so an explicit un-set persists as false rather than reverting to
+        // the device/server default.
+        caregiver: tags.includes('caregiver'),
         encryptionMode: contactEncryption || null,
         preferredVideoCodec: contactVideoCodec || null,
         preferredAudioCodec: contactAudioCodec || null,
@@ -929,64 +1014,50 @@ const getTotalPrettyStorage = (entity) => {
                           AddContactModal so users know they can paste
                           either a bare phone number / username or a
                           fully-qualified SIP URI. */}
-                      {!myself && (
-                        <TextInput
-                          mode="flat"
-                          // Switch the field label based on the URI's
-                          // shape so the user sees the most accurate
-                          // verb for what they're entering. The check
-                          // is purely cosmetic — saveContactByUser /
-                          // sanitizeContact still classify and route
-                          // the URI by their own rules — but it tells
-                          // a user typing "+40…" that this is a
-                          // phone-number row, and a user typing
-                          // "alice@…" that it's a SIP address.
-                          // Drives off both: (a) the current text in
-                          // the input (covers a freshly-typed +CC
-                          // before the contact tag is updated), and
-                          // (b) the selectedContact.tags 'tel' flag
-                          // (covers an existing telephone contact
-                          // even if the user transiently clears the
-                          // field).
-                          label={
-                            (uri.trim().startsWith('+')
-                              || (selectedContact
-                                  && Array.isArray(selectedContact.tags)
-                                  && selectedContact.tags.indexOf('tel') > -1))
-                              ? 'Telephone number'
-                              : 'SIP Address'
-                          }
-                          onChangeText={(value) =>
-                            setUri(value.replace(/\s|\(|\)/g, '').toLowerCase())
-                          }
-                          value={uri}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          // Same autofill opt-out trio as the Email
-                          // field below — Android's autofill service
-                          // was tagging this field as a username/
-                          // password row (autoCapitalize none +
-                          // email-style keyboard next to a Display
-                          // name input → "looks like a login form")
-                          // and surfacing "Use saved password?". See
-                          // the Email field's comment for the role of
-                          // each prop.
-                          autoComplete="off"
-                          importantForAutofill="no"
-                          textContentType="none"
-                          // Phone-number rows get the numeric keypad
-                          // (with + accessible on most layouts); SIP
-                          // rows keep the email-style keyboard.
-                          keyboardType={
-                            (uri.trim().startsWith('+')
-                              || (selectedContact
-                                  && Array.isArray(selectedContact.tags)
-                                  && selectedContact.tags.indexOf('tel') > -1))
-                              ? 'phone-pad'
-                              : 'email-address'
-                          }
-                        />
-                      )}
+                      {uris.map((u, i) => {
+                        // Per-ROW classification: a row is a phone number only
+                        // when THIS value starts with '+'. (Don't key off the
+                        // contact's 'tel' tag — a phone-number contact can still
+                        // have additional SIP addresses; any URI is valid.)
+                        const isTel = (u || '').trim().startsWith('+');
+                        const isLast = i === uris.length - 1;
+                        return (
+                          <TextInput
+                            key={'uri-' + i}
+                            ref={(el) => { uriRefs.current[i] = el; }}
+                            mode="flat"
+                            // Own-account row is read-only (the SIP identity).
+                            editable={!myself}
+                            disabled={myself}
+                            // Label/keyboard adapt to the row's value (phone vs SIP).
+                            label={isTel ? 'Telephone number' : 'SIP Address'}
+                            onChangeText={(value) => {
+                              const v = value.replace(/\s|\(|\)/g, '').toLowerCase();
+                              setUris((prev) => prev.map((x, j) => (j === i ? v : x)));
+                            }}
+                            value={u}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            autoComplete="off"
+                            importantForAutofill="no"
+                            textContentType="none"
+                            spellCheck={false}
+                            // Default keyboard (NOT email-address) so Android's
+                            // email autofill ("use your Gmail") doesn't pop up;
+                            // '@' is still reachable. Phone rows get the keypad.
+                            keyboardType={isTel ? 'phone-pad' : 'default'}
+                            // Last row: "+" adds a new address row above Display
+                            // name. Earlier rows: "x" removes that address.
+                            right={!myself ? (
+                              isLast
+                                ? <TextInput.Icon icon="plus" onPress={() => { setUris((prev) => [...prev, '']); setFocusUriIndex(uris.length); }} />
+                                : (i === 0
+                                    ? undefined  // default (first) address — not removable
+                                    : <TextInput.Icon icon="close" onPress={() => setUris((prev) => prev.filter((_, j) => j !== i))} />)
+                            ) : undefined}
+                          />
+                        );
+                      })}
                       <TextInput
                         mode="flat"
                         label="Display name"
@@ -1538,6 +1609,23 @@ const getTotalPrettyStorage = (entity) => {
 							);
 						  })}
 
+						  {/* Caregiver — an extra, favorite-only group toggle.
+						      Previously a quick toggle in the contact kebab; it
+						      now lives here as a dedicated group. Caregiver is a
+						      "favorite-only" attribute (app.js scrubs the tag the
+						      moment a contact is un-favorited), so we only surface
+						      the toggle when the contact is currently a Favorite.
+						      Flips the 'caregiver' tag in local state; handleSave
+						      mirrors it to localProperties.caregiver on commit. */}
+						  {tags.includes('favorite') && (
+						    <PlatformToggle
+						      key="caregiver"
+						      value={tags.includes('caregiver')}
+						      onValueChange={() => toggleTag('caregiver')}
+						      label="Caregiver"
+						    />
+						  )}
+
 						</View>
                     )}
                       </>
@@ -1577,7 +1665,7 @@ const getTotalPrettyStorage = (entity) => {
                               marginBottom: 6,
                             }}
                           >
-                            Tags:
+                            Groups:
                           </Text>
                           {/* Hide tags that are driven by the
                               per-tag Switch/Checkbox above
@@ -1591,7 +1679,16 @@ const getTotalPrettyStorage = (entity) => {
                               every key in editableTags. */}
                           {(() => {
                             const _hidden = new Set(Object.keys(editableTags || {}));
+                            // 'caregiver' has its own dedicated group toggle
+                            // above (favorite-only), so keep it out of the
+                            // chip list too — same anti-duplication rule as
+                            // the editableTags keys.
+                            _hidden.add('caregiver');
                             const _visibleTags = tags.filter(t => !_hidden.has(t));
+                            // Auto-generated groups (derived from chat / call
+                            // activity) can't be removed by hand — they reappear
+                            // as soon as the underlying activity exists. No "x".
+                            const _autoGroups = new Set(['messages', 'chat', 'calls', 'missed', 'recent']);
                             return _visibleTags.length === 0 ? (
                             <Text
                               style={{
@@ -1619,8 +1716,8 @@ const getTotalPrettyStorage = (entity) => {
                                   marginBottom: 6,
                                 }}
                               >
-                                <Text style={{ fontSize: 12, color: '#333' }}>{t}</Text>
-                                {editingTags ? (
+                                <Text style={{ fontSize: 12, color: '#333' }}>{tagLabel(t)}</Text>
+                                {editingTags && !_autoGroups.has((t || '').toLowerCase()) ? (
                                   <TouchableOpacity
                                     onPress={() => removeTag(t)}
                                     accessibilityRole="button"
@@ -1636,7 +1733,13 @@ const getTotalPrettyStorage = (entity) => {
                           );
                           })()}
                           <TouchableOpacity
-                            onPress={() => setEditingTags(prev => !prev)}
+                            onPress={() => setEditingTags(prev => {
+                              // Leaving edit mode also closes + clears the
+                              // new-group text field so it isn't left open
+                              // on the next entry.
+                              if (prev) { setShowNewGroupInput(false); setNewTagText(''); }
+                              return !prev;
+                            })}
                             accessibilityRole="button"
                             accessibilityLabel={editingTags ? 'Done editing tags' : 'Edit tags'}
                             style={{ padding: 4, marginBottom: 6 }}
@@ -1649,37 +1752,120 @@ const getTotalPrettyStorage = (entity) => {
                             />
                           </TouchableOpacity>
                         </View>
-                        {editingTags ? (
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <TextInput
-                              mode="flat"
-                              label="Add tag"
-                              value={newTagText}
-                              onChangeText={setNewTagText}
-                              onSubmitEditing={addNewTagFromInput}
-                              returnKeyType="done"
-                              autoCapitalize="none"
-                              autoCorrect={false}
-                              dense
-                              style={{ flex: 1, marginRight: 8 }}
-                            />
-                            <Button
-                              mode="contained"
-                              compact
-                              onPress={addNewTagFromInput}
-                              // Disabled when sanitization would yield
-                              // an empty string — e.g. the user typed
-                              // only spaces, emoji, or punctuation.
-                              // Gives an immediate visual cue that
-                              // the proposed tag isn't a valid ASCII
-                              // word.
-                              disabled={!sanitizeTag(newTagText)}
-                              icon="plus"
-                            >
-                              Add
-                            </Button>
-                          </View>
-                        ) : null}
+                        {/* Edit mode: show the existing-group pills (tap to
+                            assign) followed by a trailing "+". The free-text
+                            field for a brand-new group stays hidden until the
+                            "+" is tapped (showNewGroupInput), then it appears
+                            below with its Add button. */}
+                        {editingTags ? (() => {
+                          const _flag = new Set(Object.keys(editableTags || {}));
+                          const _auto = new Set(['messages', 'chat', 'calls', 'missed', 'recent']);
+                          const _assigned = new Set(tags.map(t => (t || '').toLowerCase()));
+                          const _seen = new Set();
+                          const _uniq = [];
+                          (existingGroups || []).forEach(g => {
+                            const v = (g || '').trim();
+                            if (!v) return;
+                            const lc = v.toLowerCase();
+                            if (_flag.has(lc) || _auto.has(lc) || _assigned.has(lc) || _seen.has(lc)) return;
+                            _seen.add(lc);
+                            _uniq.push(v);
+                          });
+                          return (
+                            <View style={{ marginTop: 8 }}>
+                              {_uniq.length > 0 ? (
+                                <Text style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
+                                  Existing groups
+                                </Text>
+                              ) : null}
+                              <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+                                {_uniq.map(g => (
+                                  <TouchableOpacity
+                                    key={'sugg-' + g}
+                                    onPress={() => {
+                                      const cleaned = sanitizeTag(g);
+                                      if (!cleaned) return;
+                                      setTags(prev => prev.some(t => t.toLowerCase() === cleaned.toLowerCase())
+                                        ? prev
+                                        : [...prev, cleaned]);
+                                    }}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Add group ${g}`}
+                                    style={{
+                                      flexDirection: 'row',
+                                      alignItems: 'center',
+                                      borderWidth: 1,
+                                      borderColor: '#bbb',
+                                      borderRadius: 12,
+                                      paddingHorizontal: 10,
+                                      paddingVertical: 3,
+                                      marginRight: 6,
+                                      marginBottom: 6,
+                                    }}
+                                    hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                                  >
+                                    <Text style={{ fontSize: 12, color: '#333' }}>
+                                      {tagLabel(g)}
+                                    </Text>
+                                  </TouchableOpacity>
+                                ))}
+                                {/* Trailing "+" — reveals / hides the
+                                    new-group text field. */}
+                                <TouchableOpacity
+                                  onPress={() => setShowNewGroupInput(v => {
+                                    if (v) setNewTagText('');
+                                    return !v;
+                                  })}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={showNewGroupInput ? 'Cancel new group' : 'Create a new group'}
+                                  style={{
+                                    width: 26,
+                                    height: 26,
+                                    borderRadius: 13,
+                                    borderWidth: 1,
+                                    borderColor: '#bbb',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    marginRight: 6,
+                                    marginBottom: 6,
+                                  }}
+                                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                >
+                                  <Icon name={showNewGroupInput ? 'close' : 'plus'} size={16} color="#555" />
+                                </TouchableOpacity>
+                              </View>
+                              {showNewGroupInput ? (
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
+                                  <TextInput
+                                    mode="flat"
+                                    label="Add group"
+                                    value={newTagText}
+                                    onChangeText={setNewTagText}
+                                    onSubmitEditing={addNewTagFromInput}
+                                    returnKeyType="done"
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    autoFocus
+                                    dense
+                                    style={{ flex: 1, marginRight: 8 }}
+                                  />
+                                  <Button
+                                    mode="contained"
+                                    compact
+                                    onPress={addNewTagFromInput}
+                                    // Disabled when sanitization would yield
+                                    // an empty string — e.g. the user typed
+                                    // only spaces, emoji, or punctuation.
+                                    disabled={!sanitizeTag(newTagText)}
+                                    icon="plus"
+                                  >
+                                    Add
+                                  </Button>
+                                </View>
+                              ) : null}
+                            </View>
+                          );
+                        })() : null}
                       </View>
                     )}
 
@@ -1739,7 +1925,19 @@ const getTotalPrettyStorage = (entity) => {
                         overrides that match the device default are
                         treated as "no override" — saveContactByUser
                         prunes those keys from localProperties. */}
-                    {!myself && selectedContact && (() => {
+                    {!myself && selectedContact && (
+                      <>
+                      <Button
+                        mode="text"
+                        compact
+                        icon={showAdvanced ? 'chevron-up' : 'chevron-down'}
+                        onPress={() => setShowAdvanced((v) => !v)}
+                        style={{ alignSelf: 'flex-start', marginTop: 8 }}
+                        labelStyle={{ fontSize: 13 }}
+                      >
+                        Advanced
+                      </Button>
+                      {showAdvanced && (() => {
                       // ── Reused codec constants. Keep in sync with
                       // PreferencesModal so the per-contact picker
                       // offers exactly the same set of choices the
@@ -1989,7 +2187,9 @@ const getTotalPrettyStorage = (entity) => {
                           </View>
                         </>
                       );
-                    })()}
+                      })()}
+                      </>
+                    )}
                       </>
                     )}
                     {/* end !keyboardVisible group */}
@@ -2133,6 +2333,7 @@ EditContactModal.propTypes = {
   organization: PropTypes.string,
   publicKey: PropTypes.string,
   selectedContact: PropTypes.object,
+  existingGroups: PropTypes.array,
   myself: PropTypes.bool,
   deletePublicKey: PropTypes.func,
   myuuid: PropTypes.string,

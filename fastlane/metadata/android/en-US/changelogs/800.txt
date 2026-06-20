@@ -1,0 +1,5 @@
+Added Addressbook synchronized between devices
+Added backup and restore contacts and messages
+Switch between audio and video call components
+Handle Android bold fonts
+Bug fixes and improvements

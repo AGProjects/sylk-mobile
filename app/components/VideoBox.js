@@ -804,6 +804,13 @@ class VideoBox extends Component {
         if (!pc || typeof pc.getStats !== 'function') return;
 
         let ticks = 0;
+        // In-flight guard — skip a tick if the previous getStats(null)
+        // hasn't resolved yet, so slow native getStats can't stack up
+        // pending callbacks. Stale-timeout re-arms it if a promise is
+        // ever lost.
+        let __inFlight = false;
+        let __inFlightSince = 0;
+        const INFLIGHT_STALE_MS = 6000;
         // Hold deltas across ticks so we can show per-second rates
         // instead of monotonically-growing counters.
         const prev = { inB: 0, outB: 0, inF: 0, outF: 0 };
@@ -838,6 +845,11 @@ class VideoBox extends Component {
         };
 
         const dump = async () => {
+            if (__inFlight && (Date.now() - __inFlightSince) < INFLIGHT_STALE_MS) {
+                return;
+            }
+            __inFlight = true;
+            __inFlightSince = Date.now();
             ticks += 1;
             try {
                 const stats = await pc.getStats(null);
@@ -910,6 +922,8 @@ class VideoBox extends Component {
                 }
             } catch (e) {
                 console.log('[video] stats poll failed:', (e && e.message) || e);
+            } finally {
+                __inFlight = false;
             }
         };
         // Fire after 2s, then every 2s thereafter (no upper bound — we
@@ -3515,7 +3529,47 @@ class VideoBox extends Component {
 					shareLocationFromCall = {this.props.shareLocationFromCall}
 					requestLocationFromCall = {this.props.requestLocationFromCall}
 					showMediaInfo = {this._openMediaInfoPanel}
+					callHasVideo = {this.props.callHasVideo}
+					switchCallView = {this.props.switchCallView}
                 />
+
+                {/* Remote party's client (SIP/Blink/WebRTC) User-Agent.
+                    Same source as the audio screen (User-Agent / Server
+                    SIP header forwarded by sylk-server, passed down from
+                    Call.js). Shown as a subtle line just under the header
+                    once the call is established. */}
+                {(this.props.remoteUserAgent
+                    && this.state.call
+                    && this.state.call.state === 'established'
+                    && !this.state.reconnectingCall) ?
+                    <View
+                        pointerEvents="none"
+                        style={{
+                            position: 'absolute',
+                            top: 64 + (this.state.insets.top || 0),
+                            left: 0,
+                            right: 0,
+                            alignItems: 'center',
+                            zIndex: 999,
+                        }}
+                    >
+                        <Text
+                            numberOfLines={2}
+                            ellipsizeMode="tail"
+                            style={{
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                fontSize: 12,
+                                textAlign: 'center',
+                                paddingHorizontal: 24,
+                                textShadowColor: 'rgba(0, 0, 0, 0.75)',
+                                textShadowOffset: { width: 0, height: 1 },
+                                textShadowRadius: 2,
+                            }}
+                        >
+                            {this.props.remoteUserAgent}
+                        </Text>
+                    </View>
+                : null}
 
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer]}>
@@ -3817,6 +3871,7 @@ VideoBox.propTypes = {
     accountId               : PropTypes.string,
     remoteUri               : PropTypes.string,
     remoteDisplayName       : PropTypes.string,
+    remoteUserAgent         : PropTypes.string,
     localMedia              : PropTypes.object,
     hangupCall              : PropTypes.func,
     info                    : PropTypes.string,

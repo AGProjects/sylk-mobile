@@ -7,6 +7,7 @@ import { NativeModules } from 'react-native';
 
 const logger = new Logger('CallManager');
 import { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
+import { RTCAudioSession } from 'react-native-webrtc';
 
 // https://github.com/react-native-webrtc/react-native-callkeep
 
@@ -61,6 +62,13 @@ export default class CallManager extends events.EventEmitter {
         this._calls = new Map();
         this._pushCalls = new Map();
         this._incoming_conferences = new Map();
+        // Conference calls that reuse the push/incoming CallKit UUID as their
+        // own call id (see acceptCall + startOutgoingCall). For these, CallKit
+        // already has an answered incoming call under this UUID, so the
+        // outgoing-conference path must NOT startCall() it again — it just
+        // marks it active. Eliminates the throwaway placeholder whose teardown
+        // deactivated the shared audio session ~60s in and killed conf audio.
+        this._reusedPushConferences = new Map();
         this._rejectedCalls = new Map();
         this._acceptedCalls = new Map();
         this._cancelledCalls = new Map();
@@ -237,6 +245,18 @@ export default class CallManager extends events.EventEmitter {
             hasVideo = localStream.getVideoTracks().length > 0 ? true : false;
         }
 
+        if (this._reusedPushConferences.has(callUUID)) {
+            // This conference reuses the incoming push UUID, which CallKit
+            // already knows as an answered incoming call. Calling startCall()
+            // again would request a second (outgoing) call for a UUID that's
+            // already live. Just mark the existing call active/connected so
+            // CallKit keeps its audio session — no new call, no teardown.
+            utils.timestampedLog('Callkeep: reuse incoming push UUID as active conference', callUUID,
+                'to', targetUri, '— setCurrentCallActive instead of startCall');
+            this.setCurrentCallActive(callUUID);
+            return;
+        }
+
         utils.timestampedLog('Callkeep: start call', callUUID, 'to', targetUri);
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
@@ -344,14 +364,58 @@ export default class CallManager extends events.EventEmitter {
         if (this._pushCalls.has(callUUID)) {
             this._pushCalls.delete(callUUID);
         }
+
+        if (this._reusedPushConferences.has(callUUID)) {
+            this._reusedPushConferences.delete(callUUID);
+        }
     }
 
     _rnActiveAudioSession() {
-        //utils.timestampedLog('Callkeep: activated audio call');
+        // iOS only: CallKit has activated the AVAudioSession. We run WebRTC's
+        // audio device module in MANUAL mode (set at boot in app.js), so:
+        //   1. audioSessionDidActivate() syncs RTCAudioSession.isActive.
+        //   2. setAudioEnabled(true) permits WebRTC to start the VoIP audio
+        //      unit. In manual mode this is the ONLY thing that starts it, so
+        //      it no longer matters whether the remote audio track arrived
+        //      before or after CallKit activation — the prior race that left
+        //      push-woken incoming calls silent until a mic toggle is gone.
+        if (Platform.OS === 'ios') {
+            utils.timestampedLog('Callkeep: activated audio call — RTCAudioSession activate + enable');
+            try {
+                RTCAudioSession.audioSessionDidActivate();
+                RTCAudioSession.setAudioEnabled(true);
+            } catch (e) {
+                utils.timestampedLog('Callkeep: audioSessionDidActivate failed:', e);
+            }
+        }
     }
 
     _rnDeactiveAudioSession() {
-        //utils.timestampedLog('Callkeep: deactivated audio call');
+        // iOS only: CallKit has deactivated the session (call ended). Stop the
+        // audio unit and sync RTCAudioSession state so the next call starts
+        // clean.
+        if (Platform.OS === 'ios') {
+            // Guard: only tear down the shared WebRTC audio unit when NO
+            // live call remains. In manual audio mode setAudioEnabled(false)
+            // disables the single process-wide RTCAudioSession, so if we
+            // honoured every CallKit didDeactivate we would kill audio for a
+            // still-active call. This happens on the push→conference flow:
+            // the incoming-call CallKit placeholder (tracked in
+            // _incoming_conferences, NOT _calls) is ended ~45-60s after the
+            // user joins, firing didDeactivate while the real conference call
+            // (in _calls) is still established. Skip the disable in that case.
+            if (this._calls.size > 0) {
+                utils.timestampedLog('Callkeep: skip audio deactivate, active calls remain', this._calls.size);
+                return;
+            }
+            utils.timestampedLog('Callkeep: deactivated audio call — RTCAudioSession disable + deactivate');
+            try {
+                RTCAudioSession.setAudioEnabled(false);
+                RTCAudioSession.audioSessionDidDeactivate();
+            } catch (e) {
+                utils.timestampedLog('Callkeep: audioSessionDidDeactivate failed:', e);
+            }
+        }
     }
 
     _rnAccept(data) {
@@ -456,10 +520,26 @@ export default class CallManager extends events.EventEmitter {
             let conference = this._incoming_conferences.get(callUUID);
 
             utils.timestampedLog('Callkeep: accept incoming conference', callUUID);
-			// don't hang-up the call now, otherwise iOS will not wake up the app
-            setTimeout(() => {
-				this.endCall(callUUID, CK_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE);
-            }, 60000);
+
+            // Reuse the incoming push UUID as the conference call's own id.
+            //
+            // Previously we kept this incoming CallKit call alive and started
+            // the conference under a SEPARATE new UUID, then ended this one
+            // ~60s later ("don't hang-up now or iOS won't wake the app"). But
+            // that left two CallKit calls sharing one audio session: when the
+            // placeholder was ended, CallKit deactivated the shared
+            // AVAudioSession out from under the still-live conference and the
+            // audio went dead ~60s in (a JS-side guard in
+            // _rnDeactiveAudioSession can't stop CallKit's OS-level deactivate).
+            //
+            // Instead, make the outgoing conference call BE this already-
+            // answered CallKit call by passing callUUID straight through to
+            // joinConference (Conference.js uses it as the sylkrtc call id).
+            // One CallKit call, nothing to tear down, no session cycle.
+            this._reusedPushConferences.set(callUUID, Date.now());
+            utils.timestampedLog('Callkeep: REUSE push UUID', callUUID,
+                'as outgoing conference to', conference.room,
+                '(no placeholder, no 60s endCall)');
 
             this.backToForeground();
 
@@ -482,7 +562,7 @@ export default class CallManager extends events.EventEmitter {
             // options + app.js's callKeepStartConference) so the
             // m=video transceiver is present and "enable my camera"
             // is a track.enabled flip rather than a renegotiation.
-            const inviteeMedia = Object.assign({}, this.outgoingMedia, {audio: true, video: false});
+            const inviteeMedia = Object.assign({}, this.outgoingMedia, {audio: true, video: false, callUUID: callUUID});
 
             //utils.timestampedLog('Callkeep: will start conference to', conference.room);
             this.conferenceCall(conference.room, inviteeMedia);
@@ -891,6 +971,21 @@ export default class CallManager extends events.EventEmitter {
 
         this.showAlertPanel(callUUID, room, displayName, outgoingMedia.video);
 
+        // A conference invite can arrive twice for the same callUUID — once
+        // over the websocket and once via push (see metro logs: two
+        // "handle conference" lines ~2s apart). Without clearing the prior
+        // timer here, the second handleConference() overwrites the map entry
+        // and leaks the first timer; acceptCall() then only clears the
+        // surviving (second) entry, so the orphaned first timer fires 45s
+        // later and endCall()s the placeholder out from under a live
+        // conference. Clear any existing timer before arming a new one.
+        if (this._timeouts.has(callUUID)) {
+            utils.timestampedLog('CallKeep: duplicate conference invite for', callUUID,
+                '— clearing previous answer timer to avoid leak');
+            clearTimeout(this._timeouts.get(callUUID));
+            this._timeouts.delete(callUUID);
+        }
+
         this._timeouts.set(callUUID, setTimeout(() => {
             //utils.timestampedLog('Callkeep: conference timeout', callUUID);
             this.timeoutCall(callUUID, from_uri);
@@ -931,7 +1026,7 @@ export default class CallManager extends events.EventEmitter {
             supportsDTMF = true;
         } else {
             callerType = 'email';
-            panelFrom = from.indexOf('@guest.') > -1 ? displayName : from;
+            panelFrom = utils.isAnonymous(from) ? displayName : from;
         }
 
         this._alertedCalls.set(callUUID, Date.now());

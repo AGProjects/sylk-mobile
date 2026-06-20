@@ -8,6 +8,7 @@ import {
     ScrollView,
     KeyboardAvoidingView,
     Platform,
+    Dimensions,
 } from 'react-native';
 import { Text, Button, Surface, IconButton, Divider } from 'react-native-paper';
 
@@ -147,6 +148,17 @@ class ActiveLocationSharesModal extends Component {
             uris = Object.keys(shares);
         }
 
+        // Orientation-agnostic sizing: cap the share list relative to the
+        // current window (instead of a fixed 260 that overflowed in landscape)
+        // and centre/limit the card width so it doesn't stretch edge-to-edge.
+        const _winH = Dimensions.get('window').height;
+        const _winW = Dimensions.get('window').width;
+        const _isLandscape = _winW > _winH;
+        const _listMaxHeight = _isLandscape
+            ? Math.max(120, Math.floor(_winH * 0.45))
+            : Math.min(260, Math.floor(_winH * 0.45));
+        const _surfaceExtra = _isLandscape ? { alignSelf: 'center', maxWidth: Math.min(560, _winW * 0.85) } : null;
+
         return (
             <Modal
                 style={containerStyles.container}
@@ -169,7 +181,7 @@ class ActiveLocationSharesModal extends Component {
                         >
                             {/* Block dismiss when the tap is inside the card. */}
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
                                     <Text style={containerStyles.title}>
                                         Active location shares
                                     </Text>
@@ -213,7 +225,7 @@ class ActiveLocationSharesModal extends Component {
                                     ) : (
                                         <View>
                                             <ScrollView
-                                                style={{ maxHeight: 260, marginHorizontal: 8 }}
+                                                style={{ maxHeight: _listMaxHeight, marginHorizontal: 8 }}
                                                 keyboardShouldPersistTaps="handled"
                                             >
                                                 {uris.map((uri, idx) => {

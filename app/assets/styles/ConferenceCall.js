@@ -98,6 +98,23 @@ const styles = StyleSheet.create({
     elevation: 11,
   },
 
+  chatTopActionBar: {
+    // Same audio call-control cluster as audioViewActionBar (speaker /
+    // mic / record / hangup), but rendered in NORMAL FLOW at the TOP of the
+    // conference chat column rather than pinned to the screen bottom. Gives
+    // the chat view the same call controls the audio view has, without
+    // overlapping the message list or the keyboard.
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: 20,
+    paddingRight: 20,
+    paddingTop: 6,
+    paddingBottom: 6,
+    zIndex: 1000,
+    elevation: 11,
+  },
+
   audioViewActionBarAudioGroup: {
     flexDirection: 'row',
     alignItems: 'center',

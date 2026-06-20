@@ -230,14 +230,31 @@ class MediaInfoPanel extends Component {
     }
 
     async _refresh() {
-        const snap = await snapshotMedia(this.props.call);
-        if (this._poller === null && !this.props.visible) return;
-        // Pull the latest qos-stats sample alongside the local getStats
-        // snapshot. getLastQosSnapshot() is synchronous (it just reads a
-        // module-level cache populated by the qos-stats sampler every
-        // 5 s) so there's no extra await here.
-        const qos = getLastQosSnapshot();
-        this.setState({ snapshot: snap, qos });
+        // In-flight guard: snapshotMedia() awaits pc.getStats(). If it
+        // runs slower than the 1s poll, overlapping ticks would stack
+        // pending native callbacks. Skip while a refresh is pending;
+        // the stale-timeout re-arms if a getStats promise is ever lost.
+        if (this._refreshInFlight
+                && (Date.now() - this._refreshInFlightSince) < 5000) {
+            return;
+        }
+        this._refreshInFlight = true;
+        this._refreshInFlightSince = Date.now();
+        try {
+            const snap = await snapshotMedia(this.props.call);
+            if (this._poller === null && !this.props.visible) return;
+            // Pull the latest qos-stats sample alongside the local getStats
+            // snapshot. getLastQosSnapshot() is synchronous (it just reads a
+            // module-level cache populated by the qos-stats sampler every
+            // 5 s) so there's no extra await here.
+            const qos = getLastQosSnapshot();
+            this.setState({ snapshot: snap, qos });
+        } catch (e) {
+            // getStats can throw transiently during teardown — ignore and
+            // let the next tick retry.
+        } finally {
+            this._refreshInFlight = false;
+        }
     }
 
     _row(k, v) {

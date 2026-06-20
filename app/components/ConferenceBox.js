@@ -266,6 +266,11 @@ class ConferenceBox extends Component {
         this._participantsVisibility = new Animated.Value(1);
 
         this.downloadRequests = {};
+        this.uploadRequests = {};
+        // transfer_ids the user deleted locally. listSharedFiles() skips these
+        // so a file removed from the local chat doesn't get re-added when
+        // props.call.sharedFiles is re-pushed on the next update.
+        this.deletedSharedFiles = new Set();
 
         this.packetLoss = new Map();
 
@@ -1053,7 +1058,12 @@ class ConferenceBox extends Component {
             }
         }, 250);
 
-        this.props.getMessages(this.state.remoteUri.split('@')[0]);
+        // Load persisted conference chat history. Messages are SAVED under the
+        // full room URI (user@fqdn) by saveConferenceMessage, and getMessages
+        // matches on from_uri/to_uri — so we MUST query with the full URI too.
+        // Passing the bare room number (remoteUri.split('@')[0]) matched no
+        // rows ("SQL get messages, rows = 0") and silently dropped history.
+        this.props.getMessages(this.state.remoteUri);
 
         setTimeout(() => {
             this.listSharedFiles();
@@ -2685,53 +2695,33 @@ class ConferenceBox extends Component {
             return null;
         }
 
-        let status = '';
-        let label = 'Uploading...';
+        const md = currentMessage.metadata;
+        const isImg = utils.isImage(md.filename);
+        const p = md.progress;
+        const hasProgress = (typeof p === 'number');
+        const transferring = hasProgress && p >= 0 && p < 100;
 
-        let showSwitch = currentMessage.download || (currentMessage.url && (currentMessage.metadata.progress || !currentMessage.metadata.progress !== 100) && !currentMessage.local_url && !utils.isImage(currentMessage.metadata.name)) ;
-        let switchOn = (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) ? true : false;
+        // Manual-download toggle: only for INCOMING non-image files that aren't
+        // on disk yet. Images auto-download/preview, and our own uploads never
+        // need a download control. (The old check keyed off md.name, which
+        // doesn't exist — the field is md.filename — so isImage() always saw
+        // undefined and the branch logic was effectively broken.)
+        const showSwitch = !isImg
+            && currentMessage.direction === 'incoming'
+            && !currentMessage.received;
+        const switchOn = hasProgress;
 
-        if (currentMessage.direction === 'incoming') {
-            label = 'Downloading...';
-            if (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) {
-                status = currentMessage.label + ' - ' + currentMessage.metadata.progress + '%';
-            } else {
-                if (!utils.isImage(currentMessage.metadata.name)) {
-                    status = 'Swipe to download \n' + currentMessage.label;
-                } else {
-                    status = currentMessage.label;
-                }
-            }
+        let progressLabel;
+        if (!hasProgress) {
+            progressLabel = 'Download';
         } else {
-            if (!currentMessage.local_url && currentMessage.metadata.progress === null) {
-                switchOn = false;
-            }
-
-            if (currentMessage.metadata.progress || currentMessage.metadata.progress === 0) {
-                status = currentMessage.label + ' - ' + currentMessage.metadata.progress + '%';
-            } else {
-                status = currentMessage.label;
-            }
+            progressLabel = Math.min(100, Math.max(0, p)) + ' %';
         }
 
-        if (currentMessage.url && !currentMessage.local_url) {
-            //console.log('--- Render message', currentMessage.metadata.name, currentMessage.metadata.progress);
-        }
-
-        if (!utils.isImage(currentMessage.metadata.name) && !currentMessage.local_url) {
-            //console.log('Show switch', currentMessage._id, currentMessage.metadata.name, switchOn, currentMessage.metadata.progress);
-        }
-        //console.log('text =', currentMessage.text, 'label =', label, 'status =', status);
-
-        let progress = 'Download';
-
-        if (currentMessage.metadata.progress !== null) {
-            progress = currentMessage.metadata.progress + ' %';
-        }
         if (showSwitch) {
             return (
                 <View style={styles.downloadContainer}>
-                    <Text style={styles.uploadProgress}>{progress}</Text>
+                    <Text style={styles.uploadProgress}>{progressLabel}</Text>
                     <View style={styles.switch}>
                     {/* Custom oval+circle toggle — same as PlatformToggle.
                         iOS's native Switch couldn't be styled to look
@@ -2765,10 +2755,22 @@ class ConferenceBox extends Component {
                     </View>
                 </View>
                );
-
-        } else {
-            return null;
         }
+
+        // No toggle (image preview, or our own upload): while a transfer is
+        // actively running, surface a live percentage so the bubble visibly
+        // progresses, matching the 1-to-1 upload/download UI.
+        if (transferring) {
+            return (
+                <View style={styles.downloadContainer}>
+                    <Text style={styles.uploadProgress}>
+                        {(currentMessage.direction === 'incoming' ? 'Downloading ' : 'Uploading ') + progressLabel}
+                    </Text>
+                </View>
+            );
+        }
+
+        return null;
     };
 
     failedFileUploadMessage(id) {
@@ -2790,9 +2792,14 @@ class ConferenceBox extends Component {
     async uploadFile(fileObject) {
         console.log('Uploading file', fileObject);
 
-        var id =  md5.hex_md5(this.state.remoteUri + '_' + basename);
+        // basename must be computed BEFORE the transfer_id md5: previously
+        // `id` was hashed from `basename` while it was still undefined
+        // (hoisted but unassigned), so every upload got the same id
+        // md5(remoteUri + '_undefined') — colliding across files and never
+        // matching the id listSharedFiles() derives from the real filename.
         let filepath = fileObject.uri ? fileObject.uri : fileObject;
         const basename = filepath.split('\\').pop().split('/').pop();
+        var id =  md5.hex_md5(this.state.remoteUri + '_' + basename);
         let stats_filename = filepath.startsWith('file://') ? filepath.substr(7, filepath.length - 1) : filepath;
         const { size } = await ReactNativeBlobUtil.fs.stat(stats_filename);
 
@@ -2802,7 +2809,11 @@ class ConferenceBox extends Component {
                               'sender': {'uri': this.state.accountId},
                               'receiver': {'uri': this.state.remoteUri},
                               'transfer_id': id,
-                              'direction': 'outgoing'
+                              'direction': 'outgoing',
+                              // Start at 0 so the bubble shows "Uploading 0 %"
+                              // the instant it appears, then animates up as the
+                              // upload progresses — like the 1-to-1 upload UI.
+                              'progress': 0
                               };
 
         if (fileObject.filetype) {
@@ -2843,42 +2854,49 @@ class ConferenceBox extends Component {
         file_transfer.progress = 0;
         msg.metadata = file_transfer;
 
-        RNFS.readFile(localPath, 'base64').then(res => {
-            // Persist the now-fully-populated message (metadata
-            // including url, local_url, transfer_id, progress=0)
-            // to the conference chat history table.
-            //
-            // NOTE: do NOT GiftedChat.append the same msg into
-            // renderMessages again here. The message was already
-            // added to renderMessages above (line ~1113, right
-            // after constructing the initial msg), and msg.metadata
-            // was then mutated in place (line ~1122). React state
-            // holds the same object reference, so the updated
-            // metadata is already visible to the next render.
-            // Appending again resulted in a duplicate bubble for
-            // every uploaded file — the "double message" the user
-            // reported. Removing the second append leaves a single
-            // bubble whose progress animates 0→100 as expected.
-            this.saveConferenceMessage(this.state.remoteUri, msg);
+        // Persist the now-fully-populated message (metadata including url,
+        // local_url, transfer_id, progress=0) to the conference chat history
+        // table.
+        //
+        // NOTE: do NOT GiftedChat.append the same msg into renderMessages
+        // again here. The message was already added to renderMessages above,
+        // and msg.metadata was then mutated in place. React state holds the
+        // same object reference, so the updated metadata is already visible to
+        // the next render. Appending again resulted in a duplicate bubble for
+        // every uploaded file — the "double message" the user reported.
+        this.saveConferenceMessage(this.state.remoteUri, msg);
 
-            var oReq = new XMLHttpRequest();
-            oReq.addEventListener("load", this.transferComplete);
-            oReq.addEventListener("error", this.transferFailed);
-            oReq.addEventListener("abort", this.transferCanceled);
-            oReq.open('POST', file_transfer.url);
-            const formData = new FormData();
-            formData.append(res);
+        // Upload the RAW file bytes. The SylkServer filesharing endpoint
+        // (webrtcgateway/web.py) writes request.content verbatim to disk and
+        // uses Content-Length for the size, so we must stream the binary file
+        // — not a base64 string wrapped in FormData (which the old code did
+        // via XMLHttpRequest, corrupting every uploaded file). This mirrors
+        // the working 1-to-1 path in app.js: RNBlobUtil.fetch + wrap().
+        const contentType = file_transfer.filetype
+            || (fileObject && fileObject.type)
+            || 'application/octet-stream';
 
-            oReq.send(formData);
-            if (oReq.upload) {
-                oReq.upload.onprogress = ({ total, loaded }) => {
-                    const progress = Math.ceil(loaded / total * 100);
-                    this.updateFileMessage(id, progress);
-                };
-            }
+        let task = ReactNativeBlobUtil.fetch('POST', file_transfer.url, {
+            'Content-Type': contentType,
+        }, ReactNativeBlobUtil.wrap(localPath));
+
+        this.uploadRequests[id] = task;
+
+        task.uploadProgress((written, total) => {
+            const progress = Math.ceil((written / total) * 100);
+            this.updateFileMessage(id, progress);
+        });
+
+        task.then((res) => {
+            const status = res && res.info ? res.info().status : 'unknown';
+            console.log('[conference upload] complete', basename, 'status', status);
+            this.updateFileMessage(id, 100);
+            delete this.uploadRequests[id];
         })
-        .catch(err => {
-            console.log('Failed to upload file', err.message, err.code);
+        .catch((err) => {
+            console.log('Failed to upload file', err && err.message, err && err.code);
+            this.updateFileMessage(id, 0, true);
+            delete this.uploadRequests[id];
         });
     }
 
@@ -2915,6 +2933,23 @@ class ConferenceBox extends Component {
                      msg.sent = msg.direction === 'outgoing' ? true : false;
                      msg.received = true;
                      msg.text = utils.beautyFileNameForBubble(msg.metadata);
+
+                     // Attach the now-downloaded media to the bubble so it
+                     // renders inline immediately. Previously msg.image was only
+                     // set in listSharedFiles' "file already exists" branch, so a
+                     // freshly auto-downloaded image showed just its "Photo" text
+                     // until the user left the conference chat and came back.
+                     if (msg.metadata && msg.metadata.local_url) {
+                         const _src = Platform.OS === "android" ? 'file://' + msg.metadata.local_url : msg.metadata.local_url;
+                         if (utils.isImage(msg.metadata.filename)) {
+                             msg.image = _src;
+                         } else if (utils.isAudio(msg.metadata.filename)) {
+                             msg.audio = _src;
+                         } else if (utils.isVideo(msg.metadata.filename)) {
+                             msg.video = _src;
+                         }
+                     }
+
                      console.log(msg.metadata.filename, msg.direction === 'outgoing' ? 'Upload completed' : 'Download completed');
                      //console.log('Update metadata', msg.metadata);
                      this.updateConferenceMessage(this.state.remoteUri, msg);
@@ -2941,13 +2976,28 @@ class ConferenceBox extends Component {
         });
     }
 
-    async listSharedFiles() {
-        //console.log('--- List shared files');
+    // Reconcile this.state.sharedFiles (pushed by the server) into chat
+    // bubbles. This MUST be idempotent: it runs on mount and on every
+    // fileSharing event, and the user navigates in/out of the conference
+    // chat repeatedly. The old version did a destructive
+    // setState(GiftedChat.append(new_messages, [])) and `return` the moment
+    // it matched the FIRST already-present file — which (a) collapsed the
+    // whole chat to a single bubble and rebuilt it (the "flashing"), (b)
+    // never processed the remaining files, and (c) re-evaluated download
+    // state on every pass. This version only appends genuinely-new files,
+    // never re-downloads an existing one, and refreshes inline media in
+    // place without nuking the list.
+    helperFileSrc(local_url) {
+        return Platform.OS === "android" ? 'file://' + local_url : local_url;
+    }
 
-        let messages = this.state.renderMessages;
-        let new_messages = [];
-        let found = false;
-        let exists = false;
+    async listSharedFiles() {
+        const existingById = {};
+        this.state.renderMessages.forEach((m) => { existingById[m._id] = m; });
+
+        const toAppend = [];
+        const appendedIds = new Set();
+        let mutatedExisting = false;
 
         for (const file of this.state.sharedFiles) {
             if (file.session === this.props.call.id) {
@@ -2955,97 +3005,93 @@ class ConferenceBox extends Component {
                 continue;
             }
 
-            let metadata = {};
-            let text;
-            let url;
-            let msg;
-            found = false;
-            exists = false;
+            const transfer_id = md5.hex_md5(this.state.remoteUri + '_' + file.filename);
 
-            metadata.transfer_id = md5.hex_md5(this.state.remoteUri + '_' + file.filename);
+            if (this.deletedSharedFiles.has(transfer_id)) {
+                // User deleted this file locally — don't re-add it.
+                continue;
+            }
 
-            for (const msg of messages) {
-                if (msg._id === metadata.transfer_id) {
-                    found = true;
-                    metadata = msg.metadata;
-                    console.log('File transfer', metadata.filename, 'already exists');
-                    msg.text = utils.beautyFileNameForBubble(metadata);
-                    exists = await RNFS.exists(metadata.local_url);
-                    if (exists) {
-                        console.log('Local file', metadata.filename, 'already exists');
-                        metadata.received = true;
-                        if (utils.isImage(metadata.filename)) {
-                            msg.image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                        } else if (utils.isAudio(metadata.filename)) {
-                            msg.audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                        } else if (utils.isVideo(metadata.filename)) {
-                            msg.video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
+            // Already shown (or already queued this pass)? Refresh inline media
+            // if the local file is now present, but never re-add or re-download.
+            const existingMsg = existingById[transfer_id];
+            if (existingMsg || appendedIds.has(transfer_id)) {
+                if (existingMsg) {
+                    const md = existingMsg.metadata || {};
+                    if (md.local_url && !existingMsg.image && !existingMsg.audio && !existingMsg.video) {
+                        const onDisk = await RNFS.exists(md.local_url);
+                        if (onDisk) {
+                            const src = this.helperFileSrc(md.local_url);
+                            if (utils.isImage(md.filename)) { existingMsg.image = src; md.received = true; mutatedExisting = true; }
+                            else if (utils.isAudio(md.filename)) { existingMsg.audio = src; md.received = true; mutatedExisting = true; }
+                            else if (utils.isVideo(md.filename)) { existingMsg.video = src; md.received = true; mutatedExisting = true; }
                         }
-                     } else {
-                         metadata.received = false;
-                         msg.image = null;
-                         msg.audio = null;
-                         msg.video = null;
-                     }
-                     console.log('Updated message', msg);
-                     new_messages.push(msg);
+                    }
                 }
+                continue;
             }
 
-            if (found) {
-                 this.setState({renderMessages: GiftedChat.append(new_messages, [])});
-                 console.log('Update list and return');
-                 return;
-            }
-
-            metadata.filesize = file.filesize;
-            metadata.filename = file.filename;
-            metadata.sender = {uri: file.uploader.uri};
-            metadata.receiver = {uri: this.state.remoteUri};
-            metadata.session = file.session;
-            metadata.url = this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + metadata.session + '/' + metadata.name;
+            // New shared file — build a bubble.
+            const metadata = {
+                transfer_id: transfer_id,
+                filesize: file.filesize,
+                filename: file.filename,
+                sender: {uri: file.uploader.uri},
+                receiver: {uri: this.state.remoteUri},
+                session: file.session,
+                // Download via OUR OWN session id (this.props.call.id) and the
+                // real filename. The server (webrtcgateway/web.py) looks files
+                // up by filename and only requires session_id to be any valid
+                // session in the room. Matches sylk-desktop.
+                url: this.props.fileSharingUrl + '/' + this.state.remoteUri + '/' + this.props.call.id + '/' + file.filename,
+                local_url: this.filePath(file.filename),
+            };
             metadata.direction = metadata.sender.uri === this.props.account.id ? 'outgoing' : 'incoming';
-            metadata.local_url = this.filePath(metadata.filename);
 
-            console.log('--- Shared file:', metadata);
+            const msg = {
+                _id: transfer_id,
+                key: transfer_id,
+                createdAt: new Date(),
+                text: utils.beautyFileNameForBubble(metadata),
+                metadata: metadata,
+                // Carry direction explicitly so saveConferenceMessage() doesn't
+                // mis-infer it from `received` (see that method).
+                direction: metadata.direction,
+                received: false,
+                failed: false,
+                sent: false,
+                user: metadata.direction === 'incoming' ? {_id: metadata.sender.uri, name: metadata.sender.displayName || metadata.sender.uri} : {}
+            };
 
-            text = utils.beautyFileNameForBubble(metadata);
-
-            msg = {
-                  _id: metadata.transfer_id,
-                  key: metadata.transfer_id,
-                  createdAt: new Date(),
-                  text: text,
-                  url: url,
-                  metadata: metadata,
-                  received: false,
-                  failed: false,
-                  sent: false,
-                  user: metadata.direction === 'incoming' ? {_id: metadata.sender.uri, name: metadata.sender.displayName || metadata.sender.uri} : {}
-                };
-
-            exists = await RNFS.exists(metadata.local_url);
-            if (exists) {
-                console.log('Local file new', metadata.local_url, 'already exists');
+            const onDisk = await RNFS.exists(metadata.local_url);
+            if (onDisk) {
                 metadata.received = true;
-
-                if (utils.isImage(metadata.filename)) {
-                    msg.image = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                } else if (utils.isAudio(metadata.filename)) {
-                    msg.audio = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                } else if (utils.isVideo(metadata.filename)) {
-                    msg.video = Platform.OS === "android" ? 'file://'+ metadata.local_url : metadata.local_url;
-                }
-
-            } else {
+                const src = this.helperFileSrc(metadata.local_url);
+                if (utils.isImage(metadata.filename)) { msg.image = src; }
+                else if (utils.isAudio(metadata.filename)) { msg.audio = src; }
+                else if (utils.isVideo(metadata.filename)) { msg.video = src; }
+            } else if (utils.isImage(metadata.filename)) {
+                // Images auto-download (preview inline).
                 metadata.progress = 0;
-                if (isImage) {
-                    this.downloadFile(metadata);
-                }
+                this.downloadFile(metadata);
+            } else {
+                // Non-image files are NOT auto-downloaded — progress === null
+                // makes renderCustomView show the manual download control.
+                metadata.progress = null;
             }
+
             this.saveConferenceMessage(this.state.remoteUri, msg);
-            console.log('Adding message for file transfer', msg);
-            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, [msg])});
+            toAppend.push(msg);
+            appendedIds.add(transfer_id);
+        }
+
+        if (toAppend.length > 0) {
+            // Single non-destructive append — preserves all existing bubbles.
+            this.setState({renderMessages: GiftedChat.append(this.state.renderMessages, toAppend)});
+        } else if (mutatedExisting) {
+            // Only inline media changed on existing bubbles; re-render without
+            // rebuilding the list.
+            this.setState({renderMessages: this.state.renderMessages.slice()});
         }
 
         setTimeout(() => {
@@ -3109,22 +3155,21 @@ class ConferenceBox extends Component {
                 url: metadata.url,
                 destination: metadata.local_url
             }).begin((tinfo) => {
-	            if (tinfo.expectedBytes) {
+	            if (tinfo && tinfo.expectedBytes) {
                     this.updateFileMessage(metadata.transfer_id, 0);
-                    console.log(metadata.name, 'will download', expectedBytes, 'bytes');
+                    console.log(metadata.filename, 'will download', tinfo.expectedBytes, 'bytes');
                 }
             }).progress((pdata) => {
 				if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
 					const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
 					const progress = Math.ceil(percent);
-					file_transfer.progress = progress;
                     this.updateFileMessage(metadata.transfer_id, progress);
 				}
             }).done(() => {
                 this.updateFileMessage(metadata.transfer_id, 100);
                 delete this.downloadRequests[metadata.transfer_id];
             }).error((error) => {
-                console.log(metadata.name, 'download error:', error);
+                console.log(metadata.filename, 'download error:', error);
                 this.updateFileMessage(metadata.transfer_id, 0, error);
                 delete this.downloadRequests[metadata.transfer_id];
             });
@@ -3138,12 +3183,19 @@ class ConferenceBox extends Component {
             if (currentMessage.local_url) {
                 options.push('Open');
             }
+            // Allow deleting a shared-file message locally. Any file bubble
+            // (downloaded or not) carries metadata with a transfer_id.
+            const isFile = !!(currentMessage.metadata && currentMessage.metadata.transfer_id);
+            if (isFile) {
+                options.push('Delete');
+            }
             options.push('Cancel');
 
             //console.log('currentMessage', currentMessage);
             let l = options.length - 1;
+            const destructiveButtonIndex = isFile ? options.indexOf('Delete') : undefined;
 
-            context.actionSheet().showActionSheetWithOptions({options, l}, (buttonIndex) => {
+            context.actionSheet().showActionSheetWithOptions({options, cancelButtonIndex: l, destructiveButtonIndex}, (buttonIndex) => {
                 let action = options[buttonIndex];
                 if (action === 'Copy') {
                     Clipboard.setString(currentMessage.text);
@@ -3155,9 +3207,51 @@ class ConferenceBox extends Component {
                     .catch(error => {
                         // error
                     });
+                } else if (action === 'Delete') {
+                    this.deleteSharedFile(currentMessage);
                 }
             });
         }
+    };
+
+    // Delete a shared-file message from the LOCAL conference chat only. Removes
+    // the bubble, the downloaded file on disk (if any), and the persisted chat
+    // row, and remembers the transfer_id so listSharedFiles() won't re-add it
+    // when props.call.sharedFiles is re-pushed. The file stays on the server
+    // and in other participants' views — this is a local delete.
+    async deleteSharedFile(currentMessage) {
+        const metadata = currentMessage.metadata || {};
+        const id = currentMessage._id || metadata.transfer_id;
+
+        if (metadata.transfer_id) {
+            this.deletedSharedFiles.add(metadata.transfer_id);
+        }
+
+        // Cancel an in-flight download for this file, if any.
+        if (metadata.transfer_id && metadata.transfer_id in this.downloadRequests) {
+            try {
+                this.downloadRequests[metadata.transfer_id].stop();
+            } catch (e) {}
+            delete this.downloadRequests[metadata.transfer_id];
+        }
+
+        // Remove the local copy from disk, if it was downloaded.
+        const localPath = metadata.local_url || currentMessage.local_url;
+        if (localPath) {
+            try {
+                if (await RNFS.exists(localPath)) {
+                    await RNFS.unlink(localPath);
+                }
+            } catch (e) {
+                console.log('Failed to delete local file', localPath, e && e.message);
+            }
+        }
+
+        // Drop the bubble from the rendered list and the persisted history.
+        this.setState({
+            renderMessages: this.state.renderMessages.filter((m) => m._id !== id)
+        });
+        this.props.deleteConferenceMessage(this.state.remoteUri, currentMessage);
     };
 
     removeInvitedParticipant(uri) {
@@ -4559,6 +4653,21 @@ class ConferenceBox extends Component {
         stateFiles = stateFiles.concat(files);
         this.setState({sharedFiles: stateFiles});
         this.listSharedFiles();
+
+        // Drive the navbar chat-icon unread badge for incoming uploads,
+        // mirroring the text-message path. A file is "incoming" when its
+        // session is not our own (file.session !== this.props.call.id).
+        // Only bump while the chat surface isn't actually visible (same
+        // _chatVisible gate used by the message handler).
+        const _chatVisible = !!this.state.audioChatView
+            || (!!this.state.chatView && !this.audioOnlyView);
+        if (!_chatVisible) {
+            const _incoming = (files || []).filter(
+                (f) => f && f.session !== (this.props.call && this.props.call.id)).length;
+            if (_incoming > 0) {
+                this.setState((s) => ({ chatUnreadCount: (s.chatUnreadCount || 0) + _incoming }));
+            }
+        }
     }
 
     onVideoSelected(item) {
@@ -8019,6 +8128,36 @@ class ConferenceBox extends Component {
                 </View>
             );
 
+            // Same audio call-control cluster, rendered at the TOP of the chat
+            // column when the chat is on screen (audioChatView). The audio view
+            // shows these controls at the bottom (audioViewActionBar, which is
+            // null while the chat is up), so the chat view would otherwise have
+            // no call controls — the user asked for the same bar on top of the
+            // chat. The two bars are never visible at once (audioViewActionBar
+            // is gated to !audioChatView), so reusing the same button elements
+            // here is safe. Landscape folds these into the navbar instead.
+            var chatTopActionBar = this.state.isLandscape ? null : (
+                // marginTop:40 mirrors chatContainer's clearance so the bar
+                // sits BELOW the conference navbar instead of half-tucked
+                // under it (the chat column uses the same 40dp offset).
+                <View style={[styles.chatTopActionBar, {marginTop: 40}]}>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioDevicePickerButton}
+                    </View>
+                    <View style={styles.audioViewActionBarButton}>
+                        {audioMuteButton}
+                    </View>
+                    {audioRecordButton ? (
+                        <View style={styles.audioViewActionBarButton}>
+                            {audioRecordButton}
+                        </View>
+                    ) : null}
+                    <View style={[styles.audioViewActionBarButton, {marginLeft: 30}]}>
+                        {audioHangupButton}
+                    </View>
+                </View>
+            );
+
             // Conference recording is now an inline IconButton
             // inside audioViewActionBar (audioRecordButton, defined
             // below) instead of a floating pill overlay. The pill
@@ -9264,7 +9403,11 @@ class ConferenceBox extends Component {
 			chatContainer = {
 			  flex: 1,
 			  width: '100%',
-			  marginTop: 40,
+			  // Portrait audio-chat shows chatTopActionBar above the chat,
+			  // which already carries the 40dp navbar clearance — so the chat
+			  // itself needs none there (avoids a double gap). Landscape has no
+			  // top bar, so it keeps the 40dp offset to clear the navbar.
+			  marginTop: this.state.isLandscape ? 40 : 0,
 			  overflow: 'hidden',
 			};
 
@@ -9932,7 +10075,7 @@ class ConferenceBox extends Component {
 						<Fragment>
 							{!this.state.audioChatView ? audioListTopActionBar : null}
 							{!this.state.audioChatView ? participantsColumn : null}
-							{this.state.audioChatView ? chatBackToAudioButton : null}
+							{this.state.audioChatView ? chatTopActionBar : null}
 							{this.state.audioChatView ? chatColumn : null}
 						</Fragment>
 					);

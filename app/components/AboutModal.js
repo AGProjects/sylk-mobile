@@ -8,6 +8,7 @@ import {
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
   ScrollView,
+  Dimensions,
 } from 'react-native';
 import PropTypes from 'prop-types';
 import { Surface } from 'react-native-paper';
@@ -92,6 +93,17 @@ const AboutModal = (props) => {
     }, TAP_TIMEOUT);
   };
 
+  // Orientation-agnostic sizing: derive the scroll-body height from the current
+  // window instead of a fixed 520 (which overflowed in landscape). Width is
+  // capped and centred in landscape so the card doesn't stretch edge-to-edge.
+  const _winH = Dimensions.get('window').height;
+  const _winW = Dimensions.get('window').width;
+  const _isLandscape = _winW > _winH;
+  const _scrollMaxHeight = _isLandscape
+    ? Math.max(160, Math.floor(_winH * 0.8))
+    : Math.min(520, Math.floor(_winH * 0.8));
+  const _surfaceExtra = _isLandscape ? { alignSelf: 'center', maxWidth: Math.min(560, _winW * 0.85) } : null;
+
   return (
     <Modal
       style={containerStyles.container}
@@ -114,9 +126,9 @@ const AboutModal = (props) => {
           >
             {/* Block dismiss when taps land inside the card. */}
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={containerStyles.modalSurface}>
+              <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
                 <ScrollView
-                  style={{ maxHeight: 520 }}
+                  style={{ maxHeight: _scrollMaxHeight }}
                   keyboardShouldPersistTaps="handled"
                 >
                   <Text style={containerStyles.title}>About Blink</Text>

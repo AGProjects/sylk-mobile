@@ -68,6 +68,7 @@ import {
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import RenderHTML from 'react-native-render-html';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import utils from '../utils';
 
 // Labels that earn a spot in the floating primary row (the "most
 // likely actions"). Everything else (that isn't 'Cancel') falls
@@ -250,6 +251,17 @@ const MessageContextMenu = ({
                 .replace(/background-color:[^;"]+;?/gi, '')
                 .replace(/color:[^;"]+;?/gi, '');
             const fg = isOutgoing ? C.echoTextOut : C.echoText;
+            // Wide/complex HTML (e.g. a pasted table) renders broken here; show a
+            // small text preview instead (matches the thread bubble).
+            if (/<table|<tr|<td|<th/i.test(html)) {
+                return (
+                    <View style={[styles.echoBubble, { backgroundColor: isOutgoing ? C.echoBgOut : C.echoBg }]}>
+                        <Text style={{ color: fg, fontSize: 15 }} numberOfLines={6} ellipsizeMode="tail">
+                            {utils.html2text(message.html)}
+                        </Text>
+                    </View>
+                );
+            }
             return (
                 <View
                     style={[

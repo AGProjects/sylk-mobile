@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet } from 'react-native';
+import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet, Dimensions } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
@@ -74,6 +74,17 @@ class LocationPrivacyDisclosureModal extends Component {
         // context, so a sibling Modal would silently fail to appear.
         // Same pattern as CallRecordingDisclosureModal.
         if (this.props.inline && !this.state.show) return null;
+        // Orientation-agnostic sizing: derive the scroll-body height from the
+        // current window instead of a fixed 360 (which overflowed in landscape
+        // and clipped the action buttons). Width is capped/centred in landscape.
+        const _winH = Dimensions.get('window').height;
+        const _winW = Dimensions.get('window').width;
+        const _isLandscape = _winW > _winH;
+        const _scrollMaxHeight = _isLandscape
+            ? Math.max(140, Math.floor(_winH * 0.45))
+            : Math.min(360, Math.floor(_winH * 0.55));
+        const _surfaceExtra = _isLandscape ? { alignSelf: 'center', maxWidth: Math.min(560, _winW * 0.85) } : null;
+
         // The body. In Modal mode it's a child of <Modal>; in inline
         // mode it's a child of an absolute-fill <View>.
         const body = (
@@ -82,7 +93,7 @@ class LocationPrivacyDisclosureModal extends Component {
                         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                     >
-                            <Surface style={containerStyles.modalSurface}>
+                            <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
                                     <Text style={containerStyles.title}>
                                         Location privacy policy
                                     </Text>
@@ -107,7 +118,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                         the user a visual cue that there's
                                         more content below the cut. */}
                                     <ScrollView
-                                        style={{ maxHeight: 360 }}
+                                        style={{ maxHeight: _scrollMaxHeight }}
                                         nestedScrollEnabled={true}
                                         showsVerticalScrollIndicator={true}
                                         keyboardShouldPersistTaps="handled"

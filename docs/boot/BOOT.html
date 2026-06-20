@@ -1,0 +1,180 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>First-Start Sequence</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+</style></head><body>
+<h1 id="first-start-sequence">First-Start Sequence</h1>
+<h2 id="purpose">Purpose</h2>
+<p>Describe what happens, in order, the <strong>first time a freshly installed device signs into an account</strong> — and how that differs from a normal reload. The first start is sequenced deliberately so the heavy one-time work (importing the server contact list, backfilling message history) runs without interruption and without confusing the user with prompts, banners, or incoming calls before the account is set up.</p>
+<p>The guiding rule: <strong>import the authoritative contact list first, keep the device quiet while doing it, then bring the user into a ready, fully-set-up state.</strong></p>
+<hr />
+<h2 id="actors">Actors</h2>
+<ul>
+<li><strong>App</strong> — local SQLite is the source of truth for the UI; it reconciles against the server and renders from SQLite.</li>
+<li><strong>react-native-sylkrtc</strong> — the connection/account library; exposes the addressbook and emits journal (message-history) batches.</li>
+<li><strong>SylkServer + openxcap</strong> — registration/auth, the XCAP addressbook, and the message journal.</li>
+</ul>
+<hr />
+<h2 id="fresh-first-start-the-sequenced-path">Fresh first start (the sequenced path)</h2>
+<ol>
+<li><p><strong>Launch.</strong> The active account row is loaded from SQLite; local contacts load (empty on a fresh install). PGP keys do not exist yet.</p></li>
+<li><p><strong>Connect and register.</strong> The account is added to the connection and <strong>registers</strong>. Registration is mandatory — it is the authentication step, and it is also what triggers the server to deliver the <strong>XCAP addressbook</strong>. (We cannot skip it to avoid incoming traffic; instead the device is quieted with DND, below.)</p></li>
+<li><p><strong>Journal waits for keys.</strong> The first message-history (journal) sync is requested but parks itself — <em>"waiting for keys"</em> — because messages are end-to-end encrypted and can't be processed without the private key.</p></li>
+<li><p><strong>Contacts sync begins (the one-time migration).</strong> Once the addressbook data arrives and the app state is fully settled for this account, the <strong>addressbook migration</strong> runs (guard sees <code>ab_migration = 0</code>). While it runs, the device is put into a quiet, non-distracting setup mode:</p>
+<ul>
+<li><strong>Silent DND</strong> is enabled — incoming calls / live messages are dropped client-side so they don't compete with the import. No "Do not disturb" toast is shown, and the DND pill / navbar bell-off glyph are hidden (the user didn't turn it on).</li>
+<li>A <strong>"Syncing contacts…" spinner</strong> is shown above the contacts list.</li>
+<li>The <strong>"no private key" banner is hidden</strong>, the <strong>import-key modal is deferred</strong>, the <strong>server call-history is deferred</strong>, and <strong>notification-permission prompts are held back</strong>.</li>
+<li><code>syncGroupsTable</code> (the live group sync) is <strong>skipped</strong> while the migration runs — the migration owns group reconciliation — and the migration's group phase runs in bulk mode. Per-contact writes are coalesced and zero-unread native writes are skipped, so the import is fast (single-digit seconds for ~100 contacts).</li>
+<li>The per-account <strong><code>install_date</code></strong> is recorded; SIP/media/QoS traces for calls older than the install are never backfilled.</li>
+</ul></li>
+<li><p><strong>Contacts sync completes.</strong> The migration persists its marker (<code>ab_migration = 18</code>), then, <strong>in order</strong>: restores DND, hides the spinner, and only <strong>then</strong> surfaces the deferred work — the <strong>import-key modal</strong> ("Another Sylk device?") appears and the deferred server call-history is replayed. (The modal is intentionally shown <em>after</em> the spinner clears, never overlapping it.)</p></li>
+<li><p><strong>User imports the private key.</strong> Keys now exist on the device.</p></li>
+<li><p><strong>Journal (message history) backfills.</strong> With keys present, the parked journal sync runs. Because the contact list is already authoritative as of the sync-start moment, the journal <strong>never creates new contacts</strong> and <strong>skips messages for URIs that aren't contacts</strong> (history for since-deleted contacts) — except messages newer than the sync-start boundary, which arrived live during the backfill. Contact updates from the journal are coalesced into a single write pass per page.</p></li>
+<li><p><strong>First journal sync completes.</strong> Only now is the <strong>OS notification-permission prompt</strong> surfaced (it was deferred through the whole setup). The device is fully ready.</p></li>
+</ol>
+<p>Net experience: register → quiet "Syncing contacts…" → (a few seconds) → import-key modal → import key → history fills in → notification prompt. No stray calls, banners, or prompts during setup.</p>
+<hr />
+<h2 id="normal-reload-already-migrated-account">Normal reload (already-migrated account)</h2>
+<p>On every subsequent start the account is already migrated, so the path is much shorter:</p>
+<ul>
+<li>Register; the addressbook is delivered.</li>
+<li>The migration <strong>guard</strong> sees <code>ab_migration</code> is current and returns immediately, marking the account ready — which <strong>flushes the same deferred work</strong>: any pending import-key modal is shown and any deferred call-history is replayed. (Same <code>_onContactsReady</code> hook as the fresh path, so the import-key modal is never shown before contacts are known.)</li>
+<li>No silent DND, no "Syncing contacts…" spinner, no contacts migration delay.</li>
+<li>Journal sync runs incrementally from the saved cursor; notification permission isn't re-prompted if already decided.</li>
+</ul>
+<hr />
+<h2 id="why-each-thing-is-deferred">Why each thing is deferred</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Deferred until…</th>
+<th>Item</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Migration done</td>
+<td>Import-key ("Another Sylk device?") modal</td>
+<td>The user shouldn't be asked about keys before their contacts exist; and it must not overlap the syncing spinner.</td>
+</tr>
+<tr class="even">
+<td>Migration done</td>
+<td>Server call-history processing</td>
+<td>Tallying calls against a half-built contact list mislabels them as "no-contact"; it also competes with the migration for SQLite.</td>
+</tr>
+<tr class="odd">
+<td>Migration done</td>
+<td>"No private key" banner</td>
+<td>The import-key modal is deferred, so a "no key" banner would be premature.</td>
+</tr>
+<tr class="even">
+<td>First journal sync done</td>
+<td>OS notification-permission prompt</td>
+<td>An OS dialog shouldn't interrupt initial setup.</td>
+</tr>
+<tr class="odd">
+<td>(Never, on fresh)</td>
+<td>Incoming calls / live messages</td>
+<td>Silenced via client-side DND for the migration window, restored after.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="resilience-during-boot">Resilience during boot</h2>
+<ul>
+<li><strong>Unreachable server.</strong> If a fetch returns an empty addressbook (XCAP down) while the device still has server-linked contacts, the app treats it as a failed fetch and skips reconciliation — it never mistakes an outage for "everything was deleted". The UI renders from local SQLite regardless.</li>
+<li><strong>Interrupted migration.</strong> The migration is marked done only on a fully clean run; otherwise it retries on the next load. The deferred modal/history are surfaced only once the migration truly completes.</li>
+<li><strong>Failed writes.</strong> Contact writes that don't reach the server are queued and re-pushed on the next good sync.</li>
+</ul>
+<hr />
+<h2 id="key-signals-for-reference">Key signals (for reference)</h2>
+<ul>
+<li><code>ab_migration</code> (accounts column) — <code>0</code> = never migrated (fresh); <code>&gt;= current version</code> = done.</li>
+<li><code>contactsSyncing</code> (state) — true only during a fresh migration; drives the spinner, hides the no-key banner, and (via the migration-done gate) defers the import-key modal.</li>
+<li><code>_firstJournalSyncDone</code> (session flag) <strong>OR</strong> <code>lastSyncId</code> (persisted) — gates the notification-permission prompt. The persisted <code>lastSyncId</code> is essential: it means the first sync already completed in a prior session, so a reload doesn't defer the prompt forever (the session flag alone would).</li>
+<li><code>install_date</code> (accounts column) — boundary for skipping historical call-trace backfill.</li>
+<li><code>_onContactsReady()</code> — single hook that surfaces deferred work (import-key modal + call-history), called from both the fresh clean-done path and the already-migrated guard.</li>
+</ul>
+<hr />
+<h2 id="performance-measured">Performance (measured)</h2>
+<p>A full from-scratch run on a mid-range device (FIIO M27, Android 13), account with <strong>87 server contacts</strong> and <strong>~9,130 messages</strong> of history:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Phase</th>
+<th>Volume</th>
+<th>Time</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Contacts migration (XCAP → local)</td>
+<td>87 contacts</td>
+<td><strong>8.9 s</strong></td>
+<td>Down from <strong>~73 s</strong> before optimization — ~<strong>8× faster</strong>.</td>
+</tr>
+<tr class="even">
+<td>Journal backfill (message history)</td>
+<td>~9,130 msgs, 20 files</td>
+<td><strong>93.4 s</strong></td>
+<td>Fetch + insert of <strong>still-encrypted</strong> rows (~10 ms/msg). Decryption is <em>not</em> done here — it's deferred to chat-open.</td>
+</tr>
+<tr class="odd">
+<td>Call traces / QoS for old calls</td>
+<td>100 historical calls</td>
+<td><strong>0 fetched</strong></td>
+<td>Skipped by the <code>install_date</code> gate (saved ~200 HTTP round-trips).</td>
+</tr>
+<tr class="even">
+<td>Whole boot (register → history done)</td>
+<td>—</td>
+<td><strong>~2 m 46 s</strong></td>
+<td>Contacts usable at ~9 s; the rest streams in.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Where the migration's ~8× came from.</strong> The original 73 s was dominated by <em>contention</em>, not per-write cost: server call-history processing, <code>syncGroupsTable</code>, and message saves all hit the single SQLite connection concurrently. Removing that contention did most of the work:</p>
+<ul>
+<li>Defer <strong>server call-history</strong> until the migration is done (no competing writes).</li>
+<li><strong>Skip <code>syncGroupsTable</code></strong> while the migration runs (it owns group reconciliation).</li>
+<li>Run the migration's group phase in <strong>bulk mode</strong> (no per-save re-render / favorite-blocked churn).</li>
+<li><strong>Skip the native unread write</strong> for zero-unread imported contacts.</li>
+</ul>
+<p>Measured migration writes: 137 contact rows for 87 contacts in 8.9 s.</p>
+<p><strong>Journal coalescing.</strong> Contact updates from the 20 journal files were <strong>coalesced into a single flush of 27 writes</strong> instead of one write per (file × contact) — which would have been many hundreds. The remaining 93 s is fetching and inserting the ~9,130 encrypted rows (network + IO); batching the inserts into transactions is the next available lever.</p>
+<p><strong>Decryption is lazy and viewport-first.</strong> Crucially, the journal backfill does <strong>not</strong> decrypt anything — messages land still-encrypted and are decrypted only when a contact is opened. Because a busy thread holds back the UI, the per-chat decrypt is ordered <strong>newest-first</strong>: rows load <code>unix_timestamp DESC</code>, so the most recent (in-viewport) messages and images decrypt first while older history above the fold drains afterward with bounded concurrency. Text uses a 4-wide queue (newest 4 with no breath); already-downloaded encrypted images use a 2-wide queue (newest 2 with no breath). Leaving the chat aborts the rest. The user can read the latest messages within a beat instead of waiting for the whole conversation to decrypt.</p>
+<p><strong>Quiet, gated setup.</strong> Across the whole run: <strong>0 errors</strong>, <strong>0 moment warnings</strong>, migration ran <strong>exactly once</strong>, DND was silently on for the 8.9 s contacts window only, and no OS prompts or stray "no key" banners appeared before the contacts were ready.</p>
+<hr />
+<h2 id="lessons-learned">Lessons learned</h2>
+<ol>
+<li><strong>Contention, not per-operation cost, dominated.</strong> The first instinct (batch the SQL into one transaction) would have been risky and largely unnecessary. The real win was <em>serializing</em> the one-time work and <em>deferring</em> everything that competed with it. Measure where the wall-clock actually goes before refactoring a hot path.</li>
+<li><strong>Surface modals after the setup UI is cleared, not during.</strong> The import-key modal first appeared ~4 s <em>before</em> the migration finished, because it was triggered in the clean-done branch while a slow DB persist still ran (the modal's <code>setTimeout</code> fired during the <code>await</code>). Fix: clear the spinner/DND in the <code>finally</code>, <em>then</em> surface deferred modals. Lesson: end-of-phase UI transitions belong after all the phase's <code>await</code>s, in one place.</li>
+<li><strong>Deferral implies re-entrancy — make the deferred work idempotent.</strong> Replaying <code>processServerCallHistory</code> re-ran a timezone conversion that <em>mutated</em> <code>startTime</code> into a Date; the second pass then fed a Date to moment and logged a deprecation warning. Guard mutations so a second pass is a no-op (<code>typeof === 'string'</code>, <code>instanceof Date</code>, etc.).</li>
+<li><strong>Gate one-time-setup behavior on persisted state, not session flags.</strong> <code>_firstJournalSyncDone</code> is reset every launch, so it deferred the notification prompt <em>forever</em> on reloads of an already-synced account. The durable <code>lastSyncId</code> is the correct "first sync ever completed" signal.</li>
+<li><strong>Don't act on encrypted data before the key exists — and re-act when it arrives.</strong> Without a private key, encrypted downloads/decrypts must be denied (no wasted fetches, no stranded "Decrypting…" bubbles). Equally important: once the key lands, the deferred decrypts must be <em>re-triggered</em> (on chat open), or the user is left with empty bubbles.</li>
+<li><strong>Outgoing ≠ "I have it locally."</strong> On a new device, an outgoing file's metadata still carries the sender's local <code>path</code>, which doesn't exist here — so "tap to act" must prefer <strong>download</strong> whenever a server <code>url</code> exists, not attempt a re-upload.</li>
+<li><strong>The journal backfill is now the dominant first-run cost</strong> (~93 s for ~9k messages) — but it's <em>fetch + insert</em>, not decryption. Messages are stored still-encrypted; nothing is decrypted until a contact is opened. Contact writes are no longer a factor (coalesced to 27). The next optimization, if needed, is batching the message inserts into transactions.</li>
+<li><strong>Decrypt what the user is looking at first.</strong> Decryption happens lazily per-chat, and a long decrypt run holds back the UI, so order matters: decrypt <strong>newest-first</strong> (the viewport) and let older history drain behind it with bounded concurrency, abortable when the user leaves. Don't fire every encrypted item at once — that starves the very messages the user wants to read. (This caught a regression where re-enabling deferred <em>image</em> decrypts kicked off every <code>.asc</code> on the page simultaneously, fire-and-forget, with no ordering; it's now a 2-wide newest-first queue, matching the text path.)</li>
+</ol>
+</body></html>

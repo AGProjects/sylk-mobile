@@ -3410,3 +3410,130 @@ index 4366b32..bada906 100644
 +        return this._dtmfSender;
 +    }
  }
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
+index cd4fa13..b1054bf 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
+@@ -17,4 +17,21 @@ RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(audioSessionDidDeactivate) {
+     return nil;
+ }
+ 
++// -------- SYLK APP PATCH (patches/react-native-webrtc+124.0.7.patch) --------
++// Expose RTCAudioSession's manual-audio controls to JS so the app can drive
++// the VoIP audio unit deterministically from CallKit's
++// didActivate/didDeactivateAudioSession callbacks. Without this, WebRTC
++// auto-starts the audio unit when a track is ready, which races against
++// CallKit activation on push-woken incoming calls — symptom: no audio until
++// the user toggles the mic. See app/CallManager.js + app/app.js.
++RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setManualAudio:(BOOL)manual) {
++    [RTCAudioSession sharedInstance].useManualAudio = manual;
++    return nil;
++}
++
++RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setAudioEnabled:(BOOL)enabled) {
++    [RTCAudioSession sharedInstance].isAudioEnabled = enabled;
++    return nil;
++}
++
+ @end
+diff --git a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
+index 4d4eafd..02c9a93 100644
+--- a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
++++ b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
+@@ -28,6 +28,29 @@ class RTCAudioSession {
+       WebRTCModule.audioSessionDidDeactivate();
+     }
+   }
++
++  /**
++   * Enable/disable manual audio mode. When enabled, WebRTC will not
++   * auto-start the audio unit on track readiness; the app must call
++   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++   */
++  static setManualAudio(manual) {
++    // Only valid for iOS
++    if (_reactNative.Platform.OS === 'ios') {
++      WebRTCModule.setManualAudio(!!manual);
++    }
++  }
++
++  /**
++   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++   * when manual audio is enabled.
++   */
++  static setAudioEnabled(enabled) {
++    // Only valid for iOS
++    if (_reactNative.Platform.OS === 'ios') {
++      WebRTCModule.setAudioEnabled(!!enabled);
++    }
++  }
+ }
+ exports.default = RTCAudioSession;
+ //# sourceMappingURL=RTCAudioSession.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
+index 1de961e..af20ee6 100644
+--- a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
++++ b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
+@@ -22,5 +22,28 @@ export default class RTCAudioSession {
+       WebRTCModule.audioSessionDidDeactivate();
+     }
+   }
++
++  /**
++   * Enable/disable manual audio mode. When enabled, WebRTC will not
++   * auto-start the audio unit on track readiness; the app must call
++   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++   */
++  static setManualAudio(manual) {
++    // Only valid for iOS
++    if (Platform.OS === 'ios') {
++      WebRTCModule.setManualAudio(!!manual);
++    }
++  }
++
++  /**
++   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++   * when manual audio is enabled.
++   */
++  static setAudioEnabled(enabled) {
++    // Only valid for iOS
++    if (Platform.OS === 'ios') {
++      WebRTCModule.setAudioEnabled(!!enabled);
++    }
++  }
+ }
+ //# sourceMappingURL=RTCAudioSession.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-webrtc/src/RTCAudioSession.ts b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
+index f2996e7..ab1fcd5 100644
+--- a/node_modules/react-native-webrtc/src/RTCAudioSession.ts
++++ b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
+@@ -22,4 +22,27 @@ export default class RTCAudioSession {
+             WebRTCModule.audioSessionDidDeactivate();
+         }
+     }
++
++    /**
++     * Enable/disable manual audio mode. When enabled, WebRTC will not
++     * auto-start the audio unit on track readiness; the app must call
++     * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++     */
++    static setManualAudio(manual: boolean) {
++        // Only valid for iOS
++        if (Platform.OS === 'ios') {
++            WebRTCModule.setManualAudio(!!manual);
++        }
++    }
++
++    /**
++     * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++     * when manual audio is enabled.
++     */
++    static setAudioEnabled(enabled: boolean) {
++        // Only valid for iOS
++        if (Platform.OS === 'ios') {
++            WebRTCModule.setAudioEnabled(!!enabled);
++        }
++    }
+ }

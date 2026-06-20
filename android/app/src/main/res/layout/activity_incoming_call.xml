@@ -1,108 +1,171 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Locked-screen full-screen incoming-call panel.
+
+  Deliberately styled to mirror Android's system CallStyle notification (the
+  "real push notification" the user sees when the phone is unlocked): a single
+  rounded surface card holding an app-name header row, the caller/conference
+  identity with a circular avatar, and the Decline / Answer action buttons
+  INSIDE the card. The faint centred logo behind it is just a brand watermark
+  on the otherwise-black panel.
+
+  IDs consumed by IncomingCallActivity.java (do not rename): incomingCallRoot,
+  notificationBubble, callerNameText, callingLabelText, callerUriText,
+  buttonContainer, declineButton, acceptButton, appLogo.
+-->
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/incomingCallRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black"
-    android:padding="16dp">
+    android:padding="12dp">
 
-    <!-- Push-notification-style bubble at the top of the screen -->
+    <!-- Faint brand watermark (also the view the folded-display scaler resizes). -->
+    <ImageView
+        android:id="@+id/appLogo"
+        android:layout_width="200dp"
+        android:layout_height="200dp"
+        android:src="@drawable/sylk_logo"
+        android:alpha="0.06"
+        android:layout_centerInParent="true"
+        android:contentDescription="Sylk"/>
+
+    <!-- CallStyle-notification-style card -->
     <LinearLayout
         android:id="@+id/notificationBubble"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
-        android:layout_marginTop="48dp"
-        android:layout_marginStart="8dp"
-        android:layout_marginEnd="8dp"
-        android:orientation="horizontal"
+        android:layout_marginTop="44dp"
+        android:layout_marginStart="6dp"
+        android:layout_marginEnd="6dp"
+        android:orientation="vertical"
         android:background="@drawable/notification_bubble_bg"
-        android:padding="14dp"
-        android:gravity="center_vertical">
+        android:padding="16dp">
 
-        <ImageView
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:src="@drawable/sylk_logo"
-            android:layout_marginEnd="12dp"
-            android:contentDescription="Sylk"/>
-
+        <!-- Header: app icon + app name + timestamp, like a real notification -->
         <LinearLayout
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/ic_notification"
+                android:layout_marginEnd="6dp"
+                android:contentDescription="Sylk"/>
 
             <TextView
-                android:id="@+id/callerNameText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="John Doe"
-                android:textColor="@android:color/white"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:singleLine="true"
-                android:ellipsize="end"/>
-
-            <TextView
-                android:id="@+id/callingLabelText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="is calling"
-                android:textColor="#D1D1D6"
-                android:textSize="13sp"/>
-
-            <TextView
-                android:id="@+id/callerUriText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text=""
+                android:text="Sylk"
+                android:textAllCaps="true"
                 android:textColor="#8E8E93"
                 android:textSize="12sp"
-                android:singleLine="true"
-                android:ellipsize="middle"
-                android:layout_marginTop="2dp"/>
+                android:textStyle="bold"
+                android:letterSpacing="0.03"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text=" · now"
+                android:textColor="#8E8E93"
+                android:textSize="12sp"/>
         </LinearLayout>
-    </LinearLayout>
 
-    <!-- Sylk logo centered on the screen -->
-    <ImageView
-        android:id="@+id/appLogo"
-        android:layout_width="220dp"
-        android:layout_height="220dp"
-        android:src="@drawable/sylk_logo"
-        android:layout_centerInParent="true"
-        android:contentDescription="Sylk Logo"/>
+        <!-- Body: caller / conference identity + circular avatar -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="12dp">
 
-    <!-- Single Accept / Decline pair (audio is the default; the action sent is
-         ACTION_ACCEPT_VIDEO when the incoming call's media-type is video, so
-         the in-app side picks the right path) -->
-    <LinearLayout
-        android:id="@+id/buttonContainer"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_alignParentBottom="true"
-        android:layout_marginBottom="80dp">
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:layout_marginEnd="12dp">
 
-        <Button
-            android:id="@+id/declineButton"
-            android:layout_width="140dp"
-            android:layout_height="48dp"
-            android:text="Decline"
-            android:textColor="@android:color/white"
-            android:background="@drawable/btn_red_rounded"
-            android:layout_marginEnd="16dp"/>
+                <TextView
+                    android:id="@+id/callerNameText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="John Doe"
+                    android:textColor="@android:color/white"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:singleLine="true"
+                    android:ellipsize="end"/>
 
-        <Button
-            android:id="@+id/acceptButton"
-            android:layout_width="140dp"
-            android:layout_height="48dp"
-            android:text="Accept"
-            android:textColor="@android:color/white"
-            android:background="@drawable/btn_green_rounded"
-            android:layout_marginStart="16dp"/>
+                <TextView
+                    android:id="@+id/callingLabelText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="is calling"
+                    android:textColor="#D1D1D6"
+                    android:textSize="14sp"
+                    android:singleLine="true"
+                    android:ellipsize="end"
+                    android:layout_marginTop="1dp"/>
+
+                <TextView
+                    android:id="@+id/callerUriText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textColor="#8E8E93"
+                    android:textSize="12sp"
+                    android:singleLine="true"
+                    android:ellipsize="middle"
+                    android:layout_marginTop="2dp"/>
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/callerAvatar"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/avatar_circle_bg"
+                android:src="@drawable/sylk_logo"
+                android:padding="9dp"
+                android:scaleType="fitCenter"
+                android:contentDescription="Caller"/>
+        </LinearLayout>
+
+        <!-- Actions: Decline / Answer pills INSIDE the card, like CallStyle -->
+        <LinearLayout
+            android:id="@+id/buttonContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp">
+
+            <Button
+                android:id="@+id/declineButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="46dp"
+                android:text="Decline"
+                android:textColor="@android:color/white"
+                android:textAllCaps="false"
+                android:background="@drawable/btn_red_rounded"
+                android:layout_marginEnd="6dp"/>
+
+            <Button
+                android:id="@+id/acceptButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="46dp"
+                android:text="Answer"
+                android:textColor="@android:color/white"
+                android:textAllCaps="false"
+                android:background="@drawable/btn_green_rounded"
+                android:layout_marginStart="6dp"/>
+        </LinearLayout>
     </LinearLayout>
 
 </RelativeLayout>

@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
 import autoBind from 'auto-bind';
-import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter, NativeModules, AppState} from 'react-native';
+import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpacity, Dimensions, Animated, Easing, DeviceEventEmitter, NativeModules, AppState, Alert, BackHandler} from 'react-native';
 // SylkAudioRouteModule's prepareForRecording / restoreAfterRecording
 // helpers — see the native side in ios/sylk/AudioRouteModule.m for
 // rationale. On iOS this module configures AVAudioSession for VOIP
@@ -176,6 +176,12 @@ class ReadyBox extends Component {
             return;
         }
 
+        // A delete (chat menu or elsewhere) bumps gotoDeletedSignal so we land
+        // the user on the Deleted folder, showing the contact they just removed.
+        if (nextProps.gotoDeletedSignal !== this.props.gotoDeletedSignal) {
+            this.setState({ contactsFilter: 'deleted', chat: false });
+        }
+
         if (this.props.selectedContact && !nextProps.selectedContact) {
             // This branch is the "user is LEAVING the chat" case
             // (new selectedContact is null after the old one was set).
@@ -244,6 +250,47 @@ class ReadyBox extends Component {
             this.setState({'contactsFilter': null});
         }
 
+        // Reset the selected category when it's a tag-based group (incl. custom
+        // groups like "Abcd test") that no longer has any contacts — e.g. after
+        // deleting the last member. Computed / property-based filters (calls,
+        // recent, missed, autoanswer) are not tag-driven, so skip them.
+        {
+            const f = this.state.contactsFilter;
+            // 'graveyard' (and 'all') are not tag groups — graveyard contacts
+            // are tombstones loaded separately, not tagged — so they must be
+            // exempt from the tag-existence reset below, otherwise the filter
+            // is cleared on the next props update and the user is bounced out.
+            const NON_TAG = new Set(['calls', 'recent', 'missed', 'autoanswer', 'graveyard', 'all']);
+            if (f === 'deleted') {
+                // Deleted is column-based (storage_purged or deleted_timestamp),
+                // not a tag. Only reset when the trash is actually empty —
+                // otherwise entering it would bounce the user back to All.
+                const stillHas = (nextProps.allContacts || []).some(c => c && (c.storagePurged || c.deletedTimestamp));
+                if (!stillHas) {
+                    // If the Deleted folder just emptied (e.g. the last contact
+                    // was killed → tombstone) but the Graveyard now has entries,
+                    // slide into the Graveyard instead of bouncing the user out
+                    // to All — the content is still there, just one step down.
+                    const hasGraveyardContacts = (nextProps.graveyardCount || 0) > 0;
+                    if (hasGraveyardContacts) {
+                        if (typeof this.props.loadGraveyardContacts === 'function') {
+                            this.props.loadGraveyardContacts();
+                        }
+                        this.setState({ contactsFilter: 'graveyard' });
+                    } else {
+                        this.setState({ contactsFilter: null });
+                    }
+                }
+            } else if (f && !NON_TAG.has(f)) {
+                const stillHas = (nextProps.allContacts || []).some(
+                    c => Array.isArray(c && c.tags) && c.tags.indexOf(f) > -1
+                );
+                if (!stillHas) {
+                    this.setState({ contactsFilter: null });
+                }
+            }
+        }
+
         if (this.props.allContacts.length === 0 && nextProps.allContacts && nextProps.allContacts.length > 0) {
             this.bounceNavigation();
         }
@@ -289,6 +336,14 @@ class ReadyBox extends Component {
 
     async componentDidMount() {
         this.ended = false;
+
+        // Android hardware back: when the user is inside the Deleted (or its
+        // Graveyard sub-view) contact filter, "back" should drop the filter
+        // and return to All rather than leaving the screen. Registered here;
+        // ContactsListBox's own back handler runs first (it's mounted later)
+        // and only consumes the event for its overlays, so when no overlay is
+        // up this listener gets the press.
+        this._backHandlerSub = BackHandler.addEventListener('hardwareBackPress', this.backPressed);
         // Kick off the pulse immediately if we landed here already sharing
         // (e.g. user switched chats, or app reloaded mid-share). All the
         // "start/stop on change" logic lives in componentDidUpdate; this
@@ -330,8 +385,28 @@ class ReadyBox extends Component {
         });
     }
 
+    // Android back inside the Deleted / Graveyard contact view → exit the
+    // filter back to All (remove filtering) and consume the event. Any other
+    // state falls through (returns falsy) so the default back behaviour and
+    // ContactsListBox's overlay handling are unaffected.
+    backPressed = () => {
+        if (this.ended) {
+            return false;
+        }
+        if (!this.props.selectedContact
+                && (this.state.contactsFilter === 'deleted' || this.state.contactsFilter === 'graveyard')) {
+            this.filterHistory('all');
+            return true;
+        }
+        return false;
+    }
+
     componentWillUnmount() {
         this.ended = true;
+        if (this._backHandlerSub) {
+            this._backHandlerSub.remove();
+            this._backHandlerSub = null;
+        }
         this._stopLocationSharePulse();
         this._clearNoPrivateKeyWarningTimer();
         if (this.callStartingListener) {
@@ -403,9 +478,11 @@ class ReadyBox extends Component {
         const modalVisible = !!this.props.showImportPrivateKeyModal;
         const noLocalKey = keyStatus.existsLocal === false;
 
-        // Modal is up, or we have a key, or we don't yet know: banner is
-        // definitely not allowed. Clear any pending timer and hide.
-        if (modalVisible || !noLocalKey) {
+        // Modal is up, the initial contact import is still running, we have a
+        // key, or we don't yet know: banner is definitely not allowed. Clear
+        // any pending timer and hide. (During contact sync the import-key modal
+        // is deferred, so showing a "no private key" banner would be premature.)
+        if (modalVisible || this.props.contactsSyncing || !noLocalKey) {
             this._clearNoPrivateKeyWarningTimer();
             if (this.state.showNoPrivateKeyWarning) {
                 this.setState({ showNoPrivateKeyWarning: false });
@@ -467,6 +544,13 @@ class ReadyBox extends Component {
     }
     
 	componentDidUpdate(prevProps, prevState) {
+	  // Surface the active contacts filter to the parent (so the navbar can
+	  // hide its kebab in the Deleted / Graveyard views).
+	  if (prevState.contactsFilter !== this.state.contactsFilter
+	      && typeof this.props.onContactsFilterChange === 'function') {
+	      this.props.onContactsFilterChange(this.state.contactsFilter);
+	  }
+
 	  // Pulse the chat-header pin whenever the currently-selected contact
 	  // has an active live-location share. Two triggers matter here:
 	  //   (a) the user starts/stops a share (activeLocationShares map
@@ -602,10 +686,29 @@ class ReadyBox extends Component {
        } else if (filter === 'recent') {
            filter = this.state.historyPeriodFilter === filter ? null : filter;
            this.setState({'historyPeriodFilter': filter});
+       } else if (filter === 'all') {
+           // Exit Deleted mode → back to the normal category bar (no filter).
+           this.setState({contactsFilter: null});
        } else {
            if (filter == this.state.contactsFilter) {
 			   this.setState({contactsFilter: null});
            } else {
+			   // Tapping "Deleted" when the Deleted folder is empty but the
+			   // Graveyard has tombstones → jump straight to the Graveyard.
+			   // (The folder has nothing to show; the only entries are
+			   // tombstones, so land the user where the content actually is.)
+			   if (filter === 'deleted') {
+			       const hasDeletedContacts = (this.props.allContacts || []).some(
+			           c => c && (c.storagePurged || c.deletedTimestamp));
+			       const hasGraveyardContacts = (this.props.graveyardCount || 0) > 0;
+			       if (!hasDeletedContacts && hasGraveyardContacts) {
+			           filter = 'graveyard';
+			       }
+			   }
+			   // Entering the Graveyard → load the tombstones on demand.
+			   if (filter === 'graveyard' && typeof this.props.loadGraveyardContacts === 'function') {
+			       this.props.loadGraveyardContacts();
+			   }
 			   this.setState({'contactsFilter': filter});
            }
        }
@@ -619,7 +722,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (uri.indexOf('@guest') > -1) {
+        if (utils.isAnonymous(uri)) {
             return true;
         }
 
@@ -750,6 +853,14 @@ class ReadyBox extends Component {
         if (this.props.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.props.shareToContacts) {
             return false;
         }
+        // Anonymous / guest callers are not callable back — the canonical
+        // anonymous@anonymous.invalid contact (and the legacy <random>@guest.<host>
+        // form) collapses many throwaway peers into one synthetic row with
+        // no reachable address, so the audio/video call bar must stay hidden
+        // for it.
+        if (this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri)) {
+            return false;
+        }
         // On foldables, hide the above-chat call buttons (audio + video)
         // when the device is folded onto the cover display. The cover is
         // too narrow to sensibly host call buttons above the chat area,
@@ -796,7 +907,7 @@ class ReadyBox extends Component {
             return false;
         }
 
-	    if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@guest') > -1) {
+	    if (this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri)) {
             return false;
         }
 
@@ -936,7 +1047,7 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.props.selectedContact.uri.indexOf('@guest') > -1) {
+        if (utils.isAnonymous(this.props.selectedContact.uri)) {
             return false;
         }
 
@@ -1098,15 +1209,15 @@ class ReadyBox extends Component {
         if (this.state.contactSource === source) {
             return;
         }
-        // Every Phonebook selection invokes loadAddressBook. On the
+        // Every Phonebook selection invokes loadPhoneAddressBook. On the
         // app.js side it short-circuits when permission is granted
         // AND contacts have already been fetched; otherwise it
         // re-prompts the user. So the first tap shows the OS prompt,
         // and subsequent taps either no-op (granted, loaded) or
         // re-prompt (still denied). We deliberately don't ask at app
         // start any more — only on explicit Phonebook intent.
-        if (source === 'ab' && typeof this.props.loadAddressBook === 'function') {
-            this.props.loadAddressBook();
+        if (source === 'ab' && typeof this.props.loadPhoneAddressBook === 'function') {
+            this.props.loadPhoneAddressBook();
         }
         // Switching away from AB closes the dialpad — it's only
         // meaningful in the AddressBook number-entry mode.
@@ -1158,7 +1269,7 @@ class ReadyBox extends Component {
     // The main-interface search now unifies Sylk + Phonebook.
     // Phonebook entries used to be loaded only when the user
     // explicitly tapped the (now-hidden) Phonebook pill; with the
-    // pill gone we lazily kick loadAddressBook the first time the
+    // pill gone we lazily kick loadPhoneAddressBook the first time the
     // user signals search intent — either by tapping the search
     // field (URIInput.onSearchFocus, the preferred trigger so the
     // OS permission dialog appears the moment they "click search")
@@ -1166,7 +1277,7 @@ class ReadyBox extends Component {
     // (handleSearch, in case some platform skips the click event).
     // This preserves the "only on explicit user intent" stance for
     // the OS contacts-permission prompt: we don't ask just for
-    // opening the app. loadAddressBook is idempotent on the host
+    // opening the app. loadPhoneAddressBook is idempotent on the host
     // side — already-granted + already-loaded is a no-op, and not-
     // yet-granted re-prompts the OS once.
     kickUnifiedSearchAddressBookLoad() {
@@ -1174,16 +1285,16 @@ class ReadyBox extends Component {
         if (this.state.searchMessages) return;
         if (this.props.shareToContacts) return;
         if (this.props.inviteContacts) return;
-        if (typeof this.props.loadAddressBook !== 'function') return;
+        if (typeof this.props.loadPhoneAddressBook !== 'function') return;
 
         this._unifiedSearchAbLoadKicked = true;
         try {
-            this.props.loadAddressBook();
+            this.props.loadPhoneAddressBook();
         } catch (e) {
             // Swallow — the Sylk side of the merged result renders
             // immediately regardless, and a failure here just means
             // the AB pile stays empty for this search.
-            console.log('unified search loadAddressBook failed', e && e.message);
+            console.log('unified search loadPhoneAddressBook failed', e && e.message);
         }
     }
 
@@ -1229,6 +1340,78 @@ class ReadyBox extends Component {
         });
     };
 
+    // Long-press a contact → enter select mode. Inside the Deleted view this
+    // pre-selects ALL trashed contacts (so "Delete all" is one tap, or deselect
+    // a few first); elsewhere it just selects the long-pressed contact.
+    handleLongPressContact = (contact) => {
+        if (this.state.contactsFilter === 'deleted') {
+            const uris = (this.props.allContacts || [])
+                .filter(c => c && (c.storagePurged || c.deletedTimestamp)).map(c => c.uri);
+            this.props.enterContactSelectModeAll(uris);
+        } else if (this.state.contactsFilter === 'graveyard') {
+            // Graveyard tombstones live in graveyardContacts (deleted=1), not
+            // allContacts. Select them all so Revive-all / Delete-all is one tap.
+            const uris = (this.props.graveyardContacts || []).filter(Boolean).map(c => c.uri);
+            this.props.enterContactSelectModeAll(uris);
+        } else {
+            this.props.enterContactSelectMode(contact);
+        }
+    }
+
+    // Floating-trash handler. Inside the Deleted view it's a HARD delete
+    // (server + local) and asks for confirmation; everywhere else it's a SOFT
+    // delete (move to the Deleted view), no confirmation.
+    handleContactDelete = () => {
+        const uris = (this.props.selectedContacts || []).slice();
+        if (!uris.length) return;
+        if (this.state.contactsFilter === 'graveyard') {
+            // Graveyard delete = EJECT: physically remove the SQL rows. This is
+            // the ultimate, irreversible step — warn that it is final and that
+            // resurrection is no longer possible.
+            Alert.alert(
+                'Delete forever',
+                'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
+                    + ' from this device?\n\nThis is final — once deleted '
+                    + (uris.length > 1 ? 'they' : 'it') + ' cannot be revived or recovered.',
+                [
+                    {text: 'Cancel', style: 'cancel'},
+                    {text: 'Delete forever', style: 'destructive', onPress: () => {
+                        this.props.ejectContacts(uris);
+                        // Leave selection mode so the floating Delete/Restore FABs
+                        // hide — they linger otherwise once the list reappears.
+                        if (this.props.exitContactSelectMode) {
+                            this.props.exitContactSelectMode();
+                        }
+                        // If this eject empties the Graveyard, drop the category
+                        // back to All so the UI returns to the main contacts list
+                        // (the Graveyard pill would otherwise leave the user on an
+                        // empty view — graveyard is exempt from the auto-reset).
+                        const remaining = (this.props.graveyardContacts || [])
+                            .filter(c => c && uris.indexOf(c.uri) === -1);
+                        if (remaining.length === 0) {
+                            this.setState({ contactsFilter: null });
+                        }
+                    }},
+                ]
+            );
+        } else if (this.state.contactsFilter === 'deleted') {
+            Alert.alert(
+                'Delete permanently',
+                'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
+                    + '? This also removes ' + (uris.length > 1 ? 'them' : 'it') + ' from the server.',
+                [
+                    {text: 'Cancel', style: 'cancel'},
+                    {text: 'Delete', style: 'destructive', onPress: () => this.props.hardDeleteContacts(uris)},
+                ]
+            );
+        } else {
+            this.props.softDeleteContacts(uris);
+            // Jump to the Deleted category so the user immediately sees the
+            // trashed contacts (to prune further or restore).
+            this.setState({ contactsFilter: 'deleted' });
+        }
+    }
+
     handleSearch(inputText, contact) {
         // Note: previously kicked kickUnifiedSearchAddressBookLoad()
         // here as a typing-time safety net, but that turned typing in
@@ -1256,7 +1439,7 @@ class ReadyBox extends Component {
 
         //console.log('handleSearch contact =', contact);
 
-        if ((this.props.inviteContacts || this.props.shareToContacts) && contact) {
+        if ((this.props.inviteContacts || this.props.shareToContacts || this.props.contactSelectMode) && contact) {
              const uri = contact.uri;
              this.props.updateSelection(uri);
              return;
@@ -1497,7 +1680,7 @@ class ReadyBox extends Component {
 
     get callButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1) {
+        if (!uri || uri.indexOf(' ') > -1 || utils.isAnonymous(uri)) {
             return true;
         }
 
@@ -1534,7 +1717,7 @@ class ReadyBox extends Component {
 
     get videoButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || uri.indexOf('@guest.') > -1) {
+        if (!uri || uri.indexOf(' ') > -1 || utils.isAnonymous(uri)) {
             return true;
         }
 
@@ -1955,8 +2138,79 @@ class ReadyBox extends Component {
             c => Array.isArray(c && c.tags) && c.tags.indexOf('tel') > -1
         );
 
+        // Messages category — display name for the 'chat' tag (contacts the
+        // user has messaged). Maps to the server 'Messages' group.
+        const hasChatContacts = (this.props.allContacts || []).some(
+            c => Array.isArray(c && c.tags)
+                && (c.tags.indexOf('messages') > -1 || c.tags.indexOf('chat') > -1)
+        );
+
+        // Dynamic group categories: any custom group-tag present on contacts
+        // that isn't one of the built-in categories or a non-group flag tag.
+        // Each becomes a pill that filters by that tag (group name).
+        const BUILTIN = new Set(['chat', 'messages', 'favorite', 'blocked', 'tel',
+            'conference', 'test', 'autoanswer', 'calls', 'recent', 'missed']);
+        const FLAG = new Set(['bypassdnd', 'muted', 'noread', 'history', 'contact']);
+        const customTags = new Set();
+        (this.props.allContacts || []).forEach(c => {
+            (Array.isArray(c && c.tags) ? c.tags : []).forEach(t => {
+                const tag = (t || '').trim();
+                if (!tag) return;
+                const low = tag.toLowerCase();
+                if (BUILTIN.has(low) || FLAG.has(low)) return;
+                customTags.add(tag);
+            });
+        });
+        const customGroupItems = [...customTags].sort().map(tag => ({
+            key: tag,
+            title: tag.charAt(0).toUpperCase() + tag.slice(1),
+            enabled: true,
+            selected: this.state.contactsFilter === tag,
+        }));
+
+        // Deleted (trash) category — shown ONLY when at least one contact
+        // actually matches the deleted criteria (a soft-deleted contact with
+        // deleted_timestamp set, or one whose storage was purged). An empty
+        // trash hides the pill entirely (renderNavigationItem returns null on
+        // enabled:false), so the bar isn't cluttered with a folder that has
+        // nothing in it. The pill is force-enabled while the user is already
+        // inside the Deleted / Graveyard view so they can still see it
+        // (it's the selected chip) and toggle back out. Tapping it lists the
+        // trashed contacts; permanent tombstones (deleted=1) are never loaded.
+        // Deleting from there is the real (hard) delete.
+        const hasDeletedContacts = (this.props.allContacts || []).some(
+            c => c && (c.storagePurged || c.deletedTimestamp));
+        // Tombstones (deleted=1) live only in the Graveyard, which is reached
+        // THROUGH the Deleted pill. So the Deleted pill must also show when the
+        // Deleted folder is empty but the Graveyard still has entries —
+        // otherwise those tombstones would be unreachable. graveyardCount is a
+        // cheap up-front count kept in sync on app.js.
+        const hasGraveyardContacts = (this.props.graveyardCount || 0) > 0;
+        const _inDeletedMode = this.state.contactsFilter === 'deleted'
+            || this.state.contactsFilter === 'graveyard';
+        const _deletedItem = {key: 'deleted', title: 'Deleted', enabled: hasDeletedContacts || hasGraveyardContacts || _inDeletedMode, selected: this.state.contactsFilter === 'deleted'};
+        const _graveyardItem = {key: 'graveyard', title: 'Graveyard', enabled: true, selected: this.state.contactsFilter === 'graveyard'};
+        // "All" is ALWAYS the first pill — tapping it clears any active filter
+        // (reset). It is never highlighted: "All" means no criteria, so there's
+        // no active selection to indicate (highlighting it implied a filter was
+        // applied when in fact nothing is). It only ever shows the active chip
+        // styling for real category filters, not for the no-filter default.
+        const _allItem = {key: 'all', title: 'All', enabled: true,
+            selected: false};
+
+        // "Deleted mode": once the user enters the Deleted folder (or the
+        // Graveyard within it), collapse the whole category bar to just
+        // All + Deleted + Graveyard. "All" exits back to the normal bar;
+        // re-tapping Deleted also toggles back out (filterHistory clears an
+        // active filter). Graveyard is ONLY shown here.
+        if (this.state.contactsFilter === 'deleted' || this.state.contactsFilter === 'graveyard') {
+            return [_allItem, _deletedItem, _graveyardItem];
+        }
+
         return [
+              _allItem,
               {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
+              {key: 'messages', title: 'Messages', enabled: hasChatContacts, selected: this.state.contactsFilter === 'messages'},
               {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
               {key: 'favorite', title: 'Favorites', enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
               {key: 'autoanswer', title: 'Caregivers', enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
@@ -1965,6 +2219,8 @@ class ReadyBox extends Component {
               {key: 'blocked', title: 'Blocked', enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
               {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
               {key: 'test', title: 'Test', enabled: !this.props.shareToContacts && !this.props.inviteContacts, selected: this.state.contactsFilter === 'test'},
+              ...customGroupItems,
+              _deletedItem,
               ];
     }
 
@@ -2346,7 +2602,16 @@ class ReadyBox extends Component {
             />);
         }
 
-        return (<Button key={_bbRemountKey} compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
+        // The "All" pill has a very short label, so `compact` renders it
+        // cramped. Give it extra width + breathing room around it (a min width,
+        // wider horizontal padding, and a little outer margin) so it doesn't
+        // read as a tiny chip next to the other category pills.
+        const _isAllPill = key === 'all';
+        return (<Button key={_bbRemountKey} compact
+            style={[buttonStyle, _isAllPill ? { marginHorizontal: 4 } : null]}
+            labelStyle={_navItemLabelStyle}
+            contentStyle={{ paddingVertical: 0, minHeight: 0, paddingHorizontal: _isAllPill ? 8 : undefined }}
+            onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
     renderOrderItem(object) {
@@ -3509,7 +3774,7 @@ class ReadyBox extends Component {
                                    is now requested ONLY when the user
                                    explicitly taps the navbar Search
                                    button — see app.js#toggleSearchContacts
-                                   which calls loadAddressBook when
+                                   which calls loadPhoneAddressBook when
                                    entering search mode. */
                                 /* onSearchFocus={this.kickUnifiedSearchAddressBookLoad} */
                                 /* Folded + search-contacts: the
@@ -4117,6 +4382,22 @@ class ReadyBox extends Component {
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
 
+                   {/* Initial contact-import indicator. Shown only while the
+                       first XCAP contacts sync is running (contactsSyncing),
+                       in the contacts-list view. Reuses the soft-amber pill
+                       look so it reads as informational. */}
+                   {this.props.contactsSyncing
+                       && !this.props.selectedContact
+                       && !this.props.shareToContacts
+                       && !this.props.inviteContacts
+                       && !this.state.searchMessages
+                       && !this.props.showQRCodeScanner ? (
+                       <View style={readyBoxSyncingStyles.pill}>
+                           <ActivityIndicator size="small" color="#7a5a1d" style={{ marginRight: 8 }} />
+                           <Text style={readyBoxSyncingStyles.text}>Syncing contacts…</Text>
+                       </View>
+                   ) : null}
+
                    {/* App-DND status pill. Persistent reminder that the
                        in-app bell is on and incoming calls are being
                        delivered silently. Tapping toggles DND off via
@@ -4315,6 +4596,11 @@ class ReadyBox extends Component {
                       :
 					<ContactsListBox
 						allContacts={this.props.allContacts}
+						graveyardContacts={this.props.graveyardContacts}
+						reviveContact={this.props.reviveContact}
+						ejectContact={this.props.ejectContact}
+						hardDeleteContacts={this.props.hardDeleteContacts}
+						contactHasStoredMessages={this.props.contactHasStoredMessages}
 						contacts={this.props.addressBookContacts}
 						targetUri={this.state.targetUri}
 						fontScale = {this.props.fontScale}
@@ -4366,6 +4652,8 @@ class ReadyBox extends Component {
 						inviteContacts = {this.props.inviteContacts}
 						shareToContacts = {this.props.shareToContacts}
 						selectedContacts = {this.props.selectedContacts}
+						contactSelectMode = {this.props.contactSelectMode}
+						onLongPressContact = {this.handleLongPressContact}
 						toggleFavorite={this.props.toggleFavorite}
 						toggleAutoanswer={this.props.toggleAutoanswer}
 						toggleBlocked={this.props.toggleBlocked}
@@ -4436,6 +4724,42 @@ class ReadyBox extends Component {
 					/>
 					}
 
+                    {this.props.contactSelectMode ?
+                        <View style={readyBoxTrashStyles.contactSelectFab} pointerEvents="box-none">
+                            <TouchableOpacity
+                                style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabCancel]}
+                                onPress={this.props.exitContactSelectMode}>
+                                <MaterialCommunityIcon name="close" size={24} color="#fff" />
+                            </TouchableOpacity>
+                            {(this.props.selectedContacts || []).length > 0
+                                && (this.state.contactsFilter === 'deleted' || this.state.contactsFilter === 'graveyard') ?
+                                <TouchableOpacity
+                                    style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabRestore]}
+                                    onPress={() => {
+                                        const uris = (this.props.selectedContacts || []).slice();
+                                        // Graveyard tombstones revive via the graveyard-specific
+                                        // bulk path (they aren't in allContacts); the Deleted
+                                        // folder uses the regular restore.
+                                        if (this.state.contactsFilter === 'graveyard') {
+                                            this.props.restoreGraveyardContacts(uris);
+                                        } else {
+                                            this.props.restoreContacts(uris);
+                                        }
+                                    }}>
+                                    <MaterialCommunityIcon name="restore" size={24} color="#fff" />
+                                </TouchableOpacity>
+                            : null}
+                            {(this.props.selectedContacts || []).length > 0 ?
+                                <TouchableOpacity
+                                    style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabDelete]}
+                                    onPress={this.handleContactDelete}>
+                                    <MaterialCommunityIcon name="delete" size={24} color="#fff" />
+                                    <Text style={readyBoxTrashStyles.fabCount}>{(this.props.selectedContacts || []).length}</Text>
+                                </TouchableOpacity>
+                            : null}
+                        </View>
+                    : null}
+
                     </View>
                     : null
                     }
@@ -4452,7 +4776,13 @@ class ReadyBox extends Component {
                     <View
                         key={'recents-' + (this.props.isFolded ? 'f' : 'u')
                             + '-' + (this.props.orientation || '?')
-                            + '-' + Math.round(width) + 'x' + Math.round(height)}
+                            + '-' + Math.round(width) + 'x' + Math.round(height)
+                            // Include the active filter so the FlatList REMOUNTS
+                            // when the category set changes size (e.g. collapsing
+                            // to All·Deleted·Graveyard in the Deleted folder).
+                            // Without this it keeps its stale scroll/layout from
+                            // the long bar and only the first pill ("All") shows.
+                            + '-' + (this.state.contactsFilter || 'none')}
                         // Override the shared bar height — the recents
                         // bar at the BOTTOM of the contacts list
                         // hosts plain IconButtons (no caption stack
@@ -4610,7 +4940,7 @@ ReadyBox.propTypes = {
     //   • If permission is NOT authorized → re-prompt the user.
     // This makes each Phonebook tap re-ask for permission until the
     // user grants it (or hits the OS-level "don't ask again" cap).
-    loadAddressBook: PropTypes.func,
+    loadPhoneAddressBook: PropTypes.func,
     // True when the OS contacts permission is currently denied (or
     // in the OS-level "don't ask again" state where re-requesting
     // is a silent no-op). Drives the inline "Phonebook access is
@@ -4684,6 +5014,37 @@ ReadyBox.propTypes = {
 // the right-hand side of the contacts-list Sort/Order navigation row.
 // Kept here next to the JSX it styles instead of in the global Ready
 // Box stylesheet so the pill visuals are easy to find and tweak.
+const readyBoxTrashStyles = StyleSheet.create({
+    contactSelectFab: {
+        position: 'absolute',
+        right: 16,
+        bottom: 24,
+        alignItems: 'center',
+    },
+    fabBtn: {
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 12,
+        elevation: 6,
+        shadowColor: '#000',
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
+    },
+    fabCancel: { backgroundColor: '#757575' },
+    fabDelete: { backgroundColor: '#c62828' },
+    fabRestore: { backgroundColor: '#2e7d32' },
+    fabCount: {
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: 'bold',
+        marginTop: -2,
+    },
+});
+
 const readyBoxPillStyles = StyleSheet.create({
     pillGroup: {
         flexDirection: 'row',
@@ -4832,6 +5193,29 @@ const readyBoxDialpadStyles = StyleSheet.create({
 // identical (row layout, leading icon, title+body text). The pill
 // itself is a TouchableOpacity so the whole strip is tappable to
 // flip DND back off without scrolling up to the navbar bell.
+// "Syncing contacts…" strip shown during the first XCAP contacts import.
+// Soft amber (informational) so it's distinct from the red DND pill.
+const readyBoxSyncingStyles = StyleSheet.create({
+    pill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginHorizontal: 8,
+        marginTop: 6,
+        marginBottom: 4,
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        backgroundColor: '#fcf3e0',
+        borderColor: '#f0d9a8',
+        borderWidth: 1,
+        borderRadius: 20,
+    },
+    text: {
+        color: '#7a5a1d',
+        fontSize: 14,
+        fontWeight: '600',
+    },
+});
+
 const readyBoxDndPillStyles = StyleSheet.create({
     pill: {
         flexDirection: 'row',

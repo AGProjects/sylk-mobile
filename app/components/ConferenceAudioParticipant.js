@@ -8,6 +8,7 @@ import VuMeter from './VuMeter';
 import { Avatar, List, Text } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DarkModeManager from '../DarkModeManager';
+import utils from '../utils';
 
 import { StyleSheet } from 'react-native';
 
@@ -15,9 +16,10 @@ import { StyleSheet } from 'react-native';
 // ContactCard so the audio conference tile's title reads identically
 // to the same person's row in the contacts list. Three rules:
 //
-//   1. Anonymous / guest URIs (@guest.<domain>) render as
-//      "Anonymous" — the same label the contacts list uses for
-//      drive-by callers that have no saved identity.
+//   1. Anonymous / guest URIs (@guest.<domain> and the canonical
+//      anonymous@anonymous.invalid) render as "Unknown caller" — the
+//      same label the contacts list uses for drive-by callers that
+//      have no saved identity.
 //   2. When the remote party supplied a display name we keep it
 //      verbatim (just trim surrounding whitespace). Users / SIP UAs
 //      pick their own capitalisation on purpose ("iPhone of John",
@@ -47,8 +49,8 @@ function beautifyIdentity(identity) {
     if (!identity) return '';
     const uri = identity.uri || identity._uri || '';
     const dn = identity.displayName || identity._displayName || '';
-    if (typeof uri === 'string' && uri.indexOf('@guest.') > -1) {
-        return 'Anonymous';
+    if (utils.isAnonymous(uri)) {
+        return 'Unknown caller';
     }
     if (dn && dn.trim() && dn.trim() !== uri) {
         return dn.trim();

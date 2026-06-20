@@ -898,7 +898,20 @@ public class IncomingCallService extends Service {
 		// event would fire into a JS context whose Activity is still
 		// stopped, and the user wouldn't see the call screen until
 		// they manually returned to the app.
-		boolean appInForeground = isAppInForeground();
+		// CAUTION: isAppInForeground() can falsely report true on a LOCKED
+		// screen. On a locked-phone incoming call the native
+		// IncomingCallActivity is shown over the keyguard; it lives in THIS
+		// process, so ProcessLifecycleOwner reports the process as STARTED
+		// even though the RN host (MainActivity) is not up. Taking the
+		// "skip startActivity" branch then emits the ACTION_ACCEPT_* bridge
+		// event into a JS context with no foreground Activity — and, fresh
+		// from a push, an RN runtime that isn't listening yet — so the accept
+		// is silently dropped and nothing happens (no conference is joined).
+		// Treat a locked phone as "not in foreground" so we always launch
+		// MainActivity, which carries the session-id extras the JS accept
+		// path consumes. (See the matching note above re: the foreground
+		// case skipping startActivity to avoid lifecycle bounces.)
+		boolean appInForeground = isAppInForeground() && !phoneLocked;
 		if (!appInForeground) {
 			SylkLogger.d("[call] [service] -- Launching Sylk app (app was not in foreground)");
 			Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
@@ -927,7 +940,12 @@ public class IncomingCallService extends Service {
 
 		// RN app alive → send event only
 		if (getApplication() instanceof ReactApplication) {
-			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, false, event, fromDisplayName, (ReactApplication) getApplication());
+			// Pass the REAL lock state, not a hardcoded false. JS
+			// (callEventHandler) stores this as this.phoneWasLocked and uses it
+			// to send the app back behind the keyguard when the call ends. With
+			// false hardcoded here, phoneWasLocked was always false and the
+			// lock-screen minimize-on-end never fired for any call type.
+			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, phoneLocked, event, fromDisplayName, (ReactApplication) getApplication());
 			SylkLogger.d("[call] [service] Sent React Native event for call: " + callId);
 		}
 

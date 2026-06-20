@@ -231,9 +231,29 @@ class MeetingRequestModal extends Component {
                                         both ends read consistently. */}
                                     {(() => {
                                         const dest = this.props.destination;
-                                        if (!dest
-                                                || typeof dest.latitude !== 'number'
-                                                || typeof dest.longitude !== 'number') {
+                                        const hasDest = !!(dest
+                                                && typeof dest.latitude === 'number'
+                                                && typeof dest.longitude === 'number');
+                                        const userLoc = this.props.userLocation;
+                                        const hasUserLoc = !!(userLoc
+                                                && typeof userLoc.latitude === 'number'
+                                                && typeof userLoc.longitude === 'number');
+                                        // Render the preview whenever we have
+                                        // SOMETHING to anchor it on: a shared
+                                        // meeting point (destination) and/or the
+                                        // receiver's own location. The
+                                        // no-destination case is the privacy-
+                                        // radius "Meet up" invite — it ships no
+                                        // meeting point, but we still show an
+                                        // empty map centred on the receiver's own
+                                        // position (once their GPS fix lands) so
+                                        // the request reads as a real invitation
+                                        // with a map to agree to, not a bare line
+                                        // of text. While the fix is still in
+                                        // flight (neither point known yet) we
+                                        // render nothing and let the buttons
+                                        // stand alone.
+                                        if (!hasDest && !hasUserLoc) {
                                             return null;
                                         }
                                         const PREVIEW_W = Math.max(
@@ -249,13 +269,14 @@ class MeetingRequestModal extends Component {
                                         // Falls back to default
                                         // street-level zoom while the
                                         // bbox has only one point.
-                                        const userLoc = this.props.userLocation;
-                                        const _fitPoints = [
-                                            {latitude: dest.latitude, longitude: dest.longitude},
-                                        ];
-                                        if (userLoc
-                                                && typeof userLoc.latitude === 'number'
-                                                && typeof userLoc.longitude === 'number') {
+                                        const _fitPoints = [];
+                                        if (hasDest) {
+                                            _fitPoints.push({
+                                                latitude: dest.latitude,
+                                                longitude: dest.longitude,
+                                            });
+                                        }
+                                        if (hasUserLoc) {
                                             _fitPoints.push({
                                                 latitude: userLoc.latitude,
                                                 longitude: userLoc.longitude,
@@ -290,8 +311,8 @@ class MeetingRequestModal extends Component {
                                                 alignSelf: 'center',
                                             }}>
                                                 <StaticMap
-                                                    destinationLatitude={dest.latitude}
-                                                    destinationLongitude={dest.longitude}
+                                                    destinationLatitude={hasDest ? dest.latitude : undefined}
+                                                    destinationLongitude={hasDest ? dest.longitude : undefined}
                                                     /* Receiver's own
                                                        location pin —
                                                        fetched in app.js's
@@ -422,9 +443,15 @@ class MeetingRequestModal extends Component {
                                                         }}
                                                         numberOfLines={1}
                                                     >
-                                                        {dest.latitude.toFixed(5)
-                                                            + ', '
-                                                            + dest.longitude.toFixed(5)}
+                                                        {hasDest
+                                                            ? (dest.latitude.toFixed(5)
+                                                                + ', '
+                                                                + dest.longitude.toFixed(5))
+                                                            : (hasUserLoc
+                                                                ? (userLoc.latitude.toFixed(5)
+                                                                    + ', '
+                                                                    + userLoc.longitude.toFixed(5))
+                                                                : '')}
                                                     </Text>
                                                 </View>
                                             </View>

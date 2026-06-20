@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permits cleartext HTTP so the on-device "Export data" LAN server can be reached
+  by the importing phone's fetch() in RELEASE builds. Android blocks cleartext by
+  default on targetSdk >= 28; the debug manifest already allowed it, but release
+  uses this config. The export server runs only on the user's local Wi-Fi.
+
+  NOTE: this enables cleartext app-wide (Android's network-security-config cannot
+  whitelist by IP range, and the LAN IP is dynamic). If you don't want the HTTP
+  import, either flip the export server to HTTPS and handle the self-signed cert
+  on the client, or remove this file + the android:networkSecurityConfig
+  reference in AndroidManifest.xml.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

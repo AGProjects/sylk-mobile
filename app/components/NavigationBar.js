@@ -81,6 +81,7 @@ import EditConferenceModal from './EditConferenceModal';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
 import PreferencesModal from './PreferencesModal';
+import ExportDataModal from './ExportDataModal';
 import DeleteAccountModal from './DeleteAccountModal';
 import SwitchAccountModal from './SwitchAccountModal';
 import GenerateKeysModal from './GenerateKeysModal';
@@ -191,9 +192,11 @@ class NavigationBar extends Component {
             showPublicKey: false,
             menuVisible: false,
             keyMenuVisible: false,
+            storageMenuVisible: false,
             showDeleteFileTransfers: false,
             showEditContactModal: false,
             showPreferencesModal: false,
+            showExportDataModal: false,
             // Live measurement of the Appbar.Header height (set by
             // its onLayout below). Plumbed down to ReadyBox →
             // ContactsListBox → KeyboardAvoidingView's
@@ -1178,6 +1181,26 @@ class NavigationBar extends Component {
             case 'scanQr':
                 this.props.toggleQRCodeScannerFunc();
                 break;
+            case 'backupContacts':
+                if (typeof this.props.backupContacts === 'function') {
+                    this.props.backupContacts();
+                }
+                break;
+            case 'backupMessages':
+                if (typeof this.props.backupMessages === 'function') {
+                    this.props.backupMessages();
+                }
+                break;
+            case 'restoreMessages':
+                if (typeof this.props.openRestoreMessages === 'function') {
+                    this.props.openRestoreMessages();
+                }
+                break;
+            case 'importContacts':
+                if (typeof this.props.openImportContacts === 'function') {
+                    this.props.openImportContacts();
+                }
+                break;
             case 'shareConferenceLinkModal':
                 this.showConferenceLinkModal();
                 break;
@@ -1370,6 +1393,9 @@ class NavigationBar extends Component {
             case 'preferences':
                 this.setState({ showPreferencesModal: true });
                 break;
+            case 'exportData':
+                this.setState({ showExportDataModal: true });
+                break;
             case 'speakerphone':
                 this.props.toggleSpeakerPhone();
                 break;
@@ -1435,7 +1461,17 @@ class NavigationBar extends Component {
                 this.setState({showDeleteHistoryModal: true, deleteContact: false});
                 break;
             case 'deleteContact':
-                this.setState({showDeleteHistoryModal: true, deleteContact: true});
+                // Stage 1: move the contact straight to the Deleted folder — no
+                // confirm here. The Deleted folder is the undo; the single, real
+                // confirmation is the permanent delete done from inside it. This
+                // routes through deleteMessages' delete-contact intercept, which
+                // soft-deletes (sets deleted_timestamp + hides messages).
+                if (this.props.selectedContact && this.props.selectedContact.uri) {
+                    this.props.deleteMessages(this.props.selectedContact.uri, false, {
+                        deleteContact: true,
+                        selectedContact: this.props.selectedContact,
+                    });
+                }
                 break;
             case 'deleteFileTransfers':
                 this.setState({showDeleteFileTransfers: true});
@@ -1491,7 +1527,7 @@ class NavigationBar extends Component {
                 break;
         }
 
-        this.setState({menuVisible: false, keyMenuVisible: false});
+        this.setState({menuVisible: false, keyMenuVisible: false, storageMenuVisible: false});
     }
 
     toggleAboutModal() {
@@ -2661,6 +2697,21 @@ class NavigationBar extends Component {
                 metadataContent.privacyDeferredRadiusMeters = r;
             }
         }
+        // Dummy-origin tick: a privacy-radius meet invite with NO shared
+        // destination has no real point it's willing to disclose, so the
+        // `value` coords above are a throwaway point generated a few km
+        // from the inviter's actual position (see startLocationSharing).
+        // The flag tells the receiver this point is fake — render no pin
+        // for it (the privacyDeferred path already suppresses the inviter
+        // pin; this is belt-and-suspenders and lets the bubble pick a
+        // sane empty-map centre). The dummy exists ONLY so the origin
+        // bubble persists with valid coords: that keeps the origin/update
+        // chain intact so the inviter's REAL position renders the moment
+        // they cross the perimeter (the first real tick overwrites the
+        // dummy in place). Cleared on that first real-coord tick.
+        if (extras.dummy) {
+            metadataContent.dummy = true;
+        }
         if (extras.inReplyTo) {
             metadataContent.in_reply_to = extras.inReplyTo;
         }
@@ -3133,6 +3184,48 @@ class NavigationBar extends Component {
         const h = sLat1 * sLat1
             + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sLon1 * sLon1;
         return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+
+    // Generate a throwaway "dummy" origin point a few km from `origin`
+    // at a random bearing. Used by the privacy-radius meet INVITE that
+    // carries no shared destination: the dummy is shipped as the origin
+    // tick's `value` (flagged dummy:true) purely so the origin bubble
+    // persists with valid coordinates — it is never rendered as a pin,
+    // never paired as a real position, and is overwritten by the
+    // inviter's first real fix once they cross their privacy perimeter.
+    //
+    // Distance is randomised in the ~4–7 km band (not a fixed radius)
+    // and the bearing is fully random, so the dummy reveals nothing
+    // useful about the inviter's actual position beyond what the privacy
+    // radius already implies. Returns {latitude, longitude}; falls back
+    // to the origin unchanged if the input is unusable (the caller has
+    // already gated on a valid `effective` fix, so this is defensive).
+    _dummyOriginPoint(origin) {
+        const lat = origin && typeof origin.latitude === 'number' ? origin.latitude : null;
+        const lng = origin && typeof origin.longitude === 'number' ? origin.longitude : null;
+        if (lat == null || lng == null) {
+            return origin || null;
+        }
+        const R = 6371008; // mean Earth radius, metres
+        const distance = 4000 + Math.random() * 3000; // 4–7 km
+        const bearing = Math.random() * 2 * Math.PI;   // 0–360°
+        const toRad = (deg) => deg * Math.PI / 180;
+        const toDeg = (rad) => rad * 180 / Math.PI;
+        const δ = distance / R;
+        const φ1 = toRad(lat);
+        const λ1 = toRad(lng);
+        const φ2 = Math.asin(
+            Math.sin(φ1) * Math.cos(δ)
+            + Math.cos(φ1) * Math.sin(δ) * Math.cos(bearing)
+        );
+        const λ2 = λ1 + Math.atan2(
+            Math.sin(bearing) * Math.sin(δ) * Math.cos(φ1),
+            Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2)
+        );
+        // Normalise longitude to −180…+180.
+        let lng2 = toDeg(λ2);
+        lng2 = ((lng2 + 540) % 360) - 180;
+        return { latitude: toDeg(φ2), longitude: lng2 };
     }
 
     // ===== DEBUG: synthetic-position override =====
@@ -4849,6 +4942,9 @@ class NavigationBar extends Component {
                     // the bubble adds the inviter pin to both ends.
                     const liveEntryRef0 = this.locationTimers && this.locationTimers[uri];
                     const dest = tickExtras && tickExtras.destination;
+                    const _hasDest = !!(dest
+                            && typeof dest.latitude === 'number'
+                            && typeof dest.longitude === 'number');
                     // Both sides of the meet handshake can opt into a
                     // privacy radius — the inviter (kind=meetingRequest)
                     // hides their starting position with the slider in
@@ -4862,33 +4958,91 @@ class NavigationBar extends Component {
                     // without disclosing the deferred party's actual
                     // position. Real coords flow once the user crosses
                     // their own perimeter.
-                    if ((kind === 'meetingRequest' || kind === 'meetingAccept')
-                            && dest
-                            && typeof dest.latitude === 'number'
-                            && typeof dest.longitude === 'number'
+                    //
+                    // The destination is no longer required for the INVITER.
+                    // When the inviter sets a privacy radius but picks no
+                    // meeting point (the common "Meet up" case — the modal
+                    // never collects a destination), we still ship a
+                    // bootstrap tick so the receiver's accept modal appears.
+                    // With a destination it ships as the value stand-in
+                    // (existing behaviour); without one we ship a DUMMY
+                    // stand-in: a throwaway point a few km from the
+                    // inviter's real position (see _dummyOriginPoint below),
+                    // flagged dummy:true so neither end renders a pin for
+                    // it. The dummy's whole purpose is to give the origin
+                    // bubble VALID coords so it persists in SQL on both
+                    // devices — which keeps the origin/update chain intact,
+                    // so the moment the inviter crosses the perimeter their
+                    // first REAL tick overwrites the dummy in place and the
+                    // live position renders (the rendezvous converges).
+                    //
+                    // The ACCEPTER path is deliberately UNCHANGED: it still
+                    // requires a destination to fire here, exactly as before,
+                    // so this fix touches only the inviter's no-destination
+                    // case (the reported bug).
+                    if ((kind === 'meetingRequest'
+                                || (kind === 'meetingAccept' && _hasDest))
                             && liveEntryRef0
                             && !liveEntryRef0.privacyDeferredOriginSent) {
                         liveEntryRef0.privacyDeferredOriginSent = true;
                         liveEntryRef0.privacyDeferred = true;
+                        // Resume guard for the DUMMY case. On an app-restart
+                        // / resume the origin bubble already exists on both
+                        // devices — carrying either the original dummy or, if
+                        // the inviter had already crossed their perimeter, a
+                        // real position — and its id is restored here via
+                        // opts.resumeOriginMetadataId. Minting + sending a
+                        // FRESH dummy now would be doubly wrong: it would
+                        // jitter the empty map to a new random spot on every
+                        // restart, and it could overwrite a real position that
+                        // was already revealed before the restart. So for the
+                        // dummy case we skip the (re)send on resume entirely
+                        // and let the restored origin stand. The localOwner-
+                        // Coords stamp below still runs (so the inviter keeps
+                        // seeing their own pin), and real ticks resume in place
+                        // the moment they're past the perimeter. The
+                        // destination case is deterministic, so it keeps its
+                        // existing resume behaviour.
+                        const _skipDummyOnResume = !_hasDest
+                            && !!opts.resumeOriginMetadataId;
+                        // Stand-in coords for the origin bubble. Real
+                        // destination if the share has one; otherwise a
+                        // dummy point ~4–7 km from the inviter's actual
+                        // position at a random bearing. The offset is large
+                        // enough that the dummy never doubles as a usable
+                        // approximation of where the inviter is, and the
+                        // dummy:true flag means it's never rendered or
+                        // paired as a real position anyway. Not generated at
+                        // all when we're skipping the send on resume.
+                        const _standIn = _hasDest
+                            ? {latitude: dest.latitude, longitude: dest.longitude}
+                            : (_skipDummyOnResume ? null : this._dummyOriginPoint(effective));
                         let _deferredMid = null;
                         try {
-                            // sendLocationMetadata stamps
-                            // metadata.privacyDeferred + the radius
-                            // (read from the timer entry's
-                            // excludeOriginRadiusMeters) — no
-                            // separate system note here. The
-                            // "Move <radius> from here…" hint is
-                            // rendered as a bottom strip overlay on
-                            // the map bubble itself (LocationBubble's
-                            // privacy-deferred branch), keeping the
-                            // chat timeline clean.
-                            _deferredMid = this.sendLocationMetadata(
-                                uri,
-                                {latitude: dest.latitude, longitude: dest.longitude},
-                                expiresIso,
-                                originMetadataId,
-                                {...tickExtras, privacyDeferred: true}
-                            );
+                            if (_skipDummyOnResume) {
+                                utils.timestampedLog(
+                                    '[location] privacy invite: skipping dummy origin re-send on resume —',
+                                    uri, 'origin=', originMetadataId
+                                );
+                            } else {
+                                // sendLocationMetadata stamps
+                                // metadata.privacyDeferred + the radius
+                                // (read from the timer entry's
+                                // excludeOriginRadiusMeters) — no
+                                // separate system note here. The
+                                // "Move <radius> from here…" hint is
+                                // rendered as a bottom strip overlay on
+                                // the map bubble itself (LocationBubble's
+                                // privacy-deferred branch), keeping the
+                                // chat timeline clean.
+                                _deferredMid = this.sendLocationMetadata(
+                                    uri,
+                                    _standIn,
+                                    expiresIso,
+                                    originMetadataId,
+                                    {...tickExtras, privacyDeferred: true, dummy: !_hasDest}
+                                );
+                            }
                         } catch (e) {
                             console.log('[location] privacy-deferred origin send failed',
                                 e && e.message ? e.message : e);
@@ -5771,7 +5925,9 @@ class NavigationBar extends Component {
     }
 
     get myself() {
-        return this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId;
+        return !!(this.props.selectedContact
+            && String(this.props.selectedContact.uri || '').trim().toLowerCase()
+               === String(this.props.accountId || '').trim().toLowerCase());
     }
 
     conferenceCall() {
@@ -6049,7 +6205,6 @@ class NavigationBar extends Component {
         let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
         let favoriteIcon = (this.props.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
         let autoAnswerTitle = this.props.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
-        let caregiverTitle = this.props.selectedContact?.localProperties?.caregiver ? '✓ Caregiver' : 'Caregiver';
 		let autoAnswerModeTitle = this.props.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
   
         let extraMenu = false;
@@ -6059,7 +6214,7 @@ class NavigationBar extends Component {
 
         let showBackButton = this.props.selectedContact || this.props.sharingAction;
 
-        let isAnonymous = this.props.selectedContact && (this.props.selectedContact.uri.indexOf('@guest.') > -1 || this.props.selectedContact.uri.indexOf('anonymous@') > -1);
+        let isAnonymous = this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri);
         let isCallableUri = !isConference && !this.props.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
 
         let blockedTitle = (this.props.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
@@ -6183,8 +6338,8 @@ class NavigationBar extends Component {
 				subtitle = _isTel ? _selUri.split('@')[0] : _selUri;
 			}
 
-			if (this.props.selectedContact.uri.indexOf('@guest.') > -1) {
-				title = 'Anonymous caller';
+			if (utils.isAnonymous(this.props.selectedContact.uri)) {
+				title = 'Unknown caller';
 			}
 
 		}
@@ -6950,7 +7105,7 @@ class NavigationBar extends Component {
                   (this.props.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}
-                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false})}
+                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false, storageMenuVisible: false})}
                         // Push the dropdown down by the device's top
                         // safe-area inset so the topmost items don't
                         // get eclipsed by the camera cutout / notch /
@@ -7167,46 +7322,20 @@ class NavigationBar extends Component {
                         <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
                         : null}
 
-                        {/* Caregiver — gated on the same conditions as
-                            Auto-answer above (favorite contact, not a
-                            conference / anonymous / blocked / test row,
-                            outside of a call or active message search).
-                            Sits immediately below Auto-answer so the
-                            two favorite-only attributes group together
-                            visually, and toggleFavorite scrubs the tag
-                            on un-favorite, so the option only ever
-                            renders when the underlying state can
-                            actually carry it. */}
-                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleCaregiver')} title={caregiverTitle}/>
-                        : null}
+                        {/* Caregiver — no longer offered here. It is a
+                            favorite-only attribute and is now edited as a
+                            dedicated group toggle inside EditContactModal
+                            (see the Caregiver PlatformToggle there). The
+                            kebab only carries the favorite/auto-answer
+                            quick toggles now. */}
 
-                        {!this.props.inCall && tags.indexOf('test') === -1 && !isFavorite && !(this.props.isFolded && this.props.selectedContact) ?
+                        {!this.props.inCall && !isFavorite && !this.myself && !(this.props.isFolded && this.props.selectedContact) ?
                         <Divider />
                         : null}
 
-                        {!this.props.inCall && !isFavorite && !(this.props.isFolded && this.props.selectedContact) ?
+                        {!this.props.inCall && !isFavorite && !this.myself && !(this.props.isFolded && this.props.selectedContact) ?
                         <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
                         : null}
-
-                        {/* Help… — same entry that lives in the
-                            no-contact kebab below, mirrored here so
-                            it is also reachable from the per-contact
-                            kebab. This is the only kebab the user
-                            can open while a call is active (during
-                            a call selectedContact is set to the
-                            remote party, so the no-contact branch
-                            never renders), and previously there was
-                            no path to the in-app log viewer / support
-                            request modal mid-call. Always shown,
-                            matching the "available in every context"
-                            intent stated on the sibling item. The
-                            folded layout has its own truncation
-                            rules elsewhere in this menu; Help is
-                            small and self-contained so we leave it
-                            unconditional. */}
-                        <Divider />
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Logs…" />
 
                     </Menu>
                 :
@@ -7217,7 +7346,12 @@ class NavigationBar extends Component {
                         // mode menu above — same camera-cutout fix.
                         style={topInset ? {marginTop: topInset} : null}
                         anchor={
-                            <Appbar.Action
+                            // No kebab in the Deleted / Graveyard views — those
+                            // offer their own per-contact actions (Restore /
+                            // Proceed / Revive / Eject), not the main menu.
+                            (this.props.activeContactsFilter === 'deleted' || this.props.activeContactsFilter === 'graveyard')
+                            ? <View />
+                            : <Appbar.Action
                                 ref={this.menuRef}
                                 color="white"
                                 icon="menu"
@@ -7334,6 +7468,59 @@ class NavigationBar extends Component {
 					</Menu>
                      : null}
 
+                       {/* My Storage — nested submenu grouping the
+                           on-device storage / migration actions (export,
+                           contact backup, contact restore). Mirrors the
+                           "My private key..." submenu above; placed right
+                           after it. Uses storageMenuVisible state. */}
+                     {!(this.props.isFolded && !this.props.selectedContact) ?
+                     <Menu
+                        visible={this.state.storageMenuVisible}
+                        onDismiss={() => this.setState({storageMenuVisible: !this.state.storageMenuVisible})}
+                        // Same camera-cutout offset as the parent
+                        // menu — keeps the nested storage submenu from
+                        // peeking out under the notch.
+                        style={topInset ? {marginTop: topInset} : null}
+						anchor={
+							<Menu.Item
+								title="My Storage..."
+								icon="folder"
+								onPress={() => this.setState({storageMenuVisible: true})}
+							/>
+						}
+                    >
+
+                       {/* Export data — starts the on-device LAN HTTPS
+                           server so a browser on the same Wi-Fi can pull
+                           this phone's messages / contacts / files (for
+                           phone-to-phone migration or computer backup). */}
+                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportData')} icon="export" title="Export data..."/> : null}
+
+                       {/* Backup contacts — one-tap local snapshot of this
+                           account's contacts, written to the same per-account
+                           folder as the weekly auto-backup. On-device only. */}
+                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupContacts')} icon="content-save" title="Backup contacts..."/> : null}
+
+                       {/* Backup messages — full local message-store dump for
+                           this account, written as plaintext JSON to the
+                           per-account messages/history folder. On-device only. */}
+                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupMessages')} icon="message-lock" title="Backup messages..."/> : null}
+
+                       {/* Restore messages — opens a modal listing message
+                           backups; each is loaded on demand to show how many
+                           messages are new vs current storage, then add-only
+                           restored (missing rows only). */}
+                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restoreMessages')} icon="message-arrow-left" title="Restore messages..."/> : null}
+
+                       {/* Restore contacts — add-only restore from a local
+                           backup snapshot. Lists backups with their count of
+                           contacts missing locally; importing creates those
+                           locally and on the server (no updates / deletes). */}
+                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('importContacts')} icon="account-multiple-plus" title="Restore contacts..."/> : null}
+
+						</Menu>
+                     : null}
+
                        {/* Preferences modal — opens a sheet of
                            per-account toggles (encryption mode, video
                            codec, etc.). Pure UI; no overlap with an
@@ -7410,6 +7597,16 @@ class NavigationBar extends Component {
                     devMode={this.props.devMode}
                 />
 
+                <ExportDataModal
+                    show={this.state.showExportDataModal}
+                    close={() => this.setState({ showExportDataModal: false })}
+                    accountId={this.props.accountId}
+                    userAgent={this.props.userAgent}
+                    announceDataExport={this.props.announceDataExport}
+                    beginDnd={this.props.beginDnd}
+                    endDnd={this.props.endDnd}
+                />
+
                 {/* Payment information modal — shared between the
                     "Donate…" menu item and the 'Payment required'
                     PSTN branch in app.callStateChanged. show/close
@@ -7442,7 +7639,7 @@ class NavigationBar extends Component {
                     filteredMessageIds={this.props.filteredMessageIds}
                     selectedContact={this.props.selectedContact}
                     deleteContact={this.state.deleteContact}
-                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && String(this.props.selectedContact.uri || '').trim().toLowerCase() === String(this.props.accountId || '').trim().toLowerCase()) ? true : false}
                 />
 
                 <DeleteFileTransfers
@@ -7454,7 +7651,7 @@ class NavigationBar extends Component {
                     transferedFiles={this.props.transferedFiles}
                     transferedFilesSizes={this.props.transferedFilesSizes}
                     getTransferedFiles={this.props.getTransferedFiles}
-                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && String(this.props.selectedContact.uri || '').trim().toLowerCase() === String(this.props.accountId || '').trim().toLowerCase()) ? true : false}
                 />
 
                 <AddContactModal
@@ -7467,14 +7664,29 @@ class NavigationBar extends Component {
                 <EditContactModal
                     show={showEditModal}
                     close={this.hideEditContactModal}
+                    accountId={this.props.accountId}
                     uri={this.props.selectedContact ? this.props.selectedContact.uri : this.props.accountId}
                     defaultDomain={this.props.defaultDomain}
                     displayName={this.props.selectedContact ? this.props.selectedContact.name : this.props.displayName}
                     selectedContact={this.props.selectedContact}
-                    organization={this.props.organization}
+                    organization={this.props.selectedContact ? this.props.selectedContact.organization : this.props.organization}
                     email={this.props.selectedContact ? this.props.selectedContact.email : this.props.email}
-                    myself={!this.props.selectedContact || (this.props.selectedContact && this.props.selectedContact.uri === this.props.accountId) ? true : false}
+                    myself={!this.props.selectedContact || (this.props.selectedContact && String(this.props.selectedContact.uri || '').trim().toLowerCase() === String(this.props.accountId || '').trim().toLowerCase()) ? true : false}
                     saveContactByUser={this.props.saveContactByUser}
+                    /* Union of every group (tag) already used across the
+                       address book, so EditContactModal can offer them as
+                       tappable suggestions instead of forcing the user to
+                       retype "Family" / "Business" by hand each time. */
+                    existingGroups={(() => {
+                        const set = new Set();
+                        (this.props.allContacts || []).forEach(c => {
+                            (c && Array.isArray(c.tags) ? c.tags : []).forEach(t => {
+                                const v = (t || '').trim();
+                                if (v) set.add(v);
+                            });
+                        });
+                        return Array.from(set);
+                    })()}
                     deletePublicKey={this.props.deletePublicKey}
                     publicKey={this.state.showPublicKey ? this.props.publicKey: null}
                     myuuid={this.props.myuuid}

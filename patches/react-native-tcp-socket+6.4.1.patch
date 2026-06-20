@@ -1,0 +1,17 @@
+diff --git a/node_modules/react-native-tcp-socket/src/Server.js b/node_modules/react-native-tcp-socket/src/Server.js
+index 0000000..1111111 100644
+--- a/node_modules/react-native-tcp-socket/src/Server.js
++++ b/node_modules/react-native-tcp-socket/src/Server.js
+@@ -107,6 +107,12 @@
+                 port: options.port,
+                 host: options.host || '0.0.0.0',
+                 reuseAddress: options.reuseAddress,
++                // Carry the TLS context through to native. TLSServer.listen()
++                // sets options.tls (the resolved keystore); without this line it
++                // was dropped here, so createTLSServer() silently produced a
++                // PLAIN server (native emitted 'connection', never
++                // 'secureConnection') and every TLS handshake hung.
++                tls: options.tls,
+             };
+             if (typeof callback_or_host === 'function') {
+                 cb = callback_or_host;

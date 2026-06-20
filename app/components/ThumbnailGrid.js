@@ -452,7 +452,21 @@ const renderItem = useCallback(
 
     return (
       <View style={[styles.thumb, {width: size, height: size}]}>
+			{/* Only mount FastImage once we actually have a thumbnail URI.
+			    Video tiles start with item.uri === null (the thumbnail is
+			    generated lazily after the file downloads). FastImage 8.6.3
+			    does NOT reliably reload when source.uri changes from
+			    null/empty to a real path — the native view caches its first
+			    "no source" state — so a tile mounted with uri=null stayed
+			    blank until the whole grid remounted (navigate away + back).
+			    That is the "they must rebuild when the thumbnail is loaded"
+			    symptom. Fix: render a neutral placeholder while the URI is
+			    missing, and key the FastImage on the URI so the moment a
+			    thumbnail lands React mounts a FRESH FastImage that loads it
+			    — no manual rebuild needed. */}
+			{item.uri ? (
 			<FastImage
+			  key={item.uri}
 			  source={{ uri: item.uri }}
 			  style={[
 				styles.image,
@@ -464,6 +478,15 @@ const renderItem = useCallback(
 			  ]}
 			  resizeMode={FastImage.resizeMode.cover}
 			/>
+			) : (
+			<View
+			  style={[
+				styles.image,
+				{ width: size, height: size },
+				imageStyle,
+			  ]}
+			/>
+			)}
 
 		{showTimestamp && item.timestamp && (
 		  <View style={styles.timestampBadge}>

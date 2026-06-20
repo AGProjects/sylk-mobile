@@ -1,0 +1,543 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylk Mobile Addressbook - Code Reference</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+</style>
+</head><body>
+<h1>Sylk Mobile Addressbook - Code Reference</h1>
+<p>Copyright (C) 2020-2026 AG Projects B.V. (https://www.ag-projects.com)</p>
+<p>Implementation map for the addressbook sync layer. The companion document
+<a href="addressbook.html"><code>addressbook.html</code></a> explains the design and behavior; this one
+maps that behavior onto the code — the functions that implement it, where they
+live, and how they fit together. Section references like (Chapter 16) point back into
+the design doc.</p>
+<p>Everything described here lives in <strong><code>app/app.js</code></strong> on the root <code>App</code>
+component. The cross-device data model, server contract, and reconciliation
+rules are documented in <code>addressbook.html</code>; the client library surface
+(<code>connection.addressbook</code>, its getters and <code>data*</code> events) is provided by
+<strong>react-native-sylkrtc</strong> and is not part of this file.</p>
+<hr />
+<h2>Naming conventions</h2>
+<ul>
+<li><strong><code>_ab*</code></strong> — every addressbook helper is prefixed <code>_ab</code> (e.g. <code>_abServerUris</code>,
+  <code>_abMigrateGroups</code>). The prefix namespaces the layer inside the large <code>App</code>
+  component and makes the addressbook surface greppable in one pass.</li>
+<li><strong><code>loadPhoneAddressBook</code>, <code>_abMigrateOnce</code>, <code>_abMigratePreview</code></strong>
+  — the few non-<code>_ab</code> entry points keep the established <code>AddressBook</code> (capital
+  <code>B</code>) spelling used elsewhere in the codebase (<code>addressBookContacts</code>,
+  <code>kickUnifiedSearchAddressBookLoad</code>). The <code>data*</code> event handlers use the <code>_abOn*</code>
+  prefix (<code>_abOnDataLoaded</code>, …) to match the <code>_on*</code> handler convention in the file.</li>
+<li><strong><code>R1</code>–<code>R6</code> tags in comments</strong> — several helpers carry an <code>Rn:</code> marker in
+  their leading comment. These are the URI-normalization / junk rules
+  (<code>addressbook.html</code> Chapter 3): <code>R1</code> IP-literal domain, <code>R3</code> URI-echo name, <code>R4</code> phone
+  normalization, <code>R5</code> conference anomaly, <code>R6</code> conference-domain mangling.</li>
+<li><strong><code>[ab] ...</code> log prefix</strong> — all addressbook console output is tagged <code>[ab]</code>
+  (with sub-tags such as <code>[ab] [get]</code>, <code>[ab] [put]</code>, <code>[ab] [queue]</code>,
+  <code>[ab] [delete]</code>) so a sync can be followed in the metro log.</li>
+</ul>
+<hr />
+<h2>Lifecycle and entry points</h2>
+<p>On connection setup the four client-library addressbook events are bound to
+the <code>_abOn*</code> handlers (and unbound first to avoid duplicate listeners):</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Handler</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataLoaded</code></td>
+<td><code>_abOnDataLoaded</code></td>
+<td>fresh authoritative snapshot fetched</td>
+</tr>
+<tr>
+<td><code>dataCacheLoaded</code></td>
+<td><code>_abOnDataCacheLoaded</code></td>
+<td>library served a cached snapshot (e.g. account switch-back)</td>
+</tr>
+<tr>
+<td><code>dataUpdated</code></td>
+<td><code>_abOnDataUpdated</code></td>
+<td>fresh authoritative delta</td>
+</tr>
+<tr>
+<td><code>dataDeleted</code></td>
+<td><code>_abOnDataDeleted</code></td>
+<td>server-authoritative contact removal</td>
+</tr>
+<tr>
+<td><code>dataUpdateFailed</code></td>
+<td><code>_abUpdateFailed</code></td>
+<td>a write the client issued failed</td>
+</tr>
+</tbody>
+</table>
+<h3>Readiness gate and dispatch</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abReady</code></td>
+<td>True only when the app is fully settled for the <strong>current</strong> account: account id set, connection ready, local contacts loaded <strong>and stamped for this account</strong>, <code>accounts.settings</code> committed for this account, and server data present for this account. Prevents one account's data leaking into another during a switch (Chapter 9).</td>
+</tr>
+<tr>
+<td><code>_abMaybeRun(source)</code></td>
+<td>Called from every readiness edge. Bails silently until <code>_abReady</code> passes; whichever edge fires last actually starts the work. On any server data it runs <code>syncGroupsTable</code> + <code>applySelfContactFromServer</code>; it only runs the migration against <strong>authoritative</strong> (freshly fetched) data, never a possibly-partial cache.</td>
+</tr>
+<tr>
+<td><code>_abOnDataLoaded</code></td>
+<td><code>dataLoaded</code>: marks server + authoritative data present for the account, logs the pending-put queue once (Chapter 10), writes the recovery dump (Chapter 9/Chapter 20), then <code>_abMaybeRun('dataLoaded')</code>.</td>
+</tr>
+<tr>
+<td><code>_abOnDataCacheLoaded</code></td>
+<td><code>dataCacheLoaded</code>: marks server data present (not authoritative), then <code>_abMaybeRun('dataCacheLoaded')</code>.</td>
+</tr>
+<tr>
+<td><code>_abOnDataUpdated</code></td>
+<td><code>dataUpdated</code>: marks server + authoritative data present, then <code>_abMaybeRun('dataUpdated')</code>.</td>
+</tr>
+<tr>
+<td><code>_abOnDataDeleted</code></td>
+<td><code>dataDeleted</code>: delegates to <code>_abApplyServerDelete</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The state fields <code>_abServerDataAccount</code> (any server data, cache or fresh) and
+<code>_abAuthoritativeDataAccount</code> (a fresh fetch arrived) are what the gate reads to
+tell a cache load apart from an authoritative one.</p>
+<h3>OS contacts loader</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>loadPhoneAddressBook</code></td>
+<td>Permission-driven loader for the <strong>phone's OS contacts</strong> (react-native-contacts), deferred to explicit user intent (tapping Phonebook) so the OS permission prompt only appears then. Idempotent: skips work only when permission is already authorized <strong>and</strong> contacts are already fetched. Distinct from the server XCAP sync above.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Migration workflow</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abMigrateOnce(source)</code></td>
+<td>The one-time-per-account reconciliation (Chapter 9). Version-guarded by a persistent per-account marker plus an in-memory re-entrancy guard; imports/updates server contacts, puts local-only contacts, reconciles groups, applies normalization, runs in bulk mode (suppress per-contact re-render, refresh once). On a truly fresh account it enables DND for the duration of the initial sync. Guards on the cross-client <code>MigratedVersion</code> marker first: if the self XCAP contact already carries a marker <code>&gt;=</code> the required version, it adopts it and skips the destructive reconciliation (Chapter 9).</td>
+</tr>
+<tr>
+<td><code>_abMigrateGroups</code></td>
+<td>Group ↔ tag convergence (Chapter 7): adopts server-group membership onto local rows, strips tags for groups deleted elsewhere (using the seen-groups baseline), and puts local-only groups up.</td>
+</tr>
+<tr>
+<td><code>_abConsolidateExistingUris(keepContact)</code></td>
+<td>Duplicate / URI-collision resolution support (Chapter 16.1–16.2): consolidates a shared URI onto the canonical survivor.</td>
+</tr>
+<tr>
+<td><code>_abMigratePreview(source)</code></td>
+<td>Dry-run of the migration that logs what <strong>would</strong> change without writing — the planning/diagnostic counterpart to <code>_abMigrateOnce</code>.</td>
+</tr>
+<tr>
+<td><code>_abApplyServerDelete(event)</code></td>
+<td>Applies a server-driven delete: drops group tags, stamps <code>deleted_timestamp</code>, and tombstones once storage is purged. Bound to <code>dataDeleted</code> via <code>_abOnDataDeleted</code> (Chapter 12, Chapter 16.3).</td>
+</tr>
+<tr>
+<td><code>_abMigrationVersion</code></td>
+<td>The migration version (bump to force a cross-device re-run). Compared against <code>accounts.ab_migration</code> and the self-contact marker.</td>
+</tr>
+<tr>
+<td><code>_abSelfServerContact()</code></td>
+<td>The server (XCAP) contact for our own account, matched by URI. Used by the privacy adopt path and the cross-client migration marker.</td>
+</tr>
+<tr>
+<td><code>_abWriteSelfMigrationMarker(account)</code></td>
+<td>Publishes the cross-client marker — writes <code>MigratedVersion = _abMigrationVersion</code> onto the self XCAP contact so other clients/devices skip the migration. Written on clean completion and re-published by already-migrated devices that lack it (Chapter 9, Chapter 16.4).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Live replication and the offline queue</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abReplicateToServer(contact)</code></td>
+<td>Live put of a contact change to the server, contact first then group membership, so the contact exists before group ops reference it.</td>
+</tr>
+<tr>
+<td><code>_abPutLocalContactToServer(c)</code></td>
+<td>Put a local-only contact (<code>addContact</code>); on success stamps the returned server id onto the local <code>remote_id</code>. Adopts an existing server contact with the same URI rather than duplicating.</td>
+</tr>
+<tr>
+<td><code>_abServerContactPayload(c, id)</code></td>
+<td>Builds the server contact payload — <code>uris[]</code> (each with its own id), <code>default_uri</code>, preserved <code>dialog</code>/<code>presence</code>, name, and the <code>attributes</code> bag (Chapter 15). Mangles URIs back to the server <code>conference.X</code> form on the way out.</td>
+</tr>
+<tr>
+<td><code>_abFlushPendingPut(account)</code></td>
+<td>Re-puts every contact whose previous replicate failed; called on the next good sync (Chapter 10).</td>
+</tr>
+<tr>
+<td><code>_abUpdateFailed(e)</code></td>
+<td><code>dataUpdateFailed</code> handler: classifies the failure — transport/5xx/408/429 retryable (queue it), 4xx permanent (drop) — using the retryable flag the server carries on the event (Chapter 10).</td>
+</tr>
+<tr>
+<td><code>_abPendingPutKey(account)</code></td>
+<td>Current queue key, <code>ab_ops_queue.&lt;account&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>_abPendingPutLegacyKey(account)</code></td>
+<td>Legacy key <code>ab_pending_push.&lt;account&gt;</code>, read once and migrated forward so pre-rename writes aren't lost.</td>
+</tr>
+<tr>
+<td><code>_abLoadPendingPut</code> / <code>_abSavePendingPut</code></td>
+<td>Load/persist the queue (a serialized <code>Set</code> of URIs) in AsyncStorage.</td>
+</tr>
+<tr>
+<td><code>_abQueuePendingPut</code> / <code>_abDequeuePendingPut</code></td>
+<td>Add / remove a URI from the queue.</td>
+</tr>
+<tr>
+<td><code>_abLogPendingPut(account)</code></td>
+<td>Logs the queue contents once per account per run on first authoritative load (<code>[ab] [queue] ...</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3>Server-call plumbing</h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abExec(label, fn)</code></td>
+<td>Promisifies a node-style <code>cb(err)</code> addressbook call so the sync code can <code>await</code> it.</td>
+</tr>
+<tr>
+<td><code>_abMethodTag(label)</code></td>
+<td>Derives the HTTP-method tag (<code>[put]</code>, <code>[delete]</code>, …) from an operation label for logging.</td>
+</tr>
+<tr>
+<td><code>_abGenerateServerId()</code></td>
+<td>Mints a server-style id: the literal <code>id</code> followed by digits.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>URI normalization, mangling, and junk rules</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Rule</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abNormalizeUri(uri)</code></td>
+<td>R4</td>
+<td>Phone numbers (user part starting <code>+</code>/<code>0</code>) stored bare, without domain; otherwise lowercased/trimmed.</td>
+</tr>
+<tr>
+<td><code>_abIsIpDomain(uri)</code></td>
+<td>R1</td>
+<td>Domain is an IP literal (IPv4 or bracketed IPv6) → junk.</td>
+</tr>
+<tr>
+<td><code>_abIsLocalDomain(uri)</code></td>
+<td>—</td>
+<td>URI ends in <code>@local</code> (Bonjour / LAN).</td>
+</tr>
+<tr>
+<td><code>_abIsConferenceAnomaly(uri)</code></td>
+<td>R5</td>
+<td>Conference room whose username starts with <code>0</code> → junk.</td>
+</tr>
+<tr>
+<td><code>_abVideoConfDomain()</code></td>
+<td>R6</td>
+<td>The local/Sylk conference domain (<code>videoconference.X</code>).</td>
+</tr>
+<tr>
+<td><code>_abSipBridgeDomain()</code></td>
+<td>R6</td>
+<td>The paired server SIP bridge domain (<code>conference.X</code>), a fixed client convention.</td>
+</tr>
+<tr>
+<td><code>_abSwapDomain(uri, from, to)</code></td>
+<td>R6</td>
+<td>Swap only the host between the two forms; username untouched.</td>
+</tr>
+<tr>
+<td><code>_abMangleConferenceDomainFromServer(uri)</code></td>
+<td>R6</td>
+<td><code>conference.X → videoconference.X</code> (read / match / display).</td>
+</tr>
+<tr>
+<td><code>_abMangleConferenceDomainToServer(uri)</code></td>
+<td>R6</td>
+<td><code>videoconference.X → conference.X</code> (write).</td>
+</tr>
+<tr>
+<td><code>_abNormServerUri(uri)</code></td>
+<td>R4+R6</td>
+<td>Mangle-from-server then normalize.</td>
+</tr>
+<tr>
+<td><code>_abLocalToServerUri(uri)</code></td>
+<td>R4+R6</td>
+<td>Normalize then mangle-to-server.</td>
+</tr>
+<tr>
+<td><code>_abUriUsername(uri)</code></td>
+<td>—</td>
+<td>Extract the user part of a URI.</td>
+</tr>
+<tr>
+<td><code>_abIsConferenceUri(uri)</code></td>
+<td>—</td>
+<td>True for a conference room (either bridge domain).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Contact / URI resolution</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abServerUris(s)</code></td>
+<td>Unique lowercased list of every URI on a server contact (<code>default_uri</code> + <code>uris[]</code>), each run through <code>_abNormServerUri</code>.</td>
+</tr>
+<tr>
+<td><code>_abLocalContactUris(c)</code></td>
+<td>All URIs a local contact owns (primary + extras), lowercased.</td>
+</tr>
+<tr>
+<td><code>_abChosenDefaultUri(s)</code></td>
+<td>The server's flagged default URI, else the <code>uris[]</code> default, else <code>uris[0]</code>.</td>
+</tr>
+<tr>
+<td><code>_abBestUri(uris)</code></td>
+<td>Best default when none is flagged: prefer non-phone under the account domain, then any non-phone SIP, then phone, then first (Chapter 5).</td>
+</tr>
+<tr>
+<td><code>_abFindServerContactByUri(contact)</code></td>
+<td>Find the server contact sharing a URI with this local contact (adopt-by-URI; un-mangles conference URIs so a put adopts rather than duplicates).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Display name resolution</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abIsUriEcho(name, uri)</code></td>
+<td>R3: name carries no real info — empty, equals the URI, the URI without <code>@</code>, or the username.</td>
+</tr>
+<tr>
+<td><code>_abWinningDisplayName(localName, serverName, uri)</code></td>
+<td>R3: choose the name to store — server real name wins, else local real name, else empty (Chapter 4).</td>
+</tr>
+<tr>
+<td><code>_abFinalDisplayName(c)</code></td>
+<td>Final stored display name for a local contact.</td>
+</tr>
+<tr>
+<td><code>_abServerDisplayName(s, primaryLocalUri)</code></td>
+<td>Resolved display name for a server contact (server name unless URI-echo).</td>
+</tr>
+<tr>
+<td><code>_abConferenceName(name, uri)</code></td>
+<td>A conference room's display name is the room number (URI username).</td>
+</tr>
+<tr>
+<td><code>_abCapitalizeGroup(name)</code></td>
+<td>Canonical Capitalized form for a (case-insensitive) group name.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Groups, tags, and attributes</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abTagToGroupName(tag)</code></td>
+<td>Reserved tag → server group name (<code>favorite → Favorites</code>, <code>blocked → Blocked</code>, <code>tel → Tel</code>, <code>chat → Messages</code>); custom tags pass through.</td>
+</tr>
+<tr>
+<td><code>_abGroupNameToTag(name)</code></td>
+<td>Reverse mapping, server group name → local tag.</td>
+</tr>
+<tr>
+<td><code>_abIsPurgeGroup(name)</code></td>
+<td>A server group that must be deleted from the server, never imported.</td>
+</tr>
+<tr>
+<td><code>_abIsPurgeTag(tag)</code></td>
+<td>A local tag mapping to a purge group.</td>
+</tr>
+<tr>
+<td><code>_abContactQualifiesForTag(c, tag)</code></td>
+<td>Whether a contact legitimately belongs to the group for a tag.</td>
+</tr>
+<tr>
+<td><code>_abNonGroupTags</code></td>
+<td>Set of per-contact flag tags excluded from group sync (<code>bypassdnd</code>, <code>muted</code>, <code>noread</code>, <code>history</code>, <code>caregiver</code>).</td>
+</tr>
+<tr>
+<td><code>_abDynamicLocalGroups</code></td>
+<td>Locally-authoritative dynamic groups (<code>calls</code>, <code>recent</code>).</td>
+</tr>
+<tr>
+<td><code>_abAutoLocalGroups</code></td>
+<td>Auto-derived categories, never user groups (<code>messages</code>, <code>chat</code>, <code>calls</code>, <code>recent</code>).</td>
+</tr>
+<tr>
+<td><code>_abSeenGroupsKey(account)</code></td>
+<td>AsyncStorage key for the seen-groups baseline, <code>ab_seen_groups.&lt;account&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>_abLoadSeenGroups</code> / <code>_abSaveSeenGroups</code></td>
+<td>Load/persist the set of server group names this device has seen (drives offline-delete inference, Chapter 7).</td>
+</tr>
+<tr>
+<td><code>_abContactAttributes(c)</code></td>
+<td>The synced attribute subset of a local contact written to the server <code>attributes</code> bag.</td>
+</tr>
+<tr>
+<td><code>_abApplyServerAttrs(contact, s)</code></td>
+<td>Apply the server <code>attributes</code> onto a local contact — additive, tolerant of string/bool values (Chapter 6).</td>
+</tr>
+<tr>
+<td><code>_abRecordPendingEdit(uri, fields)</code></td>
+<td>Record an authoritative-field edit so an in-flight re-fetch doesn't revert it (Chapter 6, edit protection).</td>
+</tr>
+<tr>
+<td><code>_abEditProtected(uri, field, serverVal)</code></td>
+<td>True when adoption should skip a field because of a recent local edit still within <code>_abEditWindowMs</code> (30s).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Recency, diagnostics, and dumps</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_abLatestMessageTimestamp(uri)</code></td>
+<td>Latest real-message timestamp (unix seconds) for a URI, or null — drives list order (Chapter 14).</td>
+</tr>
+<tr>
+<td><code>_abImportTimestamp</code></td>
+<td>Fixed historic date for contacts with no message history, so pure imports sort below people you've talked to.</td>
+</tr>
+<tr>
+<td><code>_abDumpHistory()</code></td>
+<td>On authoritative load, snapshot the full server addressbook (contacts + groups + policies) to the account's private folder for recovery, and print the <code>[ab] CONTACTS</code> / <code>CONTACTS DIFF</code> diagnostic tables (Chapter 20).</td>
+</tr>
+<tr>
+<td><code>_abWriteDump(filename, text)</code></td>
+<td>Write a dump file under the account's dump dir.</td>
+</tr>
+<tr>
+<td><code>_abAccountDir(account)</code> / <code>_abDumpDir(account)</code></td>
+<td>Resolve the per-account private / dump directory.</td>
+</tr>
+<tr>
+<td><code>_abPurgeDumpDir(account)</code></td>
+<td>Remove the account's entire dump folder (on account delete).</td>
+</tr>
+<tr>
+<td><code>_abPurgeLegacyDump()</code></td>
+<td>One-time cleanup of legacy dump locations.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Actual workflow</h2>
+<ol>
+<li>Connection setup binds the <code>data*</code> events to the <code>_abOnData*</code> handlers.</li>
+<li>A snapshot arrives → <code>_abOnData*</code> records which account the data is for and
+   calls <code>_abMaybeRun</code>.</li>
+<li><code>_abMaybeRun</code> checks <code>_abReady</code>; once the last readiness edge
+   passes it runs <code>syncGroupsTable</code> + <code>applySelfContactFromServer</code>, and — only
+   on authoritative data — <code>_abMigrateOnce</code>.</li>
+<li>The migration reconciles contacts and groups using the resolution
+   (<code>_abFindServerContactByUri</code>, <code>_abServerUris</code>), normalization
+   (<code>_abNormalizeUri</code>, the mangle helpers), name (<code>_abWinningDisplayName</code>), and group
+   (<code>_abMigrateGroups</code>) helpers, writing through <code>_abServerContactPayload</code> /
+   <code>_abPutLocalContactToServer</code> / <code>_abExec</code>.</li>
+<li>Later user edits replicate live via <code>_abReplicateToServer</code>; failed writes land in the
+   AsyncStorage queue (<code>_abQueuePendingPut</code>) and are retried by
+   <code>_abFlushPendingPut</code> on the next good sync.</li>
+</ol>
+<p>For the rules behind each step — server-authoritative precedence, dedup by
+lowest id, conference mangling, offline-delete inference, the empty-snapshot
+safety gate — see <a href="addressbook.html"><code>addressbook.html</code></a>.</p>
+</body></html>

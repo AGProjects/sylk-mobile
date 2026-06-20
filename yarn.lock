@@ -4315,7 +4315,7 @@ buffer@^5.0.2:
     base64-js "^1.0.2"
     ieee754 "^1.1.4"
 
-buffer@^5.5.0:
+buffer@^5.4.3, buffer@^5.5.0:
   version "5.7.1"
   resolved "https://registry.npmjs.org/buffer/-/buffer-5.7.1.tgz"
   integrity sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==
@@ -6188,6 +6188,11 @@ event-target-shim@^5.0.0, event-target-shim@^5.0.1:
   version "5.0.1"
   resolved "https://registry.yarnpkg.com/event-target-shim/-/event-target-shim-5.0.1.tgz#5d4d3ebdf9583d63a5333ce2deb7480ab2b05789"
   integrity sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==
+
+eventemitter3@^4.0.7:
+  version "4.0.7"
+  resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-4.0.7.tgz#2de9b68f6528d5644ef5c59526a1b4a07306169f"
+  integrity sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw==
 
 events@^2.0.0:
   version "2.1.0"
@@ -10601,9 +10606,9 @@ react-native-swipe-list-view@^3.2.3:
   resolved "https://registry.npmjs.org/react-native-swipe-list-view/-/react-native-swipe-list-view-3.2.3.tgz"
   integrity sha512-f0B92eZiO0mCk7ZFtn8tbLz4lb+mR8xzcfjFqCVSDeXnuNw7GenUMsccGnclIOhnxnip5BHvUHavlD41peGqig==
 
-react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#96a96891e58088b3fdcf20fd16db587ca475384e:
-  version "1.7.0"
-  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/96a96891e58088b3fdcf20fd16db587ca475384e"
+react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#c9f7b90b54239a0a513c97c87d0da5fa9706aa88:
+  version "2.0.2"
+  resolved "https://codeload.github.com/AGProjects/react-native-sylkrtc.js/tar.gz/c9f7b90b54239a0a513c97c87d0da5fa9706aa88"
   dependencies:
     "@rifflearning/attachmediastream" "^3.0.0"
     async "^3.1.0"
@@ -10617,6 +10622,14 @@ react-native-sylkrtc@AGProjects/react-native-sylkrtc.js#96a96891e58088b3fdcf20fd
     webrtc-adapter "^6.4.8"
     websocket "^1.0.34"
     xss "^1.0.8"
+
+react-native-tcp-socket@^6.4.1:
+  version "6.4.1"
+  resolved "https://registry.yarnpkg.com/react-native-tcp-socket/-/react-native-tcp-socket-6.4.1.tgz#e33eec5648cbb226f79dda366bc294395a86d272"
+  integrity sha512-2+zya9ielB8nWfMYVULB64ZqLzQD32qIzTnDef7NM1BChaJiA1btkJTBL+8WnyBrujjlCBVxBC3gAkXtG5hmvQ==
+  dependencies:
+    buffer "^5.4.3"
+    eventemitter3 "^4.0.7"
 
 react-native-track-player@^4.1.2:
   version "4.1.2"

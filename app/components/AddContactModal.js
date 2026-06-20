@@ -14,6 +14,7 @@ import PropTypes from 'prop-types';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
+import utils from '../utils';
 
 const AddContactModal = ({
   show,
@@ -61,7 +62,14 @@ const AddContactModal = ({
   };
 
   const onUriChange = (value) => {
-    const cleaned = value.replace(/\s|\(|\)/g, '').toLowerCase();
+    let cleaned = value.replace(/\s|\(|\)/g, '').toLowerCase();
+    // Pasted/typed phone numbers carrying separators ('+1-313-1313',
+    // '+1313_1313') collapse to canonical digits — we know it's a phone
+    // number, so the '-'/'_' are noise. Ordinary SIP usernames (e.g.
+    // 'john-doe') keep theirs.
+    if (utils.isPhoneNumber(cleaned)) {
+      cleaned = cleaned.replace(/[-_]/g, '');
+    }
     setUri(cleaned);
   };
 

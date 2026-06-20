@@ -1,7 +1,7 @@
 import React, { Component} from 'react';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
-import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter, Vibration} from 'react-native';
+import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, ScrollView, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter, Vibration} from 'react-native';
 import ContactCard from './ContactCard';
 import utils from '../utils';
 import DigestAuthRequest from 'digest-auth-request';
@@ -33,6 +33,7 @@ import { createThumbnailSafe } from '../thumbnailService';
 import UserIcon from './UserIcon';
 import { CustomMessageText } from './CustomMessageText';
 import RenderHTML, { HTMLElementModel, HTMLContentModel } from 'react-native-render-html';
+import { WebView } from 'react-native-webview';
 
 import * as Progress from 'react-native-progress';
 
@@ -224,7 +225,7 @@ class ContactsListBox extends Component {
             message: null,
             inviteContacts: this.props.inviteContacts,
             shareToContacts: this.props.shareToContacts,
-            selectMode: this.props.shareToContacts || this.props.inviteContacts,
+            selectMode: this.props.shareToContacts || this.props.inviteContacts || this.props.contactSelectMode,
             selectedContacts: this.props.selectedContacts,
             pinned: this.props.pinned,
             filter: this.props.contactsFilter,
@@ -374,6 +375,7 @@ class ContactsListBox extends Component {
 		    replyContainerHeight: 0,
 		    appState: this.props.appState,
 		    allContacts: this.props.allContacts,
+		    graveyardContacts: this.props.graveyardContacts || [],
 		    // Which contact source the search/list filters against.
 		    // 'sylk' = the Sylk contacts in this.state.allContacts,
 		    // 'ab'   = the address-book entries in this.state.contacts.
@@ -400,6 +402,7 @@ class ContactsListBox extends Component {
             // parent app's setFullScreen() so the surrounding navbar /
             // status chrome also collapses, matching the image viewer.
             fullScreenLocation: null,
+            fullScreenHtml: null,
             // iOS-only audio player state. AVAudioPlayer (used by
             // react-native-audio-recorder-player on iOS) silently fails to
             // decode some MP3 variants — VBR Sony hardware-recorder output
@@ -988,7 +991,7 @@ class ContactsListBox extends Component {
                        sourceContact: nextProps.sourceContact,
                        isTexting: nextProps.isTexting,
                        showDeleteMessageModal: nextProps.showDeleteMessageModal,
-                       selectMode: nextProps.shareToContacts || nextProps.inviteContacts,
+                       selectMode: nextProps.shareToContacts || nextProps.inviteContacts || nextProps.contactSelectMode,
                        searchMessages: nextProps.searchMessages,
                        searchString: nextProps.searchString,
                        dark: nextProps.dark,
@@ -1002,6 +1005,7 @@ class ContactsListBox extends Component {
 					   insets: nextProps.insets,
 					   appState: nextProps.appState,
 					   allContacts: nextProps.allContacts,
+					   graveyardContacts: nextProps.graveyardContacts || [],
 					   contactSource: nextProps.contactSource || 'sylk'
 					});
 
@@ -1695,7 +1699,7 @@ class ContactsListBox extends Component {
 					numberOfLines={2}
 					ellipsizeMode="tail"
 				  >
-					{replyingTo.text}
+					{replyingTo.contentType === 'text/html' ? utils.html2text(replyingTo.html || replyingTo.text) : replyingTo.text}
 				  </Text>
 				</View>
 			  )}
@@ -2630,10 +2634,12 @@ class ContactsListBox extends Component {
 			const _stMd = (this.state.audioRecordingStatus && this.state.audioRecordingStatus.metadata) || {};
 			const _msg = this.currentAudioMessage || {};
 			const _kind = (_stMd.call_recording === true) ? 'call_recording' : 'voice_msg';
+			/*
 			utils.timestampedLog('[audio] stop', _kind,
 				'_id=', _msg._id,
 				'tid=', _stMd.transfer_id,
 				'pos=', this.state.audioRecordingStatus && this.state.audioRecordingStatus.position);
+				*/
 		} catch (_e) {}
 
 		// On Android the player is audioRecorderPlayer. On iOS we drive
@@ -2787,7 +2793,51 @@ class ContactsListBox extends Component {
 
     setTargetUri(uri, contact) {
         //console.log('Set target uri uri in history list', uri);
+        // In the Deleted folder / Graveyard a tap must NOT open the chat —
+        // it offers the lifecycle actions instead.
+        if (this.state.filter === 'deleted') {
+            this.showDeletedContactOptions(contact);
+            return;
+        }
+        if (this.state.filter === 'graveyard') {
+            this.showGraveyardContactOptions(contact);
+            return;
+        }
         this.props.setTargetUri(uri, contact);
+    }
+
+    // Deleted folder: Restore (revive) or Proceed (kill on XCAP → Graveyard).
+    // The "all messages will be deleted" warning only shows when the contact
+    // still has stored (hidden) messages — i.e. it was locally deleted. If it
+    // was remotely purged (messages already gone) we just show the buttons.
+    async showDeletedContactOptions(contact) {
+        if (!contact) return;
+        const name = (contact.name && contact.name.trim()) || contact.uri;
+        let hasMsgs = false;
+        if (typeof this.props.contactHasStoredMessages === 'function') {
+            try { hasMsgs = await this.props.contactHasStoredMessages(contact.uri); } catch (e) {}
+        }
+        const body = hasMsgs
+            ? name + '\n\nProceeding permanently deletes this contact and ALL its messages, and removes it from the server.'
+            : name;
+        Alert.alert('Deleted contact', body, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Restore', onPress: () => { if (this.props.reviveContact) this.props.reviveContact(contact); } },
+            { text: 'Proceed', style: 'destructive', onPress: () => { if (this.props.hardDeleteContacts) this.props.hardDeleteContacts([contact.uri]); } },
+        ]);
+    }
+
+    // Graveyard (tombstones): Revive (bring back) or Eject (the ultimate step —
+    // physically delete the contact row from SQL, irreversible).
+    showGraveyardContactOptions(contact) {
+        if (!contact) return;
+        const name = (contact.name && contact.name.trim()) || contact.uri;
+        Alert.alert('Graveyard contact', name
+            + '\n\nEject permanently removes the contact record from this device. This cannot be undone.', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Revive', onPress: () => { if (this.props.reviveContact) this.props.reviveContact(contact); } },
+            { text: 'Eject', style: 'destructive', onPress: () => { if (this.props.ejectContact) this.props.ejectContact(contact); } },
+        ]);
     }
 
     setFavoriteUri(uri) {
@@ -2807,6 +2857,9 @@ class ContactsListBox extends Component {
             contact={item}
             selectedContact={this.state.selectedContact}
             setTargetUri={this.setTargetUri}
+            searchMode={!this.state.searchMessages
+                && !!this.state.targetUri
+                && this.state.targetUri.length > 0}
             chat={this.state.chat}
             fontScale={this.state.fontScale}
             orientation={this.props.orientation}
@@ -2822,6 +2875,7 @@ class ContactsListBox extends Component {
             unread={item.unread}
             toggleBlocked={this.props.toggleBlocked}
             selectMode={this.state.selectMode}
+            onLongPress={() => { if (this.props.onLongPressContact) this.props.onLongPressContact(item); }}
             accountId = {this.state.accountId}
             />);
     }
@@ -3104,7 +3158,15 @@ class ContactsListBox extends Component {
             return [];
         }
 
-        const item = this.props.newContactFunc(uri.toLowerCase(), null, {src: 'search_contact'});
+        // The synthetic "exact match" row must carry the full SIP URI the
+        // search term resolves to (username@defaultDomain when the user
+        // typed a bare username), matching how it will actually be
+        // dialled/messaged. normalizeUri keeps an explicitly-typed domain
+        // (e.g. alice@other.com) untouched and only appends the default
+        // domain when none was given.
+        const fullUri = utils.normalizeUri(uri.toLowerCase(), this.props.defaultDomain);
+
+        const item = this.props.newContactFunc(fullUri, null, {src: 'search_contact'});
 
         if (!item) {
             return [];
@@ -3226,12 +3288,16 @@ class ContactsListBox extends Component {
                         elem.media = ['audio'];
                     }
 
-                    if (elem.timezone !== undefined) {
+                    // Idempotent: only convert while still a string. Re-running
+                    // momenttz.tz() on an already-converted Date stringifies it to
+                    // a non-ISO value and triggers moment's deprecation warning.
+                    if (elem.timezone !== undefined && typeof elem.startTime === 'string') {
                         localTime = momenttz.tz(elem.startTime, elem.timezone).toDate();
                         elem.startTime = localTime;
                         elem.timestamp = localTime;
-                        localTime = momenttz.tz(elem.stopTime, elem.timezone).toDate();
-                        elem.stopTime = localTime;
+                        if (typeof elem.stopTime === 'string') {
+                            elem.stopTime = momenttz.tz(elem.stopTime, elem.timezone).toDate();
+                        }
                     }
 
                     if (elem.direction === 'incoming' && elem.duration === 0) {
@@ -4061,6 +4127,18 @@ class ContactsListBox extends Component {
             return true;
         }
 
+        // Phone-number match: ignore the leading '+' and any '@domain' so a
+        // query like "3491" finds "+34918034800". Only kicks in when the query
+        // is digit-ish (digits, optional leading +).
+        const f = (filter || '').trim();
+        if (f && /^\+?\d+$/.test(f)) {
+            const qDigits = f.replace(/\D/g, '');
+            const uriDigits = (contact.uri || '').split('@')[0].replace(/\D/g, '');
+            if (qDigits && uriDigits.startsWith(qDigits)) {
+                return true;
+            }
+        }
+
         if (!this.state.selectedContact && contact.conference && contact.metadata && filter.length > 2 && contact.metadata.indexOf(filter) > -1) {
             return true;
         }
@@ -4248,13 +4326,21 @@ class ContactsListBox extends Component {
                 return;
             }
             if (!file_transfer.local_url) {
-				if (!file_transfer.path) {
-					console.log('File not yet downloaded');
+				if (file_transfer.url) {
+					// Already on the server — download it. This covers OUTGOING
+					// files sent from ANOTHER device: their metadata still carries
+					// the original sender's `path`, which doesn't exist on this
+					// device, so the old `!path ? download : upload` logic tried
+					// to re-upload a non-existent file (nothing happened). A
+					// server `url` means it's fetchable; pull it, then it decrypts.
+					console.log('File on server — downloading', message.metadata && message.metadata.transfer_id);
 					this.props.downloadFile(message.metadata, true);
-					return;
-				} else {
+				} else if (file_transfer.path) {
 					console.log('File not yet uploaded', message.metadata);
 					this.uploadFile(message);
+				} else {
+					console.log('File not yet downloaded');
+					this.props.downloadFile(message.metadata, true);
 				}
                 return;
             }
@@ -4443,6 +4529,13 @@ class ContactsListBox extends Component {
 
             let options = []
 
+            // Conference room threads don't support per-message Reply, Pin, or
+            // Edit caption — there's no 1:1 reply target, no server-side pin for
+            // room chat, and shared-file bubbles aren't editable. Exclude those
+            // actions from the contextual sheet for conference conversations.
+            const _isConferenceThread = !!(this.state.targetUri
+                && this.state.targetUri.indexOf('@videoconference') > -1);
+
             // Surface this at the top of the sheet: if the user dismissed
             // the modal, tapping the bubble's kebab is now their only way
             // back into the acceptance flow.
@@ -4493,7 +4586,7 @@ class ContactsListBox extends Component {
             const _replyFailed = !!currentMessage.failed
                 || !!(currentMessage.metadata && currentMessage.metadata.error);
             //if (currentMessage.direction == 'incoming' && !this.hideItem) {
-            if (!this.hideItem && !isLiveLocation && !_replyFailed) {
+            if (!this.hideItem && !isLiveLocation && !_replyFailed && !_isConferenceThread) {
 				options.push('Reply');
 				icons.push(<Icon name="arrow-left" size={20} />);
 			}
@@ -4563,7 +4656,7 @@ class ContactsListBox extends Component {
 			// For image / video bubbles the editable text is the caption,
 			// not a message body, so label it "Edit caption" to make that
 			// clear (handled together with 'Edit' in the callback below).
-			if (this.isMessageEditable(currentMessage) && !isLiveLocation) {
+			if (this.isMessageEditable(currentMessage) && !isLiveLocation && !_isConferenceThread) {
 				const _editLabel = (currentMessage.image || currentMessage.video)
 					? 'Edit caption'
 					: 'Edit';
@@ -4577,6 +4670,11 @@ class ContactsListBox extends Component {
                     icons.push(<Icon name="fullscreen" size={20} />);
                 }
 			}
+
+            if (currentMessage.html) {
+                options.push('Full screen');
+                icons.push(<Icon name="fullscreen" size={20} />);
+            }
 
             if (currentMessage.metadata && !currentMessage.metadata.error) {
                 if (currentMessage.metadata && currentMessage.metadata.local_url) {
@@ -4669,9 +4767,11 @@ class ContactsListBox extends Component {
             // payload type. The metadata.error guard still applies
             // (don't pin a failed bubble).
             if (currentMessage.pinned) {
+                // Still allow Unpin so a previously-pinned bubble can be undone,
+                // but never offer Pin in a conference thread.
                 options.push('Unpin');
                 icons.push(<Icon name="pin-off" size={20} />);
-            } else {
+            } else if (!_isConferenceThread) {
                 if (!currentMessage.metadata || !currentMessage.metadata.error) {
                     options.push('Pin');
                     icons.push(<Icon name="pin" size={20} />);
@@ -4936,6 +5036,14 @@ class ContactsListBox extends Component {
                         this.props.meetMeAt(this.state.targetUri, _link);
                     }
                 } else if (action === 'Full screen') {
+                    if (currentMessage.html) {
+                        this.setState({actionSheetDisplayed: false});
+                        if (typeof this.props.setFullScreen === 'function') {
+                            this.props.setFullScreen(true);
+                        }
+                        this.setState({fullScreenHtml: currentMessage});
+                        return;
+                    }
                     if (currentMessage.image) {
                         // Image bubble → open the zoomable full-screen
                         // image viewer (same path as the FS icon and the
@@ -7376,6 +7484,9 @@ class ContactsListBox extends Component {
 			    }
 			   
 			    const isIncoming = currentMessage.direction === 'incoming';
+
+				    const isWideHtml = /<table|<tr|<td|<th/i.test(html);
+
 			   
 				return (
                 <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginRight: 10}]}>
@@ -7427,7 +7538,18 @@ class ContactsListBox extends Component {
 						  }
 					}}
           		  />
-				  </View>
+				  {isWideHtml && (
+                    <TouchableOpacity
+                      onPress={() => {
+                          if (typeof this.props.setFullScreen === 'function') this.props.setFullScreen(true);
+                          this.setState({ fullScreenHtml: currentMessage, actionSheetDisplayed: false });
+                      }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={{ position: 'absolute', top: 2, right: 2, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 14, padding: 3 }}>
+                      <Icon name="fullscreen" size={20} color="#fff" />
+                    </TouchableOpacity>
+                  )}
+                  </View>
 
 				);
 			}
@@ -8656,11 +8778,7 @@ scrollToMessage(id) {
                return false;
            }
 
-           if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
-               return false;
-           }
-
-           if (this.state.selectedContact.uri.indexOf('anonymous@') > -1) {
+           if (utils.isAnonymous(this.state.selectedContact.uri)) {
                return false;
            }
        }
@@ -8682,17 +8800,9 @@ scrollToMessage(id) {
 	get isAnonymous() {
 	   if (!this.state.selectedContact || !this.state.selectedContact.uri) {
            return false;
-       } 	   
-	   
-	   if (this.state.selectedContact.uri.indexOf('@guest.') > -1) {
-		   return true;
-	   }
+       }
 
-	   if (this.state.selectedContact.uri.indexOf('anonymous@') > -1) {
-		   return true;
-	   }
-
-       return false;
+	   return utils.isAnonymous(this.state.selectedContact.uri);
 	}
 
     get showReadonlyChat() {
@@ -8923,6 +9033,48 @@ scrollToMessage(id) {
 	}
 
 
+    // DIAGNOSTIC: log the image-grid calendar (year → count) and a per-tile
+    // file list with on-disk presence, so we can tell why tiles show Download:
+    // file genuinely absent (onDisk=false) vs present-but-no-thumbnail
+    // (thumb=false, onDisk=true). Logged once per (contact, image-count).
+    async _logImageGridDiag(images) {
+        try {
+            const sel = this.props.selectedContact && this.props.selectedContact.uri;
+            const sig = (sel || '') + ':' + images.length;
+            if (this._imgDiagSig === sig) return;
+            this._imgDiagSig = sig;
+
+            const byYear = {};
+            images.forEach(it => {
+                let y = '?';
+                try { y = new Date(it.createdAt || it.timestamp).getFullYear(); } catch (e) {}
+                byYear[y] = (byYear[y] || 0) + 1;
+            });
+            const cal = Object.keys(byYear).sort().reverse().map(y => `${y} (${byYear[y]})`).join('  ');
+            console.log('[img-grid] contact=' + sel + ' images=' + images.length + ' calendar: ' + cal);
+
+            let present = 0, missing = 0, noThumb = 0;
+            for (const it of images) {
+                const lu = it.metadata && it.metadata.local_url;
+                const hasThumb = !!it.uri;
+                if (!hasThumb) noThumb++;
+                let onDisk = false;
+                if (lu) { try { onDisk = await RNFS.exists(lu); } catch (e) {} }
+                if (onDisk) present++; else missing++;
+                console.log('[img-grid] tile id=' + it.transferId
+                    + ' file=' + (it.metadata && it.metadata.filename)
+                    + ' thumb=' + hasThumb
+                    + ' onDisk=' + onDisk
+                    + ' err=' + ((it.metadata && it.metadata.error) || '-')
+                    + ' local_url=' + (lu || '(none)'));
+            }
+            console.log('[img-grid] summary present=' + present + ' missing=' + missing
+                + ' noThumbnail=' + noThumb + ' of ' + images.length);
+        } catch (e) {
+            console.log('[img-grid] diag error', e && e.message);
+        }
+    }
+
     render() {
         let searchExtraItems = [];
         let items = [];
@@ -8942,7 +9094,9 @@ scrollToMessage(id) {
         let contacts =
             contactSource === 'ab'
                 ? []
-                : this.state.allContacts;
+                : (this.state.filter === 'graveyard'
+                    ? (this.state.graveyardContacts || []) // permanent tombstones, loaded separately
+                    : this.state.allContacts);
         //console.log('----');
 
         //console.log('--- Render contacts', this.state.isLoadingEarlier);
@@ -8973,7 +9127,38 @@ scrollToMessage(id) {
              chatInputClass = this.noChatInputToolbar;
         }
 
-        if (!this.state.selectedContact && this.state.filter) {
+        // MEMOIZED DERIVATION. The filter/dedup/sort pipeline below is
+        // O(all contacts) and does NOT depend on the current selection. Cache
+        // it keyed on the inputs that DO affect it, so a selection toggle
+        // (which only flips the per-row `selected` flag, re-applied just after
+        // this block) doesn't re-run the whole pipeline — that was the ~3s
+        // per-checkbox lag on a large contact list in debug builds.
+        const _memoKey = [contacts, contactSource, this.state.filter, this.state.targetUri,
+            this.state.periodFilter, this.state.shareToContacts, this.state.inviteContacts,
+            this.state.sourceContact, this.state.blockedUris, this.state.orderBy,
+            this.state.sortOrder, this.state.accountId, this.state.selectedContact];
+        const _memoHit = this._itemsMemoKey
+            && this._itemsMemoKey.length === _memoKey.length
+            && this._itemsMemoKey.every((v, i) => v === _memoKey[i]);
+        if (_memoHit) {
+            items = this._itemsMemo;
+        } else {
+        if (!this.state.selectedContact && this.state.filter === 'graveyard') {
+            // Graveyard: permanently-deleted tombstones (deleted=1), loaded
+            // separately into graveyardContacts. Everything in the source list
+            // is a tombstone, so just match against any active search text.
+            items = contacts.filter(contact => contact
+                && this.matchContact(contact, this.state.targetUri));
+        } else if (!this.state.selectedContact && this.state.filter === 'deleted') {
+            // Deleted folder: any contact marked for deletion — storage_purged
+            // set (local delete / removeConversation) OR deleted_timestamp set
+            // (incl. legacy rows and XCAP-delete intent). From here the user
+            // revives it or kills it on XCAP. Permanent tombstones (deleted=1)
+            // are never loaded, so they can't appear here.
+            items = contacts.filter(contact => contact
+                && (contact.storagePurged || contact.deletedTimestamp)
+                && this.matchContact(contact, this.state.targetUri));
+        } else if (!this.state.selectedContact && this.state.filter) {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri, [this.state.filter]));
         } else {
             items = contacts.filter(contact => this.matchContact(contact, this.state.targetUri));
@@ -9084,6 +9269,14 @@ scrollToMessage(id) {
 
         const known = [];
         items = items.filter((elem) => {
+            // Contacts marked for deletion (storage_purged OR deleted_timestamp)
+            // live only in the Deleted view (and, once killed on XCAP, the
+            // Graveyard) — never in the main list or category filters.
+            if (elem && (elem.storagePurged || elem.deletedTimestamp)
+                && this.state.filter !== 'deleted' && this.state.filter !== 'graveyard') {
+                return;
+            }
+
             if (this.state.shareToContacts && elem.tags.indexOf('test') > -1) {
                 return;
             }
@@ -9187,8 +9380,7 @@ scrollToMessage(id) {
                 const _itemUri = (item.uri || '').toLowerCase();
                 const _accId = (this.state.accountId || '').toLowerCase();
                 if (_itemUri === _accId) return;
-                if (_itemUri.indexOf('@guest.') > -1) return;
-                if (_itemUri.indexOf('anonymous@') > -1) return;
+                if (utils.isAnonymous(_itemUri)) return;
                 if (Array.isArray(item.tags)) {
                     if (item.tags.indexOf('blocked') > -1) return;
                     if (item.tags.indexOf('test') > -1) return;
@@ -9227,7 +9419,46 @@ scrollToMessage(id) {
 
         items = filteredItems;
 
-        if (this.state.orderBy == 'size') {
+        // Contact-search mode: when the user is actively searching the
+        // contact list (a search query is present and we're not in the
+        // message-search workflow), results are sorted alphabetically by
+        // name (A→Z), honouring the asc/desc chip, rather than by message
+        // timestamp. Searching is a "find this person" task, so a stable
+        // alphabetical order is far more useful than recency — and it
+        // unifies Sylk + Phonebook hits, which otherwise interleave
+        // unpredictably because Phonebook entries carry no timestamp.
+        // Always A→Z here regardless of the global asc/desc chip (which
+        // defaults to 'desc' for the recency view): a search is a lookup,
+        // and the user asked for alphabetical results.
+        const _contactSearchActive =
+            !this.state.searchMessages
+            && !!this.state.targetUri
+            && this.state.targetUri.length > 0;
+
+        if (_contactSearchActive) {
+            items.sort(function(a, b) {
+                var aName = (a.name || a.uri || "").toLowerCase();
+                var bName = (b.name || b.uri || "").toLowerCase();
+                return aName.localeCompare(bName);
+            });
+
+            // Exception to the A→Z order: the exact thing the user typed,
+            // resolved to a full SIP URI (username@defaultDomain for a bare
+            // username), is ALWAYS the first result — the "call/chat exactly
+            // what I typed" affordance. If that same URI also appears
+            // elsewhere in the results (a real matching contact), keep only
+            // the pinned top row and drop the duplicate.
+            const _exactUri = utils.normalizeUri(
+                (this.state.targetUri || '').toLowerCase(),
+                this.props.defaultDomain
+            );
+            const _exactItem = items.find(it => it && it.uri === _exactUri);
+            if (_exactItem) {
+                items = [_exactItem].concat(
+                    items.filter(it => it && it.uri !== _exactUri)
+                );
+            }
+        } else if (this.state.orderBy == 'size') {
             if (this.state.sortOrder == 'desc') {
                 items.sort((a, b) => (a.storage < b.storage) ? 1 : -1)
             } else {
@@ -9278,6 +9509,16 @@ scrollToMessage(id) {
             item.showActions = false;
             //console.log(item.timestamp, item.uri, item.name);
         });
+        this._itemsMemo = items;
+        this._itemsMemoKey = _memoKey;
+        }
+        // Re-apply the per-row selection flag on every render (cheap). Because
+        // selection toggles hit the memo above, the heavy pipeline is skipped
+        // and only this O(visible) marking runs — making the checkbox instant.
+        {
+            const _selSet = new Set(this.state.selectedContacts || []);
+            items.forEach((it) => { if (it) it.selected = _selSet.has(it.uri); });
+        }
 
         let columns = 1;
 
@@ -9549,13 +9790,22 @@ scrollToMessage(id) {
 			// downloaded flag drives the download-icon overlay in
 			// ThumbnailGrid (same field the video grid uses).
 			downloaded: !!msg.image,
-			// In-flight info for the per-tile progress spinner.
-			stage: this.state.transferProgress
-			    && this.state.transferProgress[msg._id]
-			    && this.state.transferProgress[msg._id].stage,
-			progress: this.state.transferProgress
-			    && this.state.transferProgress[msg._id]
-			    && this.state.transferProgress[msg._id].progress,
+			// In-flight info for the per-tile progress spinner. Only
+			// surfaced when the image is NOT already present: once the
+			// bitmap exists (msg.image set, openable full-screen) the tile
+			// is downloaded, so a leftover/stuck transferProgress entry
+			// (e.g. a prior download that 404'd and never cleared) must NOT
+			// keep painting a "0%" spinner over a good image.
+			stage: msg.image
+			    ? null
+			    : (this.state.transferProgress
+			        && this.state.transferProgress[msg._id]
+			        && this.state.transferProgress[msg._id].stage),
+			progress: msg.image
+			    ? null
+			    : (this.state.transferProgress
+			        && this.state.transferProgress[msg._id]
+			        && this.state.transferProgress[msg._id].progress),
 			// Surface transferId + full metadata so the viewer's
 			// missing-file placeholder can both log a useful identifier
 			// AND offer the "Download from server" button (which needs
@@ -9565,6 +9815,9 @@ scrollToMessage(id) {
 			transferId: msg.metadata && msg.metadata.transfer_id,
 			metadata: msg.metadata,
 		  }));
+
+		// DIAGNOSTIC (console): calendar + per-tile file presence for this contact.
+		this._logImageGridDiag(images);
 
 		// Video-grid input. Same shape as `images` so ThumbnailGrid
 		// can be reused. `uri` here is the THUMBNAIL path (not the
@@ -9638,8 +9891,10 @@ scrollToMessage(id) {
 		      // url, sender, receiver, hash, etc.
 		      metadata: msg.metadata,
 		      downloaded: !!msg.video,
-		      progress: tp ? tp.progress : null,
-		      stage: tp ? tp.stage : null,
+		      // As with the image grid: suppress a stale/stuck in-flight
+		      // spinner once the video file is present (downloaded).
+		      progress: msg.video ? null : (tp ? tp.progress : null),
+		      stage: msg.video ? null : (tp ? tp.stage : null),
 		    };
 		  });
 
@@ -9848,6 +10103,10 @@ scrollToMessage(id) {
                    pass through immediately while still dismissing the
                    keyboard on taps that land in empty space. */
                 keyboardShouldPersistTaps="handled"
+                /* In select mode the floating Delete/Cancel buttons sit over
+                   the bottom-right; pad the list so the last rows (and their
+                   checkboxes) can scroll clear of them. */
+                contentContainerStyle={this.state.selectMode ? {paddingBottom: 96} : null}
                 /*
                   Key must change whenever numColumns changes, otherwise
                   FlatList throws "Changing numColumns on the fly is not
@@ -10907,6 +11166,39 @@ scrollToMessage(id) {
 			    Android back button hits onRequestClose, which routes
 			    through the same exit path as tapping the close
 			    icon. */}
+			{this.state.fullScreenHtml && (() => {
+    const _m = this.state.fullScreenHtml;
+    const _close = () => {
+        if (typeof this.props.setFullScreen === 'function') this.props.setFullScreen(false);
+        this.setState({fullScreenHtml: null});
+    };
+    const _doc = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        + '<style>body{margin:0;padding:12px;font:16px -apple-system,system-ui,sans-serif;color:#111;-webkit-text-size-adjust:100%;word-wrap:break-word}'
+        + 'table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px;vertical-align:top}'
+        + 'img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>'
+        + utils.cleanHtml(_m.html || '')
+        + '</body></html>';
+    return (
+        <Modal visible transparent={false} animationType="slide" onRequestClose={_close}>
+            <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', padding: 8, backgroundColor: '#fff' }}>
+                    <TouchableOpacity onPress={_close} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                        <Icon name="close" size={28} color="#333" />
+                    </TouchableOpacity>
+                </View>
+                <WebView
+                    originWhitelist={['*']}
+                    source={{ html: _doc }}
+                    style={{ flex: 1 }}
+                    scalesPageToFit={false}
+                    showsHorizontalScrollIndicator={true}
+                />
+            </SafeAreaView>
+        </Modal>
+    );
+})()}
+
 			{this.state.fullScreenLocation && (() => {
 				const _msg = this.state.fullScreenLocation;
 				const _latestRaw = this.locationData?.[_msg._id] || _msg.metadata;

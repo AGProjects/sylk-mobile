@@ -767,6 +767,17 @@ class ZrtpSession {
         let __tickCount = 0;
         let __stuckDiagFired = false;
         let __getStatsErrorLogged = false;
+        // In-flight guard: this poller fires every 500ms (the most
+        // frequent getStats source in the app). If native getStats runs
+        // slower than the interval — common on a video call — overlapping
+        // ticks pile up pending callbacks until React Native warns
+        // "Excessive number of pending callbacks". Skip a tick while the
+        // previous one is still awaiting getStats. __inFlightSince +
+        // STALE_MS re-arms the guard if a getStats promise is ever lost
+        // (PC torn down mid-renegotiation) so the poller can't wedge.
+        let __inFlight = false;
+        let __inFlightSince = 0;
+        const INFLIGHT_STALE_MS = 5000;
         const tick = async () => {
             __tickCount++;
             if (this._destroyed) return;
@@ -774,6 +785,12 @@ class ZrtpSession {
             if (!pc || typeof pc.getStats !== 'function') {
                 return;
             }
+            if (__inFlight && (Date.now() - __inFlightSince) < INFLIGHT_STALE_MS) {
+                return;
+            }
+            __inFlight = true;
+            __inFlightSince = Date.now();
+            try {
             let aggDelta = 0;
             try {
                 const stats = await pc.getStats();
@@ -980,6 +997,12 @@ class ZrtpSession {
                 return;
             }
             // else: not yet active, no inbound yet — wait for activity.
+            } finally {
+                // Always clear the in-flight guard, even on an early
+                // return or throw inside the body above, so the next
+                // tick can run.
+                __inFlight = false;
+            }
         };
         // Fire one tick immediately to seed _lastPacketsReceived, then
         // settle into the periodic interval.

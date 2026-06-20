@@ -350,8 +350,8 @@ class ContactCard extends Component {
 	  );
 	  let subtitle = isTelContact ? contact.uri.split('@')[0] : contact.uri;
 	
-	  if (uri.indexOf('@guest.') > -1) {
-		title = 'Anonymous caller';
+	  if (utils.isAnonymous(uri)) {
+		title = 'Unknown caller';
 	  }
 	
 	  if (uri.indexOf('@videoconference.') > -1) {
@@ -418,7 +418,33 @@ class ContactCard extends Component {
 		}
 	  }
 	
-		subtitle = contact.lastMessage || subtitle;
+		// While the user is searching the contact list, the second line
+		// shows the contact's URI instead of the most recent message
+		// preview.
+		//
+		// For a REAL found contact we show the full user@domain URI as-is
+		// (the real domain matters — it's who they actually are). For the
+		// synthetic "exact match" row (the "call/chat exactly what I typed"
+		// affordance, tagged 'synthetic') we strip the default domain since
+		// it's implicit and gets re-appended automatically when
+		// dialling/messaging — so a bare local username stays bare, while a
+		// term that already named another domain keeps it.
+		if (this.props.searchMode) {
+			const _isSynthetic = Array.isArray(contact.tags)
+				&& contact.tags.indexOf('synthetic') > -1;
+			const _u = contact.uri || '';
+			if (_isSynthetic) {
+				const _dd = (this.props.defaultDomain || '').toLowerCase();
+				const _at = _u.indexOf('@');
+				subtitle = (_at > -1 && _dd && _u.slice(_at + 1).toLowerCase() === _dd)
+					? _u.slice(0, _at)
+					: _u;
+			} else {
+				subtitle = _u;
+			}
+		} else {
+			subtitle = contact.lastMessage || subtitle;
+		}
 	
 	  // Determine title padding based on fontScale and selectMode
 	  let titlePadding = styles.titlePadding;
@@ -434,6 +460,7 @@ class ContactCard extends Component {
 				isDark && darkStyles.card,
 			  ]}
 			  onPress={() => this.setTargetUri(uri, contact)}
+			  onLongPress={() => { if (this.props.onLongPress) this.props.onLongPress(); }}
 			>
 			  <View style={styles.rowContent}>
 				<Card.Content style={styles.cardContent}>
@@ -531,6 +558,7 @@ ContactCard.propTypes = {
   contact: PropTypes.object,
   selectedContact: PropTypes.object,
   setTargetUri: PropTypes.func,
+  searchMode: PropTypes.bool,
   chat: PropTypes.bool,
   orientation: PropTypes.string,
   isTablet: PropTypes.bool,

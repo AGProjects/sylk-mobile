@@ -1486,6 +1486,34 @@ class AudioCallBox extends Component {
         );
     }
 
+    // Remote party's client identity, shown under the speedometer.
+    // Sourced from the SIP User-Agent (incoming INVITE) or Server
+    // (outgoing 200 OK) header that sylk-server forwarded — captured in
+    // Call.js and passed down as the remoteUserAgent prop. Only shown
+    // once the call is established so it doesn't flash during dialing.
+    _renderRemoteUserAgent() {
+        const ua = this.props.remoteUserAgent;
+        if (!ua) {
+            return null;
+        }
+        const _cs = (this.state.call && this.state.call.state)
+            || (this.props.call && this.props.call.state);
+        if (_cs !== 'established' || this.state.reconnectingCall) {
+            return null;
+        }
+        return (
+            <View style={styles.remoteUserAgentContainer}>
+                <Text
+                    style={styles.remoteUserAgentText}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                >
+                    {ua}
+                </Text>
+            </View>
+        );
+    }
+
     componentDidUpdate(prevProps, prevState) {
         // Pulse the recording pill while a recording is in progress.
         // Starts the loop on the false→true edge and stops it on the
@@ -2633,6 +2661,9 @@ class AudioCallBox extends Component {
                         (mediaFlowing) — i.e. below the half-dial, never while
                         the calling/reconnecting circle is shown. */}
                     {(!showOld && mediaFlowing) ? this._renderRemoteVuMeter() : null}
+                    {/* Remote party's client (SIP/Blink/WebRTC) User-Agent,
+                        shown directly under the speedometer dial. */}
+                    {this._renderRemoteUserAgent()}
                 </View>
                 {/* Footer (zRTP pill) rendered ONCE as a sibling of
                     both stats views, so its container width is the
@@ -3355,6 +3386,8 @@ class AudioCallBox extends Component {
 					requestLocationFromCall = {this.props.requestLocationFromCall}
 					showDtmfFunc = {this.showDtmfModal}
 					showMediaInfo = {this._openMediaInfoPanel}
+					callHasVideo = {this.props.callHasVideo}
+					switchCallView = {this.props.switchCallView}
                 />
 
 				{this.props.isFolded ? (
@@ -3767,8 +3800,26 @@ class AudioCallBox extends Component {
                                             // this call") is unambiguous from
                                             // context alone — the centred-`+` badge
                                             // wasn't carrying load.
-                                            icon="video-outline"
-                                            onPress={this.props.startVideo}
+                                            // When the call already carries
+                                            // video (we're in the forced
+                                            // audio view of a video call),
+                                            // this button is a view switch
+                                            // back to VideoBox, not an
+                                            // upgrade — show the filled video
+                                            // glyph to match.
+                                            icon={this.props.callHasVideo ? "video" : "video-outline"}
+                                            // If the call already has video,
+                                            // tapping this switches back to
+                                            // the video layout (no upgrade
+                                            // modal — there's nothing to
+                                            // negotiate). Otherwise fall back
+                                            // to the audio→video upgrade flow.
+                                            onPress={
+                                                this.props.callHasVideo
+                                                && typeof this.props.switchCallView === 'function'
+                                                    ? this.props.switchCallView
+                                                    : this.props.startVideo
+                                            }
                                         />
                                     </TouchableHighlight>
                                 </View>
@@ -4015,6 +4066,7 @@ class AudioCallBox extends Component {
 AudioCallBox.propTypes = {
     remoteUri: PropTypes.string,
     remoteDisplayName: PropTypes.string,
+    remoteUserAgent: PropTypes.string,
     photo: PropTypes.string,
     call: PropTypes.object,
     connection: PropTypes.object,

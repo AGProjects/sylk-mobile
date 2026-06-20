@@ -194,6 +194,18 @@ class NotificationCenter extends Component {
                     // gesture pill (Android), because the safe area
                     // already pads the SafeAreaView from those.
                     const _categoryBarHeight = 36;
+                    // In chat view (a contact conversation is open) the
+                    // bottom element is NOT the 36 dp category bar but the
+                    // taller message InputToolbar (single-line baseline
+                    // ~44–46 dp on Android/iOS — see ContactsListBox's
+                    // `customInputToolbar` / styles.inputToolbar, whose
+                    // action slots are 44 dp tall). Lift the snackbar to
+                    // clear it so the pill always sits ON TOP of whichever
+                    // bar is currently pinned to the bottom, never over it.
+                    const _chatInputBarHeight = 48;
+                    const _bottomOffset = this.props.inChatView
+                        ? _chatInputBarHeight
+                        : _categoryBarHeight;
                     return (
                         <View
                             pointerEvents="box-none"
@@ -201,7 +213,7 @@ class NotificationCenter extends Component {
                                 position: 'absolute',
                                 left: 0,
                                 right: 0,
-                                bottom: _categoryBarHeight,
+                                bottom: _bottomOffset,
                                 height: 36,
                                 backgroundColor: '#333',
                                 paddingHorizontal: 12,

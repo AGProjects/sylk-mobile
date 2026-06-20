@@ -83,9 +83,13 @@ const UserIcon = (props) => {
                 );
     }
 
-    if (props.identity.uri && props.identity.uri.search('anonymous') !== -1) {
+    if (utils.isAnonymous(props.identity.uri)) {
+         // The collapsed "Unknown caller" contact gets a distinctive
+         // masked-thief avatar so anonymous/guest callers are instantly
+         // recognisable in the list and chat header, rather than sharing
+         // the generic person glyph with nameless contacts.
          return (
-            <Avatar.Icon style={{backgroundColor: color}, styles.avatar} size={avatarSize} icon="account" />
+            <Avatar.Icon style={[{backgroundColor: color}, styles.avatar]} size={avatarSize} icon="robber" />
                 );
     }
 

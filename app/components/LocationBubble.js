@@ -493,8 +493,20 @@ const StaticMap = memo((props) => {
         center = { latitude, longitude };
     } else if (visiblePoints.length > 1) {
         center = centroid(visiblePoints);
+    } else if (visiblePoints[0]) {
+        center = visiblePoints[0];
+    } else if (typeof props.fallbackCenterLatitude === 'number'
+            && typeof props.fallbackCenterLongitude === 'number') {
+        // No renderable pin (e.g. the dummy-origin privacy invite: owner
+        // suppressed, no destination, no peer yet). Centre on the caller-
+        // supplied fallback so we show a real map area instead of the
+        // null-island default.
+        center = {
+            latitude: props.fallbackCenterLatitude,
+            longitude: props.fallbackCenterLongitude,
+        };
     } else {
-        center = visiblePoints[0] || {latitude: 0, longitude: 0};
+        center = {latitude: 0, longitude: 0};
     }
 
     const centerFrac = latLngToTileFrac(center.latitude, center.longitude, zoom);
@@ -1817,6 +1829,27 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                                 meta.destination
                                     && typeof meta.destination.longitude === 'number'
                                     ? meta.destination.longitude
+                                    : undefined
+                            }
+                            // Fallback map centre for a bubble that has no
+                            // visible pin to frame on — specifically the
+                            // dummy-origin invite (privacy meet request with
+                            // no destination): the inviter pin is suppressed
+                            // (privacyDeferred) and there's no destination, so
+                            // without this the map would centre on {0,0}.
+                            // meta.value holds the dummy stand-in coords;
+                            // centring there yields a sane empty map until the
+                            // inviter's real position arrives and takes over.
+                            // Only consulted by StaticMap when nothing else is
+                            // renderable, so it's inert for every other bubble.
+                            fallbackCenterLatitude={
+                                meta.value && typeof meta.value.latitude === 'number'
+                                    ? meta.value.latitude
+                                    : undefined
+                            }
+                            fallbackCenterLongitude={
+                                meta.value && typeof meta.value.longitude === 'number'
+                                    ? meta.value.longitude
                                     : undefined
                             }
                             ownerInitials={redInitials}

@@ -1,7 +1,10 @@
 package com.agprojects.sylk;
 
+import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.content.ClipData;
@@ -33,6 +36,68 @@ public class MainActivity extends ReactActivity {
     @Override
     protected String getMainComponentName() {
         return "Sylk";
+    }
+
+    /**
+     * Neutralise the system "Bold font" accessibility setting for this app.
+     *
+     * On Android 12 (API 31) and up, the Display → "Bold font" toggle sets a
+     * global Configuration.fontWeightAdjustment of +300. Android RENDERS every
+     * glyph heavier, but React Native (0.73) measures text with the UN-adjusted
+     * weight, so every Text box is sized a few pixels too narrow and the
+     * trailing word/letters get dropped ("Forwar" instead of "Forward",
+     * "Aic" instead of "Aici", chat bubbles + action sheet + reaction bar all
+     * clipped on the right). Forcing fontWeightAdjustment back to 0 makes the
+     * app draw text at its normal weight, so measurement and rendering agree
+     * again and nothing is clipped.
+     *
+     * We hook applyOverrideConfiguration (which AppCompatActivity always calls
+     * during attachBaseContext startup) rather than attachBaseContext itself:
+     * the config the framework hands us here is the one actually applied to the
+     * activity, so editing it reliably sticks. The value must be an explicit 0
+     * — FONT_WEIGHT_ADJUSTMENT_UNDEFINED is treated as "inherit" and would keep
+     * the system's +300.
+     *
+     * Trade-off: the app no longer follows the OS "Bold font" preference. The
+     * rest of the system (status bar, other apps) is unaffected. If we ever
+     * upgrade to a React Native version that measures fontWeightAdjustment
+     * correctly, this override can be removed to restore in-app bold.
+     */
+    @Override
+    public void applyOverrideConfiguration(Configuration overrideConfiguration) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && overrideConfiguration != null) {
+            overrideConfiguration.fontWeightAdjustment = 0;
+        }
+        super.applyOverrideConfiguration(overrideConfiguration);
+    }
+
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Configuration base = newBase.getResources().getConfiguration();
+
+            // Remember the ORIGINAL system "Bold font" adjustment (+300 when
+            // the user enabled Display → Bold font, 0 otherwise) BEFORE we
+            // neutralise it below. JS reads this back via
+            // SylkBridge.getSystemFontWeightAdjustment() and, when it's set,
+            // re-applies bold itself with an explicit fontWeight — which React
+            // Native measures correctly, so we keep the user's bold preference
+            // without the trailing-character clipping the OS-level adjustment
+            // caused.
+            try {
+                newBase.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putInt("systemFontWeightAdjustment", base.fontWeightAdjustment)
+                    .apply();
+            } catch (Throwable t) {
+                SylkLogger.w("[app] storing systemFontWeightAdjustment failed: " + t.getMessage());
+            }
+
+            Configuration override = new Configuration(base);
+            override.fontWeightAdjustment = 0;
+            newBase = newBase.createConfigurationContext(override);
+        }
+        super.attachBaseContext(newBase);
     }
 
     @Override

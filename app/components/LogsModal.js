@@ -367,6 +367,30 @@ class ShowLogsModal extends Component {
         this.setState({ selectedSubTags: new Set() });
     }
 
+    // Purge handler. When at least one top-level category pill is
+    // selected we do a PARTIAL purge: only the lines matching the
+    // active filter (the same OR-top / AND-sub combination the viewer
+    // shows) are removed from the on-disk log, everything else is
+    // kept. With no selection we fall back to the original behavior —
+    // wipe the entire log file. The parent (app.js#purgeLogs) does the
+    // actual file rewrite; we just hand it the selected tag keys.
+    _purge = () => {
+        const { selectedTags, selectedSubTags } = this.state;
+        if (selectedTags.size > 0) {
+            this.props.purgeLogs(
+                Array.from(selectedTags),
+                Array.from(selectedSubTags),
+            );
+            // The matching lines are gone after this, so the current
+            // selection would point at categories that no longer
+            // exist (zero-count pills vanish). Reset it so the user
+            // starts fresh on the rewritten log.
+            this.setState({ selectedTags: new Set(), selectedSubTags: new Set() });
+        } else {
+            this.props.purgeLogs();
+        }
+    }
+
     _decreaseFont = () => {
         const next = Math.max(FONT_MIN_SCALE, +(this.state.fontScale - FONT_STEP).toFixed(2));
         if (next === this.state.fontScale) return;
@@ -1084,12 +1108,12 @@ class ShowLogsModal extends Component {
                                     <Button
                                         mode="contained"
                                         style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                        onPress={this.props.purgeLogs}
-                                        accessibilityLabel="Purge"
+                                        onPress={this._purge}
+                                        accessibilityLabel={hasFilter ? 'Purge selected categories' : 'Purge'}
                                         icon="delete"
                                         color="red"
                                     >
-                                        Purge
+                                        {hasFilter ? 'Purge selected' : 'Purge'}
                                     </Button>
                                 ) : null}
                             </View>

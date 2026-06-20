@@ -111,6 +111,23 @@ fi
 
 echo $$ > "$PID_FILE"
 
+# Archive the previous run's log before truncating. Each start moves the
+# existing $LOG_FILE into logs/<timestamp>-metro.log so prior runs are
+# preserved instead of overwritten. Timestamp uses the file's own mtime
+# (when that run finished writing), falling back to "now" if unavailable.
+if [[ -e "$LOG_FILE" ]]; then
+    ARCHIVE_DIR="$SCRIPT_DIR/logs"
+    mkdir -p "$ARCHIVE_DIR"
+    ts=$(date -r "$LOG_FILE" '+%Y%m%d%H%M%S' 2>/dev/null || date '+%Y%m%d%H%M%S')
+    archive="$ARCHIVE_DIR/${ts}-metro.log"
+    # Avoid clobbering if two runs share the same second.
+    if [[ -e "$archive" ]]; then
+        archive="$ARCHIVE_DIR/${ts}-$$-metro.log"
+    fi
+    mv "$LOG_FILE" "$archive"
+    echo "Archived previous log to: $archive"
+fi
+
 : > "$LOG_FILE"
 echo "Logging to: $LOG_FILE  (Ctrl-C to stop)"
 

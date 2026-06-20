@@ -1880,7 +1880,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				_payload.append(_e.getKey()).append("=").append(_e.getValue());
 			}
 			_payload.append("}");
-			SylkLogger.d(_payload.toString());
+			//SylkLogger.d(_payload.toString());
 
 			List<String> tags = new ArrayList<>();
             Contact contact = getContact(toUri, fromUri);

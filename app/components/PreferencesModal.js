@@ -475,6 +475,12 @@ const PreferencesModal = ({
     // persisted in accounts.settings under disclaimers.callRecording
     // (see callRecordingDisclosure.js) so it survives an app restart
     // and is shared with any future gate.
+    // Advanced section collapse state. The four everyday prefs (Theme,
+    // Proximity, Chat, Data Usage) always render; everything else lives
+    // under a tappable "Advanced" header that's collapsed by default so
+    // the modal opens to a short, approachable list.
+    const [showAdvanced, setShowAdvanced] = useState(false);
+
     const [disclosureMode, setDisclosureMode] = useState('hidden');
     // Has-acknowledged flag, hydrated on mount from accounts.settings.
     // Drives both the "do we need to show the consent gate?" branch
@@ -799,6 +805,180 @@ const PreferencesModal = ({
 
                                 <Divider style={{ marginTop: -8, marginBottom: 8 }} />
 
+                                {/* ───── Proximity ───────────────────────────────
+                                    Promoted to a top-level pref (was a row
+                                    inside Audio Calls). The proximity-
+                                    triggered behaviours — display blank
+                                    while the phone is held to the ear, and
+                                    speakerphone toggle on the away/close
+                                    gesture — only apply to audio calls; the
+                                    sensor is suspended for video calls
+                                    regardless of this flag. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Proximity
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Automatic toggle speakerphone.
+                                    </Text>
+                                    <Button
+                                        mode={proximity ? 'contained' : 'outlined'}
+                                        compact
+                                        icon={proximity ? 'ear-hearing-off' : 'ear-hearing'}
+                                        onPress={() => {
+                                            if (typeof toggleProximity === 'function') {
+                                                toggleProximity();
+                                            }
+                                        }}
+                                        style={{ alignSelf: 'flex-start' }}
+                                        contentStyle={pillContentStyle}
+                                        labelStyle={pillLabelStyle}
+                                    >
+                                        {proximity ? 'Proximity On' : 'Proximity Off'}
+                                    </Button>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
+                                {/* ───── Chat ────────────────────────────────────
+                                    Chat-sounds toggle. Other chat-only knobs
+                                    (typing indicator, font size, link
+                                    previews) can land here later as more
+                                    rows in the same section. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Chat
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Notification sound when my message was read.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <Button
+                                            mode={chatSounds ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={chatSounds ? 'volume-high' : 'volume-off'}
+                                            onPress={() => {
+                                                if (typeof toggleChatSounds === 'function') {
+                                                    toggleChatSounds();
+                                                }
+                                            }}
+                                            style={{ alignSelf: 'flex-start' }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                        >
+                                            {chatSounds ? 'Sounds On' : 'Sounds Off'}
+                                        </Button>
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
+                                {/* ───── Data Usage ───────────────────────────────
+                                    Two independent pill toggles — Wi-Fi and
+                                    Mobile. `contained` = auto-download on for
+                                    that network; `outlined` = off. Defaults
+                                    applied upstream in app.js (Wi-Fi ON,
+                                    Mobile OFF). Manual taps on a file bubble
+                                    always download regardless. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Data Usage
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Auto-download photos, voice messages and files.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <Button
+                                            mode={autoDownloadOnWifi ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={autoDownloadOnWifi ? 'wifi' : 'wifi-off'}
+                                            style={{ marginRight: 6 }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => {
+                                                if (typeof setAutoDownloadOnWifi === 'function') {
+                                                    setAutoDownloadOnWifi(!autoDownloadOnWifi);
+                                                }
+                                            }}
+                                        >
+                                            Wi-Fi
+                                        </Button>
+                                        <Button
+                                            mode={autoDownloadOnMobile ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={autoDownloadOnMobile ? 'signal-cellular-3' : 'signal-cellular-outline'}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                            onPress={() => {
+                                                if (typeof setAutoDownloadOnMobile === 'function') {
+                                                    setAutoDownloadOnMobile(!autoDownloadOnMobile);
+                                                }
+                                            }}
+                                        >
+                                            Mobile
+                                        </Button>
+                                    </View>
+                                </View>
+
+                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+
+                                {/* ───── Advanced (collapsible) ───────────────────
+                                    Everything below the four everyday prefs
+                                    lives here, collapsed by default. Tapping
+                                    the header toggles showAdvanced; the
+                                    chevron reflects the state. The contained
+                                    sections (Video / Audio / File Encryption
+                                    / zRTP / Location / Disclaimers) are
+                                    unchanged — they're just gated behind the
+                                    toggle so the modal opens short. */}
+                                <Pressable
+                                    onPress={() => setShowAdvanced(v => !v)}
+                                    style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                        marginBottom: 12,
+                                    }}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={showAdvanced ? 'Collapse advanced settings' : 'Expand advanced settings'}
+                                >
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Advanced
+                                    </Text>
+                                    <Text style={{ fontSize: FS_LABEL, color: '#888' }}>
+                                        {showAdvanced ? '▾' : '▸'}
+                                    </Text>
+                                </Pressable>
+
+                                {showAdvanced && (
+                                <>
                                 {/* ───── Video Calls ─────────────────────────────
                                     Two rows:
                                       1. Preferred video codec — VP9 /
@@ -1068,153 +1248,7 @@ const PreferencesModal = ({
                                         </Text>
                                     </View>
 
-                                    {/* Proximity sensor — moved under
-                                        Audio Calls because the proximity-
-                                        triggered behaviours (display blank
-                                        while held to the ear, speakerphone
-                                        toggle on the away/close gesture)
-                                        only matter for audio calls. The
-                                        sensor is suspended for video
-                                        calls regardless of this flag. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
-                                        Automatic toggle speakerphone.
-                                    </Text>
-                                    <Button
-                                        mode={proximity ? 'contained' : 'outlined'}
-                                        compact
-                                        icon={proximity ? 'ear-hearing-off' : 'ear-hearing'}
-                                        onPress={() => {
-                                            if (typeof toggleProximity === 'function') {
-                                                toggleProximity();
-                                            }
-                                        }}
-                                        style={{ alignSelf: 'flex-start' }}
-                                        contentStyle={pillContentStyle}
-                                        labelStyle={pillLabelStyle}
-                                    >
-                                        {proximity ? 'Proximity On' : 'Proximity Off'}
-                                    </Button>
                                 </View>
-
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
-
-                                {/* ───── Chat ────────────────────────────────────
-                                    Currently just the chat-sounds
-                                    toggle (was on the My Account...
-                                    page). Other chat-only knobs (typing
-                                    indicator, default font size,
-                                    auto-link previews, etc.) can land
-                                    here later as additional rows in
-                                    the same section without affecting
-                                    surrounding layout. */}
-                                <View style={{ marginBottom: 16 }}>
-                                    <Text
-                                        style={{
-                                            fontSize: FS_LABEL,
-                                            fontWeight: '600',
-                                            marginBottom: 4,
-                                            color: '#333',
-                                        }}
-                                    >
-                                        Chat
-                                    </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
-                                        Notification sound when my message was read.
-                                    </Text>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-                                        <Button
-                                            mode={chatSounds ? 'contained' : 'outlined'}
-                                            compact
-                                            icon={chatSounds ? 'volume-high' : 'volume-off'}
-                                            onPress={() => {
-                                                if (typeof toggleChatSounds === 'function') {
-                                                    toggleChatSounds();
-                                                }
-                                            }}
-                                            style={{ alignSelf: 'flex-start' }}
-                                            contentStyle={pillContentStyle}
-                                            labelStyle={pillLabelStyle}
-                                        >
-                                            {chatSounds ? 'Sounds On' : 'Sounds Off'}
-                                        </Button>
-                                    </View>
-                                </View>
-
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
-
-                                {/* ───── Data Usage ───────────────────────────────
-                                    Two independent pill toggles — Wi-Fi
-                                    and Mobile — using the same compact
-                                    Button pattern as Chat sounds / zRTP
-                                    / DTMF. Each pill is an independent
-                                    on/off: `contained` mode = on, the
-                                    network's auto-download is enabled;
-                                    `outlined` mode = off, that network's
-                                    incoming media stays unfetched until
-                                    the user taps to download. Defaults
-                                    are applied upstream in app.js
-                                    (Wi-Fi: ON, Mobile: OFF).
-                                    autoDownloadFile reads
-                                    accountSetting.device.autoDownload*
-                                    before scheduling a non-user-
-                                    initiated download. Manual taps on
-                                    a file bubble always download
-                                    regardless of either toggle. */}
-                                <View style={{ marginBottom: 16 }}>
-                                    <Text
-                                        style={{
-                                            fontSize: FS_LABEL,
-                                            fontWeight: '600',
-                                            marginBottom: 4,
-                                            color: '#333',
-                                        }}
-                                    >
-                                        Data Usage
-                                    </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
-                                        Auto-download photos, voice messages and files.
-                                    </Text>
-                                    {/* Single-row layout. flexWrap is
-                                        intentionally omitted so the two
-                                        short pills stay side by side on
-                                        every form factor; the labels
-                                        ("Wi-Fi", "Mobile") are short
-                                        enough that wrapping never gets
-                                        triggered even on narrow phones. */}
-                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                        <Button
-                                            mode={autoDownloadOnWifi ? 'contained' : 'outlined'}
-                                            compact
-                                            icon={autoDownloadOnWifi ? 'wifi' : 'wifi-off'}
-                                            style={{ marginRight: 6 }}
-                                            contentStyle={pillContentStyle}
-                                            labelStyle={pillLabelStyle}
-                                            onPress={() => {
-                                                if (typeof setAutoDownloadOnWifi === 'function') {
-                                                    setAutoDownloadOnWifi(!autoDownloadOnWifi);
-                                                }
-                                            }}
-                                        >
-                                            Wi-Fi
-                                        </Button>
-                                        <Button
-                                            mode={autoDownloadOnMobile ? 'contained' : 'outlined'}
-                                            compact
-                                            icon={autoDownloadOnMobile ? 'signal-cellular-3' : 'signal-cellular-outline'}
-                                            contentStyle={pillContentStyle}
-                                            labelStyle={pillLabelStyle}
-                                            onPress={() => {
-                                                if (typeof setAutoDownloadOnMobile === 'function') {
-                                                    setAutoDownloadOnMobile(!autoDownloadOnMobile);
-                                                }
-                                            }}
-                                        >
-                                            Mobile
-                                        </Button>
-                                    </View>
-                                </View>
-
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
 
                                 {/* ───── File Encryption ──────────────────────────
                                     Max outgoing attachment size that gets PGP-
@@ -1535,6 +1569,8 @@ const PreferencesModal = ({
                                         );
                                     })}
                                 </View>
+                                </>
+                                )}
 
                                 {/* Future sections go here. */}
                             </ScrollView>

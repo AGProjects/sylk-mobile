@@ -1151,6 +1151,9 @@ PODS:
     - React
   - react-native-sqlite-storage (5.0.0):
     - React
+  - react-native-tcp-socket (6.4.1):
+    - CocoaAsyncSocket
+    - React-Core
   - react-native-track-player (4.1.2):
     - React-Core
     - SwiftAudioEx (= 1.1.0)
@@ -1494,6 +1497,7 @@ DEPENDENCIES:
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
   - react-native-sqlite-storage (from `../node_modules/react-native-sqlite-storage`)
+  - react-native-tcp-socket (from `../node_modules/react-native-tcp-socket`)
   - react-native-track-player (from `../node_modules/react-native-track-player`)
   - react-native-version-number (from `../node_modules/react-native-version-number`)
   - react-native-video (from `../node_modules/react-native-video`)
@@ -1693,6 +1697,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-splash-screen"
   react-native-sqlite-storage:
     :path: "../node_modules/react-native-sqlite-storage"
+  react-native-tcp-socket:
+    :path: "../node_modules/react-native-tcp-socket"
   react-native-track-player:
     :path: "../node_modules/react-native-track-player"
   react-native-version-number:
@@ -1876,6 +1882,7 @@ SPEC CHECKSUMS:
   react-native-safe-area-context: 758e894ca5a9bd1868d2a9cfbca7326a2b6bf9dc
   react-native-splash-screen: a43276f9cf4b2e65d7ce30efe372ffc528064293
   react-native-sqlite-storage: cd23d30c96b642f435f7b15bde803bdbc0289ea2
+  react-native-tcp-socket: 7c7e53a07f122ecf00fb3626684bc0ca82c4f044
   react-native-track-player: dd56f9948e03756a217c75e0a61aa04aab65b5a1
   react-native-version-number: 3d74b5224ca4e1032b1593937d86d3f3c94bf95c
   react-native-video: 2aad0d963bf3952bd9ebb2f53fab799338e8e202
