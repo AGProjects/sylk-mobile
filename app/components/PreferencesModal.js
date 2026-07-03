@@ -48,19 +48,19 @@ import {
     setAcknowledged  as setCallRecordingDisclosure,
     clearAcknowledged as clearCallRecordingDisclosure,
     readAcknowledgedAt as readCallRecordingDisclosureAt,
-} from '../callRecordingDisclosure';
+} from './callRecordingDisclosure';
 import LocationPrivacyDisclosureModal from './LocationPrivacyDisclosureModal';
 import {
     readAcknowledged as readLocationDisclosure,
     setAcknowledged  as setLocationDisclosure,
     clearAcknowledged as clearLocationDisclosure,
     readAcknowledgedAt as readLocationDisclosureAt,
-} from '../locationDisclosure';
+} from './locationDisclosure';
 import {
     readAcknowledged as readConferenceRecordingDisclosure,
     clearAcknowledged as clearConferenceRecordingDisclosure,
     readAcknowledgedAt as readConferenceRecordingDisclosureAt,
-} from '../conferenceRecordingDisclosure';
+} from './conferenceRecordingDisclosure';
 
 // Three-stop choices for the Location preferences. Values are kept in
 // the units the persistent setting expects directly (seconds for the
@@ -715,7 +715,7 @@ const PreferencesModal = ({
                     accessibilityLabel="Close preferences"
                 />
                 <Surface style={containerStyles.modalSurface}>
-                            <Text style={containerStyles.title}>Blink preferences</Text>
+                            <Text style={containerStyles.title}>Preferences</Text>
 
                             <ScrollView
                                 style={{ maxHeight: scrollMaxHeight, paddingHorizontal: 16 }}
@@ -1576,7 +1576,13 @@ const PreferencesModal = ({
                             </ScrollView>
 
                             <View style={{ flexDirection: 'row', justifyContent: 'flex-end', padding: 12 }}>
-                                <Button mode="contained" onPress={close}>
+                                <Button
+                                    mode="contained"
+                                    compact
+                                    onPress={close}
+                                    style={{ alignSelf: 'flex-end' }}
+                                    labelStyle={{ fontSize: FS_CAPTION, marginVertical: 6, marginHorizontal: 16 }}
+                                >
                                     Done
                                 </Button>
                             </View>

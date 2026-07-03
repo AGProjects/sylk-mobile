@@ -6,10 +6,10 @@ import PropTypes from 'prop-types';
 import { Surface, Button, ActivityIndicator } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
-import { createImportClient, contactUris } from '../importClient';
+import { createImportClient, contactUris } from '../ImportClient';
 
 const { Buffer } = require('buffer');
-const ExportCrypto = require('../exportCrypto');
+const ExportCrypto = require('../ExportCrypto');
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const KINDS = [{ id: 'contacts', label: 'Contacts' }, { id: 'messages', label: 'Messages' }, { id: 'files', label: 'Files' }];

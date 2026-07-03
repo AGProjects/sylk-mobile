@@ -34,6 +34,7 @@ const EditContactModal = ({
   show,
   close,
   saveContactByUser,
+  contactHasStoredMessages,
   uri: propUri,
   defaultDomain,
   displayName: propDisplayName,
@@ -161,6 +162,57 @@ const EditContactModal = ({
   // keyboard focus to the freshly-added (empty) address field.
   const uriRefs = useRef([]);
   const [focusUriIndex, setFocusUriIndex] = useState(null);
+  // Map of normalized-URI → true when that address has stored messages. Such a
+  // URI is locked: it can't be edited or removed (renaming/removing it would
+  // orphan its conversation), and renders with a distinct read-only background.
+  const [uriHasMessages, setUriHasMessages] = useState({});
+  const _nzUri = (u) => {
+    let v = (u || '').trim().toLowerCase();
+    // Phone numbers are stored bare locally; messages key off the bare form.
+    if (v.startsWith('+')) v = v.split('@')[0];
+    return v;
+  };
+  // Reorder addresses. The FIRST row is the default/primary URI (saved as
+  // contact.uri), so moving a row to the top changes the contact's default
+  // address. Reordering is allowed even for has-messages rows — it doesn't
+  // rename or remove the address, so no conversation is orphaned.
+  const moveUri = (from, to) => {
+    setUris((prev) => {
+      if (to < 0 || to >= prev.length || from === to) return prev;
+      const next = prev.slice();
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
+  };
+  // Addresses that were ALREADY saved on the contact when the modal opened.
+  // The reorder (^) arrow only appears for these — a freshly-added line that
+  // hasn't been saved yet can't be reordered.
+  const savedUriSetRef = useRef(new Set());
+  useEffect(() => {
+    if (show) savedUriSetRef.current = new Set(_initUris().map((x) => (x || '').trim().toLowerCase()));
+  }, [show]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!show || typeof contactHasStoredMessages !== 'function') { setUriHasMessages({}); return; }
+    (async () => {
+      const out = {};
+      for (const u of uris) {
+        const k = _nzUri(u);
+        if (!k || k in out) continue;
+        try { out[k] = await contactHasStoredMessages(u); } catch (e) { out[k] = false; }
+        console.log('[edit-contact] [readonly] uri=' + JSON.stringify(u)
+          + ' normalized=' + JSON.stringify(k)
+          + ' hasMessages=' + out[k]
+          + (out[k] ? ' → READ-ONLY (greyed)' : ' → editable'));
+      }
+      if (!cancelled) {
+        setUriHasMessages(out);
+        console.log('[edit-contact] [readonly] summary ' + JSON.stringify(out));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [show, uris, contactHasStoredMessages]);
   // Collapse the per-contact call overrides (video/audio codec + zRTP) under
   // an "Advanced" toggle so the common fields stay uncluttered.
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -1014,50 +1066,7 @@ const getTotalPrettyStorage = (entity) => {
                           AddContactModal so users know they can paste
                           either a bare phone number / username or a
                           fully-qualified SIP URI. */}
-                      {uris.map((u, i) => {
-                        // Per-ROW classification: a row is a phone number only
-                        // when THIS value starts with '+'. (Don't key off the
-                        // contact's 'tel' tag — a phone-number contact can still
-                        // have additional SIP addresses; any URI is valid.)
-                        const isTel = (u || '').trim().startsWith('+');
-                        const isLast = i === uris.length - 1;
-                        return (
-                          <TextInput
-                            key={'uri-' + i}
-                            ref={(el) => { uriRefs.current[i] = el; }}
-                            mode="flat"
-                            // Own-account row is read-only (the SIP identity).
-                            editable={!myself}
-                            disabled={myself}
-                            // Label/keyboard adapt to the row's value (phone vs SIP).
-                            label={isTel ? 'Telephone number' : 'SIP Address'}
-                            onChangeText={(value) => {
-                              const v = value.replace(/\s|\(|\)/g, '').toLowerCase();
-                              setUris((prev) => prev.map((x, j) => (j === i ? v : x)));
-                            }}
-                            value={u}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            autoComplete="off"
-                            importantForAutofill="no"
-                            textContentType="none"
-                            spellCheck={false}
-                            // Default keyboard (NOT email-address) so Android's
-                            // email autofill ("use your Gmail") doesn't pop up;
-                            // '@' is still reachable. Phone rows get the keypad.
-                            keyboardType={isTel ? 'phone-pad' : 'default'}
-                            // Last row: "+" adds a new address row above Display
-                            // name. Earlier rows: "x" removes that address.
-                            right={!myself ? (
-                              isLast
-                                ? <TextInput.Icon icon="plus" onPress={() => { setUris((prev) => [...prev, '']); setFocusUriIndex(uris.length); }} />
-                                : (i === 0
-                                    ? undefined  // default (first) address — not removable
-                                    : <TextInput.Icon icon="close" onPress={() => setUris((prev) => prev.filter((_, j) => j !== i))} />)
-                            ) : undefined}
-                          />
-                        );
-                      })}
+                      {/* Display name first, above the address list. */}
                       <TextInput
                         mode="flat"
                         label="Display name"
@@ -1065,6 +1074,76 @@ const getTotalPrettyStorage = (entity) => {
                         value={displayName}
                         autoCapitalize="words"
                       />
+                      {uris.map((u, i) => {
+                        // Per-ROW classification: a row is a phone number only
+                        // when THIS value starts with '+'. (Don't key off the
+                        // contact's 'tel' tag — a phone-number contact can still
+                        // have additional SIP addresses; any URI is valid.)
+                        const isTel = (u || '').trim().startsWith('+');
+                        const isFirst = i === 0;
+                        // This address already has a conversation: lock it. Editing
+                        // or removing it would orphan those messages, so it's
+                        // read-only with a distinct background and no remove icon.
+                        const hasMsgs = !!uriHasMessages[_nzUri(u)];
+                        const readOnly = myself || hasMsgs;
+                        const isBottom = i === uris.length - 1;
+                        // Only addresses already saved on the contact can be
+                        // reordered; a not-yet-saved (freshly-added) line shows no ^.
+                        const isSaved = savedUriSetRef.current.has((u || '').trim().toLowerCase());
+                        return (
+                          <View key={'uri-row-' + i} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <TextInput
+                              ref={(el) => { uriRefs.current[i] = el; }}
+                              mode="flat"
+                              // Read-only for the own-account identity OR any address
+                              // that already has stored messages.
+                              editable={!readOnly}
+                              disabled={myself}
+                              // flex so it fills the row beside the reorder arrows;
+                              // distinct background for a locked (read-only) address.
+                              style={[{ flex: 1 }, readOnly ? { backgroundColor: '#ececec' } : null]}
+                              // Label/keyboard adapt to the row's value (phone vs SIP).
+                              label={isTel ? 'Telephone number' : 'SIP Address'}
+                              onChangeText={(value) => {
+                                const v = value.replace(/\s|\(|\)/g, '').toLowerCase();
+                                setUris((prev) => prev.map((x, j) => (j === i ? v : x)));
+                              }}
+                              value={u}
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              autoComplete="off"
+                              importantForAutofill="no"
+                              textContentType="none"
+                              spellCheck={false}
+                              // Default keyboard (NOT email-address) so Android's
+                              // email autofill ("use your Gmail") doesn't pop up;
+                              // '@' is still reachable. Phone rows get the keypad.
+                              keyboardType={isTel ? 'phone-pad' : 'default'}
+                              // Up-only reorder in the LEFT icon slot so it matches
+                              // the right-side +/x exactly (no white background). The
+                              // first row (default URI) has no arrow but still reserves
+                              // the slot with a blank placeholder, so every field — and
+                              // the +/x column on the right — stays aligned.
+                              left={(!myself && uris.length > 1)
+                                ? ((isFirst || !isSaved)
+                                    ? <TextInput.Icon icon={() => <View style={{ width: 24, height: 24 }} />} disabled />
+                                    : <TextInput.Icon icon="chevron-up" onPress={() => { Keyboard.dismiss(); moveUri(i, i - 1); }} />)
+                                : undefined}
+                              // FIRST row carries the "+" to add a new address; every
+                              // OTHER row carries an "x" to remove it — except a
+                              // read-only (has-messages / own-account) row, which can't
+                              // be removed.
+                              right={myself ? undefined : (
+                                isFirst
+                                  ? <TextInput.Icon icon="plus" onPress={() => { setUris((prev) => [...prev, '']); setFocusUriIndex(uris.length); }} />
+                                  : (hasMsgs
+                                      ? undefined  // has messages → greyed out + read-only, no remove
+                                      : <TextInput.Icon icon="close" onPress={() => setUris((prev) => prev.filter((_, j) => j !== i))} />)
+                              )}
+                            />
+                          </View>
+                        );
+                      })}
                       {!myself && (
                         <TextInput
                           mode="flat"
@@ -2327,6 +2406,7 @@ EditContactModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
   saveContactByUser: PropTypes.func,
+  contactHasStoredMessages: PropTypes.func,
   uri: PropTypes.string,
   displayName: PropTypes.string,
   email: PropTypes.string,

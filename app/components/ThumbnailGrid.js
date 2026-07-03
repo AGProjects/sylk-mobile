@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useMemo, useEffect} from 'react';
+import React, {useState, useCallback, useMemo, useEffect, useRef} from 'react';
 import { LayoutAnimation } from 'react-native';
 
 import {
@@ -92,7 +92,17 @@ export default function ThumbnailGrid({
   // historically uses bottom-right (out of the way of the user's
   // tap-to-open zone); the video grid wants top-left so the
   // selection state reads above the play overlay in the centre.
-  checkboxCorner = 'bottom-right',  // 'top-left' | 'bottom-right'
+  // The inline chat photo-group bubble passes 'bottom-left' so the
+  // bottom-right corner is free for the per-tile delivery-state
+  // badge (see showStateBadge).
+  checkboxCorner = 'bottom-right',  // 'top-left' | 'bottom-right' | 'bottom-left'
+  // When true, each tile draws a small delivery-state badge (✓ /
+  // ✓✓ / 🕓) in the bottom-right corner, read from item.state.
+  // Only outgoing tiles (item.direction === 'outgoing') get one —
+  // ticks are a sender-side receipt. Used by the chat photo-group
+  // bubble so a batch of sent photos shows each photo's own state
+  // when expanded. Off by default for the media-gallery grids.
+  showStateBadge = false,
   // Selection action: native Share. Mirrors enableDelete /
   // deleteImages — the action-bar Share button only renders when
   // enableShare is true; tapping it hands the array of selected
@@ -123,6 +133,12 @@ export default function ThumbnailGrid({
   // download via the app's existing file-transfer pipeline. When
   // omitted the button is hidden, so this prop is purely additive.
   onRequestDownload,
+  // Optional. Invoked for each tile that scrolls INTO the viewport and is not
+  // yet downloaded (item.downloaded === false, no in-flight transfer). Receives
+  // the full grid item; the caller maps item.metadata to an auto-download in
+  // viewport mode (honours the size cap — large files still need a manual tap).
+  // When omitted, nothing auto-downloads on scroll (purely additive).
+  onAutoDownload,
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
@@ -144,6 +160,33 @@ export default function ThumbnailGrid({
     const [viewerVisible, setViewerVisible] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
     const [visibleImages, setVisibleImages] = useState(images);
+
+    // Viewport-driven auto-download: fetch a tile's file only when it scrolls
+    // into view (not eagerly for the whole grid). The handler/config passed to
+    // FlatList must be STABLE (RN rejects changing them on the fly), so keep the
+    // latest callback in a ref the stable handler reads. A per-transfer guard
+    // avoids re-firing while a tile lingers in view; autoDownloadFile in
+    // viewport mode (wired by the caller) still honours the size cap, so large
+    // files are skipped here and stay tap-to-download.
+    const _autoDownloadRef = useRef(onAutoDownload);
+    useEffect(() => { _autoDownloadRef.current = onAutoDownload; }, [onAutoDownload]);
+    const _viewKickedRef = useRef(new Set());
+    const _viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 20 });
+    const _onViewableItemsChangedRef = useRef(({ viewableItems }) => {
+        const cb = _autoDownloadRef.current;
+        if (!cb) return;
+        for (const v of viewableItems) {
+            const it = v && v.item;
+            if (!it || !it.metadata) continue;
+            const inFlight = it.stage === 'download' || it.stage === 'decrypt';
+            if (it.downloaded === false && !inFlight) {
+                const k = it.metadata.transfer_id || it.id;
+                if (_viewKickedRef.current.has(k)) continue;
+                _viewKickedRef.current.add(k);
+                cb(it);
+            }
+        }
+    });
 
 	for (const image of images) {
 		//console.log('--image', image.id, image.rotation);
@@ -655,6 +698,7 @@ const renderItem = useCallback(
             style={[
               styles.checkbox,
               checkboxCorner === 'top-left' ? styles.checkboxTopLeft : null,
+              checkboxCorner === 'bottom-left' ? styles.checkboxBottomLeft : null,
             ]}
           onPress={(e) => {
             e.stopPropagation(); // prevent opening viewer
@@ -670,6 +714,35 @@ const renderItem = useCallback(
           </TouchableOpacity>
           : null
           }
+
+          {/* Per-tile delivery-state badge — bottom-right corner.
+              Mirrors the chat bubble's renderTicks glyphs so a single
+              photo in an expanded group reads the same as it would as
+              a standalone bubble: 🕓 pending, ✓ sent, ✓✓ displayed,
+              ✕ failed. Sender-side receipt only, so it's drawn for
+              outgoing tiles. The 'accepted' (server-accepted, no
+              remote receipt yet) state and incoming tiles get no
+              badge — same as the bubble, which shows no ticks there.
+              pointerEvents none so it never steals the center tap. */}
+          {(() => {
+            if (!showStateBadge) return null;
+            if (!item || item.direction !== 'outgoing') return null;
+            const st = item.state;
+            let glyph = null;
+            if (st === 'pending') glyph = '🕓';
+            else if (st === 'sent') glyph = '✓';
+            else if (st === 'displayed') glyph = '✓✓';
+            else if (st === 'failed') glyph = '✕';
+            if (!glyph) return null;
+            return (
+              <View pointerEvents="none" style={styles.stateBadge}>
+                <Text style={[
+                  styles.stateText,
+                  st === 'failed' && styles.stateTextFailed,
+                ]}>{glyph}</Text>
+              </View>
+            );
+          })()}
 
           {/* "Go to chat on this day" overlay — bottom-right
               corner. Sits on top of the size badge slot's
@@ -697,7 +770,7 @@ const renderItem = useCallback(
       </View>
     );
   },
-  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens, onGoToDay],
+  [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens, onGoToDay, showStateBadge, checkboxCorner],
 );
 
   if (!images || images.length === 0) {
@@ -784,6 +857,8 @@ return (
       removeClippedSubviews={false}
       initialNumToRender={12}
       windowSize={9}
+      onViewableItemsChanged={_onViewableItemsChangedRef.current}
+      viewabilityConfig={_viewabilityConfigRef.current}
       style={{flex: 1}}
       contentContainerStyle={{
         paddingHorizontal: 0,
@@ -1152,6 +1227,39 @@ checkboxTopLeft: {
   left: 6,
   bottom: 'auto',
   right: 'auto',
+},
+
+// Override consumed via checkboxCorner='bottom-left'. The chat
+// photo-group bubble uses this so the bottom-right corner is left
+// free for the per-tile delivery-state badge (see stateBadge).
+checkboxBottomLeft: {
+  left: 6,
+  right: 'auto',
+},
+
+// Per-tile delivery-state badge — bottom-right corner. Mirrors the
+// bubble's tick colours (green ✓ / ✓✓ / 🕓) on a translucent disc so
+// it reads against any thumbnail without dominating it.
+stateBadge: {
+  position: 'absolute',
+  bottom: 6,
+  right: 6,
+  zIndex: 3,
+  minWidth: 22,
+  height: 18,
+  paddingHorizontal: 5,
+  borderRadius: 9,
+  backgroundColor: 'rgba(0,0,0,0.55)',
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+stateText: {
+  color: '#4caf50',
+  fontSize: 11,
+  fontWeight: '700',
+},
+stateTextFailed: {
+  color: '#ff5252',
 },
 
 checkboxInner: {

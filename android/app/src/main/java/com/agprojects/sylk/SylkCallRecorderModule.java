@@ -95,6 +95,16 @@ public class SylkCallRecorderModule extends ReactContextBaseJavaModule {
             if (peaks != null) {
                 result.putString("peaks", peaks);
             }
+            // In-line spectrogram (remote leg), computed on the same 100 ms
+            // bins as the peaks so it's aligned with the audio/waveform.
+            String spectrum = SylkCallRecorder.getInstance().getLastSpectrumJson();
+            if (spectrum != null) {
+                result.putString("spectrum", spectrum);
+            }
+            // Exact encoded-audio duration so JS can resample the spectrogram
+            // onto the audio timeline (the peaks length is capped for long
+            // calls, so it can't be used to derive duration).
+            result.putDouble("durationMs", (double) SylkCallRecorder.getInstance().getLastDurationMs());
             promise.resolve(result);
         } catch (Throwable t) {
             SylkLogger.e("[call] [recorder] stop failed", t);
@@ -201,6 +211,9 @@ public class SylkCallRecorderModule extends ReactContextBaseJavaModule {
             WritableMap result = Arguments.createMap();
             result.putString("path", path);
             if (peaks != null) result.putString("peaks", peaks);
+            String spectrum = SylkCallRecorder.getInstance().getLastSpectrumJson();
+            if (spectrum != null) result.putString("spectrum", spectrum);
+            result.putDouble("durationMs", (double) SylkCallRecorder.getInstance().getLastDurationMs());
             promise.resolve(result);
         } catch (Throwable t) {
             SylkLogger.e("[call] [recorder] stopConference failed", t);

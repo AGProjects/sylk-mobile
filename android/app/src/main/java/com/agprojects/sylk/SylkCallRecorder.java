@@ -7,6 +7,7 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.media.MediaRecorder;
+import android.util.Base64;
 import android.util.Log;
 
 import org.webrtc.AudioTrack;
@@ -119,11 +120,22 @@ public class SylkCallRecorder {
     // for transcription, post-processing, and debugging. Opus natively
     // supports 8/12/16/24/48 kHz; 16 kHz is plenty for voice and
     // matches what AudioRecord captures + what the remote sink
-    // decimates down to. Bitrate bumped for stereo: ~36 kbps total.
+    // decimates down to.
     private static final int OUTPUT_SAMPLE_RATE = 16000;
     private static final int OUTPUT_CHANNELS = 2;
     private static final int MIC_FRAMES_PER_CHUNK = OUTPUT_SAMPLE_RATE / 100; // 10 ms = 160
-    private static final int OPUS_BITRATE_BPS = 36000;
+    // Opus bitrate for the STEREO stream. 36 kbps (~18 kbps/channel) was too
+    // low: loud/complex speech saturated the encoder on BOTH legs, heard as a
+    // "hits-a-ceiling" clipping/noise artifact even though the PCM itself never
+    // clips. 64 kbps gives each leg ~32 kbps — comfortable for 16 kHz wideband
+    // voice — and removes that distortion.
+    private static final int OPUS_BITRATE_BPS = 64000;
+    // Pre-encoder headroom. The remote leg arrives very hot (WebRTC AGC leaves
+    // it at ~-0.4 dBFS); sitting right at the ceiling makes the codec ring/
+    // overshoot on peaks. A gentle ~-2.5 dB trim (0.75) gives the encoder room
+    // without audibly lowering the recording. Applied to both channels with a
+    // hard clamp so the result can never wrap.
+    private static final float REC_HEADROOM_GAIN = 0.75f;
     private AudioRecord mMicRecord;
     private Thread mMicThread;
 
@@ -165,6 +177,34 @@ public class SylkCallRecorder {
     // Snapshot of the peaks JSON computed at stop() so the bridge
     // can read it AFTER stop() has cleared the live arrays.
     private String mLastPeaksJson;
+
+    // ----- Spectrogram computed IN-LINE from the written remote PCM -----
+    // Previously the spectrogram was captured by a separate JS analyser
+    // (SpectrumRecorder.startRemote → SylkAudioBands) that ticked on wall
+    // time, so it drifted out of sync with the peaks/audio (which live on
+    // the encoded-frame timeline) whenever Opus DTX dropped silence. We now
+    // compute a 16-band frame here, from the SAME remote samples the writer
+    // encodes, at the SAME 100 ms bin boundary as the peaks — so the spectrum
+    // shares one clock with the waveform and stays aligned for any call
+    // length. Output matches spectrumCodec.js: 16 bands, 10 fps, dB in
+    // [-100, 0] quantised to a byte per band, base64 row-major.
+    private static final int SPEC_BANDS   = 16;
+    private static final int SPEC_RATE_HZ = 1000 / PEAK_BIN_CHUNKS / 10; // 100 ms bins → 10 fps
+    private static final int SPEC_FFT_N   = 2048;                 // power of two >= bin size
+    private static final int SPEC_WIN     = PEAK_BIN_CHUNKS * MIC_FRAMES_PER_CHUNK; // 100 ms = 1600 @16k
+    private static final int SPEC_DB_LO   = -100;
+    private static final int SPEC_DB_HI   = 0;
+    private static final int SPEC_F_LOW   = 200;                  // display range (Hz)
+    private static final int SPEC_F_HIGH  = 8000;                 // Nyquist @16 kHz
+    private double[] mHann;                 // Hann window over SPEC_WIN
+    private int[]    mBandLo;               // FFT bin range [lo,hi) per band
+    private int[]    mBandHi;
+    private double[] mFftRe;                // scratch FFT buffers
+    private double[] mFftIm;
+    private double[] mSpecWin;              // accumulates remote samples for the current bin
+    private int      mSpecFill = 0;
+    private ArrayList<byte[]> mSpectrumFrames;   // one byte[SPEC_BANDS] per 100 ms
+    private String   mLastSpectrumJson;          // snapshot built at stop()
 
     /**
      * Begin recording.
@@ -210,6 +250,7 @@ public class SylkCallRecorder {
         mPeakAccumLocal  = 0;
         mPeakAccumRemote = 0;
         mPeakBinChunks   = 0;
+        initSpectrumState();
 
         // Set up the Opus encoder + OGG muxer. The encoder accepts
         // any chunk size of 16-bit PCM and emits Opus frames of its
@@ -327,6 +368,7 @@ public class SylkCallRecorder {
         mPeakAccumLocal  = 0;
         mPeakAccumRemote = 0;
         mPeakBinChunks   = 0;
+        initSpectrumState();
         mIsConference    = true;
         mConferenceRemotes.clear();
 
@@ -622,8 +664,23 @@ public class SylkCallRecorder {
         mLastPeaksRemoteCount = Math.max(0, finalRemote);
         mPeaksLocal  = null;
         mPeaksRemote = null;
+        // Snapshot the in-line spectrogram (remote leg) built on the same
+        // 100 ms bins as the peaks, so it ships aligned in message metadata.
+        mLastSpectrumJson = buildSpectrumJson(mSpectrumFrames);
+        mSpectrumFrames = null;
+        mSpecWin = null;
 
-        SylkLogger.i("[call] [recorder] Recording stopped: " + mPath);
+        // Exact ENCODED-AUDIO duration (ms). Derived from the presentation
+        // timestamp we advance per written frame, so it reflects the real
+        // audio length — NOT the wall-clock call time (which is longer when
+        // silence is dropped) and NOT the peaks array length (which is
+        // max-pooled down to MAX_PEAKS for long calls). JS uses this to
+        // resample the spectrogram onto the audio timeline so the spectrum
+        // stays aligned with the waveform for calls of any length.
+        mLastDurationMs = mPresentationTimeUs / 1000L;
+
+        SylkLogger.i("[call] [recorder] Recording stopped: " + mPath
+                + " durationMs=" + mLastDurationMs);
         return mPath;
     }
 
@@ -642,14 +699,166 @@ public class SylkCallRecorder {
         return mLastPeaksJson;
     }
 
+    // ---------- In-line spectrogram (remote leg, encoded timeline) ----------
+
+    /** Allocate/reset the spectrum state at the start of a recording:
+     *  Hann window, per-band FFT bin ranges (log-spaced SPEC_F_LOW..SPEC_F_HIGH),
+     *  scratch FFT buffers and the frame accumulator. */
+    private void initSpectrumState() {
+        mSpectrumFrames = new ArrayList<>(600);
+        mSpecWin = new double[SPEC_WIN];
+        mSpecFill = 0;
+        mFftRe = new double[SPEC_FFT_N];
+        mFftIm = new double[SPEC_FFT_N];
+        if (mHann == null || mHann.length != SPEC_WIN) {
+            mHann = new double[SPEC_WIN];
+            for (int i = 0; i < SPEC_WIN; i++) {
+                mHann[i] = 0.5 - 0.5 * Math.cos((2.0 * Math.PI * i) / (SPEC_WIN - 1));
+            }
+        }
+        // Log-spaced band edges → FFT bin ranges. Bin k maps to
+        // f = k * OUTPUT_SAMPLE_RATE / SPEC_FFT_N.
+        mBandLo = new int[SPEC_BANDS];
+        mBandHi = new int[SPEC_BANDS];
+        final double binHz = (double) OUTPUT_SAMPLE_RATE / SPEC_FFT_N;
+        final int nyBin = SPEC_FFT_N / 2;
+        for (int band = 0; band < SPEC_BANDS; band++) {
+            double fLo = SPEC_F_LOW * Math.pow((double) SPEC_F_HIGH / SPEC_F_LOW, (double) band / SPEC_BANDS);
+            double fHi = SPEC_F_LOW * Math.pow((double) SPEC_F_HIGH / SPEC_F_LOW, (double) (band + 1) / SPEC_BANDS);
+            int lo = (int) Math.floor(fLo / binHz);
+            int hi = (int) Math.ceil(fHi / binHz);
+            if (lo < 1) lo = 1;
+            if (hi > nyBin) hi = nyBin;
+            if (hi <= lo) hi = lo + 1;
+            mBandLo[band] = lo;
+            mBandHi[band] = hi;
+        }
+    }
+
+    /** Compute one 16-band frame (dB, quantised to bytes) from the samples
+     *  accumulated in mSpecWin for the current 100 ms bin. Windowed real FFT,
+     *  per-band RMS magnitude → dBFS, clamped to [SPEC_DB_LO, SPEC_DB_HI]. */
+    private byte[] computeSpectrumFrame() {
+        byte[] out = new byte[SPEC_BANDS];
+        final int fill = mSpecFill;
+        // Load windowed samples into the FFT real buffer, zero-pad the rest.
+        for (int i = 0; i < SPEC_FFT_N; i++) {
+            double s = (i < fill) ? mSpecWin[i] * mHann[i] : 0.0;
+            mFftRe[i] = s;
+            mFftIm[i] = 0.0;
+        }
+        fftInPlace(mFftRe, mFftIm);
+        // Window coherent gain ≈ sum(hann)/2 ≈ SPEC_WIN/4; normalise the
+        // magnitude so a full-scale tone lands near 0 dBFS.
+        final double norm = (SPEC_WIN / 4.0) * 32768.0;
+        for (int band = 0; band < SPEC_BANDS; band++) {
+            double sumSq = 0.0; int cnt = 0;
+            for (int k = mBandLo[band]; k < mBandHi[band]; k++) {
+                double re = mFftRe[k], im = mFftIm[k];
+                sumSq += re * re + im * im;
+                cnt++;
+            }
+            double rms = (cnt > 0) ? Math.sqrt(sumSq / cnt) : 0.0;
+            double db = SPEC_DB_LO;
+            if (rms > 0.0 && norm > 0.0) {
+                db = 20.0 * Math.log10(rms / norm);
+            }
+            if (db < SPEC_DB_LO) db = SPEC_DB_LO;
+            if (db > SPEC_DB_HI) db = SPEC_DB_HI;
+            int q = (int) Math.round(((db - SPEC_DB_LO) / (double) (SPEC_DB_HI - SPEC_DB_LO)) * 255.0);
+            if (q < 0) q = 0; else if (q > 255) q = 255;
+            out[band] = (byte) q;
+        }
+        return out;
+    }
+
+    /** Iterative radix-2 Cooley–Tukey FFT, in place. Length must be a power
+     *  of two (SPEC_FFT_N). No external dependency. */
+    private static void fftInPlace(double[] re, double[] im) {
+        final int n = re.length;
+        // Bit-reversal permutation.
+        for (int i = 1, j = 0; i < n; i++) {
+            int bit = n >> 1;
+            for (; (j & bit) != 0; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) {
+                double tr = re[i]; re[i] = re[j]; re[j] = tr;
+                double ti = im[i]; im[i] = im[j]; im[j] = ti;
+            }
+        }
+        for (int len = 2; len <= n; len <<= 1) {
+            double ang = -2.0 * Math.PI / len;
+            double wpr = Math.cos(ang), wpi = Math.sin(ang);
+            for (int i = 0; i < n; i += len) {
+                double wr = 1.0, wi = 0.0;
+                for (int k = 0; k < (len >> 1); k++) {
+                    int a = i + k, b = i + k + (len >> 1);
+                    double xr = re[b] * wr - im[b] * wi;
+                    double xi = re[b] * wi + im[b] * wr;
+                    re[b] = re[a] - xr; im[b] = im[a] - xi;
+                    re[a] += xr;        im[a] += xi;
+                    double nwr = wr * wpr - wi * wpi;
+                    wi = wr * wpi + wi * wpr; wr = nwr;
+                }
+            }
+        }
+    }
+
+    /** Build the spectrumCodec.js metadata JSON from the captured frames.
+     *  Shape: {"v":1,"rate":10,"bands":16,"count":N,"lo":-100,"hi":0,
+     *          "data":"<base64>","fLow":..,"fHigh":..,"ticks":[..]}.
+     *  Returns null if no frames were captured. */
+    private static String buildSpectrumJson(ArrayList<byte[]> frames) {
+        if (frames == null || frames.isEmpty()) return null;
+        final int srcLen = frames.size();
+        // Downsample to <= MAX_PEAKS frames with the SAME max-pool grouping the
+        // peaks use (buildPeaksJson), so the spectrum frame count matches the
+        // peaks count and both stay bounded (~16 KB base64 for a 1 h call).
+        // Per-band max preserves spectral peaks the way peak max-pool does.
+        final int step = (srcLen + MAX_PEAKS - 1) / MAX_PEAKS;   // ceil(srcLen / MAX_PEAKS)
+        final int count = (srcLen + step - 1) / step;
+        byte[] flat = new byte[count * SPEC_BANDS];
+        for (int f = 0; f < count; f++) {
+            int from = f * step;
+            int to   = Math.min(srcLen, from + step);
+            for (int band = 0; band < SPEC_BANDS; band++) {
+                int mx = 0;
+                for (int s = from; s < to; s++) {
+                    int v = frames.get(s)[band] & 0xFF;
+                    if (v > mx) mx = v;
+                }
+                flat[f * SPEC_BANDS + band] = (byte) mx;
+            }
+        }
+        String b64 = Base64.encodeToString(flat, Base64.NO_WRAP);
+        StringBuilder sb = new StringBuilder(b64.length() + 128);
+        sb.append("{\"v\":1,\"rate\":").append(SPEC_RATE_HZ)
+          .append(",\"bands\":").append(SPEC_BANDS)
+          .append(",\"count\":").append(count)
+          .append(",\"lo\":").append(SPEC_DB_LO)
+          .append(",\"hi\":").append(SPEC_DB_HI)
+          .append(",\"data\":\"").append(b64).append("\"")
+          .append(",\"fLow\":").append(SPEC_F_LOW)
+          .append(",\"fHigh\":").append(SPEC_F_HIGH)
+          .append(",\"ticks\":[1,2,4,8]}");
+        return sb.toString();
+    }
+
+    public synchronized String getLastSpectrumJson() {
+        return mLastSpectrumJson;
+    }
+
     // Capture peak counts at stop time so the bridge can ferry them
     // back to JS for logging — the JS side's metro-logs script
     // doesn't see logcat, only console output.
     private int mLastPeaksLocalCount  = 0;
     private int mLastPeaksRemoteCount = 0;
+    // Exact encoded-audio duration (ms) of the most recent recording.
+    private long mLastDurationMs = 0;
 
     public synchronized int getLastPeaksLocalCount()  { return mLastPeaksLocalCount; }
     public synchronized int getLastPeaksRemoteCount() { return mLastPeaksRemoteCount; }
+    public synchronized long getLastDurationMs()      { return mLastDurationMs; }
 
     /**
      * Build the JSON ourselves with StringBuilder rather than pulling
@@ -794,12 +1003,23 @@ public class SylkCallRecorder {
             for (int i = 0; i < n; i++) {
                 int a = (pendingMic != null && i < pendingMic.length) ? pendingMic[i] : 0;
                 int b = (pendingRem != null && i < pendingRem.length) ? pendingRem[i] : 0;
+                // Gentle headroom trim so hot inputs (esp. the remote leg,
+                // which arrives ~-0.4 dBFS) don't sit on the ceiling and make
+                // the encoder ring on peaks. Round-to-nearest, then clamp.
+                a = Math.round(a * REC_HEADROOM_GAIN);
+                b = Math.round(b * REC_HEADROOM_GAIN);
                 if (a > 32767) a = 32767; if (a < -32768) a = -32768;
                 if (b > 32767) b = 32767; if (b < -32768) b = -32768;
                 int absA = a < 0 ? -a : a;
                 int absB = b < 0 ? -b : b;
                 if (absA > peakL) peakL = absA;
                 if (absB > peakR) peakR = absB;
+                // Accumulate the REMOTE sample into the current spectrum bin.
+                // Same samples, same 100 ms boundary as the peaks below, so
+                // spectrum frame k and peak bin k describe the same instant.
+                if (mSpecWin != null && mSpecFill < SPEC_WIN) {
+                    mSpecWin[mSpecFill++] = b;
+                }
                 scratch.putShort((short) a); // Left  = mic
                 scratch.putShort((short) b); // Right = remote
             }
@@ -816,6 +1036,11 @@ public class SylkCallRecorder {
                 mPeakAccumLocal  = 0;
                 mPeakAccumRemote = 0;
                 mPeakBinChunks   = 0;
+                // Emit one spectrum frame for this same 100 ms bin.
+                if (mSpectrumFrames != null) {
+                    mSpectrumFrames.add(computeSpectrumFrame());
+                }
+                mSpecFill = 0;
                 // Log every 50 bins (~5 s) so we can confirm peaks are
                 // accumulating without flooding logcat.
             }

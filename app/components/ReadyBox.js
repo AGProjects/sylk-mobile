@@ -13,7 +13,7 @@ import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpac
 // so the voice-processing IO is released for the recording and
 // restored afterwards.
 const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
-import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox } from 'react-native-paper';
+import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox, Menu } from 'react-native-paper';
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 // react-native-sound-level was previously used to drive the recording
@@ -25,21 +25,40 @@ import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-
 // and this import is no longer needed.
 import { check as checkPermission, PERMISSIONS as RNP_PERMISSIONS, RESULTS as RNP_RESULTS } from 'react-native-permissions';
 
-import { red } from '../colors';
+import { red } from '../assets/styles/colors';
 import DarkModeManager from '../DarkModeManager';
 
 import ConferenceModal from './ConferenceModal';
 import ContactsListBox from './ContactsListBox';
+import AudioRecorder from './AudioRecorder';
 
-import FooterBox from './FooterBox';
-import URIInput from './URIInput';
-import { DTMFPad } from './DTMFModal';
+import SessionButtonsBar from './SessionButtonsBar';
+import ContactsListBanners from './ContactsListBanners';
+import ContactsCategoryBar from './ContactsCategoryBar';
+import ChatFilterSortBar from './ChatFilterSortBar';
+import ContactSelectFab from './ContactSelectFab';
+import SearchBar from './SearchBar';
+import {
+    isVideoConferenceUri,
+    isAnonymousUri,
+    canReceiveVoiceMemo,
+    canShareLocationWith,
+} from './ContactCapabilities';
+import { planFilterHistory } from './contactsFilterMachine';
+import { planPropsReconcile } from './propsReconciler';
+// Custom in-app confirmation dialog — replaces native Alert.alert for
+// the bulk Delete (Deleted/Graveyard) confirmations, which overflow the
+// right margin in portrait.
+import ConfirmActionModal from './ConfirmActionModal';
 import utils from '../utils';
 import {Keyboard} from 'react-native';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
 import AudioWaveform from './AudioWaveform';
 import VuMeter from './VuMeter';
+import MicSpectrumBars from './MicSpectrumBars';
+import SpectrumPlayback from './SpectrumPlayback';
+import SpectrumRecorder from './SpectrumRecorder';
 import AudioProgressSlider from './AudioProgressSlider';
 
 import uuid from 'react-native-uuid';
@@ -58,14 +77,31 @@ import styles from '../assets/styles/ReadyBox';
 import containerStyles from '../assets/styles/ContainerStyles';
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
+// Match the 50 ms (~20 fps) metering/playback cadence used elsewhere
+// (AudioRecorder.js, ChatBox.js) so peaks and the slider stay in sync
+// with the audio instead of updating only ~twice a second.
+try { audioRecorderPlayer.setSubscriptionDuration(0.05); } catch (e) { /* older lib: ignore */ }
+
+// Per-platform action-button style classes. These depend only on Platform.OS
+// (fixed for the life of the process) and the static `styles` stylesheet, so
+// they're computed once at module load rather than rebuilt on every render.
+const greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS         : styles.greenButton;
+const blueButtonClass          = Platform.OS === 'ios' ? styles.blueButtoniOS          : styles.blueButton;
+const redButtonClass           = Platform.OS === 'ios' ? styles.redButtoniOS           : styles.redButton;
+// Purple dot = "Share location" — visually distinct from the green call
+// buttons and the blue record/file-transfer buttons so the new action doesn't
+// get mistaken for a call or a file share.
+const purpleButtonClass        = Platform.OS === 'ios' ? styles.purpleButtoniOS        : styles.purpleButton;
+const disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS : styles.disabledGreenButton;
+const disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS  : styles.disabledBlueButton;
 
 
 class ReadyBox extends Component {
     constructor(props) {
         super(props);
         autoBind(this);
+        this.audioRecorderRef = React.createRef();
 
-        this.recordingStopTimer = null;
 
         // Drives the pulsing opacity on the chat-header "Share location"
         // pin when the current contact has an active live share. Matches
@@ -77,8 +113,13 @@ class ReadyBox extends Component {
         this._locationSharePulseLoop = null;
 
         this.state = {
+            recorderState: { recording: false, recordArmed: false, previewRecording: false, playRecording: false, recordingFile: null, msgPlaybackActive: false },
             targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
             sticky: false,
+            // Custom bulk-delete confirmation dialog (Deleted "Delete
+            // permanently" / Graveyard "Delete forever"). Holds
+            // {title, message, actions} when open, null when closed.
+            confirmDialog: null,
             contactsFilter: null,
             messagesCategoryFilter: null,
             historyPeriodFilter: null,
@@ -90,7 +131,7 @@ class ReadyBox extends Component {
             // seeded selectedContact from a sylk://message launch
             // intent (via SylkBridge.consumeLaunchMessageUri). The
             // first paint then rendered the contacts list and only
-            // flipped to chat mode after componentWillReceiveProps
+            // flipped to chat mode after the props reconciler (_reconcileProps)
             // fired with the next prop update, producing the
             // "contacts list briefly visible under the spinner"
             // symptom on a notification cold-start tap. selectedContact
@@ -98,11 +139,9 @@ class ReadyBox extends Component {
             // the App has a contact selected, regardless of any
             // concurrent call.
             chat: this.props.selectedContact !== null,
-            isTyping: this.props.isTyping,
-            navigationItems: this.props.navigationItems,
-            keys: this.props.keys,
-			searchMessages: this.props.searchMessages,
-			searchContacts: this.props.searchContacts,
+            // isTyping / navigationItems / keys / searchMessages / searchContacts
+            // are read directly from props (they were pure prop-mirrors); only
+            // searchString is genuine local state.
 			searchString: '',
 			recordingDuration: 0,
 			// Per-100ms peak amplitude for the in-progress / just-
@@ -112,6 +151,10 @@ class ReadyBox extends Component {
 			// the recipient's bubble draws the same waveform we
 			// preview here.
 			recordingPeaks: [],
+			// Recorded spectrogram (spectrumCodec metadata) for the
+			// in-progress / just-finished take, animated on preview +
+			// shipped with the message so playback shows the spectrum.
+			recordingSpectrum: null,
 			sortOrder: 'desc',
 			orderBy: 'timestamp',
 			showOrderBar: false,
@@ -125,6 +168,23 @@ class ReadyBox extends Component {
 			// itself has captured — using a separate setInterval would
 			// drift relative to the actual file duration.
 			recordingElapsedMs: 0,
+			// Active microphone for the current voice-message recording.
+			// Set in onStartRecord from the engaged device and shown under the
+			// live mic spectrum. null when not recording.
+			recordingInputDevice: null,
+			// Pre-record "armed" screen: the user has tapped record and is
+			// choosing an input device, but capture hasn't started yet.
+			recordArmed: false,
+			// Selectable input devices for the armed screen ({type,name,id,icon}).
+			recordInputs: [],
+			// The input device chosen on the armed screen (engaged at Start).
+			selectedRecordInput: null,
+			// Whether the input-device picker menu is open.
+			recordInputMenuVisible: false,
+			// True between tapping Start and capture actually beginning. The
+			// armed screen stays mounted (so the chat doesn't flash back) and
+			// shows a "Starting…" spinner while the input route engages.
+			recordStarting: false,
 			// Gated by a timer so the red "no private key" banner doesn't
 			// flash on the main screen behind the ImportPrivateKeyModal the
 			// moment keyStatus arrives. It only flips true after the modal
@@ -171,163 +231,105 @@ class ReadyBox extends Component {
         this._noPrivateKeyWarningDelay = 600;
     }
 
-    UNSAFE_componentWillReceiveProps(nextProps) {
+    // Props-edge reconciliation, called from componentDidUpdate (guarded so it
+    // runs only when props actually changed — see the call site). This replaces
+    // the former UNSAFE_componentWillReceiveProps: `prevProps` is the previous
+    // props and `this.props` is the current ("next") props. Decision logic lives
+    // in the pure planPropsReconcile machine; this is a thin executor over the
+    // ordered ops it returns. See propsReconciler.js for the full transition
+    // table.
+    //
+    // Timing note: because this now runs in componentDidUpdate rather than
+    // before render, the setState ops apply in a follow-up render (React batches
+    // them) instead of the same render. Empty setState patches are skipped so
+    // they don't schedule a redundant render.
+    _reconcileProps(prevProps) {
         if (this.ended) {
             return;
         }
 
-        // A delete (chat menu or elsewhere) bumps gotoDeletedSignal so we land
-        // the user on the Deleted folder, showing the contact they just removed.
-        if (nextProps.gotoDeletedSignal !== this.props.gotoDeletedSignal) {
-            this.setState({ contactsFilter: 'deleted', chat: false });
-        }
+        const props = this.props;
+        const ctx = {
+            hasPrevSelectedContact: !!prevProps.selectedContact,
+            hasNextSelectedContact: !!props.selectedContact,
+            selectedContactChanged: props.selectedContact !== prevProps.selectedContact,
+            prevSelectedContactUri: prevProps.selectedContact ? prevProps.selectedContact.uri : null,
+            prevInviteContacts: prevProps.inviteContacts,
+            nextInviteContacts: props.inviteContacts,
+            prevPinned: prevProps.pinned,
+            prevHistoryFilter: prevProps.historyFilter,
+            nextHistoryFilter: props.historyFilter,
+            prevGotoDeletedSignal: prevProps.gotoDeletedSignal,
+            nextGotoDeletedSignal: props.gotoDeletedSignal,
+            prevAllContactsLength: prevProps.allContacts.length,
+            nextAllContactsLength: props.allContacts ? props.allContacts.length : 0,
+            nextSearchContacts: props.searchContacts,
+            nextSearchString: props.searchString,
+            nextMissedCallsLen: props.missedCalls.length,
+            nextBlockedUrisLen: props.blockedUris.length,
+            nextFavoriteUrisLen: props.favoriteUris.length,
+            nextHasDeletedContacts: (props.allContacts || []).some(
+                c => c && (c.storagePurged || c.deletedTimestamp)),
+            nextGraveyardCount: props.graveyardCount,
+            nextStateFilterTagPresent: (props.allContacts || []).some(
+                c => Array.isArray(c && c.tags) && c.tags.indexOf(this.state.contactsFilter) > -1),
+            hasLoadGraveyardFn: typeof props.loadGraveyardContacts === 'function',
+            stateContactsFilter: this.state.contactsFilter,
+            // "Was search open before this update?" — the previous props value
+            // (the state mirror that used to hold this is gone post-Phase-2).
+            stateSearchContacts: prevProps.searchContacts,
+            nextChatEnabled: props.selectedContact
+                ? !this.chatDisabledForUri(props.selectedContact.uri)
+                : undefined,
+            navItemsLength: (this.navigationItems && this.navigationItems.length) || 0,
+            pickedContactWhileSearching: !!this._pickedContactWhileSearching,
+        };
 
-        if (this.props.selectedContact && !nextProps.selectedContact) {
-            // This branch is the "user is LEAVING the chat" case
-            // (new selectedContact is null after the old one was set).
-            // Previously the guard was just `this.props.selectedContact`
-            // — truthy on every re-render where a contact was still
-            // selected — which slammed chat=false on every App re-
-            // render. Boot fires dozens of those (contactsLoaded,
-            // account loaded, journal sync, every saveSylkContact),
-            // and each one re-exposed the contacts list under my
-            // chat-open overlay on a cold-start sylk://message tap.
-            // The `&& !nextProps.selectedContact` guard restricts
-            // this reset to the actual "leaving the chat" transition.
-            this.setState({targetUri: '', chat: false});
-        }
-
-        if (!this.props.inviteContacts && nextProps.inviteContacts) {
-            this.handleSearch('');
-            this.setState({chat: false});
-        }
-
-        if (this.props.selectedContact !== nextProps.selectedContact && nextProps.selectedContact) {
-            this.setState({chat: !this.chatDisabledForUri(nextProps.selectedContact.uri)});
-            this.setState({playRecording: false});
-        }
-
-        if (this.props.selectedContact !== nextProps.selectedContact ) {
-            this.setState({gettingSharedAsset: false});
-        }
-
-        if (nextProps.selectedContact !== this.props.selectedContact) {
-           this.resetContact()
-           this.setState({'messagesCategoryFilter': null});
-           // Reset the Recents/main nav bar to the start when leaving the
-           // contacts-list view. Each visible FlatList now owns its own
-           // ref (navigationRefMain / Filter / Category / Sort); we
-           // target the main one because that's the bar that shows when
-           // !selectedContact. Still guard against an empty list to
-           // avoid the FlatList "item length 0 but minimum is 1"
-           // invariant when navigationItems hasn't been populated yet.
-           if (this.navigationRefMain
-               && !this.props.selectedContact
-               && this.navigationItems
-               && this.navigationItems.length > 0) {
-               try {
-                   this.navigationRefMain.scrollToIndex({animated: true, index: 0});
-               } catch (e) {}
-           }
-           if (this.props.selectedContact && this.props.pinned) {
-               this.props.togglePinned(this.props.selectedContact.uri);
-           }
-        }
-
-        if (!nextProps.historyFilter && this.props.historyFilter) {
-            this.filterHistory(null);
-        }
-
-        if (nextProps.missedCalls.length === 0 && this.state.contactsFilter === 'missed') {
-            this.setState({'contactsFilter': null});
-        }
-
-        if (nextProps.blockedUris.length === 0 && this.state.contactsFilter === 'blocked') {
-            this.setState({'contactsFilter': null});
-        }
-
-        if (nextProps.favoriteUris.length === 0 && this.state.contactsFilter === 'favorite') {
-            this.setState({'contactsFilter': null});
-        }
-
-        // Reset the selected category when it's a tag-based group (incl. custom
-        // groups like "Abcd test") that no longer has any contacts — e.g. after
-        // deleting the last member. Computed / property-based filters (calls,
-        // recent, missed, autoanswer) are not tag-driven, so skip them.
-        {
-            const f = this.state.contactsFilter;
-            // 'graveyard' (and 'all') are not tag groups — graveyard contacts
-            // are tombstones loaded separately, not tagged — so they must be
-            // exempt from the tag-existence reset below, otherwise the filter
-            // is cleared on the next props update and the user is bounced out.
-            const NON_TAG = new Set(['calls', 'recent', 'missed', 'autoanswer', 'graveyard', 'all']);
-            if (f === 'deleted') {
-                // Deleted is column-based (storage_purged or deleted_timestamp),
-                // not a tag. Only reset when the trash is actually empty —
-                // otherwise entering it would bounce the user back to All.
-                const stillHas = (nextProps.allContacts || []).some(c => c && (c.storagePurged || c.deletedTimestamp));
-                if (!stillHas) {
-                    // If the Deleted folder just emptied (e.g. the last contact
-                    // was killed → tombstone) but the Graveyard now has entries,
-                    // slide into the Graveyard instead of bouncing the user out
-                    // to All — the content is still there, just one step down.
-                    const hasGraveyardContacts = (nextProps.graveyardCount || 0) > 0;
-                    if (hasGraveyardContacts) {
-                        if (typeof this.props.loadGraveyardContacts === 'function') {
-                            this.props.loadGraveyardContacts();
-                        }
-                        this.setState({ contactsFilter: 'graveyard' });
-                    } else {
-                        this.setState({ contactsFilter: null });
+        const ops = planPropsReconcile(ctx);
+        for (const item of ops) {
+            switch (item.op) {
+                case 'setState':
+                    if (item.patch && Object.keys(item.patch).length > 0) {
+                        this.setState(item.patch);
                     }
-                }
-            } else if (f && !NON_TAG.has(f)) {
-                const stillHas = (nextProps.allContacts || []).some(
-                    c => Array.isArray(c && c.tags) && c.tags.indexOf(f) > -1
-                );
-                if (!stillHas) {
-                    this.setState({ contactsFilter: null });
-                }
+                    break;
+                case 'handleSearch':
+                    this.handleSearch(item.arg);
+                    break;
+                case 'resetContact':
+                    this.resetContact();
+                    break;
+                case 'togglePinned':
+                    this.props.togglePinned(item.uri);
+                    break;
+                case 'filterHistory':
+                    this.filterHistory(item.arg);
+                    break;
+                case 'scrollMainNavToStart':
+                    if (this.navigationRefMain) {
+                        try {
+                            this.navigationRefMain.scrollToIndex({ animated: true, index: 0 });
+                        } catch (e) {}
+                    }
+                    break;
+                case 'loadGraveyardContacts':
+                    if (typeof this.props.loadGraveyardContacts === 'function') {
+                        this.props.loadGraveyardContacts();
+                    }
+                    break;
+                case 'bounceNavigation':
+                    this.bounceNavigation();
+                    break;
+                case 'consumePickFlag':
+                    this._pickedContactWhileSearching = false;
+                    break;
+                case 'selectContact':
+                    try { this.props.selectContact && this.props.selectContact(item.arg); } catch (e) {}
+                    break;
+                default:
+                    break;
             }
         }
-
-        if (this.props.allContacts.length === 0 && nextProps.allContacts && nextProps.allContacts.length > 0) {
-            this.bounceNavigation();
-        }
-                
-        if (nextProps.searchString) {
-            this.setState({'searchString': nextProps.searchString});
-        }
-        
-        if ('playRecording' in nextProps) {
-            console.log('playRecording', extProps.playRecording);
-            this.setState({playRecording: nextProps.playRecording});
-        }
-        
-        if ('recordingDuration' in nextProps) {
-            this.setState({recordingDuration: nextProps.recordingDuration});
-        }
-
-        // When the user exits contact-search mode (the search bar is
-        // collapsing), snap the source toggle back to 'sylk' AND close
-        // the AB dialpad. Without this the next time they open search
-        // they'd land on whatever they last picked — usually 'ab' with
-        // the dialpad expanded — which surprised people who expected
-        // the default Sylk view to come back. Reset early so the
-        // setState below doesn't race with stale toggles.
-        const exitedContactSearch =
-            this.state.searchContacts && !nextProps.searchContacts;
-
-        this.setState({
-                        searchMessages: nextProps.searchMessages,
-                        searchContacts: nextProps.searchContacts,
-                        isTyping: nextProps.isTyping,
-                        navigationItems: nextProps.navigationItems,
-                        keys: nextProps.keys,
-                        ...(exitedContactSearch
-                            ? { contactSource: 'sylk', showAbDialpad: false }
-                            : {})
-                        });
     }
 
     getTargetUri(uri) {
@@ -352,24 +354,6 @@ class ReadyBox extends Component {
             this._startLocationSharePulse();
         }
 
-        // Stop voice-message recording / preview playback whenever a call
-        // is about to start (incoming OR outgoing) so audio doesn't
-        // contend with the ringtone or the call itself.
-        this.callStartingListener = DeviceEventEmitter.addListener(
-            'SylkCallStarting',
-            (payload) => {
-                try {
-                    if (this.state.recording) {
-                        this.stopRecording();
-                    }
-                    if (this.state.playRecording || this.state.previewRecording) {
-                        try { audioRecorderPlayer.stopPlayer(); } catch (_e) {}
-                        try { audioRecorderPlayer.removePlayBackListener(); } catch (_e) {}
-                        this.setState({ playRecording: false, previewRecording: false });
-                    }
-                } catch (e) { /* swallow — never block call handling */ }
-            }
-        );
 
         // Populate the cached mic-permission state so
         // showAudioRecordButton can hide the mic when recording isn't
@@ -383,6 +367,33 @@ class ReadyBox extends Component {
                 this._refreshMicPermission();
             }
         });
+
+        // Chat message audio playback is routed to the AudioRecorder player
+        // (it owns the whole waveform/spectrum/slider/seek plumbing). ChatBox
+        // emits SylkPlayMessageAudio when a voice-message bubble is tapped;
+        // we forward it to the recorder, which renders its player card while
+        // the chat list is hidden (showContactsList gates on msgPlaybackActive)
+        // — so GiftedChat's FlatList is unmounted and can't churn per tick.
+        this._playMsgAudioSub = DeviceEventEmitter.addListener(
+            'SylkPlayMessageAudio',
+            (info) => {
+                try {
+                    const r = this.audioRecorderRef.current;
+                    if (r) r.playMessageAudio(info);
+                } catch (e) { /* never block */ }
+            }
+        );
+        // Stop request (top Stop button, call starting, etc.) also tears down
+        // the recorder's message playback.
+        this._stopMsgAudioSub = DeviceEventEmitter.addListener(
+            'SylkStopAudioPlayback',
+            () => {
+                try {
+                    const r = this.audioRecorderRef.current;
+                    if (r && r.state && r.state.msgPlayback) r.stopMessageAudio();
+                } catch (e) { /* never block */ }
+            }
+        );
     }
 
     // Android back inside the Deleted / Graveyard contact view → exit the
@@ -409,10 +420,6 @@ class ReadyBox extends Component {
         }
         this._stopLocationSharePulse();
         this._clearNoPrivateKeyWarningTimer();
-        if (this.callStartingListener) {
-            this.callStartingListener.remove();
-            this.callStartingListener = null;
-        }
         if (this._appStateSub) {
             // RN 0.65+: addEventListener returns a subscription with
             // .remove(); the older AppState.removeEventListener API
@@ -422,6 +429,8 @@ class ReadyBox extends Component {
             }
             this._appStateSub = null;
         }
+        if (this._playMsgAudioSub) { this._playMsgAudioSub.remove(); this._playMsgAudioSub = null; }
+        if (this._stopMsgAudioSub) { this._stopMsgAudioSub.remove(); this._stopMsgAudioSub = null; }
     }
 
     // Read-only permission probe — does NOT trigger the OS prompt.
@@ -544,6 +553,17 @@ class ReadyBox extends Component {
     }
     
 	componentDidUpdate(prevProps, prevState) {
+	  // Props-edge reconciliation (formerly UNSAFE_componentWillReceiveProps).
+	  // Guard: componentDidUpdate fires after EVERY update, including our own
+	  // setState; React keeps the same `props` object reference across
+	  // state-only updates, so `prevProps !== this.props` runs this only when
+	  // the parent actually re-rendered with new props — matching when cWRP
+	  // used to fire. Runs first so its state resets/side effects precede the
+	  // rest of this method.
+	  if (prevProps !== this.props) {
+	      this._reconcileProps(prevProps);
+	  }
+
 	  // Surface the active contacts filter to the parent (so the navbar can
 	  // hide its kebab in the Deleted / Graveyard views).
 	  if (prevState.contactsFilter !== this.state.contactsFilter
@@ -579,7 +599,7 @@ class ReadyBox extends Component {
 	      this._syncNoPrivateKeyWarning();
 	  }
 
-	  if (prevState.searchMessages !== this.state.searchMessages && !this.state.searchMessages) {
+	  if (prevProps.searchMessages !== this.props.searchMessages && !this.props.searchMessages) {
             this.setState({sortOrder: 'desc',
                            orderBy: 'timestamp',
                            messagesCategoryFilter: null
@@ -605,13 +625,12 @@ class ReadyBox extends Component {
 		}
       
       
-      if (prevState.searchContacts !== this.state.searchContacts && this.state.searchContacts) {
+      if (prevProps.searchContacts !== this.props.searchContacts && this.props.searchContacts) {
 		  this.setState({messagesCategoryFilter: null, historyPeriodFilter: null});
 		  this.props.filterHistoryFunc(null);
       }
 
       if (this.state.messagesCategoryFilter !== prevState.messagesCategoryFilter) {
-		  console.log('messagesCategoryFilter did change', this.state.messagesCategoryFilter);
       }
 
       if (this.state.historyFilter !== prevState.historyFilter) {
@@ -635,7 +654,7 @@ class ReadyBox extends Component {
       }
 
       if (prevState.selectedContact !== this.state.selectedContact && !prevState.selectedContact) {
-        if (this.state.searchContacts) {
+        if (this.props.searchContacts) {
 			this.props.toggleSearchContacts()
 		}
       }
@@ -646,83 +665,52 @@ class ReadyBox extends Component {
             return;
        }
 
-       //console.log('filterHistory', filter);
+       // Decision logic lives in the pure planFilterHistory machine; here we
+       // just supply the current context and execute the ordered ops it
+       // returns. See contactsFilterMachine.js for the full transition table.
+       const selectedContact = this.props.selectedContact;
+       const ops = planFilterHistory(filter, {
+           hasSelectedContact: !!selectedContact,
+           pinned: this.props.pinned,
+           messagesCategoryFilter: this.state.messagesCategoryFilter,
+           historyPeriodFilter: this.state.historyPeriodFilter,
+           contactsFilter: this.state.contactsFilter,
+           hasDeletedContacts: (this.props.allContacts || []).some(
+               c => c && (c.storagePurged || c.deletedTimestamp)),
+           hasGraveyardContacts: (this.props.graveyardCount || 0) > 0,
+       });
 
-       if (this.props.selectedContact) {
-           if (!filter && this.props.pinned) {
-               this.props.togglePinned(this.props.selectedContact.uri);
-           }
-
-           if (filter === 'pinned') {
-               this.props.togglePinned(this.props.selectedContact.uri);
-               return;
-           }
-
-           if (filter === this.state.messagesCategoryFilter) {
-               this.setState({'messagesCategoryFilter': null});
-           } else {
-               this.setState({'messagesCategoryFilter': filter});
-           }
-           return;
-       }
-
-       this.props.filterHistoryFunc(filter);
-
-       if (!filter) {
-           if (!this.state.historyPeriodFilter) {
-               /*
-               let orderBy;
-               if (this.state.orderBy == 'timestamp') {
-				   this.props.postSystemNotification('Sort by used storage');
-				   orderBy = 'storage';
-               } else {
-				   this.props.postSystemNotification('Sort by last message');
-				   orderBy = 'timestamp';
-               }
-			   this.setState({'orderBy': orderBy});
-			   */
-           }
-           this.setState({historyPeriodFilter: null, contactsFilter: null});
-       } else if (filter === 'recent') {
-           filter = this.state.historyPeriodFilter === filter ? null : filter;
-           this.setState({'historyPeriodFilter': filter});
-       } else if (filter === 'all') {
-           // Exit Deleted mode → back to the normal category bar (no filter).
-           this.setState({contactsFilter: null});
-       } else {
-           if (filter == this.state.contactsFilter) {
-			   this.setState({contactsFilter: null});
-           } else {
-			   // Tapping "Deleted" when the Deleted folder is empty but the
-			   // Graveyard has tombstones → jump straight to the Graveyard.
-			   // (The folder has nothing to show; the only entries are
-			   // tombstones, so land the user where the content actually is.)
-			   if (filter === 'deleted') {
-			       const hasDeletedContacts = (this.props.allContacts || []).some(
-			           c => c && (c.storagePurged || c.deletedTimestamp));
-			       const hasGraveyardContacts = (this.props.graveyardCount || 0) > 0;
-			       if (!hasDeletedContacts && hasGraveyardContacts) {
-			           filter = 'graveyard';
-			       }
-			   }
-			   // Entering the Graveyard → load the tombstones on demand.
-			   if (filter === 'graveyard' && typeof this.props.loadGraveyardContacts === 'function') {
-			       this.props.loadGraveyardContacts();
-			   }
-			   this.setState({'contactsFilter': filter});
+       for (const item of ops) {
+           switch (item.op) {
+               case 'togglePinned':
+                   this.props.togglePinned(selectedContact.uri);
+                   break;
+               case 'filterHistoryFunc':
+                   this.props.filterHistoryFunc(item.arg);
+                   break;
+               case 'loadGraveyardContacts':
+                   if (typeof this.props.loadGraveyardContacts === 'function') {
+                       this.props.loadGraveyardContacts();
+                   }
+                   break;
+               case 'setState':
+                   this.setState(item.patch);
+                   break;
+               case 'handleSearch':
+                   this.handleSearch(item.arg);
+                   break;
+               default:
+                   break;
            }
        }
-
-       this.handleSearch('');
-       
     }
 
     chatDisabledForUri(uri) {
-        if (uri.indexOf('@videoconference') > -1) {
+        if (isVideoConferenceUri(uri)) {
             return true;
         }
 
-        if (utils.isAnonymous(uri)) {
+        if (isAnonymousUri(uri)) {
             return true;
         }
 
@@ -746,7 +734,7 @@ class ReadyBox extends Component {
             //return false;
         }
 
-        if (this.state.recording) {
+        if (this.state.recorderState.recording) {
             //return false;
         }
 
@@ -766,7 +754,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (!this.state.searchMessages && !this.state.searchContacts) {
+        if (!this.props.searchMessages && !this.props.searchContacts) {
 			return false;
         }
 
@@ -775,7 +763,7 @@ class ReadyBox extends Component {
 		}
 
         if (this.props.selectedContact) {
-            if (!this.state.searchMessages) {
+            if (!this.props.searchMessages) {
 				return false;
             }
         }
@@ -808,7 +796,7 @@ class ReadyBox extends Component {
 		   return false;
 	   }
 	   if (this.props.selectedContact) {
-		   return this.state.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
+		   return this.props.searchMessages || this.state.messagesCategoryFilter || this.state.orderBy == 'size';
 	   } else {
 		   // The bar is already gated on the user actively entering
 		   // "search contacts" mode, so the only relevant question is
@@ -820,7 +808,7 @@ class ReadyBox extends Component {
 		   // than a handful of Sylk contacts. Keep the bar visible
 		   // whenever search mode is active, regardless of contact
 		   // count.
-		   return this.state.searchContacts;
+		   return this.props.searchContacts;
 	   }
    }
 
@@ -829,7 +817,7 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (this.state.recording || this.state.previewRecording) {
+        if (this.state.recorderState.recording || this.state.recorderState.previewRecording) {
             return false;
         }
 
@@ -850,7 +838,7 @@ class ReadyBox extends Component {
     }
 
     get showCallButtons() {
-        if (this.props.call || this.state.recording || this.state.playRecording || this.state.previewRecording || this.state.recordingFile || this.props.shareToContacts) {
+        if (this.props.call || this.state.recorderState.recording || this.state.recorderState.playRecording || this.state.recorderState.previewRecording || this.state.recorderState.recordingFile || this.props.shareToContacts) {
             return false;
         }
         // Anonymous / guest callers are not callable back — the canonical
@@ -858,7 +846,7 @@ class ReadyBox extends Component {
         // form) collapses many throwaway peers into one synthetic row with
         // no reachable address, so the audio/video call bar must stay hidden
         // for it.
-        if (this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri)) {
+        if (this.props.selectedContact && isAnonymousUri(this.props.selectedContact.uri)) {
             return false;
         }
         // On foldables, hide the above-chat call buttons (audio + video)
@@ -877,21 +865,21 @@ class ReadyBox extends Component {
             return false;
         }
 
-        if (!this.state.recordingFile) {
+        if (!this.state.recorderState.recordingFile) {
             return false;
         }
         return true;
     }
 
     get showAudioDeleteButton() {
-        if (!this.state.recordingFile) {
+        if (!this.state.recorderState.recordingFile) {
             return false;
         }
         return true;
     }
 
     get showAudioStopButton() {
-        return this.state.playRecording;
+        return this.state.recorderState.playRecording;
     }
 
     get showAudioRecordButton() {
@@ -903,51 +891,19 @@ class ReadyBox extends Component {
             return false;
         }
 
-	    if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
+        // Contact-type gating: a voice memo is a file transfer, so it can only
+        // be delivered to a real 1:1 peer. canReceiveVoiceMemo rejects video /
+        // audio conference rooms, anonymous guests, `test` stubs and PSTN
+        // numbers — see ContactCapabilities.js for the per-rule rationale.
+        if (!canReceiveVoiceMemo(this.props.selectedContact)) {
             return false;
         }
 
-	    if (this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri)) {
+        if (this.state.recorderState.recordingFile) {
             return false;
         }
 
-        // Audio-only conference rooms (@conference, distinct from
-        // @videoconference which is matched above) don't accept inbound
-        // file transfers, so a recorded voice memo can't be delivered.
-        // Hide the mic instead of rendering it greyed-out — the user
-        // shouldn't see an affordance for an action that has no path
-        // to actually completing.
-        if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@conference') > -1) {
-            return false;
-        }
-
-        // `test`-tagged contacts are local-only stubs used for QA /
-        // first-run scaffolding; file transfers (and therefore voice
-        // memo delivery) are disabled for them. Same rationale as the
-        // conference-room block above: hide the mic rather than show
-        // a permanently-disabled button.
-        if (this.props.selectedContact
-                && Array.isArray(this.props.selectedContact.tags)
-                && this.props.selectedContact.tags.indexOf('test') > -1) {
-            return false;
-        }
-
-        if (this.props.selectedContact) {
-			const els = this.props.selectedContact.uri.split('@');
-			const username = els[0];
-			const isNumber = utils.isPhoneNumber(username);
-
-			if (isNumber && (username.startsWith('0') || username.startsWith('+'))) {
-				return false;
-			}
-		}
-
-
-        if (this.state.recordingFile) {
-            return false;
-        }
-
-        if (this.state.playRecording) {
+        if (this.state.recorderState.playRecording) {
             return false;
         }
 
@@ -1043,23 +999,11 @@ class ReadyBox extends Component {
         // playback) stay because they DO conflict with the same UI
         // row the share button lives in.
 
-        if (this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
-            return false;
-        }
-
-        if (utils.isAnonymous(this.props.selectedContact.uri)) {
-            return false;
-        }
-
-        const els = this.props.selectedContact.uri.split('@');
-        const username = els[0];
-        const isNumber = utils.isPhoneNumber(username);
-        if (isNumber && (username.startsWith('0') || username.startsWith('+'))) {
-            return false;
-        }
-
-        // PGP key required — same rule as NavigationBar's menu item.
-        if (!this.props.selectedContact.publicKey) {
+        // Static contact-type gating: real 1:1 peer (not a video conference
+        // room, anonymous guest, or PSTN number) that has a PGP public key —
+        // location metadata ships encrypted with no plaintext fallback. The
+        // dynamic gates (already-sharing / bidirectional chat) follow below.
+        if (!canShareLocationWith(this.props.selectedContact)) {
             return false;
         }
 
@@ -1082,16 +1026,16 @@ class ReadyBox extends Component {
         //   • previewRecording — finished, user hasn't confirmed/cancelled yet
         //   • recordingFile    — captured file exists (review/send state)
         //   • playRecording    — user is listening back to the take
-        if (this.state.recording) {
+        if (this.state.recorderState.recording) {
             return false;
         }
-        if (this.state.previewRecording) {
+        if (this.state.recorderState.previewRecording) {
             return false;
         }
-        if (this.state.recordingFile) {
+        if (this.state.recorderState.recordingFile) {
             return false;
         }
-        if (this.state.playRecording) {
+        if (this.state.recorderState.playRecording) {
             return false;
         }
 
@@ -1100,6 +1044,22 @@ class ReadyBox extends Component {
 
     get showButtonsBar() {
         if (this.props.fullScreen) {
+            return false;
+        }
+
+        // Hide the call/video/conference button bar while a chat voice message
+        // is playing in the recorder player card — the card has its own
+        // play/pause, Stop and Back controls, so the call bar would just be
+        // clutter (and could start a call over the playback).
+        if (this.state.recorderState.msgPlaybackActive) {
+            return false;
+        }
+
+        // Hide the call/video/conference button bar ONLY on the armed screen
+        // (input selector + Start). During actual recording the bar must stay
+        // visible — it hosts the Stop button, so hiding it would trap the user
+        // in a recording they can't end.
+        if (this.state.recorderState.recordArmed && !this.state.recorderState.recording) {
             return false;
         }
 
@@ -1151,7 +1111,7 @@ class ReadyBox extends Component {
         }        
 
 
-        if (this.state.searchMessages) {
+        if (this.props.searchMessages) {
             return false;
         }        
 
@@ -1282,7 +1242,7 @@ class ReadyBox extends Component {
     // yet-granted re-prompts the OS once.
     kickUnifiedSearchAddressBookLoad() {
         if (this._unifiedSearchAbLoadKicked) return;
-        if (this.state.searchMessages) return;
+        if (this.props.searchMessages) return;
         if (this.props.shareToContacts) return;
         if (this.props.inviteContacts) return;
         if (typeof this.props.loadPhoneAddressBook !== 'function') return;
@@ -1303,7 +1263,7 @@ class ReadyBox extends Component {
     //
     // Important: this does NOT call toggleSearchMessages. Flipping
     // `searchMessages` to false triggers a CDU branch above (the
-    // `if (prevState.searchMessages !== … && !this.state.searchMessages)`
+    // `if (prevProps.searchMessages !== … && !this.props.searchMessages)`
     // block) that resets sortOrder, orderBy AND
     // messagesCategoryFilter to their defaults — which means the
     // ContactsListBox calendar bar (gated on
@@ -1319,7 +1279,6 @@ class ReadyBox extends Component {
     // user can dismiss it normally (× / hardware back) — same way
     // they would have from any other "empty search bar" state.
     clearMessageSearch = () => {
-        console.log('[search] messages search query cleared (programmatic, bar stays open)');
         this.setState({searchString: ''});
     };
 
@@ -1333,7 +1292,6 @@ class ReadyBox extends Component {
     // isn't filtered by stale text — the user explicitly asked
     // to see the conversation around a particular date.
     clearMessageCategoryFilter = () => {
-        console.log('[search] message category filter cleared (programmatic)');
         this.setState({
             messagesCategoryFilter: null,
             searchString: '',
@@ -1361,6 +1319,52 @@ class ReadyBox extends Component {
     // Floating-trash handler. Inside the Deleted view it's a HARD delete
     // (server + local) and asks for confirmation; everywhere else it's a SOFT
     // delete (move to the Deleted view), no confirmation.
+    closeConfirmDialog = () => {
+        this.setState({ confirmDialog: null });
+    }
+
+    // Bulk Restore from the contact-select FAB. Graveyard tombstones revive
+    // via the graveyard-specific path (they aren't in allContacts); the
+    // Deleted folder uses the regular restore.
+    handleBulkRestore = () => {
+        const uris = (this.props.selectedContacts || []).slice();
+        if (this.state.contactsFilter === 'graveyard') {
+            this.props.restoreGraveyardContacts(uris);
+        } else {
+            this.props.restoreContacts(uris);
+        }
+    }
+
+    // Bulk Merge from the contact-select FAB. Resolves the keeper URI for the
+    // confirmation message, then folds all selected contacts into one on
+    // confirm. Phone numbers collapse to the bare +number, matching the tile.
+    handleBulkMerge = () => {
+        const uris = (this.props.selectedContacts || []).slice();
+        let _winUri = '';
+        try {
+            const _keeper = (this.props.allContacts || [])
+                .find(c => c && c.id === this.props.mergeKeeperId);
+            _winUri = (_keeper && _keeper.uri) || '';
+            if (_winUri && utils.isPhoneNumber(_winUri)) {
+                _winUri = _winUri.split('@')[0];
+            }
+        } catch (e) {}
+        this.setState({ confirmDialog: {
+            title: 'Merge contacts',
+            message: 'Merge the ' + uris.length + ' selected contacts into one?\n\n'
+                + 'All their addresses are combined into:\n' + (_winUri || 'the highlighted contact') + '\n\n'
+                + 'No messages are deleted.',
+            actions: [
+                { label: 'Merge', onPress: () => {
+                    this.closeConfirmDialog();
+                    if (this.props.mergeContacts) this.props.mergeContacts(uris);
+                    if (this.props.exitContactSelectMode) this.props.exitContactSelectMode();
+                } },
+                { label: 'Cancel', cancel: true, onPress: () => this.closeConfirmDialog() },
+            ],
+        } });
+    }
+
     handleContactDelete = () => {
         const uris = (this.props.selectedContacts || []).slice();
         if (!uris.length) return;
@@ -1368,14 +1372,17 @@ class ReadyBox extends Component {
             // Graveyard delete = EJECT: physically remove the SQL rows. This is
             // the ultimate, irreversible step — warn that it is final and that
             // resurrection is no longer possible.
-            Alert.alert(
-                'Delete forever',
-                'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
+            // Custom dialog (vertically stacked buttons) instead of a
+            // native Alert.alert — the latter overflows the right margin
+            // in portrait.
+            this.setState({ confirmDialog: {
+                title: 'Delete forever',
+                message: 'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
                     + ' from this device?\n\nThis is final — once deleted '
                     + (uris.length > 1 ? 'they' : 'it') + ' cannot be revived or recovered.',
-                [
-                    {text: 'Cancel', style: 'cancel'},
-                    {text: 'Delete forever', style: 'destructive', onPress: () => {
+                actions: [
+                    {label: 'Delete forever', destructive: true, onPress: () => {
+                        this.closeConfirmDialog();
                         this.props.ejectContacts(uris);
                         // Leave selection mode so the floating Delete/Restore FABs
                         // hide — they linger otherwise once the list reappears.
@@ -1392,23 +1399,25 @@ class ReadyBox extends Component {
                             this.setState({ contactsFilter: null });
                         }
                     }},
-                ]
-            );
+                    {label: 'Cancel', cancel: true, onPress: () => this.closeConfirmDialog()},
+                ],
+            }});
         } else if (this.state.contactsFilter === 'deleted') {
-            Alert.alert(
-                'Delete permanently',
-                'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
+            this.setState({ confirmDialog: {
+                title: 'Delete permanently',
+                message: 'Permanently delete ' + uris.length + ' contact' + (uris.length > 1 ? 's' : '')
                     + '? This also removes ' + (uris.length > 1 ? 'them' : 'it') + ' from the server.',
-                [
-                    {text: 'Cancel', style: 'cancel'},
-                    {text: 'Delete', style: 'destructive', onPress: () => this.props.hardDeleteContacts(uris)},
-                ]
-            );
+                actions: [
+                    {label: 'Delete', destructive: true, onPress: () => { this.closeConfirmDialog(); this.props.hardDeleteContacts(uris); }},
+                    {label: 'Cancel', cancel: true, onPress: () => this.closeConfirmDialog()},
+                ],
+            }});
         } else {
             this.props.softDeleteContacts(uris);
-            // Jump to the Deleted category so the user immediately sees the
-            // trashed contacts (to prune further or restore).
-            this.setState({ contactsFilter: 'deleted' });
+            // Stay in the main list: after a soft delete, drop back to All
+            // (contactsFilter null) rather than jumping into the Deleted
+            // category. The user asked to remain on the normal contacts view.
+            this.setState({ contactsFilter: null });
         }
     }
 
@@ -1419,19 +1428,16 @@ class ReadyBox extends Component {
         // trigger. Permission is now requested ONLY on explicit Search
         // button press — see app.js#toggleSearchContacts.
 
-        if (this.state.searchMessages) {
+        if (this.props.searchMessages) {
             if (!inputText) {
                 // Empty input in search-messages mode = the user
                 // tapped the clear icon (the × inside the Searchbar)
                 // OR cleared the field manually. Either way we
                 // close the search bar via toggleSearchMessages,
                 // which is also where the open/close log line fires.
-                console.log('[search] messages search cleared');
                 this.props.toggleSearchMessages();
                 this.setState({searchString: ''});
             } else {
-                console.log('[search] messages query change',
-                    'len=' + inputText.length);
                 this.setState({searchString: inputText});
             }
             return;
@@ -1481,14 +1487,21 @@ class ReadyBox extends Component {
         //console.log('--- Select new contact', contact? contact.uri : null);
         //console.log('--- Select new targetUri', new_value);
 
+        // Record that THIS gesture picked a real contact while searching. The
+        // selection and the search-bar collapse land in separate render
+        // cycles (see _reconcileProps), so a flag is the only
+        // reliable way to tell the ×-clear path "don't undo this pick".
+        if (contact) {
+            this._pickedContactWhileSearching = true;
+        }
+
         this.props.selectContact(contact);
         this.setState({targetUri: new_value});
     }
 
     handleTargetSelect() {
-        console.log('---handleTargetSelect');
         
-        if (this.state.searchMessages) {
+        if (this.props.searchMessages) {
 			return;
         }
 
@@ -1530,7 +1543,6 @@ class ReadyBox extends Component {
 
 
     handleChat(event) {
-        console.log('handleChat');
         event.preventDefault();
  
         let uri = this.state.targetUri.trim().toLowerCase();
@@ -1627,7 +1639,6 @@ class ReadyBox extends Component {
 
     handleConferenceCall(targetUri, options={audio: true, video: true, participants: []}) {
         Keyboard.dismiss();
-        console.log('--- handleConferenceCall options', options);
         this.props.startConference(targetUri, {audio: options.audio, video: options.video, participants: options.participants}, options.domain);
         this.props.hideConferenceModalFunc();
     }
@@ -1680,7 +1691,7 @@ class ReadyBox extends Component {
 
     get callButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || utils.isAnonymous(uri)) {
+        if (!uri || uri.indexOf(' ') > -1 || isAnonymousUri(uri)) {
             return true;
         }
 
@@ -1688,11 +1699,11 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.recording) {
+        if (this.state.recorderState.recording) {
             return true;
         }
 
-        if (this.state.recordingFile) {
+        if (this.state.recorderState.recordingFile) {
             return true;
         }
 
@@ -1717,7 +1728,7 @@ class ReadyBox extends Component {
 
     get videoButtonDisabled() {
         let uri = this.state.targetUri.trim();
-        if (!uri || uri.indexOf(' ') > -1 || utils.isAnonymous(uri)) {
+        if (!uri || uri.indexOf(' ') > -1 || isAnonymousUri(uri)) {
             return true;
         }
 
@@ -1734,11 +1745,11 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (this.state.recording) {
+        if (this.state.recorderState.recording) {
             return true;
         }
 
-        if (this.state.recordingFile) {
+        if (this.state.recorderState.recordingFile) {
             return true;
         }
 
@@ -1816,9 +1827,9 @@ class ReadyBox extends Component {
     async previewAudio () {
 		this.setState({previewRecording: true});
 
-		const path = this.state.recordingFile.startsWith('file://')
-		  ? this.state.recordingFile
-		  : 'file://' + this.state.recordingFile;
+		const path = this.state.recorderState.recordingFile.startsWith('file://')
+		  ? this.state.recorderState.recordingFile
+		  : 'file://' + this.state.recorderState.recordingFile;
   
         try {
 			const msg = await audioRecorderPlayer.startPlayer(path);
@@ -1847,7 +1858,7 @@ class ReadyBox extends Component {
     };
 
     onStopPlay = async () => {
-        if (!this.state.previewRecording) {
+        if (!this.state.recorderState.previewRecording) {
 			return;
         }
         this.setState({previewRecording: false});
@@ -2106,12 +2117,12 @@ class ReadyBox extends Component {
     }
 
     get navigationItems() {
-        let conferenceEnabled = Object.keys(this.props.myInvitedParties).length > 0 || this.state.navigationItems['conference'];
+        let conferenceEnabled = Object.keys(this.props.myInvitedParties).length > 0 || this.props.navigationItems['conference'];
         if (this.props.inviteContacts) {
             conferenceEnabled = false;
         }
 
-        if (this.state.recordingFile) {
+        if (this.state.recorderState.recordingFile) {
 			return [
               {key: "previewAudio", title: 'Play', enabled: true, selected: false},
               {key: "deleteAudio", title: 'Delete', enabled: true, selected: false},
@@ -2166,6 +2177,10 @@ class ReadyBox extends Component {
             title: tag.charAt(0).toUpperCase() + tag.slice(1),
             enabled: true,
             selected: this.state.contactsFilter === tag,
+            // Dynamic group pills opt out of the member counter — the
+            // showGroupMemberCounts prefix is reserved for the built-in
+            // categories. _withCategoryCounts skips any item flagged here.
+            isCustomGroup: true,
         }));
 
         // Deleted (trash) category — shown ONLY when at least one contact
@@ -2189,7 +2204,11 @@ class ReadyBox extends Component {
         const _inDeletedMode = this.state.contactsFilter === 'deleted'
             || this.state.contactsFilter === 'graveyard';
         const _deletedItem = {key: 'deleted', title: 'Deleted', enabled: hasDeletedContacts || hasGraveyardContacts || _inDeletedMode, selected: this.state.contactsFilter === 'deleted'};
-        const _graveyardItem = {key: 'graveyard', title: 'Graveyard', enabled: true, selected: this.state.contactsFilter === 'graveyard'};
+        // Graveyard chip is hidden when the graveyard is empty — there's
+        // nothing to show. It's force-enabled while the user is already
+        // inside the Graveyard view so the selected chip stays visible and
+        // they can toggle back out.
+        const _graveyardItem = {key: 'graveyard', title: 'Graveyard', enabled: hasGraveyardContacts || this.state.contactsFilter === 'graveyard', selected: this.state.contactsFilter === 'graveyard'};
         // "All" is ALWAYS the first pill — tapping it clears any active filter
         // (reset). It is never highlighted: "All" means no criteria, so there's
         // no active selection to indicate (highlighting it implied a filter was
@@ -2204,12 +2223,17 @@ class ReadyBox extends Component {
         // re-tapping Deleted also toggles back out (filterHistory clears an
         // active filter). Graveyard is ONLY shown here.
         if (this.state.contactsFilter === 'deleted' || this.state.contactsFilter === 'graveyard') {
-            return [_allItem, _deletedItem, _graveyardItem];
+            // Drop the Deleted chip when the soft-deleted folder is empty —
+            // with nothing in it, only the Graveyard is worth showing.
+            const _bar = [_allItem];
+            if (hasDeletedContacts) _bar.push(_deletedItem);
+            _bar.push(_graveyardItem);
+            return this._withCategoryCounts(_bar);
         }
 
-        return [
+        return this._withCategoryCounts([
               _allItem,
-              {key: 'recent', title: 'Recent', enabled: this.state.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
+              {key: 'recent', title: 'Recent', enabled: this.props.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
               {key: 'messages', title: 'Messages', enabled: hasChatContacts, selected: this.state.contactsFilter === 'messages'},
               {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
               {key: 'favorite', title: 'Favorites', enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
@@ -2221,19 +2245,69 @@ class ReadyBox extends Component {
               {key: 'test', title: 'Test', enabled: !this.props.shareToContacts && !this.props.inviteContacts, selected: this.state.contactsFilter === 'test'},
               ...customGroupItems,
               _deletedItem,
-              ];
+              ]);
     }
 
-    get sortOrderItems() {
-        return [
-              {key: null, title: 'Order:', enabled: true, selected: false},
-              {key: 'orderByTime', title: 'Time', enabled: true, selected: this.state.orderBy === 'timestamp'},
-              {key: 'orderBySize', title: 'Size', enabled: true, selected: this.state.orderBy === 'size'},
-              {key: 'divider1', title: '', enabled: true, selected: false},
-              {key: 'orderAscending', title: '↑ Asc', enabled: true, selected: this.state.sortOrder === 'asc'},
-              {key: 'orderDescending', title: '↓ Desc', enabled: true, selected: this.state.sortOrder === 'desc'},
-              ];
-    }
+    // Member count for a category / group pill in the contacts category bar.
+    // Returns a number for membership-based categories (All, custom groups,
+    // and the prop-backed ones), or null for history-derived categories
+    // (Recent / Calls) and any non-category control key, so those render
+    // without a counter. Counts exclude soft-deleted / purged contacts
+    // (except the Deleted / Graveyard buckets, which count exactly those).
+    _categoryCount = (key) => {
+        const all = (this.props.allContacts || [])
+            .filter(c => c && !c.deletedTimestamp && !c.storagePurged);
+        const tagged = (t) => all.filter(c =>
+            Array.isArray(c.tags) && c.tags.indexOf(t) > -1).length;
+        switch (key) {
+            case 'all':        return all.length;
+            case 'favorite':   return (this.props.favoriteUris || []).length;
+            case 'blocked':    return (this.props.blockedUris || []).length;
+            case 'missed':     return (this.props.missedCalls || []).length;
+            case 'messages':   return all.filter(c => Array.isArray(c.tags)
+                                   && (c.tags.indexOf('messages') > -1 || c.tags.indexOf('chat') > -1)).length;
+            case 'tel':        return tagged('tel');
+            case 'autoanswer': return tagged('autoanswer');
+            case 'conference': return tagged('conference');
+            case 'test':       return tagged('test');
+            // Deleted badge is context-dependent:
+            //   • Main bar → the COMBINED trash total (Deleted + Graveyard),
+            //     so a single pill conveys everything that's been removed.
+            //   • Inside the Deleted view → ONLY the soft-deleted count, so the
+            //     Deleted and Graveyard chips each report their own bucket.
+            // (The two sets are disjoint: Deleted reads allContacts, Graveyard
+            // is the deleted=1 tombstones in graveyardCount.)
+            case 'deleted': {
+                const soft = (this.props.allContacts || [])
+                    .filter(c => c && (c.storagePurged || c.deletedTimestamp)).length;
+                const grave = this.props.graveyardCount || 0;
+                const inDeletedMode = this.state.contactsFilter === 'deleted'
+                    || this.state.contactsFilter === 'graveyard';
+                return inDeletedMode ? soft : (soft + grave);
+            }
+            case 'graveyard':  return this.props.graveyardCount || 0;
+            // History-derived buckets — mirror the ContactsListBox filters so
+            // the badge matches what the view actually shows.
+            //   recent → the 7 most recently-active contacts (capped at 7)
+            //   calls  → has a last_call_timestamp, excluding conference rooms
+            //            (videoconference URIs are dropped from the Calls view)
+            case 'recent':
+                return Math.min(7, all.filter(c => c && c.timestamp).length);
+            case 'calls':      return all.filter(c => c
+                                   && c.lastCallTimestamp != null
+                                   && (c.uri || '').indexOf('@videoconference.') === -1).length;
+            default:           return tagged(key); // custom group tag (e.g. Business)
+        }
+    };
+
+    // Attach a `count` to each category item so renderNavigationItem can
+    // prefix the label. No-op (count omitted) when the per-device toggle
+    // showGroupMemberCounts is off.
+    _withCategoryCounts = (items) => {
+        if (!this.props.showGroupMemberCounts) return items;
+        return (items || []).map(it =>
+            it.isCustomGroup ? it : ({ ...it, count: this._categoryCount(it.key) }));
+    };
 
     renderNavigationItem(object) {
         if (!object.item.enabled) {
@@ -2243,6 +2317,27 @@ class ReadyBox extends Component {
         let title = object.item.title;
         let key = object.item.key;
         let icon = object.item.icon;
+
+        // Member counter prefix (e.g. "100 All", "4 Business"). Driven by the
+        // per-device showGroupMemberCounts setting via _withCategoryCounts,
+        // which only stamps a numeric `count` on real category items.
+        if (this.props.showGroupMemberCounts
+                && object.item.count != null
+                && object.item.count > 0
+                && object.item.enabled) {
+            title = object.item.count + ' ' + title;
+        }
+
+        // Total contacts counter on the "All" pill — always shown
+        // (independent of the showGroupMemberCounts toggle, which only
+        // governs the per-category counters). Gives an at-a-glance total
+        // of the address book, e.g. "64 All".
+        if (key === 'all') {
+            const _total = this._categoryCount('all');
+            if (_total > 0) {
+                title = object.item.title + ' ' + _total;
+            }
+        }
 
         // Selected chip background — pin to deep Sylk-blue so the
         // active filter pops against the theme-flipped bar bg.
@@ -2456,7 +2551,6 @@ class ReadyBox extends Component {
                 <TouchableOpacity
                     key={_bbRemountKey}
                     onPress={() => {
-                        console.log('[sort] orderBy: timestamp -> size (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                         this.setState({orderBy: 'size'});
                     }}
                     accessibilityLabel={title}
@@ -2468,7 +2562,6 @@ class ReadyBox extends Component {
                         iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
-                            console.log('[sort] orderBy: timestamp -> size (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                             this.setState({orderBy: 'size'});
                         }}
                     />
@@ -2482,7 +2575,6 @@ class ReadyBox extends Component {
                 <TouchableOpacity
                     key={_bbRemountKey}
                     onPress={() => {
-                        console.log('[sort] orderBy: size -> timestamp (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                         this.setState({orderBy: 'timestamp'});
                     }}
                     accessibilityLabel={title}
@@ -2494,7 +2586,6 @@ class ReadyBox extends Component {
                         iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
-                            console.log('[sort] orderBy: size -> timestamp (filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                             this.setState({orderBy: 'timestamp'});
                         }}
                     />
@@ -2514,7 +2605,6 @@ class ReadyBox extends Component {
                 <TouchableOpacity
                     key={_bbRemountKey}
                     onPress={() => {
-                        console.log('[sort] sortOrder: asc -> desc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                         this.setState({sortOrder: 'desc'});
                     }}
                     accessibilityLabel={title}
@@ -2526,7 +2616,6 @@ class ReadyBox extends Component {
                         iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
-                            console.log('[sort] sortOrder: asc -> desc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                             this.setState({sortOrder: 'desc'});
                         }}
                     />
@@ -2540,7 +2629,6 @@ class ReadyBox extends Component {
                 <TouchableOpacity
                     key={_bbRemountKey}
                     onPress={() => {
-                        console.log('[sort] sortOrder: desc -> asc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                         this.setState({sortOrder: 'asc'});
                     }}
                     accessibilityLabel={title}
@@ -2552,7 +2640,6 @@ class ReadyBox extends Component {
                         iconColor={_navItemIconColor}
                         style={[iconStyle, _sortAxisIconStyle]}
                         onPress={() => {
-                            console.log('[sort] sortOrder: desc -> asc (orderBy=' + this.state.orderBy + ', filter=' + (this.state.messagesCategoryFilter || 'none') + ')');
                             this.setState({sortOrder: 'asc'});
                         }}
                     />
@@ -2614,42 +2701,6 @@ class ReadyBox extends Component {
             onPress={() => {this.filterHistory(key)}}>{title}</Button>);
     }
 
-    renderOrderItem(object) {
-        if (!object.item.enabled) {
-            return (null);
-        }
-
-        let title = object.item.title;
-        let key = object.item.key;
-        let buttonStyle = object.item.selected ? styles.navigationButtonSelected : styles.navigationButton;
-        // Same selection-aware label style as renderNavigationItem
-        // above (see explanatory comment there).
-        const _theme = DarkModeManager.getTheme();
-        const _navItemLabelStyle = {
-            color: object.item.selected ? '#FFFFFF' : _theme.textPrimary,
-            fontWeight: 'normal',
-            fontSize: 12,
-        };
-
-        if (key === "orderByTime") {
-            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({orderBy: 'timestamp'})}}>{title}</Button>);
-        }
-
-        if (key === "orderBySize") {
-            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({orderBy: 'size'})}}>{title}</Button>);
-        }
-
-        if (key === "orderAscending") {
-            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({sortOrder: 'asc'})}}>{title}</Button>);
-        }
-
-        if (key === "orderDescending") {
-            return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.setState({sortOrder: 'desc'})}}>{title}</Button>);
-        }
-
-        return (<Button compact style={buttonStyle} labelStyle={_navItemLabelStyle} contentStyle={{ paddingVertical: 0, minHeight: 0 }} onPress={() => {this.filterHistory(key)}}>{title}</Button>);
-    }
-    
     toggleQRCodeScanner(event) {
         //console.log('Scan QR code...');
         this.props.toggleQRCodeScannerFunc();
@@ -2657,13 +2708,11 @@ class ReadyBox extends Component {
 
     QRCodeRead(e) {
         //console.log('QR code object:', e);
-        console.log('QR code data:', e.data);
         this.props.toggleQRCodeScannerFunc();
 
         let data = e.data;
         const sipUri = utils.parseSylkCallUrl(data);
         if (sipUri) {
-            console.log('QR code call URL parsed to SIP URI:', sipUri);
             data = sipUri;
         }
 
@@ -2671,14 +2720,19 @@ class ReadyBox extends Component {
     }
 
     get showContactsList() {
-        if (this.state.recording) {
+        if (this.state.recorderState.recording) {
              //return false;
         }
 
-        if (this.state.recordingFile) {
+        if (this.state.recorderState.recordingFile) {
              //return false;
         }
-        
+
+        // NOTE: message playback does NOT hide the chat. The player renders as
+        // a transparent modal that dims the still-mounted chat, so on dismiss
+        // the conversation is exactly where the user left it (same scroll
+        // position, no remount). Playback runs through the recorder and never
+        // touches renderMessages, so the mounted FlatList doesn't churn.
         return true;
     }
 
@@ -2696,508 +2750,84 @@ class ReadyBox extends Component {
         return uri.length === 0 && !this.props.shareToContacts && !this.props.inviteContacts;
     }
 
-    async recordAudio() {
-        const micAllowed = await this.props.requestMicPermission('recordAudio');
 
-        if (!micAllowed) {
-            console.log('Mic not allowed');
-            return;
-        }
 
-        if (!this.state.recording) {
-            if (this.state.recordingFile) {
-                this.deleteAudio();
-            } else {
-                this.onStartRecord();
-            }
-        } else {
-            this.onStopRecord();
-        }
+    // --- AudioRecorder forwarders -------------------------------------------
+    // The recording subsystem now lives in <AudioRecorder/>. These thin
+    // forwarders keep ContactsListBox's props and the header audio buttons
+    // working by delegating to the child through its ref.
+    onRecorderStateChange(s) {
+        this.setState({ recorderState: { ...this.state.recorderState, ...s } });
     }
 
-    recordAudio(event) {
-        event.preventDefault();
-        Keyboard.dismiss();
-        this.props.recordAudio();
+    recordAudio() {
+        const r = this.audioRecorderRef.current;
+        if (r) r.recordAudio();
     }
 
-    async sendAudioFile() {
-        if (this.state.recordingFile) {
-            this.setState({audioSendFinished: true});
-            setTimeout(() => {
-                this.setState({audioSendFinished: false});
-            }, 10);
-            let msg = await this.props.file2GiftedChat(this.state.recordingFile);
-            // Attach the per-100ms mic peaks captured during
-            // recording so the recipient's bubble draws the same
-            // waveform we previewed locally. Single-channel — the
-            // mic is the only signal — so peaks.r stays empty;
-            // AudioWaveform handles the empty side gracefully.
-            const peaks = this.state.recordingPeaks;
-            if (msg && msg.metadata
-                    && peaks && Array.isArray(peaks) && peaks.length > 0) {
-                msg.metadata.peaks = { l: peaks, r: [] };
-            }
-            this.transferFile(msg);
-            this.setState({recordingFile: null, recordingDuration: 0, recordingPeaks: []});
-        }
-    }
-
-    async transferFile(msg) {
-        msg.metadata.preview = false;
-        this.props.sendMessage(msg.metadata.receiver.uri, msg, 'application/sylk-file-transfer');
-        // Ship peaks as a sylk-message-metadata follow-up so the
-        // recipient's bubble can draw the waveform. SylkServer's
-        // file-transfer broadcast strips custom fields like `peaks`,
-        // so without this side-channel the recipient's waveform
-        // renders as a flat baseline. See app.js: sendPeaksMessage.
-        if (msg.metadata && msg.metadata.peaks
-                && typeof this.props.sendPeaksMessage === 'function') {
-            this.props.sendPeaksMessage(
-                msg.metadata.receiver.uri,
-                msg.metadata.transfer_id,
-                msg.metadata.peaks
-            );
-        }
-    }
-
-    deleteAudioAction(event) {
-        //console.log('deleteAudioAction');
-        event.preventDefault();
-        this.onStopPlay();
-        this.deleteAudio();
-    }
-
-    async recordAudio() {
-        //console.log('Start recording by user...');
-
-        const micAllowed = await this.props.requestMicPermission('recordAudio');
-
-        // Re-probe the cached permission flag now that the user has
-        // either granted or denied at the OS prompt. Without this the
-        // mic button would stay visible until the next foreground
-        // transition for a user who just tapped Deny — they'd see a
-        // tappable button that silently does nothing.
-        this._refreshMicPermission();
-
-        if (!micAllowed) {
-            return;
-        }
-
-        if (!this.state.recording) {
-            if (this.state.recordingFile) {
-                this.deleteAudio();
-            } else {
-                this.onStartRecord();
-            }
-        } else {
-            this.onStopRecord();
-        }
+    sendAudioFile() {
+        const r = this.audioRecorderRef.current;
+        if (r) r.sendAudioFile();
     }
 
     deleteAudio() {
-        this.setState({recordingFile: null,
-					   recordingDuration: 0,
-                       recording: false,
-                       previewRecording: false,
-                       recordingPeaks: []});
-
-        if (this.props.selectedContact) {
-			this.props.getMessages(this.props.selectedContact.uri);
-		}
+        const r = this.audioRecorderRef.current;
+        if (r) r.deleteAudio();
     }
 
-	stopRecordingTimer() {
-		//console.log('Ready box: stopRecordingTimer');
-		if (this.recordingStopTimer !== null) {
-		    clearTimeout(this.recordingStopTimer);
-			this.recordingStopTimer = null;
-		}
-	}
-        
-    async onStartRecord () {
-        // NB: we used to call SoundLevel.start() here to drive the
-        // VuMeter, but on iOS react-native-sound-level and
-        // react-native-audio-recorder-player both create AVAudioRecorder
-        // instances on the shared AVAudioSession, and iOS refuses to
-        // start a second one — startRecorder() below then fails with
-        // "Error occured during initiating recorder" while Android (which
-        // uses separate AudioRecord vs MediaRecorder backends) happily
-        // runs both. The recorder already emits the same dBFS level via
-        // addRecordBackListener's currentMetering, so we drive the
-        // VuMeter from that single source instead and keep the mic
-        // exclusive to the recorder.
-
-        try {
-            // Compressed AAC (M4A) recording — voice memos used to
-            // ship as 16 kHz mono 16-bit PCM WAV (~32 KB/s = ~1.9 MB
-            // per minute). Compressed AAC at ~32 kbps is ~4 KB/s
-            // (~240 KB per minute) — an 8× reduction with no audible
-            // quality loss for speech, and the file is playable
-            // everywhere natively (AVFoundation on iOS, MediaPlayer
-            // on Android, every browser, every desktop player).
-            //
-            // The recorder is shared with the playback path
-            // (audioRecorderPlayer is the same module-level instance)
-            // — that's fine because record and play never overlap in
-            // time: we record, stop, then optionally play back from
-            // the saved file.
-            //
-            // Path: cache dir + sylk-audio-recording.m4a. We pass an
-            // explicit path so the file always ends in .m4a — Android's
-            // default ends in .mp4 which file2GiftedChat would route
-            // through the isVideo branch (msg.video = filepath) instead
-            // of msg.audio = filepath, breaking bubble rendering and
-            // playback. iOS already defaults to .m4a but we set it
-            // explicitly there too for symmetry.
-            // IMPORTANT: prefix with file:// on iOS. react-native-audio-
-            // recorder-player's setAudioFileURL() only treats a string as
-            // a literal file path when it starts with file://, http://, or
-            // https:// — anything else is fed through
-            // cachesDirectory.appendingPathComponent(), which percent-
-            // encodes the slashes in an already-absolute path and yields
-            // a non-existent URL like
-            // file:///.../Caches/%2Fvar%2Fmobile%2F.../sylk-audio-
-            // recording.m4a. AVAudioRecorder.prepareToRecord() then
-            // returns false (the smoking gun in the metro log was
-            // "prepareToRecord returned false"). Android's
-            // implementation is path-agnostic so we add the prefix on
-            // iOS only to keep the existing Android-side behavior
-            // untouched.
-            const rawRecordingPath = `${RNFS.CachesDirectoryPath}/sylk-audio-recording.m4a`;
-            const recordingPath = Platform.OS === 'ios'
-                ? `file://${rawRecordingPath}`
-                : rawRecordingPath;
-            const audioSet = {
-                // iOS — AAC in an .m4a container at 16 kHz mono.
-                AVFormatIDKeyIOS: AVEncodingOption.aac,
-                AVSampleRateKeyIOS: 16000,
-                AVNumberOfChannelsKeyIOS: 1,
-                AVEncoderAudioQualityKeyIOS: AVEncoderAudioQualityIOSType.medium,
-                AVEncoderBitRateKeyIOS: 32000,
-                // Android — AAC in an MP4 container at 16 kHz mono.
-                AudioEncoderAndroid: AudioEncoderAndroidType.AAC,
-                AudioSourceAndroid: AudioSourceAndroidType.MIC,
-                OutputFormatAndroid: OutputFormatAndroidType.MPEG_4,
-                AudioSamplingRateAndroid: 16000,
-                AudioChannelsAndroid: 1,
-                AudioEncodingBitRateAndroid: 32000,
-            };
-
-            // Reset per-recording peak accumulator. Same shape /
-            // granularity Android's SylkCallRecorder uses (per-100ms
-            // 0..255 peak per channel) so the receiver's bubble
-            // renders the waveform with no special handling for
-            // "regular voice memo" vs "call recording". Driven by
-            // currentMetering (dBFS) from addRecordBackListener —
-            // metering ticks roughly every 100 ms with the loudest
-            // sample seen since the previous tick, mapped to 0..255
-            // so it slots straight into the existing peaks pipeline.
-            this._micPeaks = [];
-
-            // ---- pre-flight diagnostics ----
-            // The native iOS module throws a static "Error occured
-            // during initiating recorder" string for *any* failure
-            // inside [recorder prepareToRecord] or AVAudioSession
-            // setup, which makes the JS-side message useless on its
-            // own. Log the things that most often go wrong on iOS so
-            // the metro log tells us which one it is:
-            //   - mic permission (DENIED/BLOCKED/UNAVAILABLE all
-            //     present at native layer as a prepareToRecord
-            //     failure, not a permission error)
-            //   - cache path exists & is writable (a stale directory
-            //     or a path the sandbox can't open also surfaces as a
-            //     prepareToRecord failure)
-            //   - whether any previous recording is still on disk at
-            //     the same path (some iOS versions refuse to
-            //     overwrite a locked file).
-            try {
-                if (Platform.OS === 'ios') {
-                    const micPerm = await checkPermission(RNP_PERMISSIONS.IOS.MICROPHONE);
-                    console.log('[recorder] iOS mic permission =', micPerm,
-                        '(granted=', micPerm === RNP_RESULTS.GRANTED, ')');
-                } else if (Platform.OS === 'android') {
-                    const micPerm = await checkPermission(RNP_PERMISSIONS.ANDROID.RECORD_AUDIO);
-                    console.log('[recorder] android mic permission =', micPerm);
-                }
-            } catch (permErr) {
-                console.log('[recorder] permission check threw', permErr && permErr.message);
-            }
-            try {
-                const cacheDir = RNFS.CachesDirectoryPath;
-                const dirExists = await RNFS.exists(cacheDir);
-                // RNFS uses native filesystem paths (no scheme), so the
-                // pre-flight checks run against rawRecordingPath, not
-                // the file://-prefixed `recordingPath` we hand to the
-                // recorder.
-                const fileExists = await RNFS.exists(rawRecordingPath);
-                let fileStat = null;
-                if (fileExists) {
-                    try { fileStat = await RNFS.stat(rawRecordingPath); } catch (_e) {}
-                }
-                console.log('[recorder] cacheDir =', cacheDir,
-                    'exists=', dirExists,
-                    'targetExists=', fileExists,
-                    'targetSize=', fileStat && fileStat.size,
-                    'targetMTime=', fileStat && fileStat.mtime);
-                // If a leftover file is sitting at the target path,
-                // remove it before we try to start — that's a known
-                // trigger on iOS where AVAudioRecorder.prepareToRecord
-                // returns NO if the file is locked by something else
-                // (e.g. an unreleased AVAudioPlayer from a prior
-                // playback) and the native module surfaces that as
-                // "Error occured during initiating recorder".
-                if (fileExists) {
-                    try {
-                        await RNFS.unlink(rawRecordingPath);
-                        console.log('[recorder] removed stale recording at target path');
-                    } catch (unlinkErr) {
-                        console.log('[recorder] failed to remove stale recording:',
-                            unlinkErr && unlinkErr.message);
-                    }
-                }
-            } catch (fsErr) {
-                console.log('[recorder] fs pre-flight threw', fsErr && fsErr.message);
-            }
-
-            // iOS only: ask SylkAudioRouteModule to release the
-            // shared AVAudioSession before the recorder lib tries to
-            // claim it. See ios/sylk/AudioRouteModule.m
-            // prepareForRecording for the full rationale — the short
-            // version is that the session is held in PlayAndRecord +
-            // VoiceChat at app init for VOIP, which engages voice-
-            // processing IO and causes AVAudioRecorder.record() to
-            // return NO (the exact failure we were hitting). This
-            // helper deactivates the session with
-            // NotifyOthersOnDeactivation so the recorder lib's own
-            // setCategory(mode:.default) + setActive(true) actually
-            // takes the input route. We restore in onStopRecord.
-            if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.prepareForRecording) {
-                try {
-                    await SylkAudioRouteModule.prepareForRecording();
-                    console.log('[recorder] prepareForRecording ok');
-                } catch (prepErr) {
-                    // Non-fatal — if the native helper is missing or
-                    // fails, we still try to start the recorder. The
-                    // worst case is the same failure we had before.
-                    console.log('[recorder] prepareForRecording failed (continuing):',
-                        prepErr && prepErr.message);
-                }
-            }
-
-            console.log('[recorder] startRecorder ->', recordingPath, 'platform=', Platform.OS);
-            const startResult = await audioRecorderPlayer.startRecorder(recordingPath, audioSet, true);
-            console.log('[recorder] startRecorder ok, native path =', startResult);
-            audioRecorderPlayer.addRecordBackListener((e) => {
-                // currentMetering is in dBFS (typically -160..0) on
-                // iOS / Android. Treat -50 dB as the noise floor so
-                // ambient room tone doesn't clip the bottom of the
-                // waveform; anything quieter folds to 0. Loudest
-                // possible (0 dB) maps to 255.
-                const db = (typeof e.currentMetering === 'number')
-                    ? e.currentMetering
-                    : -160;
-                const NOISE_FLOOR_DB = -50;
-                const norm = Math.max(0, Math.min(1, (db - NOISE_FLOOR_DB) / -NOISE_FLOOR_DB));
-                this._micPeaks.push(Math.round(norm * 255));
-                // Drive the live VuMeter from the same metering tick.
-                // Previously this came from SoundLevel.onNewFrame, but
-                // that conflicted with the recorder on iOS (see note in
-                // onStartRecord above). `norm` is already 0..1 with the
-                // same -50 dB noise floor, so it slots straight in.
-                // Also surface the elapsed duration the recorder reports
-                // (currentPosition is ms since record() returned true on
-                // iOS / since prepareRecorder on Android, ticking ~every
-                // 100 ms) so the live counter under the VuMeter stays in
-                // lockstep with what's actually being written to disk.
-                const elapsed = (typeof e.currentPosition === 'number')
-                    ? Math.max(0, Math.floor(e.currentPosition))
-                    : 0;
-                this.setState({ level: norm, recordingElapsedMs: elapsed });
-            });
-
-			this.setState({recording: true, recordingElapsedMs: 0});
-
-			// 30s auto-stop timer removed per user request — the user
-			// stays in the recording screen as long as they want and
-			// stops the recording explicitly via the stop button.
-			// Previously this fired onStopRecord() after 30 seconds
-			// which capped voice messages and surprised users
-			// composing longer notes.
-
-			this.props.vibrate();
-
-        } catch (e) {
-            // The native iOS module throws a hard-coded
-            // "Error occured during initiating recorder" string for
-            // *every* AVAudioSession / AVAudioRecorder failure, so
-            // e.message alone tells us nothing. Dump everything React
-            // Native's NSError->JS bridge gives us — code, domain,
-            // userInfo, nativeStackIOS, and the JS-side stack — so
-            // the metro log actually tells us which underlying
-            // failure (busy session, missing entitlement, locked
-            // file, sandbox path, hardware route change) we're
-            // looking at.
-            try {
-                console.log('[recorder] startRecorder FAILED');
-                console.log('[recorder]   message =', e && e.message);
-                console.log('[recorder]   code    =', e && e.code);
-                console.log('[recorder]   domain  =', e && e.domain);
-                console.log('[recorder]   name    =', e && e.name);
-                if (e && e.userInfo) {
-                    try { console.log('[recorder]   userInfo =', JSON.stringify(e.userInfo)); }
-                    catch (_je) { console.log('[recorder]   userInfo (raw) =', e.userInfo); }
-                }
-                if (e && e.nativeStackIOS) {
-                    console.log('[recorder]   nativeStackIOS =', e.nativeStackIOS);
-                }
-                if (e && e.nativeStackAndroid) {
-                    console.log('[recorder]   nativeStackAndroid =', e.nativeStackAndroid);
-                }
-                if (e && e.stack) {
-                    console.log('[recorder]   js stack =', e.stack);
-                }
-                // Last resort — enumerate own props in case the
-                // module is returning something exotic.
-                try {
-                    const keys = e ? Object.getOwnPropertyNames(e) : [];
-                    if (keys.length) {
-                        const dump = {};
-                        keys.forEach((k) => { try { dump[k] = e[k]; } catch (_ke) {} });
-                        console.log('[recorder]   full =', JSON.stringify(dump));
-                    }
-                } catch (_de) {}
-            } catch (logErr) {
-                console.log('[recorder] (failure logging itself threw)', logErr && logErr.message);
-            }
-            // Failure path: we already called prepareForRecording (which
-            // deactivated the VoIP session) but startRecorder threw, so
-            // onStopRecord will never run and the session would stay
-            // deactivated. Restore it here so a subsequent call comes up
-            // in VoIP mode normally.
-            if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.restoreAfterRecording) {
-                try {
-                    await SylkAudioRouteModule.restoreAfterRecording();
-                    console.log('[recorder] restoreAfterRecording ok (after failure)');
-                } catch (restErr) {
-                    console.log('[recorder] restoreAfterRecording failed (after failure):',
-                        restErr && restErr.message);
-                }
-            }
-        }
-    };
-
-    stopRecording() {
-        //console.log('Stop recording by user...');
-        this.onStopRecord();
+    previewAudio() {
+        const r = this.audioRecorderRef.current;
+        if (r) r.previewAudio();
     }
 
-    async onStopRecord () {
-        // Stop the recording-duration ticker immediately so the
-        // header doesn't keep counting while stopRecorder() resolves.
-        // We deliberately do NOT setState({recording:false}) here —
-        // that would cause an intermediate render where neither
-        // `recording` nor `recordingFile` is set, which the chat
-        // (ContactsListBox: chatMessages = [] when either is set) would
-        // misread as "no recording in progress" and momentarily flash
-        // the previous chat history into view before the next setState
-        // hides it again. Instead we do one combined setState below
-        // that flips recording=false AND recordingFile=result in the
-        // same render pass — no flash.
-        this.stopRecordingTimer();
-        let result = null;
-        try {
-            result = await audioRecorderPlayer.stopRecorder();
-            // stopRecorder returns audioFileURL.absoluteString on iOS,
-            // which is file://-prefixed. Strip the scheme so the value
-            // stored in state.recordingFile matches Android (bare path)
-            // and the rest of the app's downstream consumers
-            // (file2GiftedChat, audio bubble playback, the
-            // file://-prefix check at line ~1381) don't have to second-
-            // guess the format. We always know the path is a local
-            // file because we constructed it from RNFS.CachesDirectoryPath
-            // in onStartRecord.
-            if (typeof result === 'string' && result.startsWith('file://')) {
-                result = result.substring('file://'.length);
-            }
-        } catch (e) {
-            console.log('stopRecorder error', e && e.message);
-        }
-        try { audioRecorderPlayer.removeRecordBackListener(); } catch (_e) {}
-        const finalPeaks = (this._micPeaks || []).slice();
-        this._micPeaks = null;
-        // Single combined setState — flips recording=false AND
-        // installs the recordingFile + peaks in the same render so
-        // ContactsListBox's "hide chat while recordingFile is set"
-        // gate stays true the whole way through. See the no-flash
-        // note at the top of this method. `level: 0` is folded into
-        // the same setState (instead of being a separate call after
-        // audioRecorded) so the VuMeter resets without forcing the
-        // extra render the no-flash comment warns about. SoundLevel.stop()
-        // is no longer needed — see the note in onStartRecord for why
-        // SoundLevel was dropped entirely.
-        this.setState({
-            recording: false,
-            recordingFile: result,
-            recordingPeaks: finalPeaks,
-            level: 0,
-            // Clear the live counter so the meter+counter pair start
-            // clean on the next recording. recordingDuration (set by
-            // audioRecorded after Sound() reads the finished file) is
-            // a separate value used by the preview UI, so we don't
-            // touch it here.
-            recordingElapsedMs: 0,
-        });
-        this.audioRecorded(result);
-        // Paired with prepareForRecording in onStartRecord — restore
-        // PlayAndRecord + VoiceChat so the next call comes up cleanly.
-        // No-op on Android, and safe to call even if prepareForRecording
-        // failed (the native side no-ops without a saved snapshot).
-        if (Platform.OS === 'ios' && SylkAudioRouteModule && SylkAudioRouteModule.restoreAfterRecording) {
-            try {
-                await SylkAudioRouteModule.restoreAfterRecording();
-                console.log('[recorder] restoreAfterRecording ok');
-            } catch (restErr) {
-                console.log('[recorder] restoreAfterRecording failed:',
-                    restErr && restErr.message);
-            }
-        }
-    };
+    pausePreviewAudio() {
+        const r = this.audioRecorderRef.current;
+        if (r) r.pausePreviewAudio();
+    }
+
+    startAudioPlayer() {
+        const r = this.audioRecorderRef.current;
+        try { utils.timestampedLog('[applog] [audio] [RB.startAudioPlayer] -> recorder ref',
+            'hasRef=', !!r); } catch (_e) {}
+        if (r) r.startAudioPlayer();
+    }
+
+    // Shared recorder-flag clearer. Called BOTH by ChatBox (via
+    // stopAudioPlayerFunc, at the end of its own stopAudioPlayer) and by the
+    // top Stop button's handler below. It must NOT emit SylkStopAudioPlayback:
+    // ChatBox.stopAudioPlayer() calls this, so emitting here would re-trigger
+    // ChatBox's listener → stopAudioPlayer() → this → emit … a feedback storm.
+    // It only clears the recorder's `playRecording` UI flag (hides the button).
+    stopAudioPlayer() {
+        const r = this.audioRecorderRef.current;
+        try { utils.timestampedLog('[applog] [audio] [RB.stopAudioPlayer] clear recorder flag',
+            'hasRef=', !!r); } catch (_e) {}
+        if (r) r.stopAudioPlayer();
+    }
+
+    // Dedicated handler for the top Stop button (SessionButtonsBar). ChatBox —
+    // which owns the real player — is nested beyond a ref path (ReadyBox →
+    // ContactsListBox → ChatBox), so we reach it via DeviceEventEmitter:
+    // ChatBox's SylkStopAudioPlayback listener runs its own stopAudioPlayer()
+    // and tears down the native audioRecorderPlayer (that path also calls
+    // stopAudioPlayer() above to clear the recorder flag). We ALSO clear the
+    // recorder flag directly so the button always dismisses even if ChatBox
+    // had nothing playing (a previously-stuck flag). This is only wired to the
+    // button, never to ChatBox, so there is no emit feedback loop.
+    onTopStopAudioPlayer() {
+        try { utils.timestampedLog('[applog] [audio] [RB.onTopStopAudioPlayer] top Stop pressed — emit SylkStopAudioPlayback + clear recorder flag'); } catch (_e) {}
+        try { DeviceEventEmitter.emit('SylkStopAudioPlayback'); } catch (_e) {}
+        const r = this.audioRecorderRef.current;
+        if (r) r.stopAudioPlayer();
+    }
 
     resetContact() {
-        this.stopRecordingTimer()
-        this.setState({
-            recording: false,
-            recordingFile: null,
-            recordingDuration: 0,
-            recordingPeaks: [],
-            audioSendFinished: false,
-            searchString: ''
-        });
+        // Recording/preview reset now lives in the AudioRecorder child.
+        const r = this.audioRecorderRef.current;
+        if (r) r.reset();
+        this.setState({ searchString: '' });
     }
 
-    async audioRecorded(file) {
-        if (file) {
-            console.log('Audio recording ready to send', file);
-            try {
-				const sound = new Sound(file, '', (error) => {
-				  if (error) {
-					console.log('Failed to load the audio', error);
-					return;
-				  }
-				  const duration = Math.floor(sound.getDuration());
-				  this.setState({recordingDuration: duration});
-			    });
-			} catch (e) {
-				console.log('error', e);
-			}
-			// Note: recording=false / recordingFile=file are already
-			// set in the combined setState at the end of onStopRecord
-			// — no duplicate setState here, since that would force an
-			// extra render and we want the transition to be a single
-			// atomic render to avoid flashing the chat history.
-        }
-    }
     
     get showBackToCallButton() {
         if (this.props.shareToContacts) {
@@ -3356,17 +2986,10 @@ class ReadyBox extends Component {
             }
         }
 
-        let greenButtonClass         = Platform.OS === 'ios' ? styles.greenButtoniOS             : styles.greenButton;
-        let blueButtonClass          = Platform.OS === 'ios' ? styles.blueButtoniOS              : styles.blueButton;
-        let redButtonClass           = Platform.OS === 'ios' ? styles.redButtoniOS               : styles.redButton;
-        // Purple dot = "Share location" — visually distinct from the green
-        // call buttons and the blue record/file-transfer buttons so the new
-        // action doesn't get mistaken for a call or a file share.
-        let purpleButtonClass        = Platform.OS === 'ios' ? styles.purpleButtoniOS            : styles.purpleButton;
-        let disabledGreenButtonClass = Platform.OS === 'ios' ? styles.disabledGreenButtoniOS     : styles.disabledGreenButton;
-        let disabledBlueButtonClass  = Platform.OS === 'ios' ? styles.disabledBlueButtoniOS      : styles.disabledBlueButton;
-        let recordIcon               = this.state.recording ? 'pause' : 'microphone';
-        let activityTitle            = this.state.recording ? "Recording audio" : "Audio recording ready";
+        // Button color classes are module-level constants (see top of file) —
+        // only recordIcon / activityTitle below are state-dependent.
+        let recordIcon               = this.state.recorderState.recording ? 'pause' : 'microphone';
+        let activityTitle            = this.state.recorderState.recording ? "Recording audio" : "Audio recording ready";
         
         const sharedContent = this.props.sharedContent || [];
         
@@ -3443,287 +3066,20 @@ class ReadyBox extends Component {
                         inner `navigationContainer` View further down
                         (via `minHeight`). */}
                     <View>
-                    {this.showCategoryBar ?
-                        // Two-section bar.
-                        //   Left  (flex: 1)  — filter chips. Hosted in a horizontal
-                        //     FlatList so they scroll if the list outgrows the
-                        //     available width (the Locations addition pushed us
-                        //     over on narrow phones; future filters will keep
-                        //     adding to this row, so a scrollable container is
-                        //     a sustainable shape).
-                        //   Splitter         — a 1 px vertical hairline marking the
-                        //     boundary between filters and sort toggles, so the
-                        //     two groups read as visually distinct.
-                        //   Right (auto)     — sort toggles. Rendered inline (not
-                        //     in a FlatList, since the count is fixed and known)
-                        //     and pinned to the right edge of the bar so they
-                        //     never scroll out of view. The user can always see
-                        //     and tap the active sort.
-                        // The selectedContact branch uses this layout; the
-                        // contacts-list branch falls back to the historical
-                        // single FlatList rendering of `categoryItems`.
-                        this.props.selectedContact ?
-                        // Contacts-list "order type" / sort row used to
-                        // render here (the second branch of the
-                        // selectedContact ternary). It has been hidden
-                        // per user request to reduce the chrome stacked
-                        // above the list — search alone is enough for
-                        // navigating the unified Sylk + Phonebook
-                        // corpus. The selected-contact branch (filter
-                        // chips + sort toggles for the chat view) is
-                        // still rendered. JSX for the hidden branch is
-                        // preserved further down (gated by `false`)
-                        // so the categoryItems pill code path can be
-                        // re-enabled quickly if we change our mind.
-                        <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                                <FlatList
-                                    contentContainerStyle={styles.navigationButtonGroup}
-                                    horizontal={true}
-                                    showsHorizontalScrollIndicator={false}
-                                    ref={(ref) => { this.navigationRefFilter = ref; }}
-                                    onScrollToIndexFailed={info => {
-                                        const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                        wait.then(() => {
-                                            if (!this.props.selectedContact
-                                                && this.navigationRefFilter
-                                                && this.categoryFilterItems
-                                                && info.index < this.categoryFilterItems.length) {
-                                                try {
-                                                    this.navigationRefFilter.scrollToIndex({ index: info.index, animated: false });
-                                                } catch (e) {}
-                                            }
-                                        });
-                                    }}
-                                    data={this.categoryFilterItems}
-                                    extraData={this.state}
-                                    keyExtractor={(item, index) => item.key}
-                                    renderItem={this.renderNavigationItem}
-                                />
-                            </View>
-                            {/* Splitter between the two button
-                                groups — hidden alongside the
-                                sort/order icons (see the `if (false)`
-                                gate in categorySortItems). With only
-                                the optional Pinned chip on the
-                                right, a divider would mark a seam
-                                where there's no longer a real
-                                two-group structure to communicate.
-                                Wrapped in `false &&` rather than
-                                deleted so the splitter is one flag
-                                flip away when sort/order come back. */}
-                            {false && <View style={{
-                                width: 1,
-                                alignSelf: 'stretch',
-                                marginVertical: 4,
-                                marginHorizontal: 8,
-                                backgroundColor: 'rgba(0,0,0,0.45)',
-                            }} />}
-                            {/* Right group ("Sort"). A subtle
-                                background tint behind the cluster
-                                gives the row a second visual cue
-                                (icon-only on the left, soft-tinted
-                                on the right) so the user can tell
-                                "the things on the right are
-                                different in purpose from the things
-                                on the left" at a glance even before
-                                reading the icons. */}
-                            <View style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                backgroundColor: 'rgba(0,0,0,0.04)',
-                                borderRadius: 6,
-                                paddingHorizontal: 2,
-                            }}>
-                                {this.categorySortItems.map((item, index) => (
-                                    this.renderNavigationItem({ item, index })
-                                ))}
-                            </View>
-                        </View>
-                        :
-                        // Hidden per user request — the contacts-list
-                        // view no longer renders the source pills +
-                        // order/sort toggles row above the list. JSX
-                        // for the row is preserved (wrapped in a
-                        // `false && (...)` guard) so the layout can
-                        // be re-enabled quickly if we change our
-                        // mind. The chat-view branch (above) still
-                        // shows its filter + sort bar; that's where
-                        // ordering is meaningful.
-                        false && (
-                        <View style={[navigationContainer, { flexDirection: 'row', alignItems: 'center' }]}>
-                            {/* LEFT side of the Contacts-list nav row:
-                                Sylk / AddressBook source pills. Drive
-                                ContactsListBox's search corpus via
-                                state.contactSource.
-
-                                The main interface now unifies the
-                                Sylk + Phonebook search into a single
-                                list (matching the invite-to-conference
-                                behaviour), so the source picker is
-                                hidden across all modes — share is
-                                still Sylk-only and invite still merges
-                                both, but the user no longer has to
-                                pick a corpus before searching. The
-                                JSX is kept (gated by `false`) so the
-                                pill code path can be re-enabled
-                                quickly if we change our mind. */}
-                            {false && !this.props.shareToContacts && !this.props.inviteContacts ? (
-                                <View style={[readyBoxPillStyles.pillGroup, readyBoxPillStyles.pillGroupLeading]}>
-                                    {/* Stacked icon-button + caption layout
-                                        mirroring the sort-order chips on the
-                                        same row: an outer TouchableOpacity
-                                        sized in column mode, a coloured
-                                        circular button containing only the
-                                        icon, and a small caption Text underneath
-                                        (OUTSIDE the coloured chip). Reads as
-                                        "tab-bar icon + label" rather than
-                                        "pill with text inside it". */}
-                                    <TouchableOpacity
-                                        onPress={() => this.handleContactSourceChange('sylk')}
-                                        accessibilityRole="button"
-                                        accessibilityState={{ selected: this.state.contactSource !== 'ab' }}
-                                        accessibilityLabel={
-                                            this.state.contactSource !== 'ab'
-                                                ? 'Searching Sylk contacts'
-                                                : 'Switch to Sylk contacts'
-                                        }
-                                        style={readyBoxPillStyles.pillCol}
-                                    >
-                                        <View
-                                            style={[
-                                                readyBoxPillStyles.pill,
-                                                this.state.contactSource !== 'ab'
-                                                    ? readyBoxPillStyles.pillSylkActive
-                                                    : readyBoxPillStyles.pillInactive,
-                                            ]}
-                                        >
-                                            <MaterialCommunityIcon
-                                                name="account-circle"
-                                                size={20}
-                                                color={this.state.contactSource !== 'ab' ? '#ffffff' : '#2980b9'}
-                                            />
-                                        </View>
-                                        <Text
-                                            style={[readyBoxPillStyles.pillCaption, { color: _readyBoxTheme.textPrimary }]}
-                                            numberOfLines={1}
-                                        >
-                                            SIP
-                                        </Text>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                        onPress={() => this.handleContactSourceChange('ab')}
-                                        accessibilityRole="button"
-                                        accessibilityState={{ selected: this.state.contactSource === 'ab' }}
-                                        accessibilityLabel={
-                                            this.state.contactSource === 'ab'
-                                                ? 'Searching device contacts'
-                                                : 'Switch to device contacts'
-                                        }
-                                        style={readyBoxPillStyles.pillCol}
-                                    >
-                                        <View
-                                            style={[
-                                                readyBoxPillStyles.pill,
-                                                this.state.contactSource === 'ab'
-                                                    ? readyBoxPillStyles.pillAbActive
-                                                    : readyBoxPillStyles.pillInactive,
-                                            ]}
-                                        >
-                                            {/* iOS: card-account-phone (matches
-                                                iOS Contacts card-with-phone
-                                                look). Android: contacts (the
-                                                Material glyph used by Google
-                                                Contacts). */}
-                                            <MaterialCommunityIcon
-                                                name={Platform.OS === 'ios'
-                                                    ? 'card-account-phone'
-                                                    : 'contacts'}
-                                                size={20}
-                                                color={this.state.contactSource === 'ab' ? '#ffffff' : '#27ae60'}
-                                            />
-                                        </View>
-                                        <Text
-                                            style={[readyBoxPillStyles.pillCaption, { color: _readyBoxTheme.textPrimary }]}
-                                            numberOfLines={1}
-                                        >
-                                            Phonebook
-                                        </Text>
-                                    </TouchableOpacity>
-                                </View>
-                            ) : null}
-                            {/* RIGHT side of the Contacts-list nav row:
-                                Sort / Order toggles. The wrapper takes the
-                                remaining flex space, and the FlatList's
-                                contentContainerStyle is overridden to
-                                justifyContent: 'flex-end' so the toggles
-                                hug the right edge instead of left-aligning
-                                next to the pill group. categoryItems
-                                returns [] when there are fewer than 10
-                                contacts, in which case the FlatList renders
-                                empty and the pills sit alone on the left.
-
-                                Hidden in invite-to-conference mode — the
-                                user is focused on picking participants,
-                                not on filtering / sorting the corpus, and
-                                the toggle pills + search bar above provide
-                                the only affordances that are meaningful
-                                in that workflow. */}
-                            {!this.props.inviteContacts ? (
-                                <View style={{ flex: 1, minWidth: 0 }}>
-                                    <FlatList contentContainerStyle={[styles.navigationButtonGroup, { justifyContent: 'flex-end', flexGrow: 1 }]}
-                                        horizontal={true}
-                                        showsHorizontalScrollIndicator={false}
-                                        ref={(ref) => { this.navigationRefCategory = ref; }}
-                                        onScrollToIndexFailed={info => {
-                                            const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                            wait.then(() => {
-                                                if (!this.props.selectedContact
-                                                    && this.navigationRefCategory
-                                                    && this.categoryItems
-                                                    && info.index < this.categoryItems.length) {
-                                                    try {
-                                                        this.navigationRefCategory.scrollToIndex({ index: info.index, animated: false });
-                                                    } catch (e) {}
-                                                }
-                                            });
-                                        }}
-                                        data={this.categoryItems}
-                                        extraData={this.state}
-                                        keyExtractor={(item, index) => item.key}
-                                        renderItem={this.renderNavigationItem}
-                                    />
-                                </View>
-                            ) : null}
-                        </View>
-                        )
-                    : null}
-
-                    {false ?
-                    <View style={navigationContainer}>
-                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                            horizontal={true}
-                            ref={(ref) => { this.navigationRefSort = ref; }}
-                              onScrollToIndexFailed={info => {
-                                const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                wait.then(() => {
-                                  if (!this.props.selectedContact
-                                      && this.navigationRefSort
-                                      && this.sortOrderItems
-                                      && info.index < this.sortOrderItems.length) {
-                                      try {
-                                          this.navigationRefSort.scrollToIndex({ index: info.index, animated: false });
-                                      } catch (e) {}
-                                  }
-                                });
-                              }}
-                            data={this.sortOrderItems}
+                    {this.showCategoryBar && this.props.selectedContact ?
+                        <ChatFilterSortBar
+                            visible={true}
+                            hasSelectedContact={!!this.props.selectedContact}
+                            navigationContainerStyle={navigationContainer}
+                            contentContainerStyle={styles.navigationButtonGroup}
+                            filterItems={this.categoryFilterItems}
+                            sortItems={this.categorySortItems}
                             extraData={this.state}
                             keyExtractor={(item, index) => item.key}
-                            renderItem={this.renderOrderItem}
+                            renderItem={this.renderNavigationItem}
                         />
-                    </View>
-                    : null}
+                        : null}
+
 
                         {/* Invite-to-conference and share-to-contacts
                             modes need the search bar BELOW the
@@ -3737,124 +3093,48 @@ class ReadyBox extends Component {
                             normal-position render here avoids a
                             duplicate bar. */}
                         {this.showSearchBar && !(this.props.inviteContacts || this.props.shareToContacts) ?
-                        <View style={URIContainerClass}>
-                            {/* URIInput stretches edge-to-edge inside
-                                URIContainerClass. The dialpad toggle
-                                that used to sit OUTSIDE the bar (in a
-                                flex-row wrapper next to it) is now an
-                                overlay INSIDE the Searchbar, rendered
-                                by URIInput via the showDialpad /
-                                onDialpadPress / isDialpadActive props.
-                                Removing the outer flex row was what
-                                let the search field reclaim that
-                                ~44 px column for typing. */}
-                            <URIInput
-                                defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
-                                onChange={this.handleSearch}
-                                onSelect={this.handleTargetSelect}
-                                shareToContacts={this.props.shareToContacts}
-                                inviteContacts={this.props.inviteContacts}
-                                searchMessages={this.state.searchMessages}
-                                contactSource={this.state.contactSource}
-                                /* Tapping the search field kicks the
-                                   address-book load (and the OS
-                                   contacts-permission prompt on first
-                                   use) so the unified Sylk + Phonebook
-                                   search has the AB pile ready by the
-                                   time the user starts typing. The
-                                   helper short-circuits in share /
-                                   invite / search-messages modes
-                                   where the pile is not used.
-
-                                   DISABLED: focus on the search input
-                                   was triggering the OS contacts-
-                                   permission prompt out of nowhere
-                                   (e.g. after autofocus on first
-                                   login on a new device). Permission
-                                   is now requested ONLY when the user
-                                   explicitly taps the navbar Search
-                                   button — see app.js#toggleSearchContacts
-                                   which calls loadPhoneAddressBook when
-                                   entering search mode. */
-                                /* onSearchFocus={this.kickUnifiedSearchAddressBookLoad} */
-                                /* Folded + search-contacts: the
-                                   navbar is hidden (see NavigationBar
-                                   render gate) so URIInput becomes
-                                   the only place to surface the
-                                   "exit search" affordance. Wire the
-                                   close-X to the existing
-                                   toggleSearchContacts handler the
-                                   navbar normally uses. */
-                                onCloseSearch={
-                                    (this.props.isFolded
-                                        && this.state.searchContacts
-                                        && typeof this.props.toggleSearchContacts === 'function')
-                                        ? this.props.toggleSearchContacts
-                                        : undefined
-                                }
-                                // Dialpad toggle — rendered as an
-                                // overlay flush against the right
-                                // edge of the Searchbar. The × clear
-                                // icon sits immediately to its left.
-                                // Previously gated on AB-source mode;
-                                // the source picker is now hidden and
-                                // the main interface runs a unified
-                                // Sylk + Phonebook search, so the
-                                // dialpad is offered any time the
-                                // user is in normal contact-search
-                                // mode (i.e. not in share / invite /
-                                // message-search workflows). The
-                                // backspace that used to live inside
-                                // the search bar moved into the
-                                // dialpad's 4th column (DTMFPad
-                                // extraColumn prop, top-to-bottom:
-                                // backspace, -, _).
-                                showDialpad={
-                                    !this.props.shareToContacts
-                                    && !this.props.inviteContacts
-                                    && !this.state.searchMessages
-                                }
-                                isDialpadActive={this.state.showAbDialpad}
-                                onDialpadPress={this.toggleAbDialpad}
-                                //autoFocus={this.state.searchMessages}
-                                autoFocus={false}
-                                dark={this.props.dark}
-                            />
-                            {this.state.showAbDialpad
-                              && !this.props.shareToContacts
-                              && !this.props.inviteContacts
-                              && !this.state.searchMessages ? (
-                                <View style={readyBoxDialpadStyles.dialpadWrap}>
-                                    {/* Full-size keys here (no
-                                        `compact`) so the pad reads
-                                        like a real phone keypad —
-                                        the compact preset shrunk the
-                                        keys to ~78% which felt
-                                        cramped for actual number
-                                        entry. `extraColumn` adds a
-                                        4th column (backspace, -, _,
-                                        blank) tailored to SIP
-                                        user-part entry: backspace
-                                        deletes the last character
-                                        from the search field (via
-                                        onBackspace), while - and _
-                                        are reported through onDigit
-                                        like the rest of the keypad. */}
-                                    <DTMFPad
-                                        onDigit={this.handleAbDialpadDigit}
-                                        extraColumn={true}
-                                        onBackspace={this.handleAbDialpadBackspace}
-                                        // 4th-column × clear key
-                                        // (row 4 of the extra
-                                        // column) — wipes the
-                                        // search field via the same
-                                        // path the search bar's own
-                                        // × overlay uses.
-                                        onClear={() => this.handleSearch('')}
-                                    />
-                                </View>
-                            ) : null}
-                        </View>
+                        <SearchBar
+                            containerStyle={URIContainerClass}
+                            defaultValue={this.props.searchMessages ? this.state.searchString : this.state.targetUri}
+                            onChange={this.handleSearch}
+                            onSelect={this.handleTargetSelect}
+                            shareToContacts={this.props.shareToContacts}
+                            inviteContacts={this.props.inviteContacts}
+                            searchMessages={this.props.searchMessages}
+                            contactSource={this.state.contactSource}
+                            onCloseSearch={
+                                (this.props.isFolded
+                                    && this.props.searchContacts
+                                    && typeof this.props.toggleSearchContacts === 'function')
+                                    ? this.props.toggleSearchContacts
+                                    : undefined
+                            }
+                            showDialpad={
+                                !this.props.shareToContacts
+                                && !this.props.inviteContacts
+                                && !this.props.searchMessages
+                                && !this.props.showQRCodeScanner
+                            }
+                            isDialpadActive={this.state.showAbDialpad}
+                            onDialpadPress={this.toggleAbDialpad}
+                            showQr={
+                                !this.props.shareToContacts
+                                && !this.props.inviteContacts
+                                && !this.props.searchMessages
+                            }
+                            onQrPress={this.toggleQRCodeScanner}
+                            autoFocus={false}
+                            dark={this.props.dark}
+                            showDialpadExpansion={
+                                this.state.showAbDialpad
+                                && !this.props.shareToContacts
+                                && !this.props.inviteContacts
+                                && !this.props.searchMessages
+                            }
+                            onDialpadDigit={this.handleAbDialpadDigit}
+                            onDialpadBackspace={this.handleAbDialpadBackspace}
+                            onDialpadClear={() => this.handleSearch('')}
+                        />
                         : null}
 
                            {/* Inline Back-to-call button removed: now rendered
@@ -3865,284 +3145,56 @@ class ReadyBox extends Component {
                                floating-back-to-call block at the end of
                                render(). */}
 
-                        {this.showButtonsBar ?
-							<View style={uriGroupClass}>
+                        <SessionButtonsBar
+                            visible={this.showButtonsBar}
+                            isFolded={this.props.isFolded}
+                            uriGroupClass={uriGroupClass}
+                            buttonGroupClass={buttonGroupClass}
+                            styles={styles}
 
-                            {this.props.isFolded ?
-                            // On foldables, hide the whole call/action
-                            // button row (audio, video, mic, delete, share,
-                            // etc.) when on the cover display. The Back-to-
-                            // call branch above still runs when a call is in
-                            // progress, so nothing important is lost.
-                            null
-                            :
+                            selectedContact={this.props.selectedContact}
+                            shareToContacts={this.props.shareToContacts}
+                            inviteContacts={this.props.inviteContacts}
 
-                            <View style={[buttonGroupClass, {borderWidth: 0, borderColor: 'white'}]}>
-                                  {!this.props.selectedContact && !this.props.shareToContacts && !this.props.inviteContacts?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                        style={this.chatButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
-                                        size={32}
-                                        disabled={this.chatButtonDisabled}
-                                        onPress={this.handleChat}
-                                        icon="chat"
-                                    />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
+                            greenButtonClass={greenButtonClass}
+                            disabledGreenButtonClass={disabledGreenButtonClass}
+                            blueButtonClass={blueButtonClass}
+                            disabledBlueButtonClass={disabledBlueButtonClass}
+                            redButtonClass={redButtonClass}
+                            purpleButtonClass={purpleButtonClass}
+                            recordIcon={recordIcon}
 
-                                  {this.showCallButtons ? 
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.callButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
-                                            size={32}
-                                            disabled={this.callButtonDisabled}
-                                            onPress={this.handleAudioCall}
-                                            icon="phone"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
+                            showCallButtons={this.showCallButtons}
+                            showAudioRecordButton={this.showAudioRecordButton}
+                            showLocationShareButton={this.showLocationShareButton}
+                            showAudioDeleteButton={this.showAudioDeleteButton}
+                            showAudioStopButton={this.showAudioStopButton}
+                            showConferenceButton={this.showConferenceButton}
+                            showAudioSendButton={this.showAudioSendButton}
+                            showQRCodeButton={this.showQRCodeButton}
 
-                                  : null }
+                            chatButtonDisabled={this.chatButtonDisabled}
+                            callButtonDisabled={this.callButtonDisabled}
+                            videoButtonDisabled={this.videoButtonDisabled}
+                            conferenceButtonDisabled={this.conferenceButtonDisabled}
 
-                                  {this.showCallButtons?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.videoButtonDisabled ? disabledGreenButtonClass : greenButtonClass}
-                                            size={32}
-                                            disabled={this.videoButtonDisabled}
-                                            onPress={this.handleVideoCall}
-                                            icon="video"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
+                            isSharingCurrentContact={this._isSharingCurrentContact(this.props)}
+                            locationSharePulse={this._locationSharePulse}
+                            recordingFile={this.state.recorderState.recordingFile}
 
-                                  {/* Recording-preview Play button moved
-                                      into the recording panel itself,
-                                      next to the slider/wave. The
-                                      action-bar position is hidden to
-                                      avoid duplication. */}
-                                  {false && this.state.recordingFile?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={greenButtonClass}
-                                            size={32}
-                                            onPress={this.state.previewRecording ? this.pausePreviewAudio : this.previewAudio }
-                                            icon={this.state.previewRecording ? "pause" : "play"}
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-
-                                  {this.showAudioRecordButton?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                        style={blueButtonClass}
-                                        size={32}
-                                        onPress={this.recordAudio}
-                                        icon={recordIcon}
-                                    />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  {/* "Share location" button — sits AFTER the
-                                      Record-audio button so the three comm
-                                      actions (Audio call, Video call, Record
-                                      audio) stay grouped, with the location
-                                      share as a distinct category on the
-                                      right. Purple fill further separates it
-                                      visually from the green call buttons and
-                                      the blue record button. Delegates to the
-                                      same NavigationBar toggle that the kebab
-                                      menu's "Share location..." item uses
-                                      (via the startLocationShare prop, wired
-                                      in app.js). Gated on the contact having
-                                      a PGP public key, because location
-                                      metadata ships encrypted with no
-                                      plaintext fallback. */}
-                                  {this.showLocationShareButton?
-                                  <View style={styles.buttonContainer}>
-                                      {/* While a share is live for the
-                                          currently-selected chat, swap the
-                                          purple pin for a red pulsing
-                                          map-marker-radius. That makes the
-                                          in-chat indicator unmistakable
-                                          (matching the NavBar one the user
-                                          sees from other screens) and lets
-                                          the tap drop them into the
-                                          Stop-sharing dialog via the same
-                                          pin handler. The Animated.View
-                                          wraps the button so the pulse
-                                          applies to the whole circle, not
-                                          just the glyph. */}
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <Animated.View style={this._isSharingCurrentContact(this.props) ? { opacity: this._locationSharePulse } : null}>
-                                            <IconButton
-                                                style={this._isSharingCurrentContact(this.props) ? [purpleButtonClass, { backgroundColor: 'rgba(220, 53, 69, 0.95)' }] : purpleButtonClass}
-                                                size={32}
-                                                // Paper v5 renamed the glyph-tint
-                                                // prop from `color` → `iconColor`;
-                                                // `color` is silently ignored, which
-                                                // is why the pin was still rendering
-                                                // in the default dark theme tint.
-                                                iconColor="white"
-                                                onPress={this.handleShareLocation}
-                                                icon={this._isSharingCurrentContact(this.props) ? "map-marker-radius" : "map-marker"}
-                                                accessibilityLabel={this._isSharingCurrentContact(this.props) ? "Location sharing active — tap to stop" : "Share location"}
-                                            />
-                                        </Animated.View>
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  {this.showAudioDeleteButton ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={redButtonClass}
-                                            size={32}
-                                            onPress={this.deleteAudio}
-                                            icon="cancel"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  {this.showAudioStopButton ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={redButtonClass}
-                                            size={32}
-                                            onPress={() => {this.stopAudioPlayer()}}
-                                            icon="pause"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  
-                                  { this.props.shareToContacts ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={redButtonClass}
-                                            size={32}
-                                            onPress={this.cancelShareContent}
-                                            icon="cancel"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null}
-
-                                  {this.showConferenceButton ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={this.conferenceButtonDisabled ? disabledBlueButtonClass : blueButtonClass}
-                                            disabled={this.conferenceButtonDisabled}
-                                            size={32}
-                                            onPress={this.showConferenceModal}
-                                            icon="account-group"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  {/* Invite-mode action pair. Visible only
-                                      when the contacts list is acting as a
-                                      participant picker for an ongoing
-                                      conference (inviteContacts=true).
-                                      Replaces the "Start conference"
-                                      account-group button (gated off above
-                                      via showConferenceButton) — the user
-                                      already has a conference, they want
-                                      to add people to it, not start a new
-                                      one. Two distinct buttons so the
-                                      operation is symmetric and obvious:
-
-                                        • Cancel (red) — calls finishInvite
-                                          which clears inviteContacts +
-                                          selectedContacts in app.js and
-                                          drops the contacts list back to
-                                          normal mode WITHOUT sending any
-                                          invites.
-
-                                        • Invite (green) — calls goBackFunc
-                                          (= goBackToCall in app.js). That
-                                          navigates back into the
-                                          ConferenceBox, whose componentDid-
-                                          Mount-equivalent path then auto-
-                                          calls inviteParticipants(
-                                              this.state.selectedContacts)
-                                          (see ConferenceBox ~line 391).
-                                          Disabled until at least one
-                                          contact is selected so an empty
-                                          tap doesn't fall back into the
-                                          conference with nothing to do.
-                                      */}
-                                  {/* Invite-mode Cancel / Invite buttons used to
-                                      live HERE in the top action strip. They
-                                      were relocated to the right side of the
-                                      search bar (see the URIContainerClass
-                                      block lower in this file) so the action
-                                      pair sits adjacent to the picker input —
-                                      one row, one focus area, no jump-up-then-
-                                      look-back-down for the user. */}
-
-                                  {this.showAudioSendButton ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={blueButtonClass}
-                                            disabled={!this.state.recordingFile}
-                                            size={32}
-                                            onPress={this.sendAudioFile}
-                                            icon="share"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  { this.props.shareToContacts ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            style={!this.props.shareToContacts ? disabledBlueButtonClass : blueButtonClass}
-                                            size={32}
-                                            onPress={this.shareContent}
-                                            icon="share"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null }
-
-                                  { this.showQRCodeButton ?
-                                  <View style={styles.buttonContainer}>
-                                      <TouchableHighlight style={styles.roundshape}>
-                                        <IconButton
-                                            onPress={this.toggleQRCodeScanner}
-                                            style={styles.qrCodeButton}
-                                            disabled={!this.showQRCodeButton}
-                                            size={32}
-                                            icon="qrcode"
-                                        />
-                                    </TouchableHighlight>
-                                  </View>
-                                  : null}
-                            </View>
-                            }
-
-                        </View>
-                        : null}
+                            onChat={this.handleChat}
+                            onAudioCall={this.handleAudioCall}
+                            onVideoCall={this.handleVideoCall}
+                            onRecordAudio={this.recordAudio}
+                            onShareLocation={this.handleShareLocation}
+                            onDeleteAudio={this.deleteAudio}
+                            onStopAudioPlayer={this.onTopStopAudioPlayer}
+                            onCancelShareContent={this.cancelShareContent}
+                            onShowConferenceModal={this.showConferenceModal}
+                            onSendAudioFile={this.sendAudioFile}
+                            onShareContent={this.shareContent}
+                            onToggleQRCodeScanner={this.toggleQRCodeScanner}
+                        />
 
                     </View>
 
@@ -4174,323 +3226,40 @@ class ReadyBox extends Component {
 					  :  null}
 
 
-                    { this.state.recording  ?
-                        <View style={styles.recordingContainer}>
-                            <View style={{borderBottom: 30}}>
-                                <Title style={styles.activityTitle}>{activityTitle}</Title>
-                            </View>
-                            {/* Live VU meter — same widget the in-call
-                                AudioCallBox uses for the live mic
-                                level. Replaces the old vertical green
-                                bar. Fixed 280 px width so it centres
-                                cleanly via alignSelf — percentage
-                                widths inside flex column parents
-                                were rendering off-centre. */}
-                            <View style={{ marginTop: 16, alignSelf: 'center' }}>
-                                <VuMeter
-                                    level={this.state.level || 0}
-                                    label="Recording"
-                                    width={280}
-                                />
-                                {/* Live elapsed-time counter, driven by
-                                    audioRecorderPlayer's currentPosition
-                                    (see addRecordBackListener in
-                                    onStartRecord). monospace + tabular
-                                    numerals so the digits don't jitter
-                                    horizontally as they tick. Same 280 px
-                                    width as the VuMeter so the two read
-                                    as a single unit. */}
-                                <Text style={{
-                                    marginTop: 8,
-                                    width: 280,
-                                    textAlign: 'center',
-                                    fontVariant: ['tabular-nums'],
-                                    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-                                    fontSize: 18,
-                                    color: red[500],
-                                }}>
-                                    {(() => {
-                                        const ms = this.state.recordingElapsedMs || 0;
-                                        const totalSec = Math.floor(ms / 1000);
-                                        const m = Math.floor(totalSec / 60);
-                                        const s = totalSec % 60;
-                                        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-                                    })()}
-                                </Text>
-                            </View>
-                        </View>
-                    : null
-                    }
-
-                    { this.state.recordingFile  ?
-                        <View style={styles.recordingContainer}>
-                            <Title style={styles.activityTitle}>{activityTitle}</Title>
-                            {(() => {
-                                // Mirror the chat bubble's outgoing audio
-                                // bubble layout exactly: a white rounded
-                                // pill with the duration label on top,
-                                // the single-channel waveform, and the
-                                // slider stacked underneath, with the
-                                // play button anchored on the right.
-                                // What the user sees here is the same
-                                // thing the recipient sees once the
-                                // file lands in the chat.
-                                //
-                                // We render this whenever recordingFile
-                                // is set — regardless of whether peaks
-                                // have landed yet — so there's no flash
-                                // while peaks finish snapshotting.
-                                // AudioWaveform handles an empty peaks
-                                // array by rendering a flat dim baseline
-                                // so the layout doesn't flinch.
-                                const dur = this.state.currentDurationSec || 0;
-                                const pos = this.state.currentPositionSec || 0;
-                                const progress = (this.state.previewRecording && dur > 0)
-                                    ? Math.max(0, Math.min(100, (pos / dur) * 100))
-                                    : 0;
-                                const isPlaying = this.state.previewRecording;
-                                const sliderWidth = 240;
-                                const formatAudioDuration = (totalSeconds) => {
-                                    const s = Math.max(0, Math.floor(totalSeconds || 0));
-                                    const h = Math.floor(s / 3600);
-                                    const m = Math.floor((s % 3600) / 60);
-                                    const sec = s % 60;
-                                    const parts = [];
-                                    if (h > 0) parts.push(`${h}h`);
-                                    if (h > 0 || m > 0) parts.push(`${m}m`);
-                                    parts.push(`${sec}s`);
-                                    return parts.join(' ');
-                                };
-                                const durationLabel = this.state.recordingDuration
-                                    ? `Recording of ${formatAudioDuration(this.state.recordingDuration)}`
-                                    : 'Recording';
-                                // Bubble palette mirrors the outgoing
-                                // GiftedChat audio bubble exactly: no
-                                // fill (transparent), 0.5px white border,
-                                // 16px radius, white text/slider/waveform.
-                                // See ChatBubble.js's audio branch
-                                // (currentMessage.audio) — same wrapper
-                                // styling, just transposed onto a plain
-                                // View since this preview lives outside
-                                // the GiftedChat row.
-                                return (
-                                    <View style={{
-                                        alignSelf: 'center',
-                                        marginTop: 4,
-                                        backgroundColor: 'transparent',
-                                        borderRadius: 16,
-                                        borderWidth: 0.5,
-                                        borderColor: 'white',
-                                        paddingVertical: 8,
-                                        paddingHorizontal: 12,
-                                        flexDirection: 'row',
-                                        alignItems: 'center',
-                                    }}>
-                                        <View style={{
-                                            flexDirection: 'column',
-                                            alignItems: 'flex-end',
-                                            justifyContent: 'center',
-                                            paddingRight: 8,
-                                        }}>
-                                            <Text style={{
-                                                marginBottom: 2,
-                                                marginTop: 0,
-                                                alignSelf: 'flex-end',
-                                                fontSize: 13,
-                                                color: '#fff',
-                                            }} numberOfLines={1}>
-                                                {durationLabel}
-                                            </Text>
-                                            <AudioWaveform
-                                                peaks={{ l: this.state.recordingPeaks || [], r: [] }}
-                                                progress={progress}
-                                                width={sliderWidth}
-                                                height={28}
-                                                barCount={60}
-                                                channel="l"
-                                                playedColor="orange"
-                                                unplayedColor="rgba(255,255,255,0.35)"
-                                            />
-                                            <AudioProgressSlider
-                                                progress={progress}
-                                                width={sliderWidth}
-                                                height={4}
-                                                knobWidth={6}
-                                                knobHeight={20}
-                                                color={"#ffffff"}
-                                                unfilledColor="rgba(255,255,255,0.3)"
-                                                knobColor={"#ffffff"}
-                                                onSeekStart={() => {
-                                                    if (this.state.previewRecording) {
-                                                        try { audioRecorderPlayer.pausePlayer(); } catch (_e) {}
-                                                    }
-                                                }}
-                                                onSeek={(pct) => {
-                                                    if (dur > 0) {
-                                                        const ms = (pct / 100) * dur;
-                                                        try {
-                                                            audioRecorderPlayer.seekToPlayer(ms);
-                                                            if (this.state.previewRecording) {
-                                                                audioRecorderPlayer.resumePlayer();
-                                                            }
-                                                        } catch (_e) {}
-                                                    }
-                                                }}
-                                            />
-                                        </View>
-                                        {/* Play/pause button — same shape
-                                            and palette as the bubble's
-                                            playButton in
-                                            ContactsListBox.renderMessageAudio
-                                            (TouchableHighlight wrapper at
-                                            48×48 with 24 radius hosting
-                                            an IconButton with the blue
-                                            `playAudioButton` style). */}
-                                        <TouchableHighlight
-                                            onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
-                                            underlayColor="transparent"
-                                            style={[
-                                                {
-                                                    height: 48,
-                                                    width: 48,
-                                                    justifyContent: 'center',
-                                                    borderRadius: 24,
-                                                    alignSelf: 'flex-end',
-                                                    marginLeft: 0,
-                                                },
-                                            ]}>
-                                            <IconButton
-                                                size={28}
-                                                onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
-                                                style={{
-                                                    backgroundColor: 'rgba(69, 114, 166, 1)',
-                                                    marginLeft: 0,
-                                                    marginRight: 0,
-                                                }}
-                                                iconColor="white"
-                                                icon={isPlaying ? 'pause' : 'play'}
-                                            />
-                                        </TouchableHighlight>
-                                    </View>
-                                );
-                            })()}
-                        </View>
-
-                    : null
-                    }
-
+                    {/* Voice-message recorder: armed screen, live recording,
+                        and preview/send UI. Extracted from ReadyBox. Self-gates
+                        on its own state; renders null when idle. */}
+                    <AudioRecorder
+                        ref={this.audioRecorderRef}
+                        selectedContact={this.props.selectedContact}
+                        requestMicPermission={this.props.requestMicPermission}
+                        refreshMicPermission={this._refreshMicPermission}
+                        file2GiftedChat={this.props.file2GiftedChat}
+                        sendMessage={this.props.sendMessage}
+                        sendPeaksMessage={this.props.sendPeaksMessage}
+                        getMessages={this.props.getMessages}
+                        vibrate={this.props.vibrate}
+                        playRecording={this.props.playRecording}
+                        recordingDuration={this.props.recordingDuration}
+                        onStateChange={this.onRecorderStateChange}
+                    />
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
 
-                   {/* Initial contact-import indicator. Shown only while the
-                       first XCAP contacts sync is running (contactsSyncing),
-                       in the contacts-list view. Reuses the soft-amber pill
-                       look so it reads as informational. */}
-                   {this.props.contactsSyncing
-                       && !this.props.selectedContact
-                       && !this.props.shareToContacts
-                       && !this.props.inviteContacts
-                       && !this.state.searchMessages
-                       && !this.props.showQRCodeScanner ? (
-                       <View style={readyBoxSyncingStyles.pill}>
-                           <ActivityIndicator size="small" color="#7a5a1d" style={{ marginRight: 8 }} />
-                           <Text style={readyBoxSyncingStyles.text}>Syncing contacts…</Text>
-                       </View>
-                   ) : null}
-
-                   {/* App-DND status pill. Persistent reminder that the
-                       in-app bell is on and incoming calls are being
-                       delivered silently. Tapping toggles DND off via
-                       the same toggleDnd action the navbar bell uses,
-                       so the user can clear it without scrolling up
-                       to the header. Scope: contacts-list view only,
-                       i.e. no contact currently selected — once the
-                       user opens a chat, the chat header / message
-                       column take over and the pill would otherwise
-                       hover above the conversation, which isn't its
-                       job. Also hidden in invite / share / QR /
-                       message-search flows where the contacts list
-                       is repurposed and the pill would crowd the
-                       modal-style UI. */}
-                   {this.props.appDnd
-                       && !this.props.selectedContact
-                       && !this.props.shareToContacts
-                       && !this.props.inviteContacts
-                       && !this.state.searchMessages
-                       && !this.props.showQRCodeScanner ? (
-                       <TouchableOpacity
-                           activeOpacity={0.8}
-                           onPress={() => {
-                               if (typeof this.props.toggleDnd === 'function') {
-                                   this.props.toggleDnd();
-                               }
-                           }}
-                           style={readyBoxDndPillStyles.pill}
-                       >
-                           <MaterialCommunityIcon
-                               name="bell-off-outline"
-                               size={18}
-                               color="#7a1d1d"
-                               style={readyBoxDndPillStyles.pillIcon}
-                           />
-                           <View style={readyBoxDndPillStyles.pillTextWrap}>
-                               <Text style={readyBoxDndPillStyles.pillTitle}>
-                                   Do Not Disturb is on
-                               </Text>
-                               <Text style={readyBoxDndPillStyles.pillBody}>
-                                   Incoming calls arrive silently. Tap to turn off.
-                               </Text>
-                           </View>
-                       </TouchableOpacity>
-                   ) : null}
-
-                   {/* "Phonebook access is off" banner. Rendered above
-                       the contacts list whenever the user has the
-                       Phonebook source pill selected but the OS has
-                       refused to surface its permission prompt (denied
-                       once on iOS, or "don't ask again" on Android).
-                       The bar explains why the list is empty and gives
-                       a one-tap path to the OS Sylk preferences page —
-                       same react-native-permissions openSettings()
-                       helper the main-menu "App Settings" item uses.
-                       Hidden in share/invite/message-search workflows
-                       where the source toggle isn't visible to the
-                       user anyway. */}
-                   {this.state.contactSource === 'ab'
-                       && this.props.abPermissionDenied
-                       && !this.props.shareToContacts
-                       && !this.props.inviteContacts
-                       && !this.state.searchMessages ? (
-                       <View style={readyBoxPermissionBannerStyles.banner}>
-                           <MaterialCommunityIcon
-                               name="account-cancel-outline"
-                               size={22}
-                               color="#b06000"
-                               style={readyBoxPermissionBannerStyles.bannerIcon}
-                           />
-                           <View style={readyBoxPermissionBannerStyles.bannerTextWrap}>
-                               <Text style={readyBoxPermissionBannerStyles.bannerTitle}>
-                                   Phonebook access is off
-                               </Text>
-                               <Text style={readyBoxPermissionBannerStyles.bannerBody}>
-                                   Open Settings to let Sylk read your contacts.
-                               </Text>
-                           </View>
-                           <Button
-                               mode="contained"
-                               compact={true}
-                               onPress={() => {
-                                   if (typeof this.props.openAppSettings === 'function') {
-                                       this.props.openAppSettings();
-                                   }
-                               }}
-                               style={readyBoxPermissionBannerStyles.bannerButton}
-                               labelStyle={readyBoxPermissionBannerStyles.bannerButtonLabel}
-                           >
-                               Open Settings
-                           </Button>
-                       </View>
-                   ) : null}
+                   <ContactsListBanners
+                       selectedContact={this.props.selectedContact}
+                       shareToContacts={this.props.shareToContacts}
+                       inviteContacts={this.props.inviteContacts}
+                       searchMessages={this.props.searchMessages}
+                       showQRCodeScanner={this.props.showQRCodeScanner}
+                       contactsSyncing={this.props.contactsSyncing}
+                       storageUpToDate={this.props.storageUpToDate}
+                       appDnd={this.props.appDnd}
+                       onToggleDnd={this.props.toggleDnd}
+                       contactSource={this.state.contactSource}
+                       abPermissionDenied={this.props.abPermissionDenied}
+                       onOpenAppSettings={this.props.openAppSettings}
+                   />
 
                    {/* Invite / share search bar — relocated copy.
                        In normal modes the URIInput renders near the
@@ -4511,79 +3280,38 @@ class ReadyBox extends Component {
                        showQRCodeScanner is gated on
                        !inviteContacts / !shareToContacts upstream). */}
                    {this.showSearchBar && (this.props.inviteContacts || this.props.shareToContacts) ?
-                   <View style={URIContainerClass}>
-                       {/* Cancel / Invite live INSIDE the URIInput as
-                           absolute overlays (handled inside URIInput
-                           itself, alongside the existing clear-× and
-                           dialpad overlays). We just pass the action
-                           callbacks and the enabled flag — URIInput
-                           draws them when inviteContacts is true and
-                           positions them at the right edge of the
-                           search bar, with the existing clear-×
-                           shifted further left to clear them.
-
-                           Dialpad in invite mode: only when the user
-                           has flipped the source to AddressBook AND
-                           we're not in a share workflow (the share
-                           path doesn't support PSTN-style entry).
-                           Lets the inviter dial a phone number into
-                           the search bar to add a phone-only entry
-                           to the conference. */}
-                       <URIInput
-                           defaultValue={this.state.searchMessages ? this.state.searchString : this.state.targetUri}
-                           onChange={this.handleSearch}
-                           onSelect={this.handleTargetSelect}
-                           shareToContacts={this.props.shareToContacts}
-                           inviteContacts={this.props.inviteContacts}
-                           searchMessages={this.state.searchMessages}
-                           contactSource={this.state.contactSource}
-                           // Dialpad is unconditionally available in
-                           // invite mode (no source toggle is shown in
-                           // this flow — the picker merges Sylk +
-                           // Phonebook into one list, so the pad is
-                           // just "type a number to add". Still hidden
-                           // in share/search-messages modes, AND while
-                           // the soft keyboard is up: the user is
-                           // typing into the search field, the dialpad
-                           // would compete for the same screen space.
-                           showDialpad={
-                               this.props.inviteContacts
-                               && !this.props.shareToContacts
-                               && !this.state.searchMessages
-                               && !this.props.keyboardVisible
-                           }
-                           isDialpadActive={this.state.showAbDialpad}
-                           onDialpadPress={this.toggleAbDialpad}
-                           autoFocus={false}
-                           dark={this.props.dark}
-                           inviteEnabled={!!(this.props.selectedContacts && this.props.selectedContacts.length > 0)}
-                           onInvitePress={this.props.goBackFunc}
-                           onCancelInvitePress={this.props.finishInvite}
-                       />
-                       {/* Dialpad expansion under the relocated
-                           invite-mode search bar. Same showAbDialpad
-                           state, but here it's the invite picker's
-                           pad, not the AB-browse pad — gated on
-                           inviteContacts so it never doubles up with
-                           the upper-bar pad when the user toggles
-                           between modes. Also folded away while the
-                           soft keyboard is up (the on-screen pad and
-                           the system keyboard can't reasonably share
-                           the bottom of the screen). */}
-                       {this.props.inviteContacts
-                         && this.state.showAbDialpad
-                         && !this.props.shareToContacts
-                         && !this.state.searchMessages
-                         && !this.props.keyboardVisible ? (
-                           <View style={readyBoxDialpadStyles.dialpadWrap}>
-                               <DTMFPad
-                                   onDigit={this.handleAbDialpadDigit}
-                                   extraColumn={true}
-                                   onBackspace={this.handleAbDialpadBackspace}
-                               />
-                           </View>
-                       ) : null}
-                   </View>
+                   <SearchBar
+                       containerStyle={URIContainerClass}
+                       defaultValue={this.props.searchMessages ? this.state.searchString : this.state.targetUri}
+                       onChange={this.handleSearch}
+                       onSelect={this.handleTargetSelect}
+                       shareToContacts={this.props.shareToContacts}
+                       inviteContacts={this.props.inviteContacts}
+                       searchMessages={this.props.searchMessages}
+                       contactSource={this.state.contactSource}
+                       showDialpad={
+                           this.props.inviteContacts
+                           && !this.props.shareToContacts
+                           && !this.props.searchMessages
+                           && !this.props.keyboardVisible
+                       }
+                       isDialpadActive={this.state.showAbDialpad}
+                       onDialpadPress={this.toggleAbDialpad}
+                       autoFocus={false}
+                       dark={this.props.dark}
+                       inviteEnabled={!!(this.props.selectedContacts && this.props.selectedContacts.length > 0)}
+                       onInvitePress={this.props.goBackFunc}
+                       onCancelInvitePress={this.props.finishInvite}
+                       showDialpadExpansion={
+                           this.props.inviteContacts
+                           && this.state.showAbDialpad
+                           && !this.props.shareToContacts
+                           && !this.props.searchMessages
+                           && !this.props.keyboardVisible
+                       }
+                       onDialpadDigit={this.handleAbDialpadDigit}
+                       onDialpadBackspace={this.handleAbDialpadBackspace}
+                   />
                    : null}
 
                    {this.props.showQRCodeScanner ?
@@ -4598,6 +3326,7 @@ class ReadyBox extends Component {
 						allContacts={this.props.allContacts}
 						graveyardContacts={this.props.graveyardContacts}
 						reviveContact={this.props.reviveContact}
+						blockDeletedContact={this.props.blockDeletedContact}
 						ejectContact={this.props.ejectContact}
 						hardDeleteContacts={this.props.hardDeleteContacts}
 						contactHasStoredMessages={this.props.contactHasStoredMessages}
@@ -4638,6 +3367,7 @@ class ReadyBox extends Component {
 						defaultDomain={this.props.defaultDomain}
 						allContacts = {this.props.allContacts}
 						messages = {this.props.messages}
+						contactMessages = {this.props.contactMessages}
 						sendMessage = {this.props.sendMessage}
 						reSendMessage = {this.props.reSendMessage}
 						deleteMessages = {this.props.deleteMessages}
@@ -4652,6 +3382,7 @@ class ReadyBox extends Component {
 						inviteContacts = {this.props.inviteContacts}
 						shareToContacts = {this.props.shareToContacts}
 						selectedContacts = {this.props.selectedContacts}
+						mergeKeeperId = {this.props.mergeKeeperId}
 						contactSelectMode = {this.props.contactSelectMode}
 						onLongPressContact = {this.handleLongPressContact}
 						toggleFavorite={this.props.toggleFavorite}
@@ -4662,10 +3393,11 @@ class ReadyBox extends Component {
 						loadEarlierMessages = {this.props.loadEarlierMessages}
 						newContactFunc = {this.props.newContactFunc}
 						messageZoomFactor = {this.props.messageZoomFactor}
-						isTyping = {this.state.isTyping}
+						isTyping = {this.props.isTyping}
 						call = {this.props.call}
-						keys = {this.state.keys}
+						keys = {this.props.keys}
 						downloadFile = {this.props.downloadFile}
+						autoDownloadFile = {this.props.autoDownloadFile}
 						uploadFile = {this.props.uploadFile}
 						decryptFunc = {this.props.decryptFunc}
 						openLogAttachment = {this.props.openLogAttachment}
@@ -4683,14 +3415,24 @@ class ReadyBox extends Component {
 						orderBy = {this.state.orderBy}
 						sortOrder = {this.state.sortOrder}
 						toggleSearchMessages = {this.props.toggleSearchMessages}
-						searchMessages = {this.state.searchMessages}
+						searchMessages = {this.props.searchMessages}
 						searchString = {this.state.searchString}
 						clearMessageSearch = {this.clearMessageSearch}
 						clearMessageCategoryFilter = {this.clearMessageCategoryFilter}
 						recordAudio = {this.recordAudio}
+						/* Same per-contact / per-state gate the header
+						   "Record audio" button uses (showAudioRecordButton).
+						   The chat input-bar mic must respect it too —
+						   otherwise contacts that can't receive a voice memo
+						   (conference rooms, anonymous, phone numbers, test
+						   stubs, denied mic permission, or an active call)
+						   would still expose a tappable mic in the composer. */
+						canRecordAudio = {this.showAudioRecordButton}
 						defaultConferenceDomain = {this.props.defaultConferenceDomain}
 						dark = {this.props.dark}
 						messagesMetadata = {this.props.messagesMetadata}
+						messagesMetadataById = {this.props.messagesMetadataById}
+						messagesMetadataByOriginalId = {this.props.messagesMetadataByOriginalId}
 						chatScrollTrigger = {this.props.chatScrollTrigger}
 						localOwnerCoordsByMid = {this.props.localOwnerCoordsByMid}
 						activeRemoteSharesByUri = {this.props.activeRemoteSharesByUri}
@@ -4714,119 +3456,49 @@ class ReadyBox extends Component {
 						startAudioPlayerFunc = {this.startAudioPlayer}
 						stopAudioPlayerFunc = {this.stopAudioPlayer}
 						markAudioMessageDisplayedFunc = {this.props.markAudioMessageDisplayed}
-						playRecording = {this.state.playRecording}
+						playRecording = {this.state.recorderState.playRecording}
 						updateFileTransferMetadata = {this.props.updateFileTransferMetadata}
-						isAudioRecording = {this.state.recording}
-						recordingFile = {this.state.recordingFile}
+						isAudioRecording = {this.state.recorderState.recording || this.state.recorderState.recordArmed}
+						audioArmed = {this.state.recorderState.recordArmed && !this.state.recorderState.recording}
+						recordingFile = {this.state.recorderState.recordingFile}
 						sendAudioFile = {this.sendAudioFile}
 						insets = {this.props.insets}
 						appState = {this.props.appState}
 					/>
 					}
 
-                    {this.props.contactSelectMode ?
-                        <View style={readyBoxTrashStyles.contactSelectFab} pointerEvents="box-none">
-                            <TouchableOpacity
-                                style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabCancel]}
-                                onPress={this.props.exitContactSelectMode}>
-                                <MaterialCommunityIcon name="close" size={24} color="#fff" />
-                            </TouchableOpacity>
-                            {(this.props.selectedContacts || []).length > 0
-                                && (this.state.contactsFilter === 'deleted' || this.state.contactsFilter === 'graveyard') ?
-                                <TouchableOpacity
-                                    style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabRestore]}
-                                    onPress={() => {
-                                        const uris = (this.props.selectedContacts || []).slice();
-                                        // Graveyard tombstones revive via the graveyard-specific
-                                        // bulk path (they aren't in allContacts); the Deleted
-                                        // folder uses the regular restore.
-                                        if (this.state.contactsFilter === 'graveyard') {
-                                            this.props.restoreGraveyardContacts(uris);
-                                        } else {
-                                            this.props.restoreContacts(uris);
-                                        }
-                                    }}>
-                                    <MaterialCommunityIcon name="restore" size={24} color="#fff" />
-                                </TouchableOpacity>
-                            : null}
-                            {(this.props.selectedContacts || []).length > 0 ?
-                                <TouchableOpacity
-                                    style={[readyBoxTrashStyles.fabBtn, readyBoxTrashStyles.fabDelete]}
-                                    onPress={this.handleContactDelete}>
-                                    <MaterialCommunityIcon name="delete" size={24} color="#fff" />
-                                    <Text style={readyBoxTrashStyles.fabCount}>{(this.props.selectedContacts || []).length}</Text>
-                                </TouchableOpacity>
-                            : null}
-                        </View>
-                    : null}
+                    <ContactSelectFab
+                        visible={this.props.contactSelectMode}
+                        selectedCount={(this.props.selectedContacts || []).length}
+                        contactsFilter={this.state.contactsFilter}
+                        searchContacts={this.props.searchContacts}
+                        onCancel={this.props.exitContactSelectMode}
+                        onRestore={this.handleBulkRestore}
+                        onMerge={this.handleBulkMerge}
+                        onDelete={this.handleContactDelete}
+                    />
 
                     </View>
                     : null
                     }
 
-                    {this.showNavigationBar && !this.props.selectedContact ?
-                    // Keying the wrapper on isFolded + orientation + window
-                    // dims forces the Recents-bar FlatList (and all its Paper
-                    // <Button>s, which cache their measured frame at the
-                    // density they were first mounted under) to remount when
-                    // the device folds/unfolds or Android toggles Default /
-                    // Full Screen on the cover display. extraData={this.state}
-                    // alone was insufficient because neither data nor state
-                    // changed reference on a pure prop change.
-                    <View
-                        key={'recents-' + (this.props.isFolded ? 'f' : 'u')
-                            + '-' + (this.props.orientation || '?')
-                            + '-' + Math.round(width) + 'x' + Math.round(height)
-                            // Include the active filter so the FlatList REMOUNTS
-                            // when the category set changes size (e.g. collapsing
-                            // to All·Deleted·Graveyard in the Deleted folder).
-                            // Without this it keeps its stale scroll/layout from
-                            // the long bar and only the first pill ("All") shows.
-                            + '-' + (this.state.contactsFilter || 'none')}
-                        // Override the shared bar height — the recents
-                        // bar at the BOTTOM of the contacts list
-                        // hosts plain IconButtons (no caption stack
-                        // underneath) so it can sit much tighter
-                        // than the top sort/category bar. 34dp wraps
-                        // the IconButton's ~32dp footprint with a
-                        // hairline gap top/bottom. We also zero out
-                        // navigationContainer's inherited
-                        // `minHeight: 50` and `paddingBottom` here —
-                        // those were leaving a phantom bottom margin
-                        // that pushed the icons up against the top
-                        // edge.
-                        style={[navigationContainer, { height: 34, minHeight: 0, paddingBottom: 0 }]}
-                    >
-                        <FlatList contentContainerStyle={styles.navigationButtonGroup}
-                            horizontal={true}
-                            ref={(ref) => { this.navigationRefMain = ref; }}
-                              onScrollToIndexFailed={info => {
-                                const wait = new Promise(resolve => setTimeout(resolve, 10));
-                                wait.then(() => {
-                                  if (!this.props.selectedContact
-                                      && this.navigationRefMain
-                                      && this.navigationItems
-                                      && info.index < this.navigationItems.length) {
-                                      try {
-                                          this.navigationRefMain.scrollToIndex({ index: info.index, animated: false });
-                                      } catch (e) {}
-                                  }
-                                });
-                              }}
-                            data={this.navigationItems}
-                            extraData={this.state}
-                            keyExtractor={(item, index) => item.key}
-                            renderItem={this.renderNavigationItem}
-                        />
-                    </View>
-                    : null}
+                    <ContactsCategoryBar
+                        visible={this.showNavigationBar && !this.props.selectedContact}
+                        isFolded={this.props.isFolded}
+                        orientation={this.props.orientation}
+                        width={width}
+                        height={height}
+                        contactsFilter={this.state.contactsFilter}
+                        navigationContainerStyle={navigationContainer}
+                        contentContainerStyle={styles.navigationButtonGroup}
+                        data={this.navigationItems}
+                        extraData={this.state}
+                        keyExtractor={(item, index) => item.key}
+                        renderItem={this.renderNavigationItem}
+                        onListRef={(ref) => { this.navigationRefMain = ref; }}
+                    />
 
 
-                    {this.props.isTablet && 0?
-                    <View style={styles.footer}>
-                        <FooterBox />
-                    </View>
-                        : null}
 
                 </View>
 
@@ -4848,6 +3520,18 @@ class ReadyBox extends Component {
                        server doesn't expose a bridge. */
                     conferenceSettings = {this.props.conferenceSettings}
                 />
+
+                {/* Bulk-delete confirmation (Deleted "Delete permanently"
+                    / Graveyard "Delete forever"). Vertically stacked
+                    buttons so the panel never overflows the right margin
+                    in portrait. */}
+                <ConfirmActionModal
+                    visible={!!this.state.confirmDialog}
+                    title={this.state.confirmDialog ? this.state.confirmDialog.title : ''}
+                    message={this.state.confirmDialog ? this.state.confirmDialog.message : ''}
+                    actions={this.state.confirmDialog ? this.state.confirmDialog.actions : []}
+                    onDismiss={this.closeConfirmDialog}
+                />
             </Fragment>
         );
     }
@@ -4865,6 +3549,8 @@ ReadyBox.propTypes = {
     // sharing. Optional; treated as empty if not passed.
     activeLocationShares: PropTypes.object,
     orientation     : PropTypes.string,
+    // Per-device toggle: prefix each category/group pill with its member count.
+    showGroupMemberCounts: PropTypes.bool,
     isTablet        : PropTypes.bool,
     isLandscape     : PropTypes.bool,
     refreshHistory  : PropTypes.bool,
@@ -4907,6 +3593,7 @@ ReadyBox.propTypes = {
     shareToContacts  : PropTypes.bool,
     showQRCodeScanner      : PropTypes.bool,
     selectedContacts: PropTypes.array,
+    mergeContacts   : PropTypes.func,
     updateSelection : PropTypes.func,
     loadEarlierMessages: PropTypes.func,
     newContactFunc  : PropTypes.func,
@@ -5009,288 +3696,5 @@ ReadyBox.propTypes = {
 	remoteConferenceDomain: PropTypes.string,
 	addressBookContacts: PropTypes.array,
 };
-
-// Local stylesheet for the Sylk / AddressBook source pills that sit on
-// the right-hand side of the contacts-list Sort/Order navigation row.
-// Kept here next to the JSX it styles instead of in the global Ready
-// Box stylesheet so the pill visuals are easy to find and tweak.
-const readyBoxTrashStyles = StyleSheet.create({
-    contactSelectFab: {
-        position: 'absolute',
-        right: 16,
-        bottom: 24,
-        alignItems: 'center',
-    },
-    fabBtn: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: 12,
-        elevation: 6,
-        shadowColor: '#000',
-        shadowOpacity: 0.3,
-        shadowRadius: 4,
-        shadowOffset: { width: 0, height: 2 },
-    },
-    fabCancel: { backgroundColor: '#757575' },
-    fabDelete: { backgroundColor: '#c62828' },
-    fabRestore: { backgroundColor: '#2e7d32' },
-    fabCount: {
-        color: '#fff',
-        fontSize: 11,
-        fontWeight: 'bold',
-        marginTop: -2,
-    },
-});
-
-const readyBoxPillStyles = StyleSheet.create({
-    pillGroup: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginLeft: 6,
-    },
-    // Variant applied when the pill group sits on the LEFT edge of
-    // the nav row (Contacts-list view, where Sylk/Phonebook moved to
-    // the left of the search bar and Sort/Order moved to the right).
-    // Drops the marginLeft that made sense when the pills were
-    // tucked next to a flex:1 wrapper on the right, and adds a small
-    // marginRight so the right-side Sort/Order cluster has a bit of
-    // breathing room.
-    pillGroupLeading: {
-        marginLeft: 0,
-        marginRight: 6,
-    },
-    // Outer TouchableOpacity wrapper for each source button. Sized
-    // and shaped like the sort-order chips so the whole row reads as
-    // one ribbon of equally-weighted toggles. The label-under-button
-    // layout is delegated to this column: icon chip on top, caption
-    // text below, both centered horizontally.
-    pillCol: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        // Tight horizontal gutter between the two pills (and between
-        // this column and the sort chips immediately to its left) so
-        // the right-side cluster eats less of the row. The sort-icon
-        // FlatList sits in a flex:1 wrapper, so widening this column
-        // also implicitly shifts those icons leftward — exactly what
-        // we want when "Phonebook" needs more horizontal room than
-        // "Sylk".
-        marginHorizontal: 2,
-        // 60 px is the smallest width that fits "Phonebook" at the
-        // 9 pt 600-weight caption style without truncation, while
-        // keeping the icon chip vertically centered. The Sylk
-        // column gets the same width so the two read as a balanced
-        // pair (its shorter label just floats centered).
-        width: 60,
-    },
-    // The visible coloured chip — circular, just big enough to hold
-    // a 20 px icon plus a hint of padding. Background carries the
-    // active/inactive state; the caption beneath stays the same
-    // neutral white regardless of which pill is selected (matches
-    // the sort chips).
-    pill: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        borderWidth: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    pillSylkActive: {
-        backgroundColor: '#2980b9',
-        borderColor: '#2980b9',
-    },
-    pillAbActive: {
-        backgroundColor: '#27ae60',
-        borderColor: '#27ae60',
-    },
-    pillInactive: {
-        backgroundColor: 'transparent',
-        borderColor: '#cfd8dc',
-    },
-    // Caption is plain text below the chip — same styling shape as
-    // the sort-order labels (`Time` / `Size` / `Asc` / `Desc`): tiny
-    // text, centered, snug to the chip above. fontWeight pinned to
-    // numeric '400' (Regular) — on Android the string 'normal' /
-    // '600' can drift to Roboto Medium under Paper's inherited
-    // defaults; the numeric value resolves more reliably to the
-    // intended Roboto Regular cut. textTransform:none guards
-    // against any uppercase parent.
-    pillCaption: {
-        fontSize: 9,
-        fontWeight: '400',
-        textTransform: 'none',
-        color: '#ffffff',
-        // Pull the caption right up under the chip — the previous
-        // +2 left a visible gap, the user wants the chip + label to
-        // read as a single stacked element.
-        marginTop: -2,
-        textAlign: 'center',
-        backgroundColor: 'transparent',
-    },
-});
-
-// Layout for the dialpad icon + inline DTMFPad attached to the
-// AddressBook search row. Kept separate from the pill stylesheet so
-// the two surfaces evolve independently.
-const readyBoxDialpadStyles = StyleSheet.create({
-    searchRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    searchInputWrap: {
-        flex: 1,
-    },
-    iconButton: {
-        marginLeft: 4,
-        marginRight: 0,
-        // The IconButton ships a built-in margin we don't want here;
-        // padding zero keeps the icon flush with the search bar's
-        // right edge and matches the height the bar settled on.
-        margin: 0,
-    },
-    iconButtonActive: {
-        backgroundColor: '#27ae60',
-    },
-    dialpadWrap: {
-        marginTop: 6,
-        paddingVertical: 4,
-        // A faint divider/background separates the dialpad from the
-        // contact list immediately below it, so the keypad doesn't
-        // feel like it's floating over rows.
-        backgroundColor: 'rgba(0,0,0,0.03)',
-        borderRadius: 12,
-    },
-    dialpadActions: {
-        flexDirection: 'row',
-        justifyContent: 'flex-end',
-        alignItems: 'center',
-        paddingRight: 12,
-        paddingTop: 4,
-    },
-    dialpadBackspace: {
-        // White-tinted backspace control sitting on a translucent
-        // dark backdrop so it reads against the soft panel below.
-        backgroundColor: 'rgba(0,0,0,0.45)',
-        borderRadius: 18,
-        margin: 0,
-    },
-});
-
-// Inline banner shown above the contacts list when the user is on the
-// Phonebook source pill but the OS contacts permission was denied (or
-// is stuck in "don't ask again"). Visually a soft amber strip so it
-// reads as informational, not alarming — paired with a small filled
-// button on the right that opens the OS Sylk preferences page via
-// react-native-permissions's openSettings() helper.
-// DND-on pill rendered above the contacts list whenever
-// state.accountSetting.privacy.dnd is true. Colour palette is a
-// dusty pink/red (background #fde8e8, border #f3b8b8, text #7a1d1d)
-// to make it visually distinct from the orange phonebook-permission
-// banner directly below it — the two are otherwise structurally
-// identical (row layout, leading icon, title+body text). The pill
-// itself is a TouchableOpacity so the whole strip is tappable to
-// flip DND back off without scrolling up to the navbar bell.
-// "Syncing contacts…" strip shown during the first XCAP contacts import.
-// Soft amber (informational) so it's distinct from the red DND pill.
-const readyBoxSyncingStyles = StyleSheet.create({
-    pill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginHorizontal: 8,
-        marginTop: 6,
-        marginBottom: 4,
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        backgroundColor: '#fcf3e0',
-        borderColor: '#f0d9a8',
-        borderWidth: 1,
-        borderRadius: 20,
-    },
-    text: {
-        color: '#7a5a1d',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-});
-
-const readyBoxDndPillStyles = StyleSheet.create({
-    pill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginHorizontal: 8,
-        marginTop: 6,
-        marginBottom: 4,
-        paddingVertical: 8,
-        paddingHorizontal: 10,
-        backgroundColor: '#fde8e8',
-        borderColor: '#f3b8b8',
-        borderWidth: 1,
-        borderRadius: 20,
-    },
-    pillIcon: {
-        marginRight: 8,
-    },
-    pillTextWrap: {
-        flex: 1,
-        minWidth: 0,
-    },
-    pillTitle: {
-        fontSize: 13,
-        fontWeight: '700',
-        color: '#7a1d1d',
-    },
-    pillBody: {
-        fontSize: 12,
-        color: '#7a1d1d',
-        marginTop: 1,
-    },
-});
-
-const readyBoxPermissionBannerStyles = StyleSheet.create({
-    banner: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginHorizontal: 8,
-        marginTop: 6,
-        marginBottom: 4,
-        paddingVertical: 8,
-        paddingHorizontal: 10,
-        backgroundColor: '#fff4e0',
-        borderColor: '#f1c789',
-        borderWidth: 1,
-        borderRadius: 8,
-    },
-    bannerIcon: {
-        marginRight: 8,
-    },
-    bannerTextWrap: {
-        flex: 1,
-        minWidth: 0,
-    },
-    bannerTitle: {
-        fontSize: 13,
-        fontWeight: '700',
-        color: '#5a3700',
-    },
-    bannerBody: {
-        fontSize: 12,
-        color: '#5a3700',
-        marginTop: 1,
-    },
-    bannerButton: {
-        marginLeft: 10,
-        backgroundColor: '#b06000',
-    },
-    bannerButtonLabel: {
-        fontSize: 12,
-        color: '#ffffff',
-        marginVertical: 4,
-        marginHorizontal: 8,
-    },
-});
-
 
 export default ReadyBox;

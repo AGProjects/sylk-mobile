@@ -1,5 +1,5 @@
 // generateColor.js
-import * as colors from './colors';
+import * as colors from './assets/styles/colors';
 import murmur from 'murmurhash-js';
 
 // Available material design colors

@@ -608,9 +608,11 @@ const ChatBubble = memo(
       // in ContactsListBox.renderMessageAudio. Both sides need to
       // agree on the playButton + margin + column padding budget or
       // the bubble background will mismatch its content.
-      const _audioWinW = Dimensions.get('window').width;
-      const _audioSliderBudget = Math.max(120, Math.min((_audioWinW - 50) * 0.8 - 94, 520));
-      const _audioWrapperWidth = _audioSliderBudget + 94;
+      // Compact audio bubble: playback now happens in the standalone recorder
+      // player card, so the bubble is just a play button + duration label. Pin
+      // a modest fixed width (enough for "Call recording of 1h 6m 40s") on both
+      // sides so incoming/outgoing stay symmetric.
+      const _audioWrapperWidth = 240;
       content = (
         <Bubble
           {...bubbleProps}
@@ -808,6 +810,35 @@ const ChatBubble = memo(
 		return false;
 	  }
 
+	  // ==== Measured bubble width ====
+	  // The reply-preview pane is glued ABOVE the bubble and is sized to
+	  // `width: bubbleWidth` (= max(measuredWidth, MIN_BUBBLE_WIDTH)),
+	  // while the reply bubble below uses `minWidth: bubbleWidth` and
+	  // grows with its content. Both numbers derive from
+	  // bubbleWidths[id], which starts at 0 (→ MIN floor) on the first
+	  // render and only gets its real value after customView's onLayout
+	  // measures the bubble and the parent setState's bubbleWidths.
+	  //
+	  // None of the other checks in this comparator watch bubbleWidths,
+	  // so that post-measure update was being SKIPPED: the preview pane
+	  // stayed frozen at the MIN floor (e.g. 120) while the bubble had
+	  // already grown to hug a longer reply (e.g. 210) — the two panes
+	  // rendered at different widths (the reported mismatch). Re-render
+	  // when this bubble's measured width changes so the preview pane
+	  // tracks the bubble and both panes settle at the widest one.
+	  //
+	  // Rounded compare (1px) so sub-pixel layout jitter can't set up an
+	  // endless render → measure → setState → render loop; the width
+	  // converges within a frame or two.
+	  {
+		const prevW = Math.round(prev.bubbleWidths?.[id] ?? 0);
+		const nextW = Math.round(next.bubbleWidths?.[id] ?? 0);
+		if (prevW !== nextW) {
+		  locTrace(false, 'measured bubbleWidth changed');
+		  return false;
+		}
+	  }
+
 		// ==== Reply messages ====
 		const currentId = p._id;
 		
@@ -940,6 +971,23 @@ const ChatBubble = memo(
 		}
 	  }
 
+	  // ==== Image aspect ratio (EXIF / natural-size correction) ====
+	  // FastImage / Image.getSize report the TRUE display aspect once the
+	  // image decodes (orientation applied), which can differ from the value
+	  // baked into send-time metadata for older or received rotated photos.
+	  // The corrected ratio is stored in state.imageAspectRatios[id] and
+	  // plumbed here as a prop. Re-render when it changes so the bubble
+	  // reshapes to hug the image instead of letterboxing it with white side
+	  // bars. MUST run before the imageLoadingState SKIP below (which returns
+	  // true / skips), otherwise a simultaneous loading-state flip would eat
+	  // the aspect correction and it would only land after fullscreen.
+	  const prevAR = prev.imageAspectRatios?.[id] ?? null;
+	  const nextAR = next.imageAspectRatios?.[id] ?? null;
+	  if (prevAR !== nextAR) {
+		locTrace(false, 'imageAspectRatio changed');
+		return false; // re-render
+	  }
+
 	  // ==== Image loading state ====
 	  const prevImgState = prev.imageLoadingState?.[id] ?? null;
 	  const nextImgState = next.imageLoadingState?.[id] ?? null;
@@ -1025,7 +1073,13 @@ const ChatBubble = memo(
 		}
 
 		// ==== Status flags ====
-		const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label'];
+		const flags = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing', 'position', 'consumed', 'rotation', 'label',
+			// Image-group leader: signature of the LAST member's delivery
+			// flags (set in ChatBox visibleMessages). The leader's own
+			// flags don't change when a collapsed member's IMDN state
+			// flips, so without watching this the leader bubble would
+			// keep stale ticks. Default null (non-leaders never set it).
+			'_groupTickSig'];
 		let defaultFalse = ['pending', 'sent', 'received', 'displayed', 'failed', 'pinned', 'playing'];
 
 		for (let f of flags) {

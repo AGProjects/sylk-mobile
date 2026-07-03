@@ -4,6 +4,7 @@ import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu, Surf
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import uuid from 'react-native-uuid';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 import MediaInfoPanel from './MediaInfoPanel';
@@ -17,6 +18,7 @@ import LoadingScreen from './LoadingScreen';
 import TrafficStats from './BarChart';
 import AudioSpeedometer from './AudioSpeedometer';
 import VuMeter from './VuMeter';
+import SpectrumBars from './SpectrumBars';
 
 // Used by _logProposedCodec: we re-run sylkrtc's mungeSdp() with the
 // currently active preferred-codec settings against pc.localDescription.sdp
@@ -53,7 +55,7 @@ import {
 //     'not_implemented' (e.g. iOS pre-track-resolution race), we
 //     fall back to mic-only AAC capture via audioRecorderPlayer.
 //     One-sided record but the same compressed format.
-import CallRecorder from '../CallRecorder';
+import CallRecorder from './CallRecorder';
 import AudioRecorderPlayer, {
     AudioEncoderAndroidType,
     AudioSourceAndroidType,
@@ -67,7 +69,7 @@ import CallRecordingDisclosureModal from './CallRecordingDisclosureModal';
 import {
     readAcknowledged as readCallRecordingDisclosure,
     setAcknowledged as setCallRecordingDisclosure,
-} from '../callRecordingDisclosure';
+} from './callRecordingDisclosure';
 
 import styles from '../assets/styles/AudioCall';
 
@@ -171,6 +173,10 @@ class AudioCallBox extends Component {
             // Toggle between the AudioSpeedometer (default) and the
             // legacy TrafficStats bar-chart. Tap the stats area to flip.
             showOldStats                : false,
+            // Audio-viz cycle for the meter slot under the names. Tap to
+            // advance: 0 = Levels (VU meters), 1 = Loss/RTT trend chart,
+            // 2 = remote Spectrum (16 log bands). See _renderAudioViz.
+            vizMode                     : 0,
             // 10-second auto-start countdown for the outgoing-audio
             // pre-call screen. Reaches 0 → confirmStartCall() fires
             // automatically. Updated by the interval started in
@@ -1074,6 +1080,12 @@ class AudioCallBox extends Component {
                 if (result && result !== 'not_implemented') {
                     usedBackend = 'callrecorder';
                     usedFilename = recName;
+                    // The remote-leg spectrogram is now computed INSIDE the
+                    // native recorder (SylkCallRecorder), from the same PCM it
+                    // encodes, on the same 100 ms bins as the peaks — so it
+                    // stays aligned with the waveform/audio. The old JS analyser
+                    // capture (SpectrumRecorder.startRemote) is no longer needed
+                    // here; the live in-call bars keep their own analyser.
                 } else {
                     utils.timestampedLog(
                         '[call] CallRecorder unavailable after 10 attempts — falling back to AAC mic-only (peaks via metering)');
@@ -1151,19 +1163,36 @@ class AudioCallBox extends Component {
             clearInterval(this._recordingTickInterval);
             this._recordingTickInterval = null;
         }
+        // Synchronous re-entrancy guard. _stopCallRecording is wired to several
+        // triggers (call terminated, button, unmount), and setState(isRecording:
+        // false) below is async — so two triggers firing in the same tick both
+        // pass the `isRecording` check and each run stopRecorder()+saveCallRecording,
+        // producing TWO chat messages (two transfer_ids) for ONE file, with the
+        // two runs racing on the shared SpectrumRecorder singleton so one gets
+        // the spectrum and the other doesn't. This flag flips synchronously so
+        // only the first caller proceeds.
+        if (this._recordingStopping) return;
         if (!this.state.isRecording) return;
+        this._recordingStopping = true;
         const elapsed = this.state.recordingElapsedSec || 0;
         const backend = this._recordingBackend || 'fallback';
         try {
             let path;
             let peaks = null;
+            // Spectrogram (remote leg). Computed INSIDE the native recorder
+            // (SylkCallRecorder), from the same PCM it encodes, on the same
+            // 100 ms bins as the peaks — so it shares the recorder's encoded-
+            // audio clock and stays aligned with the waveform for any call
+            // length, DTX included. The old JS analyser path (which ticked on
+            // wall time and drifted) is gone. Null on the mic-only fallback,
+            // which has no remote leg.
+            let spectrum = null;
             if (backend === 'callrecorder') {
-                // CallRecorder.stop now returns { path, peaks } so the
-                // playback VU meter can be driven by real per-100ms
-                // amplitude data instead of a synthetic ticker.
+                // CallRecorder.stop returns { path, peaks, spectrum, durationMs }.
                 const r = await CallRecorder.stop();
                 path  = r && r.path;
                 peaks = r && r.peaks;
+                spectrum = (r && r.spectrum) ? r.spectrum : null;
             } else {
                 // AAC mic-only fallback (audioRecorderPlayer). The
                 // remote side is empty because there's no track
@@ -1200,6 +1229,7 @@ class AudioCallBox extends Component {
                         remoteDisplayName: this.state.remoteDisplayName,
                         durationSec: elapsed,
                         peaks: peaks,
+                        spectrum: spectrum,
                     });
                 } catch (e) {
                     console.log('saveCallRecording handler failed:', e && e.message);
@@ -1212,6 +1242,7 @@ class AudioCallBox extends Component {
             }
         } finally {
             this._recordingBackend = null;
+            this._recordingStopping = false;
         }
     }
 
@@ -1449,6 +1480,30 @@ class AudioCallBox extends Component {
      *  Uses the shared VuMeter component so the in-call meter and the
      *  bubble playback meter render exactly the same widget. The
      *  outer wrapper centres each 60%-wide bar across the screen. */
+    /** Small caption showing which microphone is currently capturing —
+     *  rendered under the local (recording) VU meter in the Levels view.
+     *  The active mic isn't tracked separately; it follows the selected
+     *  output route, so utils.getActiveInputDevice() derives it from
+     *  selectedAudioDevice, enriched with the real device name from the
+     *  native input list when available. */
+    _renderCurrentInputDevice() {
+        const input = utils.getActiveInputDevice(
+            this.props.selectedAudioDevice,
+            this.props.audioInputs,
+        );
+        if (!input) {
+            return null;
+        }
+        return (
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, opacity: 0.6 }}>
+                <Icon name={input.icon} size={12} color="#ccc" />
+                <Text style={{ fontSize: 10, marginLeft: 4, color: '#ccc' }}>
+                    {input.name}
+                </Text>
+            </View>
+        );
+    }
+
     _renderRemoteVuMeter() {
         // Suppress the WHOLE VU-meter block (bars AND labels) until
         // WebRTC publishes its first audioLevel sample. The latch in
@@ -1475,15 +1530,70 @@ class AudioCallBox extends Component {
         // landscape tweaks add another offset. Portrait keeps
         // natural too.
         const _vuLift = this.state.isLandscape ? { transform: [{ translateY: 0 }] } : null;
+
+        // Three-way cycle for this slot: tap to advance
+        //   0 Levels (VU meters) -> 1 Loss/RTT trend -> 2 Spectrum.
+        const mode = this.state.vizMode || 0;
+        const callObj = this.state.call || this.props.call;
+
+        let body;
+        if (mode === 1) {
+            // Loss / RTT (plus jitter/bitrate) trend — the SAME widget
+            // and data the stats block uses, surfaced here in the cycle.
+            body = (
+                <TrafficStats
+                    isTablet={this.props.isTablet}
+                    isLandscape={this.state.isLandscape}
+                    isFolded={this.props.isFolded}
+                    data={this.state.audioGraphData}
+                    media="audio"
+                    footer={null}
+                />
+            );
+        } else if (mode === 2) {
+            // Remote spectrum — 16 log-spaced bands. The display range
+            // zooms to the negotiated codec's band (Opus 2-16k, G.722
+            // 1-8k, G.711 0.5-4k), derived from the codec reported in
+            // the latest stats sample. SpectrumBars is mounted only in
+            // this mode, so the native analyser runs only while shown.
+            const _lastG = (this.state.audioGraphData && this.state.audioGraphData.length)
+                ? this.state.audioGraphData[this.state.audioGraphData.length - 1]
+                : null;
+            const _codec = _lastG ? (_lastG.audioCodec || '') : '';
+            body = (
+                <SpectrumBars call={callObj} active codec={_codec} width={220} height={64} />
+            );
+        } else {
+            // Labels removed per user request — the bar geometry
+            // (remote on top, local on bottom) is consistent enough
+            // that the captions weren't carrying weight.
+            body = (
+                <React.Fragment>
+                    <VuMeter level={this.state.remoteAudioLevel} width="60%" />
+                    <VuMeter level={this.state.localAudioLevel}  width="60%" />
+                    {this._renderCurrentInputDevice()}
+                </React.Fragment>
+            );
+        }
+
+        const _vizLabel = ['Levels', 'Loss / RTT', 'Spectrum'][mode];
         return (
-            <View style={[{ alignSelf: 'stretch', alignItems: 'center' }, _vuLift]}>
-                {/* Labels removed per user request — the bar geometry
-                    (remote on top, local on bottom) is consistent
-                    enough that the captions weren't carrying weight. */}
-                <VuMeter level={this.state.remoteAudioLevel} width="60%" />
-                <VuMeter level={this.state.localAudioLevel}  width="60%" />
-            </View>
+            <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={this._cycleViz}
+                style={[{ alignSelf: 'stretch', alignItems: 'center' }, _vuLift]}
+            >
+                {body}
+                <Text style={{ fontSize: 9, opacity: 0.5, marginTop: 2 }}>
+                    {_vizLabel}  ›
+                </Text>
+            </TouchableOpacity>
         );
+    }
+
+    /** Advance the audio-viz cycle: Levels -> Loss/RTT -> Spectrum -> … */
+    _cycleViz() {
+        this.setState(s => ({ vizMode: ((s.vizMode || 0) + 1) % 3 }));
     }
 
     // Remote party's client identity, shown under the speedometer.
@@ -4117,6 +4227,7 @@ AudioCallBox.propTypes = {
 	userStartedCall: PropTypes.bool,
     availableAudioDevices : PropTypes.array,
     selectedAudioDevice : PropTypes.string,
+    audioInputs : PropTypes.array,
     selectAudioDevice: PropTypes.func,
     useInCallManger: PropTypes.bool,
 	insets: PropTypes.object,

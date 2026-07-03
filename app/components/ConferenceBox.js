@@ -9,7 +9,7 @@ import debug from 'react-native-debug';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
-import { IconButton, Appbar, Portal, Modal, Surface, Paragraph, Text, Menu, Dialog, Button } from 'react-native-paper';
+import { IconButton, Appbar, Modal, Surface, Paragraph, Text, Menu, Button } from 'react-native-paper';
 import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated, Easing} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
@@ -72,12 +72,13 @@ import InCallManager from 'react-native-incall-manager';
 
 import xss from 'xss';
 import * as RNFS from 'react-native-fs';
-import CallRecorder from '../CallRecorder';
+import CallRecorder from './CallRecorder';
 import CallRecordingDisclosureModal from './CallRecordingDisclosureModal';
+import ConfirmActionModal from './ConfirmActionModal';
 import {
     readAcknowledged as readConferenceRecordingDisclosure,
     setAcknowledged  as setConferenceRecordingDisclosure,
-} from '../conferenceRecordingDisclosure';
+} from './conferenceRecordingDisclosure';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 
 import md5 from "react-native-md5";
@@ -3198,7 +3199,14 @@ class ConferenceBox extends Component {
             context.actionSheet().showActionSheetWithOptions({options, cancelButtonIndex: l, destructiveButtonIndex}, (buttonIndex) => {
                 let action = options[buttonIndex];
                 if (action === 'Copy') {
-                    Clipboard.setString(currentMessage.text);
+                    // HTML bubbles: copy the rendered text, not the raw markup.
+                    if (currentMessage.contentType === 'text/html' || currentMessage.html) {
+                        Clipboard.setString(
+                            utils.html2text(currentMessage.html || currentMessage.text)
+                        );
+                    } else {
+                        Clipboard.setString(currentMessage.text);
+                    }
                 } else if (action === 'Open') {
                     FileViewer.open(currentMessage.local_url, { showOpenWithDialog: true })
                     .then(() => {
@@ -10475,31 +10483,16 @@ class ConferenceBox extends Component {
 				    dialog never appeared in audio view — the
 				    Hangup buttons did nothing visible because the
 				    Portal had no host in the active render tree. */}
-				<Portal>
-					<Dialog
-						visible={!!this.state.hangupConfirmVisible}
-						onDismiss={this.cancelHangup}
-					>
-						<Dialog.Title>Leave conference</Dialog.Title>
-						<Dialog.Content>
-							<Text>
-								Are you sure you want to leave the conference?
-							</Text>
-						</Dialog.Content>
-						<Dialog.Actions>
-							<Button onPress={this.cancelHangup}>
-								Cancel
-							</Button>
-							<Button
-								mode="contained"
-								onPress={this.confirmHangup}
-								icon="phone-hangup"
-							>
-								Leave
-							</Button>
-						</Dialog.Actions>
-					</Dialog>
-				</Portal>
+				<ConfirmActionModal
+					visible={!!this.state.hangupConfirmVisible}
+					title="Leave conference"
+					message="Are you sure you want to leave the conference?"
+					onDismiss={this.cancelHangup}
+					actions={[
+						{ label: 'Leave', onPress: this.confirmHangup, destructive: true },
+						{ label: 'Cancel', onPress: this.cancelHangup, cancel: true },
+					]}
+				/>
 			</View>
 			);
         }
@@ -11904,31 +11897,16 @@ class ConferenceBox extends Component {
 			    before the conference is torn down. Same Portal +
 			    Dialog shape as the "Escalate to conference"
 			    confirmation panel for visual consistency. */}
-			<Portal>
-				<Dialog
-					visible={!!this.state.hangupConfirmVisible}
-					onDismiss={this.cancelHangup}
-				>
-					<Dialog.Title>Leave conference</Dialog.Title>
-					<Dialog.Content>
-						<Text>
-							Are you sure you want to hang up the conference?
-						</Text>
-					</Dialog.Content>
-					<Dialog.Actions>
-						<Button onPress={this.cancelHangup}>
-							Cancel
-						</Button>
-						<Button
-							mode="contained"
-							onPress={this.confirmHangup}
-							icon="phone-hangup"
-						>
-							Hangup
-						</Button>
-					</Dialog.Actions>
-				</Dialog>
-			</Portal>
+			<ConfirmActionModal
+				visible={!!this.state.hangupConfirmVisible}
+				title="Leave conference"
+				message="Are you sure you want to hang up the conference?"
+				onDismiss={this.cancelHangup}
+				actions={[
+					{ label: 'Hangup', onPress: this.confirmHangup, destructive: true },
+					{ label: 'Cancel', onPress: this.cancelHangup, cancel: true },
+				]}
+			/>
 		</View>
         );
     }

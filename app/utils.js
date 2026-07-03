@@ -1190,7 +1190,7 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
         } else if (isCallRecording) {
             text = 'Call recording';
         } else {
-            text = 'Audio';
+            text = 'Audio recording';
         }
     } else if (isVideo(decrypted_file_name, metadata.filetype)) {
         text = 'Video';
@@ -1757,7 +1757,7 @@ async function getRemotePartySizes(accountId, uri) {
 			continue;
         }
         const remotePartyPath = item.path;
-        const size = await getFolderSize(remotePartyPath, uri);
+        const size = await getFolderSize(remotePartyPath, false);
         const dirs = await getDirs(remotePartyPath);
         //console.log('Space used for', item.name, '->', beautySize(size), 'dirs', dirs.length);
         //listAllFilesRecursive(item.path);        
@@ -1803,20 +1803,14 @@ async function getFolderSize(folderPath, log=false) {
     if (!exists) return 0;
 
     const items = await RNFS.readDir(folderPath);
-	if (log) {
-		console.log('Found', items.length, 'items');
-    }
+    // Per-file/per-folder scan logging removed — it spammed the log on every
+    // file-transfer disk-usage tally. The `log` param is kept for signature
+    // compatibility but no longer emits anything.
     for (const item of items) {
       if (item.isFile()) {
         totalSize += Number(item.size);
-        if (log) {
-			console.log('Found file', item.path, 'with size', item.size);
-		}
       } else if (item.isDirectory()) {
 		dirSize = await getFolderSize(item.path, log);
-        if (log) {
-			console.log('log dir', item.path, 'with size', dirSize);
-		}
         totalSize += dirSize;
       }
     }
@@ -1955,6 +1949,93 @@ const availableAudioDeviceNames = {
 	BLUETOOTH_SCO: 'Bluetooth',
 	BUILTIN_SPEAKER: 'Speaker',
 };
+
+// --- Current INPUT (microphone) device ---------------------------------
+// The app never tracks a "selected input" of its own — on both platforms
+// the active mic follows whatever output route is selected (BT route → BT
+// mic, wired route → headset mic, earpiece/speaker → built-in mic). So we
+// derive the active mic from the selected route type rather than from a
+// separate selection.
+
+// Selected output route type → the mic type that route uses.
+const inputTypeForRoute = {
+	BUILTIN_EARPIECE: 'BUILTIN_MIC',
+	BUILTIN_SPEAKER:  'BUILTIN_MIC',
+	WIRED_HEADSET:    'WIRED_HEADSET',
+	USB_HEADSET:      'USB_HEADSET',
+	BLUETOOTH_SCO:    'BLUETOOTH_SCO',
+};
+
+// Friendly fallback labels per mic type. Used when the native input list
+// doesn't carry a usable product name (e.g. Android skips the BT mic in
+// getAudioInputs(), and the built-in mic's productName is just the phone
+// model, which we'd rather not show).
+const inputDeviceNames = {
+	BUILTIN_MIC:    'Built-in microphone',
+	WIRED_HEADSET:  'Wired headset mic',
+	USB_HEADSET:    'USB headset mic',
+	BLUETOOTH_SCO:  'Bluetooth mic',
+};
+
+const inputDeviceIconsMap = {
+	BUILTIN_MIC:    'microphone',
+	WIRED_HEADSET:  'headphones',
+	USB_HEADSET:    'headphones',
+	BLUETOOTH_SCO:  'bluetooth-audio',
+};
+
+// Resolve the currently-active microphone for display.
+//   selectedRoute: the selected output route type (this.state.selectedAudioDevice)
+//   audioInputs:   native input list [{type, name, id}, ...] (this.state.audioInputs)
+// Returns {type, name, icon}. For headset routes we prefer the real device
+// name reported by the native input list (e.g. "AirPods Pro"); for the
+// built-in mic we keep the friendly label.
+function getActiveInputDevice(selectedRoute, audioInputs) {
+	const micType = inputTypeForRoute[selectedRoute] || 'BUILTIN_MIC';
+	let name = inputDeviceNames[micType] || 'Microphone';
+
+	if (micType !== 'BUILTIN_MIC' && Array.isArray(audioInputs)) {
+		const match = audioInputs.find(d => d && d.type === micType);
+		if (match && match.name && match.name !== 'UNKNOWN') {
+			name = match.name;
+		}
+	}
+
+	return { type: micType, name: name, icon: inputDeviceIconsMap[micType] || 'microphone' };
+}
+
+// Pick the active microphone when there's NO call route to follow — e.g.
+// while recording a voice message. Without an explicit route, both
+// platforms route mic capture to a connected headset over the built-in
+// mic, so we pick the highest-priority connected input from the native
+// input list (AudioRouteModule.getAudioInputs()). For headsets we prefer
+// the real reported device name; for the built-in mic we keep the
+// friendly label. Returns {type, name, icon}.
+function pickActiveInputFromList(audioInputs) {
+	if (!Array.isArray(audioInputs) || audioInputs.length === 0) {
+		return {
+			type: 'BUILTIN_MIC',
+			name: inputDeviceNames.BUILTIN_MIC,
+			icon: inputDeviceIconsMap.BUILTIN_MIC,
+		};
+	}
+
+	const priority = ['BLUETOOTH_SCO', 'USB_HEADSET', 'WIRED_HEADSET', 'BUILTIN_MIC'];
+	let best = null;
+	for (let i = 0; i < priority.length; i++) {
+		best = audioInputs.find(d => d && d.type === priority[i]);
+		if (best) break;
+	}
+	if (!best) best = audioInputs[0];
+
+	const type = best.type || 'BUILTIN_MIC';
+	let name = inputDeviceNames[type] || best.name || 'Microphone';
+	if (type !== 'BUILTIN_MIC' && best.name && best.name !== 'UNKNOWN') {
+		name = best.name;
+	}
+
+	return { type: type, name: name, icon: inputDeviceIconsMap[type] || 'microphone' };
+}
                     
 // URL detection used by the persisted `has_link` column and the
 // runtime Links chip JS post-filter. Single source of truth so a
@@ -2061,6 +2142,10 @@ exports.fileChecksum = fileChecksum;
 exports.deepEqual = deepEqual;
 exports.availableAudioDevicesIconsMap = availableAudioDevicesIconsMap;
 exports.availableAudioDeviceNames = availableAudioDeviceNames;
+exports.inputDeviceNames = inputDeviceNames;
+exports.inputDeviceIconsMap = inputDeviceIconsMap;
+exports.getActiveInputDevice = getActiveInputDevice;
+exports.pickActiveInputFromList = pickActiveInputFromList;
 exports.getFolderSize = getFolderSize;
 exports.cleanHtml = cleanHtml;
 exports.parseSylkConferenceUrl = parseSylkConferenceUrl;
@@ -2075,3 +2160,42 @@ exports.getLogfilePath = getLogfilePath;
 
 
 
+
+
+// --- anonymizeEmails — stable email scrubber (moved from anonymizeEmails.js) ---
+// Replaces every user@domain literal with a stable random@random substitute.
+// Each unique original maps to ONE substitute for the whole export so the text
+// still reads coherently. Used by the support-log share flow (LogsModal) and
+// the automatic ANR/crash reporter (appExitReporter).
+const EMAIL_RE = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
+
+function _fakeUserFor(idx) {
+    const group = Math.floor(idx / 2) + 1;
+    const baseName = idx % 2 === 0 ? 'alice' : 'bob';
+    return group === 1 ? baseName : `${baseName}${group}`;
+}
+
+function anonymizeEmails(text) {
+    if (!text) return text;
+    const emailMap = new Map();
+    const domainMap = new Map();
+    let userIdx = 0;
+    let domainIdx = 0;
+    return text.replace(EMAIL_RE, (orig) => {
+        if (emailMap.has(orig)) return emailMap.get(orig);
+        const fakeUser = _fakeUserFor(userIdx++);
+        const at = orig.indexOf('@');
+        const origDomain = orig.slice(at + 1);
+        let fakeDomain = domainMap.get(origDomain);
+        if (!fakeDomain) {
+            domainIdx++;
+            fakeDomain = `example${domainIdx}.com`;
+            domainMap.set(origDomain, fakeDomain);
+        }
+        const fake = `${fakeUser}@${fakeDomain}`;
+        emailMap.set(orig, fake);
+        return fake;
+    });
+}
+
+exports.anonymizeEmails = anonymizeEmails;

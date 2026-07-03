@@ -11,7 +11,7 @@ import {
   Dimensions,
 } from 'react-native';
 import PropTypes from 'prop-types';
-import { Surface } from 'react-native-paper';
+import { Surface, Button } from 'react-native-paper';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
 // ShareLocationModal / ActiveLocationSharesModal / DeleteHistoryModal /
@@ -51,6 +51,10 @@ const styles = StyleSheet.create({
   inner: {
     paddingHorizontal: 12,
     paddingBottom: 12,
+  },
+  donateButton: {
+    marginTop: 12,
+    marginHorizontal: 12,
   },
 });
 
@@ -161,6 +165,22 @@ const AboutModal = (props) => {
                     <Text onPress={handleLink} style={styles.link}>
                       Copyright &copy; AG Projects
                     </Text>
+
+                    {/* Donate — closes this About modal first, then
+                        opens the shared PaymentInfoModal with the
+                        'donate' template. The close-then-open
+                        sequencing lives in the parent (NavigationBar)
+                        so we just fire the callback here. */}
+                    {props.onDonate ? (
+                      <Button
+                        mode="contained"
+                        icon="hand-heart"
+                        style={styles.donateButton}
+                        onPress={props.onDonate}
+                      >
+                        Donate…
+                      </Button>
+                    ) : null}
                   </View>
                 </ScrollView>
               </Surface>
@@ -179,6 +199,7 @@ AboutModal.propTypes = {
   buildId: PropTypes.string,
   toggleDevMode: PropTypes.func,
   devMode: PropTypes.bool,
+  onDonate: PropTypes.func,
 };
 
 export default AboutModal;

@@ -502,10 +502,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						SylkLogger.w("[call] [fcm] settings JSON parse failed — failing open", jsonEx);
 					}
 				}
-				SylkLogger.d("[fcm] account flags (from settings JSON): active=" + isActive
+				/* SylkLogger.d("[fcm] account flags (from settings JSON): active=" + isActive
 					+ " dnd=" + isDnd
 					+ " rejectAnonymous=" + rejectAnonymous
-					+ " rejectNonContacts=" + rejectNonContacts);
+					+ " rejectNonContacts=" + rejectNonContacts); */
 			}
 			readOk = true;
 		} catch (SQLiteDatabaseLockedException locked) {
@@ -786,9 +786,9 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
 		if (!osForeground) {
 			boolean staleFlag = prefs.contains("appActive") && prefs.getBoolean("appActive", false);
-			SylkLogger.d("[fcm] isAppInForeground: OS importance=" + proc.importance
+			/*SylkLogger.d("[fcm] isAppInForeground: OS importance=" + proc.importance
 					+ " (not FOREGROUND/VISIBLE) — treating as background"
-					+ (staleFlag ? " (cleared stale appActive=true left behind by swipe-kill)" : ""));
+					+ (staleFlag ? " (cleared stale appActive=true left behind by swipe-kill)" : "")); */
 			if (prefs.contains("appActive")) {
 				prefs.edit().remove("appActive").apply();
 			}
@@ -809,7 +809,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		// before AppState listener attached). Default to true so we
 		// don't double-process a message that JS is about to handle
 		// over the websocket.
-		SylkLogger.d("[fcm] isAppInForeground: OS=foreground, no JS flag yet — defaulting to true");
+		//SylkLogger.d("[fcm] isAppInForeground: OS=foreground, no JS flag yet — defaulting to true");
 		return true;
 	}
 
@@ -994,8 +994,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 									+ ") VALUES (?, '', ?, ?, '', '', '', ?, ?, '', ?, '', "
 									+ "'', '', 'incoming', '', 0, '', 0, NULL, '', '')",
 							new Object[]{contactId, account, fromUri, unixSec, resolvedName, messageId});
-					SylkLogger.d("[message] [fcm] inserted contact stub for " + fromUri
-							+ " name=" + resolvedName + " unread=" + messageId);
+					//SylkLogger.d("[message] [fcm] inserted contact stub for " + fromUri + " name=" + resolvedName + " unread=" + messageId);
 				} catch (Exception contactEx) {
 					SylkLogger.w("[message] [fcm] contact INSERT failed: " + contactEx.getMessage());
 				}
@@ -1021,33 +1020,63 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					int unreadCount = newUnread.isEmpty()
 							? 0
 							: newUnread.split(",").length;
-					SylkLogger.d("[message] [fcm] updated contact unread for " + fromUri
-							+ " unread=" + newUnread + " count=" + unreadCount
-							+ " ts<=MAX(existing," + unixSec + ")");
+					SylkLogger.d("[message] [fcm] updated contact unread for " + fromUri + " unread=" + newUnread + " count=" + unreadCount + " ts<=MAX(existing," + unixSec + ")");
 				} catch (Exception updEx) {
 					SylkLogger.w("[message] [fcm] contact UPDATE failed: " + updEx.getMessage());
 				}
 			}
 
 			// ---- message insert ----
-			db.execSQL(
-					"INSERT OR IGNORE INTO messages ("
-							+ "account, encrypted, msg_id, timestamp, unix_timestamp, "
-							+ "content, content_type, metadata, from_uri, to_uri, "
-							+ "direction, received, related_action, related_msg_id, "
-							+ "disposition_notification, expire"
-							+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'incoming', 1, NULL, NULL, '', 0)",
-					new Object[]{
-							account, encrypted, messageId, tsCol, unixSec,
-							safeContent, safeContentType, metadata, fromUri, account
-					});
-			// Mirror the JS-side save log
-			// (app.js: "save incoming [message] <id> from <uri>") so
-			// APPLOG reads identically whether the row was written by
-			// JS or by the native FCM handler.
-			SylkLogger.d("save incoming [message] " + messageId
-					+ " from " + fromUri
-					+ " encrypted=" + encrypted + " (via push)");
+			// The push payload no longer reliably carries the message body
+			// (the server stopped including it because PGP ciphertext often
+			// overflowed the FCM 4 KB limit). Writing a row with an empty
+			// content column here is HARMFUL: it lands first, then the real
+			// body arriving via the WS/journal sync can't overwrite it — the
+			// JS insert collides on the (account, msg_id) primary key and is
+			// suppressed as a duplicate, so the row stays empty forever and
+			// renders as "Broken message, cannot be decrypted...".
+			//
+			// So only persist the message row when the push actually delivered
+			// a body. When it didn't, we still did the contact-stub / unread /
+			// badge bookkeeping above; the body itself is filled in moments
+			// later by the WS/journal path (which is the authoritative writer).
+			if (!safeContent.isEmpty()) {
+				db.execSQL(
+						"INSERT OR IGNORE INTO messages ("
+								+ "account, encrypted, msg_id, timestamp, unix_timestamp, "
+								+ "content, content_type, metadata, from_uri, to_uri, "
+								+ "direction, received, related_action, related_msg_id, "
+								+ "disposition_notification, expire"
+								// The push payload carries no IMDN flags, so we
+								// can't know the message's real disposition here.
+								// Assume the sender wants delivery + read receipts
+								// (the overwhelming default for user messages) by
+								// storing 'positive-delivery,display' instead of an
+								// empty string. Without this, JS confirmRead would
+								// treat the row as save-only and never put the
+								// "displayed" IMDN on the wire when the user opens
+								// the chat from the notification. The actual send is
+								// still gated by the user's read-receipt preference
+								// and the per-contact 'noread' block in JS.
+								+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'incoming', 1, NULL, NULL, 'positive-delivery,display', 0)",
+						new Object[]{
+								account, encrypted, messageId, tsCol, unixSec,
+								safeContent, safeContentType, metadata, fromUri, account
+						});
+				// Mirror the JS-side save log
+				// (app.js: "save incoming [message] <id> from <uri>") so
+				// APPLOG reads identically whether the row was written by
+				// JS or by the native FCM handler.
+				SylkLogger.d("save incoming [message] " + messageId
+						+ " from " + fromUri
+						+ " encrypted=" + encrypted + " (via push)");
+			} else {
+				// No body in the push — skip the row so the WS/journal write
+				// (with the real content) is the one that lands.
+				SylkLogger.d("skip incoming [message] row " + messageId
+						+ " from " + fromUri
+						+ " — empty push body, WS/journal will persist content (via push)");
+			}
 		} catch (SQLiteDatabaseLockedException locked) {
 			SylkLogger.w("[message] [fcm] DB locked, message not persisted: " + messageId);
 		} catch (SQLiteException sqlEx) {
@@ -1895,12 +1924,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					? pushDisplayName.trim()
 					: fromUri;
 
-			SylkLogger.w("[message] [fcm]" + event + " " + messageId
-					+ " from " + fromUri + " to " + toUri
-					+ " pushDisplayName=" + (pushDisplayName != null ? pushDisplayName : "(none)"));
+			SylkLogger.w("[message] [fcm]" + event + " " + messageId + " from " + fromUri + " to " + toUri + " pushDisplayName=" + (pushDisplayName != null ? pushDisplayName : "(none)"));
 
 			if (fromUri.equals(toUri)) {
-				SylkLogger.d("[message] [fcm] Skipping notification for my own account");
+				//SylkLogger.d("[message] [fcm] Skipping notification for my own account");
 				return;
 			}
 
@@ -1908,11 +1935,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				displayName = contact.getDisplayName();
                 tags = contact.getTags();
 
-				SylkLogger.d("[message] [fcm] Display name: " + displayName);
-				SylkLogger.d("[message] [fcm] Tags: " + tags);
+				//SylkLogger.d("[message] [fcm] Display name: " + displayName);
+				//SylkLogger.d("[message] [fcm] Tags: " + tags);
 
 			} else {
-				SylkLogger.d("[message] [fcm] Unknown contact");
+				//SylkLogger.d("[message] [fcm] Unknown contact");
 			}
 
 			if (isBlocked(tags)) {
@@ -1939,8 +1966,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			String contentType = data.get("content_type");
 			boolean _insertAppForeground = isAppInForeground();
 			if (_insertAppForeground) {
-				SylkLogger.d("[message] [fcm] App is foreground — skipping native SQL insert; WS will deliver "
-						+ messageId);
+				//SylkLogger.d("[message] [fcm] App is foreground — skipping native SQL insert; WS will deliver " + messageId);
 			} else {
 				List<String> _insertTags = (contact != null) ? tags : null;
 				if (isInsertAllowedForAccount(toUri, fromUri, _insertTags)) {
@@ -1989,8 +2015,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			String activeChat = prefs.getString("currentChat", null);
 
 			if (activeChat != null && !appInForeground) {
+			        /*
 				SylkLogger.w("[message] [fcm] Stale currentChat=" + activeChat
 						+ " (OS reports app is background) — clearing and ignoring");
+						*/
 				prefs.edit().remove("currentChat").apply();
 				activeChat = null;
 			}
@@ -1998,27 +2026,25 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			if (activeChat != null && activeChat.equals(fromUri)) {
 				// User is genuinely in this chat right now, skip
 				// showing notification/bubble.
-				SylkLogger.d("[message] [fcm] Skipping notification: user is in chat " + activeChat);
+				//SylkLogger.d("[message] [fcm] Skipping notification: user is in chat " + activeChat);
 				return;
 			}
 
 			if (activeChat != null) {
-			    SylkLogger.d("[message] [fcm] Active chat " + activeChat);
+			    //SylkLogger.d("[message] [fcm] Active chat " + activeChat);
 			} else {
-			    SylkLogger.d("[message] [fcm] No active chat");
+			    //SylkLogger.d("[message] [fcm] No active chat");
 			}
 
 			// Skip increment if app is in foreground — JS side will count this
 			// message via setUnreadForContact and we would otherwise double-count.
 			// (appInForeground was computed above for the activeChat stale-pref check.)
 			if (appInForeground) {
-				SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri
-						+ " (contentType=" + contentType + ")");
+				//SylkLogger.d("[message] [fcm] App in foreground, JS handles unread counter for " + fromUri + " (contentType=" + contentType + ")");
 			} else if (contentType != null && UNREAD_COUNTER_TYPES.contains(contentType)) {
 				// Allowlist match — bump the per-contact native badge so the
 				// launcher icon picks it up while the app is backgrounded.
-				SylkLogger.d("[message] [fcm] incrementing unread badge for " + fromUri
-						+ " (contentType=" + contentType + ", messageId=" + messageId + ")");
+				//SylkLogger.d("[message] [fcm] incrementing unread badge for " + fromUri + " (contentType=" + contentType + ", messageId=" + messageId + ")");
 				incrementUnreadForContact(fromUri);
 			} else {
 				// Allowlist miss — skip the badge bump so we stay in lockstep
@@ -2029,8 +2055,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				// counted text/html, text/plain, and application/sylk-file-
 				// transfer. Keep the log so subsequent drift signals are
 				// still attributable to a specific content type.
-				SylkLogger.d("[message] [fcm] SKIP unread badge bump for " + fromUri
-						+ " (contentType=" + contentType + " not in allowlist, messageId=" + messageId + ")");
+				//SylkLogger.d("[message] [fcm] SKIP unread badge bump for " + fromUri + " (contentType=" + contentType + " not in allowlist, messageId=" + messageId + ")");
 			}
 
 			// IMPORTANT: setNumber on a per-contact notification must be the
@@ -2043,8 +2068,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// because florig's notification got setNumber(4) (=total) on top
 			// of living233's existing setNumber(2).
 			int unreadCount = getUnreadForContact(fromUri);
-			SylkLogger.d("[message] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount
-					+ " (total inbox=" + getTotalUnreadCount() + ")");
+			//SylkLogger.d("[message] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount + " (total inbox=" + getTotalUnreadCount() + ")");
 
 			// Throttle the alert for visible notifications: if we showed a
 			// notification for this sender less than THROTTLE_NOTIFICATION_MS
@@ -2054,9 +2078,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			boolean throttled = shouldThrottleNotification(fromUri);
 			if (throttled) {
 				long elapsed = System.currentTimeMillis() - getLastNotificationTime(fromUri);
-				SylkLogger.d("[message] [fcm] Throttling notification alert for " + fromUri
-						+ " (last alerted " + elapsed + "ms ago, window "
-						+ THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
+				//SylkLogger.d("[message] [fcm] Throttling notification alert for " + fromUri + " (last alerted " + elapsed + "ms ago, window " + THROTTLE_NOTIFICATION_MS + "ms) — updating count silently");
 			}
 
 			// ----- CHANNEL -----
@@ -2199,13 +2221,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			if (throttled) {
-				SylkLogger.d("[message] [fcm] Silent notification update for " + fromUri
-						+ " (count=" + unreadCount + ")");
+				//SylkLogger.d("[message] [fcm] Silent notification update for " + fromUri + " (count=" + unreadCount + ")");
 			} else {
 				setLastNotificationTime(fromUri, System.currentTimeMillis());
-				SylkLogger.d("[message] [fcm] Notification alerted for " + fromUri
-						+ " (count=" + unreadCount + "), next throttle window "
-						+ THROTTLE_NOTIFICATION_MS + "ms");
+				//SylkLogger.d("[message] [fcm] Notification alerted for " + fromUri + " (count=" + unreadCount + "), next throttle window " + THROTTLE_NOTIFICATION_MS + "ms");
 			}
 
         } else {

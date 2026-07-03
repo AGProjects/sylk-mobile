@@ -17,6 +17,7 @@ public class SylkCallRecorderPackage implements ReactPackage {
     public List<NativeModule> createNativeModules(@NonNull ReactApplicationContext reactContext) {
         List<NativeModule> modules = new ArrayList<>();
         modules.add(new SylkCallRecorderModule(reactContext));
+        modules.add(new SylkAudioSpectrumModule(reactContext));
         return modules;
     }
 

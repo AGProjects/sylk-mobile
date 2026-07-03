@@ -359,9 +359,15 @@ class ShareLocationModal extends Component {
                 _privacyOverlapsDestination = true;
             }
         }
-        const _meetModeMissingLocations = this.props.meetMode
-            && (!_userLocResolved || !_destResolved);
-        const _confirmDisabled = _meetModeMissingLocations
+        // The user's own location is required for EVERY share — without
+        // a GPS fix there's nothing to send. Gate Confirm on it in all
+        // modes (not just meet-mode) so the button can't be pressed
+        // before the location has been acquired. In meet-mode we
+        // additionally require the destination to have resolved.
+        const _meetModeMissingDestination = this.props.meetMode
+            && !_destResolved;
+        const _confirmDisabled = !_userLocResolved
+            || _meetModeMissingDestination
             || _privacyOverlapsDestination;
         return (
             <Modal
@@ -1249,7 +1255,7 @@ class ShareLocationModal extends Component {
                                         }}>
                                             Your privacy zone covers the destination — pick a smaller radius or a different destination.
                                         </Text>
-                                    ) : (this.props.meetMode && !_userLocResolved) ? (
+                                    ) : (!_userLocResolved) ? (
                                         <Text style={{
                                             fontSize: 11,
                                             textAlign: 'center',
@@ -1293,9 +1299,9 @@ class ShareLocationModal extends Component {
                                             onPress={this.onConfirm}
                                             icon="map-marker"
                                             disabled={_confirmDisabled}
-                                            accessibilityLabel="Confirm sharing location"
+                                            accessibilityLabel="Share location"
                                         >
-                                            Confirm
+                                            Share
                                         </Button>
                                     </View>
                                 </Surface>

@@ -631,8 +631,10 @@
     // Full APNS payload
        NSDictionary *userInfo = notification.request.content.userInfo;
        // %s + UTF8String of [obj description] to bypass unified-logging <private> redaction.
+       /*
        [SylkLogger log:@"[app] willPresentNotification userInfo: %s",
              [[userInfo description] UTF8String]];
+       */
 
        // Your custom payload (the inner "data" dict)
        NSDictionary *data = userInfo[@"data"];

@@ -13,7 +13,7 @@
 
 import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { anonymizeEmails } from './anonymizeEmails';
+import { anonymizeEmails } from './utils';
 
 // Watermark: epoch-ms of the newest exit we've already accounted for. Anything
 // at or before this is never looked at again.

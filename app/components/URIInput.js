@@ -166,6 +166,47 @@ class URIInput extends React.Component {
         // the dialpad icon).
         const _suppressedClearIcon = () => null;
 
+        // Whether the QR scan button is actually rendered. It's offered
+        // when the host enables it (showQr) but hidden while the dialpad
+        // view is open (isDialpadActive) — the two right-edge controls
+        // don't coexist — and in close-search (folded) mode where the
+        // close-X owns the right edge. Drives the dialpad's right-edge
+        // shift and the clear-× offsets so they stay in sync.
+        const _showQrBtn = this.props.showQr
+            && !this.props.isDialpadActive
+            && typeof this.props.onCloseSearch !== 'function';
+
+        // Reserve right padding on the text input so long search text
+        // ellipsizes BEFORE it slides underneath the overlay buttons
+        // (user-reported bug: "too long search text gets under the
+        // dialpad button").
+        //
+        // Sizing note: Paper's Searchbar ALWAYS renders its built-in
+        // clear-icon slot in normal flow when the field has text (we
+        // suppress the glyph, not the slot), so the input already
+        // ends ~40px short of the bar's right edge. The extra padding
+        // therefore only needs to span from that built-in slot to the
+        // left edge of our custom clear-× — which arithmetically works
+        // out to just the clear-×'s `right` offset (offset + ~38px
+        // button width − ~40px built-in slot). Anything more piles up
+        // as dead space between the text and the × (the follow-up bug).
+        const _clearRight = (_showQrBtn && this.props.showDialpad)
+            ? 100
+            : _showQrBtn
+                ? 52
+                : (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
+                    ? 108
+                    : (this.state.inviteContacts && this.props.inviteEnabled)
+                        ? 56
+                        : 48;
+        // Only needed while there's text (the built-in slot is
+        // position:absolute — zero-width — when the field is empty,
+        // but then there's no long text to protect either).
+        const _inputPaddingRight =
+            this.state.defaultValue && this.state.defaultValue.length > 0
+                ? _clearRight
+                : 0;
+
         return (
             <View style={uriInputStyles.searchbarRow}>
                 <Searchbar
@@ -192,6 +233,7 @@ class URIInput extends React.Component {
                     inputStyle={[
                         uriInputStyles.searchbarInput,
                         darkColors.textColor ? { color: darkColors.textColor } : null,
+                        { paddingRight: _inputPaddingRight },
                     ]}
                     iconColor={darkColors.iconColor}
                     placeholderTextColor={darkColors.placeholderColor}
@@ -224,11 +266,15 @@ class URIInput extends React.Component {
                             //   invite alone    → 1 button to clear → right:56
                             //   dialpad alone   → 1 button to clear → right:48 (default)
                             //   nothing         → right:48 (default)
-                            (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
-                                ? uriInputStyles.clearOverlayInviteAndDialpadMode
-                                : (this.state.inviteContacts && this.props.inviteEnabled)
-                                    ? uriInputStyles.clearOverlayInviteMode
-                                    : null,
+                            (_showQrBtn && this.props.showDialpad)
+                                ? uriInputStyles.clearOverlayQrAndDialpadMode
+                                : _showQrBtn
+                                    ? uriInputStyles.clearOverlayQrMode
+                                    : (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
+                                        ? uriInputStyles.clearOverlayInviteAndDialpadMode
+                                        : (this.state.inviteContacts && this.props.inviteEnabled)
+                                            ? uriInputStyles.clearOverlayInviteMode
+                                            : null,
                         ]}
                         iconColor={darkColors.iconColor}
                     />
@@ -282,6 +328,14 @@ class URIInput extends React.Component {
                         }
                         style={[
                             uriInputStyles.dialpadOverlay,
+                            // When the QR button shares the bar it owns
+                            // the rightmost slot (right:4); the dialpad
+                            // shifts one stride left to sit beside it.
+                            // (When the dialpad is active the QR button
+                            // is hidden, so the pad stays flush right.)
+                            _showQrBtn
+                                ? uriInputStyles.dialpadOverlayWithQr
+                                : null,
                             this.props.isDialpadActive
                                 ? uriInputStyles.dialpadOverlayActive
                                 : null,
@@ -291,6 +345,22 @@ class URIInput extends React.Component {
                                 ? '#ffffff'
                                 : '#27ae60'
                         }
+                    />
+                ) : null}
+                {/* QR scan button overlaid INSIDE the search bar,
+                    immediately to the RIGHT of the dialpad toggle.
+                    Takes the rightmost slot (right:4) and the dialpad
+                    shifts left to right:52 (dialpadOverlayWithQr).
+                    Suppressed in close-search (folded) mode where the
+                    close-X owns the right edge. */}
+                {_showQrBtn ? (
+                    <IconButton
+                        icon="qrcode-scan"
+                        size={22}
+                        onPress={this.props.onQrPress}
+                        accessibilityLabel="Scan QR code"
+                        style={uriInputStyles.qrOverlay}
+                        iconColor={darkColors.iconColor}
                     />
                 ) : null}
                 {/* Invite-mode action pair: Cancel + Invite, overlaid
@@ -398,6 +468,32 @@ const uriInputStyles = StyleSheet.create({
         backgroundColor: '#27ae60',
         borderRadius: 18,
     },
+    // QR scan button — pinned flush to the right edge (right:4),
+    // taking the rightmost slot so it sits to the RIGHT of the
+    // dialpad. The dialpad gets dialpadOverlayWithQr (right:52)
+    // to make room.
+    qrOverlay: {
+        position: 'absolute',
+        right: 4,
+        top: (SEARCHBAR_HEIGHT - 36) / 2,
+        margin: 0,
+        zIndex: 5,
+        elevation: 5,
+    },
+    // Dialpad shifted one IconButton stride (~48px) left so the QR
+    // button can own the right edge.
+    dialpadOverlayWithQr: {
+        right: 52,
+    },
+    // Clear-× offsets when the QR button is present:
+    //   • QR alone        → one button to clear → right:52
+    //   • QR + dialpad     → two buttons to clear → right:100
+    clearOverlayQrMode: {
+        right: 52,
+    },
+    clearOverlayQrAndDialpadMode: {
+        right: 100,
+    },
     // Invite-mode action pair overlays. Right→left order:
     //   • Invite (account-plus, green when enabled) at right:4
     //   • Cancel (×, neutral) at right:56  ← +52px from Invite,
@@ -464,6 +560,11 @@ URIInput.propTypes = {
     showDialpad: PropTypes.bool,
     isDialpadActive: PropTypes.bool,
     onDialpadPress: PropTypes.func,
+    // QR scan button overlay. When showQr is true a QR icon renders
+    // at the right edge of the Searchbar (to the right of the
+    // dialpad) and calls onQrPress.
+    showQr: PropTypes.bool,
+    onQrPress: PropTypes.func,
     // Invite-mode action pair callbacks. URIInput renders the
     // Cancel + Invite buttons as absolute overlays inside the search
     // bar when `inviteContacts` is true; these props are how the

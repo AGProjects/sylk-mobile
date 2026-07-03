@@ -22,11 +22,11 @@ import DeviceInfo from 'react-native-device-info';
 import RNFS from 'react-native-fs';
 import NetInfo from '@react-native-community/netinfo';
 
-import { ExportRouter, parseRequest, buildHead } from './exportRouter';
-import { relPathFromLocalUrl } from './exportArchive';
+import { ExportRouter, parseRequest, buildHead } from './ExportRouter';
+import { relPathFromLocalUrl } from './ExportArchive';
 import utils from './utils';
 
-const ExportCrypto = require('./exportCrypto');
+const ExportCrypto = require('./ExportCrypto');
 
 const { Buffer } = require('buffer');
 

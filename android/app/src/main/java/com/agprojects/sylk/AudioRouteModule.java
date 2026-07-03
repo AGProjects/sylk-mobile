@@ -1794,6 +1794,333 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         return info;
     }
 
+    // ---- Voice-message recording: optional Bluetooth mic capture --------
+    // The message recorder (ReadyBox) records via MediaRecorder with
+    // AudioSource.MIC, which captures from the built-in mic unless the
+    // Bluetooth SCO (HFP) link is engaged. These two methods bracket
+    // startRecorder/stopRecorder so a connected BT headset's mic is actually
+    // used for the recording.
+    //
+    // They are deliberately self-contained: they do NOT touch the call-path
+    // currentRoute / scoManager / started state, so a voice-message recording
+    // can never disturb a live call (and recording never overlaps a call —
+    // the mic is exclusive). If no BT mic is present, or SCO fails to engage,
+    // they restore cleanly and report the built-in mic so JS carries on.
+    private boolean recordingBtEngaged = false;
+    private int recordingPrevMode = AudioManager.MODE_NORMAL;
+
+    @ReactMethod
+    public void prepareBluetoothInputForRecording(Promise promise) {
+        try {
+            // Don't fight an active call's audio session.
+            if (started) {
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "call_active");
+                promise.resolve(r);
+                return;
+            }
+
+            // setCommunicationDevice (and auto-SCO) is API 31+. On older
+            // devices we skip BT capture and record from the built-in mic.
+            AudioDeviceInfo btDevice = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                for (AudioDeviceInfo d : audioManager.getAvailableCommunicationDevices()) {
+                    if (d.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                        btDevice = d;
+                        break;
+                    }
+                }
+            }
+
+            if (btDevice == null) {
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "no_bt");
+                promise.resolve(r);
+                return;
+            }
+
+            final AudioDeviceInfo target = btDevice;
+            final String btName = target.getProductName() != null
+                    ? target.getProductName().toString() : "Bluetooth";
+            final int btId = target.getId();
+
+            // Engage the SCO link. On API 31+ setCommunicationDevice() triggers
+            // SCO establishment automatically — but it completes asynchronously,
+            // so we poll getCommunicationDevice() (off the JS thread) until the
+            // BT device is actually active before resolving. The recorder must
+            // not open the mic until SCO is up, or it captures the built-in mic.
+            recordingPrevMode = audioManager.getMode();
+            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+            audioManager.setSpeakerphoneOn(false);
+            boolean requested = audioManager.setCommunicationDevice(target);
+            SylkLogger.d("[audio] [recording] setCommunicationDevice(BT) requested=" + requested
+                    + " device=" + btId + " (" + btName + ")");
+
+            if (!requested) {
+                audioManager.clearCommunicationDevice();
+                audioManager.setMode(recordingPrevMode);
+                recordingBtEngaged = false;
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "set_device_rejected");
+                promise.resolve(r);
+                return;
+            }
+
+            new Thread(() -> {
+                boolean active = false;
+                long deadline = System.currentTimeMillis() + 2500;
+                while (System.currentTimeMillis() < deadline) {
+                    AudioDeviceInfo cur = audioManager.getCommunicationDevice();
+                    if (cur != null && cur.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                        active = true;
+                        break;
+                    }
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                }
+
+                WritableMap r = Arguments.createMap();
+                if (active) {
+                    recordingBtEngaged = true;
+                    r.putBoolean("engaged", true);
+                    r.putString("type", "BLUETOOTH_SCO");
+                    r.putString("name", btName);
+                    r.putString("id", String.valueOf(btId));
+                    SylkLogger.d("[audio] [recording] BT SCO engaged for recording: " + btName);
+                } else {
+                    // SCO never came up — restore and fall back to built-in.
+                    try { audioManager.clearCommunicationDevice(); } catch (Exception ignored) {}
+                    try { audioManager.setMode(recordingPrevMode); } catch (Exception ignored) {}
+                    recordingBtEngaged = false;
+                    r.putBoolean("engaged", false);
+                    r.putString("type", "BUILTIN_MIC");
+                    r.putString("name", "Built-in microphone");
+                    r.putString("reason", "sco_timeout");
+                    SylkLogger.w("[audio] [recording] BT SCO did not engage within timeout, using built-in mic");
+                }
+                promise.resolve(r);
+            }).start();
+
+        } catch (Exception e) {
+            SylkLogger.e("[audio] [recording] prepareBluetoothInputForRecording ERROR", e);
+            try { audioManager.clearCommunicationDevice(); } catch (Exception ignored) {}
+            recordingBtEngaged = false;
+            promise.reject("ERROR", e);
+        }
+    }
+
+    @ReactMethod
+    public void restoreAfterBluetoothInputRecording(Promise promise) {
+        try {
+            if (recordingBtEngaged) {
+                audioManager.clearCommunicationDevice();
+                if (scoManager != null) {
+                    scoManager.stopScoIfActive();
+                }
+                audioManager.setMode(recordingPrevMode);
+                audioManager.setSpeakerphoneOn(false);
+                recordingBtEngaged = false;
+                SylkLogger.d("[audio] [recording] restored after BT recording, mode="
+                        + getAudioModeDescription(recordingPrevMode));
+            }
+            promise.resolve(true);
+        } catch (Exception e) {
+            SylkLogger.e("[audio] [recording] restoreAfterBluetoothInputRecording ERROR", e);
+            recordingBtEngaged = false;
+            promise.reject("ERROR", e);
+        }
+    }
+
+    // Enumerate the input devices the user may pick from in the message
+    // recorder. The built-in mic is always offered; a connected Bluetooth
+    // (HFP), wired, or USB headset is added when present — independent of
+    // whether SCO is currently engaged, so the selector can list them before
+    // recording starts. Each entry: {type, name, id}.
+    @ReactMethod
+    public void getRecordingInputDevices(Promise promise) {
+        try {
+            WritableArray arr = Arguments.createArray();
+
+            WritableMap builtin = Arguments.createMap();
+            builtin.putString("type", "BUILTIN_MIC");
+            builtin.putString("name", "Built-in microphone");
+            builtin.putString("id", "builtin");
+            arr.pushMap(builtin);
+
+            java.util.Set<String> seenTypes = new HashSet<>();
+            seenTypes.add("BUILTIN_MIC");
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                for (AudioDeviceInfo d : audioManager.getAvailableCommunicationDevices()) {
+                    String t;
+                    switch (d.getType()) {
+                        case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: t = "BLUETOOTH_SCO"; break;
+                        case AudioDeviceInfo.TYPE_WIRED_HEADSET:  t = "WIRED_HEADSET";  break;
+                        case AudioDeviceInfo.TYPE_USB_HEADSET:    t = "USB_HEADSET";    break;
+                        case AudioDeviceInfo.TYPE_USB_DEVICE:     t = "USB_HEADSET";    break;
+                        default: continue;
+                    }
+                    if (seenTypes.contains(t)) continue;
+                    seenTypes.add(t);
+
+                    WritableMap m = Arguments.createMap();
+                    m.putString("type", t);
+                    m.putString("name", d.getProductName() != null
+                            ? d.getProductName().toString() : t);
+                    m.putString("id", String.valueOf(d.getId()));
+                    arr.pushMap(m);
+                }
+            }
+
+            promise.resolve(arr);
+        } catch (Exception e) {
+            SylkLogger.e("[audio] [recording] getRecordingInputDevices ERROR", e);
+            promise.reject("ERROR", e);
+        }
+    }
+
+    // Engage a specific input device for the upcoming/active recording.
+    //   BUILTIN_MIC      → release any communication device so MediaRecorder's
+    //                      MIC source captures from the built-in mic.
+    //   BLUETOOTH_SCO /  → route capture to that device via
+    //   WIRED_HEADSET /    setCommunicationDevice (API 31+), waiting until the
+    //   USB_HEADSET        route is actually active before resolving.
+    // Resolves {engaged:boolean, type, name, [reason]}. Mirrors
+    // prepareBluetoothInputForRecording but for an explicitly chosen device.
+    @ReactMethod
+    public void setRecordingInputDevice(ReadableMap deviceMap, Promise promise) {
+        try {
+            if (deviceMap == null) {
+                promise.reject("ERROR", "No device provided");
+                return;
+            }
+            String type = deviceMap.hasKey("type") ? deviceMap.getString("type") : null;
+            String idStr = deviceMap.hasKey("id") ? deviceMap.getString("id") : null;
+
+            // Built-in mic: release any engaged communication device and fall
+            // back to the default capture path.
+            if (type == null || type.equals("BUILTIN_MIC")) {
+                try { audioManager.clearCommunicationDevice(); } catch (Exception ignored) {}
+                if (scoManager != null) { scoManager.stopScoIfActive(); }
+                if (recordingBtEngaged) {
+                    audioManager.setMode(recordingPrevMode);
+                }
+                recordingBtEngaged = false;
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                promise.resolve(r);
+                return;
+            }
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                // No setCommunicationDevice on older devices — built-in only.
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "api_too_low");
+                promise.resolve(r);
+                return;
+            }
+
+            // Locate the requested device among the communication devices,
+            // matching by id first then by type.
+            int wantId = -1;
+            try { wantId = Integer.parseInt(idStr); } catch (Exception ignored) {}
+            int wantType = getAudioDeviceTypeFromString(type);
+
+            AudioDeviceInfo target = null;
+            for (AudioDeviceInfo d : audioManager.getAvailableCommunicationDevices()) {
+                if (wantId != -1 && d.getId() == wantId) { target = d; break; }
+                if (d.getType() == wantType) { target = d; break; }
+            }
+
+            if (target == null) {
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "not_found");
+                promise.resolve(r);
+                return;
+            }
+
+            final AudioDeviceInfo dev = target;
+            final String devType = type;
+            final String devName = dev.getProductName() != null
+                    ? dev.getProductName().toString() : devType;
+            final int devTypeInt = wantType;
+
+            if (!recordingBtEngaged) {
+                recordingPrevMode = audioManager.getMode();
+            }
+            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+            audioManager.setSpeakerphoneOn(false);
+            boolean requested = audioManager.setCommunicationDevice(dev);
+            SylkLogger.d("[audio] [recording] setRecordingInputDevice requested=" + requested
+                    + " type=" + devType + " device=" + dev.getId() + " (" + devName + ")");
+
+            if (!requested) {
+                audioManager.clearCommunicationDevice();
+                audioManager.setMode(recordingPrevMode);
+                recordingBtEngaged = false;
+                WritableMap r = Arguments.createMap();
+                r.putBoolean("engaged", false);
+                r.putString("type", "BUILTIN_MIC");
+                r.putString("name", "Built-in microphone");
+                r.putString("reason", "set_device_rejected");
+                promise.resolve(r);
+                return;
+            }
+
+            new Thread(() -> {
+                boolean active = false;
+                long deadline = System.currentTimeMillis() + 2500;
+                while (System.currentTimeMillis() < deadline) {
+                    AudioDeviceInfo cur = audioManager.getCommunicationDevice();
+                    if (cur != null && cur.getType() == devTypeInt) { active = true; break; }
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                }
+
+                WritableMap r = Arguments.createMap();
+                if (active) {
+                    recordingBtEngaged = true;
+                    r.putBoolean("engaged", true);
+                    r.putString("type", devType);
+                    r.putString("name", devName);
+                    r.putString("id", String.valueOf(dev.getId()));
+                    SylkLogger.d("[audio] [recording] input engaged: " + devType + " " + devName);
+                } else {
+                    try { audioManager.clearCommunicationDevice(); } catch (Exception ignored) {}
+                    try { audioManager.setMode(recordingPrevMode); } catch (Exception ignored) {}
+                    recordingBtEngaged = false;
+                    r.putBoolean("engaged", false);
+                    r.putString("type", "BUILTIN_MIC");
+                    r.putString("name", "Built-in microphone");
+                    r.putString("reason", "route_timeout");
+                    SylkLogger.w("[audio] [recording] input route did not engage: " + devType);
+                }
+                promise.resolve(r);
+            }).start();
+
+        } catch (Exception e) {
+            SylkLogger.e("[audio] [recording] setRecordingInputDevice ERROR", e);
+            try { audioManager.clearCommunicationDevice(); } catch (Exception ignored) {}
+            recordingBtEngaged = false;
+            promise.reject("ERROR", e);
+        }
+    }
+
     @ReactMethod
     public void getAudioInputs(Promise promise) {
         //SylkLogger.e("[audio] getAudioInputs");
@@ -1837,6 +2164,11 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 case AudioDeviceInfo.TYPE_BUILTIN_MIC: typeName = "BUILTIN_MIC"; break;
                 case AudioDeviceInfo.TYPE_WIRED_HEADSET: typeName = "WIRED_HEADSET"; break;
                 case AudioDeviceInfo.TYPE_USB_HEADSET: typeName = "USB_HEADSET"; break;
+                // Bluetooth HFP mic. Note: on many devices (incl. Motorola RAZR)
+                // this only appears in GET_DEVICES_INPUTS once SCO is actually
+                // engaged — see prepareBluetoothInputForRecording, which starts
+                // SCO before the recorder opens the mic.
+                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: typeName = "BLUETOOTH_SCO"; break;
                 case AudioDeviceInfo.TYPE_AUX_LINE: typeName = "AUX_LINE"; break;
                 case AudioDeviceInfo.TYPE_LINE_ANALOG: typeName = "LINE_ANALOG"; break;
                 default: continue; // skip unknowns

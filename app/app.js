@@ -36,7 +36,7 @@ import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
 import SoundPlayer from 'react-native-sound-player';
 import OpenPGP from "react-native-fast-openpgp";
-import exportAnnounce from './exportAnnounce';
+import exportAnnounce from './ExportAnnounce';
 import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams, registerZrtpRs1Handlers, setLocalDeviceId } from './components/CallZrtp';
 import ShortcutBadge from 'react-native-shortcut-badge';
 import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
@@ -94,6 +94,14 @@ import * as sylkrtc from 'react-native-sylkrtc';
 // build it loaded; if it doesn't match this constant we log a loud
 // warning so a stale .cxx cache or a missed patch-package run is
 // caught immediately rather than weeks later via "weird E2EE bugs".
+//
+// IMPORTANT: this string is a HANDSHAKE with the native binary. Do NOT bump
+// it on its own — the SAME value is hard-coded in the native webrtc library
+// (getSylkE2EEBuild() in react-native-webrtc; see the patch under patches/
+// and SylkZRTPBridge.mm on iOS). If you change this constant you MUST also
+// update the native code and rebuild the library (./rebuild-webrtc.sh
+// --reinstall), otherwise the boot probe reports "*** MISMATCH ***" and calls
+// fall back to sdes instead of E2EE/zRTP.
 const SYLK_E2EE_BUILD = 'build-2026-05-02-public-aesgcm';
 
 // ---------- Video quality profile -------------------------------------------
@@ -489,6 +497,11 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // into the same SIP account can legitimately want different
         // themes (one in a bright office, one always at night).
         themeMode: 'system',
+        // Show a member counter before each category / group label in the
+        // contacts category bar (e.g. "100 All", "10 Recent", "4 Business").
+        // Per-device UI preference. OFF by default; toggle on to prefix
+        // labels. Read by ReadyBox (navigationItems / renderNavigationItem).
+        showGroupMemberCounts: false,
     }),
     // ---- Privacy / call-acceptance & messaging behaviour ---------------
     // Moved out of the dedicated SQL columns
@@ -785,6 +798,7 @@ import SetCallerIdModal from './components/SetCallerIdModal';
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
 import Call from './components/Call';
+import { haversineMeters } from './components/geoUtils';
 import Conference from './components/Conference';
 import FooterBox from './components/FooterBox';
 import StatusBox from './components/StatusBox';
@@ -835,7 +849,7 @@ import {
 } from './accountInfo';
 import { getQosResult, loadQosResultFromDisk } from '../qos/qos-stats';
 import { formatQosReport, formatQosReportHtml, reconcileQos, qosSummaryLine } from './qosReport';
-import { readAcknowledged as readLocationDisclosure } from './locationDisclosure';
+import { readAcknowledged as readLocationDisclosure } from './components/locationDisclosure';
 import fileType from 'react-native-file-type';
 import path from 'react-native-path';
 
@@ -1328,6 +1342,22 @@ class Sylk extends Component {
         this.lastServerJournalTimestamp = null;
         this.pushTokenSent = false;
 
+        // Journal-sync cursor hydration gate. The SIP 'registered' event
+        // can beat loadAccount's async SQL read on a cold start; if the
+        // post-register sync fires before state.lastSyncId /
+        // lastSyncTimestamp are hydrated from the accounts row, it sees a
+        // null cursor and falls into requestSyncConversations' "first full
+        // sync (5y window)" branch, re-downloading the entire journal even
+        // though a valid cursor was about to load (see metro.log
+        // 2026-06-21 08:40:10 firing 3s before the cursor hydrated at
+        // 08:40:13). _syncCursorHydratedFor records the accountId whose
+        // cursor is now in state; _pendingRegisteredSync remembers that a
+        // 'registered' sync was deferred so loadAccount can run it once the
+        // cursor lands. Keyed by accountId so an account switch re-defers
+        // automatically until the new account's row loads.
+        this._syncCursorHydratedFor = null;
+        this._pendingRegisteredSync = false;
+
         // "Until we meet" (meeting_request) handshake state. Kept off React
         // state so additions don't trigger renders on every metadata tick;
         // only the presented modal + pending-by-uri queue are in state.
@@ -1601,6 +1631,16 @@ class Sylk extends Component {
             // flip this — only an actual sync round-trip does. See
             // requestSyncConversations / clearFirstSyncPending.
             firstSyncPending: false,
+            // One-time "Blink storage is now up to date!" banner, shown on the
+            // contacts list the instant the newest journal file lands during
+            // the first sync; auto-hides after 10s (see _runSyncConversations).
+            storageUpToDateBanner: false,
+            // Continuous "fetching journals" spinner. True from the moment a
+            // (multi-batch) journal sync is requested until every batch is
+            // downloaded and saved locally. Unlike syncConversations (which
+            // toggles per batch to release the pagination gate) this stays on
+            // for the whole fetch, so the spinner doesn't flicker per batch.
+            journalSyncActive: false,
             // Cold-start chat-open spinner.
             //
             // Defaults to FALSE so a normal launcher start never shows
@@ -1672,7 +1712,17 @@ class Sylk extends Component {
             // the live log file.
             attachedLogContent: null,
             attachedLogUri: null,
-            messages: {},
+            // Chat-data model: the selected contact's list lives in
+            // contactMessages (app-owned, id-indexed). The legacy per-uri
+            // state.messages map has been retired.
+            // `contactMessages` is the ready-to-render list for the SELECTED
+            // contact only — already built/sorted by getMessages so ChatBox
+            // can consume it without re-deriving. `this.contactMessageIndex`
+            // (a Map<_id, message>, an instance field, not React state)
+            // backs O(1) incremental updates (read/displayed/file-transfer)
+            // without scanning the array. The legacy per-uri `messages` map
+            // stays for now; it'll be retired once ChatBox consumes contactMessages.
+            contactMessages: [],
             // selectedContact pre-seeded above with a stub if the
             // launch was from a sylk://message tap, so the chat view
             // renders from the first paint. Default null otherwise.
@@ -3226,19 +3276,6 @@ class Sylk extends Component {
 
         keyStatus.existsLocal = true;
 
-        // Optimistic server-snapshot update. The user has just decided
-        // (either by importing or by explicitly generating a new key)
-        // that THIS device's key is authoritative, and sendPublicKey
-        // below uploads it. Align keyStatus.serverPublicKey /
-        // existsOnServer with the local key immediately so the next
-        // CDU-driven generateKeysIfNecessary() doesn't compare the
-        // fresh local key against the stale pre-Generate server
-        // snapshot, flag keyDifferentOnServer=true, and re-open the
-        // redundant "Another Sylk device? / Use this device key"
-        // modal right after the user already chose Generate.
-        // keyDifferentOnServer is cleared in the same setState for
-        // the same reason — the explicit Generate decision overrides
-        // any prior server-diff flag set during generateKeysIfNecessary.
         keyStatus.existsOnServer = true;
         keyStatus.serverPublicKey = keys.public;
 
@@ -3269,19 +3306,12 @@ class Sylk extends Component {
 
 		this.updateKeySql(keys);
 
-        // Keys just landed (generated locally or imported from another
-        // device). This is the strongest "fully set-up account" signal
-        // we have, so it's the right moment to surface the iOS / Android
-        // push notification permission prompt. The helper is idempotent
-        // and won't re-prompt if the SQL-load path already fired.
+        setTimeout(() => {
+            try { this._abEnsureSelfKeys(this.state.accountId); } catch (e) {}
+        }, 500);
+
         this._maybeTriggerPushPermissionAfterKeys('savePrivateKey');
 
-        // On fresh enrollment the order is: registration completes BEFORE keys
-        // exist locally, so requestSyncConversations() fires once and bails with
-        // "Wait for sync until we have keys", and nothing retries it. That means
-        // afterFirstSync() never runs -> no test numbers, no "Account activated"
-        // welcome message. Now that keys exist, retry the deferred first sync
-        // if the account is already registered and we have not yet synced.
         if (this.state.account
                 && this.state.registrationState === 'registered'
                 && !this.state.lastSyncId
@@ -3311,49 +3341,13 @@ class Sylk extends Component {
 	  return "unknown";
 	}
 
-    async saveLastSyncId(id, force=false, messageTimestamp=null, allowClear=false) {
+    async saveLastSyncId(id, force=false, messageTimestamp=null, allowClear=false, durableOnly=false, allowRegress=false) {
         if (!force) {
-            if (!this.state.keys || !this.state.keys.private) {
-               console.log('Skip saving last sync id until we have a private key');
-               return
-            }
-            // THE JOURNAL CURSOR IS OWNED BY THE SYNC, NOT BY LIVE DELIVERIES.
-            //
-            // The cursor is a position in the SERVER journal, and that journal
-            // is ordered by DELIVERY, not by message timestamp — proven in the
-            // field: cursor e3d37d76 (msg ts 09:51:12) was the journal HEAD
-            // (sync returned 0 new) while message 46813515 (msg ts 09:57:57,
-            // a LATER timestamp) sat BEHIND it. So a live websocket delivery
-            // cannot be used to advance the cursor safely: re-deliveries and
-            // echoes of an existing message (a past outgoing file transfer and
-            // its accepted/available state updates, multi-device echoes of our
-            // own sent messages, retried IMDNs) carry an OLD journal position
-            // but a fresh-looking id/timestamp. Adopting any of them as the
-            // cursor rewinds the journal, so the next sync re-downloads the
-            // whole backlog after that old point ("journal worked hard again").
-            //
-            // Neither a timestamp-monotonic guard nor an "already-known id"
-            // guard is reliable here (timestamps aren't journal-ordered, and a
-            // re-delivered message may have been deleted locally). So we simply
-            // DO NOT move the cursor on live deliveries. The authoritative
-            // journal sync (force=true) is the only writer; any live message
-            // that arrived between syncs is picked up — and de-duplicated by
-            // msg_id — by the next sync from the true sync head.
-            //utils.timestampedLog('[journal] saveLastSyncId: live cursor advance ignored for '
-            //    + id + ' — cursor is owned by the journal sync');
+            //utils.timestampedLog('[journal] saveLastSyncId: live cursor advance ignored for ' + id + ' — cursor is owned by the journal sync');
             return;
         }
 
         if (!id) {
-            // A null/undefined id must ONLY ever come from the explicit
-            // "refetch" menu (resetStorage → allowClear=true). The cursor
-            // is otherwise always the last synced message's id, so any
-            // OTHER null reaching here is a race / bug — e.g. a sync
-            // completion path firing with an empty batch, or two account
-            // contexts overlapping. Do NOT touch the stored cursor in that
-            // case (keep both id and timestamp so we can't trigger a full
-            // re-download) and log the caller's stack so the offending
-            // path can be found and fixed.
             if (!allowClear) {
                 const _stack = (new Error('saveLastSyncId(null)')).stack || '';
                 utils.timestampedLog('[journal] BLOCKED accidental saveLastSyncId(null)'
@@ -3362,12 +3356,6 @@ class Sylk extends Component {
                 return;
             }
 
-            // Explicit refetch: clear the id but PRESERVE the per-account
-            // last_sync_timestamp. The id may point at a message we just
-            // deleted locally; the durable timestamp must survive so a
-            // later sync still resumes with a `since` delta instead of
-            // re-downloading the entire journal. (Only an explicit full
-            // user reset clears the timestamp, elsewhere.)
             await this.ExecuteQuery(
                 "update accounts set last_sync_id = NULL where account = ?",
                 [this.state.accountId]
@@ -3379,11 +3367,6 @@ class Sylk extends Component {
             return;
         }
 
-        // Persist the timestamp of the message that lastSyncId points at,
-        // not the wall-clock time of the save. The server uses this as a
-        // fallback "since" when the lastSyncId is no longer present on the
-        // server (e.g. after server-side pruning) so we can still continue
-        // the sync from where we left off in time.
         let timestamp;
         if (messageTimestamp) {
             // Accept a Date, moment, or ISO string. Normalise to Date.
@@ -3399,10 +3382,28 @@ class Sylk extends Component {
             timestamp = new Date();
         }
 
+        if (!allowRegress && timestamp && !isNaN(timestamp.getTime())) {
+            const storedRaw = this.state.lastSyncTimestamp;
+            const storedTs = storedRaw
+                ? (storedRaw instanceof Date ? storedRaw : new Date(storedRaw))
+                : null;
+            if (storedTs && !isNaN(storedTs.getTime())
+                    && timestamp.getTime() < storedTs.getTime()) {
+                utils.timestampedLog('[journal] lastSyncId regress BLOCKED — keeping '
+                    + this.state.lastSyncId + ' @ ' + storedTs.toISOString()
+                    + ', refused older ' + id + ' @ ' + timestamp.toISOString());
+                return;
+            }
+        }
+
         let params = [id, JSON.stringify(timestamp), this.state.accountId];
 
         await this.ExecuteQuery("update accounts set last_sync_id = ?, last_sync_timestamp = ?  where account = ?", params).then((result) => {
-            this.setState({lastSyncId: id, lastSyncTimestamp: timestamp});
+            // durableOnly: persist the cursor to SQL but DON'T touch
+            // this.state.lastSyncId — used by the cache-time checkpoint during
+            // first-sync pagination, which relies on state.lastSyncId staying
+            // null to keep paging. SQL is read back into state on next launch.
+            if (!durableOnly) this.setState({lastSyncId: id, lastSyncTimestamp: timestamp});
         }).catch((error) => {
             console.log('Save last sync id SQL error:', error);
         });
@@ -3411,12 +3412,6 @@ class Sylk extends Component {
     async updateKeySql(keys) {
         const priv = (keys && keys.private) ? keys.private : '';
         const pub = (keys && keys.public) ? keys.public : '';
-        // GUARD: NEVER overwrite a stored key with an empty value. The private
-        // key is irreplaceable — it decrypts all past messages — so an empty or
-        // raced write must NOT clear it. The CASE keeps the existing column when
-        // the incoming value is empty; a real value overwrites as before (an
-        // explicit regenerate / import). This makes accidental key loss via this
-        // path impossible.
         if (!priv) {
             console.log('[pgp] updateKeySql: refusing to write EMPTY private key — keeping stored key');
         }
@@ -3432,11 +3427,6 @@ class Sylk extends Component {
             console.log('SQL update account error:', error);
         });
     }
-
-    // checkFirstSync — REMOVED. Read from the AsyncStorage key
-    // 'firstSync' which nothing ever wrote, set state.firstSync which
-    // nothing ever read, and was itself never called from anywhere.
-    // The boot path now just wipes the key (see componentDidMount).
 
     async getDownloadTasks() {
         //console.log('-- getDownloadTasks');
@@ -3464,12 +3454,7 @@ class Sylk extends Component {
     }
 
     async generateKeys(force=false) {
-        // GUARD: never silently destroy an existing private key. Only the
-        // explicit user "Generate / Regenerate" action passes force=true. Every
-        // automatic caller (generateKeysIfNecessary) passes nothing, so re-read
-        // the DB directly (not the possibly-raced in-memory keyStatus) and abort
-        // if a key already exists. If the check itself fails, abort too — better
-        // to not generate than to risk overwriting an irreplaceable key.
+        // explicit user "Generate / Regenerate" action passes force=true
         if (!force) {
             try {
                 const r = await this.ExecuteQuery(
@@ -3485,6 +3470,7 @@ class Sylk extends Component {
                 return;
             }
         }
+
         console.log('[pgp] generating keys...');
 
         const Options = {
@@ -3522,14 +3508,7 @@ class Sylk extends Component {
         console.log('Reset storage');
 
         if (days > 365) {
-		    await this.ExecuteQuery('delete from contacts where account = ?', [this.state.accountId]).then((result) => {
-                if (result.rowsAffected > 0) {
-                    console.log(result.rowsAffected, 'contacts deleted');
-                }
-			}).catch((error) => {
-				console.log('SQL resetStorage error:', error);
-			});
-
+            // Full message reset — delete EVERY message for this account
 		    await this.ExecuteQuery('delete from messages where account = ?', [this.state.accountId]).then((result) => {
                 if (result.rowsAffected > 0) {
                     console.log(result.rowsAffected, 'messages deleted');
@@ -3538,7 +3517,8 @@ class Sylk extends Component {
 				console.log('SQL resetStorage error:', error);
 			});
 
-			this.setState({allContacts: [], messages: {}});
+			this.setState({contactMessages: []});
+			if (this.contactMessageIndex) this.contactMessageIndex.clear();
         } else  {
 			const msAgo = days * 24 * 60 * 60 * 1000;
 			const unix_timestamp = Math.floor((Date.now() - msAgo) / 1000);
@@ -3556,13 +3536,6 @@ class Sylk extends Component {
         // preserved inside saveLastSyncId.
         this.saveLastSyncId(null, false, null, true);
     }
-
-    // All five privacy toggles now route through
-    // accountSetting.privacy.* (one SQL UPDATE per toggle into the
-    // settings JSON blob via setAccountSetting). The native push
-    // handlers parse the same JSON, so dropping the dedicated SQL
-    // columns kept JS and native consistent without any cross-thread
-    // signalling.
 
     async toggleDnd () {
         const current = !!(this.state.accountSetting
@@ -3664,7 +3637,20 @@ class Sylk extends Component {
     async toggleSearchContacts () {
         const next = !this.state.searchContacts;
         //console.log(' -- toggle search contacts', next);
-        this.setState({searchContacts: next});
+        // Exiting search (tapping the × / close on the menu bar) must
+        // also dismiss the QR scanner — it's part of the search
+        // workflow and shouldn't linger as a full-screen overlay once
+        // search is gone.
+        // Leaving search mode (tapping the × in the navbar) must also tear
+        // down any multi-select / merge sub-selection — the selection only
+        // makes sense inside the search list, so clear it along with the
+        // mode and the merge-winner highlight.
+        const _exitSel = next ? {} : { contactSelectMode: false, selectedContacts: [], mergeKeeperId: null };
+        if (!next && this.state.showQRCodeScanner) {
+            this.setState({searchContacts: next, showQRCodeScanner: false, ..._exitSel});
+        } else {
+            this.setState({searchContacts: next, ..._exitSel});
+        }
         // The Search button (account-search icon in NavigationBar) is
         // the ONLY user gesture that should trigger the OS contacts
         // permission prompt. Focus / typing inside the search bar used
@@ -3868,16 +3854,6 @@ class Sylk extends Component {
             return;
         }
 
-        console.log('loading Sylk contacts...');
-
-        // NOTE: address-book loading deliberately omitted here. It used
-        // to run on every startup (await this.loadPhoneAddressBook()), which
-        // triggered the OS "allow contacts access" prompt before the
-        // user had any context for what it was for. The prompt now
-        // fires lazily — only the first time the user explicitly taps
-        // the Phonebook pill in the contacts list, via
-        // ReadyBox.handleContactSourceChange('ab') → props.loadPhoneAddressBook.
-
         let blockedUris = [];
         let favoriteUris = [];
         let missedCalls = [];
@@ -3899,17 +3875,6 @@ class Sylk extends Component {
             let idx;
             let formatted_date;
             let updated;
-            // The contacts table should have at most ONE row with
-            // uri === accountId (the "myself" contact). When duplicates
-            // sneak in (older code paths, sync edge cases), the loop
-            // below would let every match overwrite state.displayName,
-            // so the FINAL value depended on iteration order — the
-            // older row would clobber the newer one and the display
-            // name would silently change after every reload. The
-            // query orders by `timestamp desc` so the first matching
-            // row is the freshest; this flag locks the myself-update
-            // to that first row and logs a warning for any extras so
-            // the user can clean them up.
             let _myselfApplied = false;
             //console.log(rows.length, 'SQL contacts rows');
 
@@ -3977,9 +3942,6 @@ class Sylk extends Component {
 
                     if (contact.tags.indexOf('missed') > -1) {
                         missedCalls.push(contact.last_call_id);
-                        if (contact.unread.indexOf(contact.last_call_id) === -1) {
-                            contact.unread.push(contact.last_call_id);
-                        }
                     } else {
                         idx = contact.unread.indexOf(contact.last_call_id);
                         if (idx > -1) {
@@ -3989,14 +3951,6 @@ class Sylk extends Component {
 
                     if (contact.uri === this.state.accountId) {
                         if (_myselfApplied) {
-                            // Duplicate myself-contact — log it AND
-                            // delete it from SQL. The duplicate
-                            // carries a different contact_id but the
-                            // same (account, uri) pair; nothing in
-                            // the rest of the app references the
-                            // older id, and keeping the row around
-                            // just lets it re-leak through the next
-                            // load loop / cascade.
                             console.log(
                                 '[account] [load] duplicate myself contact — deleting:',
                                 JSON.stringify({
@@ -4014,15 +3968,6 @@ class Sylk extends Component {
                                     err && err.message);
                             });
                         } else {
-                            // Filter "Myself" and "<uri>" sentinel
-                            // values too — historically some auto-
-                            // create paths stored the URI itself as
-                            // the contact name, which then leaked
-                            // back as the displayName field on the
-                            // My Account modal and got saved again
-                            // verbatim. Treat both as empty so the
-                            // modal opens blank and the user types
-                            // a real name on first save.
                             const _rawName = (contact.name || '').trim();
                             const _isUriEcho = _rawName !== ''
                                 && _rawName.toLowerCase() === (contact.uri || '').toLowerCase();
@@ -4131,28 +4076,99 @@ class Sylk extends Component {
 					 console.log(' -- Duplicate contact', contact.id, contact.uri);
 			    }
 
+			// Collapse rows that share a remote_id
+			let finalContacts = filteredContacts;
+			try {
+				const _dnorm = (u) => (u || '').trim().toLowerCase();
+				const _ab = this.state.connection && this.state.connection.addressbook;
+				const _serverDefaultUri = (rid) => {
+					try {
+						const sc = _ab && Array.isArray(_ab.contacts) ? _ab.contacts.find(x => x && x.id === rid) : null;
+						if (!sc || !this._abChosenDefaultUri) return null;
+						return (this._abNormServerUri ? this._abNormServerUri(this._abChosenDefaultUri(sc)) : this._abChosenDefaultUri(sc)) || null;
+					} catch (e) { return null; }
+				};
+				const _byNormUri = {};
+				const _byRid = {};
+				filteredContacts.forEach(c => {
+					if (!c) return;
+					const k = _dnorm(c.uri);
+					if (k) (_byNormUri[k] = _byNormUri[k] || []).push(c);
+					if (c.remote_id) (_byRid[c.remote_id] = _byRid[c.remote_id] || []).push(c);
+				});
+				Object.keys(_byNormUri).forEach(k => {
+					const g = _byNormUri[k];
+					if (g.length > 1) utils.timestampedLog('[ab] [contact] [dup] URI x' + g.length + ' ' + k
+						+ ' ids=[' + g.map(c => c.id).join(',') + ']');
+				});
+				const _ridPurge = new Set();
+				Object.keys(_byRid).forEach(rid => {
+					const g = _byRid[rid];
+					if (g.length < 2) return;
+					g.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+					let keeper = g[0];
+					const _def = _serverDefaultUri(rid);
+					if (_def) {
+						const m = g.find(c => _dnorm(c.uri) === _dnorm(_def));
+						if (m) keeper = m;
+					}
+					const losers = g.filter(c => c.id !== keeper.id);
+					const merged = new Set([keeper.uri, ...(Array.isArray(keeper.uris) ? keeper.uris : [])].filter(Boolean));
+					losers.forEach(l => {
+						[l.uri, ...(Array.isArray(l.uris) ? l.uris : [])].filter(Boolean).forEach(u => merged.add(u));
+						_ridPurge.add(l.id);
+					});
+					keeper.uris = [...merged].filter(u => u && _dnorm(u) !== _dnorm(keeper.uri));
+					utils.timestampedLog('[ab] [contact] [dup] collapse remote_id=' + rid
+						+ ' keep=' + keeper.id + ' (' + keeper.uri + ')'
+						+ ' drop=[' + losers.map(l => l.id + ':' + l.uri).join(', ') + ']'
+						+ ' uris=[' + keeper.uris.join(', ') + ']');
+					this.saveSylkContact(keeper.uri, keeper, 'dedup-remote-id');
+				});
+				if (_ridPurge.size) {
+					finalContacts = filteredContacts.filter(c => !_ridPurge.has(c.id));
+					this.deleteDuplicateContacts(_ridPurge);
+				}
+			} catch (e) { console.log('[ab] [contact] [dup] collapse error', e && e.message); }
+
 				this.deleteDuplicateContacts(purgeSet);
 				
-                this.setState({allContacts: filteredContacts,
+                this.setState({allContacts: finalContacts,
                                missedCalls: missedCalls,
                                favoriteUris: favoriteUris,
                                myInvitedParties: myInvitedParties,
                                blockedUris: blockedUris
                                });
+
+                try {
+                    const _ts = finalContacts.filter(c => c && c.lastCallTimestamp != null);
+                    const _tag = finalContacts.filter(c => c && Array.isArray(c.tags) && c.tags.indexOf('calls') > -1);
+                    // Calls category = a lastCallTimestamp is set AND it's not a
+                    // conference room (those are excluded from the Calls view).
+                    const _callsCat = _ts.filter(c => (c.uri || '').indexOf('@videoconference.') === -1);
+                    // Recent category = contacts with activity in the last 3 days
+                    // (timestamp >= start-of-day three days ago) — mirrors the
+                    // periodFilter==='recent' gate in ContactsListBox.
+                    const _recentStart = new Date(); _recentStart.setHours(0, 0, 0, 0);
+                    _recentStart.setDate(_recentStart.getDate() - 3);
+                    const _recentCat = finalContacts.filter(c => c && c.timestamp
+                        && new Date(c.timestamp) >= _recentStart);
+                    utils.timestampedLog('[calls-diag] [load] origin=' + origin
+                        + ' contacts=' + finalContacts.length
+                        + ' withLastCallTs=' + _ts.length
+                        + ' withCallsTag=' + _tag.length
+                        + ' Calls=' + _callsCat.length
+                        + ' Recent=' + _recentCat.length
+                        + ' sample=' + _ts.slice(0, 6).map(c => c.uri).join(','));
+                } catch (e) { console.log('[calls-diag] [load] error', e && e.message); }
             }
 
 			this.setState({contactsLoaded: true});
-			// Stamp which account these in-memory contacts belong to, so the
-			// addressbook migration never runs against another account's
-			// contacts during an account switch (cross-account contamination).
+
 			this._contactsAccountId = this.state.accountId;
 
-            // Replay any call-history snapshot that arrived from the
-            // server before contacts had loaded (refreshAccountInfo
-            // typically wins the race against loadSylkContacts on
-            // app start). Without this, processServerCallHistory
-            // would tally every entry as "no-contact" because
-            // contactIndex was empty when the snapshot landed.
+			this._scheduleStorageRecompute();
+
             if (this._pendingCallHistory) {
                 const _pending = this._pendingCallHistory;
                 this._pendingCallHistory = null;
@@ -4177,7 +4193,6 @@ class Sylk extends Component {
             // logs every change.
             setTimeout(() => {
                 this.migrateBarePhoneUris();
-                this._abPurgeLegacyDump(); // remove orphaned pre-per-account dump files
             }, 200);
 
             // Clean up pre-existing duplicate contact rows (same account+uri,
@@ -4191,8 +4206,6 @@ class Sylk extends Component {
                 this.fetchSharedItemsAndroidAtStart();
 				this.fetchSharedItemsiOS();
                 if (this.initialChatUri) {
-                    // Cold-start deep-link replay.
-                    //
                     // selectChatContact() from a sylk://message/incoming/<uri>
                     // tap runs WAY before this — typically before contacts
                     // / account / route have loaded — and the boot path's
@@ -4228,28 +4241,7 @@ class Sylk extends Component {
     // its URI to the canonical shape:
     //   • missing @domain          →   append "@<defaultDomain>"
     //   • starts with "00<digits>" →   rewrite as "+<digits>"
-    // Both transformations target the same root cause: drift between
-    // how a phone-number contact is stored locally and how the call
-    // path / server history reference it. After this pass every
-    // row's URI matches the wire form lookupContacts will hand us
-    // post-call, so addHistoryEntry stops creating duplicate rows.
-    //
-    // Idempotent: once every row already has '@' and never starts
-    // with '00', the SELECT pre-filter returns nothing and the
-    // migration is a no-op on subsequent starts.
-    //
-    // Why a SQL sweep rather than just patching state: rows can be in
-    // SQL but absent from in-memory allContacts (skipped during load
-    // due to the dedupe pass, or arrived after componentDidUpdate
-    // already ran). Going through SQL guarantees we don't miss any.
-    //
-    // Conflict handling: if the canonical target URI already maps to
-    // a DIFFERENT contact_id in the table, we don't blindly
-    // overwrite — that would leave two rows pointing at the same
-    // URI under two different ids. Instead we log both ids so the
-    // user can resolve manually (kebab → Delete contact on whichever
-    // duplicate they don't want to keep). The const→let fix made
-    // that path actually work for both ids.
+
     async migrateBarePhoneUris() {
         if (!this.state.accountId) {
             return;
@@ -4351,14 +4343,6 @@ class Sylk extends Component {
     }
 
     // Collapse duplicate contact rows for the same (account, uri). The
-    // contacts table is keyed by (account, contact_id), so historically two
-    // code paths that each minted a fresh contact_id for one uri (chat
-    // auto-create + the OS "Local AddressBook" sync, racing an empty
-    // contactIndex) could leave several rows for a single uri. Only one tends
-    // to carry the server remote_id, so the others read back as perpetually
-    // "not-pushed". Keep ONE row per uri (prefer the server-linked one, else
-    // the most recently updated) and delete the rest. Local-only cleanup — we
-    // never delete the server contact here.
     async dedupeContactsByUri() {
         try {
             const account = this.state.accountId;
@@ -4404,7 +4388,6 @@ class Sylk extends Component {
             console.log('[ab] [dedupe] error', e && e.message);
         }
     }
-
 
 	async checkFileTransfer(file_transfer) {
         //console.log('checkFileTransfer', file_transfer.metadata.transfer_id);
@@ -4487,17 +4470,6 @@ class Sylk extends Component {
 
 	     if (this.state.keys != prevState.keys) {
 		      //console.log('keys have changed', this.state.keys);
-		      // One-shot recovery: encrypted file transfers downloaded
-		      // by the broken build sit on disk as PGP ASCII armor
-		      // (text envelopes starting "-----BEGIN PGP MESSAGE-----")
-		      // with the plaintext filename — never decrypted because
-		      // their local_url didn't end in .asc. Now that PGP keys
-		      // are available, walk Documents/<account>/ and rename +
-		      // decrypt every PGP-armored file in place. Guarded inside
-		      // migrateBrokenEncryptedFiles via _brokenFilesMigrationRan
-		      // so it runs at most once per session even if `keys`
-		      // bounces (e.g. unlock screen rehydration). See the
-		      // method comment for the full repair flow.
 		      if (this.state.keys && this.state.keys.private && this.state.accountId) {
 		          this.migrateBrokenEncryptedFiles();
 		      }
@@ -4616,8 +4588,29 @@ class Sylk extends Component {
 					 // the answer often hinges on whether the
 					 // public-key lookup completed before the user
 					 // started typing / sharing.
+					 // Source of the selected contact: 'saved' = a real local row
+					 // (in allContacts, by id / primary uri / a secondary uri),
+					 // 'address-book' = only in the OS phonebook (transient, not
+					 // saved), 'ad-hoc' = neither (a typed/speculative address).
+					 let _scSource = 'ad-hoc';
+					 try {
+						 const _scu = (this.state.selectedContact.uri || '').toLowerCase();
+						 const _scid = this.state.selectedContact.id;
+						 const _saved = (this.state.allContacts || []).some(c => c
+							 && ((_scid && c.id === _scid)
+								 || (c.uri && c.uri.toLowerCase() === _scu)
+								 || (Array.isArray(c.uris) && c.uris.some(u => (u || '').toLowerCase() === _scu))));
+						 if (_saved) _scSource = 'saved';
+						 else if (typeof this.lookupABContacts === 'function'
+							 && (this.lookupABContacts(this.state.selectedContact.uri) || []).length > 0) _scSource = 'address-book';
+					 } catch (e) { /* best-effort */ }
 					 utils.timestampedLog('selected [contact] changed', this.state.selectedContact.uri,
-						 this.state.selectedContact.timestamp,
+						 'source=', _scSource,
+						 'contact_id=', this.state.selectedContact.id,
+						 'remote_id=', this.state.selectedContact.remote_id,
+						 'lastTs=', this.state.selectedContact.timestamp,
+						 'lastMessage=', JSON.stringify(this.state.selectedContact.lastMessage),
+						 'lastMessageId=', this.state.selectedContact.lastMessageId,
 						 'hasPublicKey=', !!this.state.selectedContact.publicKey);
 					 
 					 this.setState({messageZoomFactor: 1});
@@ -4627,9 +4620,9 @@ class Sylk extends Component {
 					setTimeout(() => {
 					 if (Platform.OS === 'android') {
 						 SylkBridge.setActiveChat(uri);
-						 UnreadModule.resetUnreadForContact(uri);
+						 this._nativeResetUnread(uri);
 					 } else {
-						 NativeModules.SharedDataModule.setActiveChat(uri); 
+						 NativeModules.SharedDataModule.setActiveChat(uri);
 					 }
 
 					 this.messagesConfirmedRead.clear();
@@ -4671,7 +4664,7 @@ class Sylk extends Component {
 			 }
 		 }
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.headsetIsPlugged && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			utils.timestampedLog('[proximity] in-call route change',
 				prevState.proximityNear, '->', this.state.proximityNear,
 				'useInCallManger=' + !!this.useInCallManger);
@@ -5422,61 +5415,10 @@ class Sylk extends Component {
                                                 13: [{query: 'delete from messages where content_type = ?', params: ['application/sylk-message-metadata']}],
                                                 14: [{query: 'alter table messages add column disposition_notification', params: []}],
                                                 15: [{query: 'CREATE INDEX IF NOT EXISTS idx_messages_account_time ON messages(account, unix_timestamp DESC)', params: []}],
-                                                // v16: crash-safe cleanup for time-sensitive rows.
-                                                //   `expire` is a unix timestamp (seconds). When > 0,
-                                                //   the row is eligible for purge once `now() > expire`.
-                                                //   Current writer: location origin rows (both outgoing
-                                                //   and incoming) — carries the share's expires_at so a
-                                                //   force-kill doesn't leak the session past its end.
-                                                //   Any future time-limited message kind can reuse the
-                                                //   same column; 0/NULL means "keep forever".
-                                                //   The accompanying partial index keeps the purge scan
-                                                //   cheap as the column grows.
                                                 16: [{query: 'alter table messages add column expire INTEGER default 0', params: []},
                                                      {query: 'CREATE INDEX IF NOT EXISTS idx_messages_expire ON messages(expire) WHERE expire > 0', params: []}],
-                                                // v17: persisted per-row category column.
-                                                //   One of {'text','image','video','audio','location',
-                                                //   'other'} or NULL (control rows: pgp keys,
-                                                //   reactions, replies — never surfaced as bubbles).
-                                                //   Computed at INSERT time by saveOutgoing-/save-
-                                                //   IncomingMessageSql via _classifyMessageCategory,
-                                                //   so subsequent reads don't have to repeat the
-                                                //   JSON-parse + utils.isImage/isAudio/isVideo loop
-                                                //   per file-transfer row. The compound index puts
-                                                //   `category` before `unix_timestamp` so both
-                                                //   "all messages in category X" and "per-day
-                                                //   histogram for category X" reads sit on an
-                                                //   index range scan instead of a table scan.
-                                                //   Backfill of existing rows runs after the
-                                                //   migration block (see _backfillMessageCategories,
-                                                //   invoked from initSQL once the version bump
-                                                //   commits) — one-shot, no rerun on subsequent
-                                                //   boots.
                                                 17: [{query: 'alter table messages add column category TEXT', params: []},
                                                      {query: 'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_ts ON messages(account, from_uri, to_uri, category, unix_timestamp)', params: []}],
-                                                // v18: per-row has_link flag overlaying the
-                                                //   category column. Persisted alongside
-                                                //   category so a single text row that contains
-                                                //   a URL can be queried under both the "text"
-                                                //   chip AND the "links" chip without inventing
-                                                //   a multi-value category. Computed at INSERT
-                                                //   time when we have plaintext (outgoing rows
-                                                //   always; incoming rows that arrive via the
-                                                //   push handler with already-decrypted body)
-                                                //   and lazily at decrypt time in sql2GiftedChat
-                                                //   for stored encrypted rows. The compound
-                                                //   index puts has_link before unix_timestamp
-                                                //   so the Links date-pill query
-                                                //   (`AND category='text' AND has_link=1`)
-                                                //   stays on the index — same shape as the
-                                                //   per-category date queries from v17.
-                                                //   Backfill: pre-v18 rows land with NULL
-                                                //   has_link; the decrypt-time path fills them
-                                                //   in over normal use (one UPDATE per row, at
-                                                //   most once). No big bulk-decrypt pass at
-                                                //   boot — keeps upgrades quick on big chats
-                                                //   even if the link pills lag a tiny bit
-                                                //   behind reality until rows get rendered.
                                                 18: [{query: 'alter table messages add column has_link INTEGER', params: []},
                                                      {query: 'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_link_ts ON messages(account, from_uri, to_uri, category, has_link, unix_timestamp)', params: []}],
                                                 19: [{query: 'alter table messages add column origin TEXT', params: []}],
@@ -5510,23 +5452,8 @@ class Sylk extends Component {
                                                 12: [{query: 'alter table contacts add remote_id TEXT', params: []},
 													 {query: 'alter table contacts add remote_properties TEXT', params: []}
                                                     ],
-                                                // v13: per-contact "most recent call" timestamp.
-                                                //   Stamped from updateHistoryEntry whenever a
-                                                //   call to / from this URI ends, fan-out style
-                                                //   across every row matching the URI. Replaces
-                                                //   the old `tags includes 'calls'` filter for
-                                                //   the bottom-bar Calls category — that filter
-                                                //   missed rows whose tag list was never updated
-                                                //   (rejected on connect, fast-cancelled, etc.).
                                                 13: [{query: 'alter table contacts add column last_call_timestamp INTEGER', params: []}],
-                                                // v14: soft-delete trash flag. 1 = moved to the
-                                                //   Deleted view (hidden everywhere else, still on
-                                                //   the server until a hard delete).
                                                 14: [{query: 'alter table contacts add column deleted INTEGER default 0', params: []}],
-                                                // v15: Stage-1 trash marker (ISO string). Set when
-                                                //   a contact is moved to the Deleted folder; NULL
-                                                //   otherwise. `deleted` is repurposed as the
-                                                //   Stage-2 permanent tombstone flag (record kept).
                                                 15: [{query: 'alter table contacts add column deleted_timestamp TEXT', params: []}],
                                                 16: [{query: 'alter table contacts add column storage_purged TEXT', params: []}],
                                                 },
@@ -5546,39 +5473,9 @@ class Sylk extends Component {
 												16: [{query: 'alter table accounts add column verified TEXT  NOT NULL default "0"', params: []}],
 												17: [{query: 'alter table accounts add column read_receipts TEXT', params: []}],
 												18: [{query: 'alter table accounts add column app_state TEXT', params: []}],
-												// v19: per-account settings JSON blob.
-												//   Holds keys formerly stored as the AsyncStorage
-												//   blob 'devicePreferences' (preferredVideoCodec,
-												//   preferredAudioCodec, encryptionMode, dtmfMode,
-												//   enableAudioRecording, locationTickIntervalSec,
-												//   locationProximityMeters, locationPrivacyRadiusMeters)
-												//   plus the (currently empty) per-account
-												//   accountLocalProperties slot. Mirrored in
-												//   state.accountSetting and read/written via
-												//   _applyAccountSettings / setAccountSetting.
-												//   No data carry-over: after upgrade the column
-												//   is NULL for every existing row and parses to
-												//   {} so the in-code defaults take effect again.
 												19: [{query: 'alter table accounts add column settings TEXT', params: []}],
-												// v20: drop the long-deprecated `verified` column
-												// (auto-login is gated on `active == 1` alone now;
-												// `verified` hasn't been read or written for many
-												// releases). DROP COLUMN requires SQLite 3.35+
-												// (Android 12+ / iOS 15+); older devices throw
-												// "near \"DROP\": syntax error" which the migration
-												// catch silently logs — the column then stays as
-												// dead weight, harmless. The CREATE TABLE no
-												// longer mentions verified, so fresh installs on
-												// any SQLite version skip the column entirely.
 												20: [{query: 'alter table accounts drop column verified', params: []}],
 												21: [{query: 'alter table accounts add column server_call_history TEXT', params: []}],
-												// v22: dedicated addressbook migration marker column.
-												//   Stores the AB_MIGRATION_VERSION that last
-												//   completed cleanly for the account. Kept OUT of
-												//   the settings JSON blob so a startup
-												//   setAccountSetting that fires before the loaded
-												//   blob commits cannot clobber it (which used to
-												//   re-trigger the whole migration on every reload).
 												22: [{query: 'alter table accounts add column ab_migration TEXT', params: []}],
 												23: [{query: 'alter table accounts add column install_date INTEGER', params: []}],
                                                }
@@ -5623,16 +5520,6 @@ class Sylk extends Component {
                         version_numbers = Object.keys(update_queries);
                         version_numbers.sort(function(a, b){return a-b});
                         version_numbers.forEach((version) => {
-                            // Both sides MUST be compared numerically.
-                            // currentVersions[key] comes from the SQL TEXT
-                            // column as a string, and Object.keys() gives
-                            // string keys. A naive `version <= current`
-                            // does lexicographic compare, which silently
-                            // skips legitimate migrations whenever the
-                            // version numbers cross a digit-count boundary
-                            // (e.g. '17' < '9' lexicographically), which
-                            // is exactly why the read_receipts migration
-                            // didn't run on some installs.
                             if (Number(version) <= Number(currentVersions[key])) {
                                 return;
                             }
@@ -5658,63 +5545,14 @@ class Sylk extends Component {
                 }
             }
 
-            // Schema sanity / self-heal pass.
-            //
-            // The version-table-driven migration path has historically not
-            // been bulletproof on this codebase: some installs end up with
-            // versions row at the new number but the underlying ALTER TABLE
-            // never executed (e.g. lexicographic compare quirks, errors that
-            // were swallowed, hand-edited DBs). Rather than relying on the
-            // version row to be authoritative, run a small set of idempotent
-            // "make sure this column exists" statements at every startup.
-            // SQLite throws on duplicate column add, so we catch and ignore
-            // — the sole failure mode that matters here is "column already
-            // exists", which is exactly the success state.
             this.ensureColumn('accounts', 'read_receipts', 'TEXT');
-            // Per-contact "most recent call" timestamp (v13). The
-            // version-table migration adds this on the v12→v13 step;
-            // ensureColumn runs unconditionally on every boot as a
-            // safety net for installs whose migration was skipped
-            // (versions row bumped but ALTER swallowed). Without it
-            // the saveSylkContact INSERT/UPDATE fails with "table
-            // contacts has no column named last_call_timestamp" on
-            // every contact write.
             this.ensureColumn('contacts', 'last_call_timestamp', 'INTEGER');
-            // Per-account JSON blob holding app state that used to live
-            // in AsyncStorage under global keys (location share state,
-            // meeting-request handshake markers). The blob is a single
-            // JSON object with top-level namespace keys — today
-            // `location`; future namespaces (preferences, drafts, …)
-            // can be added without a further ALTER TABLE.
             this.ensureColumn('accounts', 'app_state', 'TEXT');
-            // Per-account JSON blob holding user-controllable settings
-            // grouped into top-level sections (rtp, device, location,
-            // privacy, disclaimers, account). The settings live here
-            // instead of in dedicated columns so adding a new
-            // preference doesn't require a new SQL migration; native
-            // push handlers parse the blob to read privacy flags
-            // (dnd / rejectAnonymous / rejectNonContacts). See
-            // ACCOUNT_SETTINGS_DEFAULTS for the full schema.
             this.ensureColumn('accounts', 'settings', 'TEXT');
-            // Per-row category column (v17). Same self-heal so the
-            // backfill below can rely on the column existing even
-            // if the v17 migration entry got skipped.
             this.ensureColumn('messages', 'category', 'TEXT');
-            // v18 has_link self-heal — same idempotent pattern.
             this.ensureColumn('messages', 'has_link', 'INTEGER');
-            // call_id self-heal. Links a message to a specific call
-            // (the SIP Call-ID) so the live "call ended" system message
-            // and the server call-history system message converge onto
-            // one row (see saveCallSystemMessages upsert).
             this.ensureColumn('messages', 'call_id', 'TEXT');
 
-            // Backfill the category column for rows that pre-date
-            // v17. Runs at most once per install (guarded by an
-            // AsyncStorage flag inside the method); subsequent
-            // boots see the flag and short-circuit. Fire-and-forget
-            // — the chat surface tolerates a brief window where
-            // category is NULL on old rows (queries falling back to
-            // counting all rows, which matches pre-v17 behaviour).
             this._backfillMessageCategories();
             // v18 has_link backfill for already-plaintext rows.
             // Same fire-and-forget pattern; the lazy decrypt
@@ -6070,6 +5908,7 @@ class Sylk extends Component {
                     [uri]: _newEntry,
                 },
             }));
+            /*
             utils.timestampedLog(
                 '[mirror] stamped owner coords from self-echo tick'
                 + ' peer=' + uri
@@ -6081,6 +5920,7 @@ class Sylk extends Component {
                 + ' lng=' + _v.longitude.toFixed(5)
                 + (_wasActive ? '' : ' (NEW remote share)')
             );
+            */
             if (!_wasActive) this.forceUpdate();
 
             // Persist the latest position to SQL via UPDATE-in-place
@@ -6810,7 +6650,7 @@ class Sylk extends Component {
             && (route === '/ready' || route === '/login')) {
             this.setState({answeringCallOverlayUUID: null});
         }
-        let messages = this.state.messages;
+        let messages = this._messagesMap();
 
         // Codec + encryption-mode restore: when leaving /conference or
         // /call for any other route, restore both back to the user's
@@ -6876,17 +6716,19 @@ class Sylk extends Component {
                         }
                     }
                     this.setState({
-                                messages: messages,
+                                contactMessages: [],
                                 selectedContact: null,
                                 searchMessages: false,
                                 targetUri: ''
                                 });
+                    if (this.contactMessageIndex) this.contactMessageIndex.clear();
                 } else {
                     this.setState({
-                                messages: {},
+                                contactMessages: [],
                                 messageZoomFactor: 1,
                                 searchMessages: false
                                 });
+                    if (this.contactMessageIndex) this.contactMessageIndex.clear();
                     this.endShareContent();
                 }
             }
@@ -7051,8 +6893,9 @@ class Sylk extends Component {
                             muted: false
                             };
                 if (!_isBootOrConnectivityFlip) {
-                    _stateUpdate.messages = {};
                     _stateUpdate.selectedContact = null;
+                    _stateUpdate.contactMessages = [];
+                    if (this.contactMessageIndex) this.contactMessageIndex.clear();
                 }
                 this.setState(_stateUpdate);
             }
@@ -7583,6 +7426,11 @@ class Sylk extends Component {
             utils.timestampedLog('[history] processServerCallHistory: empty / not-an-object input');
             return;
         }
+        // Retain the latest RAW snapshot (placed/received blocks) so the
+        // post-import re-apply in _abMarkImportFinished can reprocess it once
+        // the contact index carries the final ids. The persisted cache only
+        // holds the serialized sessionId set, not the raw entries.
+        this._lastServerCallHistory = data;
         const recvCount = Array.isArray(data.received) ? data.received.length : 0;
         const placCount = Array.isArray(data.placed)   ? data.placed.length   : 0;
         utils.timestampedLog('[history] processServerCallHistory: input received=' + recvCount
@@ -7654,7 +7502,8 @@ class Sylk extends Component {
                 collectNew(data.received);
                 collectNew(data.placed);
                 // Fire-and-forget — never block history processing on traces.
-                this.fetchAndStoreNewCallTraces(newEntries);
+                // TODO add setting to get call traces and qos recport
+                //this.fetchAndStoreNewCallTraces(newEntries);
             }
         } catch (e) {
             console.log('[trace] failed to schedule trace retrieval:', e && e.message);
@@ -7676,14 +7525,18 @@ class Sylk extends Component {
         // list and (b) competes with the migration for the single SQLite
         // connection, inflating the migration time. The replay hook in
         // loadSylkContacts re-runs this once both are ready.
-        const _migDone = this._abMigratedAccounts
-            && this._abMigratedAccounts.has(this.state.accountId);
+        // Gate on the TRUE addressbook-import-finished signal, not migration-done:
+        // on the server-marker skip path the migration completes instantly while
+        // the contact import still runs in syncGroupsTable, so processing here
+        // would tally most calls as "no-contact" against a half-built list. The
+        // replay hook in _abMarkImportFinished re-runs this once the import ends.
+        const _abDone = this._abImportDoneForAccount === this.state.accountId;
         if (!this.state.contactsLoaded
             || !this.contactIndex
             || Object.keys(this.contactIndex).length === 0
-            || !_migDone) {
+            || !_abDone) {
             utils.timestampedLog('[history] processServerCallHistory: '
-                + (!_migDone ? 'addressbook migration not done' : 'contacts not yet loaded')
+                + (!_abDone ? 'addressbook import not finished' : 'contacts not yet loaded')
                 + ' — deferring');
             this._pendingCallHistory = data;
             return;
@@ -7844,23 +7697,25 @@ class Sylk extends Component {
             return true;
         });
 
-        const summary = [
-            '[history] processServerCallHistory:',
-            '  kept             = ' + history.length,
-            '  droppedConference= ' + droppedConference,
-            '  droppedDuplicate = ' + droppedDuplicate,
-            '  missedTagged     = ' + missedTagged,
-            '  renamedSelf      = ' + renamedSelf,
-            '  sample (first ' + sampleKept.length + '):',
-        ];
-        sampleKept.forEach((s) => {
-            summary.push('    - ' + s.dir.padEnd(8) + ' ' + s.uri
-                + (s.name && s.name !== s.uri ? '  "' + s.name + '"' : '')
-                + '  dur=' + s.dur + 's'
-                + (s.tags && s.tags.length ? '  tags=[' + s.tags.join(',') + ']' : '')
-            );
-        });
-        console.log(summary.join('\n'));
+        // Per-call-sync summary dump (kept/droppedConference/droppedDuplicate/
+        // missedTagged/sample) — commented out to keep the log quiet.
+        // const summary = [
+        //     '[history] processServerCallHistory:',
+        //     '  kept             = ' + history.length,
+        //     '  droppedConference= ' + droppedConference,
+        //     '  droppedDuplicate = ' + droppedDuplicate,
+        //     '  missedTagged     = ' + missedTagged,
+        //     '  renamedSelf      = ' + renamedSelf,
+        //     '  sample (first ' + sampleKept.length + '):',
+        // ];
+        // sampleKept.forEach((s) => {
+        //     summary.push('    - ' + s.dir.padEnd(8) + ' ' + s.uri
+        //         + (s.name && s.name !== s.uri ? '  "' + s.name + '"' : '')
+        //         + '  dur=' + s.dur + 's'
+        //         + (s.tags && s.tags.length ? '  tags=[' + s.tags.join(',') + ']' : '')
+        //     );
+        // });
+        // console.log(summary.join('\n'));
 
         if (history.length === 0) {
             utils.timestampedLog('[history] processServerCallHistory: all entries filtered out, nothing to save');
@@ -7946,6 +7801,9 @@ class Sylk extends Component {
     }
 
     async fetchAndStoreNewCallTraces(entries) {
+        // TODO add a setting for this
+        return;
+        
         if (!Array.isArray(entries) || entries.length === 0) return;
 
         const account  = this.state.accountId;
@@ -8394,7 +8252,7 @@ class Sylk extends Component {
             let existing = null;
             try {
                 existing = await this.ExecuteQuery(
-                    "SELECT msg_id, content FROM messages WHERE account = ? AND call_id = ? LIMIT 1",
+                    "SELECT msg_id, content, metadata FROM messages WHERE account = ? AND call_id = ? LIMIT 1",
                     [this.state.accountId, String(callid)]
                 );
             } catch (err) {
@@ -8418,9 +8276,21 @@ class Sylk extends Component {
                             '$1' + _clock
                         );
                     }
+                    // Idempotency guard. This converge path is re-run over the
+                    // WHOLE history on the post-import forced reprocess (see
+                    // _abMarkImportFinished, which nulls _serverCallHistoryCache),
+                    // so without this every already-enriched row would be
+                    // rewritten + logged on each app start. Skip the UPDATE when
+                    // the row already carries exactly this metadata and content —
+                    // nothing would change, so there's no work to do.
+                    const _newMetadata = JSON.stringify(metadata);
+                    const _oldMetadata = String(existing.rows.item(0).metadata || '');
+                    if (_oldMetadata === _newMetadata && _oldContent === _newContent) {
+                        continue;
+                    }
                     await this.ExecuteQuery(
                         "UPDATE messages SET metadata = ?, content = ? WHERE account = ? AND call_id = ?",
-                        [JSON.stringify(metadata), _newContent, this.state.accountId, String(callid)]
+                        [_newMetadata, _newContent, this.state.accountId, String(callid)]
                     );
                     this._enrichInMemoryCallMessage(uri, String(callid), metadata, _newContent);
                     console.log('[trace] converged: enriched existing call message', callid,
@@ -8521,10 +8391,11 @@ class Sylk extends Component {
      */
     _enrichInMemoryCallMessage(uri, callid, metadata, newText = null, matchMsgId = null) {
         try {
-            const all = this.state.messages || {};
+            const all = this._messagesMap();
             const list = all[uri];
             if (!Array.isArray(list) || list.length === 0) return;
             let changed = false;
+            let _patchedMsg = null;
             const next = list.map((m) => {
                 // Match by call_id (normal converge) OR by msg_id (the
                 // fallback path, where the orphan message's callId is
@@ -8551,12 +8422,14 @@ class Sylk extends Component {
                     if (newText != null && newText !== '') {
                         patched.text = newText;
                     }
+                    _patchedMsg = patched;
                     return patched;
                 }
                 return m;
             });
             if (changed) {
-                this.setState({ messages: { ...all, [uri]: next } });
+                // Update the new model (state.messages retired).
+                if (_patchedMsg) this._patchContactMessage(_patchedMsg._id, _patchedMsg);
             }
         } catch (e) {
             console.log('[trace] in-memory enrich failed:', e && e.message);
@@ -9128,6 +9001,16 @@ class Sylk extends Component {
             await this.updateSqlAccount(account, 1, newPassword);
         } catch (e) {
             console.log('changeSipPassword: SQL update failed:', e && e.message);
+        }
+        if (this.state.keys && this.state.keys.private) {
+            // Delay the contact update by 5s so the server has time to commit
+            // the new password before we re-encrypt the saved key with it.
+            setTimeout(() => {
+                this._abEnsureSelfKeys(account, { force: true, password: newPassword })
+                    .catch((e) => {
+                        console.log('changeSipPassword: re-escrow of encrypted key failed:', e && e.message);
+                    });
+            }, 5000);
         }
         // Toast confirmation. Routes through the existing
         // NotificationCenter snackbar (same channel used by mic /
@@ -9803,6 +9686,15 @@ class Sylk extends Component {
             }
         }, 20000);
 
+        // Housekeeping: purge leftover call/voice recording temp files that the
+        // native recorder writes to the app's top-level files dir. saveCallRecording
+        // now unlinks the staging original after copying it into the per-transfer
+        // folder, but older builds leaked them and an app restart mid-recording can
+        // orphan one too. Delayed + fire-and-forget so it never competes with cold-
+        // start work; only removes files older than the safety window.
+        // Also sweeps files/qos-client/ of QoS reports older than 3 days.
+        setTimeout(() => { this._purgeStaleRecordingTempFiles(); }, 8000);
+
         // Fast-path: kick this BEFORE awaiting initSQL so the chat-open
         // SQL query doesn't have to wait for the pragmas + showTables +
         // createTables chain (~500 ms) to finish. The fast-path
@@ -10251,7 +10143,9 @@ class Sylk extends Component {
 			// speaker the moment the call connects.
 			const hasHeadset = (btDevice || wiredDevice || usbDevice) ? true : false;
 			const earpieceDevice = currentOutputs.find(d => d.type === 'BUILTIN_EARPIECE');
-			const initialDevice = btDevice || wiredDevice || usbDevice || earpieceDevice
+			// Priority USB > BT > wired: when both USB and Bluetooth are
+			// connected, start the call on the USB headset.
+			const initialDevice = usbDevice || btDevice || wiredDevice || earpieceDevice
 				|| { type: 'BUILTIN_EARPIECE', name: 'Earpiece', id: '' };
 			console.log('[audioManagerStart] initial audio device:', initialDevice.type);
 			// In-app trace line so users can confirm what the call started with.
@@ -10321,9 +10215,9 @@ class Sylk extends Component {
 		// Lazy-import to avoid pulling the disclosure modules into the
 		// hot-load path; only this audit reader needs them at the app
 		// level (per-feature gates pull them via their own imports).
-		const locMod = require('./locationDisclosure');
-		const callMod = require('./callRecordingDisclosure');
-		const confMod = require('./conferenceRecordingDisclosure');
+		const locMod = require('./components/locationDisclosure');
+		const callMod = require('./components/callRecordingDisclosure');
+		const confMod = require('./components/conferenceRecordingDisclosure');
 		_emit('location',            locMod);
 		_emit('call recording',      callMod);
 		_emit('conference recording', confMod);
@@ -10709,15 +10603,21 @@ class Sylk extends Component {
 							// in-call route branch which read state.hasHeadset.
 							this.setState({hasHeadset: hasBT || hasWired || hasUsb});
 
-							if (hasBT && cur !== 'BLUETOOTH_SCO' && cur !== 'BUILTIN_SPEAKER') {
+							// Priority USB > BT > wired: when both USB and Bluetooth are
+							// connected, route to the USB headset.
+							if (hasUsb && cur !== 'USB_HEADSET' && cur !== 'BUILTIN_SPEAKER') {
+								const usbDevice = audioOutputs.find(d => d.type === 'USB_HEADSET');
+								console.log('[AudioDevices] USB available, updating selected to USB_HEADSET');
+								this.setState({ selectedAudioDevice: 'USB_HEADSET', selectedDevice: usbDevice || null });
+							} else if (hasBT && !hasUsb && cur !== 'BLUETOOTH_SCO' && cur !== 'BUILTIN_SPEAKER') {
 								const btDevice = audioOutputs.find(d => d.type === 'BLUETOOTH_SCO');
 								console.log('[AudioDevices] BT available, updating selected to BLUETOOTH_SCO');
 								this.setState({ selectedAudioDevice: 'BLUETOOTH_SCO', selectedDevice: btDevice || null });
-							} else if (!hasBT && hasWired && cur !== 'WIRED_HEADSET' && cur !== 'BUILTIN_SPEAKER') {
+							} else if (!hasBT && !hasUsb && hasWired && cur !== 'WIRED_HEADSET' && cur !== 'BUILTIN_SPEAKER') {
 								const wiredDevice = audioOutputs.find(d => d.type === 'WIRED_HEADSET');
 								console.log('[AudioDevices] Wired available, updating selected to WIRED_HEADSET');
 								this.setState({ selectedAudioDevice: 'WIRED_HEADSET', selectedDevice: wiredDevice || null });
-							} else if (!hasBT && !hasWired && (cur === 'BLUETOOTH_SCO' || cur === 'WIRED_HEADSET')) {
+							} else if (!hasBT && !hasWired && !hasUsb && (cur === 'BLUETOOTH_SCO' || cur === 'WIRED_HEADSET' || cur === 'USB_HEADSET')) {
 								const earpiece = audioOutputs.find(d => d.type === 'BUILTIN_EARPIECE');
 								console.log('[AudioDevices] Headset gone, falling back to BUILTIN_EARPIECE');
 								this.setState({
@@ -11152,11 +11052,10 @@ class Sylk extends Component {
 					try { return k + '=' + JSON.stringify(v); }
 					catch (_) { return k + '=<unstringifiable>'; }
 				}).join(', ');
-				utils.timestampedLog('[message] FCM payload {' + _summary + '}');
+				//utils.timestampedLog('[message] FCM payload {' + _summary + '}');
 			} catch (_) { /* logging never blocks delivery */ }
 
-			utils.timestampedLog('[message] FCM in-app event: message from', from,
-				'displayName=', notification['from_display_name'] || '(none)');
+			utils.timestampedLog('[message] FCM in-app event: message from', from, 'displayName=', notification['from_display_name'] || '(none)');
 
 			// Native already INSERTed the row (or skipped on foreground
 			// to let WS handle it). We additionally feed the payload
@@ -11597,6 +11496,16 @@ class Sylk extends Component {
 
         this.setState({appState: nextAppState});
 
+        // Drop the native-unread write-dedup cache whenever we leave the
+        // foreground. While backgrounded the native FCM service owns and
+        // mutates the per-contact counter directly, so any value we cached
+        // is no longer authoritative — keeping it could make the first
+        // foreground save wrongly skip a real write. updateTotalUnread's
+        // orphan reconcile re-establishes the true native state on resume.
+        if (nextAppState !== 'active') {
+            this._invalidateNativeUnreadCache();
+        }
+
         if (nextAppState === 'active') {
             // Re-arm the once-per-foreground orphan reconcile in
             // updateTotalUnread. Background FCM may have set per-contact
@@ -11745,7 +11654,7 @@ class Sylk extends Component {
             if (Platform.OS === 'android' && this.state.selectedContact) {
                 const uri = this.state.selectedContact.uri;
                 SylkBridge.setActiveChat(uri);
-                UnreadModule.resetUnreadForContact(uri);
+                this._nativeResetUnread(uri);
                 this.confirmRead(uri, 'app_foreground');
             }
 
@@ -12278,18 +12187,26 @@ class Sylk extends Component {
                 }, 8000);
             }
 
-			// Pass the timestamp of the last synced message as a fallback
-			// `since`. If the server has pruned the lastSyncId we still
-			// get back only messages newer than that timestamp instead of
-			// having to re-download the entire journal.
-			{
-				let syncOptions = {};
-				if (this.state.lastSyncTimestamp) {
-					syncOptions.since = this.state.lastSyncTimestamp;
-				}
-				this.requestSyncConversations(this.state.lastSyncId, syncOptions);
-			}
+			// Fire the journal sync, but only once loadAccount has hydrated
+			// the cursor from SQL. On a cold start this 'registered' event
+			// can beat the async account-row read, in which case the helper
+			// defers and loadAccount runs it with the real cursor. Without
+			// this gate a null cursor here re-downloads the whole journal
+			// (5-year window) on every cold start.
+			this._requestRegisteredJournalSync();
   		    this.replayJournal();
+
+            // Send the "displayed" receipt for the chat the user is already
+            // viewing (e.g. opened by tapping a push) as soon as we are
+            // registered and can transmit — WITHOUT waiting for the journal
+            // sync to replay the message back to us. The incoming row was
+            // already persisted by the native FCM handler, so confirmRead can
+            // emit the IMDN now. canSend() is true at this point; read-receipt
+            // preferences and the per-contact 'noread' block are enforced
+            // inside sendDispositionNotification().
+            if (this.state.appState === 'active' && this.state.selectedContact) {
+                this.confirmRead(this.state.selectedContact.uri, 'registered');
+            }
 
             if (this.registrationFailureTimer) {
                 clearTimeout(this.registrationFailureTimer);
@@ -12375,6 +12292,19 @@ class Sylk extends Component {
 			});
         }
     }
+
+	// Debounced full storage recompute. prettyStorage / storage are in-memory
+	// only (not SQL columns), so every loadSylkContacts reload rebuilds contact
+	// objects without them and the per-contact size readout disappears. Call
+	// this after reloads and after decrypts settle to repopulate it; the
+	// debounce coalesces bursts (e.g. many decrypts) into a single disk scan.
+	_scheduleStorageRecompute = (delay = 3000) => {
+		if (this._storageRecomputeTimer) clearTimeout(this._storageRecomputeTimer);
+		this._storageRecomputeTimer = setTimeout(() => {
+			this._storageRecomputeTimer = null;
+			try { this.getStorageUsage(); } catch (e) { /* non-fatal */ }
+		}, delay);
+	};
 
 	async getStorageUsage(uri) {
 		//console.log('getStorageUsage', uri);
@@ -13340,6 +13270,26 @@ class Sylk extends Component {
 				    // and short-circuits if savePrivateKey already fired
 				    // the prompt this session.
 				    this._maybeTriggerPushPermissionAfterKeys('sqlLoad');
+
+				    // The journal-sync cursor (state.lastSyncId /
+				    // lastSyncTimestamp) is now hydrated from SQL. Mark it so
+				    // the post-registration sync uses the real cursor rather
+				    // than racing ahead with a null one (which would trigger a
+				    // full 5-year re-download). If 'registered' already fired
+				    // and deferred its sync, run it now with the loaded cursor.
+				    this._syncCursorHydratedFor = this.state.accountId;
+				    if (this._pendingRegisteredSync) {
+				        utils.timestampedLog('[journal] SQL cursor hydrated — running deferred post-register sync');
+				        this._requestRegisteredJournalSync();
+				    }
+
+				    // Startup healing pass: detect text/* rows with a missing
+				    // body (left behind by the broken push-payload incident
+				    // where the push delivered no content and nothing was
+				    // stored in the SQL content field). Detection-only for
+				    // now — dumps the ids to the console; recovery (re-fetch
+				    // from server) is built on top of this list.
+				    this.healEmptyTextMessages(this.state.accountId);
 				});
 
 				// Arm the conversation-remove floor before any journal replay so
@@ -13438,13 +13388,27 @@ class Sylk extends Component {
 
 			} else {
 				console.log('No account found in database');
+				// No row means there's no stored cursor to wait for. Mark
+				// hydration done (with whatever the initial null state holds)
+				// so a deferred post-register sync doesn't hang forever; the
+				// sync will legitimately run as a first sync. requestSync-
+				// Conversations still bails safely if there's no account.
+				this._syncCursorHydratedFor = this.state.accountId;
+				if (this._pendingRegisteredSync) {
+					this._requestRegisteredJournalSync();
+				}
 			}
 
 		}).catch((error) => {
 			console.log('SQL loadAccount error:', error);
+			// Don't strand a deferred sync if the row read failed.
+			this._syncCursorHydratedFor = this.state.accountId;
+			if (this._pendingRegisteredSync) {
+				this._requestRegisteredJournalSync();
+			}
 		});
     }
-    
+
     async saveSqlAccount(account, active, password) {
 		let timestamp = new Date();
 
@@ -13806,7 +13770,36 @@ class Sylk extends Component {
 			'near=' + !!this.state.proximityNear,
 			'useInCallManger=' + !!this.useInCallManger);
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.isFolded) {
+		// Headset-first default: if a headset (BT / wired / USB) is
+		// connected, start the call on it rather than letting the
+		// proximity logic pick earpiece/speaker. Gated on
+		// userChangedAudioDevice so this only sets the *default* at call
+		// start — once the user picks a device themselves, we don't yank
+		// the route back to the headset on a later call-state transition.
+		if ((this.state.hasHeadset || this.state.headsetIsPlugged) && !this.state.userChangedAudioDevice) {
+			const outputs = this.state.audioOutputs || [];
+			// Priority USB > BT > wired: when both USB and Bluetooth are
+			// connected, prefer the USB headset.
+			const headsetDevice = outputs.find(d => d.type === 'USB_HEADSET')
+				|| outputs.find(d => d.type === 'BLUETOOTH_SCO')
+				|| outputs.find(d => d.type === 'WIRED_HEADSET');
+			const headsetType = headsetDevice ? headsetDevice.type : null;
+			utils.timestampedLog('[proximity] setProximityChosenDevice -> HEADSET default',
+				'type=' + headsetType,
+				'hasHeadset=' + !!this.state.hasHeadset,
+				'plugged=' + !!this.state.headsetIsPlugged);
+			if (headsetType) {
+				this.selectAudioDevice(headsetType);
+			} else if (this.useInCallManger) {
+				// Wired plug reported but not yet enumerated in audioOutputs;
+				// InCallManager hardware-priority already routes to it — just
+				// make sure the speaker isn't forced on.
+				this.speakerphoneOff();
+			}
+			return;
+		}
+
+		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.headsetIsPlugged && !this.state.isFolded) {
 			if (this.state.proximityNear) {
 				console.log('proximity set BUILTIN_EARPIECE')
 				utils.timestampedLog('[proximity] setProximityChosenDevice -> EARPIECE');
@@ -15738,12 +15731,15 @@ class Sylk extends Component {
 
         let keyStatus = this.state.keyStatus;
 
-        // Contacts are 'ready' once the addressbook migration has completed
-        // for this account. Until then the import-key modal is deferred so it
-        // doesn't pop over the initial contacts sync. Migration-done is the
-        // race-proof signal (contactsSyncing only spans the brief fresh-sync).
-        const _contactsReady = !!(this._abMigratedAccounts && this.state.accountId
-            && this._abMigratedAccounts.has(this.state.accountId));
+        // Contacts are 'ready' once the addressbook has fully SYNCED for this
+        // account (contacts imported + groups reconciled), not merely once the
+        // migration guard passed. On the server-marker skip path the migration
+        // is skipped instantly while the import still runs in syncGroupsTable,
+        // so gating on migration-done popped the modal over the initial sync.
+        // _abImportDoneForAccount is set by _abMarkImportFinished at the true
+        // end of the import.
+        const _contactsReady = !!(this.state.accountId
+            && this._abImportDoneForAccount === this.state.accountId);
 
         console.log('[pgp] keys generation if necessary');
         
@@ -16094,10 +16090,62 @@ class Sylk extends Component {
              ? current.concat([uri])
              : current.slice(0, idx).concat(current.slice(idx + 1));
          this.setState({selectedContacts: next});
+
+         // Merge preview: log what merging the CURRENT selection would produce
+         // (same keeper rule as mergeContacts — the saved contact with the MOST
+         // messages, tiebreak smallest remote_id; else a new contact). Async +
+         // no side effects; selection-time guidance only.
+         if (next.length < 2) {
+             if (this.state.mergeKeeperId) this.setState({ mergeKeeperId: null });
+         }
+         if (next.length >= 2) {
+             (async () => {
+                 try {
+                     const _lc = (x) => (x || '').trim().toLowerCase();
+                     const savedIds = new Set((this.state.allContacts || []).map(c => c && c.id).filter(Boolean));
+                     const resolved = next.map(u => ({ uri: u, contact: this.lookupContact(u) }));
+                     const saved = []; const seenIds = new Set();
+                     resolved.forEach(r => { const c = r.contact; if (c && c.id && savedIds.has(c.id) && !seenIds.has(c.id)) { seenIds.add(c.id); saved.push(c); } });
+                     const allUris = []; const seenUri = new Set();
+                     const addUri = (x) => { const k = _lc(x); if (k && !seenUri.has(k)) { seenUri.add(k); allUris.push((x || '').trim()); } };
+                     resolved.forEach(r => { addUri(r.uri); if (r.contact) { addUri(r.contact.uri); (Array.isArray(r.contact.uris) ? r.contact.uris : []).forEach(addUri); } });
+                     let keeperLabel, defaultUri;
+                     if (saved.length > 0) {
+                         const _counts = new Map();
+                         for (const c of saved) _counts.set(c.id, await this.contactMessageCount(c));
+                         const _rid = (c) => (c && c.remote_id) ? String(c.remote_id) : '';
+                         const sorted = saved.slice().sort((a, b) => {
+                             const ca = _counts.get(a.id) || 0, cb = _counts.get(b.id) || 0;
+                             if (cb !== ca) return cb - ca;
+                             const ra = _rid(a), rb = _rid(b);
+                             if (ra && rb) return ra.localeCompare(rb);
+                             if (ra && !rb) return -1;
+                             if (!ra && rb) return 1;
+                             return String(a.id).localeCompare(String(b.id));
+                         });
+                         keeperLabel = 'contact_id=' + sorted[0].id + ' (remote_id=' + (sorted[0].remote_id || '(none)')
+                             + ', messages=' + (_counts.get(sorted[0].id) || 0) + ')';
+                         defaultUri = sorted[0].uri;
+                         // Highlight the winning contact's tile.
+                         this.setState({ mergeKeeperId: sorted[0].id });
+                     } else {
+                         keeperLabel = '(a NEW contact will be minted)';
+                         defaultUri = allUris[0];
+                         this.setState({ mergeKeeperId: null });
+                     }
+                     utils.timestampedLog('[merge] [preview] ' + allUris.length + ' uris ['
+                         + allUris.join(', ') + '] will be merged into ' + keeperLabel
+                         + ' with default uri = ' + defaultUri);
+                 } catch (e) { console.log('[merge] [preview] error', e && e.message); }
+             })();
+         }
     }
 
     // Long-press a contact to enter select mode (and pre-select it).
     enterContactSelectMode = (contact) => {
+        // Drop the search keyboard so the selection FABs (merge/delete) and the
+        // multi-select list aren't hidden behind it.
+        try { Keyboard.dismiss(); } catch (e) { /* non-fatal */ }
         this.setState({contactSelectMode: true});
         if (contact && contact.uri) this.updateSelection(contact.uri);
     }
@@ -16106,11 +16154,12 @@ class Sylk extends Component {
     // Deleted view pre-selects ALL trashed contacts so the user can hard-delete
     // them all at once, or deselect a few first).
     enterContactSelectModeAll = (uris) => {
+        try { Keyboard.dismiss(); } catch (e) { /* non-fatal */ }
         this.setState({contactSelectMode: true, selectedContacts: (uris || []).slice()});
     }
 
     exitContactSelectMode = () => {
-        this.setState({contactSelectMode: false, selectedContacts: []});
+        this.setState({contactSelectMode: false, selectedContacts: [], mergeKeeperId: null});
     }
 
     async _dumpDeletedContacts() {
@@ -16188,6 +16237,24 @@ class Sylk extends Component {
         }
     }
 
+    // Add a just-tombstoned contact to the in-memory Graveyard state so the
+    // Graveyard view updates in REAL TIME, without waiting for the next
+    // loadGraveyardContacts (which only runs on Graveyard open) or an app
+    // restart. The tombstone paths previously only dropped the row from
+    // allContacts + bumped the count, so a fresh tombstone never appeared in
+    // the Graveyard list until a re-query.
+    _addTombstoneToGraveyardState = (contact, ts) => {
+        if (!contact) return;
+        const tomb = { ...contact, deleted: true,
+            deletedTimestamp: ts || contact.deletedTimestamp || new Date().toISOString() };
+        const same = (x) => x && (x.id === contact.id
+            || (x.uri && contact.uri && x.uri.toLowerCase() === contact.uri.toLowerCase()));
+        this.setState(prev => ({
+            graveyardContacts: [tomb, ...(prev.graveyardContacts || []).filter(x => !same(x))],
+        }));
+        this.refreshGraveyardCount();
+    }
+
     // Flip the deleted flag on every (non-deleted-aware) message exchanged with
     // a URI. dir=1 hides (Stage-1 soft delete), dir=0 un-hides (restore).
     // When beforeMs (a millisecond action time) is given, only messages at or
@@ -16235,22 +16302,40 @@ class Sylk extends Component {
         const account = this.state.accountId;
         const ts = new Date().toISOString();
         const targets = uris.filter(u => u && u.toLowerCase() !== (account || '').toLowerCase());
+        const markedIds = new Set();
         for (const uri of targets) {
             try {
-                // Set storage_purged too: that is the single criterion for the
-                // Deleted folder. Messages are HIDDEN (deleted=1, recoverable on
-                // revive), not hard-wiped — the hard wipe + tombstone only happen
-                // on an explicit "kill in XCAP" (hardDeleteContacts).
-                await this.ExecuteQuery(
-                    'UPDATE contacts SET deleted_timestamp = ? WHERE account = ? AND lower(uri) = lower(?)',
-                    [ts, account, uri]);
+                // Resolve the saved contact (matches by primary uri, any secondary
+                // uri, or a phone-number variant) so we mark the right SQL row by
+                // its contact_id. A uri-only UPDATE misses a contact the user
+                // deleted from a SECONDARY address (its primary uri differs) and
+                // does nothing at all for a transient/search contact that was never
+                // saved — which is why such a "deleted" contact appeared in neither
+                // the Deleted folder nor the Graveyard.
+                const c = (typeof this.lookupContact === 'function') ? this.lookupContact(uri) : null;
+                const cid = c && c.id;
+                let res;
+                if (cid) {
+                    res = await this.ExecuteQuery(
+                        'UPDATE contacts SET deleted_timestamp = ? WHERE account = ? AND contact_id = ?',
+                        [ts, account, cid]);
+                    markedIds.add(cid);
+                } else {
+                    res = await this.ExecuteQuery(
+                        'UPDATE contacts SET deleted_timestamp = ? WHERE account = ? AND lower(uri) = lower(?)',
+                        [ts, account, uri]);
+                }
+                const ra = (res && res.rowsAffected != null) ? res.rowsAffected : '?';
+                utils.timestampedLog('[trash] soft-delete ' + uri + ' contact_id=' + (cid || '(none)')
+                    + ' rowsAffected=' + ra
+                    + (ra === 0 ? ' — NOT a saved contact (nothing to move to Deleted)' : ''));
                 await this._setMessagesDeletedForUri(uri, 1);
             } catch (e) { console.log('[trash] soft-delete failed for', uri, e && e.message); }
         }
         const set = new Set(targets.map(u => u.toLowerCase()));
         this.setState(prev => ({
             allContacts: (prev.allContacts || []).map(c =>
-                (c && c.uri && set.has(c.uri.toLowerCase())) ? {...c, deletedTimestamp: ts, storagePurged: (c.storagePurged || ts)} : c),
+                (c && ((c.id && markedIds.has(c.id)) || (c.uri && set.has(c.uri.toLowerCase())))) ? {...c, deletedTimestamp: ts, storagePurged: (c.storagePurged || ts)} : c),
             contactSelectMode: false,
             selectedContacts: [],
             // If the open chat is one of the just-trashed contacts, close it so
@@ -16262,6 +16347,102 @@ class Sylk extends Component {
             gotoDeletedSignal: (prev.gotoDeletedSignal || 0) + 1,
         }));
         utils.timestampedLog('[trash] moved ' + targets.length + ' contact(s) to Deleted folder @ ' + ts);
+    }
+
+    // MERGE selected contacts (from search multi-select) into ONE. Every URI
+    // across the selection is folded onto a single keeper:
+    //   • If any selected are existing saved contacts, the keeper is the one
+    //     with the SMALLEST contact_id and the others are deleted (their URIs
+    //     move to the keeper).
+    //   • If none are saved (all phonebook / typed results), a NEW contact is
+    //     minted carrying every selected URI.
+    // Messages stay reachable: they key off URI and the contact index resolves
+    // a contact by any of its URIs.
+    async mergeContacts(uris) {
+        try {
+            if (!Array.isArray(uris) || uris.length < 2) return;
+            const account = this.state.accountId;
+            const _lc = (x) => (x || '').trim().toLowerCase();
+            const savedIds = new Set((this.state.allContacts || []).map(c => c && c.id).filter(Boolean));
+
+            // Resolve each selected URI to a contact (saved row, or transient).
+            const resolved = uris.map(u => ({ uri: u, contact: (typeof this.lookupContact === 'function') ? this.lookupContact(u) : null }));
+            const saved = [];
+            const seenIds = new Set();
+            resolved.forEach(r => {
+                const c = r.contact;
+                if (c && c.id && savedIds.has(c.id) && !seenIds.has(c.id)) { seenIds.add(c.id); saved.push(c); }
+            });
+
+            // Gather every URI across the selection (selected uri + each contact's uri + uris).
+            const allUris = []; const seenUri = new Set();
+            const addUri = (x) => { const k = _lc(x); if (k && !seenUri.has(k)) { seenUri.add(k); allUris.push((x || '').trim()); } };
+            resolved.forEach(r => { addUri(r.uri); if (r.contact) { addUri(r.contact.uri); (Array.isArray(r.contact.uris) ? r.contact.uris : []).forEach(addUri); } });
+            if (!allUris.length) return;
+
+            // Keeper = the saved contact with the MOST real messages, so the
+            // merged contact keeps the richest existing conversation under its
+            // primary URI. Ties (incl. all-zero) break by smallest remote_id
+            // (server-linked beats local-only), then contact_id — deterministic
+            // so multiple clients converge on the same survivor. If none are
+            // saved, mint a new contact. NOTE: merging only re-homes URIs and
+            // contact rows — it never touches the messages table.
+            let keeper; let losers = [];
+            if (saved.length > 0) {
+                const _counts = new Map();
+                for (const c of saved) _counts.set(c.id, await this.contactMessageCount(c));
+                const _rid = (c) => (c && c.remote_id) ? String(c.remote_id) : '';
+                const sorted = saved.slice().sort((a, b) => {
+                    const ca = _counts.get(a.id) || 0, cb = _counts.get(b.id) || 0;
+                    if (cb !== ca) return cb - ca;              // more messages first
+                    const ra = _rid(a), rb = _rid(b);
+                    if (ra && rb) return ra.localeCompare(rb);  // tie → lowest remote_id
+                    if (ra && !rb) return -1;                   // server-linked beats local-only
+                    if (!ra && rb) return 1;
+                    return String(a.id).localeCompare(String(b.id));
+                });
+                keeper = sorted[0];
+                losers = sorted.slice(1);
+                utils.timestampedLog('[merge] message counts: '
+                    + saved.map(c => c.uri + '=' + (_counts.get(c.id) || 0)).join(', '));
+            } else {
+                keeper = this.newContact(allUris[0]);
+            }
+            if (!keeper) return;
+
+            // Display name: keep the keeper's real name, else the first real name
+            // found among the selected contacts.
+            let name = (keeper.name && !this._abIsUriEcho(keeper.name, [keeper.uri, ...allUris])) ? keeper.name : '';
+            if (!name) { for (const r of resolved) { const n = r.contact && r.contact.name; if (n && !this._abIsUriEcho(n, allUris)) { name = n; break; } } }
+            if (name) keeper.name = name;
+
+            // Fold all URIs onto the keeper (primary stays keeper.uri).
+            keeper.uris = allUris.filter(u => _lc(u) !== _lc(keeper.uri));
+            // Union tags from every selected contact (skip the synthetic 'contact'/'phone'/'email' AB tags).
+            const _skipTags = new Set(['contact', 'phone', 'email']);
+            const _tags = new Set(Array.isArray(keeper.tags) ? keeper.tags : []);
+            resolved.forEach(r => (Array.isArray(r.contact && r.contact.tags) ? r.contact.tags : []).forEach(t => { if (!_skipTags.has((t || '').toLowerCase())) _tags.add(t); }));
+            keeper.tags = [..._tags];
+
+            utils.timestampedLog('[merge] keeper=' + keeper.id + ' remote_id=' + (keeper.remote_id || '(none)')
+                + ' (' + keeper.uri + ') losers=['
+                + losers.map(l => l.id + '/rid:' + (l.remote_id || '(none)') + ':' + l.uri).join(', ')
+                + '] uris=[' + keeper.uris.join(', ') + ']');
+
+            // Save keeper FIRST (replicates to XCAP, claiming the merged URIs),
+            // THEN delete the loser rows — relink-before-delete, never the reverse.
+            await this.saveSylkContact(keeper.uri, keeper, 'editContact');
+            for (const l of losers) {
+                try { await this.deleteSylkContact(l); }
+                catch (e) { console.log('[merge] delete loser failed', l && l.uri, e && e.message); }
+            }
+
+            this.setState({ contactSelectMode: false, selectedContacts: [], mergeKeeperId: null });
+            await this.loadSylkContacts('merge', true);
+            utils.timestampedLog('[merge] done — merged ' + uris.length + ' selection(s) into ' + keeper.uri);
+        } catch (e) {
+            console.log('[merge] error', e && e.message);
+        }
     }
 
     // RESTORE — un-trash from the Deleted folder: clear deleted_timestamp and
@@ -16346,9 +16527,9 @@ class Sylk extends Component {
         contact.storagePurged = contact.storagePurged || ts;
         // Drop the conversation from the in-memory render store too.
         try {
-            const rm = {...this.state.messages};
+            const rm = {...this._messagesMap()};
             uris.forEach(u => { if (u in rm) delete rm[u]; });
-            this.setState({messages: rm});
+            this._syncContactMessagesToLegacy();
         } catch (e) {}
         utils.timestampedLog('[trash] purged storage for ' + this._abNormalizeUri(contact.uri));
     }
@@ -16369,7 +16550,7 @@ class Sylk extends Component {
             allContacts: (prev.allContacts || []).filter(x => !(x && x.id === contact.id)),
         }));
         if (this.state.selectedContact?.id === contact.id) this.setState({selectedContact: null});
-        this.refreshGraveyardCount(); // a new tombstone landed in the Graveyard
+        this._addTombstoneToGraveyardState(contact, ts); // real-time Graveyard update (+ count)
         utils.timestampedLog('[trash] tombstoned ' + this._abNormalizeUri(contact.uri)
             + ' (storage purged + delete confirmed)');
         return true;
@@ -16404,6 +16585,156 @@ class Sylk extends Component {
         utils.timestampedLog('[trash] revived ' + this._abNormalizeUri(contact.uri)
             + (wasTombstone ? ' (from Graveyard)' : '')
             + ' — cleared deleted/storage_purged/deleted_timestamp, reset server id, re-pushed');
+    }
+
+    // Revive a deleted contact when GENUINELY NEW activity (an incoming
+    // message or call) arrives for its URI. Covers both deletion states:
+    //   • Deleted folder (trash): deleted_timestamp set, deleted = 0 — the row
+    //     is still in allContacts, just flagged.
+    //   • Graveyard tombstone: deleted = 1 — NOT in allContacts, read from SQL.
+    //
+    // "NEW" is the critical guard: we revive ONLY when the activity timestamp is
+    // strictly AFTER the moment the contact was deleted. A historical echo
+    // (an old message replayed by the journal, or a stale push, that predates
+    // the deletion) must NEVER resurrect the contact — that is the whole reason
+    // tombstones exist. This is called from every incoming message and call
+    // entry point (push AND websocket), so revival is source-independent: once
+    // JS is running and processes the arrival, the contact comes back.
+    // opts.skipTombstone: only revive an in-memory TRASHED contact (deleted=0,
+    // already in allContacts) — do NOT touch Graveyard tombstones (deleted=1).
+    // Used by the journal-replay loop, where reviving a tombstone mid-loop
+    // (which triggers an async loadSylkContacts) would race the loop's own
+    // newContact fallback and mint a duplicate row. Live paths leave it false.
+    async _reviveDeletedContactForActivity(uri, activityMs, source, opts={}) {
+        try {
+            if (!uri) return;
+            const account = this.state.accountId;
+            if (!account) return;
+            const u = String(uri).trim().toLowerCase();
+            if (!u || u === account.toLowerCase()) return; // never our own uri
+            const _ts = (typeof activityMs === 'number' && !isNaN(activityMs))
+                ? activityMs : Date.now();
+
+            // 1) Trashed-but-loaded contact (Deleted folder). This is an
+            // in-memory lookup (no SQL), so it runs unthrottled — a journal
+            // batch can present an older row first and a newer one later, and
+            // the newer one must still trigger the revive.
+            const active = (typeof this.lookupContact === 'function')
+                ? this.lookupContact(uri) : null;
+            if (active && !active.deleted) {
+                // A contact sits in the Deleted folder when EITHER marker is
+                // set: deletedTimestamp (this device moved it to trash) OR
+                // storagePurged (a removeConversation sync from another device
+                // hid + purged it WITHOUT setting deletedTimestamp — see the
+                // removeConversation handler ~line 29084). The revive gate must
+                // honour both, exactly like the call-history path (~line 44374).
+                // Keying off deletedTimestamp alone left a storagePurged-only
+                // contact stuck in the Deleted folder on new activity: the
+                // incoming message saved to SQL but the contact never resurfaced
+                // or re-sorted to the top.
+                const _delMarker = active.deletedTimestamp || active.storagePurged;
+                if (_delMarker) {
+                    const delMs = new Date(_delMarker).getTime();
+                    if (_ts > delMs) {
+                        utils.timestampedLog('[trash] reviving trashed contact', u,
+                            'on new ' + (source || 'activity') + ' (newer than deletion)');
+                        await this._reviveContact(active);
+                    } else {
+                        utils.timestampedLog('[trash] keep trashed contact', u,
+                            '— ' + (source || 'activity') + ' older than deletion, not reviving');
+                    }
+                }
+                return; // active contact handled (or nothing to do)
+            }
+
+            // 2) Graveyard tombstone (deleted = 1) — not in allContacts, needs
+            // a SQL read. Throttle per-URI so an all-historical journal batch
+            // (where nothing ends up reviving) doesn't run this query once per
+            // row. Placed here so the cheap branch above stays unthrottled.
+            if (opts && opts.skipTombstone) return;
+            if (!this._reviveCheckedAt) this._reviveCheckedAt = new Map();
+            const _last = this._reviveCheckedAt.get(u) || 0;
+            if (Date.now() - _last < 5000) return;
+            this._reviveCheckedAt.set(u, Date.now());
+            const res = await this.ExecuteQuery(
+                "SELECT * FROM contacts WHERE account = ? AND lower(uri) = ? AND deleted = 1 LIMIT 1",
+                [account, u]);
+            const item = (res && res.rows && res.rows.length) ? res.rows.item(0) : null;
+            if (!item) return;
+            const delMs = item.deleted_timestamp ? new Date(item.deleted_timestamp).getTime() : 0;
+            if (!(_ts > delMs)) {
+                utils.timestampedLog('[trash] keep tombstone', u,
+                    '— ' + (source || 'activity') + ' older than deletion, not reviving');
+                return;
+            }
+            const tomb = this.newContact(item.uri, item.name, {sqlItem: item});
+            if (!tomb) return;
+            tomb.deleted = true; // make _reviveContact take the wasTombstone path
+            utils.timestampedLog('[trash] reviving Graveyard tombstone', u,
+                'on new ' + (source || 'activity'));
+            await this._reviveContact(tomb);
+        } catch (e) {
+            console.log('[trash] _reviveDeletedContactForActivity error', e && e.message);
+        }
+    }
+
+    // Deleted-folder action "Block": same destructive cleanup as the Graveyard
+    // path (purge the contact's messages from SQL + disk, and propagate a
+    // removeConversation so our other devices drop the thread too), but instead
+    // of tombstoning the contact we KEEP it as an active row moved into the
+    // Blocked group. Being in the Blocked group is what now rejects this URI's
+    // future messages and calls (the blockedUris gate in the message/call
+    // handlers) — that membership replaces the tombstone's resurrection
+    // protection. The contact therefore shows under the Blocked filter, not the
+    // Deleted folder or the Graveyard.
+    blockDeletedContact = async (contact) => {
+        if (!contact) return;
+        const account = this.state.accountId;
+        const uri = contact.uri;
+        try {
+            // (1) Purge messages: SQL rows + on-disk transfer files + the
+            //     in-memory render store (same as the Graveyard path).
+            await this._purgeContactStorage(contact);
+
+            // (2) Propagate the conversation removal to our other devices.
+            if (this.state.account && uri
+                    && !(account && uri.toLowerCase() === account.toLowerCase())) {
+                this.addJournal(uri, 'removeConversation');
+            }
+
+            // (3) Keep the contact active and move it into the Blocked group.
+            //     Clear the trash/purge markers so it isn't treated as deleted,
+            //     and leave deleted = 0 (NOT a tombstone). Add the 'blocked' tag.
+            contact.deleted = false;
+            contact.deletedTimestamp = null;
+            contact.storagePurged = null;
+            if (!Array.isArray(contact.tags)) contact.tags = [];
+            if (contact.tags.indexOf('blocked') === -1) contact.tags.push('blocked');
+            contact.timestamp = new Date();
+            try {
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET deleted = 0, deleted_timestamp = NULL, storage_purged = NULL WHERE account = ? AND contact_id = ?',
+                    [account, contact.id]);
+            } catch (e) { console.log('[trash] block clear-flags SQL failed', e && e.message); }
+            // Persist the blocked tag (replicates the contact to the server).
+            await this.saveSylkContact(uri, contact, 'blockDeletedContact');
+
+            // (4) Register in blockedUris + reflect the new state in allContacts.
+            const blockedUris = this.state.blockedUris ? [...this.state.blockedUris] : [];
+            if (uri && blockedUris.indexOf(uri) === -1) blockedUris.push(uri);
+            this.setState(prev => ({
+                blockedUris,
+                selectedContact: null,
+                allContacts: (prev.allContacts || []).map(x =>
+                    (x && x.id === contact.id)
+                        ? {...x, deleted: false, deletedTimestamp: null, storagePurged: null, tags: contact.tags}
+                        : x),
+            }));
+            utils.timestampedLog('[trash] blocked contact ' + this._abNormalizeUri(uri)
+                + ' — purged messages + removeConversation, kept in Blocked group (not graveyarded)');
+        } catch (e) {
+            console.log('[trash] blockDeletedContact failed', e && e.message);
+        }
     }
 
     // STAGE 2 — permanently remove contacts from the Deleted folder
@@ -17520,16 +17851,12 @@ class Sylk extends Component {
             //   - release the old audio session + local media
             //   - re-acquire media for the new call
             // …minus the changeRoute itself.
-            let _messages = this.state.messages;
-            if (this.state.callContact && this.state.callContact.uri in _messages) {
-                delete _messages[this.state.callContact.uri];
-            }
-
+            if (this.contactMessageIndex) this.contactMessageIndex.clear();
             this.setState({
                 outgoingCallUUID: null,
                 currentCall: null,
                 callContact: null,
-                messages: {},
+                contactMessages: [],
                 selectedContact: null,
                 inviteContacts: false,
                 selectedContacts: [],
@@ -18532,9 +18859,11 @@ class Sylk extends Component {
 
 		const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
 
-		const messages = this.state.messages;
-        if (from in this.state.messages) {
-			const exists = messages[from].some(m => m._id === id);
+		const _slice = this._messagesFor(from);
+		const _loaded = !!(this.state.selectedContact
+			&& this.getAllContactUris(this.state.selectedContact).indexOf(from) !== -1);
+		if (_loaded) {
+			const exists = _slice.some(m => m._id === id);
 			if (exists) {
 			    //console.log('Message is already loaded', id);
 				return;
@@ -18663,6 +18992,12 @@ class Sylk extends Component {
         if (this.unmounted) {
             return;
         }
+
+        // A new push-delivered incoming call must revive a deleted contact
+        // (Deleted folder OR Graveyard) — same rule as the wss call path. The
+        // call is live now, so it is always newer than any past deletion.
+        this._reviveDeletedContactForActivity(from, Date.now(), 'call (push)')
+            .catch(e => console.log('[trash] revive on push call failed', e && e.message));
 
         // Tell any in-app audio capture / playback (voice-message recording
         // in ReadyBox, recording playback in ContactsListBox / ReadyBox) to
@@ -18851,6 +19186,13 @@ class Sylk extends Component {
         this.callKeeper.addWebsocketCall(call);
         const callUUID = call.id;
         const from = call.remoteIdentity.uri;
+
+        // A new incoming call must bring a deleted contact back (Deleted folder
+        // OR Graveyard), exactly like a new message. The call is happening now,
+        // so it is always newer than any past deletion. Fire-and-forget so call
+        // setup is never delayed by the revive.
+        this._reviveDeletedContactForActivity(from, Date.now(), 'call (wss)')
+            .catch(e => console.log('[trash] revive on wss call failed', e && e.message));
 
         // WSS incoming-call arrived — disarm any liveness healthcheck
         // armed for this callUUID by callPrepEventHandler. Done up
@@ -19370,13 +19712,14 @@ class Sylk extends Component {
         let timestamp = new Date();
         let params;
         let unix_timestamp = Math.floor(timestamp / 1000);
-        const _cat = this._classifyMessageCategory(contentType, null, null);
+        const _cat = this._classifyMessageCategory(contentType, null, null, content);
         // saveOutgoingRawMessage is called with the wire-format
         // content (ciphertext for encrypted text). The plaintext
         // isn't available here, so we can't reliably set has_link
         // — leave it NULL and let sql2GiftedChat fill it on first
         // decrypt-read.
         params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, contentType, from_uri, to_uri, "outgoing", "1", _cat, null];
+        this._normalizeInsertUris(params, 6, 7);
         await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL insert message OK');
         }).catch((error) => {
@@ -19415,6 +19758,133 @@ class Sylk extends Component {
 			check();
 		});
 	}
+
+    // Per-URI cache of the last unread value we pushed to the native
+    // counter via UnreadModule. saveSylkContact fans out across several
+    // unrelated code paths (saveConference, addHistoryEntry,
+    // updateHistoryEntry, replicate, …) that each fire in a burst when a
+    // call/conference ends — without this guard every one of them
+    // re-writes the same (usually unchanged) count to native and floods
+    // metro.log with "save [contact] -> setUnreadForContact" lines.
+    //
+    // The cache is only valid while the app owns the counter (appState
+    // === 'active'). While backgrounded the native FCM service mutates
+    // the counter directly, so we drop the whole cache on any transition
+    // away from active (see _invalidateNativeUnreadCache) to avoid
+    // masking a genuine write on the next foreground save.
+    _nativeSetUnread(uri, n) {
+        if (!this._lastNativeUnread) {
+            this._lastNativeUnread = {};
+        }
+        if (this._lastNativeUnread[uri] === n) {
+            return false; // native already holds this value — skip the write
+        }
+        UnreadModule.setUnreadForContact(uri, n);
+        this._lastNativeUnread[uri] = n;
+        return true;
+    }
+
+    _nativeResetUnread(uri) {
+        if (!this._lastNativeUnread) {
+            this._lastNativeUnread = {};
+        }
+        if (this._lastNativeUnread[uri] === 0) {
+            return false;
+        }
+        UnreadModule.resetUnreadForContact(uri);
+        this._lastNativeUnread[uri] = 0;
+        return true;
+    }
+
+    _invalidateNativeUnreadCache() {
+        this._lastNativeUnread = {};
+    }
+
+    // Single source of truth for the contacts INSERT column order. Used by
+    // both saveSylkContact (single row) and _bulkInsertContacts (one
+    // transaction, many rows) so the two paths can never drift apart.
+    _contactsInsertColumns = "contact_id, remote_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, last_call_timestamp, properties, local_properties, last_message, last_message_id";
+
+    _buildContactInsertParams(uri, contact) {
+        let unreadCount = contact?.unread?.length;
+        if (typeof unreadCount !== "number" || isNaN(unreadCount)) {
+            unreadCount = 0;
+        }
+        let unread_messages = '';
+        if (unreadCount > 0) {
+            unread_messages = contact.unread.toString();
+        }
+
+        const conference = contact.conference ? 1 : 0;
+        const media = contact.lastCallMedia.toString();
+        const participants = contact.participants.toString();
+        const uris = contact.uris ? contact.uris.toString() : '';
+        const unixTime = Math.floor(contact.timestamp / 1000);
+        const properties = contact.properties ? JSON.stringify(contact.properties) : '';
+        const localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : '';
+
+        return [
+            contact.id,
+            contact.remote_id || '',
+            this.state.accountId,
+            uri,
+            uris,
+            contact.email || '',
+            contact.photo || '',
+            unixTime,
+            contact.name || '',
+            contact.organization || '',
+            unread_messages,
+            contact.tags.toString(),
+            participants,
+            contact.publicKey || '',
+            contact.direction || '',
+            media || '',
+            conference || 0,
+            contact.lastCallId || '',
+            contact.lastCallDuration || 0,
+            // last_call_timestamp (v13). Coerce Date/number to int seconds;
+            // null when never called so the Calls filter treats this row as
+            // "no calls".
+            (contact.lastCallTimestamp instanceof Date)
+                ? Math.floor(contact.lastCallTimestamp.getTime() / 1000)
+                : (typeof contact.lastCallTimestamp === 'number'
+                    ? Math.floor(contact.lastCallTimestamp)
+                    : null),
+            properties,
+            localProperties,
+            // last_message / last_message_id — included so the first persist
+            // via INSERT is durable (see saveSylkContact for the full history).
+            contact.lastMessage || '',
+            contact.lastMessageId || ''
+        ];
+    }
+
+    // Insert many contacts in ONE transaction (one commit) instead of one
+    // transaction per row. Used by the first XCAP server-contacts import.
+    // Resolves true on a clean commit; REJECTS on any SQL/transaction error so
+    // the caller can fall back to the per-contact saveSylkContact path.
+    // INSERT OR IGNORE keeps a stray duplicate from aborting the whole batch
+    // (the fresh-import gate means collisions are not expected anyway).
+    _bulkInsertContacts(contacts) {
+        return new Promise((resolve, reject) => {
+            if (!contacts || !contacts.length) {
+                resolve(true);
+                return;
+            }
+            const sql = "INSERT OR IGNORE INTO contacts (" + this._contactsInsertColumns
+                + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            this.db.transaction(
+                (trans) => {
+                    for (const { uri, contact } of contacts) {
+                        trans.executeSql(sql, this._buildContactInsertParams(uri, contact));
+                    }
+                },
+                (error) => reject(error),   // whole transaction rolled back
+                () => resolve(true)          // committed once
+            );
+        });
+    }
 
     async saveSylkContact(uri, contact, origin=null) {
         await this.waitForContactsLoaded();
@@ -19574,71 +20044,26 @@ class Sylk extends Component {
 			// 0 after FCM had just set it to N).
 			if (this.state.appState === 'active') {
 				const activeUri = this.state.selectedContact ? this.state.selectedContact.uri : null;
-				console.log('save [contact] -> setUnreadForContact', uri, unreadCount,
-					'selectedContact =', activeUri);
-				UnreadModule.setUnreadForContact(uri, unreadCount);
+				// Dedup: only touch native (and log) when the count actually
+				// changed. The burst of saves on call/conference teardown
+				// otherwise re-writes the same value N times.
+				const _wrote = this._nativeSetUnread(uri, unreadCount);
+				if (_wrote) {
+					console.log('save [contact] -> setUnreadForContact', uri, unreadCount,
+						'selectedContact =', activeUri);
+				}
 			} else {
 				console.log('save [contact]: skipping setUnreadForContact (appState =',
 					this.state.appState, ') FCM owns the counter');
 			}
 		}
 
-        let conference = contact.conference ? 1: 0;
-        let media = contact.lastCallMedia.toString();
-        let participants = contact.participants.toString();
-        let uris = contact.uris? contact.uris.toString() : '';
-        let unixTime = Math.floor(contact.timestamp / 1000);
-        let photo = contact?.photo || '';
-        let properties = contact.properties ? JSON.stringify(contact.properties) : '';
-        let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : '';
+        // Build the row params via the shared helper so this single-row INSERT
+        // and the bulk-import path (_bulkInsertContacts) stay byte-for-byte in
+        // sync on column order.
+        let params = this._buildContactInsertParams(uri, contact);
 
-        let params = [
-			  contact.id,
-			  contact.remote_id || '',
-			  this.state.accountId,
-			  uri,
-			  uris,
-			  contact.email || '',
-			  contact.photo || '',
-			  unixTime,
-			  contact.name || '',
-			  contact.organization || '',
-		      unread_messages,
-			  contact.tags.toString(),
-			  participants,
-			  contact.publicKey || '',
-			  contact.direction || '',
-			  media || '',
-			  conference || 0,
-			  contact.lastCallId || '',
-			  contact.lastCallDuration || 0,
-			  // last_call_timestamp (v13). Coerce Date/number to int
-			  // seconds; null when never called so the Calls filter
-			  // treats this row as "no calls".
-			  (contact.lastCallTimestamp instanceof Date)
-			    ? Math.floor(contact.lastCallTimestamp.getTime() / 1000)
-			    : (typeof contact.lastCallTimestamp === 'number'
-			        ? Math.floor(contact.lastCallTimestamp)
-			        : null),
-			  properties,
-			  localProperties,
-			  // last_message / last_message_id — these used to be
-			  // OMITTED from the INSERT (only updateSylkContact's
-			  // UPDATE wrote them), which meant the contacts-list
-			  // subtitle ("Incoming/Outgoing call ended (mm:ss)",
-			  // last chat preview, etc.) was lost on app restart
-			  // for any contact whose FIRST persist happened via
-			  // INSERT — fresh PSTN dial-ins, brand-new chat
-			  // contacts, etc. The UPDATE path on subsequent saves
-			  // wrote it correctly, but a contact that was only
-			  // saved once via the INSERT path read back with a
-			  // null last_message after restart. Include the
-			  // columns here so the first persist is durable.
-			  contact.lastMessage || '',
-			  contact.lastMessageId || ''
-			];
-
-        await this.ExecuteQuery("INSERT INTO contacts (contact_id, remote_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, last_call_timestamp, properties, local_properties, last_message, last_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        await this.ExecuteQuery("INSERT INTO contacts (" + this._contactsInsertColumns + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             if (result.rowsAffected === 1) {
                 console.log('SQL inserted contact', contact.id, uri, 'by', origin);
 
@@ -19885,16 +20310,68 @@ class Sylk extends Component {
         try {
             if (!uri) return false;
             const u = String(uri).toLowerCase();
+            // Count only REAL chat messages. Call/system breadcrumbs (system=1
+            // or a row linked to a SIP Call-ID) and soft-deleted rows must NOT
+            // make a URI "have messages" — otherwise a contact you only ever
+            // called shows up as read-only with no actual conversation.
+            const _realMsgWhere =
+                'account = ? AND (lower(from_uri) = ? OR lower(to_uri) = ?) '
+                + 'AND (system IS NULL OR system = 0) '
+                + "AND (call_id IS NULL OR call_id = '') "
+                + 'AND (deleted IS NULL OR deleted = 0)';
             const res = await this.ExecuteQuery(
-                'SELECT COUNT(*) AS c FROM messages WHERE account = ? '
-                + 'AND (lower(from_uri) = ? OR lower(to_uri) = ?)',
+                'SELECT COUNT(*) AS c FROM messages WHERE ' + _realMsgWhere,
                 [this.state.accountId, u, u]);
             const n = (res && res.rows && res.rows.length) ? (res.rows.item(0).c || 0) : 0;
+            // DIAGNOSTIC: when a URI counts as having messages, dump the actual
+            // matching rows (id / type / system flag / direction / from→to /
+            // deleted) so we can see WHAT is counting — e.g. call/system rows or
+            // a uri-form mismatch — rather than a real chat thread.
+            if (n > 0) {
+                try {
+                    const d = await this.ExecuteQuery(
+                        'SELECT msg_id, content_type, system, call_id, direction, from_uri, to_uri, deleted '
+                        + 'FROM messages WHERE account = ? AND (lower(from_uri) = ? OR lower(to_uri) = ?) '
+                        + 'ORDER BY unix_timestamp DESC LIMIT 10',
+                        [this.state.accountId, u, u]);
+                    const rows = (d && d.rows) ? d.rows : null;
+                    console.log('[ab] contactHasStoredMessages uri=' + u + ' realCount=' + n + ' (all rows, up to 10):');
+                    for (let i = 0; rows && i < rows.length; i++) {
+                        const r = rows.item(i);
+                        console.log('[ab]   msg_id=' + r.msg_id + ' ct=' + r.content_type
+                            + ' system=' + r.system + ' call_id=' + r.call_id + ' dir=' + r.direction
+                            + ' from=' + r.from_uri + ' to=' + r.to_uri + ' deleted=' + r.deleted);
+                    }
+                } catch (e2) { console.log('[ab] contactHasStoredMessages detail error', e2 && e2.message); }
+            }
             return n > 0;
         } catch (e) {
             console.log('[ab] contactHasStoredMessages error', e && e.message);
             return false;
         }
+    }
+
+    // Count of REAL chat messages across ALL of a contact's URIs (primary +
+    // uris[]). Same filter as contactHasStoredMessages (excludes call/system
+    // rows, call-linked rows, soft-deleted). A single query over the URI set so
+    // a message touching two of the contact's URIs isn't double-counted. Used by
+    // the merge to pick the keeper with the richest conversation.
+    async contactMessageCount(contact) {
+        try {
+            if (!contact) return 0;
+            const us = [...new Set([contact.uri, ...(Array.isArray(contact.uris) ? contact.uris : [])]
+                .filter(Boolean).map(u => String(u).toLowerCase()))];
+            if (!us.length) return 0;
+            const ph = us.map(() => '?').join(',');
+            const res = await this.ExecuteQuery(
+                'SELECT COUNT(*) AS c FROM messages WHERE account = ? '
+                + 'AND (lower(from_uri) IN (' + ph + ') OR lower(to_uri) IN (' + ph + ')) '
+                + 'AND (system IS NULL OR system = 0) '
+                + "AND (call_id IS NULL OR call_id = '') "
+                + 'AND (deleted IS NULL OR deleted = 0)',
+                [this.state.accountId, ...us, ...us]);
+            return (res && res.rows && res.rows.length) ? (res.rows.item(0).c || 0) : 0;
+        } catch (e) { return 0; }
     }
 
     // Re-entrancy guard. The conversation-delete path can fire the same delete
@@ -19988,6 +20465,7 @@ class Sylk extends Component {
 			console.log('deleteSylkContact: tombstoned (deleted=1) rowsAffected=', rowsAffected, 'for id=', contact.id);
 			if (rowsAffected > 0) {
 				this.removeContactInState(contact);
+				this._addTombstoneToGraveyardState(contact, _nowTs); // real-time Graveyard update
 				if (this.state.selectedContact?.id == contact.id) {
 				   this.setState({selectedContact: null});
 				}
@@ -20009,6 +20487,7 @@ class Sylk extends Component {
 							c => !c || c.uri !== contact.uri
 						)
 					}));
+					this._addTombstoneToGraveyardState(contact, _nowTs); // real-time Graveyard update
 					if (this.state.selectedContact?.uri === contact.uri) {
 						this.setState({selectedContact: null});
 					}
@@ -20589,7 +21068,11 @@ class Sylk extends Component {
 					this.sendPublicKeyToUri(uri);
 					this.sentPublicKeyUris.add(uri);
 				}
-				this.saveSystemMessage(uri, 'Public key received', 'incoming');
+				// Storing a peer's public key is housekeeping, not conversation
+				// activity — no longer surfaced as a chat system message. It was
+				// noise (a bubble on every key fetch / change) and the row, stamped
+				// at "now", also popped contacts to the top of the list on chat open
+				// (recency bump from a system row).
 		    } else {
 				console.log('[pgp] [message] savePublicKey unchanged: stored key equals incoming for', uri);
 		    }
@@ -20667,7 +21150,7 @@ class Sylk extends Component {
             return;
         }
 
-        //console.log('Send', contentType, 'message', id, 'to', uri);
+        console.log('Send', contentType, 'message', id, 'to', uri);
         let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
             if (error) {
                 console.log('Message', id, 'sending error:', error);
@@ -20677,6 +21160,8 @@ class Sylk extends Component {
                     status = 'Domain not found';
                     this.renderSystemMessage(uri, status, 'incoming');
                 }
+            } else {
+				console.log('Sent', contentType, 'message', id, 'to', uri);
             }
         });
         
@@ -20735,7 +21220,7 @@ class Sylk extends Component {
             }
         }
 
-        let renderMessages = this.state.messages;
+        let renderMessages = this._messagesMap();
         if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
             if (Object.keys(renderMessages).indexOf(uri) === -1) {
                 renderMessages[uri] = [];
@@ -20915,11 +21400,6 @@ class Sylk extends Component {
             // onto the captured `renderMessages` reference and writing it back
             // would clobber the intervening update (e.g. a live-location bubble).
             this.setState(prev => {
-                const prevList = (prev.messages && prev.messages[uri]) || [];
-                const newMessages = {
-                    ...prev.messages,
-                    [uri]: [...prevList, message],
-                };
                 let nextSelected = prev.selectedContact;
                 if (nextSelected && nextSelected.uri === uri) {
                     nextSelected = {
@@ -20933,8 +21413,10 @@ class Sylk extends Component {
                         if (_lm != null) nextSelected.lastMessage = _lm;
                     }
                 }
-                return { messages: newMessages, selectedContact: nextSelected };
+                return { selectedContact: nextSelected };
             });
+            // Add the outgoing send to the new model (state.messages retired).
+            this._appendContactMessage(uri, message);
         }
     }
 
@@ -21984,7 +22466,6 @@ class Sylk extends Component {
 	}
 
     async saveConferenceMessage(room, message) {
-        let messages = this.state.messages;
         let ts = message.createdAt;
 
         let unix_timestamp = Math.floor(ts / 1000);
@@ -21999,17 +22480,14 @@ class Sylk extends Component {
         let sender = !system ? message.user._id : null;
 
         var content = message.text;
-        const _cat = this._classifyMessageCategory(contentType, message.metadata, null);
+        const _cat = this._classifyMessageCategory(contentType, message.metadata, null, content);
         const _hl = this._hasLinkInText(contentType, content);
         var params = [this.state.accountId, system, JSON.stringify(message.metadata), message.image, sender, message.local_url, message.url, message._id, JSON.stringify(ts), unix_timestamp, content, contentType, from_uri, to_uri, message.direction, 0, message.sent ? 1: 0, message.received ? 1: 0, _cat, _hl];
+        this._normalizeInsertUris(params, 12, 13);
         await this.ExecuteQuery("INSERT INTO messages (account, system, metadata, image, sender, local_url, url, msg_id, timestamp, unix_timestamp, content, content_type, from_uri, to_uri, direction, pending, sent, received, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             //console.log('SQL insert conference message', message._id, from_uri, to_uri, message.direction);
-            if (room in messages) {
-                messages[room].push(message);
-            } else {
-                messages[room] = [message];
-            }
-            this.setState({messages: messages});
+            // Publish into the new model when this room is the selected chat.
+            this._appendContactMessage(room, message);
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('saveConferenceMessage SQL error:', error.message);
@@ -22019,7 +22497,6 @@ class Sylk extends Component {
 
     async updateConferenceMessage(room, message, update=false) {
         //console.log('Update conference message', message._id, 'for room', room);
-        let messages = this.state.messages;
         let sent = message.sent ? 1 : 0;
         let received = message.received ? 1 : 0;
 
@@ -22032,8 +22509,8 @@ class Sylk extends Component {
             }
         });
 
-        let renderMessages = messages[room];
-        let newRenderMessages = [];
+        let renderMessages = this._messagesFor(room);
+        let _updatedConfMsg = null;
         if (renderMessages) {
             renderMessages.forEach((msg) => {
                  if (msg._id === message._id) {
@@ -22045,29 +22522,20 @@ class Sylk extends Component {
                      msg.failed = message.failed;
                      msg.sent = message.sent;
                      msg.received = message.received;
+                     _updatedConfMsg = msg;
                  }
-                 newRenderMessages.push(msg);
             });
-            messages[room] = newRenderMessages;
-            this.setState({messages: messages});
+            // Update the new model.
+            if (_updatedConfMsg) this._patchContactMessage(message._id, _updatedConfMsg);
         }
     }
 
     async deleteConferenceMessage(room, message) {
         //console.log('Delete conference message', message._id);
-        let messages = this.state.messages;
-
         var params = [message._id];
         await this.ExecuteQuery("delete from messages where msg_id = ?", params).then((result) => {
-            let renderMessages = messages[room];
-            let newRenderMessages = [];
-            renderMessages.forEach((msg) => {
-                 if (msg._id !== message._id) {
-                     newRenderMessages.push(msg);
-                 }
-            });
-            messages[room] = newRenderMessages;
-            this.setState({messages: messages});
+            // Remove from the new model.
+            this._removeContactMessage(message._id);
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
                 console.log('deleteConferenceMessage SQL error:', error);
@@ -22219,13 +22687,14 @@ class Sylk extends Component {
 				expire = nowSecForExpire + SEVEN_DAYS_SEC;
 			}
 
-			const _cat = this._classifyMessageCategory(content_type, message.metadata, related_action);
+			const _cat = this._classifyMessageCategory(content_type, message.metadata, related_action, message.text);
 			// `message.text` here is the value being persisted in
 			// the content column — for outgoing encrypted rows
 			// that's the CIPHERTEXT, not the plaintext. We can't
 			// reliably probe for URLs, so leave has_link NULL and
 			// let the lazy decrypt-time update path fill it in.
 			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted, related_msg_id, related_action, expire, _cat, null];
+			this._normalizeInsertUris(params, 7, 8);
 			await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted, related_msg_id, related_action, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 
 			}).catch((error) => {
@@ -22247,7 +22716,9 @@ class Sylk extends Component {
         utils.timestampedLog('Outgoing [message]', id, 'state is', state);
 
         if (state === 'accepted') {
-            // pending 1 -> 0
+            // pending 1 -> 0. "accepted" = the server has the message (sent to
+            // server), but NOT yet delivered to the recipient — so no checkmark
+            // (single check = delivered, double = displayed).
             query = "UPDATE messages set pending = 0 where msg_id = ?";
         } else if (state === 'failed') {
             // pending -> 0
@@ -22313,10 +22784,74 @@ class Sylk extends Component {
         });
     }
 
+    // Maps an IMDN state to the SQL SET column assignments shared by all
+    // message/file-transfer state updates. Returns null for invalid states.
+    // SQL mapping   pending: pending=1, sent=0, received=0
+    // SQL mapping  accepted: pending=0, sent=0, received=0
+    // SQL mapping delivered: pending=0, sent=1, received=0
+    // SQL mapping displayed: pending=0, sent=1, received=1
+    // SQL mapping failed/error/forbidden: pending=0, sent=1, received=0 + error
+    messageStateColumns(state) {
+        const failed_states = ['failed', 'error', 'forbidden'];
+
+        if (state == 'accepted') {
+            return "pending = 0";
+        } else if (state == 'delivered') {
+            return "pending = 0, sent = 1";
+        } else if (state == 'displayed') {
+            return "received = 1, sent = 1, pending = 0";
+        } else if (failed_states.indexOf(state) > -1) {
+            return "received = 0, sent = 1, pending = 0";
+        }
+        return null;
+    }
+
+    // Single place where message/file-transfer state updates hit SQL.
+    // Builds the UPDATE from the shared column mapping, runs the query and
+    // triggers the matching UI refresh. Pass file_transfer for transfers
+    // (null for plain messages). Returns false on invalid state or error.
+    async updateMessageState(id, state, file_transfer, label) {
+        const cols = this.messageStateColumns(state);
+        if (cols === null) {
+            console.log('Invalid', label, 'state', id, state);
+            return false;
+        }
+
+        let query;
+        let params;
+
+        if (file_transfer) {
+            query = `UPDATE messages set metadata = ?, ${cols}, state = ? where msg_id = ?`;
+            params = [JSON.stringify(file_transfer), state, id];
+        } else {
+            query = `UPDATE messages set ${cols}, state = ? where msg_id = ?`;
+            params = [state, id];
+        }
+
+        try {
+            await this.ExecuteQuery(query, params);
+			utils.timestampedLog('[message] Message', id, '[imdn] state changed to', state);
+
+            if (file_transfer) {
+                this.updateFileTransferBubble(file_transfer);
+            } else {
+                this.updateRenderMessageState(id, state);
+            }
+            return true;
+        } catch (error) {
+			utils.timestampedLog('[message] Message', id, '[imdn] state', state, 'SQL error:', error);
+            return false;
+        }
+    }
+
     async messageStateChanged(id, state, data) {
         // valid API states: pending -> accepted -> delivered -> displayed
-        // error, failed or forbidden
-        // valid UI render states: pending, read, received
+
+        // UI mapping pending: Clock icon
+        // UI mapping accepted: Nothing
+        // UI mapping delivered: 1 tick
+        // UI mapping displayed: 2 ticks
+        // UI mapping error, failed or forbidden: Red bubble
 
         let reason = data.reason;
         let code = data.code;
@@ -22328,61 +22863,19 @@ class Sylk extends Component {
             }
         }
 
-        //utils.timestampedLog('[message] Message', id, 'IMDN state changed to', state);
-        let query;
-
-        const failed_states = ['failed', 'error', 'forbidden'];
-
-        if (state == 'accepted') {
-            query = "UPDATE messages set pending = 0, state = ? where msg_id = ?";
-        } else if (state == 'delivered') {
-            query = "UPDATE messages set pending = 0, sent = 1, state = ? where msg_id = ?";
-        } else if (state == 'displayed') {
-            query = "UPDATE messages set received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else if (failed_states.indexOf(state) > -1) {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else {
-            console.log('Invalid message state', id, state);
-            return;
-        }
-
-        await this.ExecuteQuery(query, [state, id]).then((results) => {
-            this.updateRenderMessageState(id, state);
-            // console.log('SQL update OK');
-        }).catch((error) => {
-            console.log('messageStateChanged SQL error:', error);
-        });
+        await this.updateMessageState(id, state, null, 'messageStateChanged');
     }
 
     async fileTransferStateChanged(id, state, file_transfer) {
         let failed = state === 'failed';
 
         utils.timestampedLog('File [transfer]', id, 'is', state, 'to', file_transfer && file_transfer.receiver && file_transfer.receiver.uri);
-        let query;
 
-        const failed_states = ['failed', 'error', 'forbidden'];
-
-        if (state == 'accepted') {
-            query = "UPDATE messages set metadata = ?, pending = 0, state = ? where msg_id = ?";
-        } else if (state == 'delivered') {
-            query = "UPDATE messages set metadata = ?, pending = 0, sent = 1, state = ? where msg_id = ?";
-        } else if (state == 'displayed') {
-            query = "UPDATE messages set metadata = ?, received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else if (failed_states.indexOf(state) > -1) {
+        if (['failed', 'error', 'forbidden'].indexOf(state) > -1) {
             file_transfer.failed = true;
-            query = "UPDATE messages set metadata = ?, received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else {
-            console.log('Invalid file transfer state', id, state);
-            return;
         }
-        
-        //console.log(query);
 
-        await this.ExecuteQuery(query, [JSON.stringify(file_transfer), state, id]).then((results) => {
-            this.updateFileTransferBubble(file_transfer);
-        }).catch((error) => {
-            console.log('fileTransferStateChanged SQL error:', error);
-        });
+        await this.updateMessageState(id, state, file_transfer, 'fileTransferStateChanged');
     }
 
     async messageStateChangedSync(obj) {
@@ -22396,30 +22889,7 @@ class Sylk extends Component {
 
         //console.log('Sync message', id, 'state', state);
 
-        let query;
-
-        const failed_states = ['failed', 'error', 'forbidden'];
-
-        if (state == 'accepted') {
-            query = "UPDATE messages set pending = 0, state = ? where msg_id = ?";
-        } else if (state == 'delivered') {
-            query = "UPDATE messages set pending = 0, sent = 1, state = ? where msg_id = ?";
-        } else if (state == 'displayed') {
-            query = "UPDATE messages set received = 1, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else if (failed_states.indexOf(state) > -1) {
-            query = "UPDATE messages set received = 0, sent = 1, pending = 0, state = ? where msg_id = ?";
-        } else {
-            console.log('Invalid message state:', state);
-			return;
-        }
-
-        await this.ExecuteQuery(query, [state, id]).then((results) => {
-            //console.log('messageStateChangedSync SQL update OK', state);
-			this.updateRenderMessageState(id, state);
-
-        }).catch((error) => {
-            console.log('messageStateChangedSync SQL error:', error);
-        });
+        await this.updateMessageState(id, state, null, 'messageStateChangedSync');
     }
 
     async deleteRawMessage(rowid) {
@@ -22451,7 +22921,7 @@ class Sylk extends Component {
 		// remote=true for the OTHER leg so both devices converge on the
 		// same "only system notes remain" end state.
 		try {
-			const msgList = (this.state.messages && this.state.messages[uri]) || [];
+			const msgList = this._messagesFor(uri);
 			const target = msgList.find(m => m._id === id);
 			if (target && target.contentType === 'application/sylk-live-location') {
 				_wasLocationBubble = true;
@@ -22514,7 +22984,7 @@ class Sylk extends Component {
 		// removeMessage, the active-share gate fires, stop
 		// propagates to peer, all three sides converge clean.
 		try {
-			const msgList = (this.state.messages && this.state.messages[uri]) || [];
+			const msgList = this._messagesFor(uri);
 			const target = msgList.find(m => m._id === id);
 			if (target
 					&& target.contentType === 'application/sylk-live-location'
@@ -22797,38 +23267,20 @@ class Sylk extends Component {
     }
 
 	async deleteRenderMessage(id, uri) {
-		const { messages } = this.state;
-	
-		// If uri has no messages, do nothing
-		if (!(uri in messages)) {
+		const existingMessages = this._messagesFor(uri);
+		if (existingMessages.length === 0) {
 			return;
 		}
-	
-		const existingMessages = messages[uri];
-	
-		// Filter without mutating original array
-		const newRenderedMessages = existingMessages.filter(m => m._id !== id);
-	
-		// If nothing changed -> exit early
-		if (newRenderedMessages.length === existingMessages.length) {
+		// If nothing matches, exit early.
+		if (!existingMessages.some(m => m._id === id)) {
 			return;
 		}
-	
-		// Create NEW messages object (immutability)
-		const newMessages = {
-			...messages,
-			[uri]: newRenderedMessages,
-		};
-	
-		// Set NEW references -> memoized components rerender
-		//console.log('deleteRenderMessage', id);
-		this.setState({
-			messages: newMessages,
-		});
+		// Remove from the new model (state.messages retired).
+		this._removeContactMessage(id);
 	}
 
 	async deleteRenderMessageSync(id, uri) {
-		const existingList = this.state.messages[uri] ?? [];
+		const existingList = this._messagesFor(uri);
 	
 		// Build new array without mutating the original
 		const newRenderedMessages = existingList.filter(m => m._id !== id);
@@ -22839,13 +23291,8 @@ class Sylk extends Component {
 			return;
 		}
 	
-		// Create a NEW messages object for memoization to detect changes
-		this.setState(prev => ({
-			messages: {
-				...prev.messages,
-				[uri]: newRenderedMessages
-			}
-		}));
+		// Remove from the new model (state.messages retired).
+		this._removeContactMessage(id);
 	}
 
     async sendPendingMessage(uri, text, id, contentType, timestamp) {
@@ -23071,13 +23518,13 @@ class Sylk extends Component {
 
 		uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
 
-		if (!(uri in this.state.messages)) return;
+		const _prevList = this._messagesFor(uri);
+		if (_prevList.length === 0) return;
 
  	    //console.log('updateRenderMessageState', id, state);
-	
-		// Create a shallow clone of the messages object (immutable update)
-		const prevMessages = this.state.messages;
-		const updatedMessagesForUri = prevMessages[uri].map((m) => {
+
+		let _updatedMsg = null;
+		const updatedMessagesForUri = _prevList.map((m) => {
 		  if (m._id !== id) return m; // keep same reference if unchanged
 		  
 		  // clone the message that needs to change
@@ -23143,20 +23590,14 @@ class Sylk extends Component {
 			  break;
 		  }
 
+		  _updatedMsg = updated;
 		  return updated;
 		});
-	
-		const changedCount = updatedMessagesForUri.filter((m, i) => m !== prevMessages[uri][i]).length;
-		//console.log('Changed message count:', changedCount);
 
 		if (hasChanges) {
-		  this.setState((prev) => ({
-			messages: {
-			  ...prev.messages,
-			  [uri]: updatedMessagesForUri,
-			},
-		  }));
-	
+		  // Update the new contactMessages model (selected contact only).
+		  this._patchContactMessage(id, _updatedMsg);
+
 		  if (state === 'failed') {
 			// this.renderSystemMessage(uri, 'Message delivery failed', 'incoming');
 		  }
@@ -23168,10 +23609,72 @@ class Sylk extends Component {
 	}
 	
     get contactMessages() {
-          if (this.state.selectedContact && this.state.selectedContact.uri in this.state.messages) {
-			  return this.state.messages[this.state.selectedContact.uri];
-          }
-          return [];
+          // Repointed to the new model: the ready, app-built list for the
+          // selected contact. (Was state.messages[selectedContact.uri].)
+          return this.state.contactMessages || [];
+    }
+
+    // Mirror a single message update into the new contactMessages model.
+    // No-op unless the message belongs to the selected contact's loaded set
+    // — the id index only holds that set, so `has(id)` doubles as the
+    // "is this the selected contact?" test (updates for other contacts are
+    // SQL-only per the new model). O(1) membership check; O(n) array rebuild
+    // for the fresh reference React needs. `newMsg` is the already-updated
+    // message object the legacy path just produced, so there's no duplicated
+    // state logic. Wired alongside the legacy state.messages update for now.
+    _patchContactMessage(id, newMsg) {
+        if (!id || !newMsg || !this.contactMessageIndex) return false;
+        if (!this.contactMessageIndex.has(id)) return false;
+        this.contactMessageIndex.set(id, newMsg);
+        const arr = this.state.contactMessages || [];
+        let changed = false;
+        const next = arr.map(m => {
+            if (m && m._id === id) { changed = true; return newMsg; }
+            return m;
+        });
+        if (changed) this.setState({ contactMessages: next });
+        return changed;
+    }
+
+    // Append a freshly-arrived message into the new contactMessages model.
+    // No-op unless `uri` belongs to the selected contact (messages for other
+    // contacts are SQL-only per the new model). Dedups by _id, then re-sorts
+    // via _buildContactMessages so a clock-skewed arrival lands in the right
+    // position and the id index is rebuilt. Wired alongside the legacy
+    // messages[uri] append for now.
+    _appendContactMessage(uri, msg) {
+        if (!msg || msg._id == null) return false;
+        const sel = this.state.selectedContact;
+        if (!sel || this.getAllContactUris(sel).indexOf(uri) === -1) return false;
+        if (this.contactMessageIndex && this.contactMessageIndex.has(msg._id)) return false; // dedup
+        const arr = this.state.contactMessages || [];
+        this.setState({ contactMessages: this._buildContactMessages([...arr, msg]) });
+        return true;
+    }
+
+    // Remove a message from the new contactMessages model by id. No-op
+    // unless the message is in the selected contact's loaded set (the index
+    // membership test). Wired alongside the legacy messages[uri] delete.
+    _removeContactMessage(id) {
+        if (id == null || !this.contactMessageIndex) return false;
+        if (!this.contactMessageIndex.has(id)) return false;
+        this.contactMessageIndex.delete(id);
+        const arr = this.state.contactMessages || [];
+        this.setState({ contactMessages: arr.filter(m => !(m && m._id === id)) });
+        return true;
+    }
+
+    // Re-sync the new model to the legacy slice for the SELECTED contact.
+    // Used by the bulk delete / clear / reset paths where per-id mirroring
+    // isn't practical (whole-conversation removal, multi-bubble wipes, full
+    // resets). Reads the legacy slice for the current selected contact and
+    // rebuilds contactMessages + index from it — yielding [] when that slice
+    // is gone (conversation deleted, messages map cleared, contact switched
+    // away). Best called as a setState callback so it sees committed state.
+    _syncContactMessagesToLegacy() {
+        const sel = this.state.selectedContact;
+        const list = (sel && this.state.contactMessages) || [];
+        this.setState({ contactMessages: this._buildContactMessages(list) });
     }
 
     async saveOutgoingChatUri(uri, message) {
@@ -23413,14 +23916,34 @@ class Sylk extends Component {
 						continue;
 					}
 
-					this.messagesConfirmedRead.add(item.msg_id);
+					// Treat an ABSENT disposition_notification as "display requested".
+					// Rows written by the native FCM push handler carry no IMDN flags
+					// (the push payload doesn't include them, so the column is stored
+					// empty) yet they are real incoming messages the user has just
+					// opened, so the sender should still get a "displayed" receipt.
+					// Only suppress the wire IMDN when the field is explicitly present
+					// and does NOT request display. The read-receipts opt-out and the
+					// per-contact 'noread' block are still enforced downstream inside
+					// sendDispositionNotification().
 					const dispositionNotification = item.disposition_notification ? item.disposition_notification.split(",") : [];
 					//console.log('dispositionNotification', dispositionNotification);
-					if (dispositionNotification.indexOf('display') === -1) {
+					if (dispositionNotification.length > 0 && dispositionNotification.indexOf('display') === -1) {
 						item.save_only = true;
 					} else {
 						item.save_only = false;
 					}
+
+					// A wire IMDN needs a live, registered connection. On a cold start
+					// from a push tap, confirmRead can run (chat initial load / WSS
+					// 'ready') before the account has finished registering, when
+					// canSend() is still false. Do NOT mark the message confirmed-read
+					// in that window or the later 'registered' confirmRead would treat
+					// it as already handled and the "displayed" receipt would never
+					// leave the device. save-only rows need no wire and can be marked.
+					if (!item.save_only && !this.canSend()) {
+						continue;
+					}
+					this.messagesConfirmedRead.add(item.msg_id);
 
 					if (item.encrypted === 3) {
 						utils.timestampedLog('[message]', item.msg_id, 'from', item.from_uri || uri, 'could not be decrypted', item.content_type);
@@ -23598,7 +24121,7 @@ class Sylk extends Component {
 			return;
         }
 
-	    utils.timestampedLog('[message] sendDispositionNotification', id, state, 'for', uri);
+	    utils.timestampedLog('[message] [imdn]', id, state, 'for', uri);
 
         // Account-wide read-receipts opt-out. When the user has switched
         // "Read receipts" off in their account modal, suppress 'displayed'
@@ -23779,7 +24302,7 @@ class Sylk extends Component {
             return;
         }
 
-        let messages = this.state.messages[this.state.selectedContact.uri]
+        let messages = this._messagesFor(this.state.selectedContact.uri)
         messages.forEach((msg) => {
             if (msg.metadata && msg.metadata.paused) {
                 console.log('Resume transfer', msg.metadata.transfer_id);
@@ -23788,7 +24311,16 @@ class Sylk extends Component {
         });
     }
 
-    async autoDownloadFile(file_transfer) {
+    async autoDownloadFile(file_transfer, opts = {}) {
+        // viewport=true: the file is on screen (chat image scrolled into view,
+        // or a media-grid tile). Rule: when on screen, the ONLY things that may
+        // force the user to tap "download" are SIZE or NETWORK TYPE — never how
+        // old the file is. So viewport lifts the 10-day recency cutoff (see the
+        // age gate near the end of this method) but STILL honors the Wi-Fi/Mobile
+        // auto-download preferences, the mobile size cap, and the encrypted/
+        // on-disk/in-flight guards. It only bypasses the transient
+        // sync-in-progress gate (an on-screen file shouldn't wait for sync).
+        const _viewport = !!(opts && opts.viewport);
         // Deny auto-download of ENCRYPTED material before a private key exists
         // on this device — there's no point fetching what we can't decrypt, and
         // it avoids stranding the bubble on "Decrypting…". (Plaintext transfers
@@ -23813,6 +24345,9 @@ class Sylk extends Component {
         const _dev = (this.state.accountSetting && this.state.accountSetting.device) || {};
         const _wifiAllowed   = _dev.autoDownloadOnWifi   !== false; // default true
         const _mobileAllowed = _dev.autoDownloadOnMobile !== false; // default true
+        // NETWORK TYPE is a legitimate reason to require a manual tap, even when
+        // the file is on screen (viewport) — so these gates apply regardless of
+        // viewport. (Only the TIME cutoff is lifted for on-screen files.)
         if (this.state.connectivity === 'wifi' && !_wifiAllowed) {
             console.log('autoDownloadFile skipped — Wi-Fi auto-download disabled in Preferences',
                 file_transfer.transfer_id);
@@ -23823,6 +24358,8 @@ class Sylk extends Component {
                 file_transfer.transfer_id);
             return;
         }
+        // Size cap still applies even in the viewport (large files are never
+        // auto-fetched on mobile — the user taps to download those).
         if (this.state.connectivity == 'mobile' && file_transfer.filesize > 20 * 1000 * 1000) {
         	console.log('autoDownloadFile large file transfer skipped on mobile', file_transfer.transfer_id);
  			return;
@@ -23838,7 +24375,7 @@ class Sylk extends Component {
 			return;
 		}
 
- 		if (this.state.syncConversations) {
+ 		if (!_viewport && this.state.syncConversations) {
         	console.log('sync in progress');
 			return;
 		}
@@ -23903,12 +24440,19 @@ class Sylk extends Component {
             return;
         }
 
+        // Bypass the 10-day recency cutoff below when the file is on screen:
+        //  - ignoreAge=true: the media HISTORY grid (shows the whole history).
+        //  - viewport=true:  an image scrolled into view in a chat — the user
+        //    is looking at it now, so fetch it regardless of how old it is.
+        // The network-preference, mobile and size limits above STILL apply
+        // (they ran before this point), so only the TIME restriction is lifted.
+        const _ignoreAge = !!(opts && opts.ignoreAge) || _viewport;
         if (file_transfer.timestamp) {
 			let ft_ts = new Date(file_transfer.timestamp);
 			difference = now.getTime() - ft_ts.getTime();
 			let days = Math.ceil(difference / (1000 * 3600 * 24));
-	
-			if (days < 10) {
+
+			if (days < 10 || _ignoreAge) {
 				if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
 					this.downloadFile(file_transfer);
 				} else {
@@ -24106,13 +24650,24 @@ class Sylk extends Component {
             + ' renamed=' + renamed
             + ' decryptKicked=' + decrypted
             + ' errors=' + errors);
+
+        // Schedule a debounced full storage recompute. (This broken-files pass
+        // runs early — usually before the real attachment downloads — so a
+        // fixed delay here would scan an empty disk. The debounced recompute is
+        // also fired from decryptInChunks and loadSylkContacts, so whichever
+        // settles last wins and every contact ends up with its true on-disk
+        // size instead of a value wiped by a later reload.)
+        this._scheduleStorageRecompute();
     }
 
     async downloadFile(file_transfer, force=false, cancel=false) {
         const res = await RNFS.getFSInfo();
         let id = file_transfer.transfer_id;
         const inFlight = id in this.downloadRequests;
-        console.log('Download file', file_transfer.url, file_transfer.filesize, force);
+        console.log('Download file', file_transfer.url, file_transfer.filesize, force,
+            'msg_id=' + (file_transfer.transfer_id || '?'),
+            'uri=' + this._ftPeerUri(file_transfer),
+            'ageDays=' + this._ftAgeDays(file_transfer));
 
         // Deny downloading encrypted material until a private key exists — both
         // manual taps and any internal re-trigger. Cancel is always allowed.
@@ -24250,17 +24805,13 @@ class Sylk extends Component {
             || (_urlBase && _urlBase.length > _strippedStored.length
                 && _urlBase.startsWith(_strippedStored)); // truncated to prefix
         if (_looksBroken && _urlBase) {
-            console.log('[dl-diag] repairing filename id=' + id,
-                'stored=' + JSON.stringify(_stored),
-                'urlBase=' + JSON.stringify(_urlBase));
+            //console.log('[dl-diag] repairing filename id=' + id, 'stored=' + JSON.stringify(_stored), 'urlBase=' + JSON.stringify(_urlBase));
             file_transfer.filename = _urlBase;
         } else if (_strippedStored !== _stored) {
             // Filename was salvageable but had a stray leading "/" or
             // "." — strip those so the path concatenation below doesn't
             // produce a double slash.
-            console.log('[dl-diag] sanitising filename id=' + id,
-                'before=' + JSON.stringify(_stored),
-                'after=' + JSON.stringify(_strippedStored));
+            // console.log('[dl-diag] sanitising filename id=' + id, 'before=' + JSON.stringify(_stored), 'after=' + JSON.stringify(_strippedStored));
             file_transfer.filename = _strippedStored;
         }
 
@@ -24282,29 +24833,29 @@ class Sylk extends Component {
             file_transfer.filename = file_transfer.filename + ('.asc');
         }
 
-        console.log('[dl-diag] step=before-mkdir id=' + id + ' dir=' + dir_path);
+        //console.log('[dl-diag] step=before-mkdir id=' + id + ' dir=' + dir_path);
         try {
             await RNFS.mkdir(dir_path);
         } catch (e) {
-            console.log('[dl-diag] mkdir-fail id=' + id + ' err=' + (e && e.message));
+            //console.log('[dl-diag] mkdir-fail id=' + id + ' err=' + (e && e.message));
             return;
         }
-        console.log('[dl-diag] step=after-mkdir id=' + id);
+        //console.log('[dl-diag] step=after-mkdir id=' + id);
 
         let file_path = dir_path + "/" + file_transfer.filename;
         let tmp_file_path = file_path + '.tmp';
-        console.log('[dl-diag] step=paths id=' + id + ' file=' + file_path + ' tmp=' + tmp_file_path);
+        //console.log('[dl-diag] step=paths id=' + id + ' file=' + file_path + ' tmp=' + tmp_file_path);
 
         file_transfer.paused = false;
 
         try {
             await RNFS.unlink(file_path);
-            console.log('[dl-diag] step=unlinked-old id=' + id);
+            //console.log('[dl-diag] step=unlinked-old id=' + id);
         } catch (err) {
             // benign — file didn't exist
         };
 
-        console.log('[dl-diag] step=before-RNBD.download id=' + id + ' url=' + (file_transfer.url || '').slice(0, 120));
+        //console.log('[dl-diag] step=before-RNBD.download id=' + id + ' url=' + (file_transfer.url || '').slice(0, 120));
         let filesize;
         let _beginFired = false;
         let _firstProgressLogged = false;
@@ -24314,8 +24865,7 @@ class Sylk extends Component {
         // network is slow" from "the download never started".
         const _beginWatchdog = setTimeout(() => {
             if (!_beginFired) {
-                console.log('[dl-diag] WATCHDOG-15s id=' + id
-                    + ' begin-never-fired url=' + (file_transfer.url || '').slice(0, 120));
+                //console.log('[dl-diag] WATCHDOG-15s id=' + id + ' begin-never-fired url=' + (file_transfer.url || '').slice(0, 120));
             }
         }, 15000);
 
@@ -24327,18 +24877,14 @@ class Sylk extends Component {
             }).begin((tinfo) => {
                 _beginFired = true;
                 clearTimeout(_beginWatchdog);
-                console.log('[dl-diag] begin id=' + id
-                    + ' expectedBytes=' + (tinfo && tinfo.expectedBytes)
-                    + ' headers=' + (tinfo && tinfo.headers ? Object.keys(tinfo.headers).length + ' keys' : '0'));
+                // console.log('[dl-diag] begin id=' + id + ' expectedBytes=' + (tinfo && tinfo.expectedBytes) + ' headers=' + (tinfo && tinfo.headers ? Object.keys(tinfo.headers).length + ' keys' : '0'));
                 if (tinfo && tinfo.expectedBytes) {
                     console.log('File', file_transfer.filename, 'has', tinfo.expectedBytes, 'bytes');
                 }
             }).progress((pdata) => {
                 if (!_firstProgressLogged) {
                     _firstProgressLogged = true;
-                    console.log('[dl-diag] first-progress id=' + id
-                        + ' bytesDownloaded=' + (pdata && pdata.bytesDownloaded)
-                        + ' bytesTotal=' + (pdata && pdata.bytesTotal));
+                    //console.log('[dl-diag] first-progress id=' + id + ' bytesDownloaded=' + (pdata && pdata.bytesDownloaded) + ' bytesTotal=' + (pdata && pdata.bytesTotal));
                 }
                 if (pdata && pdata.bytesDownloaded && pdata.bytesTotal) {
 					const percent = pdata.bytesDownloaded/pdata.bytesTotal * 100;
@@ -24349,10 +24895,13 @@ class Sylk extends Component {
                 }
             }).done(() => {
                 clearTimeout(_beginWatchdog);
-                console.log('[dl-diag] done id=' + id);
+                //console.log('[dl-diag] done id=' + id);
 			ReactNativeBlobUtil.fs.stat(tmp_file_path).then(stat => {
 			    filesize = stat.size;
-				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes');
+				console.log('Downloaded file', file_transfer.filename, 'has', filesize, 'bytes',
+				'msg_id=' + (file_transfer.transfer_id || '?'),
+				'uri=' + this._ftPeerUri(file_transfer),
+				'ageDays=' + this._ftAgeDays(file_transfer));
 				delete this.downloadRequests[id];
 
 				file_transfer.error = null;
@@ -24411,12 +24960,8 @@ class Sylk extends Component {
             // Log the full error shape (some Android downloaders
             // pass {error, errorCode, ...} objects, others pass a
             // bare string) so we can see what actually failed.
-            console.log('[dl-diag] error id=' + id
-                + ' wasCancelled=' + !!wasCancelled
-                + ' error=' + JSON.stringify(error)
-                + ' typeof=' + (typeof error));
-            console.log('File', file_transfer.filename, 'download failed:', error,
-                        'wasCancelled=', !!wasCancelled);
+            //console.log('[dl-diag] error id=' + id + ' wasCancelled=' + !!wasCancelled + ' error=' + JSON.stringify(error) + ' typeof=' + (typeof error));
+            console.log('File', file_transfer.filename, 'download failed:', error, 'wasCancelled=', !!wasCancelled);
 
             if (wasCancelled) {
                 // Deliberate user cancel — the downloader fires .error() after
@@ -24450,11 +24995,10 @@ class Sylk extends Component {
                 }, 2000);
             }
         });
-            console.log('[dl-diag] step=after-RNBD.download-call id=' + id
-                + ' hasHandler=' + !!this.downloadRequests[id]);
+            //console.log('[dl-diag] step=after-RNBD.download-call id=' + id + ' hasHandler=' + !!this.downloadRequests[id]);
         } catch (e) {
             clearTimeout(_beginWatchdog);
-            console.log('[dl-diag] DOWNLOAD-SETUP-THREW id=' + id + ' err=' + (e && e.message));
+            //console.log('[dl-diag] DOWNLOAD-SETUP-THREW id=' + id + ' err=' + (e && e.message));
             delete this.downloadRequests[id];
             this.deleteTransferProgress(file_transfer.transfer_id);
         }
@@ -24466,6 +25010,29 @@ class Sylk extends Component {
      * @param {string} outputPath - Path for the decrypted file
      * @param {string} privateKey - Your PGP private key
      */
+
+    // The contact URI a file transfer is with: the far end of the transfer
+    // (sender when we are the receiver, receiver otherwise). Used for logging.
+    _ftPeerUri = (ft) => {
+        try {
+            const me = this.state.accountId;
+            const r = ft && ft.receiver ? ft.receiver.uri : undefined;
+            const s = ft && ft.sender ? ft.sender.uri : undefined;
+            return (me === r ? s : r) || r || s || '?';
+        } catch (e) { return '?'; }
+    };
+
+    // Age of a file transfer in days (now − the transfer/message timestamp),
+    // one decimal. Used on the download / decrypt log lines so we can see how
+    // old the attachments being fetched/decrypted actually are. '?' when the
+    // transfer carries no usable timestamp.
+    _ftAgeDays = (ft) => {
+        try {
+            const t = ft && ft.timestamp ? new Date(ft.timestamp) : null;
+            if (!t || isNaN(t.getTime())) return '?';
+            return ((Date.now() - t.getTime()) / 86400000).toFixed(1);
+        } catch (e) { return '?'; }
+    };
 
     async decryptInChunks(file_transfer, outputPath, privateKey) {
         const CHUNK_SIZE = 1024 * 1024; // 1 MB
@@ -24629,7 +25196,20 @@ class Sylk extends Component {
             // re-entering the chat. Calling updateFileTransferBubble here
             // makes the playable audio bubble appear immediately.
             this.updateFileTransferBubble(file_transfer);
-            console.log('Decryption complete:', file_transfer.filename);
+            console.log('Decryption complete:', file_transfer.filename,
+                'msg_id=' + (file_transfer.transfer_id || '?'),
+                'uri=' + this._ftPeerUri(file_transfer),
+                'ageDays=' + this._ftAgeDays(file_transfer));
+
+            // Decryption wrote the plaintext file to disk (and removed the
+            // .asc/temp bytes), but the per-contact storage figures are only
+            // adjusted on deletion, so they'd stay stale after a decrypt.
+            // Recompute this contact's storage from disk so the usage shown in
+            // the UI reflects the newly-decrypted file(s).
+            try { this.getStorageUsage(this._ftPeerUri(file_transfer)); } catch (e) { /* non-fatal */ }
+            // Also schedule a debounced full recompute so the size survives the
+            // next contact reload (the per-uri update above is wiped by it).
+            this._scheduleStorageRecompute();
 
         } catch(error) {
             let error_message = error.message;
@@ -24671,7 +25251,10 @@ class Sylk extends Component {
     }
 
     async decryptFile(file_transfer, force=false) {
-        console.log('Decrypting file', file_transfer.filename);
+        console.log('Decrypting file', file_transfer.filename,
+            'msg_id=' + (file_transfer.transfer_id || '?'),
+            'uri=' + this._ftPeerUri(file_transfer),
+            'ageDays=' + this._ftAgeDays(file_transfer));
 
         if (!this._hasPrivateKey()) {
             // No private key yet — can't decrypt. Don't leave the bubble stuck
@@ -24754,13 +25337,13 @@ class Sylk extends Component {
         let pending_messages = [];
         let idx;
         let uri = message.direction === 'incoming' ? message.from_uri : message.to_uri;
-        let messages = this.state.messages;
+        let messages = this._messagesMap();
         let render_messages = messages[uri];
         
         //console.log('decryptMessage', id);
 
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
-            utils.timestampedLog('[message]', id, 'decrypted', 'from', uri);
+            // utils.timestampedLog('[message]', id, 'decrypted', 'from', uri);
             if (uri in decryptingMessages) {
                 pending_messages = decryptingMessages[uri];
                 idx = pending_messages.indexOf(id);
@@ -24851,7 +25434,7 @@ class Sylk extends Component {
                 // Always operate on the live array. If it doesn't exist
                 // (chat closed between queue start and decrypt finish),
                 // skip — there's nothing rendered to update anyway.
-                const liveMessages = this.state.messages;
+                const liveMessages = this._messagesMap();
                 const liveList = (liveMessages && liveMessages[uri]) || null;
                 if (!Array.isArray(liveList)) {
                     return;
@@ -24861,6 +25444,8 @@ class Sylk extends Component {
                         'decrypt-complete dedup skip (already in chat)');
                 } else {
                     liveList.push(msg);
+                    // Mirror the decrypted bubble into the new model.
+                    this._appendContactMessage(uri, msg);
                 }
                 // Keep the captured-reference variables in sync for the
                 // rest of this function (the throttled setState reads
@@ -24917,7 +25502,7 @@ class Sylk extends Component {
                 if (_isLast || _isPriorityFlush || (_now - this._decryptFlushAt) > 1000) {
                     this._decryptFlushAt = _now;
                     this._decryptFlushCount += 1;
-                    this.setState({messages: {...messages}});
+                    // (state.messages retired; contactMessages mirror handles render)
                 }
                 if (_isLast) {
                     if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
@@ -24934,8 +25519,13 @@ class Sylk extends Component {
             // bodies without a URL get has_link=0; the UPDATE writes
             // it once and we stop re-deriving on every read.
             const _hl = this._hasLinkInText(message.content_type, content);
-            let params = [content, _hl, id, this.state.accountId];
-            this.ExecuteQuery("update messages set encrypted = 2, content = ?, has_link = ? where msg_id = ? and account = ?", params).then((result) => {
+            // Now that we have the plaintext, a sylk-message-metadata location
+            // ORIGIN can finally be recognised (its action lives in CONTENT).
+            // COALESCE fills only a still-NULL category, so an already-stamped
+            // row (text/image/…) is never disturbed.
+            const _cat = this._classifyMessageCategory(message.content_type, null, null, content);
+            let params = [content, _hl, _cat, id, this.state.accountId];
+            this.ExecuteQuery("update messages set encrypted = 2, content = ?, has_link = ?, category = COALESCE(category, ?) where msg_id = ? and account = ?", params).then((result) => {
                 if (this.state.selectedContact && this.state.selectedContact.uri === uri && pending_messages.length === 0) {
                     this.confirmRead(uri, 'sql saved read');
                 }
@@ -24971,7 +25561,9 @@ class Sylk extends Component {
                 // branch above — the previous `{message: messages}`
                 // typo set a dead key, and the in-place mutation
                 // wouldn't trigger a re-render.
-                this.setState({messages: {...messages}});
+                // (state.messages retired; contactMessages mirror handles render)
+                // Mirror the broken/failed bubble into the new model.
+                this._appendContactMessage(uri, msg);
             }
         });
     }
@@ -25075,11 +25667,45 @@ class Sylk extends Component {
 		return true;
 	}
 
+	// Does a message of this content type count as real conversation activity
+	// that should advance the contact's sort timestamp (recency)? Excludes the
+	// control / sync envelopes (read / remove / imdn / zrtp, via isMessageAllowed)
+	// AND the PGP key-exchange + housekeeping types, which travel in clear and
+	// must never pop a contact to the top of the list (e.g. the public key
+	// fetched on chat open, or the conversation-read confirmRead sends to self).
+	_contentBumpsRecency(content_type) {
+		if (!content_type) return true;
+		if (!this.isMessageAllowed(content_type, '')) return false;
+		if (content_type === 'text/pgp-public-key'
+				|| content_type === 'text/pgp-private-key'
+				|| content_type === 'text/pgp-public-key-imported'
+				|| content_type === 'application/sylk-contact-update'
+				|| content_type === 'application/sylk-message-metadata') {
+			return false;
+		}
+		return true;
+	}
+
 	getAllContactUris(contact) {
-		return [...new Set([
+		const base = [...new Set([
 			contact.uri,
 			...(Array.isArray(contact.uris) ? contact.uris : [])
 		].filter(Boolean))];
+		// For phone-number (tel) contacts, expand to every equivalent
+		// prefix/domain variant (+/00 × bare/@domain) so message
+		// loading, counting, the date index and the "message belongs to
+		// this contact" guard all cover rows that were keyed under a
+		// different-but-equivalent form — e.g. a recording stored under
+		// the dialed wire URI "00…@domain" vs the canonical "+…" contact
+		// URI. _phoneNumberVariants returns [] for non-phone URIs, so
+		// SIP/conference/email contacts are unaffected.
+		const all = new Set(base);
+		for (const u of base) {
+			for (const v of this._phoneNumberVariants(u)) {
+				all.add(v);
+			}
+		}
+		return [...all];
 	}
 
 	// Single source of truth for the per-row category column.
@@ -25108,13 +25734,37 @@ class Sylk extends Component {
 	// both — the alternative is forcing every caller to remember to
 	// pass the parsed form, which is exactly the kind of leakage
 	// this method exists to avoid.
-	_classifyMessageCategory(contentType, metadata, relatedAction) {
+	// True when a sylk-message-metadata CONTENT body is a location-share
+	// ORIGIN (the row the chat renders as a map bubble): action 'location',
+	// no metadataId, with a real lat/lng. Update ticks (metadataId set) are
+	// excluded. Same predicate as updateRenderMessageState's _isLocationOriginRow.
+	_isLocationOriginContent(content) {
+		if (typeof content !== 'string' || content.indexOf('"location"') === -1) return false;
+		try {
+			const md = JSON.parse(content);
+			return !!(md && md.action === 'location' && !md.metadataId
+				&& md.value && typeof md.value.latitude === 'number'
+				&& typeof md.value.longitude === 'number');
+		} catch (e) { return false; }
+	}
+
+	_classifyMessageCategory(contentType, metadata, relatedAction, content) {
 		if (!contentType) return null;
 		if (contentType === 'text/plain' || contentType === 'text/html') {
 			return 'text';
 		}
 		if (contentType === 'application/sylk-message-metadata') {
-			return relatedAction === 'location' ? 'location' : null;
+			// A BROWSABLE location bubble is a location-share ORIGIN: the
+			// message CONTENT parses to {action:'location', value:{lat,lng}}
+			// with NO metadataId. This is the exact rule the chat uses to
+			// render the map bubble (see updateRenderMessageState) — the
+			// `action` lives in the CONTENT JSON, not the metadata column,
+			// which is why the old metadata/related_action check stamped every
+			// location row NULL. Update ticks (metadataId set) are not bubbles
+			// and stay NULL. Content may be ciphertext at insert time; the
+			// decrypt path and the backfill (both pass plaintext content) fill
+			// those rows in later.
+			return this._isLocationOriginContent(content) ? 'location' : null;
 		}
 		if (contentType !== 'application/sylk-file-transfer') {
 			return null;
@@ -25158,12 +25808,17 @@ class Sylk extends Component {
 	// no resume logic.
 	async _backfillMessageCategories() {
 		try {
-			const _doneKey = 'sql.categoryBackfill.v17';
+			// v18: re-run once to re-classify rows left category=NULL by the
+			// old location bug (location shares were classified on related_action
+			// instead of metadata.action, so they never got the 'location' stamp).
+			// Only NULL-category rows are touched, so already-classified bubbles
+			// (image/video/text/…) are untouched.
+			const _doneKey = 'sql.categoryBackfill.v19';
 			const done = await AsyncStorage.getItem(_doneKey);
 			if (done === '1') return;
 			utils.timestampedLog('[category] starting backfill of pre-v17 messages');
 			const rowsRes = await this.ExecuteQuery(
-				'SELECT msg_id, content_type, metadata, related_action FROM messages WHERE category IS NULL',
+				'SELECT msg_id, content_type, metadata, related_action, content FROM messages WHERE category IS NULL',
 				[]
 			);
 			const rows = rowsRes.rows;
@@ -25181,7 +25836,7 @@ class Sylk extends Component {
 			for (let i = 0; i < total; i++) {
 				const r = rows.item(i);
 				const cat = this._classifyMessageCategory(
-					r.content_type, r.metadata, r.related_action
+					r.content_type, r.metadata, r.related_action, r.content
 				);
 				if (cat == null) continue; // leave NULL — not a bubble
 				if (!buckets[cat]) buckets[cat] = [];
@@ -25468,7 +26123,7 @@ class Sylk extends Component {
 
         // Bail if getMessages already raced us. Cheap idempotency
         // — the full slice is the authoritative source.
-        if (this.state.messages[uri] && this.state.messages[uri].length > 0) return;
+        if (this._messagesFor(uri).length > 0) return;
 
         // Minimal slice: text-shaped rows only, by URI alone (no
         // contact-aliasing — that needs contactsLoaded and an
@@ -25513,9 +26168,12 @@ class Sylk extends Component {
                         // _hasLinkInText.
                         try {
                             const _hl = this._hasLinkInText(item.content_type, content);
+                            // Recognise a location ORIGIN now that we have plaintext
+                            // (action lives in content). COALESCE only fills NULL.
+                            const _cat = this._classifyMessageCategory(item.content_type, null, null, content);
                             await this.ExecuteQuery(
-                                'UPDATE messages SET content = ?, encrypted = 2, has_link = ? WHERE account = ? AND msg_id = ?',
-                                [content, _hl, accountId, item.msg_id]
+                                'UPDATE messages SET content = ?, encrypted = 2, has_link = ?, category = COALESCE(category, ?) WHERE account = ? AND msg_id = ?',
+                                [content, _hl, _cat, accountId, item.msg_id]
                             );
                         } catch (uErr) { /* best-effort */ }
                         item.content = content;
@@ -25552,11 +26210,10 @@ class Sylk extends Component {
         const firstBubble = await _bubbleFromRow(rowsResult.item(0));
 
         if (this.unmounted) return;
-        if (this.state.messages[uri] && this.state.messages[uri].length > 0) return;
+        if (this._messagesFor(uri).length > 0) return;
 
         if (firstBubble) {
-            const next1 = {...this.state.messages, [uri]: [firstBubble]};
-            const _patch1 = {messages: next1};
+            const _patch1 = {};
             // Drop the spinner as soon as the push bubble is on
             // screen — the rest of the fast-path and the full slice
             // arrive a few hundred ms later under no overlay.
@@ -25565,6 +26222,11 @@ class Sylk extends Component {
                 _patch1.chatOpenUri = null;
             }
             this.setState(_patch1);
+            // Mirror the fast-load first bubble into the new model (best-effort;
+            // see stage 2 note re: cold-start selectedContact).
+            if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+                this.setState({ contactMessages: this._buildContactMessages([firstBubble]) });
+            }
             utils.timestampedLog('[chat-fast] stage 1 for', uri);
 
             // Clear the unread badge for this URI even though the
@@ -25586,14 +26248,18 @@ class Sylk extends Component {
             //      the SQL contacts hydration runs later it loads
             //      contact.unread = [] instead of [msg_id], and the
             //      mirror in saveSylkContact stays at 0.
-            //   3. The IMDN "displayed" disposition still gets sent
-            //      later via the AppState-foreground handler's
-            //      confirmRead() — which by then has contacts
-            //      loaded and can use the SELECT-based path safely.
+            //   3. The IMDN "displayed" disposition is NOT sent from
+            //      here. It is sent by saveIncomingMessage's
+            //      confirmRead() once the offline journal is replayed
+            //      on (re)connect and the row settles to received=1 —
+            //      that call now matches the launched chat by uri, so
+            //      it fires on cold start too. (The old AppState-
+            //      foreground handler does not run on a cold launch,
+            //      since there is no background->active transition.)
             try {
                 if (Platform.OS === 'android' && UnreadModule
                         && typeof UnreadModule.resetUnreadForContact === 'function') {
-                    UnreadModule.resetUnreadForContact(uri);
+                    this._nativeResetUnread(uri);
                 }
             } catch (e) { /* native bridge optional */ }
             try {
@@ -25634,7 +26300,7 @@ class Sylk extends Component {
         if (this.unmounted) return;
         // getMessages already overtook us with the full slice — no
         // point overwriting its larger result with our 20.
-        if (this.state.messages[uri] && this.state.messages[uri].length > 1) return;
+        if (this._messagesFor(uri).length > 1) return;
 
         // Compose newest-first array: [firstBubble, ...tail]. If the
         // first row didn't decrypt but tail rows did, we still seed
@@ -25642,8 +26308,7 @@ class Sylk extends Component {
         const combined = firstBubble ? [firstBubble, ...tail] : tail;
         if (combined.length === 0) return;
 
-        const next2 = {...this.state.messages, [uri]: combined};
-        const _patch2 = {messages: next2};
+        const _patch2 = {};
         // Defensive: if for any reason the spinner is still up
         // (stage 1 short-circuited above), drop it here.
         if (this.state.chatOpenLoading && this.state.chatOpenUri === uri) {
@@ -25651,7 +26316,145 @@ class Sylk extends Component {
             _patch2.chatOpenUri = null;
         }
         this.setState(_patch2);
+        // Mirror the fast-load slice into the new model when this is the chat
+        // being opened (cold start may not have selectedContact yet — then
+        // getMessages rebuilds it shortly after, so this is best-effort).
+        if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+            this.setState({ contactMessages: this._buildContactMessages(combined) });
+        }
         utils.timestampedLog('[chat-fast] stage 2:', combined.length, 'bubbles for', uri);
+    }
+
+    // Build the ready-to-render list + id index for the selected contact
+    // from a freshly-loaded SQL slice. Returns a NEW array sorted newest →
+    // oldest (DESC), matching what GiftedChat's inverted list expects, and
+    // (re)builds this.contactMessageIndex as Map<_id, message> so later
+    // incremental state changes (read/displayed/file-transfer/new message)
+    // can patch a single entry by id instead of scanning. Pure w.r.t. React
+    // state — the caller decides whether to setState({contactMessages}).
+    // Bake the metadata overlay (media label / rotation / reply) onto a single
+    // message, mirroring ChatBox's getMetadataByAction('label'|'rotation'|
+    // 'reply') — last entry per action wins. Ref-preserving: returns the same
+    // object when nothing changed. Location text is intentionally NOT touched
+    // here (live-location synthesis stays in ChatBox for now). `mm` is the
+    // messagesMetadata map (msgId -> array of {action,value,...}).
+    _overlayMessage(msg, mm) {
+        if (!msg) return msg;
+        const id = msg.messageId || msg._id;
+        const arr = mm && mm[id];
+        if (!Array.isArray(arr) || arr.length === 0) return msg;
+        let label, rotation, reply;
+        for (const e of arr) {
+            if (!e) continue;
+            if (e.action === 'label' && e.value !== undefined) label = e.value;
+            else if (e.action === 'rotation' && e.value !== undefined) rotation = e.value;
+            else if (e.action === 'reply' && e.value !== undefined) reply = e.value;
+        }
+        const newText = label || msg.text;
+        const newRot = rotation !== undefined ? rotation : msg.rotation;
+        const newReply = reply !== undefined ? reply : (msg.replyId != null ? msg.replyId : null);
+        if (newText === msg.text && newRot === msg.rotation && newReply === (msg.replyId ?? null)) {
+            return msg;
+        }
+        return { ...msg, text: newText, rotation: newRot, replyId: newReply };
+    }
+
+    // ── Legacy state.messages compatibility shims ──────────────────────
+    // The per-uri map state.messages was retired; the selected contact's
+    // list now lives in state.contactMessages (app-owned, id-indexed). These
+    // accessors reconstruct the small slice of that old shape the remaining
+    // call sites need — keyed ONLY by the selected contact's uri, because the
+    // new model holds exactly one conversation in memory at a time. Reads for
+    // any other uri legitimately return empty (those messages live in SQL and
+    // are loaded on contact switch).
+    _messagesFor(uri) {
+        const sel = this.state.selectedContact;
+        if (sel && uri && this.getAllContactUris(sel).indexOf(uri) !== -1) {
+            return this.state.contactMessages || [];
+        }
+        return [];
+    }
+
+    _messagesMap() {
+        const sel = this.state.selectedContact;
+        if (sel && sel.uri) {
+            // Copy the array so any legacy in-place mutation on the returned
+            // map is a harmless throwaway (the real store is contactMessages,
+            // maintained via the _append/_patch/_remove mirrors).
+            return { [sel.uri]: [...(this.state.contactMessages || [])] };
+        }
+        return {};
+    }
+
+    // Derive ready-to-lookup overlay maps from messagesMetadata so ChatBox
+    // can apply label/rotation/reply by a simple id lookup instead of walking
+    // metadata arrays. Two indices because the data is keyed two ways:
+    //   • byId           — keyed by the metadata's own key (the rendered _id
+    //                      in the common case).
+    //   • byOriginalId   — keyed by an entry's `messageId` field, for the
+    //                      cases where the annotated message's id differs from
+    //                      the map key.
+    // Each value is the collapsed { label, rotation, reply } (last entry per
+    // action wins, mirroring getMetadataByAction). Memoised on the
+    // messagesMetadata reference.
+    _buildMetadataLookups(mm) {
+        const byId = {};
+        const byOriginalId = {};
+        if (!mm) return { byId, byOriginalId };
+        for (const k of Object.keys(mm)) {
+            const arr = mm[k];
+            if (!Array.isArray(arr)) continue;
+            let label, rotation, reply, originalId;
+            for (const e of arr) {
+                if (!e) continue;
+                if (e.action === 'label' && e.value !== undefined) label = e.value;
+                else if (e.action === 'rotation' && e.value !== undefined) rotation = e.value;
+                else if (e.action === 'reply' && e.value !== undefined) reply = e.value;
+                if (e.messageId != null) originalId = e.messageId;
+            }
+            if (label === undefined && rotation === undefined && reply === undefined) continue;
+            const derived = { label, rotation, reply };
+            byId[k] = derived;
+            if (originalId != null && originalId !== k) byOriginalId[originalId] = derived;
+        }
+        return { byId, byOriginalId };
+    }
+
+    // Memoised accessor — recomputes only when messagesMetadata changes.
+    _getMetadataLookups() {
+        if (this._mmLookupSrc !== this.state.messagesMetadata) {
+            this._mmLookupCache = this._buildMetadataLookups(this.state.messagesMetadata);
+            this._mmLookupSrc = this.state.messagesMetadata;
+        }
+        return this._mmLookupCache || { byId: {}, byOriginalId: {} };
+    }
+
+    _buildContactMessages(list, mm) {
+        const _mm = mm !== undefined ? mm : this.state.messagesMetadata;
+        const _ts = (v) => {
+            if (v == null) return 0;
+            if (v instanceof Date) return v.getTime();
+            if (typeof v === 'number') return v;
+            const t = new Date(v).getTime();
+            return isNaN(t) ? 0 : t;
+        };
+        const _overlaid = (Array.isArray(list) ? list : []).map(m => this._overlayMessage(m, _mm));
+        const sorted = [..._overlaid].sort((a, b) => {
+            const ta = _ts(a && a.createdAt);
+            const tb = _ts(b && b.createdAt);
+            if (ta !== tb) return tb - ta; // DESC, newest first
+            const ia = String((a && a._id) || '');
+            const ib = String((b && b._id) || '');
+            if (ia < ib) return 1;
+            if (ia > ib) return -1;
+            return 0;
+        });
+        const idx = new Map();
+        for (const m of sorted) {
+            if (m && m._id != null) idx.set(m._id, m);
+        }
+        this.contactMessageIndex = idx;
+        return sorted;
     }
 
     async getMessages(obj, filter={pinned: false, category: null, text:null, contentType: null}) {
@@ -25678,7 +26481,11 @@ class Sylk extends Component {
 
         let has_filter = pinned || category || dateFrom != null || dateTo != null;
 
-        let messages = this.state.messages;
+        // Local scratch map (was this.state.messages). The loader builds the
+        // slice for orig_uri here; the result is published to contactMessages
+        // at the commit (state.messages is retired). Other contacts' lists are
+        // not held in memory — they load from SQL on contact switch.
+        let messages = {};
 
         let msg;
         let query;
@@ -25975,6 +26782,12 @@ class Sylk extends Component {
             let file_path;
             let file_transfer;
             let contentTypes = {};
+            // Load-summary counters (logged once at the commit below):
+            // count of loaded messages per raw SQL content_type, and — for
+            // file-transfer rows only — count per media category. These are
+            // true counts, unlike `contentTypes` which only flags presence.
+            let _loadByContentType = {};
+            let _loadFtByCategory = {};
             let foundMetadata = false;
             let metadataTimstamps = {};
 			let metadataContent;
@@ -26003,7 +26816,8 @@ class Sylk extends Component {
 	
 					content = item.content;
 					if (!content) {
-						content = 'Empty message...';
+						console.log('Empty message content for msg_id:', item.msg_id);
+						content = 'Broken message, cannot be decrypted...';
 					}
 
 					let timestamp;
@@ -26033,7 +26847,7 @@ class Sylk extends Component {
 
 					const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
 
-					//console.log(" - SQL message:", timestamp, item.content_type, item.direction, content.substring(0, 200));
+					//console.log(" - SQL message:", timestamp, item.content_type, item.direction, item.from_uri, item.to_uri, content.substring(0, 200));
 					
 					if (!this.isMessageAllowed(item.content_type, content)) {
 						continue;
@@ -26279,7 +27093,7 @@ class Sylk extends Component {
 										if (_ownC
 												&& typeof _ownC.latitude === 'number'
 												&& typeof _ownC.longitude === 'number') {
-											const _d = this._haversineMeters(_ownC, _peerC);
+											const _d = haversineMeters(_ownC, _peerC);
 											if (Number.isFinite(_d)) {
 												metadataContent.distanceMeters = _d;
 											}
@@ -26477,7 +27291,13 @@ class Sylk extends Component {
 											// renderers read msg[action].
 											if (meta.action === 'peaks') {
 												if (!existingMsg.metadata) existingMsg.metadata = {};
-												existingMsg.metadata.peaks = meta.value;
+												const _v = meta.value || {};
+												existingMsg.metadata.peaks = { l: _v.l, r: _v.r };
+												// Spectrogram rides in the peaks
+												// side-channel — lift to its own key.
+												if (_v.spectrum && _v.spectrum.data) {
+													existingMsg.metadata.spectrum = _v.spectrum;
+												}
 											} else {
 												existingMsg[meta.action] = meta.value;
 											}
@@ -26542,6 +27362,18 @@ class Sylk extends Component {
 						
 						if (orig_uri in messages) {
 							messages[orig_uri].push(msg);
+							// Tally for the load summary. content_type comes
+							// from the raw SQL row; file-transfer rows also get
+							// bucketed by media category (audio/image/video/other).
+							const _ct = (item && item.content_type) || 'unknown';
+							_loadByContentType[_ct] = (_loadByContentType[_ct] || 0) + 1;
+							if (msg.metadata && msg.metadata.filename) {
+								const _ftCat = msg.audio ? 'audio'
+									: msg.image ? 'image'
+									: msg.video ? 'video'
+									: 'other';
+								_loadFtByCategory[_ftCat] = (_loadFtByCategory[_ftCat] || 0) + 1;
+							}
 						}
 
 						if (pinned || category) {
@@ -26558,23 +27390,11 @@ class Sylk extends Component {
 								contentTypes['failed'] = true;
 							}
 							
-							// Already downloaded but still ENCRYPTED on disk (.asc) — e.g.
-							// fetched while we had no private key, for either direction.
-							// Now that a key exists, kick off the deferred decrypt ONCE per
-							// transfer (the auto-download branch below is gated on !local_url,
-							// so it never covers these). decryptFile rewrites local_url to the
-							// decrypted path and refreshes the bubble.
-							if (msg.metadata.local_url && msg.metadata.local_url.endsWith('.asc') && this._hasPrivateKey()) {
-								if (!this._decryptKicked) this._decryptKicked = new Set();
-								if (!this._decryptKicked.has(msg.metadata.transfer_id)) {
-									this._decryptKicked.add(msg.metadata.transfer_id);
-									// Don't fire here — that decrypted every encrypted
-									// image on the page at once (heavy, unordered). Queue
-									// it; the post-loop worker drains newest-first with
-									// bounded concurrency so recent images surface first.
-									images_to_decrypt.push(msg.metadata);
-								}
-							}
+							// On-disk-encrypted (.asc) attachments are decrypted
+							// VIEWPORT-DRIVEN now (ContactsListBox.onViewableItemsChanged
+							// → decryptFunc), so they're no longer queued for a bulk
+							// decrypt here — only the ones the user actually sees get
+							// decrypted, the rest on scroll.
 
 							ft_ts = new Date(msg.metadata.timestamp);
 							ft_difference = now.getTime() - ft_ts.getTime();
@@ -27069,7 +27889,7 @@ class Sylk extends Component {
 						if (_ownC
 								&& typeof _ownC.latitude === 'number'
 								&& typeof _ownC.longitude === 'number') {
-							const _d = this._haversineMeters(_ownC, _peerC);
+							const _d = haversineMeters(_ownC, _peerC);
 							if (Number.isFinite(_d)) {
 								md.distanceMeters = _d;
 							}
@@ -27159,6 +27979,104 @@ class Sylk extends Component {
 				// }
 			} catch (e) {
 				console.log('[location] session-log failed',
+					e && e.message ? e.message : e);
+			}
+
+			// ---- Diagnostic: location-track availability at journal load.
+			// "After loading the journal not all location tracks load" — the
+			// hypothesis is that the data is still encrypted: some
+			// application/sylk-message-metadata rows (which carry the location
+			// ticks) are still queued for PGP decryption when getMessages
+			// finishes, so their ticks aren't in messagesMetadata yet and the
+			// trail renders short. A still-encrypted row is parsed into
+			// messagesMetadata only AFTER its async decrypt completes (see the
+			// is_encrypted branch ~line 26461). This logs, per share, how many
+			// ticks are already available vs. how many metadata rows are still
+			// pending decryption for this conversation — so metro.log shows
+			// directly whether the missing track points are explained by
+			// in-flight decryption at load time.
+			try {
+				const _pendingMetaRows = (messages_to_decrypt || [])
+					.filter(it => it
+						&& it.content_type === 'application/sylk-message-metadata').length;
+				const _readablePts = (arr) => (Array.isArray(arr) ? arr : []).filter(
+					t => t && t.action === 'location'
+						&& t.value
+						&& typeof t.value.latitude === 'number'
+						&& typeof t.value.longitude === 'number').length;
+				let _shareTicks = 0;
+				let _shareReadable = 0;
+				let _shareBubbles = 0;
+				let _bubblesWithTrail = 0;   // bubbles whose own _id has >=2 points
+				let _bubblesSingle = 0;      // bubbles whose own _id has <=1 point
+				for (const m of last_messages) {
+					if (!m || m.contentType !== 'application/sylk-live-location') continue;
+					_shareBubbles += 1;
+					const trail = messagesMetadata[m._id] || [];
+					_shareTicks += trail.length;
+					const pts = _readablePts(trail);
+					_shareReadable += pts;
+					if (pts >= 2) _bubblesWithTrail += 1; else _bubblesSingle += 1;
+				}
+				// Key-level distribution: are the ticks fragmented across
+				// many messageIds (A: each tick its own key → many 1-point
+				// bubbles) or aggregated under one origin (B: one fat key →
+				// the track should render). maxTrailLen tells which.
+				const _mmKeys = Object.keys(messagesMetadata);
+				let _maxLen = 0;
+				let _maxKey = null;
+				let _keysMulti = 0;
+				for (const k of _mmKeys) {
+					const n = _readablePts(messagesMetadata[k]);
+					if (n >= 2) _keysMulti += 1;
+					if (n > _maxLen) { _maxLen = n; _maxKey = k; }
+				}
+				// Geographic spread of the longest trail. Origin = first
+				// valid fix; maxDistOrigin = farthest any point strays from
+				// it; lastDistOrigin = where the latest point sits. If a
+				// trail has dozens of points but maxDistOrigin≈0, the
+				// sender never moved (or is stamping a frozen fix) — the
+				// map correctly collapses to a single dot. Non-zero spread
+				// with a blank map would instead point at the renderer.
+				let _maxDistOrigin = 0;
+				let _lastDistOrigin = 0;
+				try {
+					const _arr = (_maxKey && messagesMetadata[_maxKey]) || [];
+					let _origin = null;
+					let _last = null;
+					for (const _e of _arr) {
+						const _ev = _e && _e.value;
+						if (_ev && typeof _ev.latitude === 'number'
+								&& typeof _ev.longitude === 'number') {
+							if (!_origin) _origin = _ev;
+							_last = _ev;
+							const _d = haversineMeters(_origin, _ev);
+							if (_d > _maxDistOrigin) _maxDistOrigin = _d;
+						}
+					}
+					if (_origin && _last) {
+						_lastDistOrigin = haversineMeters(_origin, _last);
+					}
+				} catch (e) { /* never throw from logging */ }
+				if (_shareBubbles > 0 || _pendingMetaRows > 0) {
+					utils.timestampedLog(
+						'[location] [load] track availability',
+						'uri=' + uri,
+						'shareBubbles=' + _shareBubbles,
+						'bubblesWithTrail>=2=' + _bubblesWithTrail,
+						'bubblesSingle<=1=' + _bubblesSingle,
+						'metaKeys=' + _mmKeys.length,
+						'keysWithTrail>=2=' + _keysMulti,
+						'maxTrailLen=' + _maxLen,
+						'maxTrailKey=' + _maxKey,
+						'maxDistOrigin=' + _maxDistOrigin.toFixed(1) + 'm',
+						'lastDistOrigin=' + _lastDistOrigin.toFixed(1) + 'm',
+						'ticksLoaded=' + _shareTicks,
+						'readablePoints=' + _shareReadable,
+						'metaRowsPendingDecrypt=' + _pendingMetaRows);
+				}
+			} catch (e) {
+				console.log('[location] [load] track-availability log failed',
 					e && e.message ? e.message : e);
 			}
 
@@ -27275,6 +28193,16 @@ class Sylk extends Component {
 						// receive (saveIncomingMessage) for the same
 						// reason — this is the load-side mirror.
 						if (ct === 'application/sylk-live-location') {
+							return;
+						}
+						// System / housekeeping rows (call notes, 'Public key received',
+						// key-exchange, IMDN, …) are NOT conversation activity. Letting
+						// them set last_message_id / last_message_ts would bump
+						// contact.timestamp via the refresh gate below to the row's time
+						// (often "now") on chat open, popping the contact to the top with
+						// no real new message. Skip them so only genuine messages drive
+						// recency + preview.
+						if (last_item && (last_item.system === true || last_item.system === 1)) {
 							return;
 						}
 						if (ct && typeof ct === 'string' && ct.startsWith('text/') &&
@@ -27506,46 +28434,12 @@ class Sylk extends Component {
 			// the tail keeps OpenPGP off the UI path, and the selectedContact gate
 			// aborts the rest the moment the user leaves the chat (un-started items
 			// are released from _decryptKicked so a re-open re-queues them).
-			if (images_to_decrypt.length > 0) {
-				const _imgQueue = images_to_decrypt.slice();
-				const _imgUri = orig_uri;
-				const IMG_CONCURRENCY = 2;
-				const IMG_PRIORITY = 2; // newest N: no breath
-				let _imgConsumed = 0;
-				const _imgReleaseUnstarted = () => {
-					if (!this._decryptKicked) return;
-					for (const q of _imgQueue) {
-						if (q && q.transfer_id) this._decryptKicked.delete(q.transfer_id);
-					}
-				};
-				const _imgWorker = async () => {
-					while (_imgQueue.length > 0) {
-						if (!this.state.selectedContact
-								|| this.state.selectedContact.uri !== _imgUri) {
-							_imgReleaseUnstarted();
-							_imgQueue.length = 0;
-							console.log('[decrypt-file] queue aborted — user left', _imgUri);
-							return;
-						}
-						const meta = _imgQueue.shift();
-						if (!meta) return;
-						const isPriority = ++_imgConsumed <= IMG_PRIORITY;
-						try {
-							await this.decryptFile(meta);
-						} catch (e) {
-							console.log('[decrypt-file] queue item failed',
-								e && e.message ? e.message : e);
-						}
-						if (!isPriority) {
-							await new Promise(resolve => setTimeout(resolve, 100));
-						}
-					}
-				};
-				(async () => {
-					const workers = Array.from({length: IMG_CONCURRENCY}, () => _imgWorker());
-					await Promise.all(workers);
-				})();
-			}
+			// File/image decryption is now VIEWPORT-DRIVEN: ContactsListBox's
+			// onViewableItemsChanged decrypts (and downloads) only the file/image
+			// bubbles that are actually on screen, and triggers the rest as the
+			// user scrolls. This avoids decrypting/downloading every attachment on
+			// the page at chat open (heavy, mostly off-screen). Text messages are
+			// small and still decrypt eagerly in the loop above.
 
 			console.log('[message] loaded', (messages[orig_uri] || []).length, 'messages exchanged with', uri);
 
@@ -27649,9 +28543,39 @@ class Sylk extends Component {
 					e && e.message ? e.message : e);
 			}
 
-			this.setState({messages: messages,
-						   messagesMetadata: messagesMetadata,
+			// Load summary: how many messages were loaded per content_type,
+			// and how many file transfers per media category.
+			try {
+				const _fmt = (o) => Object.keys(o).sort().map(k => `${k}=${o[k]}`).join(', ') || '(none)';
+				const _totalLoaded = Object.values(_loadByContentType).reduce((a, b) => a + b, 0);
+				utils.timestampedLog('[message] load summary for', uri,
+					'— total', _totalLoaded,
+					'| by content_type:', _fmt(_loadByContentType),
+					'| file transfers by category:', _fmt(_loadFtByCategory));
+			} catch (e) {
+				console.log('[message] load summary failed', e && e.message ? e.message : e);
+			}
+
+			// Stage 1: also publish the ready contactMessages for the SELECTED
+			// contact. getMessages also runs for category-filter chip taps
+			// and the occasional non-selected load, so only refresh contactMessages
+			// when this slice belongs to the contact the user is viewing
+			// (orig_uri is one of its uris). Wired alongside `messages`;
+			// nothing consumes contactMessages yet (that's Stage 2).
+			let _contactMessagesUpdate = {};
+			try {
+				const _selForView = this.state.selectedContact;
+				const _selUrisForView = _selForView ? this.getAllContactUris(_selForView) : [];
+				if (_selForView && _selUrisForView.indexOf(orig_uri) !== -1) {
+					_contactMessagesUpdate = { contactMessages: this._buildContactMessages(messages[orig_uri], messagesMetadata) };
+				}
+			} catch (e) {
+				console.log('[contactMessages] build failed', e && e.message ? e.message : e);
+			}
+
+			this.setState({messagesMetadata: messagesMetadata,
 						   decryptingMessages: decryptingMessages,
+						   ..._contactMessagesUpdate,
 						   // Clear the cold-start chat-open spinner when
 						   // this slice is for the URI the deep-link
 						   // requested. Other getMessages calls (e.g.
@@ -27769,9 +28693,6 @@ class Sylk extends Component {
 						   try { await RNFS.unlink(encFilename); } catch (e) { /* optional cleanup */ }
 				       }
 				   }
-				   
-                   // scan what files take space: 
-				   await utils.getFolderSize(folderPath, true);
 			   }
 			   
 			   // Note: itemSize must be `let` — the branch below reassigns it
@@ -27869,7 +28790,7 @@ class Sylk extends Component {
     // (origin ticks, announcements) are removed from SQL along with the
     // rest of the conversation.
     async deleteMessages(uri, remote=false, filter={}) {
-        let messages = {...this.state.messages};
+        let messages = {...this._messagesMap()};
         let timestamp;
         let purgeMessages = [];
         let deleteAll = filter.deleteContact && !filter.simulate
@@ -27978,7 +28899,7 @@ class Sylk extends Component {
 
 					if (orig_uri in messages) {
 						delete messages[orig_uri];
-						this.setState({messages: {...messages}});
+						this._syncContactMessagesToLegacy();
 					}
 				}
 			}
@@ -28464,19 +29385,6 @@ class Sylk extends Component {
 		}
 	
 		this.setState(prevState => {
-	
-			// ---- Update messages ----
-			if (!prevState.messages[uri]) {
-				return null;
-			}
-	
-			const updatedMessages = {
-				...prevState.messages,
-				[uri]: prevState.messages[uri].filter(
-					msg => msg._id !== message.id
-				)
-			};
-	
 			// ---- Find matching contacts SAFELY from prevState ----
 			const matchedIds = new Set(
 				prevState.allContacts
@@ -28487,7 +29395,7 @@ class Sylk extends Component {
 			);
 	
 			if (!matchedIds.size) {
-				return { messages: updatedMessages };
+				return null;
 			}
 	
 			// ---- Update contacts immutably ----
@@ -28516,10 +29424,12 @@ class Sylk extends Component {
 			});
 	
 			return {
-				messages: updatedMessages,
 				allContacts: updatedContacts
 			};
 		});
+
+		// Remove from the new model (state.messages retired).
+		this._removeContactMessage(message.id);
 	}
 
     async removeConversation(obj, actionTimestamp) {
@@ -28593,8 +29503,8 @@ class Sylk extends Component {
                 } catch (e) { console.log('[trash] removeConversation orphan purge failed', e && e.message); }
                 try { await this._removeContactFiles(uri); } catch (e) {}
                 try {
-                    const rm = {...this.state.messages};
-                    if (uri in rm) { delete rm[uri]; this.setState({messages: rm}); }
+                    const rm = {...this._messagesMap()};
+                    this._syncContactMessagesToLegacy();
                 } catch (e) {}
                 utils.timestampedLog('[trash] removeConversation: no contact — purged orphan storage for', uri);
                 return;
@@ -28648,8 +29558,8 @@ class Sylk extends Component {
                             (x && x.id === contact.id) ? {...x, storagePurged: contact.storagePurged} : x),
                     }));
                     try {
-                        const rm = {...this.state.messages};
-                        if (uri in rm) { delete rm[uri]; this.setState({messages: rm}); }
+                        const rm = {...this._messagesMap()};
+                        this._syncContactMessagesToLegacy();
                     } catch (e) {}
                     utils.timestampedLog('[trash] removeConversation: hid messages + storage_purged '
                         + this._abNormalizeUri(contact.uri) + ' (deleted on another device)');
@@ -28712,7 +29622,7 @@ class Sylk extends Component {
 		let uris = this.getAllContactUris(contact);
 		let updated = false;
 
-        let renderMessages = {...this.state.messages};
+        let renderMessages = {...this._messagesMap()};
 
         for (const uri of uris) {
 			if (uri in renderMessages) {
@@ -28734,7 +29644,7 @@ class Sylk extends Component {
         }
 
         if (updated) {
-			this.setState({messages: renderMessages});
+			this._syncContactMessagesToLegacy();
 		}
 
         this.deleteSylkContact(contact);
@@ -28758,6 +29668,23 @@ class Sylk extends Component {
 		}
 	  }
 
+    // Re-download the journal for the last `days` and overwrite local
+    // storage with the server's authoritative copy. Driven by the
+    // "Refetch messages..." item in the My Storage menu (RefetchMessagesModal
+    // picks `days`); also reachable via the legacy menu path gated on
+    // NavigationBar.refetchMessagesForDays.
+    //
+    // Flow:
+    //   1. resetStorage(days) clears the local window we're about to re-pull:
+    //      for days <= 365 it deletes messages NEWER than `days` ago for this
+    //      account; for days > 365 it deletes ALL messages. It NEVER deletes
+    //      contacts. Either way it nulls the sync-cursor id (allowClear) while
+    //      PRESERVING the per-account last_sync_timestamp.
+    //   2. requestSyncConversations(null, { since: days ago }) re-fetches the
+    //      journal from that point. Incoming rows are de-duplicated by msg_id,
+    //      so re-pulling the cleared window rebuilds it from the server.
+    // `uri` (the open contact, if any) only scopes the in-sync "new message"
+    // highlight; the storage reset itself is account-wide.
     async refetchMessages(days=30, uri) {
 		console.log('-- refetchMessages since', days, 'days ago');
 		await this.resetStorage(days);
@@ -28765,6 +29692,34 @@ class Sylk extends Component {
         var since = moment().subtract(days, 'days');
         let options = {since: since};
         this.requestSyncConversations(null, options, uri);
+    }
+
+    // Post-registration journal sync, gated on the SQL account row having
+    // hydrated state.lastSyncId / state.lastSyncTimestamp. On a cold start
+    // the 'registered' event frequently fires before loadAccount's async DB
+    // read resolves; running the sync at that instant passes a null cursor
+    // and triggers a full 5-year re-download (the bug this guards against —
+    // metro.log 2026-06-21 08:40:10). If the cursor hasn't hydrated yet we
+    // set _pendingRegisteredSync and return; loadAccount runs this again the
+    // moment the cursor lands. Once hydrated (the common returning-user
+    // path where loadAccount wins the race), we proceed immediately with
+    // the real cursor + its timestamp fallback.
+    _requestRegisteredJournalSync() {
+        if (this._syncCursorHydratedFor !== this.state.accountId) {
+            utils.timestampedLog('[journal] deferring post-register sync until SQL cursor hydrates');
+            this._pendingRegisteredSync = true;
+            return;
+        }
+        this._pendingRegisteredSync = false;
+        // Pass the timestamp of the last synced message as a fallback
+        // `since`. If the server has pruned the lastSyncId we still get back
+        // only messages newer than that timestamp instead of re-downloading
+        // the entire journal.
+        let syncOptions = {};
+        if (this.state.lastSyncTimestamp) {
+            syncOptions.since = this.state.lastSyncTimestamp;
+        }
+        this.requestSyncConversations(this.state.lastSyncId, syncOptions);
     }
 
     requestSyncConversations(lastId=null, options={}, uri) {
@@ -28802,8 +29757,16 @@ class Sylk extends Component {
             return;
         }
 
-        if (!this.state.keys) {
-            console.log('Wait for [journal] sync until we have keys');
+        // The journal first sync depends ONLY on the addressbook import being
+        // finished — NOT on keys. Encrypted messages are stored as ciphertext
+        // (encrypted=1) and decrypt on demand; any that failed to decrypt (3)
+        // are reset to 1 when a key is generated/imported (see savePrivateKey).
+        // A returning device already holds its addressbook + a cursor, so only
+        // the genuine first full sync waits here.
+        const _firstFullSync = (lastId == null && !this.state.lastSyncId && !this.state.lastSyncTimestamp);
+        if (_firstFullSync && this._abImportDoneForAccount !== this.state.account.id) {
+            console.log('Wait for [journal] first sync until addressbook import is finished');
+            this._pendingFirstJournalSync = { lastId, options, uri };
             return;
         }
 
@@ -28825,22 +29788,30 @@ class Sylk extends Component {
         this.syncRequested = true;
 
         // Light up the spinner for this sync round-trip, and arm a 15s
-        // safety timeout. Always set firstSyncPending — that's the
-        // visible signal that a sync is in flight. The timer is only
-        // armed if not already running so back-to-back paginated
-        // requests (the "first batch ready, fetch next" branch in
-        // syncConversations()) reuse a single 15s window instead of
-        // resetting the budget each time.
+        // safety timeout. Always set firstSyncPending — that's the visible
+        // signal that a sync is in flight. The spinner stays up until the sync
+        // actually completes (clearFirstSyncPending on 'sync_completed'). The
+        // timeout is a 3-minute INACTIVITY safety net, RE-ARMED on every batch:
+        // a long paginated first sync keeps extending it, so it never cuts the
+        // spinner mid-sync (the old single 15s window fired while a big first
+        // sync was still running). It only fires if no further batch arrives
+        // for 3 minutes (a genuinely stuck sync).
         if (!this.state.firstSyncPending) {
             console.log('firstSyncPending -> true (sync [journal] requested)');
             this.setState({firstSyncPending: true});
         }
-        if (!this._firstSyncTimeoutId) {
-            this._firstSyncTimeoutId = setTimeout(() => {
-                console.log('firstSyncPending: 15s safety timeout fired');
-                this.clearFirstSyncPending('timeout');
-            }, 15000);
+        // Light the continuous "fetching journals" spinner now and keep it on
+        // (set-once) until every batch is saved locally — see the !lastMessage
+        // clear in _runSyncConversations. Independent of the per-batch
+        // syncConversations toggle, so it doesn't flicker between batches.
+        if (!this.state.journalSyncActive) {
+            this.setState({journalSyncActive: true});
         }
+        if (this._firstSyncTimeoutId) clearTimeout(this._firstSyncTimeoutId);
+        this._firstSyncTimeoutId = setTimeout(() => {
+            console.log('firstSyncPending: 3min safety timeout fired');
+            this.clearFirstSyncPending('timeout');
+        }, 180000);
 
         if (uri) {
 			this.setState({refetchMessagesForUri: uri});
@@ -28861,6 +29832,12 @@ class Sylk extends Component {
         if (this.state.firstSyncPending) {
             console.log('firstSyncPending -> false (' + reason + ')');
             this.setState({firstSyncPending: false});
+        }
+        // Also drop the "fetching journals" spinner on any cancel/timeout so it
+        // can't get stuck on (normal completion already clears it at the
+        // downloads-saved point).
+        if (this.state.journalSyncActive) {
+            this.setState({journalSyncActive: false});
         }
     }
 
@@ -28982,7 +29959,27 @@ class Sylk extends Component {
         this._journalDiagStats = null;
     }
 
+    // SERIALIZE the journal sync. The SDK delivers a paginated sync as several
+    // callbacks (e.g. a data batch then an end-of-pagination batch=0), and those
+    // callbacks can overlap. They share the _journalBulk flag that gates whether
+    // per-message contact writes defer to the single coalesced flush. When two
+    // overlap, one invocation's `finally` clears _journalBulk while the other is
+    // still mid-apply, so its per-message saves fire AND both flush — every
+    // touched contact written TWICE. Chain each call after the previous so the
+    // bulk apply never runs concurrently with itself.
     async syncConversations(messages) {
+        const _prev = this._syncConvChain || Promise.resolve();
+        let _release;
+        this._syncConvChain = new Promise(r => { _release = r; });
+        try { await _prev; } catch (e) { /* prior call's failure must not block this one */ }
+        try {
+            return await this._runSyncConversations(messages);
+        } finally {
+            _release();
+        }
+    }
+
+    async _runSyncConversations(messages) {
         utils.timestampedLog('sync [journal], lastSyncId =', this.state.lastSyncId,
             'batchSize =', Array.isArray(messages) ? messages.length : 'n/a');
         // [IMDN-DIAG] one-line summary so we can see the burst's
@@ -29297,6 +30294,13 @@ class Sylk extends Component {
 		
 			  utils.timestampedLog('syncConversations', filteredMessages.length, 'filtered [journal] messages');
 			  await this.writeJournal(filteredMessages, journalDirectory);
+			  // Cache checkpoint: the batch is now on disk. Advance the durable
+			  // cursor (SQL only — keep state.lastSyncId null so pagination
+			  // continues) so a kill before processing resumes from here and
+			  // only fetches newer journals instead of re-downloading these.
+			  if (lastMessage && lastMessage.id) {
+			      await this.saveLastSyncId(lastMessage.id, true, lastMessage.timestamp, false, true);
+			  }
 			} catch (e) {
 			  console.log('Error writing journal files:', e);
 			}
@@ -29311,6 +30315,11 @@ class Sylk extends Component {
 		  } else {
 			try {
 			  await this.writeJournal(messages, journalDirectory);
+			  // Cache checkpoint (continuing sync): file on disk → advance the
+			  // durable cursor before processing.
+			  if (lastMessage && lastMessage.id) {
+			      await this.saveLastSyncId(lastMessage.id, true, lastMessage.timestamp, false, true);
+			  }
 			} catch (e) {
 			  console.log('Error writing journal files:', e);
 			}
@@ -29323,7 +30332,16 @@ class Sylk extends Component {
 			utils.timestampedLog('First sync [journal] done');
 			finishedFirstSync = true;
 			if (this.lastServerJournalId ) {
-				this.saveLastSyncId(this.lastServerJournalId, true, this.lastServerJournalTimestamp);
+				// durableOnly: persist the DOWNLOAD head to SQL (so a kill
+				// before/after apply resumes with a `since` delta, never the
+				// 5y re-download) but DON'T move state.lastSyncId/timestamp.
+				// Leaving state null lets the apply loop below checkpoint each
+				// journal file oldest→newest via its own saveLastSyncId calls.
+				// Setting state to the head here jammed the cursor past every
+				// file before replay, so each per-file checkpoint regressed
+				// and got blocked by the monotonic guard ("regress BLOCKED"
+				// spam) — defeating the per-file resume points entirely.
+				this.saveLastSyncId(this.lastServerJournalId, true, this.lastServerJournalTimestamp, false, true);
 			}
 
 			setTimeout(() => {
@@ -29333,6 +30351,14 @@ class Sylk extends Component {
 		    if (lastMessage) {
 				this.saveLastSyncId(lastMessage.id, true, lastMessage.timestamp);
 			}
+		}
+
+		// Downloads for this sync round are now all saved locally (server
+		// returned no more pages). Drop the continuous "fetching journals"
+		// spinner — the background apply/backfill continues and has its own
+		// progress indicator + the "storage up to date" banner.
+		if (!lastMessage && this.state.journalSyncActive) {
+			this.setState({journalSyncActive: false});
 		}
 
 		// End-of-pagination → emit the journal-diag summary if the
@@ -29348,9 +30374,28 @@ class Sylk extends Component {
 		}
 
 		const cachedJournals = await RNFS.readDir(journalDirectory);
-		cachedJournals.sort();
+		cachedJournals.sort();   // oldest → newest (files are named by timestamp)
+
+		// On the FIRST sync, apply the files in REVERSE chronological order
+		// (newest → oldest) so the user's most recent conversations appear
+		// within seconds and history then fills in recent-backward. This is
+		// safe ONLY on the first sync: the destructive/relative entries
+		// (message-remove, conversation-remove, conversation-read, imdn) are
+		// filtered out at write time, so the backfill replays only real
+		// messages + metadata — and message insertion order doesn't affect the
+		// timestamp-sorted view, while contact last-message/timestamp uses a
+		// max-wins guard. Continuing (non-first) syncs DO carry those relative
+		// ops and MUST stay oldest→newest, so they're left untouched.
+		// Per-file checkpoints are suppressed for the whole first sync (every
+		// file is out of forward order); the durable download head was saved
+		// above and a single head checkpoint is written after the loop, so
+		// fetch-resume and the in-session cursor stay intact.
+		let _applyOrder = cachedJournals;
+		if (finishedFirstSync && cachedJournals.length > 1) {
+			_applyOrder = [...cachedJournals].reverse();   // newest → oldest
+		}
 		if (cachedJournals.length == 0) {
-			this.setState({syncConversations: false});                       
+			this.setState({syncConversations: false});
 		}
 		
 		let i = 0;
@@ -29366,7 +30411,7 @@ class Sylk extends Component {
 		this._journalBulk = true;
 		this._journalTouched = new Set();
 		try {
-		for (const journalFile of cachedJournals) {
+		for (const journalFile of _applyOrder) {
 			const jFile = journalFile.path;
 			i = i + 1;
 
@@ -29385,17 +30430,39 @@ class Sylk extends Component {
 					jlabel = 'Apply ' + i +  ' out of ' + cachedJournals.length + ' journals';
 					this._notificationCenter.postSystemNotification(jlabel);
 				}
-				// Checkpoint after EVERY applied journal file, including
-				// during the first sync (when lastSyncId is still null).
-				// Journal files are named by message timestamp and sorted
-				// ascending, so they apply oldest→newest and each save
-				// moves the per-account cursor (id + timestamp) strictly
-				// forward. This means an interrupted first sync resumes
-				// from the last applied file instead of restarting the
-				// whole backfill. (Previously gated on this.state.lastSyncId,
-				// so a first sync never checkpointed mid-way.)
-				if (lastMessage && lastMessage.id) {
+				// Checkpoint after each applied journal file so an interrupted
+				// sync resumes from the last applied file. TWO cases are skipped:
+				//  • the entire FIRST sync — files apply newest→oldest there
+				//    (see _applyOrder), so per-file saves would regress the
+				//    monotonic cursor; the durable download head + a single head
+				//    checkpoint after the loop cover it instead.
+				//  • any file whose timestamp is OLDER than the cursor we already
+				//    hold (e.g. the forward resume pass after a crash mid first
+				//    sync) — checkpointing it would just hit the monotonic guard
+				//    and emit "regress BLOCKED" noise for no benefit.
+				const _fileTs = (lastMessage && lastMessage.timestamp)
+					? new Date(lastMessage.timestamp).getTime() : 0;
+				const _curTs = this.state.lastSyncTimestamp
+					? new Date(this.state.lastSyncTimestamp).getTime() : 0;
+				const _wouldRegress = _fileTs > 0 && _curTs > 0 && _fileTs < _curTs;
+				const _skipCheckpoint = finishedFirstSync || _wouldRegress;
+				if (!_skipCheckpoint && lastMessage && lastMessage.id) {
 					this.saveLastSyncId(lastMessage.id, true, lastMessage.timestamp);
+				}
+
+				// One-time "storage up to date" banner. The newest file is the
+				// FIRST applied during the first sync, so the instant it lands
+				// the user's most recent messages are on screen — surface the
+				// banner once and auto-hide after 10s while older history keeps
+				// filling in behind it.
+				if (finishedFirstSync && i === 1 && !this._storageBannerShown) {
+					this._storageBannerShown = true;
+					this.setState({ storageUpToDateBanner: true });
+					if (this._storageBannerTimeoutId) clearTimeout(this._storageBannerTimeoutId);
+					this._storageBannerTimeoutId = setTimeout(() => {
+						this._storageBannerTimeoutId = null;
+						this.setState({ storageUpToDateBanner: false });
+					}, 10000);
 				}
 			} catch (e) {
 				utils.timestampedLog('[message] Error applying [journal] file', path.basename(jFile), ':', e);
@@ -29411,6 +30478,15 @@ class Sylk extends Component {
 			this._journalBulk = false;
 			await this._flushJournalContacts();
 			if (finishedFirstSync) this._firstSyncBoundaryTs = null;
+		}
+
+		// First sync applied all files newest→oldest with per-file checkpoints
+		// suppressed; set the live cursor to the download head ONCE now. The
+		// head is the newest id/timestamp so this is monotonic-safe (no
+		// regress), and it ensures a later in-session sync does a `since` delta
+		// instead of re-running the 5-year first full sync.
+		if (finishedFirstSync && this.lastServerJournalId) {
+			this.saveLastSyncId(this.lastServerJournalId, true, this.lastServerJournalTimestamp);
 		}
 
         if (this.syncStartTimestamp) {
@@ -29433,10 +30509,10 @@ class Sylk extends Component {
     async _syncConversations(messages, file, firstSync=false) {
         console.log(' -- syncConversations handler for', file, 'with', messages.length, 'messages');
 
-        let renderMessages = { ...this.state.messages };
+        let renderMessages = { ...this._messagesMap() };
  
         if (messages.length > 0) {
-            utils.timestampedLog('[message] Sync', messages.length, '[journal] messages from server');
+            utils.timestampedLog('[message] Sync', messages.length, '[journal] messages from', file);
             //this._notificationCenter.postSystemNotification('Syncing messages with the server');
         } else {
             utils.timestampedLog('[message] No new messages on server [journal] to sync');
@@ -29539,7 +30615,13 @@ class Sylk extends Component {
 
 				direction = message.sender.uri === this.state.account.id ? 'outgoing': 'incoming';
 				
-			    //console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
+				// Per-row trace is suppressed during the first sync — a fresh
+				// phone replays ~10k+ messages and one log line each floods the
+				// bridge and slows the apply. A single per-file summary
+				// ("Sync N journal messages from <file>") still marks progress.
+				if (!firstSync && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
+					console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
+			    }
 				
 				if (this.state.refetchMessagesForUri) {
 					if (direction == 'incoming' && uri != this.state.refetchMessagesForUri) {
@@ -29571,7 +30653,22 @@ class Sylk extends Component {
 					//purgeMessages.push(message.id);
 					continue;
 				}
-	
+
+				// A genuinely-new chat message (push-delivered while we were
+				// offline, now replayed) must un-trash a contact sitting in the
+				// Deleted folder. Restricted to real chat content and to the
+				// in-memory TRASHED case (skipTombstone) — reviving a Graveyard
+				// tombstone mid-loop would race the newContact fallback below.
+				// The newness guard inside the helper ignores historical echoes.
+				if (message.contentType === 'text/plain'
+						|| message.contentType === 'text/html'
+						|| (typeof message.contentType === 'string' && message.contentType.indexOf('image/') === 0)
+						|| message.contentType === 'application/sylk-file-transfer') {
+					try {
+						await this._reviveDeletedContactForActivity(uri, messageTimestamp, 'message (journal)', {skipTombstone: true});
+					} catch (e) { /* never block journal processing on revive */ }
+				}
+
 				const matchedContacts = this.lookupContacts(uri);
 				// clone array + clone each contact object — but REUSE the
 				// clone across messages for the same contact within this
@@ -29589,7 +30686,14 @@ class Sylk extends Component {
 					const clone = {
 						...contact,
 						unread: [...(contact.unread || [])],
-						tags: [...(contact.tags || [])]
+						tags: [...(contact.tags || [])],
+						// Baseline last-activity time captured BEFORE this batch
+						// mutates the clone. A contact may ONLY be changed by a
+						// message NEWER than this — re-fetching past messages
+						// (messageTimestamp <= _origTs) must never touch the
+						// contact (timestamp, unread, last message). Live new
+						// messages are strictly newer and still apply.
+						_origTs: (contact.timestamp != null ? new Date(contact.timestamp).getTime() : 0)
 					};
 					// Pre-register so the next message in this batch for
 					// the same contact sees the same clone — even if no
@@ -29821,15 +30925,20 @@ class Sylk extends Component {
 											this.state.appState === 'active' &&
 											this.state.selectedContact &&
 											this.state.selectedContact.id === contact.id;
-										if (!isActiveChat) {
+										// ONLY a genuinely NEW message (newer than the
+										// contact's pre-batch last activity) may change
+										// unread. Re-fetching a PAST message must not
+										// resurrect unread on an up-to-date contact.
+										const _isNewMessage = messageTimestamp > (contact._origTs || 0);
+										if (!isActiveChat && _isNewMessage) {
 											contact.unread.push(message.id);
 											utils.timestampedLog('[message] Increment unread (journal) from', uri,
 												'contentType=' + message.contentType,
 												'new length =', contact.unread.length,
 												'appState =', this.state.appState);
 										} else {
-											console.log('Skipping unread increment (journal): user is in chat with', uri,
-												'contentType=' + message.contentType);
+											console.log('Skipping unread increment (journal):', uri,
+												!_isNewMessage ? '(past message re-fetch)' : '(user is in chat)');
 										}
 									}
 								} else {
@@ -29893,11 +31002,26 @@ class Sylk extends Component {
 		
 			return {
 				allContacts: updated,
-				messages: { ...renderMessages },
 				updateContacts,
 				purgeMessages
 			};
 		}, () => {
+		   // Journal replay edits many uris in one batched accumulator
+		   // (`renderMessages`, a local map). The per-item index mirrors used by
+		   // the live paths can't see that batch, so re-derive the selected
+		   // contact's contactMessages once here from the accumulator's slice —
+		   // but only when this batch actually touched the selected contact
+		   // (else it's a wasted re-render). Non-selected contacts stay
+		   // SQL-only per the model.
+		   try {
+		       const _sel = this.state.selectedContact;
+		       if (_sel && modifiedContactsMap.has(_sel.id)
+		               && renderMessages && (_sel.uri in renderMessages)) {
+		           this.setState({ contactMessages: this._buildContactMessages(renderMessages[_sel.uri], this.state.messagesMetadata) });
+		       }
+		   } catch (e) {
+		       console.log('[contactMessages] journal rebuild failed', e && e.message ? e.message : e);
+		   }
 		   this.afterSyncTasks();
 		});
     }
@@ -29913,16 +31037,70 @@ class Sylk extends Component {
             utils.timestampedLog('[history] contacts ready — replaying deferred call_history');
             setTimeout(() => { if (!this.unmounted) this.processServerCallHistory(_pending); }, 0);
         }
+    }
+
+    // The addressbook is fully synced for this account: contacts imported and
+    // groups reconciled. This is the TRUE "import finished" signal — fired from
+    // the end of syncGroupsTable (server-marker skip / ongoing path) and from
+    // the fresh-migration clean-done. NOT from _onContactsReady, which on the
+    // skip path runs before the import (in syncGroupsTable) has happened.
+    // Idempotent per account. Releases the two things that wait for the import:
+    // the deferred journal first sync and the deferred import-key modal.
+    _abMarkImportFinished = (account) => {
+        const acc = account || this.state.accountId;
+        if (!acc || this._abImportDoneForAccount === acc) return;
+        this._abImportDoneForAccount = acc;
+
+        // Call history was deferred until the contacts existed — replay it now
+        // (contact-only: it tags contacts with calls / creates conference rooms).
+        if (this._pendingCallHistory) {
+            const _pending = this._pendingCallHistory;
+            this._pendingCallHistory = null;
+            utils.timestampedLog('[history] addressbook synced — replaying deferred call_history');
+            setTimeout(() => { if (!this.unmounted) this.processServerCallHistory(_pending); }, 0);
+        }
+
+        // The replay above runs the instant the import finishes, but the
+        // post-import contact reload is async — the in-memory index can still
+        // hold pre-import contact_ids, so saveHistory's UPDATE-by-id misses
+        // every server-backed contact (only locally-created conference rooms,
+        // which INSERT, survive) and the Calls tab stays empty. Re-apply once
+        // after a short settle, when the reloaded index carries the final ids,
+        // forcing a reprocess by clearing the sessionId dedup cache.
+        if (!this._callHistoryReapplied) {
+            this._callHistoryReapplied = true;
+            setTimeout(() => {
+                if (this.unmounted) return;
+                if (this._lastServerCallHistory
+                        && this._abImportDoneForAccount === this.state.accountId) {
+                    utils.timestampedLog('[history] re-applying call history after import settle (forcing reprocess)');
+                    this._serverCallHistoryCache = null; // bypass the sessionId dedup
+                    this.processServerCallHistory(this._lastServerCallHistory);
+                }
+                // Initial call-history import window is over: from here on, missed
+                // calls (live, or a later sync) DO bump the per-contact unread
+                // badge. Set unconditionally so an account that receives its
+                // first call history LATER isn't left permanently suppressed.
+                this._callHistoryInitialImport = false;
+                utils.timestampedLog('[history] initial call-history import complete — missed calls now bump unread badge');
+            }, 6000);
+        }
+
+        if (this._pendingFirstJournalSync) {
+            const _p = this._pendingFirstJournalSync;
+            this._pendingFirstJournalSync = null;
+            utils.timestampedLog('[journal] addressbook synced — starting deferred first sync');
+            this.requestSyncConversations(_p.lastId, _p.options, _p.uri);
+        }
+
         if (this._pendingKeyModal) {
             this._pendingKeyModal = false;
-            // The modal is armed EARLY (generateKeysIfNecessary runs before the
-            // async key load finishes, so existsLocal is transiently false).
-            // Re-check now: if the private key has since loaded, do NOT nag the
-            // user to import a key they already have.
+            // Re-check: if the private key has since loaded, do NOT nag the user
+            // to import a key they already have.
             if (this.state.keys && this.state.keys.private) {
                 utils.timestampedLog('[pgp] deferred import-key modal cancelled — private key is present');
             } else {
-                utils.timestampedLog('[pgp] contacts ready — showing deferred import-key modal');
+                utils.timestampedLog('[pgp] addressbook synced — showing deferred import-key modal');
                 setTimeout(() => { if (!this.unmounted) this.setState({ showImportPrivateKeyModal: true }); }, 0);
             }
         }
@@ -29963,6 +31141,19 @@ class Sylk extends Component {
 				if (Number.isFinite(ex) && Number.isFinite(jt) && ex > jt) {
 					contact.timestamp = existing.timestamp;
 				}
+			}
+			// NO-OP SKIP: if this journal pass didn't change the contact's
+			// message-derived fields vs what's already in memory (the case when a
+			// refetch re-applies already-known messages), don't rewrite the row.
+			// Only the four fields a journal entry can touch are compared; a
+			// genuinely newer message differs and still writes. existing===null
+			// (brand-new contact) falls through and writes.
+			if (existing
+				&& (existing.lastMessageId || '') === (contact.lastMessageId || '')
+				&& (existing.lastMessage || '') === (contact.lastMessage || '')
+				&& (((existing.unread && existing.unread.length) || 0) === ((contact.unread && contact.unread.length) || 0))
+				&& new Date(existing.timestamp).getTime() === new Date(contact.timestamp).getTime()) {
+				return;   // unchanged — nothing to persist
 			}
 			console.log('Must update contact', contact.id, contact.uri, contact.timestamp);
 			this.saveSylkContact(contact.uri, contact, 'journal');
@@ -30005,6 +31196,28 @@ class Sylk extends Component {
         return messageTimestamp <= this._firstSyncBoundaryTs;
     };
 
+    // A journal-touched contact whose message-derived fields already match what
+    // is persisted needs NO rewrite. Re-applying a journal (e.g. a refetch of
+    // already-known messages) recomputes IDENTICAL values, so writing the row
+    // again only churns disk + forces a re-render. Compare the four fields the
+    // journal path can change; return true (skip) only when ALL match. On a
+    // missing row or any error, return false so the contact is still written.
+    _journalContactUnchanged = async (c) => {
+        try {
+            const row = await this.ExecuteQuery(
+                'SELECT timestamp, unread_messages, last_message, last_message_id FROM contacts WHERE account = ? AND lower(uri) = lower(?) LIMIT 1',
+                [this.state.accountId, c.uri]);
+            if (!row || !row.rows || !row.rows.length) return false;   // no row yet → must INSERT
+            const r = row.rows.item(0);
+            const unix = Math.floor(c.timestamp / 1000);
+            const unread = (Array.isArray(c.unread) && c.unread.length) ? c.unread.toString() : '';
+            return String(r.timestamp) === String(unix)
+                && (r.unread_messages || '') === unread
+                && (r.last_message || '') === (c.lastMessage || '')
+                && (r.last_message_id || '') === (c.lastMessageId || '');
+        } catch (e) { return false; }   // uncertain → write (safe)
+    };
+
     async _flushJournalContacts() {
         const ids = this._journalTouched ? [...this._journalTouched] : [];
         this._journalTouched = new Set();
@@ -30012,11 +31225,14 @@ class Sylk extends Component {
         utils.timestampedLog('[message] [journal] flushing', ids.length, 'coalesced contact update(s)');
         const byId = new Map((this.state.allContacts || []).map(c => [c.id, c]));
         this._abBulkMode = true;
+        let _wrote = 0;
         try {
             for (const id of ids) {
                 const c = byId.get(id);
                 if (c && c.uri) {
+                    if (await this._journalContactUnchanged(c)) continue;   // no-op rewrite — skip
                     await this.saveSylkContact(c.uri, c, 'journal');
+                    _wrote++;
                 }
             }
         } catch (e) {
@@ -30024,7 +31240,7 @@ class Sylk extends Component {
         } finally {
             this._abBulkMode = false;
         }
-        await this.loadSylkContacts('journal-flush', true);
+        if (_wrote) await this.loadSylkContacts('journal-flush', true);   // only repaint if something actually changed
     }
 
     async publicKeyReceived(message) {
@@ -30617,9 +31833,7 @@ class Sylk extends Component {
         // resolving through the original instance unchanged.
         try {
             const uriForTs = message && message.sender && message.sender.uri;
-            const sliceForTs = uriForTs && this.state.messages
-                ? (this.state.messages[uriForTs] || [])
-                : [];
+            const sliceForTs = uriForTs ? this._messagesFor(uriForTs) : [];
             if (sliceForTs.length > 0 && message && message.timestamp) {
                 const toMs = (v) => {
                     if (v == null) return NaN;
@@ -30784,15 +31998,8 @@ class Sylk extends Component {
 		const uri = message.sender.uri;
 
 		if (this.state.selectedContact && uri === this.state.selectedContact.uri) {
-			let renderMessages = { ...this.state.messages };
-			const existingList = renderMessages[uri] || [];
 			const gMsg = utils.sylk2GiftedChat(message, decryptedBody, 'incoming');
 
-			// Create NEW array instead of mutating push()
-			if (!existingList.some(obj => obj._id === message.id)) {
-				renderMessages[uri] = [...existingList, gMsg];
-			}
-	
 			let _lmSelected = null;
 			if (gMsg.contentType?.startsWith('text/')) {
 				_lmSelected = this.buildLastMessage(gMsg);
@@ -30804,11 +32011,12 @@ class Sylk extends Component {
 			  direction: 'incoming',
 			  lastCallDuration: null,
 			};
-	
-			this.setState({ 
-				selectedContact,
-				messages: renderMessages
-			});
+
+			this.setState({ selectedContact });
+
+			// Add the incoming bubble to the new model (state.messages retired;
+			// dedups internally).
+			this._appendContactMessage(uri, gMsg);
 		}
     }
 
@@ -30943,6 +32151,17 @@ class Sylk extends Component {
 		// Both branches early-return so the message doesn't fall through
 		// to the generic chat-rendering path; conference_request is a
 		// signaling artifact, not a user-visible chat bubble.
+		// Journal replay must NOT process conference-request signaling. These are
+		// live, short-lived handshake artifacts (room invite / accept / reject,
+		// expiring in ~60s) — by the time they're synced from the journal they're
+		// long expired, and re-noting/re-sending them on every history sync is
+		// noise. Skip them during the bulk journal drain; live delivery handles
+		// real-time requests.
+		if (this._journalBulk
+				&& (metadataContent.action === 'conference_request'
+					|| metadataContent.action === 'conference_request_reject')) {
+			return;
+		}
 		if (metadataContent.action === 'conference_request') {
 			if (author) {
 				// Distinguish original incoming requests from accept
@@ -31164,8 +32383,32 @@ class Sylk extends Component {
 						? _v.longitude.toFixed(5) : '?';
 					const _acc = typeof _v.accuracy === 'number'
 						? ` ±${Math.round(_v.accuracy)}m` : '';
+					// Distance from the share's ORIGIN point (the first
+					// valid fix already stored under this messageId). Tells
+					// us at a glance whether successive ticks actually move
+					// or are stacking on the same spot — a frozen sender
+					// shows distOrigin≈0 forever while the tick count climbs.
+					let _distStr = '';
+					try {
+						const _trail = (this.state.messagesMetadata
+							&& this.state.messagesMetadata[metadataContent.messageId]) || [];
+						let _origin = null;
+						for (const _e of _trail) {
+							const _ev = _e && _e.value;
+							if (_ev && typeof _ev.latitude === 'number'
+									&& typeof _ev.longitude === 'number') {
+								_origin = _ev;
+								break;
+							}
+						}
+						if (_origin && typeof _v.latitude === 'number'
+								&& typeof _v.longitude === 'number') {
+							const _d = haversineMeters(_origin, _v);
+							_distStr = ` distOrigin=${_d.toFixed(1)}m`;
+						}
+					} catch (e) { /* never throw from logging */ }
 					utils.timestampedLog(
-						`[location] tick ${_dir} ← ${_sender} ${_lat},${_lng}${_acc} (_id=${_mid})`
+						`[location] tick ${_dir} ← ${_sender} ${_lat},${_lng}${_acc}${_distStr} (_id=${_mid})`
 					);
 				} catch (e) { /* logging must never throw */ }
 			}
@@ -31386,6 +32629,19 @@ class Sylk extends Component {
 				selectedContact: selectedContact,
 				messagesMetadata: newMessagesMetadataForUri
 			};
+		}, () => {
+			// Re-bake this message's overlay (label / rotation / reply) into
+			// the new contactMessages model so the live change survives the
+			// next merge in ChatBox. Location ticks are handled separately
+			// (deferred); only the selected contact's list carries an index
+			// entry, so this is a no-op for anything else.
+			if (metadataContent.action !== 'location' && this.contactMessageIndex) {
+				const _cur = this.contactMessageIndex.get(mId);
+				if (_cur) {
+					const _rebaked = this._overlayMessage(_cur, this.state.messagesMetadata);
+					if (_rebaked !== _cur) this._patchContactMessage(mId, _rebaked);
+				}
+			}
 		});
 
 		// After the per-tick metadata update has landed, cross-inject the
@@ -31665,7 +32921,7 @@ class Sylk extends Component {
 		// device's own progress, not a shared number.
 		let toDestSuffix = '';
 		if (destinationCoords && ownCoords) {
-			const toDest = this._haversineMeters(ownCoords, destinationCoords);
+			const toDest = haversineMeters(ownCoords, destinationCoords);
 			if (Number.isFinite(toDest)) {
 				toDestSuffix = ' • ' + this._meetFormatDistance(toDest) + ' to dest';
 			}
@@ -31866,27 +33122,30 @@ class Sylk extends Component {
 		//    messages intact is implicit — they're keyed by their own
 		//    msg_ids, not by the session id.
 		if (uri) {
+			// Drop the session's bubble(s) from the new model (selected contact).
+			const _selWipe = this.state.selectedContact;
+			if (_selWipe && this.getAllContactUris(_selWipe).indexOf(uri) !== -1) {
+				const _cur = this.state.contactMessages || [];
+				const _filtered = _cur.filter(m => {
+					if (!m) return true;
+					if (m._id === sessionId) return false;
+					const md = m.metadata;
+					if (!md) return true;
+					if (md.messageId === sessionId) return false;
+					if (md.metadataId === sessionId) return false;
+					if (md.in_reply_to === sessionId) return false;
+					return true;
+				});
+				if (_filtered.length !== _cur.length) {
+					this.contactMessageIndex = new Map(
+						_filtered.filter(m => m && m._id != null).map(m => [m._id, m]));
+					this.setState({ contactMessages: _filtered });
+				}
+			}
+
 			this.setState(prev => {
-				const prevList = (prev.messages && prev.messages[uri]) || null;
 				const next = {};
 				let changed = false;
-
-				if (prevList) {
-					const filtered = prevList.filter(m => {
-						if (!m) return true;
-						if (m._id === sessionId) return false;
-						const md = m.metadata;
-						if (!md) return true;
-						if (md.messageId === sessionId) return false;
-						if (md.metadataId === sessionId) return false;
-						if (md.in_reply_to === sessionId) return false;
-						return true;
-					});
-					if (filtered.length !== prevList.length) {
-						next.messages = {...prev.messages, [uri]: filtered};
-						changed = true;
-					}
-				}
 
 				// Strip session-keyed metadata from allContacts entries so
 				// a re-entry to the chat doesn't re-inject a stale bubble.
@@ -32208,8 +33467,7 @@ class Sylk extends Component {
 	// metadata column at SQL load time), so this scan works even
 	// before async PGP decryption finishes.
 	_findLatestActionableInvitation(uri) {
-		const msgs = this.state && this.state.messages
-			? this.state.messages[uri] : null;
+		const msgs = this._messagesFor(uri);
 		if (!Array.isArray(msgs) || msgs.length === 0) return null;
 		for (let i = msgs.length - 1; i >= 0; i--) {
 			const m = msgs[i];
@@ -33629,23 +34887,6 @@ class Sylk extends Component {
 	}
 
 	// Compute great-circle distance between two coord pairs, in metres.
-	// Haversine — plenty accurate for "are we in the same coffee shop"
-	// scale distances and cheap enough to call on every tick.
-	_haversineMeters(a, b) {
-		if (!a || !b) return null;
-		if (typeof a.latitude !== 'number' || typeof a.longitude !== 'number') return null;
-		if (typeof b.latitude !== 'number' || typeof b.longitude !== 'number') return null;
-		const R = 6371000;
-		const toRad = (d) => (d * Math.PI) / 180;
-		const dLat = toRad(b.latitude - a.latitude);
-		const dLng = toRad(b.longitude - a.longitude);
-		const lat1 = toRad(a.latitude);
-		const lat2 = toRad(b.latitude);
-		const h = Math.sin(dLat / 2) ** 2
-			+ Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-		const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-		return R * c;
-	}
 
 	// Patch peerCoords (+ distance) into the latest 'location' metadata
 	// entry of each bubble that belongs to this session, so LocationBubble
@@ -33666,7 +34907,7 @@ class Sylk extends Component {
 		// arrived yet) we still stamp peerCoords on whatever we have.
 		if (!requesterCoords && !accepterCoords) return;
 
-		const distance = this._haversineMeters(requesterCoords, accepterCoords);
+		const distance = haversineMeters(requesterCoords, accepterCoords);
 		// Pick "our own" coords for this side. We're the requester
 		// when this session id is in myOutgoingMeetingRequestIds (set
 		// when our outgoing meeting_request tick echoed locally).
@@ -34314,7 +35555,7 @@ class Sylk extends Component {
 			return;
 		}
 
-		const existingList = this.state.messages[uri] || [];
+		const existingList = this._messagesFor(uri);
 		if (existingList.some(m => m._id === mId)) {
 			console.log('[location] _injectLocationBubble: bubble already in list, skip', mId);
 			return;
@@ -34365,13 +35606,10 @@ class Sylk extends Component {
 			return null;
 		})();
 
-		this.setState(prev => {
-			const prevList = prev.messages[uri] || [];
-			// Race guard — another setState may have appended it already.
-			if (prevList.some(m => m._id === mId)) {
-				console.log('[location] _injectLocationBubble: race — already in list', mId);
-				return null;
-			}
+		const _curList = this.state.contactMessages || [];
+		if (_curList.some(m => m._id === mId)) {
+			console.log('[location] _injectLocationBubble: race — already in list', mId);
+		} else {
 			if (meetRole) {
 				try {
 					utils.timestampedLog('[location] [meet] inject CREATE bubble',
@@ -34383,26 +35621,20 @@ class Sylk extends Component {
 			} else {
 				console.log('[location] _injectLocationBubble: INJECTING bubble',
 					'_id=', mId, 'direction=', direction, 'into uri=', uri,
-					'(prev count', prevList.length, '→', prevList.length + 1, ')');
+					'(prev count', _curList.length, '→', _curList.length + 1, ')');
 			}
-			// When the user just confirmed sharing FROM the chat
-			// (e.g. tapped a Maps-link → "Meet me there..." → Confirm),
-			// they may be scrolled up looking at the older bubble
-			// they tapped. Bumping `chatScrollTrigger` here forces
-			// the chat view to scroll to the latest bubble. Only
-			// fire on OUTGOING bubbles (incoming ticks shouldn't
-			// hijack a scroll that the user might be controlling).
-			const _shouldBumpScroll = direction === 'outgoing';
-			return {
-				messages: {
-					...prev.messages,
-					[uri]: [...prevList, bubble],
-				},
-				chatScrollTrigger: _shouldBumpScroll
-					? (prev.chatScrollTrigger || 0) + 1
-					: (prev.chatScrollTrigger || 0),
-			};
-		});
+			// When the user just confirmed sharing FROM the chat they may be
+			// scrolled up; bump chatScrollTrigger to scroll to the latest
+			// bubble. Only on OUTGOING (incoming ticks shouldn't hijack scroll).
+			if (direction === 'outgoing') {
+				this.setState(prev => ({
+					chatScrollTrigger: (prev.chatScrollTrigger || 0) + 1,
+				}));
+			}
+		}
+
+		// Add the injected location bubble to the new model (dedups internally).
+		this._appendContactMessage(uri, bubble);
 	}
 
     buildLastMessage(message, content=null) {
@@ -35050,12 +36282,14 @@ class Sylk extends Component {
                             this.setState({selectedContact: {...selectedContact}});
                         }
 
-                        let renderMessages = this.state.messages;
+                        let renderMessages = this._messagesMap();
                         if (Object.keys(renderMessages).indexOf(uri) > -1) {
                             if (!renderMessages[uri].some((obj) => obj._id === message.id)) {
                                 renderMessages[uri].push(gMsg);
                                 //console.log('Added render message', message.id, message.contentType);
                                 this.setState({renderMessages: renderMessages});
+                                // Mirror the outgoing bubble into the new model.
+                                this._appendContactMessage(uri, gMsg);
                             } else {
                                 return;
                             }
@@ -35100,7 +36334,13 @@ class Sylk extends Component {
 						}
 					} catch (_e) {}
 				}
-				if (!_isCallRec) {
+				// Only real conversation activity advances the contact's sort
+				// timestamp. Control / sync envelopes — most notably the
+				// conversation-read marker confirmRead sends to our own account on
+				// every chat open — must NOT bump recency (isMessageAllowed returns
+				// false for read / remove / imdn / zrtp); otherwise opening a chat
+				// pops the contact to "now".
+				if (!_isCallRec && this._contentBumpsRecency(message.contentType)) {
 					for (const contact of contacts) {
 						contact.timestamp = message.timestamp;
 					}
@@ -35124,13 +36364,15 @@ class Sylk extends Component {
                     }
                 }
 
-                let renderMessages = this.state.messages;
+                let renderMessages = this._messagesMap();
                 //console.log(renderMessages);
                 if (Object.keys(renderMessages).indexOf(uri) > -1) {
                     if (!renderMessages[uri].some((obj) => obj._id === message.id)) {
                         renderMessages[uri].push(gMsg);
                         //console.log('Added render message', message.id, message.contentType);
                         this.setState({renderMessages: renderMessages});
+                        // Mirror the outgoing bubble into the new model.
+                        this._appendContactMessage(uri, gMsg);
                     } else {
                         return;
                     }
@@ -35143,6 +36385,30 @@ class Sylk extends Component {
 
     async outgoingMessageFromJournal(message, info={}) {
         //console.log('outgoingMessageFromJournal', message.id, message.contentType , 'to', message.receiver, info);
+
+		// Location/meeting metadata is encrypted. The drop-gate below needs
+		// PLAINTEXT to tell an ORIGIN (keep — it's the map bubble) from an
+		// UPDATE tick (drop). Without this inline decrypt the gate sees an
+		// un-introspectable PGP blob and drops EVERYTHING — so on a from-scratch
+		// journal re-fetch our OUTGOING location shares vanished from the chat
+		// and the Locations browser. Mirrors the incoming path
+		// (incomingMessageFromJournal) so both directions behave the same.
+		if (!info?.decryptedBody
+				&& message.contentType === 'application/sylk-message-metadata'
+				&& typeof message.content === 'string'
+				&& message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1
+				&& message.content.indexOf('-----END PGP MESSAGE-----') > -1
+				&& this.state.keys && this.state.keys.private) {
+			try {
+				const decrypted = await OpenPGP.decrypt(message.content, this.state.keys.private);
+				info.decryptedBody = decrypted;
+				info.is_encrypted = true;
+			} catch (e) {
+				console.log('[journal] failed to decrypt outgoing metadata', message.id,
+					e && e.message ? e.message : e);
+				// Fall through — the gate will drop an un-introspectable PGP blob.
+			}
+		}
 
 		// Same ephemeral-metadata drop as the incoming side. Replaying our
 		// own location/meeting ticks from the journal would duplicate
@@ -35351,13 +36617,14 @@ class Sylk extends Component {
         //console.log('--- metadata', metadata);
 
         let unix_timestamp = Math.floor(ts / 1000);
-        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, related_action);
+        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, related_action, content);
         // `content` here is what gets stored — ciphertext when
         // encrypted is set. Leave has_link NULL on encrypted text
         // (decrypt-time path fills it); compute eagerly when the
         // body is clear.
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action, _cat, _hl];
+        this._normalizeInsertUris(params, 8, 9);
         this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
 
@@ -35574,8 +36841,24 @@ class Sylk extends Component {
         // [audio-debug] DISABLED. Re-enable to trace metadata mutations
         // (playing/position/consumed) from the playback listener.
 
-		metadata[attribute] = value;
 		let update = false;
+
+		if (attribute == 'dimensions') {
+			// Persist EXIF-corrected display dimensions discovered at render
+			// time (FastImage onLoad / Image.getSize, both orientation-aware)
+			// back onto older or received transfers whose stored width/height
+			// were the raw sensor size — wrong for rotated photos, which made
+			// the bubble letterbox the image on first paint. value = {width,
+			// height}. Writing these means the NEXT load reads the correct
+			// shape from metadata with no first-render flash.
+			if (value && value.width > 0 && value.height > 0) {
+				metadata.width = value.width;
+				metadata.height = value.height;
+				update = true;
+			}
+		} else {
+			metadata[attribute] = value;
+		}
 
 		if (attribute == 'playing') {
 		    if (value === false) {
@@ -35614,6 +36897,13 @@ class Sylk extends Component {
 		} else if (attribute == 'thumbnail') {
 		   const thumbnail_filename = value.split('/').pop();
 		   console.log('Update thumbnail', value, metadata.thumbnail);
+		   update = true;
+		} else if (attribute == 'duration') {
+		   // Persist the audio clip length once it's been probed in the
+		   // bubble (react-native-sound), so we never recompute it on later
+		   // renders or after a reload. Classification is by filename/
+		   // filetype (see _classifyMessageCategory), so a duration field
+		   // can't re-route an audio message to the video branch.
 		   update = true;
 		}
 
@@ -35760,7 +37050,16 @@ class Sylk extends Component {
                     if (value
                             && Array.isArray(value.l)
                             && Array.isArray(value.r)) {
-                        metadata.peaks = value;
+                        metadata.peaks = { l: value.l, r: value.r };
+                        // The recorded spectrogram rides along in the
+                        // same peaks side-channel (see ReadyBox
+                        // transferFile). Lift it out to its own key so
+                        // the bubble can animate the spectrum on
+                        // playback. Validated loosely (must carry b64
+                        // data) so a malformed payload is ignored.
+                        if (value.spectrum && value.spectrum.data) {
+                            metadata.spectrum = value.spectrum;
+                        }
                     } else {
                         return;
                     }
@@ -35769,13 +37068,17 @@ class Sylk extends Component {
                 }
 
                 const newMetadata = JSON.stringify(metadata);
-                console.log('new metadata', newMetadata);
+                //console.log('new metadata', newMetadata);
 
                 let params = [newMetadata, id];
                 query = "update messages set metadata = ? where msg_id = ?";
                 this.ExecuteQuery(query, params).then((results) => {
 					this.updateFileTransferBubble(metadata);
-                    console.log('updateMetadataFromRemote OK', metadata.action, metadata.value);
+					if (metadata.consumed) {
+						console.log('updateMetadataFromRemote OK', metadata.consumed);
+                    } else {
+						console.log('updateMetadataFromRemote OK', metadata.action, metadata.value);
+                    }
                 }).catch((error) => {
                     console.log('updateMetadataFromRemote SQL error:', error);
                 });
@@ -35940,7 +37243,7 @@ class Sylk extends Component {
         let disposition_notification = '';
 		const ts = typeof message.timestamp === 'number' ? message.timestamp: new Date(message.timestamp).getTime();
 		const unix_timestamp = Math.floor(ts / 1000);
-        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, null);
+        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, null, content);
         // Encrypted text → has_link NULL (decrypt path fills it).
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl];
@@ -35949,6 +37252,109 @@ class Sylk extends Component {
         if (this.pendingNewSQLMessages.length > 49) {
             await this.insertPendingMessages();
         }        
+    }
+
+    // Fill in the body of a message row that already exists but was stored
+    // empty — the native FCM push handler used to INSERT a content-less stub
+    // (the push payload no longer carries the body), which then blocked the
+    // real text arriving via WS/journal because the (account, msg_id) PRIMARY
+    // KEY insert is suppressed as a duplicate. The UPDATE is guarded by
+    // `content IS NULL OR content = ''` so a row that already has real content
+    // (a genuine duplicate delivery) is never overwritten.
+    //
+    // `values` is a pendingNewSQLMessages / saveIncomingMessage params array,
+    // whose column order puts: encrypted=[1], msg_id=[2], content=[5],
+    // category=[16], has_link=[17], account=[0].
+    async _backfillEmptyMessageContent(values) {
+        try {
+            const account = values[0];
+            const encrypted = values[1];
+            const msg_id = values[2];
+            const content = values[5];
+            const category = values[16];
+            const has_link = values[17];
+            // Never replace an empty stub with another empty body.
+            if (content === null || content === undefined || content === '') return;
+            const res = await this.ExecuteQuery(
+                "UPDATE messages SET content = ?, encrypted = ?, has_link = ?, category = COALESCE(category, ?) WHERE account = ? AND msg_id = ? AND (content IS NULL OR content = '')",
+                [content, encrypted, has_link, category, account, msg_id]
+            );
+            if (res && res.rowsAffected > 0) {
+                console.log('[message] backfilled empty stub row content for msg_id:', msg_id);
+            }
+        } catch (e) {
+            console.log('[message] _backfillEmptyMessageContent failed', e && e.message);
+        }
+    }
+
+    // Startup healing pass — DETECTION ONLY (for now).
+    //
+    // Find text/* message rows whose body is missing (content NULL or
+    // empty). These are typically left behind when:
+    //   - a native push stub row was INSERTed with no body, and the real
+    //     text that arrived later via WS/journal was suppressed by the
+    //     (account, msg_id) PRIMARY KEY (see _backfillEmptyMessageContent), or
+    //   - a decrypt/write failed mid-flight.
+    // Note: encrypted-but-not-yet-decrypted rows (encrypted=1) and
+    // failed-decrypt rows (encrypted=3) still hold ciphertext in `content`,
+    // so they are NON-empty and are NOT flagged here — this only catches
+    // rows that genuinely have no stored body.
+    //
+    // We log the ids to the console and return the list so the next step
+    // (re-fetch from server) can act on it. Deleted rows are skipped.
+    async healEmptyTextMessages(accountId = this.state.accountId) {
+        if (!accountId) {
+            console.log('[heal] skipped — no accountId yet');
+            return [];
+        }
+        try {
+            const res = await this.ExecuteQuery(
+                "SELECT msg_id, content_type, direction, from_uri, to_uri, timestamp, unix_timestamp, encrypted, deleted "
+                + "FROM messages "
+                + "WHERE account = ? "
+                + "AND content_type LIKE 'text/%' "
+                + "AND (content IS NULL OR content = '' OR length(content) = 0) "
+                + "AND (deleted IS NULL OR deleted = 0) "
+                + "ORDER BY unix_timestamp ASC",
+                [accountId]
+            );
+            const rows = (res && res.rows) ? res.rows : null;
+            const broken = [];
+            for (let i = 0; rows && i < rows.length; i++) {
+                const r = rows.item(i);
+                broken.push({
+                    id: r.msg_id,
+                    contentType: r.content_type,
+                    direction: r.direction,
+                    from: r.from_uri,
+                    to: r.to_uri,
+                    timestamp: r.timestamp,
+                    encrypted: r.encrypted,
+                });
+            }
+            if (broken.length === 0) {
+                console.log('[heal] no empty text/* messages found for', accountId);
+                return [];
+            }
+            console.log('[heal] found ' + broken.length + ' empty text/* message(s) for ' + accountId + ':');
+            // Plain id list first — easy to copy from the console.
+            console.log('[heal] ids:', broken.map(b => b.id).join(', '));
+            // Per-row breakdown to inform the recovery strategy (direction
+            // and counterparty tell us who to ask the server for).
+            for (const b of broken) {
+                console.log('[heal]   id=' + b.id
+                    + ' ct=' + b.contentType
+                    + ' dir=' + b.direction
+                    + ' enc=' + b.encrypted
+                    + ' from=' + b.from
+                    + ' to=' + b.to
+                    + ' ts=' + b.timestamp);
+            }
+            return broken;
+        } catch (e) {
+            console.log('[heal] healEmptyTextMessages failed', e && e.message);
+            return [];
+        }
     }
 
     async insertPendingMessages() {
@@ -35988,6 +37394,7 @@ class Sylk extends Component {
 
         if (pendingNewSQLMessages.length > 0) {
             pendingNewSQLMessages.forEach((values) => {
+                this._normalizeInsertUris(values, 8, 9);
                 Array.prototype.push.apply(all_values, values);
                 query = query + "(";
                 n = 0;
@@ -36059,6 +37466,17 @@ class Sylk extends Component {
 							console.error('Bad message data at index', index, {
 								error: err.message, values
 							});
+						} else {
+							// Dup on (account, msg_id). Usually a true duplicate
+							// (we already have the row) — but it can also be a
+							// CONTENT-LESS STUB written by the native FCM push
+							// handler before the body arrived (the server stopped
+							// putting the body in the push payload once it grew
+							// past the FCM limit). Backfill the real content ONLY
+							// when the existing row is still empty, so a genuine
+							// duplicate is left untouched. This both repairs old
+							// stub rows and covers a push-then-sync race.
+							await this._backfillEmptyMessageContent(values);
 						}
 					}
 				}
@@ -36077,7 +37495,7 @@ class Sylk extends Component {
 
 		uri = utils.normalizeAnonymousUri(uri);
 
-		console.log('saveSystemMessage', uri, content);
+		//console.log('saveSystemMessage', uri, content);
 
         // System messages are surfaced as text bubbles; classify as 'text'
         // so date pills count them like any other text row.
@@ -36096,6 +37514,7 @@ class Sylk extends Component {
         const _callId = callId ? String(callId) : null;
         let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', _meta, direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl, _callId];
 
+        this._normalizeInsertUris(params, 7, 8);
         await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, pending, system, direction, category, has_link, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             this.renderSystemMessage(uri, content, direction, timestamp, system, metadata, _callId, id);
 
@@ -36128,7 +37547,7 @@ class Sylk extends Component {
 			return;
 		}
 
-		let renderMessages = this.state.messages;
+		let renderMessages = this._messagesMap();
 		let existingMessages = renderMessages[ownerUri];
 
 		// [audio-debug] Lookup-diagnostic log — DISABLED. Re-enable to
@@ -36139,6 +37558,7 @@ class Sylk extends Component {
 			return;
 		}
 
+		let _updatedFtMsg = null;
 		let newMessages = existingMessages.map((msg) => {
 			if (msg._id !== id) {
 				// unchanged message‚ keep original reference
@@ -36260,6 +37680,7 @@ class Sylk extends Component {
 				}
 			}
 	
+			_updatedFtMsg = newMsg;
 			return newMsg;
 		});
 	
@@ -36271,7 +37692,9 @@ class Sylk extends Component {
 			[ownerUri]: newMessages,
 		};
 
-		this.setState({ messages: renderMessages });
+		// Update the new contactMessages model (selected contact only;
+		// no-op for transfers owned by a non-selected contact).
+		this._patchContactMessage(id, _updatedFtMsg);
 	}
 
     async renderSystemMessage(uri, content, direction, timestamp, system=true, metadata=null, callId=null, msgId=null) {
@@ -36280,7 +37703,7 @@ class Sylk extends Component {
             uri = uri.split('@')[0];
         }
 
-        let renderMessages = this.state.messages;
+        let renderMessages = this._messagesMap();
         if (Object.keys(renderMessages).indexOf(uri) > - 1) {
             let msg;
 
@@ -36314,7 +37737,8 @@ class Sylk extends Component {
             // the wrong key silently dropped every live system-note render
             // (the SQL INSERT still persisted, so it only surfaced after a
             // reload). Push under the real key so the chat updates live.
-            this.setState({messages: renderMessages});
+            // Add the system bubble to the new model (state.messages retired).
+            this._appendContactMessage(uri, msg);
         }
     }
 
@@ -36450,6 +37874,17 @@ class Sylk extends Component {
             this.setState({showCallMeMaybeModal: false});
         }
 
+		// A new incoming message must bring a deleted contact back: if this
+		// URI was trashed (Deleted folder) or tombstoned (Graveyard) and this
+		// message is NEWER than the deletion, revive it before we look it up /
+		// create a fresh stub. (Covers WS-live and push-tap delivery; the
+		// journal path covers push-while-offline.)
+		try {
+			const _msgMs = (typeof message.timestamp === 'number')
+				? message.timestamp : new Date(message.timestamp).getTime();
+			await this._reviveDeletedContactForActivity(uri, _msgMs, 'message');
+		} catch (e) { /* never block message handling on revive */ }
+
 		let contacts = this.lookupContacts(uri);
 
 		for (const contact of contacts) {
@@ -36457,7 +37892,7 @@ class Sylk extends Component {
 				return;
 			}
 		}
-		
+
 		if (contacts.length === 0) {
 		    contact = this.newContact(uri);
 		    contacts.push(contact);
@@ -36636,12 +38071,13 @@ class Sylk extends Component {
         }
 
 		let disposition_notification = message.dispositionNotification ? message.dispositionNotification.join(",") : '';
-        const _cat = this._classifyMessageCategory(message.contentType, metadata, related_action);
+        const _cat = this._classifyMessageCategory(message.contentType, metadata, related_action, content);
         // Incoming text typically arrives encrypted; eagerly
         // classify only when content is clear (encrypted falsy).
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
         let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification, expire, _cat, _hl];
 
+        this._normalizeInsertUris(params, 8, 9);
         await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 			//console.log('saveIncomingMessage SQL OK');
 
@@ -36703,9 +38139,11 @@ class Sylk extends Component {
 					// type (no allowlist), JS skips anything outside
 					// unreadCounterTypes. Logging the rejection here so the
 					// drift-source is visible at the WS-delivery moment.
+					/*
 					utils.timestampedLog('[message] Skip unread bump (saveIncomingMessage) from', uri,
 						'contentType=' + message.contentType,
 						'(not in unreadCounterTypes allowlist)');
+					*/
 				}
 
 				contact.direction = 'incoming';
@@ -36814,16 +38252,37 @@ class Sylk extends Component {
 				for (const contact of contacts) {
 					this.saveSylkContact(uri, contact, 'saveIncomingMessage');
 
-					if (this.state.selectedContact && this.state.selectedContact.id === contact.id) {
+					// Fire the "displayed" IMDN if this message belongs to the
+					// chat currently on screen. Match by URI as well as by
+					// contact.id: on a cold-start-from-push the selectedContact
+					// is the launch STUB minted by newContact(), whose `id` is a
+					// random uuid.v4() that never equals the real contact's
+					// persisted id. The id-only check therefore failed on cold
+					// start, so confirmRead (and thus the "displayed" receipt)
+					// never ran even though "delivered" — sent unconditionally
+					// above — went out. Matching the sender uri against the
+					// selected contact's uris fixes that path while still
+					// covering the warm-start id match.
+					if (this.state.selectedContact
+							&& (this.state.selectedContact.id === contact.id
+								|| this.getAllContactUris(this.state.selectedContact).indexOf(uri) !== -1)) {
 						this.confirmRead(uri, 'incoming_message');
 					}
 				}
 				this.requestDndPermission();
             }
 
-        }).catch((error) => {
-            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+        }).catch(async (error) => {
+            const isDup = error.message.indexOf('UNIQUE constraint failed') !== -1
+                || error.message.indexOf('SQLITE_CONSTRAINT_PRIMARYKEY') !== -1;
+            if (!isDup) {
                 console.log('saveIncomingMessage SQL error:', error);
+            } else {
+                // The row already exists — typically a native FCM push stub
+                // written with an empty body (the push payload no longer
+                // carries the message text). Fill in the real content now
+                // (only if the existing row is still empty).
+                await this._backfillEmptyMessageContent(params);
             }
         });
     }
@@ -36936,7 +38395,7 @@ class Sylk extends Component {
 
         //console.log('Sync metadata', message.id, message.contentType, metadata, typeof(message.content));
 
-        const _cat = this._classifyMessageCategory(message.contentType, metadata, null);
+        const _cat = this._classifyMessageCategory(message.contentType, metadata, null, content);
         // Sync bulk inserts arrive with ciphertext when encrypted;
         // skip eager has_link, decrypt path handles it.
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
@@ -37124,6 +38583,54 @@ class Sylk extends Component {
 	  return Array.from(variants);
 	};
 
+	// Canonical chat-line key for a peer URI. Defensively strips a stray
+	// wrapping quote layer, then reduces genuine international phone
+	// numbers (leading + or 00) to bare E.164 (00 -> +, no @domain).
+	// A call recording arrives keyed off the DIALED target, which for
+	// PSTN calls is the wire form (pstnRules.replacePlus "+"→"00", e.g.
+	// "00318008185@sylk.link") or a bare/quoted variant — none of which
+	// match the contact's canonical "+…" URI or the call-ended system
+	// message. Collapsing to bare E.164 lands the bubble on the right
+	// conversation. Non-phone URIs (SIP users, conference rooms, emails)
+	// are returned unchanged apart from the de-quote.
+	_canonicalPeerUri = (uri) => {
+	  if (!uri) return uri;
+	  let v = String(uri).trim();
+	  if (v.length >= 2 && (v[0] === "'" || v[0] === '"') && v[v.length - 1] === v[0]) {
+	    v = v.slice(1, -1).trim();
+	  }
+	  const at = v.indexOf('@');
+	  const local = at > -1 ? v.slice(0, at) : v;
+	  const core = local.replace(/[\s\-()]/g, '');
+	  if (/^\+\d{6,}$/.test(core)) return core;            // already bare E.164
+	  if (/^00\d{6,}$/.test(core)) return '+' + core.slice(2); // 00 -> +, bare
+	  return v;
+	};
+
+	// Normalize the participant URIs (from_uri / to_uri) of a
+	// message-INSERT params array to their canonical bare-E.164 chat-line
+	// key, IN PLACE, right before the row is written — and log any change
+	// for diagnostics. Non-phone URIs (the account, SIP users, conference
+	// rooms, emails) are left untouched by _canonicalPeerUri. Centralizing
+	// this here means every "INSERT INTO messages" stores a consistent
+	// from_uri / to_uri regardless of which save path produced it, so a
+	// PSTN peer always lands on the same conversation as its tel contact.
+	_normalizeInsertUris = (params, fromIdx, toIdx) => {
+	  if (!Array.isArray(params)) return params;
+	  const norm = (i, label) => {
+	    if (i == null || i < 0 || i >= params.length) return;
+	    const before = params[i];
+	    const after = this._canonicalPeerUri(before);
+	    if (after !== before) {
+	      utils.timestampedLog('[msg-uri] ' + label + ' ' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));
+	    }
+	    params[i] = after;
+	  };
+	  norm(fromIdx, 'from_uri');
+	  norm(toIdx, 'to_uri');
+	  return params;
+	};
+
 	lookupContact = (uriString, create = false, save = false) => {
 	  // returns only one contact
 	  //
@@ -37145,8 +38652,7 @@ class Sylk extends Component {
 	    for (const alt of this._phoneNumberVariants(uriString)) {
 	      match = this.contactIndex?.[alt] || null;
 	      if (match) {
-	        console.log('lookupContact: matched', uriString, 'via phone-number variant', alt,
-	          '→ contact id=', match.id);
+	        //console.log('lookupContact: matched', uriString, 'via phone-number variant', alt, '→ contact id=', match.id);
 	        break;
 	      }
 	    }
@@ -37871,15 +39377,6 @@ class Sylk extends Component {
 	    } catch (e) { /* missing dir is fine */ }
 	};
 
-	// One-time cleanup of legacy dump locations (shared external logs tree).
-	// Safe/idempotent.
-	_abPurgeLegacyDump = async () => {
-	    const bases = [RNFS.ExternalDirectoryPath, RNFS.DocumentDirectoryPath].filter(Boolean);
-	    for (const base of bases) {
-	        try { await RNFS.unlink(`${base}/logs/addressbook`); } catch (e) { /* ignore */ }
-	    }
-	};
-
 	_abUriUsername = (uri) => {
 	    const u = (uri || '').trim().toLowerCase();
 	    const at = u.indexOf('@');
@@ -37947,6 +39444,18 @@ class Sylk extends Component {
 	            ? this._abMigratedMark.v : undefined;
 	        const mark = ourMark || existingMark;
 	        if (mark != null && String(mark).length) attrs.MigratedVersion = String(mark);
+	        // Self-contact PGP key escrow. The account keypair is carried on the
+	        // user's own XCAP contact as a JSON `keys` attribute so it replicates to
+	        // their other devices: { private_key (symmetrically encrypted with the
+	        // account password), public_key, device, timestamp }. Preserve any value
+	        // the server already carries and stamp ours once computed (see
+	        // _abEnsureSelfKeys), so an unrelated self-contact write (privacy /
+	        // MigratedVersion) never drops the escrowed key.
+	        const existingKeys = selfS && selfS.attributes ? selfS.attributes.keys : undefined;
+	        const ourKeys = (this._abSelfKeysAttr && this._abSelfKeysAttr.acc === this.state.accountId)
+	            ? this._abSelfKeysAttr.v : undefined;
+	        const keysVal = ourKeys || existingKeys;
+	        if (keysVal != null && String(keysVal).length) attrs.keys = String(keysVal);
 	    } else {
 	        if (tags.includes('bypassdnd')) attrs.bypassdnd = true;
 	        if (tags.includes('muted')) attrs.muted = true;
@@ -38207,6 +39716,16 @@ class Sylk extends Component {
 
 	        for (const c of matches) {
 	            if (c.deleted) continue; // already a tombstone
+	            // SELF IS NEVER TRASHED. A server delete that maps back to the
+	            // user's OWN account (e.g. fold-dup removing a duplicate self
+	            // entry, whose id the self row transiently held) must not mark the
+	            // account deleted — that buries the user's own account in the
+	            // Deleted folder. Same self-exemption softDeleteContacts already has.
+	            if (c.uri && c.uri.toLowerCase() === (account || '').toLowerCase()) {
+	                utils.timestampedLog('[ab] [delete] [contact] ignoring server delete for OWN account '
+	                    + this._abNormalizeUri(c.uri) + ' — self is never trashed');
+	                continue;
+	            }
 
 	            const ts = c.deletedTimestamp || new Date().toISOString();
 	            try {
@@ -38640,8 +40159,18 @@ class Sylk extends Component {
 	            utils.timestampedLog('[ab] [get] ANOMALY: empty server snapshot (0 contacts, 0 groups) while '
 	                + _localCount + ' local contacts exist (' + _localLinked + ' server-linked)'
 	                + ' — treating as FAILED FETCH, skipping reconciliation');
+	            // Latch the anomaly so EVERY downstream XCAP writer (self-contact
+	            // privacy, migration, key escrow) is suppressed until a good
+	            // snapshot arrives. Writing into the bogus empty document is what
+	            // defeats this very gate: the key-escrow addContact seeds a
+	            // near-empty addressbook, the NEXT fetch is then non-empty (just
+	            // our own fresh self contacts), the gate no longer trips, and the
+	            // orphan pass mass-buries every local contact (2026-07-03 incident).
+	            this._abSnapshotAnomaly = true;
 	            return;
 	        }
+	        // Good (non-anomalous) snapshot — writes are safe again.
+	        this._abSnapshotAnomaly = false;
 
 	        await this.ExecuteQuery('DELETE FROM contacts_groups WHERE account = ?', [account]);
 	        for (const g of groups) {
@@ -38686,7 +40215,10 @@ class Sylk extends Component {
 		            const local = _byRemote.get(s && s.id) || _byUri.get(u.toLowerCase());
 		            _rows.push({
 		                sname: (s && s.name) || '',
-		                lname: (local && local.name) || '',
+		                // Distinguish "no local row" (NO LOCAL) from "local row
+		                // exists but unnamed" ((no name)) — the count gap between two
+		                // devices is exactly the NO LOCAL rows.
+		                lname: local ? (local.name || '(no name)') : '*** NO LOCAL ***',
 		                uri: u,
 		                sid: (s && s.id) || '',
 		            });
@@ -38694,19 +40226,22 @@ class Sylk extends Component {
 		        if (_rows.length) {
 		            _rows.sort((a, b) => (a.sname || a.lname || a.uri).toLowerCase()
 		                .localeCompare((b.sname || b.lname || b.uri).toLowerCase()));
-		            const wS = Math.min(_rows.reduce((m, r) => Math.max(m, (r.sname || '(no name)').length), 9), 28);
-		            const wL = Math.min(_rows.reduce((m, r) => Math.max(m, (r.lname || '(no name)').length), 8), 28);
+		            const wS = Math.min(_rows.reduce((m, r) => Math.max(m, (r.sname || '(no name)').length), 9), 20);
+		            const wL = Math.min(_rows.reduce((m, r) => Math.max(m, (r.lname || '(no name)').length), 8), 20);
 		            const wU = _rows.reduce((m, r) => Math.max(m, r.uri.length), 3);
 		            const pad = (v, w) => { v = v || ''; return v.length > w ? v.slice(0, w - 1) + '\u2026' : v + ' '.repeat(w - v.length); };
-		            let out = '[ab] CONTACTS (' + _rows.length + ') ' + this.state.accountId + '\n';
-		            out += '  # ' + pad('SERVER DN', wS) + '  ' + pad('LOCAL DN', wL) + '  ' + pad('URI', wU) + '  SERVER_ID\n';
+		            // Log per row (not one big string): Android logcat truncates a single
+		            // message at ~4KB, which cut the full table off in release.log.
+		            /*
+		            console.log('[ab] [contact] [dump] CONTACTS (' + _rows.length + ') ' + this.state.accountId);
+		            console.log('[ab] [contact] [dump]   # ' + pad('SERVER DN', wS) + '  ' + pad('LOCAL DN', wL) + '  ' + pad('URI', wU) + '  SERVER_ID');
 		            _rows.forEach((r, i) => {
-		                out += ('' + (i + 1)).padStart(3) + ' '
-		                    + pad(r.sname || '(no name)', wS) + '  '
-		                    + pad(r.lname || '(no name)', wL) + '  '
-		                    + pad(r.uri, wU) + '  ' + r.sid + '\n';
+		                console.log('[ab] [contact] [dump] ' + ('' + (i + 1)).padStart(3) + ' '
+		                    + pad(r.sname || '(no name)', wS) + '  ' + pad(r.lname || '(no name)', wL) + '  '
+		                    + pad(r.uri, wU) + '  ' + r.sid);
 		            });
-		            console.log(out);
+		            */
+		            
 		        }
 		        // DIFFERENCE DUMP: the local SQLite rows that are NOT live server
 		        // contacts — i.e. exactly what accounts for the gap between the local
@@ -38740,16 +40275,20 @@ class Sylk extends Component {
 		            const wN = Math.min(_diff.reduce((m, r) => Math.max(m, (r.name || '(no name)').length), 4), 24);
 		            const wU = _diff.reduce((m, r) => Math.max(m, r.uri.length), 3);
 		            const padd = (v, w) => { v = v || ''; return v.length > w ? v.slice(0, w - 1) + '\u2026' : v + ' '.repeat(w - v.length); };
-		            let dout = '[ab] CONTACTS DIFF (' + _diff.length + ' = local ' + _locals.length
-		                + ' \u2212 server ' + sContacts.length + ') ' + this.state.accountId + '\n';
-		            dout += '  summary: ' + _summary + '\n';
-		            dout += '  # ' + padd('CATEGORY', wC) + '  ' + padd('NAME', wN) + '  ' + padd('URI', wU) + '  REMOTE_ID\n';
+		            // Per-row logging (logcat ~4KB cap truncates one big string).
+		            console.log('[ab] [contact] [dump] CONTACTS DIFF (' + _diff.length + ' = local ' + _locals.length
+		                + ' \u2212 server ' + sContacts.length + ') ' + this.state.accountId);
+		            console.log('[ab] [contact] [dump]   summary: ' + _summary);
+		            console.log('[ab] [contact] [dump]   # ' + padd('CATEGORY', wC) + '  ' + padd('NAME', wN) + '  ' + padd('URI', wU) + '  REMOTE_ID');
 		            _diff.forEach((r, i) => {
-		                dout += ('' + (i + 1)).padStart(3) + ' '
+		                console.log('[ab] [contact] [dump] ' + ('' + (i + 1)).padStart(3) + ' '
 		                    + padd(r.cat, wC) + '  ' + padd(r.name || '(no name)', wN) + '  '
-		                    + padd(r.uri, wU) + '  ' + (r.rid || '\u2205') + '\n';
+		                    + padd(r.uri, wU) + '  ' + (r.rid || '\u2205'));
 		            });
-		            console.log(dout);
+		        } else {
+		            const _abG = this.state.connection && this.state.connection.addressbook;
+		            const _gcount = (_abG && Array.isArray(_abG.groups)) ? _abG.groups.length : 0;
+		            console.log('[ab] [contact] Addressbook is in sync (' + sContacts.length + ' contacts and ' + _gcount + ' groups)');
 		        }
 		    }
 		} catch (e) { console.log('[ab] contacts-table error', e && e.message); }
@@ -38893,7 +40432,34 @@ class Sylk extends Component {
 	                    this._abApplyServerAttrs(c, s);
 	                    if (_protOrg) c.organization = _keepOrg;
 	                    if (_protEmail) c.email = _keepEmail;
-	                    if (_attrSig(c) !== before) {
+	                    // URI-SET ADOPTION (server wins, like name/attrs). The live adoption
+	                    // previously synced only name + attributes, so a uri-list edit on another
+	                    // device never reached this one even though the name did. Adopt the
+	                    // server's address set onto the matched local row: keep the primary
+	                    // c.uri, store the rest in c.uris.
+	                    let _urisChanged = false;
+	                    {
+	                        const _nz = (x) => this._abNormalizeUri(x);
+	                        const _localSet = new Set([c.uri, ...(Array.isArray(c.uris) ? c.uris : [])]
+	                            .filter(Boolean).map(_nz));
+	                        // ADDITIVE adoption (per the addressbook design): add only the server
+	                        // addresses the local row is MISSING, compared on the NORMALIZED form so
+	                        // phone bare-vs-@domain / case never false-positive. Never strip local-only
+	                        // addresses — they accumulate from message threads and the server may not
+	                        // carry them; stripping them re-adopted 'uris →[]' for every contact on
+	                        // every sync (the churn).
+	                        const _newUris = [...new Set(sUris.filter(Boolean))].filter(u => !_localSet.has(_nz(u)));
+	                        if (_newUris.length) {
+	                            const _seen = new Set();
+	                            c.uris = [...(Array.isArray(c.uris) ? c.uris : []), ..._newUris].filter(u => {
+	                                const k = _nz(u);
+	                                if (!u || k === _nz(c.uri) || _seen.has(k)) return false;
+	                                _seen.add(k); return true;
+	                            });
+	                            _urisChanged = true;
+	                        }
+	                    }
+	                    if (_attrSig(c) !== before || _urisChanged) {
 	                        const _aa = _snap(c);
 	                        const _diff = [];
 	                        if (_ba.name !== _aa.name) _diff.push('name "' + _ba.name + '"→"' + _aa.name + '"');
@@ -38904,6 +40470,7 @@ class Sylk extends Component {
 	                        if (_added.length) _diff.push('+tags ' + JSON.stringify(_added));
 	                        if (_removed.length) _diff.push('-tags ' + JSON.stringify(_removed));
 	                        if (_ba.caregiver !== _aa.caregiver) _diff.push('caregiver ' + _ba.caregiver + '→' + _aa.caregiver);
+	                        if (_urisChanged) _diff.push('uris →[' + (Array.isArray(c.uris) ? c.uris.join(', ') : '') + ']');
 	                        const _uriLbl = this._abNormalizeUri(c.uri);
 	                        if (!_diff.length) {
 	                            utils.timestampedLog('[ab] [get] attr-adopt ← server for ' + _uriLbl + ' | localProperties normalized');
@@ -38930,6 +40497,64 @@ class Sylk extends Component {
 	            }
 	        }
 	        const sGroups = groups.filter(g => !this._abIsPurgeGroup(g.name));
+	        // Fold DUPLICATE server groups that share a name (case-insensitive) into
+	        // one canonical group (keep the SMALLEST id — same deterministic rule as
+	        // the contact fold). The in-memory collapse runs EVERY pass (cheap, no
+	        // writes) so adoption sees one group per name. The SERVER writes (merge
+	        // into keeper + delete losers) run at most ONCE per account per session —
+	        // otherwise each write re-triggers dataUpdated → reconcile → fold → write
+	        // … an infinite loop.
+	        try {
+	            const _gByName = {};
+	            for (const g of sGroups) {
+	                if (!g || g.id == null) continue;
+	                const k = this._abCapitalizeGroup(g.name).toLowerCase();
+	                (_gByName[k] = _gByName[k] || []).push(g);
+	            }
+	            const _folded = [];
+	            const _foldOps = []; // { keeper, merged, losers } for the one-time server write
+	            for (const arr of Object.values(_gByName)) {
+	                if (arr.length === 1) { _folded.push(arr[0]); continue; }
+	                const sorted = arr.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+	                const keeper = sorted[0];
+	                const mergedById = new Map();
+	                for (const g of arr) {
+	                    for (const m of (Array.isArray(g.contacts) ? g.contacts : [])) {
+	                        if (m && m.id != null && !mergedById.has(m.id)) mergedById.set(m.id, m);
+	                    }
+	                }
+	                const merged = [...mergedById.values()];
+	                _foldOps.push({ keeper, merged, losers: sorted.slice(1) });
+	                keeper.contacts = merged;   // in-memory collapse for this pass
+	                _folded.push(keeper);
+	            }
+	            // Replace the in-memory group set with the folded one so the rest of
+	            // this reconcile (adoption, server-only/local-only) sees one per name.
+	            sGroups.length = 0;
+	            for (const g of _folded) sGroups.push(g);
+
+	            // Server-side fold: once per account per session.
+	            if (!this._abGroupsFolded) this._abGroupsFolded = new Set();
+	            if (_foldOps.length && !this._abGroupsFolded.has(account)) {
+	                this._abGroupsFolded.add(account);   // claim synchronously — no re-entry
+	                for (const op of _foldOps) {
+	                    utils.timestampedLog('[ab] [get] fold groups "' + this._abCapitalizeGroup(op.keeper.name)
+	                        + '" keep id=' + op.keeper.id + ' merge ' + op.merged.length + ' member(s), delete dup ids=['
+	                        + op.losers.map(g => g.id).join(', ') + ']');
+	                    await this._abExec('updateGroup ' + op.keeper.name + ' (fold-dup keep ' + op.keeper.id + ')',
+	                        cb => ab.updateGroup({ id: op.keeper.id, name: this._abCapitalizeGroup(op.keeper.name),
+	                            attributes: op.keeper.attributes || {}, contacts: op.merged }, cb));
+	                    for (const g of op.losers) {
+	                        // Only delete when the group is still present so the SDK sends the
+	                        // full Group (with name); a bare {id} delete is rejected by the
+	                        // current server ("Mandatory property 'name' missing").
+	                        if (!ab.getGroup(g.id)) continue;
+	                        await this._abExec('deleteGroup ' + g.name + ' (fold-dup loser, keep=' + op.keeper.id + ')',
+	                            cb => ab.deleteGroup(g.id, cb));
+	                    }
+	                }
+	            }
+	        } catch (e) { console.log('[ab] group-fold error', e && e.message); }
 	        const acc = account.toLowerCase();
 	        const localSyncable = (this.state.allContacts || []).filter(c =>
 	            c.uri && !this._abIsIpDomain(c.uri));
@@ -38980,7 +40605,13 @@ class Sylk extends Component {
 	        const serverOnlyList = sContacts.filter(s =>
 	            !linkedIds.has(s.id)
 	            && !this._abServerUris(s).some(u => this._abIsLocalDomain(u)) // Bonjour/LAN contact \u2014 not ours, ignore
-	            && !this._abServerUris(s).some(u => this._abIsConferenceUri(u)) // conference room \u2014 ephemeral, ignore
+            // Conference rooms ARE imported from the server so every device holds
+            // the same set the server does (local == server), regardless of which
+            // device placed the call. Only ANOMALY rooms (username starts with 0)
+            // stay excluded as junk. Previously ALL conference rooms were skipped
+            // here as ephemeral, leaving each device with only its own CDR-derived
+            // subset - the source of the 5-vs-18 mismatch.
+            && !this._abServerUris(s).some(u => this._abIsConferenceUri(u) && this._abIsConferenceAnomaly(u))
 	            && !this._abServerUris(s).some(u => this.lookupContacts(u).length > 0));
 	        const serverOnly = serverOnlyList.length;
 
@@ -39046,7 +40677,35 @@ class Sylk extends Component {
 	            if (c.deleted) continue;                         // already a tombstone
 	            if (serverIds.has(c.remote_id)) continue;        // linked & alive → keep
 	            if (_stillOnServer(c)) continue;                 // URI still on server → keep (relink handles)
-	            if (this._abIsConferenceUri(c.uri)) continue;    // conference rooms are local-only
+	            if (this._abIsConferenceUri(c.uri)) {
+	                // Stale conference room: carries a server id but is GONE from
+	                // the server addressbook (its URI isn't there either) — it was
+	                // pushed once and later removed server-side. These used to be
+	                // HARD-DELETED (ephemeral / CDR-re-derivable, tombstone judged
+	                // noise) — which made them the ONLY contacts unrecoverable when
+	                // a bogus near-empty server snapshot slipped past the safety
+	                // gate (2026-07-03 incident: 5 rooms hard-deleted while every
+	                // other orphan was un-tombstoned once the real snapshot
+	                // returned). Tombstone them like any other orphan instead —
+	                // the SERVER-WINS un-tombstone pass then restores them too,
+	                // and a genuinely deleted room just sits in the Graveyard.
+	                // A room still live on the server (its remote_id is in
+	                // serverIds) or a never-pushed local-only room (no remote_id,
+	                // skipped above) is NOT affected.
+	                utils.timestampedLog('[ab] [get] orphan conference \u2192 tombstone: '
+	                    + this._abNormalizeUri(c.uri) + ' remote_id=' + c.remote_id + ' gone from server');
+	                try {
+	                    await this.ExecuteQuery(
+	                        "UPDATE contacts SET remote_id = '', deleted = 1, deleted_timestamp = COALESCE(deleted_timestamp, ?) WHERE account = ? AND contact_id = ?",
+	                        [c.deletedTimestamp || new Date().toISOString(), account, c.id]);
+	                } catch (e) { utils.timestampedLog('[ab] [get] conference tombstone failed', e && e.message); }
+	                this.setState(prev => ({
+	                    allContacts: (prev.allContacts || []).filter(x => !(x && x.id === c.id)),
+	                }));
+	                if (this.state.selectedContact && this.state.selectedContact.id === c.id) this.setState({selectedContact: null});
+	                _orphanBuried++;
+	                continue;
+	            }
 	            if (c.uri && c.uri.toLowerCase() === _accLc) continue; // never tombstone self
 	            if (/@local$/i.test(c.uri || '')) continue;      // Bonjour/LAN — not ours
 	            const _ts = c.deletedTimestamp || new Date().toISOString();
@@ -39141,32 +40800,121 @@ class Sylk extends Component {
 	        // ANOTHER device shows up here CONTINUOUSLY, not only at migration
 	        // time. @local / conference rooms are already excluded from
 	        // serverOnlyList. Idempotent: once created it's no longer server-only.
+	        // Synchronous import-claim guard. lookupContacts reads the in-memory
+	        // index, which lags the async saveSylkContact, so two back-to-back
+	        // reconcile passes (dataLoaded then dataUpdated) could both pass the
+	        // guard and insert the same URI twice (then dedup deleted the extra).
+	        // Claim each URI synchronously here so the second pass skips it.
+	        if (!this._abImportClaim || this._abImportClaim.acc !== this.state.accountId) {
+	            this._abImportClaim = { acc: this.state.accountId, set: new Set() };
+	        }
+	        const _importClaim = this._abImportClaim.set;
+	        // Track whether this reconcile changed any local rows (import or group
+	        // adoption). If so, reload at the end so derived state (favoriteUris and
+	        // the category/group bar) is recomputed and the groups actually show.
+	        let _reconcileChanged = false;
+	        // Collect prepared contacts and persist them with ONE bulk insert
+	        // after the loop (see below) instead of one INSERT transaction per
+	        // contact. Falls back to per-contact saveSylkContact if bulk fails.
+	        const _preparedImports = [];
 	        for (const s of serverOnlyList) {
 	            const newUri = this._abNormServerUri(this._abChosenDefaultUri(s)) || this._abServerUris(s)[0];
 	            if (!newUri) continue;
-	            if (this.lookupContacts(newUri).length > 0) continue; // already arrived
+	            const _claimKey = newUri.toLowerCase();
+	            if (this.lookupContacts(newUri).length > 0 || _importClaim.has(_claimKey)) continue; // already arrived / claimed
+	            _importClaim.add(_claimKey);
 	            const contact = this.newContact(newUri);
 	            if (!contact) continue;
 	            contact.remote_id = s.id;
 	            contact.uris = this._abServerUris(s);
 	            contact.name = this._abServerDisplayName(s, newUri);
 	            this._abApplyServerAttrs(contact, s);
+	            // Apply GROUP membership AT IMPORT TIME (pass 1). The separate
+	            // adoption loop below uses lookupContacts, which doesn't yet see
+	            // this just-saved row, so on a fresh import real groups (Favorites,
+	            // Business, …) only landed on a later pass. Derive them here from
+	            // the server groups this contact belongs to (skip conference + the
+	            // locally-authoritative auto categories).
+	            for (const _g of sGroups) {
+	                const _gName = this._abCapitalizeGroup(_g.name);
+	                const _gKey = _gName.toLowerCase();
+	                if (_gKey === 'conference' || this._abAutoLocalGroups.has(_gKey)) continue;
+	                const _gMembers = Array.isArray(_g.contacts) ? _g.contacts : [];
+	                const _inGroup = _gMembers.some(m => m && (m.id === s.id
+	                    || this._abServerUris(m).some(mu => this._abServerUris(s).includes(mu))));
+	                if (!_inGroup) continue;
+	                const _wantTag = this._abGroupNameToTag(_gName);
+	                if (_wantTag && !(Array.isArray(contact.tags) ? contact.tags : [])
+	                        .some(t => (t || '').toLowerCase() === _wantTag.toLowerCase())) {
+	                    contact.tags = [...(Array.isArray(contact.tags) ? contact.tags : []), _wantTag];
+	                }
+	            }
+	            // Conference room imported from the server: the group loop above
+	            // skips the 'conference' group (locally-authoritative), so tag it
+	            // here and force the display name to the room number / empty. Without
+	            // the tag the room wouldn't appear in the Conference category.
+	            if (this._abIsConferenceUri(contact.uri)) {
+	                contact.name = this._abConferenceName(contact.name, contact.uri);
+	                if (!(Array.isArray(contact.tags) ? contact.tags : [])
+	                        .some(t => (t || '').toLowerCase() === 'conference')) {
+	                    contact.tags = [...(Array.isArray(contact.tags) ? contact.tags : []), 'conference'];
+	                }
+	            }
 	            // Phone numbers belong in the Tel group - set ONCE at creation
 	            // (the user can remove the tag later; it won't be re-added).
 	            if (utils.isPhoneNumber(contact.uri, this.state.defaultConferenceDomain)
 	                && (Array.isArray(contact.tags) ? contact.tags : []).indexOf('tel') === -1) {
 	                contact.tags = [...(Array.isArray(contact.tags) ? contact.tags : []), 'tel'];
 	            }
-	            // Timestamp = chat recency (system messages excluded). A newly-minted
-	            // contact (added on another device, no history yet) sorts to NOW so it
-	            // appears at the TOP like a just-added contact instead of being buried at
-	            // the historic anchor. Contacts WITH history keep their real chat recency.
+	            // Timestamp = chat recency (system messages excluded). A contact with
+	            // NO message history is pinned to the fixed historic anchor so pure
+	            // addressbook imports sort BELOW people you've actually talked to,
+	            // instead of being freshly minted at "now" (newer than real messages)
+	            // and jumping to the top. Same rule as the migration import path.
 	            const lastMsgTs = await this._abLatestMessageTimestamp(contact.uri);
-	            contact.timestamp = lastMsgTs ? new Date(lastMsgTs * 1000) : new Date();
-	            await this.saveSylkContact(contact.uri, contact, 'addressbook-import');
-	            utils.timestampedLog('[ab] [get] imported server contact ' + newUri);
+	            // A contact that appears AFTER the initial addressbook import has
+	            // finished is a genuine NEW addition synced from another device, so
+	            // it sorts at "now" (top). During the initial bulk import the anchor
+	            // keeps pure addressbook contacts below people you've talked to.
+	            const _lateAddition = this._abImportDoneForAccount === this.state.accountId;
+	            contact.timestamp = lastMsgTs ? new Date(lastMsgTs * 1000)
+	                : (_lateAddition ? new Date() : this._abImportTimestamp);
+	            _preparedImports.push({ uri: contact.uri, contact });
+	            utils.timestampedLog('[ab] [get] prepared server contact ' + newUri);
 	        }
-	
+
+	        // Persist the prepared server contacts. On the FIRST import (table is
+	        // fresh) do it as ONE transaction via _bulkInsertContacts — collapsing
+	        // N per-row commits into a single commit. If the bulk insert fails for
+	        // any reason, fall back to the per-contact saveSylkContact path, which
+	        // carries full dedup + UNIQUE->UPDATE handling. Returning devices
+	        // (_abImportDoneForAccount already set) and single late additions keep
+	        // the per-contact path unchanged.
+	        if (_preparedImports.length) {
+	            const _firstImport = this._abImportDoneForAccount !== this.state.accountId;
+	            let _bulkOk = false;
+	            if (_firstImport && _preparedImports.length > 1) {
+	                this._abBulkMode = true;
+	                try {
+	                    await this._bulkInsertContacts(_preparedImports);
+	                    _bulkOk = true;
+	                    _reconcileChanged = true;
+	                    utils.timestampedLog('[ab] [get] bulk-inserted ' + _preparedImports.length + ' server contacts');
+	                } catch (e) {
+	                    utils.timestampedLog('[ab] [get] bulk insert failed ('
+	                        + (e && e.message ? e.message : e) + ') — falling back to per-contact');
+	                } finally {
+	                    this._abBulkMode = false;
+	                }
+	            }
+	            if (!_bulkOk) {
+	                for (const { uri, contact } of _preparedImports) {
+	                    await this.saveSylkContact(uri, contact, 'addressbook-import');
+	                    _reconcileChanged = true;
+	                }
+	            }
+	        }
+
 	        // LIVE PUT (local->server): the OUT OF SYNC report above only
 		// LOGGED the local contacts with no remote_id — detecting them isn't
 		// enough. Put each one now so a contact that exists on THIS device but
@@ -39240,6 +40988,37 @@ class Sylk extends Component {
 				await this._abExec('addGroup ' + canon + ' (local-only put)',
 					cb => ab.addGroup({ id: this._abGenerateServerId(), name: canon, attributes: {}, contacts: members }, cb));
 			}
+
+			// Push local members into groups that ALREADY exist on the server
+			// (the loop above only creates whole NEW local-only groups). Without
+			// this, a contact tagged into e.g. Business/Test on one device never
+			// reaches the server group, so other devices never adopt it. Once per
+			// account per session — the updateGroup write re-triggers reconcile.
+			if (!this._abGroupMembersPushed) this._abGroupMembersPushed = new Set();
+			if (!this._abGroupMembersPushed.has(account)) {
+				const _memberPushes = [];
+				for (const g of sGroups) {
+					if (!g || g.id == null) continue;
+					const key = this._abCapitalizeGroup(g.name).toLowerCase();
+					if (key === 'conference' || this._abAutoLocalGroups.has(key) || this._abIsPurgeGroup(g.name)) continue;
+					const want = localGroupMembers[key] || [];
+					if (!want.length) continue;
+					const serverIds = new Set((Array.isArray(g.contacts) ? g.contacts : []).map(m => m && m.id).filter(Boolean));
+					const missing = want.filter(c => c.remote_id && !serverIds.has(c.remote_id));
+					if (missing.length) _memberPushes.push({ g, missing });
+				}
+				if (_memberPushes.length) {
+					this._abGroupMembersPushed.add(account);   // claim before awaits
+					for (const { g, missing } of _memberPushes) {
+						const merged = [...(Array.isArray(g.contacts) ? g.contacts : []),
+							...missing.map(c => this._abServerContactPayload(c, c.remote_id))].filter(Boolean);
+						utils.timestampedLog('[ab] [get] push ' + missing.length + ' local member(s) → server group "'
+							+ this._abCapitalizeGroup(g.name) + '" [' + missing.map(c => this._abNormalizeUri(c.uri)).join(', ') + ']');
+						await this._abExec('updateGroup ' + g.name + ' (add local members)',
+							cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: merged }, cb));
+					}
+				}
+			}
 		} catch (e) { console.log('[ab] put local-only groups error', e && e.message); }
 
 	        // LIVE GROUP ADOPTION (server->local): when a contact is added to a
@@ -39268,6 +41047,7 @@ class Sylk extends Component {
 	                        if (has) continue;
 	                        c.tags = [...new Set([...(Array.isArray(c.tags) ? c.tags : []), wantTag])];
 	                        await this.saveSylkContact(c.uri, c, 'addressbook-group-adopt');
+	                        _reconcileChanged = true;
 	                        utils.timestampedLog('[ab] [get] adopt group "' + gName + '" → ' + this._abNormalizeUri(c.uri));
 	                    }
 	                }
@@ -39315,6 +41095,7 @@ class Sylk extends Component {
 	                    for (const c of victims) {
 	                        c.tags = (Array.isArray(c.tags) ? c.tags : []).filter(t => !matchesTag(t));
 	                        await this.saveSylkContact(c.uri, c, 'addressbook-group-adopt');
+	                        _reconcileChanged = true;
 	                        utils.timestampedLog('[ab] [get] group "' + this._abCapitalizeGroup(n)
 	                            + '" gone from server (deleted while offline) — removed tag from ' + this._abNormalizeUri(c.uri));
 	                    }
@@ -39325,8 +41106,24 @@ class Sylk extends Component {
 	
 	        // Confirmed-good server snapshot (passed the safety gate) => server is
 	        // reachable. Re-put any contacts whose earlier write didn't land
-	        // (queued by _abUpdateFailed / _abReplicateToServer).
-	        await this._abFlushPendingPut(account);
+	        // (queued by _abUpdateFailed / _abReplicateToServer) — but NEVER in
+	        // real time. Schedule the flush on an exponential backoff so a server
+	        // that is rejecting writes (e.g. the 500 lock-timeout) is retried
+	        // after a growing delay instead of being hammered every pass.
+	        this._abScheduleFlushPendingPut(account);
+
+	        // If this reconcile imported contacts or changed group membership,
+	        // reload so derived state (favoriteUris + the category/group bar) is
+	        // recomputed from the new tags — otherwise the groups (e.g. Favorites)
+	        // don't show until a later load. Guarded so a no-op pass doesn't loop.
+	        if (_reconcileChanged) {
+	            await this.loadSylkContacts('post-ab-import', true);
+	        }
+
+	        // Contacts imported + groups reconciled on a good snapshot: the
+	        // addressbook is now synced for this account. Release the import-gated
+	        // work (journal first sync, import-key modal). Idempotent.
+	        this._abMarkImportFinished(account);
 	    } catch (e) {
 	        console.log('[ab] syncGroupsTable error', e && e.message);
 	    }
@@ -39476,6 +41273,207 @@ class Sylk extends Component {
 	    } catch (e) { utils.timestampedLog('[ab] [migrate] write self marker error', e && e.message); return false; }
 	};
 
+	// ---- Self-contact PGP key escrow -------------------------------------------
+	// The user's own XCAP "self" contact carries a JSON `keys` attribute holding
+	// the account keypair so it replicates across the user's devices:
+	//   { private_key, public_key, device, timestamp }
+	// `private_key` is symmetrically encrypted with the ACCOUNT PASSWORD (never
+	// stored in clear), exactly like the email / broadcast backup paths. The
+	// public key, the writing device label, and an ISO timestamp travel in clear
+	// so any device can see which device escrowed the key and when.
+	//
+	// Per authoritative load:
+	//   - keys present on the self contact -> log device + timestamp, do nothing.
+	//   - keys absent                      -> encrypt + build + upload to server.
+
+	// Parse the server-side `keys` attribute (JSON text) into an object, or null.
+	_abParseSelfKeys = (selfServer) => {
+	    try {
+	        const raw = selfServer && selfServer.attributes ? selfServer.attributes.keys : undefined;
+	        if (raw == null || !String(raw).length) return null;
+	        const obj = (typeof raw === 'string') ? JSON.parse(raw) : raw;
+	        return (obj && typeof obj === 'object') ? obj : null;
+	    } catch (e) {
+	        utils.timestampedLog('[ab] [keys] self keys attribute present but unparseable:', e && e.message);
+	        return null;
+	    }
+	};
+
+	// Ensure the account keypair is escrowed on the self contact. Idempotent and
+	// best-effort: only writes when the attribute is missing on the server.
+	async _abEnsureSelfKeys(account, options = {}) {
+	    const force = !!options.force;
+	    try {
+	        const ab = this.state.connection && this.state.connection.addressbook;
+	        if (!ab || !account) return;
+
+	        // Never write while a snapshot anomaly is latched (empty/failed XCAP
+	        // fetch). selfServerContact/serverKeys are read from that snapshot, so
+	        // both come back "absent" and we'd addContact a fresh self entry into
+	        // the broken document — seeding a near-empty addressbook that defeats
+	        // the empty-snapshot safety gate on the next fetch (mass-tombstone
+	        // incident, 2026-07-03). Covers ALL call sites incl. password change.
+	        if (this._abSnapshotAnomaly) {
+	            utils.timestampedLog('[ab] [keys] snapshot anomaly active — skipping key escrow');
+	            return;
+	        }
+
+	        const keys = this.state.keys;
+	        const hasLocal = !!(keys && keys.private && keys.public);
+
+	        const selfServer = this._abSelfServerContact();
+	        const serverKeys = this._abParseSelfKeys(selfServer);
+
+	        // Make the branch decision explicit in the log so a from-scratch
+	        // restore vs. escrow vs. no-op is unambiguous when reading metro.log.
+	        utils.timestampedLog('[ab] [keys] check — hasLocal=' + hasLocal
+	            + ' selfServerContact=' + (selfServer ? 'yes' : 'no')
+	            + ' serverKeys=' + (serverKeys ? ('yes device="' + (serverKeys.device || '?')
+	                + '" timestamp=' + (serverKeys.timestamp || '?')) : 'no')
+	            + ' hasPassword=' + (!!(this.state.password && this.state.password.trim()))
+	            + ' account=' + account);
+
+	        if (!hasLocal) {
+	            // New device (or a device that lost its key): no local keypair.
+	            // If our own contact carries an escrowed key, try to restore it
+	            // by decrypting with the account password and importing it. This
+	            // runs automatically and, on success, supersedes the manual
+	            // import-key modal. There is nothing to escrow until a keypair
+	            // exists locally, so return either way.
+	            if (serverKeys && serverKeys.private_key) {
+	                await this._abRestoreSelfKeys(account, serverKeys);
+	            }
+	            return;
+	        }
+
+	        if (serverKeys && !force) {
+	            //utils.timestampedLog('[ab] [keys] present on own contact' + ' — device="' + (serverKeys.device || '?') + '"' + ' timestamp=' + (serverKeys.timestamp || '?'));
+	            return;
+	        }
+
+	        utils.timestampedLog(serverKeys
+	            ? '[ab] [keys] forced re-escrow (password change) — re-encrypting this device key'
+	            : '[ab] [keys] not present on own contact — escrowing this device key');
+
+	        // Per-account in-flight guard: don't fire concurrent / repeated writes
+	        // within a session before the server round-trips the new attribute.
+	        if (!this._abSelfKeysWriting) this._abSelfKeysWriting = new Set();
+	        if (this._abSelfKeysWriting.has(account)) return;
+	        this._abSelfKeysWriting.add(account);
+
+	        try {
+	            // The private key is encrypted symmetrically with the ACCOUNT
+	            // PASSWORD. Without one we cannot meet that requirement, so bail
+	            // rather than escrow an unprotected key.
+	            const password = ((options.password || this.state.password) || '').trim();
+	            if (!password) {
+	                utils.timestampedLog('[ab] [keys] no account password available — skipping key escrow');
+	                return;
+	            }
+
+	            const public_key = keys.public.replace(/\r/g, '').trim();
+	            const private_key = keys.private.replace(/\r/g, '').trim();
+
+	            // react-native-fast-openpgp: (message, passphrase, fileHints,
+	            // options) — KeyOptions is the 4th arg (see exportPrivateKey).
+	            const encryptedPrivate = await OpenPGP.encryptSymmetric(private_key, password, undefined, KeyOptions);
+
+	            const keyRecord = {
+	                private_key: encryptedPrivate,   // symmetric, account-password protected
+	                public_key: public_key,
+	                device: DEVICE_LABEL || 'unknown device',
+	                timestamp: new Date().toISOString(),
+	            };
+
+	            // Stash so _abServerContactPayload -> _abContactAttributes carries it
+	            // (and so later self writes preserve it).
+	            this._abSelfKeysAttr = { acc: account, v: JSON.stringify(keyRecord) };
+
+	            // Need a local self contact to build the payload from.
+	            const accLc = account.toLowerCase();
+	            const selfLocal = (this.state.allContacts || []).find(c => c.uri && c.uri.toLowerCase() === accLc);
+	            if (!selfLocal) {
+	                utils.timestampedLog('[ab] [keys] no local self contact yet — deferring escrow');
+	                return;
+	            }
+
+	            const id = selfServer ? selfServer.id : this._abGenerateServerId();
+	            const payload = this._abServerContactPayload(selfLocal, id);
+	            const label = (selfServer ? 'updateContact' : 'addContact')
+	                + ' (self keys escrow device="' + keyRecord.device + '")';
+	            const ok = await this._abExec(label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
+	            utils.timestampedLog('[ab] [keys] escrow upload ' + (ok ? 'ok' : 'failed')
+	                + ' — device="' + keyRecord.device + '" timestamp=' + keyRecord.timestamp);
+	        } finally {
+	            this._abSelfKeysWriting.delete(account);
+	        }
+	    } catch (e) {
+	        utils.timestampedLog('[ab] [keys] ensure self keys error', e && e.message);
+	    }
+	};
+
+	// Restore the account keypair from the self-contact `keys` escrow. Decrypts
+	// the symmetrically-encrypted private key with the ACCOUNT PASSWORD and, on
+	// success, imports the keypair (savePrivateKey) so this device adopts it.
+	// Best-effort: a wrong/empty password or a malformed blob just logs and
+	// returns false, leaving the manual import-key modal as the fallback.
+	async _abRestoreSelfKeys(account, serverKeys) {
+	    try {
+	        if (!serverKeys || !serverKeys.private_key || !serverKeys.public_key) return false;
+
+	        const password = (this.state.password || '').trim();
+	        if (!password) {
+	            utils.timestampedLog('[ab] [keys] escrowed key on own contact but no account password — cannot restore');
+	            return false;
+	        }
+
+	        // Per-account in-flight guard so concurrent loads don't each decrypt
+	        // + import; cleared on completion so a failed attempt can retry later.
+	        if (!this._abSelfKeysRestoring) this._abSelfKeysRestoring = new Set();
+	        if (this._abSelfKeysRestoring.has(account)) return false;
+	        this._abSelfKeysRestoring.add(account);
+
+	        try {
+	            utils.timestampedLog('[ab] [keys] restoring escrowed key from own contact'
+	                + ' — device="' + (serverKeys.device || '?') + '"'
+	                + ' timestamp=' + (serverKeys.timestamp || '?'));
+
+	            let decrypted;
+	            try {
+	                decrypted = await OpenPGP.decryptSymmetric(serverKeys.private_key, password);
+	            } catch (e) {
+	                utils.timestampedLog('[ab] [keys] restore failed — could not decrypt with account'
+	                    + ' password (wrong password?): ' + (e && e.message ? e.message : e));
+	                return false;
+	            }
+
+	            const private_key = (decrypted || '').replace(/\r/g, '').trim();
+	            const public_key = (serverKeys.public_key || '').replace(/\r/g, '').trim();
+	            if (!private_key || private_key.indexOf('BEGIN PGP PRIVATE KEY') < 0) {
+	                utils.timestampedLog('[ab] [keys] restore failed — decrypted blob is not a PGP private key');
+	                return false;
+	            }
+	            if (!public_key || public_key.indexOf('BEGIN PGP PUBLIC KEY') < 0) {
+	                utils.timestampedLog('[ab] [keys] restore failed — escrow missing a valid public key');
+	                return false;
+	            }
+
+	            // Adopt as this device's keypair: writes SQL, fans the public key
+	            // out to existing contacts, retries the deferred first sync, closes
+	            // the import modal and clears keyDifferentOnServer.
+	            await this.savePrivateKey({ private: private_key, public: public_key });
+	            utils.timestampedLog('[ab] [keys] restored and imported keypair from own contact escrow'
+	                + ' (device="' + (serverKeys.device || '?') + '")');
+	            return true;
+	        } finally {
+	            this._abSelfKeysRestoring.delete(account);
+	        }
+	    } catch (e) {
+	        utils.timestampedLog('[ab] [keys] restore self keys error', e && e.message);
+	        return false;
+	    }
+	};
+
 	// Apply the self contact's server attributes (account-level privacy) to
 	// the local account settings. Runs on every addressbook load so privacy
 	// changes made on another device propagate here. Server is authoritative.
@@ -39485,6 +41483,27 @@ class Sylk extends Component {
 	        const account = this.state.accountId;
 	        if (!ab || !account) return;
 	        const acc = account.toLowerCase();
+
+	        // SELF NEVER LIVES IN THE DELETED FOLDER. A stray deleted_timestamp /
+	        // storage_purged / deleted on the local self row (left by a server
+	        // dataDeleted for a duplicate self entry, or legacy data) files the
+	        // user's OWN account under Deleted. Heal it here on every reconcile —
+	        // idempotent, a no-op once the row is clean.
+	        const _selfRow = (this.state.allContacts || []).find(c => c && c.uri && c.uri.toLowerCase() === acc);
+	        if (_selfRow && (_selfRow.deletedTimestamp || _selfRow.storagePurged || _selfRow.deleted)) {
+	            this.ExecuteQuery(
+	                'UPDATE contacts SET deleted = 0, deleted_timestamp = NULL, storage_purged = NULL WHERE account = ? AND lower(uri) = lower(?)',
+	                [account, acc])
+	                .then(() => utils.timestampedLog('[ab] [self] healed stray trash marker on own account '
+	                    + acc + ' — removed from Deleted folder'))
+	                .catch(e => console.log('[ab] [self] heal trash marker failed', e && e.message));
+	            this.setState(prev => ({
+	                allContacts: (prev.allContacts || []).map(x =>
+	                    (x && x.uri && x.uri.toLowerCase() === acc)
+	                        ? { ...x, deleted: false, deletedTimestamp: null, storagePurged: null } : x),
+	            }));
+	        }
+
 	        const self = (ab.contacts || []).find(s =>
 	            this._abServerUris(s).some(u => u === acc)
 	            || (Array.isArray(s.uris) ? s.uris : []).some(x => x && x.uri && x.uri.toLowerCase() === acc));
@@ -39571,15 +41590,14 @@ class Sylk extends Component {
 	    // Persisted version-based once-guard: read directly from the accounts.ab_migration
 	    // column (not the clobberable settings blob), keyed by account row.
 	    const AB_MIGRATION_VERSION = this._abMigrationVersion; // single source: the _abMigrationVersion field
-	    // Fixed historic timestamp for server-only contacts created at first sync.
+	    // Historic timestamp for server-only contacts created at first sync, Blink birth date
 	    const AB_IMPORT_TIMESTAMP = new Date('2010-04-12T00:00:00Z');
 	    let ranVersion = 0;
 	    try {
 	        const r = await this.ExecuteQuery('SELECT ab_migration FROM accounts WHERE account = ?', [account]);
 	        if (r && r.rows && r.rows.length) ranVersion = parseInt(r.rows.item(0).ab_migration, 10) || 0;
 	    } catch (e) { /* unreadable → fall through and (re)migrate */ }
-	    utils.timestampedLog('[ab] [migrate] guard account=' + account
-	        + ' ab_migration=' + ranVersion + ' need=' + AB_MIGRATION_VERSION);
+	    // utils.timestampedLog('[ab] [migrate] guard account=' + account + ' ab_migration=' + ranVersion + ' need=' + AB_MIGRATION_VERSION);
 	    // Cross-client guard: if the server marker >= our version, another client already
 	    // migrated - adopt it and don't re-run the destructive migration here.
 	    if (ranVersion < AB_MIGRATION_VERSION) {
@@ -39805,6 +41823,9 @@ class Sylk extends Component {
 	            } catch (e) { utils.timestampedLog('[ab] [migrate] publish self marker error', e && e.message); }
 	            const _abMigDur = this._abMigrationStartedAt ? ((Date.now() - this._abMigrationStartedAt) / 1000).toFixed(1) : '?';
 	            utils.timestampedLog('[ab] [migrate] ===== DONE (clean) — ab_migration=' + AB_MIGRATION_VERSION + ' for ' + account + ' in ' + _abMigDur + 's =====');
+	            // Fresh migration did the import itself (syncGroupsTable bails while
+	            // migration runs), so release the import-gated work here too.
+	            this._abMarkImportFinished(account);
 	        } else {
 	            const _abMigDurI = this._abMigrationStartedAt ? ((Date.now() - this._abMigrationStartedAt) / 1000).toFixed(1) : '?';
 	            utils.timestampedLog('[ab] [migrate] ===== INCOMPLETE after ' + _abMigDurI + 's: ' + totalFailures
@@ -39965,16 +41986,75 @@ class Sylk extends Component {
 	// Run the addressbook sync + migration if the app is settled for the current
 	// account. Called from every readiness edge (server data, settings, contacts loaded);
 	// the _abReady gate makes all-but-the-last bail, whichever finishes last runs it.
+	// Coalesced, single-flight entry point. Every readiness edge AND every
+	// server write we issue emits a dataUpdated, so this fires in bursts. Two
+	// guards keep us from bombarding XCAP:
+	//   1. DEBOUNCE — collapse a burst of edges into ONE reconcile (timer).
+	//   2. SINGLE-FLIGHT — never let two reconcile passes overlap. Overlapping
+	//      passes are concurrent writers to the ONE per-user XCAP document and
+	//      trip its per-document lock (the server then replies 500 with
+	//      "TimeoutError: Failed to acquire lock on xcap_sip:<account>").
+	//      One-pass-at-a-time keeps every write serialized.
+	// A change that arrives mid-pass sets _abRerunPending; we then run ONE more
+	// pass AFTER a delay — never re-entering in real time.
 	_abMaybeRun = (source) => {
-	    // Bails silently until the account is fully settled; whichever readiness edge fires last runs it.
 	    if (!this._abReady()) return;
-	    // Sync-status + self reconcile run on ANY server data, including a cache load on
-	    // switch-back (so [ab] [get] appears for a cached addressbook too).
-	    this.syncGroupsTable();
-	    this.applySelfContactFromServer();
-	    // Migration only runs against authoritative (freshly fetched) data, never a cache.
-	    if (this._abAuthoritativeDataAccount === this.state.accountId) {
-	        this._abMigrateOnce(source);
+	    this._abPendingSource = source;
+	    if (this._abDebounceTimer) return;            // a reconcile is already scheduled
+	    this._abDebounceTimer = setTimeout(() => {
+	        this._abDebounceTimer = null;
+	        this._abRunReconcile(this._abPendingSource);
+	    }, 500);
+	};
+
+	// The actual reconcile body, guarded so it never overlaps itself. All XCAP
+	// writers (group/contact sync, self-contact privacy, migration, key escrow)
+	// run in SEQUENCE here so they never race each other for the document lock.
+	_abRunReconcile = async (source) => {
+	    if (this._abReconcileRunning) { this._abRerunPending = true; return; }
+	    this._abReconcileRunning = true;
+	    try {
+	        if (!this._abReady()) return;
+	        // Sync-status + self reconcile run on ANY server data, including a cache
+	        // load on switch-back (so [ab] [get] appears for a cached addressbook too).
+	        await this.syncGroupsTable();
+	        // ANOMALY LATCH — syncGroupsTable just bailed on an empty/failed
+	        // server snapshot. NOTHING below may write to XCAP: the snapshot is
+	        // not trustworthy (selfServerContact/serverKeys both read as absent
+	        // on it), so self-contact privacy, migration, and key escrow would
+	        // all write garbage into — and worse, SEED — the broken document.
+	        // Skip everything; the next good fetch clears the latch and the
+	        // rerun/debounce machinery picks it all up again.
+	        if (this._abSnapshotAnomaly) {
+	            utils.timestampedLog('[ab] snapshot anomaly active — skipping self-contact apply, migration and key escrow (no writes)');
+	            return;
+	        }
+	        this.applySelfContactFromServer();
+	        // Migration only runs against authoritative (freshly fetched) data, never a cache.
+	        if (this._abAuthoritativeDataAccount === this.state.accountId) {
+	            // Escrow the account key onto the self contact. Runs on EVERY
+	            // authoritative load (not only at migration time). Awaited in
+	            // sequence (not fired in parallel) so these self-contact writes
+	            // never race the group/contact sync above for the document lock.
+	            const _acc = this.state.accountId;
+	            try { await this._abMigrateOnce(source); } catch (e) { /* keys still escrowed below */ }
+	            await this._abEnsureSelfKeys(_acc);
+	        }
+	    } catch (e) {
+	        console.log('[ab] _abRunReconcile error', e && e.message);
+	    } finally {
+	        this._abReconcileRunning = false;
+	        if (this._abRerunPending) {
+	            this._abRerunPending = false;
+	            // One more pass, AFTER a delay — picks up anything that changed
+	            // while we were running, without a real-time re-entry storm.
+	            if (!this._abDebounceTimer) {
+	                this._abDebounceTimer = setTimeout(() => {
+	                    this._abDebounceTimer = null;
+	                    this._abRunReconcile(source);
+	                }, 1500);
+	            }
+	        }
 	    }
 	};
 
@@ -40035,11 +42115,6 @@ class Sylk extends Component {
                           tags: [],
                           prettyStorage: null,
                           lastCallMedia: [],
-                          // last_call_timestamp (v13). Null until a
-                          // call to / from this URI ends; set by
-                          // updateHistoryEntry. The Calls category
-                          // filter shows only rows where this is
-                          // non-null.
                           lastCallTimestamp: null,
                           participants: [],
                           messagesMetadata: {},
@@ -40054,14 +42129,9 @@ class Sylk extends Component {
 			contact.organization = item.organization;
 			contact.email = item.email;
 			contact.id = item.contact_id;
-			// remote_id (server addressbook id) + uris — needed for server
-			// sync (update/delete/group membership) and multi-URI matching.
 			contact.remote_id = item.remote_id || '';
 			contact.deleted = (item.deleted === 1 || item.deleted === '1'); // permanent tombstone flag (record kept)
-			// Stage-1 trash marker: ISO string when in the Deleted folder, null otherwise.
 			contact.deletedTimestamp = item.deleted_timestamp || null;
-			// Storage-purged marker (messages + files removed). Truthy once purged.
-			// INVARIANT: a contact may only become a tombstone (deleted=1) after this.
 			contact.storagePurged = item.storage_purged || null;
 			contact.uris = item.uris ? item.uris.split(',').map(u => u.trim()).filter(Boolean) : [];
 			contact.photo = item.photo;
@@ -40073,12 +42143,6 @@ class Sylk extends Component {
 			contact.lastCallId = item.last_call_id;
 			contact.lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
 			contact.lastCallDuration = item.last_call_duration;
-			// last_call_timestamp (v13). SQL value is unix-seconds
-			// (INTEGER); rehydrate to a Date for in-memory use so
-			// ContactCard / filters can compare via getTime() like
-			// any other timestamp. Null when no call has ever been
-			// recorded for this row — the Calls category filter
-			// treats null as "no calls" and hides the row.
 			contact.lastCallTimestamp = (item.last_call_timestamp != null
 			    && Number.isFinite(item.last_call_timestamp))
 			    ? new Date(item.last_call_timestamp * 1000)
@@ -40304,9 +42368,9 @@ class Sylk extends Component {
                     for (const uri of changedUris) {
                         const n = perContact[uri] || 0;
                         if (n > 0) {
-                            UnreadModule.setUnreadForContact(uri, n);
+                            this._nativeSetUnread(uri, n);
                         } else {
-                            UnreadModule.resetUnreadForContact(uri);
+                            this._nativeResetUnread(uri);
                         }
                     }
                 } catch (e) {
@@ -40347,7 +42411,7 @@ class Sylk extends Component {
                                 const jsCount = perContact[uri] || 0;
                                 if (jsCount === 0 && knownUris.has(uri)) {
                                     orphans.push(uri + '=' + nativeMap[uri]);
-                                    UnreadModule.resetUnreadForContact(uri);
+                                    this._nativeResetUnread(uri);
                                 }
                             }
                             if (orphans.length > 0) {
@@ -40423,10 +42487,20 @@ class Sylk extends Component {
         // from contact.uri + contact.uris, so the extra addresses replicate to
         // the server addressbook on save.
         if (Array.isArray(contactObject.uris)) {
+            // Append the default domain ONLY to a BARE user string (e.g.
+            // "alice" → "alice@sylk.link"). Leave untouched anything that
+            // already has a domain (@), carries a URI scheme (http:, https:,
+            // sip:, mailto:, tel:, …), or is a phone number — otherwise a
+            // website like "http://ag-projects.com" gets mangled into
+            // "http://ag-projects.com@sylk.link".
+            const _hasScheme = (v) => /^[a-z][a-z0-9+.\-]*:/i.test(v);
             const norm = (u) => {
                 u = (u || '').trim().toLowerCase();
-                if (u && u.indexOf('@') === -1) u = u + '@' + this.state.defaultDomain;
-                return u;
+                if (!u) return u;
+                if (u.indexOf('@') > -1) return u;
+                if (_hasScheme(u)) return u;
+                if (utils.isPhoneNumber(u)) return u;
+                return u + '@' + this.state.defaultDomain;
             };
             const all = [uri, ...contactObject.uris.map(norm)].filter(Boolean);
             contact.uris = [...new Set(all)];
@@ -40829,6 +42903,39 @@ class Sylk extends Component {
 		}
     }
 
+    // Retry queued puts on an EXPONENTIAL BACKOFF — never in real time, and
+    // never while a reconcile pass is mid-flight (so the flush doesn't add a
+    // concurrent writer to the per-user XCAP document and re-trip its lock).
+    // Idempotent: repeated calls while a flush is already scheduled are a no-op,
+    // so a storm of reconcile passes can't stack timers. The delay grows while
+    // the queue keeps failing (15s, 30s, 60s, capped at 120s) and resets to the
+    // base once the queue drains.
+    _abScheduleFlushPendingPut = (account) => {
+		if (this._abFlushTimer) return;                 // already scheduled
+		const n = this._abFlushBackoff || 0;
+		const delay = Math.min(120000, 15000 * Math.pow(2, n));
+		this._abFlushTimer = setTimeout(() => this._abFlushPendingPutBackoff(account), delay);
+    }
+
+    _abFlushPendingPutBackoff = async (account) => {
+		this._abFlushTimer = null;
+		try {
+			// Don't race the reconcile pass for the document lock — defer past it.
+			if (this._abReconcileRunning) { this._abScheduleFlushPendingPut(account); return; }
+			const before = await this._abLoadPendingPut(account);
+			if (!before.size) { this._abFlushBackoff = 0; return; }
+			await this._abFlushPendingPut(account);
+			const after = await this._abLoadPendingPut(account);
+			if (after.size > 0) {
+				// Still failing — back off further and try again later.
+				this._abFlushBackoff = Math.min((this._abFlushBackoff || 0) + 1, 3);
+				this._abScheduleFlushPendingPut(account);
+			} else {
+				this._abFlushBackoff = 0;               // drained — reset
+			}
+		} catch (e) { console.log('[ab] _abFlushPendingPutBackoff error', e && e.message); }
+    }
+
     // Re-put every contact whose previous replicate failed, on a confirmed-good server
     // snapshot. Optimistic: dequeue before re-putting; failures get re-queued.
     async _abFlushPendingPut(account) {
@@ -40902,21 +43009,34 @@ class Sylk extends Component {
             username = canonicalLocal;
         }
 
-        // Always qualify with the account's default SIP domain when
-        // the URI is bare — phone numbers included. The call wire
-        // format and the server history payload always carry an
-        // @domain (e.g. "+40721253846@sylk.link"), so storing the
-        // contact in the same shape means lookupContacts hits on
-        // the exact URI without needing any phone-number variant
-        // fallback. The old `!isPhoneNumber(uri)` exception kept
-        // phone-number contacts as "+40…" bare, which then drifted
-        // away from the routed form the call/history path used —
-        // every call ended up minting a fresh duplicate row keyed
-        // by the @-qualified URI. We still recognise phone numbers
-        // for naming / display logic via `isNumber` above; only the
-        // stored URI gets normalized.
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@' + this.state.defaultDomain;
+        // Phone-number (tel) contacts are stored as BARE E.164 — no
+        // @domain. That's the app's convention for a PSTN number, and it
+        // keeps the contact URI aligned with the (now bare-normalized)
+        // from_uri/to_uri the message writers persist (see
+        // _normalizeInsertUris), so recordings and call-duration system
+        // messages land on the exact contact URI. Only GENUINE
+        // international numbers qualify (leading "+" after the 00→+ step
+        // above); numeric conference-room usernames (e.g.
+        // "639578@videoconference.sip2sip.info") are NOT phone numbers
+        // and keep their domain.
+        //
+        // The old code appended @domain to phone numbers too, to avoid
+        // duplicate contact rows when the call/history path saved the
+        // "+…@domain" wire form. That concern is now handled two ways:
+        //   1. sanitizeContact runs BEFORE saveSylkContact's uri-dedup
+        //      SELECT, so a "+…@domain" save collapses to the same bare
+        //      "+…" key and hits the existing row (UPDATE, not INSERT).
+        //   2. lookupContact / getAllContactUris match across every
+        //      +/00 × bare/@domain variant, so the wire form still
+        //      resolves to the bare contact.
+        const _isTel = isNumber && /^\+\d{6,}$/.test(username);
+        if (_isTel) {
+            const at = uri.indexOf('@');
+            if (at > -1) {
+                uri = uri.substring(0, at);          // strip domain → bare E.164
+            }
+        } else if (uri.indexOf('@') === -1) {
+            uri = uri + '@' + this.state.defaultDomain; // non-phone bare → qualify
         }
 
         let uuidPattern = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/gi;
@@ -41343,13 +43463,46 @@ class Sylk extends Component {
             file_transfer.duration = fileObject.duration;
         }
 
-        // Capture the image's pixel dimensions at send time. The picker
-        // (react-native-image-picker) gives us width/height; stashing them
-        // in the file-transfer metadata means the bubble's aspect ratio is
-        // known on the FIRST render — no square-default letterbox flash —
-        // and, because metadata ships with the transfer, the RECEIVER gets
-        // the correct shape on first render too.
-        if (fileObject.width && fileObject.height) {
+        // Capture the image's DISPLAY pixel dimensions at send time so the
+        // bubble's aspect ratio is known on the FIRST render — no
+        // square-default letterbox flash — and, because metadata ships with
+        // the transfer, the RECEIVER gets the correct shape on first render
+        // too.
+        //
+        // IMPORTANT: do NOT trust the picker's width/height directly. For
+        // camera photos react-native-image-picker reports the raw stored
+        // bitmap size, which ignores EXIF orientation — a PORTRAIT photo
+        // comes back as e.g. 4000x2250 (landscape sensor). Storing those
+        // made the bubble compute a landscape aspect ratio and letterbox the
+        // portrait image with white bars left/right until something forced a
+        // re-layout. Image.getSize decodes with EXIF orientation applied and
+        // returns the TRUE display dimensions, so use it as the authority and
+        // fall back to the picker values only if it fails.
+        if (utils.isImage(basename, file_transfer.filetype)) {
+            let dispW = fileObject.width;
+            let dispH = fileObject.height;
+            try {
+                // Image.getSize needs a URI scheme; Android local paths come
+                // through as bare /data/... so prefix file:// when missing.
+                const probeUri = (Platform.OS === 'android' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(filepath))
+                    ? 'file://' + filepath
+                    : filepath;
+                const sized = await new Promise((resolve, reject) => {
+                    Image.getSize(probeUri, (w, h) => resolve({ w, h }), reject);
+                });
+                if (sized && sized.w > 0 && sized.h > 0) {
+                    dispW = sized.w;
+                    dispH = sized.h;
+                }
+            } catch (e) {
+                console.log('file2GiftedChat: Image.getSize failed, using picker dims',
+                    'err=', e && (e.message || String(e)));
+            }
+            if (dispW > 0 && dispH > 0) {
+                file_transfer.width = dispW;
+                file_transfer.height = dispH;
+            }
+        } else if (fileObject.width && fileObject.height) {
             file_transfer.width = fileObject.width;
             file_transfer.height = fileObject.height;
         }
@@ -41404,9 +43557,82 @@ class Sylk extends Component {
      *  with our own account.id as the receiver and let Sylk's existing
      *  file-transfer/upload pipeline replicate to siblings.
      */
+    // Startup housekeeping: remove stale recording temp files left in the
+    // app's top-level DocumentDirectoryPath. The native call recorder (and the
+    // mic-only fallback) write `sylk-call-recording-<ts>.ogg/.m4a` there as a
+    // staging file; saveCallRecording copies it into the per-transfer folder
+    // and unlinks it, but older builds leaked them and a crash/restart while
+    // recording can orphan one. We only delete files older than a safety window
+    // so an in-flight or just-finished recording is never removed. Best-effort.
+    async _purgeStaleRecordingTempFiles() {
+        try {
+            if (!RNFS || !RNFS.DocumentDirectoryPath) return;
+            const dir = RNFS.DocumentDirectoryPath;
+            const items = await RNFS.readDir(dir);
+            const MAX_AGE_MS = 60 * 60 * 1000;   // 1 h — leave recent/in-use files alone
+            const now = Date.now();
+            let removed = 0;
+            for (const it of items) {
+                try {
+                    if (typeof it.isFile === 'function' && !it.isFile()) continue;
+                    const name = it.name || '';
+                    // Only the staging recordings that live at the top level —
+                    // real message copies live in {account}/{peer}/{id}/ subdirs.
+                    if (!(name.startsWith('sylk-call-recording-') || name.startsWith('sylk-audio-recording'))) continue;
+                    const mtime = it.mtime ? new Date(it.mtime).getTime() : 0;
+                    if (mtime && (now - mtime) < MAX_AGE_MS) continue;   // too recent — may be in use
+                    await RNFS.unlink(it.path);
+                    removed++;
+                } catch (e) { /* per-file best-effort */ }
+            }
+            if (removed > 0) {
+                utils.timestampedLog('[cleanup] purged', removed, 'stale recording temp file(s) from DocumentDirectoryPath');
+            }
+        } catch (e) {
+            console.log('[cleanup] purge stale recordings failed:', e && e.message);
+        }
+
+        // QoS reports: qos-stats.js mirrors each per-call result to
+        // files/qos-client/<callId>.json so it survives a JS reload until the
+        // trace reconcile runs (seconds-to-minutes after the call). Anything
+        // older than 3 days is long past reconcile and just wastes disk.
+        try {
+            if (!RNFS || !RNFS.DocumentDirectoryPath) return;
+            const qosDir = RNFS.DocumentDirectoryPath + '/qos-client';
+            if (!(await RNFS.exists(qosDir))) return;
+            const items = await RNFS.readDir(qosDir);
+            const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;   // 3 days
+            const now = Date.now();
+            let removed = 0;
+            for (const it of items) {
+                try {
+                    if (typeof it.isFile === 'function' && !it.isFile()) continue;
+                    const mtime = it.mtime ? new Date(it.mtime).getTime() : 0;
+                    if (mtime && (now - mtime) < MAX_AGE_MS) continue;   // recent — may still be reconciled
+                    await RNFS.unlink(it.path);
+                    removed++;
+                } catch (e) { /* per-file best-effort */ }
+            }
+            if (removed > 0) {
+                utils.timestampedLog('[cleanup] purged', removed, 'QoS report(s) older than 3 days from qos-client');
+            }
+        } catch (e) {
+            console.log('[cleanup] purge old QoS reports failed:', e && e.message);
+        }
+    }
+
     async saveCallRecording(args) {
         const filePath = args && args.filePath;
-        const remoteUri = args && args.remoteUri;
+        // Canonicalize the peer URI before it becomes the chat-line key.
+        // The recording arrives keyed off the DIALED target (wire form
+        // "00…@domain" after pstnRules.replacePlus, or a bare/quoted
+        // variant), which does not match the contact's canonical "+…"
+        // URI nor the call-ended system message. _canonicalPeerUri
+        // reduces phone numbers to bare E.164 so from_uri, the in-memory
+        // append, the file_transfer sender and the cross-device
+        // call_recording_party all agree on one conversation key.
+        const rawRemoteUri = args && args.remoteUri;
+        const remoteUri = this._canonicalPeerUri(rawRemoteUri);
         const remoteDisplayName = (args && args.remoteDisplayName) || remoteUri;
         const durationSec = (args && args.durationSec) || 0;
         // Per-100ms peak amplitudes per channel as { l: number[], r:
@@ -41417,12 +43643,34 @@ class Sylk extends Component {
         // synthetic) waveform during playback. Travels in
         // file_transfer metadata so cross-device sync gets it for free.
         const peaks = args && args.peaks;
+        // Recorded spectrogram (spectrumCodec metadata) for the remote
+        // leg — embedded in file_transfer metadata alongside peaks so
+        // the bubble animates the spectrum on playback and cross-device
+        // sync carries it for free.
+        const spectrum = args && args.spectrum;
         if (!filePath || !remoteUri || !this.state.account) {
             console.log('saveCallRecording: missing args', !!filePath, !!remoteUri, !!this.state.account);
             return;
         }
-        utils.timestampedLog('[call] saveCallRecording: persisting',
-            filePath, 'duration=', durationSec, 's', 'from=', remoteUri);
+
+        utils.timestampedLog('[call] saveCallRecording: persisting', filePath, 'duration=', durationSec, 's', 'from=', remoteUri);
+
+        // [rec-dump] Exact incoming values, byte-for-byte, so any stray
+        // quotes / wrong-form URI is visible in the Metro log. Logs the
+        // raw args as received from AudioCallBox AND the canonicalized
+        // routing URI actually used as from_uri. Remove once satisfied.
+        try {
+            utils.timestampedLog('[rec-dump] args=' + JSON.stringify({
+                filePath: args && args.filePath,
+                remoteUri: args && args.remoteUri,
+                remoteDisplayName: args && args.remoteDisplayName,
+                durationSec: args && args.durationSec,
+                hasPeaks: !!(args && args.peaks),
+                hasSpectrum: !!(args && args.spectrum),
+            }) + ' | rawRemoteUri=' + JSON.stringify(rawRemoteUri)
+                + ' | canonical remoteUri=' + JSON.stringify(remoteUri)
+                + ' | remoteDisplayName=' + JSON.stringify(remoteDisplayName));
+        } catch (e) { console.log('[rec-dump] arg dump failed', e && e.message); }
 
         const id = uuid.v4();
         const accountId = this.state.account.id;
@@ -41458,8 +43706,20 @@ class Sylk extends Component {
             const stripped = filePath.startsWith('file://') ? filePath.substr(7) : filePath;
             const exists = await RNFS.exists(stripped);
             if (exists) {
-                try { await RNFS.copyFile(stripped, destPath); }
+                let copied = false;
+                try { await RNFS.copyFile(stripped, destPath); copied = true; }
                 catch (e) { console.log('saveCallRecording copy failed:', e && e.message); }
+                // Remove the staging original from DocumentDirectoryPath once it
+                // has been safely copied into the per-transfer folder. The
+                // native recorder writes each call recording to the app's top-
+                // level files dir as a temp file; without this unlink every
+                // recording leaks a raw .ogg/.m4a there. Only delete after a
+                // successful copy (never lose the sole copy) and never unlink
+                // the destination itself.
+                if (copied && stripped !== destPath) {
+                    try { await RNFS.unlink(stripped); }
+                    catch (e) { console.log('saveCallRecording: temp cleanup failed:', e && e.message); }
+                }
             } else {
                 console.log('saveCallRecording: source file missing', stripped);
             }
@@ -41518,6 +43778,9 @@ class Sylk extends Component {
         if (peaks && Array.isArray(peaks.l) && Array.isArray(peaks.r)) {
             file_transfer.peaks = peaks;
         }
+        if (spectrum && spectrum.data) {
+            file_transfer.spectrum = spectrum;
+        }
 
         const text = utils.beautyFileNameForBubble(file_transfer);
         const ts = new Date();
@@ -41561,6 +43824,17 @@ class Sylk extends Component {
             this._classifyMessageCategory('application/sylk-file-transfer', metadataJson, null), // category
             0,                                       // has_link — file transfer, not text
         ];
+        // [rec-dump] The exact row being written: the from_uri/to_uri
+        // bytes + the full file_transfer blob. If from_uri ever shows a
+        // quote or wrong-form value here, it originated upstream of this
+        // INSERT (the args), since these params are bound positionally.
+        try {
+            utils.timestampedLog('[rec-dump] INSERT row: from_uri=' + JSON.stringify(params[8])
+                + ' to_uri=' + JSON.stringify(params[9])
+                + ' msg_id=' + JSON.stringify(id)
+                + ' file_transfer=' + JSON.stringify(file_transfer));
+        } catch (e) { console.log('[rec-dump] row dump failed', e && e.message); }
+        this._normalizeInsertUris(params, 8, 9);
         try {
             await this.ExecuteQuery(
                 "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -41572,14 +43846,10 @@ class Sylk extends Component {
             }
         }
 
-        // Push into in-memory messages so the chat view (if open with
-        // the remote contact) updates without a round-trip refetch.
+        // Push into the in-memory chat view (if open with the remote contact)
+        // so it updates without a round-trip refetch (state.messages retired).
         try {
-            const messages = { ...this.state.messages };
-            const list = messages[remoteUri] ? [...messages[remoteUri]] : [];
-            list.push(msg);
-            messages[remoteUri] = list;
-            this.setState({ messages });
+            this._appendContactMessage(remoteUri, msg);
         } catch (e) {
             console.log('saveCallRecording state update error:', e && e.message);
         }
@@ -41683,9 +43953,10 @@ class Sylk extends Component {
         // Force a refresh of the chat view if it's currently open with
         // the remote contact, so the new bubble lands immediately.
         try {
-            if (this.state.selectedContact && this.state.selectedContact.uri === remoteUri) {
+            if (this.state.selectedContact
+                    && this.getAllContactUris(this.state.selectedContact).includes(remoteUri)) {
                 if (typeof this.getMessages === 'function') {
-                    this.getMessages(remoteUri);
+                    this.getMessages(this.state.selectedContact.uri);
                 }
             }
         } catch (e) { /* ignore */ }
@@ -42740,7 +45011,13 @@ return (
 					)
 					}
 
-				{this.state.syncConversations && !this.state.lastSyncId && (
+				{/* Gated on journalSyncActive (continuous from sync-request until
+				    every batch is saved locally) rather than syncConversations
+				    (which toggles per batch to release the pagination gate and
+				    made this overlay flicker once per fetch). Covers every
+				    multi-batch sync. To restrict the blocking overlay to the
+				    first sync only, add `&& !this.state.lastSyncId`. */}
+				{this.state.journalSyncActive && !this.state.lastSyncId && !this.state.selectedContact && (
 					<View
 					  pointerEvents="auto"
 					  style={{
@@ -42949,7 +45226,7 @@ return (
             uri = item.uri;
             must_save = false;
             if (this.state.blockedUris.indexOf(uri) > -1) {
-                utils.timestampedLog('[history] [save] skip', uri, '— blocked');
+                //utils.timestampedLog('[history] [save] skip', uri, '— blocked');
                 tally.blocked++;
                 return;
             }
@@ -42958,7 +45235,7 @@ return (
 
 			if (this.state.accountSetting.privacy.rejectNonContacts && item.direction == 'incoming') {
 				if (!contact && !item.duration) {
-					utils.timestampedLog('[history] [save] skip', uri, '— rejectNonContacts (incoming, no contact, duration=0)');
+					//utils.timestampedLog('[history] [save] skip', uri, '— rejectNonContacts (incoming, no contact, duration=0)');
 					tally.rejectNonContact++;
 					return;
 				}
@@ -42966,34 +45243,23 @@ return (
 
 			if (this.state.accountSetting.privacy.rejectAnonymous && item.direction == 'incoming') {
 				if (utils.isAnonymous(uri)) {
-					utils.timestampedLog('[history] [save] skip', uri, '— rejectAnonymous');
+					//utils.timestampedLog('[history] [save] skip', uri, '— rejectAnonymous');
 					tally.rejectAnonymous++;
 					return;
 				}
 			}
 
             if (!contact) {
-                // Conference rooms get a LOCAL contact created on demand from
-                // call history (CDR to room@conference.X, un-mangled to the
-                // videoconference.X form upstream). Every other URI is
-                // contact-only — server history never inserts a new contact.
-                if (this._abIsConferenceUri(uri) && !this._abIsConferenceAnomaly(uri)) {
-                    contact = this.newContact(uri, item.displayName || null, {src: 'callHistory-conference'});
-                    if (!contact) {
-                        tally.noContact++;
-                        return;
-                    }
-                    // Room name must be the room number / empty, never the full URI.
-                    contact.name = this._abConferenceName(contact.name, uri);
-                    if (!Array.isArray(contact.tags)) contact.tags = [];
-                    if (contact.tags.indexOf('conference') === -1) contact.tags.push('conference');
-                    must_save = true;
-                    utils.timestampedLog('[history] [save] create conference contact', uri);
-                } else {
-                    utils.timestampedLog('[history] [save] skip', uri, '— no Sylk contact (history is contact-only)');
-                    tally.noContact++;
-                    return;
-                }
+                // History is contact-only — server call history never inserts a
+                // new contact. This applies to conference rooms too: a call to a
+                // conference room that is NOT already in the client contacts list
+                // is skipped, we do NOT auto-create a local @videoconference
+                // contact for it. (Conference rooms already present as contacts
+                // fall through to the normal update path below, since
+                // lookupContact would have found them.)
+                //utils.timestampedLog('[history] [save] skip', uri, '— no Sylk contact (history is contact-only)');
+                tally.noContact++;
+                return;
             }
 
             // Deleted-folder interaction. Server call history can carry OLD
@@ -43014,8 +45280,7 @@ return (
                     ? item.timestamp.getTime()
                     : (Date.parse(item.timestamp) || 0);
                 if (_callMs <= _delMs) {
-                    utils.timestampedLog('[history] [save] skip', uri,
-                        '— call older than deletion marker (contact in Deleted folder)');
+                    //utils.timestampedLog('[history] [save] skip', uri, '— call older than deletion marker (contact in Deleted folder)');
                     return;
                 }
                 utils.timestampedLog('[history] [save] reviving', uri,
@@ -43033,7 +45298,7 @@ return (
 
             } else {
                 if (contact.lastCallId === item.sessionId) {
-                    utils.timestampedLog('[history] [save] skip', uri, '— same sessionId as last call, no change');
+                    //utils.timestampedLog('[history] [save] skip', uri, '— same sessionId as last call, no change');
                     tally.sameCall++;
                     return;
                 } else {
@@ -43059,10 +45324,19 @@ return (
                 if (tags.indexOf('missed') === -1) {
                     tags.push('missed');
                 }
-                if (!Array.isArray(contact.unread)) contact.unread = [];
-                if (contact.unread.indexOf(item.sessionId) === -1) {
-                    contact.unread.push(item.sessionId);
-                    must_save = true;
+                // Per-contact unread BADGE: do NOT bump it for missed calls
+                // discovered during the INITIAL call-history import. On a fresh
+                // device every historical missed call would otherwise light up
+                // an unread badge on each contact. Only missed calls seen AFTER
+                // the first import has settled (live, or a later sync) bump the
+                // badge. The 'missed' tag and the global missedCalls counter
+                // (Missed category) are still tracked either way.
+                if (this._callHistoryInitialImport === false) {
+                    if (!Array.isArray(contact.unread)) contact.unread = [];
+                    if (contact.unread.indexOf(item.sessionId) === -1) {
+                        contact.unread.push(item.sessionId);
+                        must_save = true;
+                    }
                 }
                 if (missedCalls.indexOf(item.sessionId) === -1) {
                     missedCalls.push(item.sessionId);
@@ -43133,7 +45407,51 @@ return (
                         nameFilled:   nameFilled,
                     })
                 );
-                this.saveSylkContact(uri, contact, 'saveHistory');
+                // Guard against a stale contact index. The addressbook import
+                // re-inserts a URI's row with a NEW contact_id; if the in-memory
+                // index still points at the pre-import object, saveSylkContact's
+                // "UPDATE … WHERE contact_id=?" matches 0 rows and the call stamp
+                // (lastCallTimestamp + 'calls' tag) is silently lost — which is
+                // why only locally-created conference rooms (INSERT) survived and
+                // the Calls tab stayed empty. Re-resolve by URI and, if a
+                // different live row now exists, carry the call fields onto it so
+                // the write lands on the row that actually exists in SQL.
+                let _saveTarget = contact;
+                const _live = this.lookupContact(uri);
+                if (_live && _live.id && _live.id !== contact.id) {
+                    _live.direction = contact.direction;
+                    _live.lastCallId = contact.lastCallId;
+                    _live.lastCallDuration = contact.lastCallDuration;
+                    _live.lastCallMedia = contact.lastCallMedia;
+                    _live.conference = contact.conference;
+                    if (contact.lastCallTimestamp != null) _live.lastCallTimestamp = contact.lastCallTimestamp;
+                    if (contact.timestamp && (!_live.timestamp || contact.timestamp > _live.timestamp)) _live.timestamp = contact.timestamp;
+                    _live.tags = [...new Set([...(Array.isArray(_live.tags) ? _live.tags : []), ...(Array.isArray(contact.tags) ? contact.tags : [])])];
+                    if (Array.isArray(contact.unread)) {
+                        _live.unread = [...new Set([...(Array.isArray(_live.unread) ? _live.unread : []), ...contact.unread])];
+                    }
+                    if (!_live.name && contact.name) _live.name = contact.name;
+                    _saveTarget = _live;
+                    utils.timestampedLog('[history] [save] re-resolved', uri,
+                        'onto live row id=' + _live.id + ' (stamped object had id=' + contact.id + ')');
+                }
+                this.saveSylkContact(uri, _saveTarget, 'saveHistory');
+
+                // Conference rooms must exist 1:1 on XCAP (mangled to the
+                // @conference SIP-bridge domain). saveSylkContact does NOT
+                // auto-replicate 'saveHistory'-origin saves, so a room created
+                // here would stay local-only — giving more local
+                // @videoconference rooms than @conference entries on the
+                // server. Push it explicitly when it has no server link yet;
+                // replicateContact adopts an existing server room by URI
+                // (un-mangling on match) rather than creating a duplicate.
+                if (this._abIsConferenceUri && this._abIsConferenceUri(uri)
+                        && !this._abIsConferenceAnomaly(uri)
+                        && _saveTarget && !_saveTarget.remote_id) {
+                    Promise.resolve()
+                        .then(() => this._abReplicateToServer(_saveTarget))
+                        .catch((e) => utils.timestampedLog('[history] [save] conference replicate error', e && e.message));
+                }
             }
          });
 
@@ -43528,7 +45846,7 @@ return (
                     organization = {this.state.organization}
                     selectedContact = {this.state.selectedContact}
                     allContacts = {this.state.allContacts}
-                    messages = {this.state.messages}
+                    messages = {this._messagesMap()}
                     exportKey = {this.exportPrivateKey}
                     publicKey = {publicKey}
                     deleteMessages = {this.deleteMessages}
@@ -43545,6 +45863,7 @@ return (
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
                     saveContactByUser = {this.saveContactByUser}
+                    contactHasStoredMessages = {this.contactHasStoredMessages}
                     sendPublicKey = {this.sendPublicKeyToUri}
                     sendMessage = {this.sendMessage}
                     sendPeaksMessage = {this.sendPeaksMessage}
@@ -43555,6 +45874,7 @@ return (
                     showImportModal = {this.showImportPrivateKeyModal}
                     syncConversations = {this.state.syncConversations}
                     firstSyncPending = {this.state.firstSyncPending}
+                    journalSyncActive = {this.state.journalSyncActive}
                     showCallMeMaybeModal = {this.state.showCallMeMaybeModal}
                     toggleCallMeMaybeModal = {this.toggleCallMeMaybeModal}
                     /* PaymentInfoModal — opened from the kebab
@@ -43819,6 +46139,7 @@ return (
                     graveyardCount = {this.state.graveyardCount}
                     loadGraveyardContacts = {this.loadGraveyardContacts}
                     reviveContact = {this._reviveContact}
+                    blockDeletedContact = {this.blockDeletedContact}
                     ejectContact = {this.ejectContact}
                     ejectContacts = {this.ejectContacts}
                     restoreGraveyardContacts = {this.restoreGraveyardContacts}
@@ -43886,6 +46207,11 @@ return (
                         ...this.state.activeRemoteSharesByUri,
                     }}
                     orientation = {this.state.orientation}
+                    /* Member-count prefix in the contacts category bar is
+                       disabled — the category / group pills always render
+                       plain labels (no "64 All"). Hard-forced off here so a
+                       previously-persisted true value can't re-enable it. */
+                    showGroupMemberCounts = {false}
                     allContacts = {this.state.allContacts}
                     /* The system address-book entries loaded lazily —
                        populated by getABContacts() the FIRST time the
@@ -43923,6 +46249,7 @@ return (
                                  && this.state.accountSetting.privacy
                                  && this.state.accountSetting.privacy.dnd)}
                     contactsSyncing = {!!this.state.contactsSyncing}
+                    storageUpToDate = {!!this.state.storageUpToDateBanner}
                     toggleDnd = {this.toggleDnd}
                     isTablet = {this.state.isTablet}
                     /* See _uiIsFolded() comment above the NavigationBar
@@ -43969,7 +46296,8 @@ return (
                     selectedContact = {this.state.selectedContact}
                     call = {this.state.incomingCall || this.state.currentCall}
                     goBackFunc = {this.goBackToCall}
-                    messages = {this.state.messages}
+                    messages = {this._messagesMap()}
+                    contactMessages = {this.state.contactMessages}
                     deleteMessages = {this.deleteMessages}
                     sendMessage = {this.sendMessage}
                     sendPeaksMessage = {this.sendPeaksMessage}
@@ -43985,6 +46313,7 @@ return (
                     inviteContacts = {this.state.inviteContacts}
                     shareToContacts = {this.state.shareToContacts}
                     selectedContacts = {this.state.selectedContacts}
+                    mergeKeeperId = {this.state.mergeKeeperId}
                     updateSelection = {this.updateSelection}
                     contactSelectMode = {this.state.contactSelectMode}
                     enterContactSelectMode = {this.enterContactSelectMode}
@@ -43992,6 +46321,7 @@ return (
                     exitContactSelectMode = {this.exitContactSelectMode}
                     softDeleteContacts = {this.softDeleteContacts}
                     hardDeleteContacts = {this.hardDeleteContacts}
+                    mergeContacts = {this.mergeContacts}
                     restoreContacts = {this.restoreContacts}
                     // Finish-invite handler. Used by:
                     //  • ReadyBox's contacts-list invite mode
@@ -44035,6 +46365,7 @@ return (
                     keyStatus = {this.state.keyStatus}
                     showImportPrivateKeyModal = {this.state.showImportPrivateKeyModal}
                     downloadFile = {this.downloadFile}
+                    autoDownloadFile = {this.autoDownloadFile}
                     uploadFile = {this.uploadFile}
                     decryptFunc = {this.decryptFile}
                     openLogAttachment = {this.openLogAttachment}
@@ -44057,6 +46388,8 @@ return (
                     defaultConferenceDomain = {this.state.defaultConferenceDomain}
                     dark = {this.state.dark}
                     messagesMetadata = {messagesMetadata}
+                    messagesMetadataById = {this._getMetadataLookups().byId}
+                    messagesMetadataByOriginalId = {this._getMetadataLookups().byOriginalId}
                     chatScrollTrigger = {this.state.chatScrollTrigger}
                     /* Local-only owner coords for privacy-deferred
                        outgoing meet bubbles. Stamped on the wire
@@ -44400,7 +46733,7 @@ return (
                 reconnectingCall = {this.state.reconnectingCall}
                 muted = {this.state.muted}
                 goBackFunc={this.goBackToHomeFromCall}
-                messages = {this.state.messages}
+                messages = {this._messagesMap()}
                 sendMessage={this.sendMessage}
                 reSendMessage={this.reSendMessage}
                 expireMessage = {this.expireMessage}
@@ -44421,6 +46754,7 @@ return (
 				useInCallManger = {this.useInCallManger}
 				availableAudioDevices = {this.state.availableAudioDevices}
 				selectedAudioDevice = {this.state.selectedAudioDevice}
+				audioInputs = {this.state.audioInputs}
 				selectAudioDevice = {this.selectAudioDevice}
 				iceServers = {this.state.iceServers}
 				insets = {this._insets}
@@ -44547,13 +46881,14 @@ return (
                 inviteToConferenceFunc={this.inviteToConference}
                 selectedContacts={this.state.selectedContacts}
                 callState={callState}
-                messages = {this.state.messages}
+                messages = {this._messagesMap()}
                 getMessages = {this.getMessages}
                 finishInvite={this.finishInviteToConference}
                 sendConferenceMessage={this.sendConferenceMessage}
 				useInCallManger = {this.useInCallManger}
 				availableAudioDevices = {this.state.availableAudioDevices}
 				selectedAudioDevice = {this.state.selectedAudioDevice}
+				audioInputs = {this.state.audioInputs}
 				selectAudioDevice = {this.selectAudioDevice}
 				startRingback = {this.startRingback}
 				stopRingback = {this.stopRingback}
@@ -44737,6 +47072,21 @@ return (
         this.contactIndex = {};
         this.contactsIndexes = {};
         this.cdu_counter = 1;
+
+        // Reset the one-time "storage up to date" banner so the NEXT account's
+        // first sync can show it again, and cancel a pending auto-hide timer so
+        // it can't fire a stray setState after logout.
+        this._storageBannerShown = false;
+        if (this._storageBannerTimeoutId) {
+            clearTimeout(this._storageBannerTimeoutId);
+            this._storageBannerTimeoutId = null;
+        }
+        if (this.state.storageUpToDateBanner) {
+            this.setState({ storageUpToDateBanner: false });
+        }
+        if (this.state.journalSyncActive) {
+            this.setState({ journalSyncActive: false });
+        }
 
         // Reset the once-per-session gate on refreshAccountInfo so
         // the next account (post-switch / re-login) gets a fresh

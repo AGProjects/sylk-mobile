@@ -123,23 +123,14 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // Small "tel" pill rendered in the right-side metadata column for
-  // contacts whose URI is a phone number. Sits in the same vertical
+  // Dialpad icon rendered in the right-side metadata column for
+  // contacts whose URI is a phone number. Uses the same dialpad icon
+  // as the search bar's dialpad toggle. Sits in the same vertical
   // slot the storage-size text uses for chat contacts so the row
   // height stays consistent across types.
-  telPill: {
+  telIcon: {
     marginTop: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 8,
-    backgroundColor: '#95a5a6',
     alignSelf: 'flex-end',
-  },
-  telPillText: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.5,
   },
 
   timestamp: {
@@ -429,11 +420,23 @@ class ContactCard extends Component {
 		// it's implicit and gets re-appended automatically when
 		// dialling/messaging — so a bare local username stays bare, while a
 		// term that already named another domain keeps it.
-		if (this.props.searchMode) {
+		if (this.props.forceUriSubtitle) {
+			// Deleted / Graveyard views: the second line always shows the
+			// contact's FULL URI (user@domain) instead of the last-message
+			// preview, so the user can identify exactly which account a
+			// trashed / tombstoned row refers to. Overrides the conference
+			// "Audio/Video Conference" subtitle too — the raw URI is the
+			// most useful identifier in these lifecycle views.
+			subtitle = contact.uri;
+		} else if (this.props.searchMode) {
 			const _isSynthetic = Array.isArray(contact.tags)
 				&& contact.tags.indexOf('synthetic') > -1;
 			const _u = contact.uri || '';
-			if (_isSynthetic) {
+			if (isTelContact) {
+				// Phone-number contacts collapse to the bare +number even in
+				// search results — the SIP domain is never shown for tel URIs.
+				subtitle = _u.split('@')[0];
+			} else if (_isSynthetic) {
 				const _dd = (this.props.defaultDomain || '').toLowerCase();
 				const _at = _u.indexOf('@');
 				subtitle = (_at > -1 && _dd && _u.slice(_at + 1).toLowerCase() === _dd)
@@ -458,9 +461,22 @@ class ContactCard extends Component {
 				cardContainerClass,
 				{ minHeight: cardHeight },
 				isDark && darkStyles.card,
+				// Merge winner (keeper): highlight the tile so the user sees which
+				// contact the selection will be merged into.
+				contact.mergeWinner && { backgroundColor: isDark ? '#1b3a2b' : '#d7f0dd' },
 			  ]}
-			  onPress={() => this.setTargetUri(uri, contact)}
-			  onLongPress={() => { if (this.props.onLongPress) this.props.onLongPress(); }}
+			  onPress={() => {
+				// In select mode, a synthetic "New" (typed, not-yet-saved) row
+				// can't be selected — only existing contacts. A normal tap (not
+				// select mode) still opens it.
+				if (this.state.selectMode && contact && contact.searchNew) return;
+				this.setTargetUri(uri, contact);
+			  }}
+			  onLongPress={() => {
+				// Don't enter select mode by long-pressing a synthetic "New" row.
+				if (contact && contact.searchNew) return;
+				if (this.props.onLongPress) this.props.onLongPress();
+			  }}
 			>
 			  <View style={styles.rowContent}>
 				<Card.Content style={styles.cardContent}>
@@ -477,6 +493,27 @@ class ContactCard extends Component {
 						style={styles.gravatar}
 					  />
 					)}
+					{/* Bottom-left source badge on the avatar:
+					    • "New" — the synthetic typed-address row that matches no
+					      saved contact (searchNew set in searchedContact).
+					    • phone icon — the contact comes from the phone's OS address
+					      book (pure phonebook item is type:'contact'; a saved-from-AB
+					      contact carries the 'ab' tag / properties.ab_id / recordID). */}
+					{(contact && contact.searchNew) ? (
+					  <Text style={{ position: 'absolute', bottom: -2, left: -4,
+						fontSize: 9, lineHeight: 12, color: '#ffffff', textAlign: 'center',
+						backgroundColor: '#2e7d32', borderRadius: 7, overflow: 'hidden',
+						paddingHorizontal: 4, minWidth: 22 }}>New</Text>
+					) : ((!!(contact && (contact.type === 'contact'
+						|| (Array.isArray(contact.tags) && contact.tags.indexOf('ab') > -1)
+						|| (contact.properties && contact.properties.ab_id)
+						|| contact.recordID))) && (
+					  <View style={{ position: 'absolute', bottom: -2, left: -2,
+						backgroundColor: '#888888', borderRadius: 9, width: 18, height: 18,
+						alignItems: 'center', justifyContent: 'center' }}>
+						<Icon name="phone" size={11} color="#ffffff" />
+					  </View>
+					))}
 				  </View>
 	
 				  <View style={styles.mainContent}>
@@ -536,9 +573,7 @@ class ContactCard extends Component {
 				    // with a neutral "tel" pill so the row is visually
 				    // identifiable as a phone-number entry without
 				    // having to read the URI.
-				    <View style={styles.telPill}>
-				      <Text style={styles.telPillText}>tel</Text>
-				    </View>
+				    <Icon name="dialpad" size={16} color="#95a5a6" style={styles.telIcon} />
 				  ) : (
 				    <Text style={[styles.storageText, isDark && darkStyles.textSecondary]}>
 				      {contact.prettyStorage}
@@ -559,6 +594,9 @@ ContactCard.propTypes = {
   selectedContact: PropTypes.object,
   setTargetUri: PropTypes.func,
   searchMode: PropTypes.bool,
+  // Deleted / Graveyard views: force the second line to show the full
+  // contact URI instead of the last-message preview.
+  forceUriSubtitle: PropTypes.bool,
   chat: PropTypes.bool,
   orientation: PropTypes.string,
   isTablet: PropTypes.bool,

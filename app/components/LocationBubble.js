@@ -1580,17 +1580,11 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                     onSeekChange={(pct) => {
                         const idx = Math.round((pct / 100) * _maxIndex);
                         const clamped = Math.max(0, Math.min(_maxIndex, idx));
-                        // Per-move trace was here — fired many
-                        // times per second during a drag and never
-                        // turned out to be useful, just noise. The
-                        // start trace + the [APPLOG] release line
-                        // already cover every interesting moment
-                        // of a slider interaction. Re-enable below
-                        // if a future regression needs to inspect
-                        // individual gesture frames.
-                        // console.log('[map] ' + messageKey + ' slider move idx=' + clamped
-                        //     + '/' + _maxIndex
-                        //     + ' pct=' + pct.toFixed(1));
+                        // Per-move trace intentionally omitted — the
+                        // [APPLOG] release line below records the point
+                        // the user actually lands on. Re-enable a per-
+                        // point log here if a future regression needs to
+                        // inspect individual gesture frames.
                         setScrubIndex(clamped);
                     }}
                     onSeek={(pct) => {

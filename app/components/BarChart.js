@@ -97,12 +97,15 @@ const TrafficStats = (props) => {
         latencyColor = '#e67e22';
     }
 
-    // Always render both labels — the previous "showLoss && …" gate
-    // meant the loss caption only appeared once a sample had been
-    // non-zero, which left a blank space on healthy calls.
-    const lossLabel = currentLossNum < 1
-        ? 'No packet loss'
-        : 'Packet loss ' + currentLossNum.toFixed(currentLossNum < 10 ? 1 : 0) + '%';
+    // Only caption the packet-loss chart when there's actually loss to
+    // report. On a healthy call (currentLossNum < 1) the bar chart is a
+    // flat baseline, so a "No packet loss" label underneath it is just
+    // noise — leave it off and let the empty graph speak for itself.
+    // When loss is present we show the percentage.
+    const hasLoss = currentLossNum >= 1;
+    const lossLabel = hasLoss
+        ? 'Packet loss ' + currentLossNum.toFixed(currentLossNum < 10 ? 1 : 0) + '%'
+        : null;
 
     const codecLabel = audioCodec
         ? audioCodec.charAt(0).toUpperCase() + audioCodec.slice(1)
@@ -130,11 +133,13 @@ const TrafficStats = (props) => {
                 svg={{ fill: lossColor }}
                 contentInset={{ top: 5, bottom: 5 }}
             />
-            <View style={LABEL_WRAP}>
-                <Text style={[LABEL_BASE, { color: lossColor }]}>
-                    {lossLabel}
-                </Text>
-            </View>
+            {lossLabel ? (
+                <View style={LABEL_WRAP}>
+                    <Text style={[LABEL_BASE, { color: lossColor }]}>
+                        {lossLabel}
+                    </Text>
+                </View>
+            ) : null}
             {footer}
         </View>
     );

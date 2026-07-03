@@ -1653,6 +1653,7 @@ class Call extends Component {
                         awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall && (!this.state.call || this.state.call.state !== 'terminated')}
                         availableAudioDevices = {this.state.availableAudioDevices}
                         selectedAudioDevice = {this.state.selectedAudioDevice}
+                        audioInputs = {this.props.audioInputs}
                         selectAudioDevice = {this.props.selectAudioDevice}
 						useInCallManger = {this.props.useInCallManger}
 						insets = {this.state.insets}
@@ -1843,6 +1844,7 @@ class Call extends Component {
                     awaitingUserCallStart = {this.state.direction === 'outgoing' && !this.state.userStartedCall && !this.state.reconnectingCall && (!this.state.call || this.state.call.state !== 'terminated')}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
+					audioInputs = {this.props.audioInputs}
 					selectAudioDevice = {this.props.selectAudioDevice}
 					useInCallManger = {this.props.useInCallManger}
 					insets = {this.state.insets}
@@ -2016,6 +2018,7 @@ Call.propTypes = {
 	videoMuted              : PropTypes.bool,
     availableAudioDevices   : PropTypes.array,
     selectedAudioDevice     : PropTypes.string,
+    audioInputs             : PropTypes.array,
     selectAudioDevice       : PropTypes.func,
     startRingback           : PropTypes.func,
     stopRingback            : PropTypes.func,

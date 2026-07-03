@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal,
   View,
@@ -38,11 +38,24 @@ const AddContactModal = ({
   const [displayName, setDisplayName] = useState(propDisplayName || '');
   const [organization, setOrganization] = useState(propOrg || '');
 
+  // Focus the SIP-address field as soon as the modal opens so the user can
+  // start typing the address immediately (it's the primary input even though
+  // Display name renders above it).
+  const uriRef = useRef(null);
+
   useEffect(() => {
     setUri(propUri || '');
     setDisplayName(propDisplayName || '');
     setOrganization(propOrg || '');
   }, [propUri, propDisplayName, propOrg, show]);
+
+  useEffect(() => {
+    if (!show) return undefined;
+    const t = setTimeout(() => {
+      if (uriRef.current && uriRef.current.focus) uriRef.current.focus();
+    }, 250);
+    return () => clearTimeout(t);
+  }, [show]);
 
   const handleSave = () => {
     const contact = {uri: uri,
@@ -114,28 +127,25 @@ const AddContactModal = ({
 			>
 			  <TextInput
 				mode="flat"
-				label="Enter SIP address"
-				onChangeText={onUriChange}
-				value={uri}
-  			    autoCapitalize="none"
-			    autoCorrect={false}
-			  />
-	
-			  <TextInput
-				mode="flat"
 				label="Display name"
 				onChangeText={setDisplayName}
 				value={displayName}
 			    autoCorrect={false}
 				autoCapitalize="words"
 			  />
-	
+
+			  <TextInput
+				ref={uriRef}
+				mode="flat"
+				label="Enter SIP address"
+				onChangeText={onUriChange}
+				value={uri}
+  			    autoCapitalize="none"
+			    autoCorrect={false}
+			  />
+
 			</ScrollView>
 
-			  <Text style={containerStyles.note}>
-				The domain part is optional, it defaults to @{defaultDomain}
-			  </Text>
-	
 			  <View style={styles.buttonRow}>
 					{/* Match the button pattern used in EditContactModal /
 					    DeleteHistoryModal / DeleteFileTransfers — outlined
