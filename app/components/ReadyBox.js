@@ -3241,6 +3241,8 @@ class ReadyBox extends Component {
                         vibrate={this.props.vibrate}
                         playRecording={this.props.playRecording}
                         recordingDuration={this.props.recordingDuration}
+                        isLandscape={this.props.isLandscape}
+                        insets={this.props.insets}
                         onStateChange={this.onRecorderStateChange}
                     />
                     {this.showContactsList ?

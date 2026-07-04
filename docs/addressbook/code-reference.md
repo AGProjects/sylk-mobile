@@ -178,6 +178,24 @@ tell a cache load apart from an authoritative one.
 
 ---
 
+## PGP key save (self contact)
+
+The account keypair is carried on the self contact's `keys` attribute so it replicates
+across devices over XCAP (design: Chapter 22). The private key is symmetrically encrypted
+with the account password.
+
+| Function | Role |
+|----------|------|
+| `_abEnsureSelfKeys(account, options)` | Save the local keypair onto the self contact when none is present on the server; with a local keypair absent but a saved record present, falls through to restore. Idempotent and best-effort; skips when no account password is available. `options.force` re-saves even when one already exists (used on password change); `options.password` encrypts with a supplied password instead of `state.password`. |
+| `_abRestoreSelfKeys(account, serverKeys)` | Decrypt the saved `private_key` with the account password and import the keypair (`savePrivateKey`), so a new/keyless device adopts the account key automatically. Logs and returns on a wrong/empty password or malformed blob. |
+| `_abParseSelfKeys(selfServer)` | Parse the server self contact's `keys` attribute (JSON text) into an object, or null. |
+| `_abSelfKeysAttr` | Stash (`{ acc, v }`) carried into `_abServerContactPayload` → `_abContactAttributes` so the `keys` attribute is written and preserved on later self writes. |
+| `_abSelfKeysWriting` | Per-account in-flight guard preventing concurrent/duplicate save writes within a session. |
+
+`changeSipPassword(newPassword)` calls `_abEnsureSelfKeys(account, { force: true, password: newPassword })` after the new password is committed locally, re-encrypting the saved record with the new password. The call is deferred 5s so the server commits the password before the contact update. It is best-effort: a failure is logged and does not fail the password change.
+
+---
+
 ## Recency, diagnostics, and dumps
 
 | Function | Role |

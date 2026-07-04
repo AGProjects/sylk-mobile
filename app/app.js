@@ -382,9 +382,40 @@ function parseChunkMarker(text) {
 function chunkTextForSend(content, contentType) {
     if ((contentType !== 'text/plain' && contentType !== 'text/html') || typeof content !== 'string') return null;
     if (utf8ByteLength(content) <= MAX_TEXT_MESSAGE_BYTES) return null;
+    // TERMINATION GUARDS — both close an infinite send loop observed
+    // with a single-top-level-element html payload:
+    //
+    // 1. Already marker-prefixed: this IS a chunk minted by a previous
+    //    pass. sendMessage recurses once per chunk, and each chunk can
+    //    legitimately still exceed MAX_TEXT_MESSAGE_BYTES (the html
+    //    splitter's hardMax fallback allows pieces up to ~35KB).
+    //    Re-splitting would nest a second marker (breaking receiver
+    //    reassembly) — and when the splitter can't break the piece it
+    //    returned 1 chunk forever: split → recurse → split → … with a
+    //    fresh id each pass. Chunks ship as-is.
+    if (parseChunkMarker(content)) {
+        // A legal chunk can exceed MAX_TEXT_MESSAGE_BYTES (hardMax
+        // allows ~35KB) but never the wire-safe plaintext cap. Ship
+        // it as-is.
+        if (utf8ByteLength(content) <= CHUNK_HARD_MAX_BYTES) return null;
+        // Bigger than any legal chunk → this is a corrupted artifact
+        // of the pre-guard loop (markers stacked onto a FULL-SIZE
+        // body). Sending it unchunked times out on the server side
+        // (408, ~64KB+ SIP MESSAGE). Strip every stacked marker and
+        // fall through to a fresh, proper split.
+        let _m;
+        while ((_m = parseChunkMarker(content))) content = _m.body;
+        if (utf8ByteLength(content) <= MAX_TEXT_MESSAGE_BYTES) return null;
+    }
     const parts = contentType === 'text/html'
         ? splitHtmlByBytes(content, MAX_TEXT_MESSAGE_BYTES)
         : splitTextByBytes(content, MAX_TEXT_MESSAGE_BYTES - CHUNK_MARKER_BUDGET_BYTES);
+    // 2. Splitter made no progress (one un-splittable element, e.g. a
+    //    scraped <div> with no depth-0 boundary before hardMax): a
+    //    1-piece "split" is not a split. Send unchunked and let the
+    //    wire reject it if it's truly too big — better a visible
+    //    failure than an endless loop of identical sends.
+    if (parts.length <= 1) return null;
     const gid = Math.floor(Math.random() * 0x1000000); // 24-bit group id
     return parts.map((p, i) => encodeChunkMarker(gid, i, parts.length) + p);
 }
@@ -21194,27 +21225,54 @@ class Sylk extends Component {
         // keys) are never split. Each piece gets a fresh id and a 1ms-staggered
         // timestamp, then flows through the normal encrypt/save/send path on its
         // own; the recipient reassembles the pieces via the marker.
-        if (typeof message.text === 'string') {
+        if (typeof message.text === 'string' && !message._localOnly) {
             const markedPieces = chunkTextForSend(message.text, contentType);
             if (markedPieces) {
                 console.log('--- sendMessage splitting', message._id, contentType, 'into', markedPieces.length, 'chunks to', uri);
                 const baseTime = (message.createdAt instanceof Date)
                     ? message.createdAt.getTime()
                     : (typeof message.createdAt === 'number' ? message.createdAt : Date.now());
-                for (let i = 0; i < markedPieces.length; i++) {
-                    const partId = utils.generateUniqueId();
-                    const partMessage = {
-                        ...message,
-                        _id: partId,
-                        key: partId,
-                        text: markedPieces[i],
-                        createdAt: (message.createdAt instanceof Date) ? new Date(baseTime + i) : (baseTime + i),
-                        pending: true,
-                        sent: false,
-                        received: false,
-                        direction: 'outgoing',
-                    };
-                    await this.sendMessage(uri, partMessage, contentType);
+                // The SENDER shows ONE bubble for a chunked message —
+                // the same way the receiver renders one after
+                // reassembly. Pieces go out WIRE-ONLY (_chunkPart:
+                // skip local save + skip UI append), and the ORIGINAL
+                // full-text message is saved + rendered once below
+                // (_localOnly: skip the wire). IMDN state updates for
+                // piece ids are translated back to the visible
+                // bubble's id via _chunkPartToVisible (see
+                // updateMessageState / outgoingMessageStateChanged).
+                this._chunkPartToVisible = this._chunkPartToVisible || {};
+                // try/catch so a throw mid-loop (id generation, encrypt,
+                // save) can't abort the split SILENTLY — that's how a
+                // resent message once vanished: the old bubble was
+                // already deleted, chunk 1 threw, and the rejection
+                // was swallowed upstream. Log + system-message instead.
+                try {
+                    for (let i = 0; i < markedPieces.length; i++) {
+                        const partId = utils.generateUniqueId();
+                        this._chunkPartToVisible[partId] = message._id;
+                        const partMessage = {
+                            ...message,
+                            _id: partId,
+                            key: partId,
+                            text: markedPieces[i],
+                            createdAt: (message.createdAt instanceof Date) ? new Date(baseTime + i) : (baseTime + i),
+                            pending: true,
+                            sent: false,
+                            received: false,
+                            direction: 'outgoing',
+                            _chunkPart: true,
+                        };
+                        await this.sendMessage(uri, partMessage, contentType);
+                    }
+                    // All pieces on the wire — persist and render the
+                    // single visible bubble with the FULL text.
+                    message._localOnly = true;
+                    await this.sendMessage(uri, message, contentType);
+                } catch (error) {
+                    console.log('--- sendMessage chunk loop failed:', error && error.message);
+                    this.renderSystemMessage(uri,
+                        'Failed to send message in chunks: ' + (error && error.message));
                 }
                 return;
             }
@@ -21371,28 +21429,42 @@ class Sylk extends Component {
             this.uploadFile(message.metadata);
         }        
 
-        if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys && !this.state.keyDifferentOnServer) {
+        if (message._localOnly) {
+            // Visible bubble of a chunked send: the pieces are already
+            // on the wire (_chunkPart above); persist the FULL text
+            // once and never touch the wire with it.
+            this.saveOutgoingMessage(uri, message, 0, message.contentType);
+        } else if (message.contentType !== 'application/sylk-file-transfer' && message.contentType !== 'text/pgp-public-key' && public_keys && this.state.keys && !this.state.keyDifferentOnServer) {
             await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
                 utils.timestampedLog('Outgoing [message]', message._id, 'encrypted', 'to', uri);
-                this.saveOutgoingMessage(uri, message, 1, contentType);
+                // Chunk pieces are wire-only: the visible bubble is
+                // saved separately via _localOnly, so persisting each
+                // piece would bring back one-bubble-per-chunk.
+                if (!message._chunkPart) {
+                    this.saveOutgoingMessage(uri, message, 1, contentType);
+                }
                 this._sendMessage(uri, encryptedMessage, message._id, message.contentType, message.createdAt);
             }).catch((error) => {
                 utils.timestampedLog('Failed to encrypt outgoing [message]:', error, 'to', uri);
                 let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1): error.message;
                 this.renderSystemMessage(uri, error_message, 'outgoing');
-                this.saveOutgoingMessage(uri, message, 0, contentType);
+                if (!message._chunkPart) {
+                    this.saveOutgoingMessage(uri, message, 0, contentType);
+                }
                 //this.outgoingMessageStateChanged(message._id, 'failed');
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             });
         } else {
-            this.saveOutgoingMessage(uri, message, 0, message.contentType);
+            if (!message._chunkPart) {
+                this.saveOutgoingMessage(uri, message, 0, message.contentType);
+            }
             if (message.contentType !== 'application/sylk-file-transfer' ) {
                 utils.timestampedLog('Outgoing non-encrypted [message]', message._id, 'to', uri);
                 this._sendMessage(uri, message.text, message._id, message.contentType, message.createdAt);
             }
         }
 
-        if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
+        if (!message._chunkPart && this.state.selectedContact && this.state.selectedContact.uri === uri) {
             //console.log('Added render message', message._id, message.contentType);
             // Use functional setState to avoid stale-closure races. Another
             // in-flight sendMessage (or _injectLocationBubble) may have replaced
@@ -22437,17 +22509,34 @@ class Sylk extends Component {
             return;
         }
 
-        // Plain text: delete the old bubble and re-send as a fresh one.
-        await this.deleteMessage(message._id, uri).then((result) => {
+        // Plain text / html: delete the old bubble and re-send as a
+        // fresh one. The ORIGINAL contentType is preserved — this used
+        // to fall back to sendMessage's text/plain default, so a failed
+        // text/html message was resent as plain text (and its markup
+        // rendered as a wall of raw tags on the receiving side).
+        //
+        // The send is awaited inside try/catch: a throw anywhere in
+        // sendMessage (e.g. the chunk-split loop) used to reject
+        // silently AFTER the old bubble was already deleted — the
+        // message just vanished with no trace. Now the failure is
+        // logged and surfaced as a system message in the chat.
+        const resendContentType = message.contentType || 'text/plain';
+        try {
+            await this.deleteMessage(message._id, uri);
+        } catch (error) {
+            console.log('Failed to delete old messages');
+        }
+        try {
             message._id = uuid.v4();
             message.failed = false;
             message.pending = true;
             message.sent = false;
             message.received = false;
-            this.sendMessage(uri, message);
-        }).catch((error) => {
-            console.log('Failed to delete old messages');
-        });
+            await this.sendMessage(uri, message, resendContentType);
+        } catch (error) {
+            console.log('[resend] sendMessage failed:', error && error.message);
+            this.renderSystemMessage(uri, 'Resend failed: ' + (error && error.message));
+        }
     }
 
 	deleteTransferProgress(id) {
@@ -22713,6 +22802,12 @@ class Sylk extends Component {
         // mark message status
         // state can be failed or accepted
 
+        // Chunked sends: piece ids are wire-only — route the state to
+        // the single visible bubble (see updateMessageState).
+        if (this._chunkPartToVisible && id in this._chunkPartToVisible) {
+            id = this._chunkPartToVisible[id];
+        }
+
         utils.timestampedLog('Outgoing [message]', id, 'state is', state);
 
         if (state === 'accepted') {
@@ -22811,6 +22906,14 @@ class Sylk extends Component {
     // triggers the matching UI refresh. Pass file_transfer for transfers
     // (null for plain messages). Returns false on invalid state or error.
     async updateMessageState(id, state, file_transfer, label) {
+        // Chunked sends: IMDN states arrive for the wire-only piece
+        // ids; the user sees ONE bubble saved under the original id.
+        // Redirect so ticks land on the visible bubble. Updates are
+        // idempotent (delivered → displayed only moves forward), so
+        // several pieces reporting the same state is harmless.
+        if (this._chunkPartToVisible && id in this._chunkPartToVisible) {
+            id = this._chunkPartToVisible[id];
+        }
         const cols = this.messageStateColumns(state);
         if (cols === null) {
             console.log('Invalid', label, 'state', id, state);
@@ -23848,11 +23951,20 @@ class Sylk extends Component {
             return;
         }
 
-        if (uri.indexOf('@conference.') > -1) {
-            return;
-        }
-
-        if (uri.indexOf('@videoconference.') > -1) {
+        if (uri.indexOf('@conference.') > -1
+            || uri.indexOf('@videoconference.') > -1) {
+            // Conference rooms send no IMDNs, so skip the disposition logic
+            // below — but the unread badge must STILL be cleared, otherwise
+            // opening a conference room's chat leaves the counter stuck
+            // (resetUnreadCount at the bottom of this method was never
+            // reached for @conference / @videoconference URIs).
+            try {
+                if (Platform.OS === 'android' && UnreadModule
+                        && typeof UnreadModule.resetUnreadForContact === 'function') {
+                    this._nativeResetUnread(uri);
+                }
+            } catch (e) { /* native bridge optional */ }
+            this.resetUnreadCount(uri);
             return;
         }
 
@@ -23979,14 +24091,18 @@ class Sylk extends Component {
 		}
 
 		for (const contact of contacts) {
-			if (contact.unread.length > 0) {
-				contact.unread = [];
+			if (Array.isArray(contact.unread) && contact.unread.length > 0) {
+				// Prune the cleared ids from the global missedCalls counter
+				// BEFORE emptying the list (missed-call sessionIds live in
+				// contact.unread too — emptying first made this loop a no-op
+				// and the Missed counter never dropped).
 				contact.unread.forEach((id) => {
 					idx = missedCalls.indexOf(id);
 					if (idx > -1) {
 						missedCalls.splice(idx, 1);
 					}
 				});
+				contact.unread = [];
 				changes = true;
 			}
 	

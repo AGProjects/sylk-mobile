@@ -48,6 +48,12 @@ const ChatBubble = memo(
 	imageGroups,
 	groupOfImage,
 	thumbnailGridSize,
+    // Safe-area insets — needed so landscape (notch/nav) side insets are
+    // subtracted from the full-width audio bubble.
+    insets,
+    // Called with currentMessage when the user taps the Resend button
+    // on a failed bubble (wired to app.js reSendMessage via ChatBox).
+    onResend,
     // catch-all for any other GiftedChat bubble props
     ...restProps
   }) => {
@@ -143,10 +149,12 @@ const ChatBubble = memo(
     const leftTimeTextColor  = theme.isDark ? '#FFFFFF' : '#667781';
     const rightTimeTextColor = '#667781';
 
-    if (currentMessage.failed) {
-      rightColor = 'red';
-      //leftColor = 'red';
-    } else if (currentMessage.pinned) {
+    // Failed messages no longer repaint the whole bubble red — the
+    // bubble keeps its normal theme colour and gets a red alert badge
+    // (!) pinned to its top-right corner instead (see customView).
+    // The memo comparator already watches the `failed` flag, so the
+    // badge appears/disappears on state flips without extra plumbing.
+    if (currentMessage.pinned) {
       rightColor = '#2ecc71';
       leftColor = '#2ecc71';
     }
@@ -329,8 +337,12 @@ const ChatBubble = memo(
     // covers the typical 11pt time text's full line-height plus the
     // bubble's bottom padding.
     const customView = () => (
+      // box-none (not none): the wrapper itself stays transparent to
+      // touches, but interactive children — the failed-message Resend
+      // button below — still receive them. All decorative children
+      // keep their own pointerEvents="none".
       <View
-        pointerEvents="none"
+        pointerEvents="box-none"
         onLayout={e => handleBubbleLayout && handleBubbleLayout(currentMessage._id, e)}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       >
@@ -355,6 +367,44 @@ const ChatBubble = memo(
               style={{ opacity: 0.9 }}
             />
           </View>
+        ) : null}
+        {currentMessage.failed ? (
+          // Top-LEFT corner, mirroring the html fullscreen button's
+          // icon size (20). Equal 6px inset from BOTH the top and
+          // left edges so the badge sits visually centred in the
+          // corner curve (bubbleRadius 16) instead of hugging the
+          // top edge.
+          <View
+            pointerEvents="none"
+            accessibilityLabel="Message failed to send"
+            style={{ position: 'absolute', top: 6, left: 6 }}
+          >
+            {/* 21px — same footprint as the resend button's circle. */}
+            <Icon name="alert-circle" size={21} color="#e74c3c" />
+          </View>
+        ) : null}
+        {/* Failed → one-tap Resend, pinned top-RIGHT (mirroring the
+            (!) badge on the left). html bubbles get their resend
+            button inside the html control cluster in ChatBox instead
+            (their top-right corner already hosts size pill +
+            fullscreen), so skip them here. */}
+        {currentMessage.failed && !currentMessage.html && typeof onResend === 'function' ? (
+          <TouchableOpacity
+            accessibilityLabel="Resend message"
+            onPress={() => onResend(currentMessage)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 6,
+              backgroundColor: 'rgba(0,0,0,0.4)',
+              borderRadius: 11,
+              padding: 3,
+            }}
+          >
+            {/* 15px icon in a 21px circle — matches the (!) badge. */}
+            <Icon name="refresh" size={15} color="#fff" />
+          </TouchableOpacity>
         ) : null}
         {isDimmedByReplyTarget ? (
           <View
@@ -608,11 +658,19 @@ const ChatBubble = memo(
       // in ContactsListBox.renderMessageAudio. Both sides need to
       // agree on the playButton + margin + column padding budget or
       // the bubble background will mismatch its content.
-      // Compact audio bubble: playback now happens in the standalone recorder
-      // player card, so the bubble is just a play button + duration label. Pin
-      // a modest fixed width (enough for "Call recording of 1h 6m 40s") on both
-      // sides so incoming/outgoing stay symmetric.
-      const _audioWrapperWidth = 240;
+      // Audio bubble spans (nearly) the FULL chat width. Playback happens in
+      // the standalone recorder player card, so the bubble is just a play
+      // button + duration label — stretched edge-to-edge like a wide banner.
+      // window width minus the bubble margin (24) and a small row gutter so it
+      // doesn't overflow; same value both sides keeps incoming/outgoing
+      // symmetric.
+      // Subtract the safe-area side insets (notch / nav bar in landscape) from
+      // the window width first — otherwise the bubble is sized against the full
+      // physical width and overflows into the insets in landscape. Then leave
+      // clear margins (bubble margin 24 + avatar gutter + row padding).
+      const _audioSideInsets = (insets?.left || 0) + (insets?.right || 0);
+      const _audioWinW = Dimensions.get('window').width - _audioSideInsets;
+      const _audioWrapperWidth = Math.round(_audioWinW - 90);
       content = (
         <Bubble
           {...bubbleProps}

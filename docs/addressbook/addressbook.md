@@ -177,6 +177,7 @@ have no first-class server column:
 | `bypassdnd`, `muted` | per-contact behavioral flags (stored locally as tags) |
 | `read_receipts` | `false` ⇔ the local `noread` tag (receipts off); default `true` |
 | `caregiver` | relationship flag (stored locally in `localProperties`) |
+| `keys` | **self contact only** — the account PGP keypair saved for cross-device restore (Chapter 22) |
 
 Per-device data — codecs, encryption mode, zRTP state, auto-record, auto-answer, and the
 OS-address-book link — is **never** synced.
@@ -628,3 +629,46 @@ Contact data is protected in layers, from fully automatic to manual.
   human-readable records intended for recovery and debugging, not an in-app "import this
   file" button. Routine restore is the server re-fetch above; the snapshots are the safety
   net when the server copy itself needs to be reconstructed.
+
+---
+
+## 22. PGP private-key save on the self contact
+
+The account's PGP keypair is saved on the user's **own** server contact so it
+replicates across the user's devices over the same XCAP channel as everything else — no
+separate transport, no manual export. The keypair travels in the self contact's `keys`
+attribute (Chapter 6) as a JSON record:
+
+```
+{ private_key, public_key, device, timestamp }
+```
+
+`private_key` is **symmetrically encrypted with the account (SIP) password** and is never
+stored in clear. The `public_key`, the writing `device` label, and an ISO `timestamp`
+travel in clear so any device can see which device saved the key and when. Because the
+record is just another contact attribute, it rides the normal contact-write path
+(Chapter 9) to the server and on to the user's other devices.
+
+**Save (key landing).** When a keypair is generated or imported on a device, the save
+fires (a tick after the keypair is committed locally, and again on each authoritative
+addressbook load). It is **idempotent**: it only writes when the self contact carries no
+`keys` attribute on the server, so the first device to set up the account wins and later
+loads are no-ops. If the account has no password available, the save is **skipped** —
+an unprotected key is never stored.
+
+**Restore (new or keyless device).** A device that signs in without a local keypair but
+finds a saved `keys` record on its own server contact decrypts `private_key` with the account
+password and imports the keypair automatically. This supersedes the manual "import key"
+modal: signing in on a new device with the right password is enough to recover messaging.
+A wrong or missing password just logs and leaves the manual import as the fallback.
+
+**Re-save on password change.** Because `private_key` is encrypted with the account
+password, changing the password leaves the saved copy encrypted with the **old** one,
+which a later restore could no longer open. A successful password change therefore forces
+a re-save: the private key is re-encrypted with the **new** password and the `keys`
+attribute is rewritten through the normal contact update. The contact update is **delayed
+by 5 seconds** so the server has time to commit the new password before the rewrite goes
+out. This is **best-effort** — the
+password change has already succeeded on the server, so a re-save failure is logged but
+never surfaced as a password-change error (the next authoritative load will not repair it,
+since a saved record already exists; recovery is to change the password again or re-import).

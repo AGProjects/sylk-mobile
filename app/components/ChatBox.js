@@ -154,6 +154,13 @@ const htmlDomVisitors = {
   },
 };
 
+// Inline preview cap for rich/structured html bubbles. Scraped page
+// fragments can lay out thousands of pixels tall (mostly invisible
+// scaffolding); instead of dumping all of it into the chat, the bubble
+// shows just the top of the document, clipped at this height, and the
+// fullscreen button opens the complete message in the WebView viewer.
+const HTML_PREVIEW_MAX_HEIGHT = 400;
+
 function linkifyHtml(html) {
   if (!html) return html;
 
@@ -569,6 +576,18 @@ class ChatBox extends Component {
 
         this.ended = true;
     }
+
+	  // One-tap resend for failed bubbles (the corner button on text/
+	  // file bubbles via ChatBubble.onResend, and the refresh button in
+	  // the html control cluster). Same routing as the contextual-menu
+	  // Resend action.
+	  resendFailedMessage = (message) => {
+		if (typeof this.props.reSendMessage !== 'function') return;
+		const uri = this.props.selectedContact
+			? this.props.selectedContact.uri
+			: this.props.targetUri;
+		this.props.reSendMessage(message, uri);
+	  };
 
 	  handleBubbleLayout = (id, event) => {
 		const width = event.nativeEvent.layout.width;
@@ -1544,6 +1563,7 @@ class ChatBox extends Component {
 		  previousMessage={props.previousMessage}
 		  nextMessage={props.nextMessage}
 		  position={props.position}
+		  insets={this.props.insets}
 		  mediaLabels={this.state.mediaLabels}
 	      replyMessages = {this.state.replyMessages}
 		  bubbleWidths={this.state.bubbleWidths}
@@ -1558,6 +1578,7 @@ class ChatBox extends Component {
 		  renderMessageVideo={this.renderMessageVideo}
 		  renderMessageAudio={this.renderMessageAudio}
 		  renderMessageText={this.renderMessageText}
+		  onResend={this.resendFailedMessage}
 		  focusedMessageId={this.state.focusedMessageId}
 		  replyTargetId={(this.state.reactionTarget && this.state.reactionTarget._id)
 		      || (this.state.replyingTo && this.state.replyingTo._id)
@@ -3690,35 +3711,10 @@ class ChatBox extends Component {
 		</TouchableHighlight>
 	  );
 
-	  // Compact audio bubble: just a play button + duration label. Playback
-	  // (waveform, spectrum, slider, seek) now happens in the standalone
-	  // recorder player card, so the bubble no longer renders any graphs.
-	  return (
-		<View
-		  style={[
-			styles.audioContainer,
-			{
-			  flexDirection: 'row',
-			  alignItems: 'center',
-			  justifyContent: isIncoming ? 'flex-start' : 'flex-end',
-			  paddingVertical: 6,
-			},
-		  ]}
-		>
-		  {isIncoming && playButton}
-
-		  <View style={{ flex: 1, justifyContent: 'center', paddingHorizontal: 10 }}>
-			<Text
-			  numberOfLines={1}
-			  style={{ color: audioFgColor, fontSize: 14, textAlign: isIncoming ? 'left' : 'right' }}
-			>
-			  {durationLabel}
-			</Text>
-		  </View>
-
-		  {!isIncoming && playButton}
-		</View>
-	  );
+	  // The audio bubble body renders nothing — the kebab line + label + play
+	  // button live in the media custom-view (see the `currentMessage.audio`
+	  // branch), and playback happens in the standalone recorder player card.
+	  return null;
 	};
 
 	thumbnailSelectionChanged(newSelected, item) {
@@ -7307,6 +7303,18 @@ class ChatBox extends Component {
 
 					   </View>
 					  </View>
+
+					  {/* Play — opens the standalone player card. Sits on the
+						  kebab line, to the right of the label. */}
+					  {!isTransfering ?
+					  <IconButton
+						icon="play"
+						size={24}
+						onPress={() => this.toggleAudioPlayback(currentMessage)}
+						style={{ margin: 0 }}
+						iconColor={_audioTextFg}
+					  />
+					  : null}
 				</View>
 			);
 
@@ -7609,13 +7617,52 @@ class ChatBox extends Component {
 
 				    const isWideHtml = /<table|<tr|<td|<th/i.test(html);
 
-			   
-				return (
-                <View style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginRight: 10}]}>
+				    // The fullscreen affordance used to be gated on TABLE markup
+				    // only, so a big <div>-structured payload (e.g. a pasted web
+				    // page fragment) rendered cramped in the bubble with no way
+				    // to open it full screen. Treat any block-structured or
+				    // large payload as fullscreen-worthy too.
+				    const isRichHtml = isWideHtml
+				        || /<div|<section|<article|<ul|<ol|<blockquote|<pre|<img/i.test(html)
+				        || html.length > 600;
 
+				return (
+                <View
+                  // paddingTop clears the corner buttons (failure badge
+                  // top-left, fullscreen top-right: 6px inset + 26px
+                  // visual) so the payload starts below them instead of
+                  // rendering underneath.
+                  style={[styles.messageTextContainer, extraStyles, { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginRight: 10, paddingTop: 28}]}>
+
+				  {/* Rich/structured payloads render as a PREVIEW: the
+				      document is clipped at HTML_PREVIEW_MAX_HEIGHT and the
+				      fullscreen button opens the complete message in the
+				      WebView viewer. Simple formatted messages (short, no
+				      block scaffolding) still render in full. */}
+				  <View style={isRichHtml
+				      ? { maxHeight: HTML_PREVIEW_MAX_HEIGHT, overflow: 'hidden', flexShrink: 1 }
+				      : { flexShrink: 1 }}>
 				  <RenderHTML
 					source={{ html: html }}
 					contentWidth={w}
+					// Strip layout-dangerous INLINE styles. Pasted web-page
+					// fragments (virtualized lists especially) carry inline
+					// height / width / position / transform values that make
+					// no sense inside a chat bubble. Confirmed via the
+					// [html-bubble] logs: a <div style="height:3916px"> list
+					// sizer forced the bubble exactly 3916px tall while its
+					// position-styled children painted past the bubble's
+					// bottom edge (the "text overflows the bubble bottom"
+					// bug), and an inline width:768px forced another
+					// message's content wider than the screen. Dropping
+					// these lets content size naturally to contentWidth.
+					// margins/paddings are stripped too: scraped fragments
+					// carry inline spacing from the source page's layout
+					// (list gutters, sticky offsets) that renders as blank
+					// vertical runs in a bubble. Element-model defaults
+					// (e.g. <p> spacing) are unaffected — this only drops
+					// author inline styles.
+					ignoredStyles={['height', 'width', 'minWidth', 'minHeight', 'maxWidth', 'maxHeight', 'position', 'top', 'right', 'bottom', 'left', 'transform', 'zIndex', 'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']}
 					customHTMLElementModels={customHTMLElementModels}
 					domVisitors={htmlDomVisitors}
 					  tagsStyles={{
@@ -7647,16 +7694,58 @@ class ChatBox extends Component {
 						  }
 					}}
           		  />
-				  {isWideHtml && (
-                    <TouchableOpacity
-                      onPress={() => {
-                          if (typeof this.props.setFullScreen === 'function') this.props.setFullScreen(true);
-                          this.setState({ fullScreenHtml: currentMessage, actionSheetDisplayed: false });
-                      }}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      style={{ position: 'absolute', top: 2, right: 2, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 14, padding: 3 }}>
-                      <Icon name="fullscreen" size={20} color="#fff" />
-                    </TouchableOpacity>
+				  </View>
+				  {isRichHtml && (
+                    // Top-right control cluster: [resend (failed only)] ·
+                    // [size pill] · [fullscreen]. One absolutely-positioned
+                    // row instead of individually-positioned buttons so the
+                    // elements can never overlap regardless of pill width.
+                    // The anchor row has marginRight: 10, so `right: -4`
+                    // lands the cluster 6px from the bubble's right edge —
+                    // matching the (!) badge's 6px inset on the far corner.
+                    <View
+                      pointerEvents="box-none"
+                      style={{
+                        position: 'absolute',
+                        top: 6,
+                        right: -4,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                      }}>
+                      {currentMessage.failed && (
+                        <TouchableOpacity
+                          accessibilityLabel="Resend message"
+                          onPress={() => this.resendFailedMessage(currentMessage)}
+                          hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                          style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 11, padding: 3, marginRight: 6 }}>
+                          {/* 15px icon in a 21px circle — matches the (!) badge. */}
+                          <Icon name="refresh" size={15} color="#fff" />
+                        </TouchableOpacity>
+                      )}
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          backgroundColor: 'rgba(0,0,0,0.4)',
+                          borderRadius: 13,
+                          height: 26,
+                          paddingHorizontal: 9,
+                          justifyContent: 'center',
+                          marginRight: 6,
+                        }}>
+                        <Text style={{ color: '#fff', fontSize: 11, fontWeight: '600' }}>
+                          {utils.beautySize((currentMessage.html || '').length)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={() => {
+                            if (typeof this.props.setFullScreen === 'function') this.props.setFullScreen(true);
+                            this.setState({ fullScreenHtml: currentMessage, actionSheetDisplayed: false });
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }}
+                        style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 14, padding: 3 }}>
+                        <Icon name="fullscreen" size={20} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
                   )}
                   </View>
 
@@ -10424,6 +10513,17 @@ scrollToMessage(id) {
                       // inner row so the bubble truly reaches both
                       // screen edges.
                       const isPreview = props.currentMessage?.metadata?.preview === true;
+                      // Call-recording bubbles: suppress the remote avatar on
+                      // the left (renderAvatar={null} makes gifted-chat's Avatar
+                      // return null) — a call recording is your own capture, not
+                      // a message "from" the other party, so the avatar is noise.
+                      const isCallRec = props.currentMessage?.metadata?.call_recording === true;
+                      if (isCallRec) {
+                          return this.renderMessageRow(
+                              <Message {...props} renderAvatar={null} />,
+                              props.currentMessage
+                          );
+                      }
                       if (!isPreview) {
                           return this.renderMessageRow(
                               <Message {...props} />,
@@ -11091,7 +11191,18 @@ scrollToMessage(id) {
         + '<meta name="viewport" content="width=device-width, initial-scale=1">'
         + '<style>body{margin:0;padding:12px;font:16px -apple-system,system-ui,sans-serif;color:#111;-webkit-text-size-adjust:100%;word-wrap:break-word}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px;vertical-align:top}'
-        + 'img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>'
+        + 'img{max-width:100%;height:auto}pre{white-space:pre-wrap}'
+        // Neutralise layout scaffolding carried by scraped page
+        // fragments (same class of junk the inline bubble strips via
+        // RenderHTML ignoredStyles): virtualized-list sizer divs with
+        // huge inline heights, absolutely-positioned rows offset
+        // thousands of px down, and transforms. Without this the
+        // WebView reproduces the source page's full — mostly empty —
+        // scroll canvas. Forcing everything back into normal flow
+        // collapses the blank space while keeping the text readable.
+        + '*{position:static!important;height:auto!important;min-height:0!important;'
+        + 'max-width:100%!important;transform:none!important}'
+        + '</style></head><body>'
         + utils.cleanHtml(_m.html || '')
         + '</body></html>';
     return (

@@ -155,7 +155,28 @@ done
 #   rn-webrtc:pc:DEBUG  — react-native-webrtc per-stat / per-event
 #                         spam (multiple lines per second during a
 #                         call, hundreds of KB per minute).
-SUPPRESS_REGEX='rn-webrtc:pc:DEBUG'
+#
+#   Qualcomm/QTI vendor crashes — on Qualcomm-chipset devices (e.g.
+#   the Sony XQ-EC72) the system process `com.qti.qcc` repeatedly
+#   FATAL-crashes inside `com.qualcomm.qti.qdma.*` (RegionServer /
+#   ActiveCareService / DMENativeInterface) with a
+#   StringIndexOutOfBoundsException parsing the serving MCC while the
+#   radio has no full network yet. This is a vendor/firmware bug,
+#   totally unrelated to Sylk (`com.agprojects.sylk`), but it spams
+#   the AndroidRuntime:E channel with full stack traces. Drop the
+#   vendor frames + the crash header that name these packages. Real
+#   Sylk crashes don't reference com.qualcomm/com.qti so they pass
+#   through untouched.
+#   The captured trace often arrives WITHOUT the com.qualcomm.* frames
+#   (only the generic AOSP frames survive logcat), so package-name
+#   matching alone isn't enough. We also drop the bug's distinctive
+#   signature: a StringIndexOutOfBoundsException routed through
+#   String.substring/checkBoundsBeginEnd on a vendor "Thread-N" (Sylk's
+#   own crashes land on "main" / "mqt_*", never "Thread-N", so they're
+#   unaffected). Only the boilerplate bottom frame (java.lang.Thread.run)
+#   is shared with real traces — losing that one frame doesn't hide a
+#   genuine crash, whose exception + app frames still print.
+SUPPRESS_REGEX='rn-webrtc:pc:DEBUG|com\.qualcomm\.qti|com\.qti\.qcc|qdma\.(util|dme|app)|RegionServer|DMENativeInterface|ActiveCareService|StringIndexOutOfBoundsException|String\.checkBoundsBeginEnd|at java\.lang\.String\.substring|FATAL EXCEPTION: Thread-|at java\.lang\.Thread\.run\(Thread\.java'
 
 # Spawn one logcat-tail per device. Each one prefixes every line with
 # "[<serial>] " via awk so the merged file stays grep-friendly:
@@ -182,7 +203,20 @@ for serial in "${DEVICES[@]}"; do
         # fflush() for the same reason.
         adb -s "$serial" logcat -v threadtime "${FILTER[@]}" \
             | grep --line-buffered -Ev "$SUPPRESS_REGEX" \
-            | awk -v dev="$serial" '{ m = split($0, parts, /\\n/); for (i = 1; i <= m; i++) print "[" dev "] " parts[i]; fflush(); }'
+            | awk -v dev="$serial" '{
+                  raw = $0; hms = "";
+                  # logcat threadtime prefix: "MM-DD HH:MM:SS.mmm  PID  TID  L  TAG: msg".
+                  # Keep only HH:MM:SS (chars 7-14) and drop the date, millis, pid/tid,
+                  # level and tag (e.g. "I ReactNativeJS:") so the file is readable.
+                  if (raw ~ /^[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\./) {
+                      hms = substr(raw, 7, 8);
+                      sub(/^[0-9][0-9]-[0-9][0-9] [0-9:.]+ +[0-9]+ +[0-9]+ +[A-Z] +[^:]+: /, "", raw);
+                  }
+                  pfx = "[" dev "] " (hms == "" ? "" : hms " ");
+                  m = split(raw, parts, /\\n/);
+                  for (i = 1; i <= m; i++) print pfx parts[i];
+                  fflush();
+              }'
     ) >> "$LOG" &
     PIDS+=($!)
 done

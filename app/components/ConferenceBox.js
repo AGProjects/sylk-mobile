@@ -4773,10 +4773,57 @@ class ConferenceBox extends Component {
     //   1) local user (myself), always idx 1
     //   2) remote participants in this.state.participants order
     //
-    // Each line is `[grid] N/M <uri> audio:X video:Y stalled:Y/N`.
+    // Each line is `[grid] N/M <uri> audio:X video:Y codec:C stalled:Y/N`.
     // The stalled flag mirrors the visibleParticipants filter so
     // you can tell from a single line whether a participant is in
     // the rendered grid right now.
+
+    // Compact negotiated-video-codec descriptor for a peer
+    // connection, e.g. "H264/42e01f" or "VP8". Reads the local
+    // description (the offer/answer WE generated — the first real
+    // payload in its m=video is the negotiated codec). When our
+    // local answer carries NO video codec (m-line rejected, i.e.
+    // codec mismatch) but the remote offered one, returns
+    // "none(remote:H264/42001f)" so the roster line points straight
+    // at the mismatch — this is exactly the desktop→mobile black
+    // tile case: desktop offers H264 Baseline (42001f), Android
+    // only decodes Constrained Baseline (42e01f) / High (640c1f).
+    _pcVideoCodec(pc) {
+        const first = (desc) => {
+            try {
+                if (!desc || !desc.sdp) return null;
+                const m = desc.sdp.match(/^m=video\s+\d+\s+\S+\s+([\d ]+)\s*$/m);
+                if (!m) return null;
+                // Cut the video section at the next m= line so PT
+                // lookups can't leak into a following m-line.
+                let section = desc.sdp.slice(desc.sdp.indexOf(m[0]));
+                const next = section.indexOf('\nm=', 1);
+                if (next > -1) section = section.slice(0, next);
+                const ignored = /^(rtx|red|ulpfec|flexfec-03|cn)$/i;
+                for (const pt of m[1].trim().split(/\s+/)) {
+                    const rtp = section.match(new RegExp('^a=rtpmap:' + pt + ' ([^/\\s]+)', 'm'));
+                    if (!rtp || ignored.test(rtp[1])) continue;
+                    const fmtp = section.match(new RegExp('^a=fmtp:' + pt + ' .*?profile-level-id=([0-9a-fA-F]{6})', 'm'));
+                    if (!fmtp) return rtp[1];
+                    // Append the decoded H.264 profile so nobody has
+                    // to translate the hex by hand in the log —
+                    // "H264/42001f(Baseline-3.1)". Dashes instead of
+                    // spaces keep the roster line one-token-per-field.
+                    const friendly = /^h264$/i.test(rtp[1])
+                        ? utils.h264ProfileLevelName(fmtp[1]) : null;
+                    return rtp[1] + '/' + fmtp[1]
+                        + (friendly ? '(' + friendly.replace(/ /g, '-') + ')' : '');
+                }
+            } catch (e) { /* best effort */ }
+            return null;
+        };
+        if (!pc) return '?';
+        const local = first(pc.localDescription);
+        if (local) return local;
+        const remote = first(pc.remoteDescription);
+        return remote ? 'none(remote:' + remote + ')' : 'none';
+    }
+
     _dumpParticipantRoster(reason) {
         const remote = this.state.participants || [];
         const stalled = this.state.stalledParticipants || new Set();
@@ -4800,9 +4847,15 @@ class ConferenceBox extends Component {
 
         console.log('[conference] [grid] === participants after',
             reason, '(viewMode=' + this.state.viewMode + ') ===');
+        let myCodec = '?';
+        try {
+            myCodec = this._pcVideoCodec(this.props.call && this.props.call._pc);
+        } catch (e) { /* best effort */ }
+
         console.log('[conference] [grid]', `1/${total}`, myUri,
             'type:webrtc',
             'audio:' + myAudio, 'video:' + myVideo,
+            'codec:' + myCodec,
             'stalled:N',
             'self');
 
@@ -4837,9 +4890,14 @@ class ConferenceBox extends Component {
                 pType = 'sip';
             }
             const isStalled = stalled.has(p.id) ? 'Y' : 'N';
+            let codec = '?';
+            try {
+                codec = this._pcVideoCodec(p._pc);
+            } catch (e) { /* best effort */ }
             console.log('[conference] [grid]', `${i + 2}/${total}`, uri,
                 'type:' + pType,
                 'audio:' + audio, 'video:' + video,
+                'codec:' + codec,
                 'stalled:' + isStalled);
             if (!stalled.has(p.id)) {
                 rosterShort.push(this._shortLabel(uri, false));

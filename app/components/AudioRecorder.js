@@ -1,5 +1,5 @@
 import React, { Component, Fragment } from 'react';
-import { View, Platform, TouchableHighlight, TouchableOpacity, DeviceEventEmitter, NativeModules, Keyboard, Modal } from 'react-native';
+import { View, Platform, TouchableHighlight, TouchableOpacity, DeviceEventEmitter, NativeModules, Keyboard, Modal, BackHandler } from 'react-native';
 const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
 import { IconButton, Title, Button, Text, ActivityIndicator, Menu } from 'react-native-paper';
 import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -26,6 +26,7 @@ import RNFS from 'react-native-fs';
 import Sound from 'react-native-sound';
 
 import styles from '../assets/styles/ReadyBox';
+import DarkModeManager from '../DarkModeManager';
 
 const audioRecorderPlayer = new AudioRecorderPlayer();
 // Poll record-metering and playback-position callbacks at ~20 fps
@@ -251,6 +252,15 @@ class AudioRecorder extends Component {
 			currentPositionSec: 0,
 			currentDurationSec: (info.durationSec || 0) * 1000,
 		});
+		// Hardware Back while the player modal is open must do exactly what the
+		// Back button does (stop + return to chat) — and consume the event so it
+		// never also exits the chat/app. Registered last → highest priority.
+		if (!this._msgBackSub) {
+			this._msgBackSub = BackHandler.addEventListener('hardwareBackPress', () => {
+				this.stopMessageAudio();
+				return true;
+			});
+		}
 		this._beginMsgPlayback(path, startPct);
 	}
 
@@ -265,6 +275,8 @@ class AudioRecorder extends Component {
 	// (getDuration) IS correct, so we advance position from Date.now() and only
 	// use e.duration for the total. (Same approach the old ChatBox player used.)
 	async _beginMsgPlayback(path, startPct) {
+		// Replaying voids any pending "auto-return to chat" countdown.
+		this._clearMsgEndTimer();
 		try { audioRecorderPlayer.stopPlayer(); } catch (_e) {}
 		try { audioRecorderPlayer.removePlayBackListener(); } catch (_e) {}
 		this._msgSeeked = false;
@@ -299,6 +311,13 @@ class AudioRecorder extends Component {
 					this._msgPlayerActive = false;
 					this._msgSeeked = false;
 					this.setState({ msgPlaying: false, currentPositionSec: 0, currentDurationSec: dur, previewScrubPct: null });
+					// Auto-return to the chat 5 s after the clip ends. Pressing
+					// play again (→ _beginMsgPlayback) voids this timer.
+					this._clearMsgEndTimer();
+					this._msgEndTimer = setTimeout(() => {
+						this._msgEndTimer = null;
+						this.stopMessageAudio();
+					}, 5000);
 					return;
 				}
 				this.setState({
@@ -316,20 +335,26 @@ class AudioRecorder extends Component {
 	async toggleMsgPlayPause() {
 		const src = this.state.msgPlayback;
 		if (!src) return;
+		// Debounce a stray double-fire so a pause can't be instantly undone.
+		const nowT = Date.now();
+		if (this._msgToggleAt && (nowT - this._msgToggleAt) < 350) return;
+		this._msgToggleAt = nowT;
+		this._clearMsgEndTimer();
 		try {
 			if (this.state.msgPlaying) {
-				// Freeze the wall-clock position at the current spot.
-				this._msgBaseMs = Math.max(0, Math.min(this.state.currentDurationSec || 0, this._msgBaseMs + (Date.now() - this._msgWall)));
-				await audioRecorderPlayer.pausePlayer();
+				// PAUSE. pausePlayer() did NOT actually silence this stream, so
+				// stop the player the same definitive way the Back button does
+				// (stopPlayer + removePlayBackListener) — but keep the modal open
+				// and remember the position, so the next tap restarts from there.
+				this._msgBaseMs = Math.max(0, Math.min(this.state.currentDurationSec || 0,
+					this._msgBaseMs + (Date.now() - this._msgWall)));
+				try { audioRecorderPlayer.stopPlayer(); } catch (_e) {}
+				try { audioRecorderPlayer.removePlayBackListener(); } catch (_e) {}
+				this._msgSeeked = false;
+				this._msgPlayerActive = false;
 				this.setState({ msgPlaying: false, currentPositionSec: this._msgBaseMs });
-			} else if (this._msgPlayerActive) {
-				// Paused mid-clip → resume: re-anchor the wall clock, keep base.
-				this._msgWall = Date.now();
-				await audioRecorderPlayer.resumePlayer();
-				this.setState({ msgPlaying: true });
 			} else {
-				// Finished (or never started) → (re)start from the current
-				// position (0 after an end-of-clip rewind).
+				// RESUME / restart from the saved position.
 				const dur = this.state.currentDurationSec || (src.durationSec ? src.durationSec * 1000 : 0);
 				const startPct = (dur > 0 && this.state.currentPositionSec > 0)
 					? Math.max(0, Math.min(100, (this.state.currentPositionSec / dur) * 100))
@@ -339,8 +364,18 @@ class AudioRecorder extends Component {
 		} catch (e) { console.log('toggleMsgPlayPause error', e && e.message); }
 	}
 
+	// Void the pending "auto-return to chat after end" countdown.
+	_clearMsgEndTimer() {
+		if (this._msgEndTimer) {
+			clearTimeout(this._msgEndTimer);
+			this._msgEndTimer = null;
+		}
+	}
+
 	stopMessageAudio() {
 		try { utils.timestampedLog('[applog] [audio] [recorder.stopMessageAudio] stop + reveal chat'); } catch (_e) {}
+		this._clearMsgEndTimer();
+		if (this._msgBackSub) { this._msgBackSub.remove(); this._msgBackSub = null; }
 		try { audioRecorderPlayer.stopPlayer(); } catch (_e) {}
 		try { audioRecorderPlayer.removePlayBackListener(); } catch (_e) {}
 		this._msgSeeked = false;
@@ -1174,6 +1209,21 @@ class AudioRecorder extends Component {
 
     render() {
         const activityTitle = this.state.recording ? "Recording audio" : "Audio recording ready";
+        // Landscape → two columns (title/timestamp/Back on the left, the graphs
+        // card on the right) so the player fits; portrait keeps the vertical stack.
+        // Uses the app-wide isLandscape prop (passed from ReadyBox) rather than
+        // recomputing from Dimensions.
+        const _isLandscape = !!this.props.isLandscape;
+        // Theme palette for the playback modal so it matches Day/Night.
+        const _pt = DarkModeManager.getTheme();
+        const _mp = {
+            backdrop:  _pt.isDark ? 'rgba(0,0,0,0.95)' : 'rgba(255,255,255,0.94)',
+            fg:        _pt.textPrimary,
+            fgDim:     _pt.textSecondary,
+            border:    _pt.isDark ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.25)',
+            sliderUnfilled: _pt.isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.2)',
+            waveUnplayed:   _pt.isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.25)',
+        };
         return (
             <Fragment>
                     { this.state.recordArmed && !this.state.recording ?
@@ -1507,6 +1557,11 @@ class AudioRecorder extends Component {
                             transparent
                             visible
                             animationType="fade"
+                            // Keep the Android status/navigation bars visible —
+                            // the modal window sits below them instead of drawing
+                            // edge-to-edge over them.
+                            statusBarTranslucent={false}
+                            // Hardware Back == the Back button: stop + return.
                             onRequestClose={this.stopMessageAudio}
                         >
                             {/* Dim backdrop over the still-mounted chat. Tapping
@@ -1515,14 +1570,22 @@ class AudioRecorder extends Component {
                             <TouchableOpacity
                                 activeOpacity={1}
                                 onPress={this.stopMessageAudio}
-                                style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' }}
+                                style={{ flex: 1, backgroundColor: _mp.backdrop, justifyContent: 'center', alignItems: 'center' }}
                             >
                                 {/* Card — stop propagation so taps on the player
                                     don't dismiss the modal. */}
                                 <TouchableOpacity activeOpacity={1} onPress={() => {}}>
-                            <Title style={styles.activityTitle}>{this.state.msgPlayback.title}</Title>
+                            <View style={{
+                                flexDirection: _isLandscape ? 'row' : 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                            }}>
+                            {/* Left (landscape) / top (portrait): title + timestamp,
+                                plus the Back button in landscape. */}
+                            <View style={{ alignItems: 'center', justifyContent: 'center', marginRight: _isLandscape ? 24 : 0 }}>
+                            <Title style={[styles.activityTitle, { color: _mp.fg }]}>{this.state.msgPlayback.title}</Title>
                             {this.state.msgPlayback.createdAt ? (
-                                <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, textAlign: 'center', marginTop: -6, marginBottom: 16 }}>
+                                <Text style={{ color: _mp.fgDim, fontSize: 13, textAlign: 'center', marginTop: -6, marginBottom: 16 }}>
                                     {(() => {
                                         try {
                                             const d = new Date(this.state.msgPlayback.createdAt);
@@ -1533,6 +1596,20 @@ class AudioRecorder extends Component {
                                     })()}
                                 </Text>
                             ) : null}
+                            {_isLandscape ? (
+                                <Button
+                                    mode="contained"
+                                    icon="keyboard-backspace"
+                                    buttonColor="rgba(69, 114, 166, 1)"
+                                    textColor="white"
+                                    style={{ marginTop: 20, alignSelf: 'center' }}
+                                    onPress={this.stopMessageAudio}
+                                >
+                                    Back
+                                </Button>
+                            ) : null}
+                            </View>
+                            {/* Right (landscape) / middle (portrait): the graphs card. */}
                             {(() => {
                                 const src = this.state.msgPlayback;
                                 const dur = this.state.currentDurationSec
@@ -1556,7 +1633,7 @@ class AudioRecorder extends Component {
                                         backgroundColor: 'transparent',
                                         borderRadius: 16,
                                         borderWidth: 0.5,
-                                        borderColor: 'white',
+                                        borderColor: _mp.border,
                                         paddingVertical: 8,
                                         paddingHorizontal: 12,
                                         flexDirection: 'row',
@@ -1564,9 +1641,8 @@ class AudioRecorder extends Component {
                                     }}>
                                         <View style={{
                                             flexDirection: 'column',
-                                            alignItems: 'flex-end',
+                                            alignItems: 'center',
                                             justifyContent: 'center',
-                                            paddingRight: 8,
                                         }}>
                                             {src.spectrum ? (
                                                 <SpectrumPlayback
@@ -1599,9 +1675,9 @@ class AudioRecorder extends Component {
                                                     // doesn't flinch.
                                                     return (
                                                         <React.Fragment>
-                                                            <AudioWaveform peaks={pk} progress={wfProgress} width={sliderWidth} height={28} barCount={60} channel="l" playedColor="orange" unplayedColor="rgba(255,255,255,0.35)" />
+                                                            <AudioWaveform peaks={pk} progress={wfProgress} width={sliderWidth} height={28} barCount={60} channel="l" playedColor="orange" unplayedColor={_mp.waveUnplayed} />
                                                             <View style={{ flexDirection: 'row', justifyContent: 'flex-start', width: sliderWidth }}>
-                                                                <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.7)' }}>Levels</Text>
+                                                                <Text style={{ fontSize: 9, color: _mp.fgDim }}>Levels</Text>
                                                             </View>
                                                         </React.Fragment>
                                                     );
@@ -1638,7 +1714,7 @@ class AudioRecorder extends Component {
                                                         ) : null}
                                                         {!stereo ? (
                                                             <View style={{ flexDirection: 'row', justifyContent: 'flex-start', width: sliderWidth }}>
-                                                                <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.7)' }}>Levels</Text>
+                                                                <Text style={{ fontSize: 9, color: _mp.fgDim }}>Levels</Text>
                                                             </View>
                                                         ) : null}
                                                     </React.Fragment>
@@ -1650,9 +1726,9 @@ class AudioRecorder extends Component {
                                                 height={4}
                                                 knobWidth={6}
                                                 knobHeight={20}
-                                                color={"#ffffff"}
-                                                unfilledColor="rgba(255,255,255,0.3)"
-                                                knobColor={"#ffffff"}
+                                                color={_mp.fg}
+                                                unfilledColor={_mp.sliderUnfilled}
+                                                knobColor={_mp.fg}
                                                 onSeekStart={() => {
                                                     if (this.state.msgPlaying) {
                                                         try { audioRecorderPlayer.pausePlayer(); } catch (_e) {}
@@ -1685,29 +1761,30 @@ class AudioRecorder extends Component {
                                                 width={sliderWidth}
                                                 durationSec={durSec}
                                             />
+                                            {/* Play/pause — centered under the duration scale.
+                                                Only the IconButton carries onPress (wrapper is a
+                                                plain View); a Touchable wrapper here double-fires
+                                                and the pause is undone by an instant resume. */}
+                                            <View
+                                                style={{
+                                                    height: 48, width: 48, justifyContent: 'center',
+                                                    borderRadius: 24, alignSelf: 'center', marginTop: 12,
+                                                }}>
+                                                <IconButton
+                                                    size={28}
+                                                    onPress={this.toggleMsgPlayPause}
+                                                    style={{ backgroundColor: 'rgba(69, 114, 166, 1)', marginLeft: 0, marginRight: 0 }}
+                                                    iconColor="white"
+                                                    icon={isPlaying ? 'pause' : 'play'}
+                                                />
+                                            </View>
                                         </View>
-                                        {/* Play/pause */}
-                                        <TouchableHighlight
-                                            onPress={this.toggleMsgPlayPause}
-                                            underlayColor="transparent"
-                                            style={[{
-                                                height: 48, width: 48, justifyContent: 'center',
-                                                borderRadius: 24, alignSelf: 'flex-end', marginLeft: 0,
-                                            }]}>
-                                            <IconButton
-                                                size={28}
-                                                onPress={this.toggleMsgPlayPause}
-                                                style={{ backgroundColor: 'rgba(69, 114, 166, 1)', marginLeft: 0, marginRight: 0 }}
-                                                iconColor="white"
-                                                icon={isPlaying ? 'pause' : 'play'}
-                                            />
-                                        </TouchableHighlight>
                                     </View>
                                 );
                             })()}
-                            {/* Back → stop playback and return to the chat
-                                (dismissing the modal leaves the chat exactly
-                                where it was — it was only dimmed, not unmounted). */}
+                            {/* Back (portrait only — in landscape it's in the left
+                                column). Stops playback and returns to the chat. */}
+                            {!_isLandscape ? (
                             <Button
                                 mode="contained"
                                 icon="keyboard-backspace"
@@ -1718,6 +1795,8 @@ class AudioRecorder extends Component {
                             >
                                 Back
                             </Button>
+                            ) : null}
+                            </View>
                                 </TouchableOpacity>
                             </TouchableOpacity>
                         </Modal>

@@ -88,3 +88,84 @@ index 344ddd4..efb9013 100644
              }
          }
  
+diff --git a/node_modules/react-native-audio-recorder-player/android/src/main/java/com/dooboolab.audiorecorderplayer/RNAudioRecorderPlayerModule.kt b/node_modules/react-native-audio-recorder-player/android/src/main/java/com/dooboolab.audiorecorderplayer/RNAudioRecorderPlayerModule.kt
+index 1111111..2222222 100644
+--- a/node_modules/react-native-audio-recorder-player/android/src/main/java/com/dooboolab.audiorecorderplayer/RNAudioRecorderPlayerModule.kt
++++ b/node_modules/react-native-audio-recorder-player/android/src/main/java/com/dooboolab.audiorecorderplayer/RNAudioRecorderPlayerModule.kt
+@@ -1,7 +1,10 @@
+ package com.dooboolab.audiorecorderplayer
+ 
+ import android.Manifest
++import android.content.Context
+ import android.content.pm.PackageManager
++import android.media.AudioDeviceInfo
++import android.media.AudioManager
+ import android.media.MediaPlayer
+ import android.media.MediaRecorder
+ import android.net.Uri
+@@ -24,6 +27,10 @@
+     private var _meteringEnabled = false
+     private var mediaRecorder: MediaRecorder? = null
+     private var mediaPlayer: MediaPlayer? = null
++    // Preferred playback output device id (AudioDeviceInfo.getId()). -1 = use
++    // the system default route. Set from JS via setPlaybackDevice and applied
++    // to the MediaPlayer on startPlay and live while playing.
++    private var preferredOutputDeviceId: Int = -1
+     private var recorderRunnable: Runnable? = null
+     private var mTask: TimerTask? = null
+     private var mTimer: Timer? = null
+@@ -34,6 +41,42 @@
+         return tag
+     }
+ 
++    // Choose which output device playback is routed to. deviceId is an
++    // AudioDeviceInfo.getId() (as enumerated by AudioManager.getDevices /
++    // SylkAudioRouteModule.getAudioOutputs); pass -1 to restore the system
++    // default route. Applied immediately if a player is active, and again on
++    // the next startPlay.
++    @ReactMethod
++    fun setPlaybackDevice(deviceId: Double, promise: Promise) {
++        preferredOutputDeviceId = deviceId.toInt()
++        applyPreferredOutputDevice()
++        promise.resolve(preferredOutputDeviceId.toDouble())
++    }
++
++    // Apply preferredOutputDeviceId to the current MediaPlayer (if any).
++    // MediaPlayer.setPreferredDevice is API 28+; a null target restores the
++    // platform's default routing. Best-effort — never throws into callers.
++    private fun applyPreferredOutputDevice() {
++        val mp = mediaPlayer ?: return
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
++            return
++        }
++        try {
++            if (preferredOutputDeviceId < 0) {
++                mp.setPreferredDevice(null)
++                return
++            }
++            val am = reactContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
++            val target: AudioDeviceInfo? = am
++                .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
++                .firstOrNull { it.id == preferredOutputDeviceId }
++            mp.setPreferredDevice(target)
++            Log.d(tag, "applyPreferredOutputDevice id=$preferredOutputDeviceId matched=${target != null}")
++        } catch (e: Exception) {
++            Log.e(tag, "applyPreferredOutputDevice failed: ${e.message}")
++        }
++    }
++
+     @ReactMethod
+     fun startRecorder(path: String, audioSet: ReadableMap?, meteringEnabled: Boolean, promise: Promise) {
+         try {
+@@ -241,6 +284,11 @@
+             mediaPlayer = MediaPlayer()
+         }
+ 
++        // Route playback to the user-selected output device (if any) before
++        // prepare/start so the first audio frame already comes out the right
++        // device. No-op when preferredOutputDeviceId is -1 (system default).
++        applyPreferredOutputDevice()
++
+         try {
+             if ((path == "DEFAULT")) {
+                 mediaPlayer!!.setDataSource("${reactContext.cacheDir}/$defaultFileName")

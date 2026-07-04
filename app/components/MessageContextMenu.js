@@ -251,13 +251,26 @@ const MessageContextMenu = ({
                 .replace(/background-color:[^;"]+;?/gi, '')
                 .replace(/color:[^;"]+;?/gi, '');
             const fg = isOutgoing ? C.echoTextOut : C.echoText;
-            // Wide/complex HTML (e.g. a pasted table) renders broken here; show a
-            // small text preview instead (matches the thread bubble).
-            if (/<table|<tr|<td|<th/i.test(html)) {
+            // Rich/structured HTML (tables, pasted page fragments full
+            // of divs/sections, or just plain BIG payloads) renders
+            // broken or enormous here — the echo is meant to be a
+            // compact reminder of the tapped bubble, not the document.
+            // Same gating as the thread bubble's preview cap
+            // (isRichHtml in ChatBox.renderMessageText): show a few
+            // lines of extracted text instead. Whitespace is collapsed
+            // (stripped markup leaves long newline runs) and the input
+            // to Text is sliced — numberOfLines already clips the
+            // render, the slice just avoids shaping a 100KB string.
+            if (/<table|<tr|<td|<th|<div|<section|<article|<ul|<ol|<blockquote|<pre|<img/i.test(html)
+                    || html.length > 600) {
+                const echoText = utils.html2text(message.html)
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 400);
                 return (
                     <View style={[styles.echoBubble, { backgroundColor: isOutgoing ? C.echoBgOut : C.echoBg }]}>
                         <Text style={{ color: fg, fontSize: 15 }} numberOfLines={6} ellipsizeMode="tail">
-                            {utils.html2text(message.html)}
+                            {echoText}
                         </Text>
                     </View>
                 );

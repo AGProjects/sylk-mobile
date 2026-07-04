@@ -9,6 +9,8 @@ import LinearGradient from 'react-native-linear-gradient';
 import { RTCView } from 'react-native-webrtc';
 import { View } from 'react-native';
 
+import utils from '../utils';
+
 //import styles from '../assets/styles/ConferenceMatrixParticipant';
 
 import { StyleSheet } from 'react-native';
@@ -92,6 +94,34 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     letterSpacing: 0.3,
+  },
+
+  // Red warning chip rendered top-center of a tile whose video
+  // m-line was REJECTED in our answer (codec mismatch — the
+  // publisher offered a codec this device can't decode, e.g.
+  // desktop H264 Baseline 42001f vs Android's Constrained
+  // Baseline 42e01f / High 640c1f). The track object still
+  // exists so the grid thinks video:1, but nothing ever decodes
+  // — without this chip the user just sees a black tile.
+  codecWarnWrapper: {
+    position: 'absolute',
+    top: 10,
+    left: 0,
+    right: 0,
+    zIndex: 12,
+    alignItems: 'center',
+    pointerEvents: 'none',
+  },
+  codecWarn: {
+    backgroundColor: 'rgba(211, 47, 47, 0.85)',
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    overflow: 'hidden',
+    maxWidth: '90%',
   },
 
   controls: {
@@ -452,6 +482,48 @@ class ConferenceMatrixParticipant extends Component {
         }
     }
 
+    // First real video codec ("H264/42001f", "VP8", …) from an
+    // RTCSessionDescription, or null when the m=video line is
+    // absent / rejected / carries only rtx-red-ulpfec plumbing.
+    // Mirrors ConferenceBox._pcVideoCodec's parser.
+    _firstVideoCodec(desc) {
+        try {
+            if (!desc || !desc.sdp) return null;
+            const m = desc.sdp.match(/^m=video\s+\d+\s+\S+\s+([\d ]+)\s*$/m);
+            if (!m) return null;
+            let section = desc.sdp.slice(desc.sdp.indexOf(m[0]));
+            const next = section.indexOf('\nm=', 1);
+            if (next > -1) section = section.slice(0, next);
+            const ignored = /^(rtx|red|ulpfec|flexfec-03|cn)$/i;
+            for (const pt of m[1].trim().split(/\s+/)) {
+                const rtp = section.match(new RegExp('^a=rtpmap:' + pt + ' ([^/\\s]+)', 'm'));
+                if (!rtp || ignored.test(rtp[1])) continue;
+                const fmtp = section.match(new RegExp('^a=fmtp:' + pt + ' .*?profile-level-id=([0-9a-fA-F]{6})', 'm'));
+                return fmtp ? rtp[1] + '/' + fmtp[1] : rtp[1];
+            }
+        } catch (e) { /* best effort */ }
+        return null;
+    }
+
+    // Detects the undecodable-video case: the publisher's offer
+    // carries a real video codec but our generated answer carries
+    // NONE — libwebrtc found no shared codec and rejected the
+    // m-line. Returns the codec the remote offered (so the chip
+    // can say WHAT we couldn't decode), or null when negotiation
+    // is fine / not applicable.
+    _videoCodecMismatch() {
+        try {
+            const pc = this.props.participant && this.props.participant._pc;
+            if (!pc || !pc.remoteDescription || !pc.localDescription) return null;
+            const offered = this._firstVideoCodec(pc.remoteDescription);
+            if (!offered) return null;             // remote sends no video at all
+            const negotiated = this._firstVideoCodec(pc.localDescription);
+            return negotiated ? null : offered;    // answer kept a codec → fine
+        } catch (e) {
+            return null;
+        }
+    }
+
     render() {
         // const classes = classNames({
         //     'poster' : !this.state.hasVideo,
@@ -520,6 +592,34 @@ class ConferenceMatrixParticipant extends Component {
         // ConferenceBox supplies the exact label via speakerLabel
         // so layout decisions stay in one place. Anchored to the
         // tile's bottom-right corner — see speakerTagWrapper.
+        // Codec-mismatch warning chip — see codecWarnWrapper for
+        // the rationale. Only meaningful on remote tiles (the
+        // local tile renders our own camera, no decode involved).
+        let codecWarning = null;
+        if (!this.props.isLocal) {
+            const _badCodec = this._videoCodecMismatch();
+            if (_badCodec) {
+                // Decode the H.264 profile hex for humans —
+                // "H264/42001f" → "H264 Baseline 3.1 (42001f)".
+                // Non-H264 / unknown hex falls back to the raw form.
+                let _codecLabel = _badCodec;
+                const _h = _badCodec.match(/^(H264)\/([0-9a-fA-F]{6})$/i);
+                if (_h) {
+                    const _friendly = utils.h264ProfileLevelName(_h[2]);
+                    if (_friendly) {
+                        _codecLabel = _h[1] + ' ' + _friendly + ' (' + _h[2] + ')';
+                    }
+                }
+                codecWarning = (
+                    <View style={styles.codecWarnWrapper}>
+                        <Text style={styles.codecWarn} numberOfLines={2}>
+                            {'Video codec not supported: ' + _codecLabel}
+                        </Text>
+                    </View>
+                );
+            }
+        }
+
         const _pillLabel = this.props.speakerLabel;
         const mainSpeakerTag = _pillLabel ? (
             <View style={styles.speakerTagWrapper}>
@@ -586,6 +686,7 @@ class ConferenceMatrixParticipant extends Component {
 			<View style={[{ flex: 1, width: '100%', height: '100%'}]}>
 				{activeIcon}
 				{mainSpeakerTag}
+				{codecWarning}
 				{participantInfo}
 				{degradedOverlay}
 				<View style={styles.videoContainer}>

@@ -29,6 +29,7 @@
 		1FAA00112E00000000000001 /* SylkLogger.m in Sources */ = {isa = PBXBuildFile; fileRef = 1FAA00012E00000000000001 /* SylkLogger.m */; };
 		1FAA00122E00000000000002 /* NativeLoggerModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 1FAA00022E00000000000002 /* NativeLoggerModule.m */; };
 		1FBF84652FAFC162003639C2 /* SylkCallRecorder.m in Sources */ = {isa = PBXBuildFile; fileRef = 1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */; };
+		1FBF84A22FAFC162003639C2 /* SylkAudioSpectrum.m in Sources */ = {isa = PBXBuildFile; fileRef = 1FBF84A12FAFC162003639C2 /* SylkAudioSpectrum.m */; };
 		1FC06CBE2A793D9300F8D5A3 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */; };
 		1FC06CC12A793D9300F8D5A3 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 1FC06CBF2A793D9300F8D5A3 /* MainInterface.storyboard */; };
 		1FC06CC52A793D9300F8D5A3 /* sylk-share.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -139,6 +140,8 @@
 		1FAA00042E00000000000004 /* NativeLoggerModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = NativeLoggerModule.h; path = sylk/NativeLoggerModule.h; sourceTree = "<group>"; };
 		1FBF84632FAFC162003639C2 /* SylkCallRecorder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = SylkCallRecorder.h; path = sylk/SylkCallRecorder.h; sourceTree = "<group>"; };
 		1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = SylkCallRecorder.m; path = sylk/SylkCallRecorder.m; sourceTree = "<group>"; };
+		1FBF84A02FAFC162003639C2 /* SylkAudioSpectrum.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = SylkAudioSpectrum.h; path = sylk/SylkAudioSpectrum.h; sourceTree = "<group>"; };
+		1FBF84A12FAFC162003639C2 /* SylkAudioSpectrum.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = SylkAudioSpectrum.m; path = sylk/SylkAudioSpectrum.m; sourceTree = "<group>"; };
 		1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "sylk-share.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1FC06CBD2A793D9300F8D5A3 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		1FC06CC02A793D9300F8D5A3 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
@@ -248,6 +251,8 @@
 			children = (
 				1FBF84632FAFC162003639C2 /* SylkCallRecorder.h */,
 				1FBF84642FAFC162003639C2 /* SylkCallRecorder.m */,
+				1FBF84A02FAFC162003639C2 /* SylkAudioSpectrum.h */,
+				1FBF84A12FAFC162003639C2 /* SylkAudioSpectrum.m */,
 				1FAA00032E00000000000003 /* SylkLogger.h */,
 				1FAA00012E00000000000001 /* SylkLogger.m */,
 				1FAA00042E00000000000004 /* NativeLoggerModule.h */,
@@ -933,6 +938,7 @@
 				1F5F6A032EBB6ACE00D59DC8 /* SharedDataModule.m in Sources */,
 				13B07FBC1A68108700A75B9A /* AppDelegate.m in Sources */,
 				1FBF84652FAFC162003639C2 /* SylkCallRecorder.m in Sources */,
+				1FBF84A22FAFC162003639C2 /* SylkAudioSpectrum.m in Sources */,
 				1F9B147C2EA80A04001BA597 /* APNSTokenModule.m in Sources */,
 				1F4596162F38E17F00ED15D1 /* IdleTimerModule.m in Sources */,
 				1F2BEF3C2F4DC14200E88D66 /* Contact.m in Sources */,
@@ -1059,7 +1065,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 391;
+				CURRENT_PROJECT_VERSION = 409;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1072,7 +1078,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 8.0.2;
+				MARKETING_VERSION = 8.1.5;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1096,7 +1102,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 391;
+				CURRENT_PROJECT_VERSION = 409;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1108,7 +1114,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 8.0.2;
+				MARKETING_VERSION = 8.1.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

@@ -21,7 +21,7 @@ th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:t
 th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
 blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </style></head><body>
-<h1 id="addressbook-sync--design">Sylk Mobile Addressbook - Design</h1>
+<h1 id="sylk-mobile-addressbook---design">Sylk Mobile Addressbook - Design</h1>
 <h2 id="purpose">Purpose</h2>
 <p><strong>Sync each user's contact list across all of their devices.</strong> A contact that is created, edited, renamed, re-grouped, or deleted on one device appears the same way on every other device signed into the same account. The shared store is the SylkServer <a href="https://openxcap.org">XCAP</a> addressbook; every device keeps a local SQLite copy for offline use and fast rendering, and reconciles it against the server.</p>
 <p>Guiding principle: <strong>the server is authoritative.</strong> Where a contact exists on both sides, server data wins. Purely local data — call history, message previews, and per-device preferences — is preserved and never overwritten by sync.</p>
@@ -52,12 +52,12 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <span id="cb1-9"><a href="#cb1-9" aria-hidden="true"></a><span class="fu">}</span></span></code></pre></div>
 <h3 id="server-group">Server group</h3>
 <p>A group is the cross-device form of the app's per-contact <strong>tags</strong> (see Chapter 7). Its membership is carried as full contact objects (same shape as above), not id references, and is replaced wholesale on each <code>addGroup</code> / <code>updateGroup</code>.</p>
-<pre><code>{
-  "id": "string",
-  "name": "Favorites",
-  "attributes": { },
-  "contacts": [ { "id": "string", "name": "display name", "uris": [ ... ], "default_uri": { ... }, "dialog": { ... }, "presence": { ... }, "attributes": { } } ]
-}</code></pre>
+<div class="sourceCode" id="cb2"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true"></a><span class="fu">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;string&quot;</span><span class="fu">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;Favorites&quot;</span><span class="fu">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true"></a>  <span class="dt">&quot;attributes&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="fu">},</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true"></a>  <span class="dt">&quot;contacts&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;string&quot;</span><span class="fu">,</span> <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;display name&quot;</span><span class="fu">,</span> <span class="dt">&quot;uris&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="er">...</span> <span class="ot">]</span><span class="fu">,</span> <span class="dt">&quot;default_uri&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="er">...</span> <span class="fu">},</span> <span class="dt">&quot;dialog&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="er">...</span> <span class="fu">},</span> <span class="dt">&quot;presence&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="er">...</span> <span class="fu">},</span> <span class="dt">&quot;attributes&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="fu">}</span> <span class="fu">}</span> <span class="ot">]</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true"></a><span class="fu">}</span></span></code></pre></div>
 <h3 id="local-sqlite-contacts-key-account--contact_id">Local SQLite <code>contacts</code> (key <code>account</code> + <code>contact_id</code>)</h3>
 <table>
 <thead>
@@ -106,7 +106,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tbody>
 </table>
 <h3 id="in-memory-contact">In-memory contact</h3>
-<div class="sourceCode" id="cb2"><pre class="sourceCode javascript"><code class="sourceCode javascript"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true"></a>{ id<span class="op">,</span> uri<span class="op">,</span> <span class="dt">uris</span><span class="op">:</span>[]<span class="op">,</span> name<span class="op">,</span> organization<span class="op">,</span> email<span class="op">,</span> <span class="dt">tags</span><span class="op">:</span>[]<span class="op">,</span> <span class="dt">properties</span><span class="op">:</span>{}<span class="op">,</span> <span class="dt">localProperties</span><span class="op">:</span>{}<span class="op">,</span> <span class="op">...</span> }</span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre class="sourceCode javascript"><code class="sourceCode javascript"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true"></a>{ id<span class="op">,</span> uri<span class="op">,</span> <span class="dt">uris</span><span class="op">:</span>[]<span class="op">,</span> name<span class="op">,</span> organization<span class="op">,</span> email<span class="op">,</span> <span class="dt">tags</span><span class="op">:</span>[]<span class="op">,</span> <span class="dt">properties</span><span class="op">:</span>{}<span class="op">,</span> <span class="dt">localProperties</span><span class="op">:</span>{}<span class="op">,</span> <span class="op">...</span> }</span></code></pre></div>
 <p><code>uris</code> is an array of plain URI strings. The contact index resolves a contact by its <code>uri</code>, <code>id</code>, any entry in <code>uris</code>, or a phone-number variant of any of those.</p>
 <hr />
 <h2 id="3-uri-normalization-rules">3. URI normalization rules</h2>
@@ -159,6 +159,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tr class="even">
 <td><code>caregiver</code></td>
 <td>relationship flag (stored locally in <code>localProperties</code>)</td>
+</tr>
+<tr class="odd">
+<td><code>keys</code></td>
+<td><strong>self contact only</strong> — the account PGP keypair saved for cross-device restore (Chapter 22)</td>
 </tr>
 </tbody>
 </table>
@@ -337,5 +341,13 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <li><strong>Restore from trash (in-app).</strong> Soft-deleted contacts move to the Deleted folder rather than being erased (Chapter 12); <code>restoreContacts</code> revives a selection back into the active list, and <code>restoreGraveyardContacts</code> revives tombstoned entries from the Graveyard. This is the everyday "undo a delete".</li>
 <li><strong>Restoring from a snapshot file</strong> is an operator/manual step: the JSON dumps are human-readable records intended for recovery and debugging, not an in-app "import this file" button. Routine restore is the server re-fetch above; the snapshots are the safety net when the server copy itself needs to be reconstructed.</li>
 </ul>
-
+<hr />
+<h2 id="22-pgp-private-key-save-on-the-self-contact">22. PGP private-key save on the self contact</h2>
+<p>The account's PGP keypair is saved on the user's <strong>own</strong> server contact so it replicates across the user's devices over the same XCAP channel as everything else — no separate transport, no manual export. The keypair travels in the self contact's <code>keys</code> attribute (Chapter 6) as a JSON record:</p>
+<pre><code>{ private_key, public_key, device, timestamp }
+</code></pre>
+<p><code>private_key</code> is <strong>symmetrically encrypted with the account (SIP) password</strong> and is never stored in clear. The <code>public_key</code>, the writing <code>device</code> label, and an ISO <code>timestamp</code> travel in clear so any device can see which device saved the key and when. Because the record is just another contact attribute, it rides the normal contact-write path (Chapter 9) to the server and on to the user's other devices.</p>
+<p><strong>Save (key landing).</strong> When a keypair is generated or imported on a device, the save fires (a tick after the keypair is committed locally, and again on each authoritative addressbook load). It is <strong>idempotent</strong>: it only writes when the self contact carries no <code>keys</code> attribute on the server, so the first device to set up the account wins and later loads are no-ops. If the account has no password available, the save is <strong>skipped</strong> — an unprotected key is never stored.</p>
+<p><strong>Restore (new or keyless device).</strong> A device that signs in without a local keypair but finds a saved <code>keys</code> record on its own server contact decrypts <code>private_key</code> with the account password and imports the keypair automatically. This supersedes the manual "import key" modal: signing in on a new device with the right password is enough to recover messaging. A wrong or missing password just logs and leaves the manual import as the fallback.</p>
+<p><strong>Re-save on password change.</strong> Because <code>private_key</code> is encrypted with the account password, changing the password leaves the saved copy encrypted with the <strong>old</strong> one, which a later restore could no longer open. A successful password change therefore forces a re-save: the private key is re-encrypted with the <strong>new</strong> password and the <code>keys</code> attribute is rewritten through the normal contact update. The contact update is <strong>delayed by 5 seconds</strong> so the server has time to commit the new password before the rewrite goes out. This is <strong>best-effort</strong> — the password change has already succeeded on the server, so a re-save failure is logged but never surfaced as a password-change error (the next authoritative load will not repair it, since a saved record already exists; recovery is to change the password again or re-import).</p>
 </body></html>

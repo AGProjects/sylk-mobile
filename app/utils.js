@@ -1,4 +1,12 @@
-import uuidv4 from 'uuid/v4';
+// react-native-uuid (same module app.js uses) instead of the legacy
+// `uuid/v4` deep import. The deep import ran through util.deprecate
+// (an ERROR in metro on first call) and its RNG throws
+// "crypto.getRandomValues() not supported" when the getRandomValues
+// polyfill (only imported by CallZrtp) isn't loaded before first use —
+// which silently killed the resend chunk loop in sendMessage: the old
+// bubble was already deleted and no chunks ever went out, so the
+// message appeared to vanish.
+import rnUuid from 'react-native-uuid';
 import SillyNames from './SillyNames';
 import MaterialColors from './MaterialColors';
 import { Clipboard, Dimensions } from 'react-native';
@@ -248,7 +256,7 @@ function timestampedLog() {
 
 
 function generateUniqueId() {
-    const uniqueId = uuidv4().replace(/-/g, '').slice(0, 16);
+    const uniqueId = String(rnUuid.v4()).replace(/-/g, '').slice(0, 16);
     return uniqueId;
 }
 
@@ -2199,3 +2207,66 @@ function anonymizeEmails(text) {
 }
 
 exports.anonymizeEmails = anonymizeEmails;
+
+
+// --- h264ProfileLevelName — decode RFC 6184 profile-level-id ---
+// Turns the cryptic 6-hex-digit H.264 profile-level-id from SDP into
+// a human-readable "<Profile> <Level>" string:
+//
+//   42001f → "Baseline 3.1"
+//   42e01f → "Constrained Baseline 3.1"
+//   4d001f → "Main 3.1"
+//   640c1f → "Constrained High 3.1"
+//   64001f → "High 3.1"
+//
+// Layout (three bytes): profile_idc | profile-iop (constraint flags
+// constraint_set0..5 in the top bits) | level_idc. The profile is
+// picked from profile_idc + the constraint flags using the same
+// patterns libwebrtc applies in h264_profile_level_id.cc — this is
+// why 4200 (Baseline) and 42e0 (Constrained Baseline) are DIFFERENT
+// profiles to the negotiator even though they look almost identical:
+// libwebrtc requires an exact profile match, so a device that only
+// decodes Constrained Baseline rejects a plain Baseline offer.
+// The level is level_idc/10 ("1f" = 31 → 3.1), with the special
+// "level 1b" case (level_idc 11 + constraint_set3, or legacy 9).
+// Returns null for anything unrecognised — callers show the raw hex.
+function h264ProfileLevelName(hex) {
+    try {
+        if (!hex || !/^[0-9a-fA-F]{6}$/.test(hex)) return null;
+        const profileIdc = parseInt(hex.slice(0, 2), 16);
+        const iop = parseInt(hex.slice(2, 4), 16);   // constraint flags
+        const levelIdc = parseInt(hex.slice(4, 6), 16);
+        let profile = null;
+        switch (profileIdc) {
+            case 0x42:  // Baseline family — constraint_set1 ⇒ Constrained
+                profile = (iop & 0x40) ? 'Constrained Baseline' : 'Baseline';
+                break;
+            case 0x4d:  // Main family — constraint_set0 ⇒ also CB-compatible
+                profile = (iop & 0x80) ? 'Constrained Baseline' : 'Main';
+                break;
+            case 0x58:  // Extended family
+                profile = (iop & 0x80)
+                    ? ((iop & 0x40) ? 'Constrained Baseline' : 'Baseline')
+                    : 'Extended';
+                break;
+            case 0x64:  // High family — iop 0x0c ⇒ Constrained High
+                profile = (iop === 0x0c) ? 'Constrained High' : 'High';
+                break;
+            case 0x6e: profile = 'High 10'; break;
+            case 0x7a: profile = 'High 4:2:2'; break;
+            case 0xf4: profile = 'High 4:4:4'; break;
+            default: return null;
+        }
+        let level;
+        if (levelIdc === 9 || (levelIdc === 11 && (iop & 0x10))) {
+            level = '1b';
+        } else {
+            level = (levelIdc / 10).toFixed(1);
+        }
+        return profile + ' ' + level;
+    } catch (e) {
+        return null;
+    }
+}
+
+exports.h264ProfileLevelName = h264ProfileLevelName;

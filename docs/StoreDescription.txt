@@ -20,15 +20,13 @@ applications and WebRTC browsers.
 Features
 --------
 
-* Audio and video calls
-* Audio call recording
-* Online and offline messaging
-* File sharing
-* Support for multiple devices 
-* Portrait and landscape modes
-* Location sharing
-* Multiparty conferencing
-* Interoperable with SIP clients
-* Receive calls from the web
-* Classic telephony support
-* End-to-end encryption for all media
+* 1-to-1 audio and video calls (Opus, H.264, VP8, VP9)
+* Receive audio and video calls from web browsers
+* Multiparty conferencing for all media
+* Rich messaging (remote deletion, editing, replies, reactions)
+* File sharing to and from other mobile applications
+* End-to-end enryption for all media (zRTP and PGP)
+* Location sharing (meet-me, caregiver tracking)
+* Support for phones and tablets in landscape and portrait modes
+* Synchronization between multiple devices (media and contacts)
+* History management and data export

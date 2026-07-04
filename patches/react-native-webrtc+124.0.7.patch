@@ -1506,7 +1506,7 @@ index 996648c..9e747fb 100644
      public void transceiverSetDirection(int id, String senderId, String direction, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
-index acf9998..02c32ef 100644
+index acf9998..bf70bb5 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
 @@ -10,7 +10,10 @@ import org.webrtc.VideoDecoderFactory;
@@ -1520,7 +1520,7 @@ index acf9998..02c32ef 100644
  
  /**
   * This is a custom video decoder factory for WebRTC which behaves similarly
-@@ -60,6 +63,43 @@ public class H264AndSoftwareVideoDecoderFactory implements VideoDecoderFactory {
+@@ -60,12 +63,84 @@ public class H264AndSoftwareVideoDecoderFactory implements VideoDecoderFactory {
              }
          }
  
@@ -1561,9 +1561,50 @@ index acf9998..02c32ef 100644
 +            h264High = new VideoCodecInfo("H264", params, Collections.emptyList());
 +        }
 +
++        // Synthesise a plain Baseline 3.1 (42001f) entry alongside the
++        // Constrained Baseline (42e01f) one — same trick as the
++        // synthetic Constrained High entry above, opposite direction.
++        //
++        // Background: neither libwebrtc-android's H264Utils nor the
++        // filter above ever advertises plain Baseline, and libwebrtc's
++        // negotiator (H264ProfileLevelIdMatches) requires an EXACT
++        // profile match — 4200 vs 42e0 is a mismatch even though a
++        // Constrained Baseline decoder handles any real-world Baseline
++        // stream (the extra Baseline-only tools — FMO / ASO / redundant
++        // slices — are emitted by no WebRTC encoder in existence).
++        //
++        // Without this entry, a peer whose offer carries ONLY
++        // profile-level-id=42001f (seen from Sylk desktop via the
++        // SylkServer conference bridge) gets its m=video line REJECTED
++        // in our answer: the track object still surfaces, but no PT is
++        // bound to a decoder and the tile stays black. With it, the
++        // Baseline PT routes to the same hardwareVideoDecoderFactory in
++        // createDecoder(), which decodes it exactly like 42e01f.
++        //
++        // Ordered AFTER the constrained entries so we never PREFER
++        // plain Baseline when the peer offers both.
++        VideoCodecInfo h264PlainBaseline = null;
++        if (h264Baseline != null) {
++            Map<String, String> params = new HashMap<>(h264Baseline.params);
++            // No VideoCodecInfo constant for plain Baseline — libwebrtc
++            // never ships one. 42 = Baseline profile_idc, 00 = no
++            // constraint flags, 1f = level 3.1 (mirrors the CB entry).
++            params.put(VideoCodecInfo.H264_FMTP_PROFILE_LEVEL_ID, "42001f");
++            h264PlainBaseline = new VideoCodecInfo("H264", params, Collections.emptyList());
++        }
++
          if (h264High != null) {
              codecs.add(h264High);
          }
+         if (h264Baseline != null) {
+             codecs.add(h264Baseline);
+         }
++        if (h264PlainBaseline != null) {
++            codecs.add(h264PlainBaseline);
++        }
+         codecs.addAll(Arrays.asList(this.softwareVideoDecoderFactory.getSupportedCodecs()));
+ 
+         return codecs.toArray(new VideoCodecInfo[codecs.size()]);
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
 new file mode 100644
 index 0000000..136b57d
@@ -2601,6 +2642,32 @@ index e7f52a1..295335f 100644
          [self startCapture];
      }
  }
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
+index cd4fa13..b1054bf 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
+@@ -17,4 +17,21 @@ @implementation WebRTCModule (RTCAudioSession)
+     return nil;
+ }
+ 
++// -------- SYLK APP PATCH (patches/react-native-webrtc+124.0.7.patch) --------
++// Expose RTCAudioSession's manual-audio controls to JS so the app can drive
++// the VoIP audio unit deterministically from CallKit's
++// didActivate/didDeactivateAudioSession callbacks. Without this, WebRTC
++// auto-starts the audio unit when a track is ready, which races against
++// CallKit activation on push-woken incoming calls — symptom: no audio until
++// the user toggles the mic. See app/CallManager.js + app/app.js.
++RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setManualAudio:(BOOL)manual) {
++    [RTCAudioSession sharedInstance].useManualAudio = manual;
++    return nil;
++}
++
++RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setAudioEnabled:(BOOL)enabled) {
++    [RTCAudioSession sharedInstance].isAudioEnabled = enabled;
++    return nil;
++}
++
+ @end
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+SylkZRTP.h
 new file mode 100644
 index 0000000..ad044aa
@@ -3110,6 +3177,41 @@ index 0000000..dce4e05
 +}  // namespace webrtc
 +
 +#endif  // SYLK_WEBRTC_COMPAT_H_
+diff --git a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
+index 4d4eafd..02c9a93 100644
+--- a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
++++ b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
+@@ -28,6 +28,29 @@ class RTCAudioSession {
+       WebRTCModule.audioSessionDidDeactivate();
+     }
+   }
++
++  /**
++   * Enable/disable manual audio mode. When enabled, WebRTC will not
++   * auto-start the audio unit on track readiness; the app must call
++   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++   */
++  static setManualAudio(manual) {
++    // Only valid for iOS
++    if (_reactNative.Platform.OS === 'ios') {
++      WebRTCModule.setManualAudio(!!manual);
++    }
++  }
++
++  /**
++   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++   * when manual audio is enabled.
++   */
++  static setAudioEnabled(enabled) {
++    // Only valid for iOS
++    if (_reactNative.Platform.OS === 'ios') {
++      WebRTCModule.setAudioEnabled(!!enabled);
++    }
++  }
+ }
+ exports.default = RTCAudioSession;
+ //# sourceMappingURL=RTCAudioSession.js.map
+\ No newline at end of file
 diff --git a/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js b/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js
 index 621367c..15e88b8 100644
 --- a/node_modules/react-native-webrtc/lib/commonjs/RTCPeerConnection.js
@@ -3127,6 +3229,40 @@ index 621367c..15e88b8 100644
      if (!selector) {
        const data = await WebRTCModule.peerConnectionGetStats(this._pcId);
  
+diff --git a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
+index 1de961e..af20ee6 100644
+--- a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
++++ b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
+@@ -22,5 +22,28 @@ export default class RTCAudioSession {
+       WebRTCModule.audioSessionDidDeactivate();
+     }
+   }
++
++  /**
++   * Enable/disable manual audio mode. When enabled, WebRTC will not
++   * auto-start the audio unit on track readiness; the app must call
++   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++   */
++  static setManualAudio(manual) {
++    // Only valid for iOS
++    if (Platform.OS === 'ios') {
++      WebRTCModule.setManualAudio(!!manual);
++    }
++  }
++
++  /**
++   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++   * when manual audio is enabled.
++   */
++  static setAudioEnabled(enabled) {
++    // Only valid for iOS
++    if (Platform.OS === 'ios') {
++      WebRTCModule.setAudioEnabled(!!enabled);
++    }
++  }
+ }
+ //# sourceMappingURL=RTCAudioSession.js.map
+\ No newline at end of file
 diff --git a/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js b/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js
 index 5d6d1c8..3b06176 100644
 --- a/node_modules/react-native-webrtc/lib/module/RTCPeerConnection.js
@@ -3183,6 +3319,38 @@ index 51af1f0..0b4c02c 100644
 +  # tighten this constraint.
 +  s.dependency          'WebRTC-SDK'
  end
+diff --git a/node_modules/react-native-webrtc/src/RTCAudioSession.ts b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
+index f2996e7..ab1fcd5 100644
+--- a/node_modules/react-native-webrtc/src/RTCAudioSession.ts
++++ b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
+@@ -22,4 +22,27 @@ export default class RTCAudioSession {
+             WebRTCModule.audioSessionDidDeactivate();
+         }
+     }
++
++    /**
++     * Enable/disable manual audio mode. When enabled, WebRTC will not
++     * auto-start the audio unit on track readiness; the app must call
++     * setAudioEnabled(true) from CallKit's didActivateAudioSession.
++     */
++    static setManualAudio(manual: boolean) {
++        // Only valid for iOS
++        if (Platform.OS === 'ios') {
++            WebRTCModule.setManualAudio(!!manual);
++        }
++    }
++
++    /**
++     * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
++     * when manual audio is enabled.
++     */
++    static setAudioEnabled(enabled: boolean) {
++        // Only valid for iOS
++        if (Platform.OS === 'ios') {
++            WebRTCModule.setAudioEnabled(!!enabled);
++        }
++    }
+ }
 diff --git a/node_modules/react-native-webrtc/src/RTCDTMFSender.ts b/node_modules/react-native-webrtc/src/RTCDTMFSender.ts
 new file mode 100644
 index 0000000..d13f070
@@ -3408,132 +3576,5 @@ index 4366b32..bada906 100644
 +            this._dtmfSender = new RTCDTMFSender(this._peerConnectionId, this._id);
 +        }
 +        return this._dtmfSender;
-+    }
- }
-diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
-index cd4fa13..b1054bf 100644
---- a/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
-+++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/WebRTCModule+RTCAudioSession.m
-@@ -17,4 +17,21 @@ RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(audioSessionDidDeactivate) {
-     return nil;
- }
- 
-+// -------- SYLK APP PATCH (patches/react-native-webrtc+124.0.7.patch) --------
-+// Expose RTCAudioSession's manual-audio controls to JS so the app can drive
-+// the VoIP audio unit deterministically from CallKit's
-+// didActivate/didDeactivateAudioSession callbacks. Without this, WebRTC
-+// auto-starts the audio unit when a track is ready, which races against
-+// CallKit activation on push-woken incoming calls — symptom: no audio until
-+// the user toggles the mic. See app/CallManager.js + app/app.js.
-+RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setManualAudio:(BOOL)manual) {
-+    [RTCAudioSession sharedInstance].useManualAudio = manual;
-+    return nil;
-+}
-+
-+RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(setAudioEnabled:(BOOL)enabled) {
-+    [RTCAudioSession sharedInstance].isAudioEnabled = enabled;
-+    return nil;
-+}
-+
- @end
-diff --git a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
-index 4d4eafd..02c9a93 100644
---- a/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
-+++ b/node_modules/react-native-webrtc/lib/commonjs/RTCAudioSession.js
-@@ -28,6 +28,29 @@ class RTCAudioSession {
-       WebRTCModule.audioSessionDidDeactivate();
-     }
-   }
-+
-+  /**
-+   * Enable/disable manual audio mode. When enabled, WebRTC will not
-+   * auto-start the audio unit on track readiness; the app must call
-+   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
-+   */
-+  static setManualAudio(manual) {
-+    // Only valid for iOS
-+    if (_reactNative.Platform.OS === 'ios') {
-+      WebRTCModule.setManualAudio(!!manual);
-+    }
-+  }
-+
-+  /**
-+   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
-+   * when manual audio is enabled.
-+   */
-+  static setAudioEnabled(enabled) {
-+    // Only valid for iOS
-+    if (_reactNative.Platform.OS === 'ios') {
-+      WebRTCModule.setAudioEnabled(!!enabled);
-+    }
-+  }
- }
- exports.default = RTCAudioSession;
- //# sourceMappingURL=RTCAudioSession.js.map
-\ No newline at end of file
-diff --git a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
-index 1de961e..af20ee6 100644
---- a/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
-+++ b/node_modules/react-native-webrtc/lib/module/RTCAudioSession.js
-@@ -22,5 +22,28 @@ export default class RTCAudioSession {
-       WebRTCModule.audioSessionDidDeactivate();
-     }
-   }
-+
-+  /**
-+   * Enable/disable manual audio mode. When enabled, WebRTC will not
-+   * auto-start the audio unit on track readiness; the app must call
-+   * setAudioEnabled(true) from CallKit's didActivateAudioSession.
-+   */
-+  static setManualAudio(manual) {
-+    // Only valid for iOS
-+    if (Platform.OS === 'ios') {
-+      WebRTCModule.setManualAudio(!!manual);
-+    }
-+  }
-+
-+  /**
-+   * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
-+   * when manual audio is enabled.
-+   */
-+  static setAudioEnabled(enabled) {
-+    // Only valid for iOS
-+    if (Platform.OS === 'ios') {
-+      WebRTCModule.setAudioEnabled(!!enabled);
-+    }
-+  }
- }
- //# sourceMappingURL=RTCAudioSession.js.map
-\ No newline at end of file
-diff --git a/node_modules/react-native-webrtc/src/RTCAudioSession.ts b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
-index f2996e7..ab1fcd5 100644
---- a/node_modules/react-native-webrtc/src/RTCAudioSession.ts
-+++ b/node_modules/react-native-webrtc/src/RTCAudioSession.ts
-@@ -22,4 +22,27 @@ export default class RTCAudioSession {
-             WebRTCModule.audioSessionDidDeactivate();
-         }
-     }
-+
-+    /**
-+     * Enable/disable manual audio mode. When enabled, WebRTC will not
-+     * auto-start the audio unit on track readiness; the app must call
-+     * setAudioEnabled(true) from CallKit's didActivateAudioSession.
-+     */
-+    static setManualAudio(manual: boolean) {
-+        // Only valid for iOS
-+        if (Platform.OS === 'ios') {
-+            WebRTCModule.setManualAudio(!!manual);
-+        }
-+    }
-+
-+    /**
-+     * Permit/deny WebRTC to initialize the VoIP audio unit. Only effective
-+     * when manual audio is enabled.
-+     */
-+    static setAudioEnabled(enabled: boolean) {
-+        // Only valid for iOS
-+        if (Platform.OS === 'ios') {
-+            WebRTCModule.setAudioEnabled(!!enabled);
-+        }
 +    }
  }

@@ -15,9 +15,9 @@
 'use strict';
 
 const { Buffer } = require('buffer');
-const { PAGE } = require('./exportWebUI');
-const Archive = require('./exportArchive');
-const Crypto = require('./exportCrypto');
+const { PAGE } = require('./ExportWebUI');
+const Archive = require('./ExportArchive');
+const Crypto = require('./ExportCrypto');
 
 // MIME guess for served file blobs (kept tiny — just the common transfer types).
 const MIME = {

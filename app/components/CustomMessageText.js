@@ -71,6 +71,11 @@ export const CustomMessageText = ({ currentMessage, extraStyles, labelProps }) =
           maxWidth: TEXT_ROW_MAX_WIDTH,
           alignSelf: 'flex-start',
         },
+        // Failed messages carry a (!) badge pinned to the bubble's
+        // top-left corner (ChatBubble customView: top 6 + 20px icon).
+        // Push the text below that line so the badge doesn't overlap
+        // the first row of characters.
+        currentMessage.failed ? { paddingTop: 30 } : null,
       ]}
     >
       {/* File icon if present */}
