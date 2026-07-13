@@ -6963,6 +6963,26 @@ class ConferenceBox extends Component {
         // already applies the rewrite. Same rule, same place in the
         // pipeline.
         const _pstnRules = this.props.pstnRules;
+        // "Replace 0 with" rule — same tel-normalization step Call.js
+        // start() applies for 1-to-1 dials, run BEFORE replacePlus: a
+        // numeric local part starting with a SINGLE 0 (06…, not 00…)
+        // gets its leading 0 replaced by the user-configured prefix
+        // (pstn.replaceLeadingZero, e.g. 0031 — set in Preferences →
+        // Advanced → Audio Calls → Phone numbers, merged into
+        // pstnRules by app.js getEffectivePstnRules).
+        const _applyReplaceLeadingZero = (localPart) => {
+            if (!_pstnRules || typeof _pstnRules.replaceLeadingZero !== 'string'
+                    || _pstnRules.replaceLeadingZero.length === 0) {
+                return localPart;
+            }
+            if (!/^0\d+$/.test(localPart) || localPart.startsWith('00')) {
+                return localPart;
+            }
+            const rewritten = _pstnRules.replaceLeadingZero + localPart.substring(1);
+            console.log('[ConferenceBox] [conference] [pstn] replaceLeadingZero rule applied:',
+                localPart, '→', rewritten);
+            return rewritten;
+        };
         const _applyReplacePlus = (localPart) => {
             if (!_pstnRules || typeof _pstnRules.replacePlus !== 'string') {
                 return localPart;
@@ -6975,6 +6995,10 @@ class ConferenceBox extends Component {
                 localPart, '→', rewritten);
             return rewritten;
         };
+        // Composed normalization: leading-0 rewrite first, then the
+        // '+' rewrite — the same pipeline order as Call.js start().
+        const _normalizeLocalPart = (localPart) =>
+            _applyReplacePlus(_applyReplaceLeadingZero(localPart));
 
         const _normalisedUris = uris.map((u) => {
             if (typeof u !== 'string') return u;
@@ -6988,12 +7012,12 @@ class ConferenceBox extends Component {
                 const atIdx = _u.indexOf('@');
                 const localPart = _u.substring(0, atIdx);
                 const domainPart = _u.substring(atIdx);
-                return _applyReplacePlus(localPart) + domainPart;
+                return _normalizeLocalPart(localPart) + domainPart;
             }
             // No domain → assume it's a phone number / dial-out
             // candidate. Append the local SIP domain so the conference
             // focus's SIP bridge can route it.
-            const localRewritten = _applyReplacePlus(_u);
+            const localRewritten = _normalizeLocalPart(_u);
             if (_defaultDomain) {
                 return localRewritten + '@' + _defaultDomain;
             }

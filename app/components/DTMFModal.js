@@ -10,7 +10,6 @@ import {
     TouchableRipple,
     withTheme,
 } from 'react-native-paper';
-import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import dtmf from 'react-native-dtmf';
 
 const DEBUG = debug('blinkrtc:DTMF');
@@ -42,26 +41,6 @@ const KEY_LAYOUT = [
     ],
 ];
 
-// Optional 4th column, appended one item per row when the consumer
-// opts in via the `extraColumn` prop. Used by the contacts-list
-// AddressBook dialpad: the column adds quick access to backspace
-// (deletes the last character from the bound search field), a ×
-// clear action that wipes the field entirely, and the '-' and '_'
-// characters that come up in usernames / email-style SIP addresses
-// but aren't on a standard 3×4 keypad. Order matches the
-// user-visible top-to-bottom: backspace, ×, -, _.
-//   - action: 'backspace' → calls props.onBackspace, renders an icon
-//   - action: 'clear'     → calls props.onClear, renders the × icon
-//   - digit: char         → calls props.onDigit(char), renders text
-//   - placeholder: true   → renders an empty key-sized View, no press
-//     (kept around for callers that want a blank cell)
-const EXTRA_COLUMN = [
-    { action: 'backspace', icon: 'backspace-outline' },
-    { action: 'clear', icon: 'close' },
-    { digit: '-', letters: '' },
-    { digit: '_', letters: '' },
-];
-
 // Inline 3×4 keypad. Reused by:
 //   • DTMFModal — the in-call dialpad popup.
 //   • AudioCallBox awaiting screen — a preview pad rendered above the
@@ -72,50 +51,25 @@ const EXTRA_COLUMN = [
 // the wire via callKeepSendDtmf.
 class DTMFPadBase extends Component {
     handleKeyPress(item) {
-        // Placeholder cells exist purely to keep the 4-row grid
-        // aligned — they have no visible content and no behaviour.
-        if (item.placeholder) {
-            return;
-        }
-
-        // 4th-column backspace action: deletes the last character
-        // from the bound search field via the consumer's
-        // onBackspace callback. Skip the DTMF-tone path entirely
-        // (there's no tone associated with this control).
-        if (item.action === 'backspace') {
-            if (this.props.onBackspace) {
-                this.props.onBackspace();
-            }
-            return;
-        }
-
-        // 4th-column clear action (× in the bottom-right corner):
-        // empties the bound search field via the consumer's onClear
-        // callback. Like backspace, this is a UI-only control with
-        // no DTMF tone.
-        if (item.action === 'clear') {
-            if (this.props.onClear) {
-                this.props.onClear();
-            }
-            return;
-        }
-
         // Number-entry mode (e.g. typing into the contacts search
         // bar): a digit-collecting consumer takes the printable
-        // character ('1', '*', '#', '+', '0', '-', '_' …) and we
-        // skip the DTMF tone path entirely. Useful for letting the
-        // user dial a number — or assemble a SIP user-part with
-        // non-tone characters — on a real-looking keypad without it
-        // implying that tones are being sent over a wire.
+        // character ('1', '*', '#', '+', '0' …). Play a short local
+        // DTMF tone as audible key feedback — kept briefer than the
+        // in-call 500ms burst since nothing is sent over a wire,
+        // it's purely a keypad click.
         if (this.props.onDigit) {
+            // If the hold-for-'+' timer already fired for this press
+            // of the 0 key, the '+' was entered mid-hold — swallow
+            // the release-time onPress so no '0' follows it.
+            if (item.digit === '0' && this.zeroLongFired) {
+                this.zeroLongFired = false;
+                return;
+            }
+            if (item.tone) {
+                dtmf.stopTone();
+                dtmf.playTone(dtmf['DTMF_' + item.tone], 150);
+            }
             this.props.onDigit(item.digit);
-            return;
-        }
-
-        // Non-tone keys (the 4th column's '-' / '_') have no DTMF
-        // mapping. In a call context (no onDigit) silently ignore
-        // them — `dtmf['DTMF_' + undefined]` would otherwise blow up.
-        if (!item.tone) {
             return;
         }
 
@@ -130,48 +84,86 @@ class DTMFPadBase extends Component {
         }
     }
 
+    // Hold the 0 key for 1s → enter '+' instead of '0' (the standard
+    // phone-dialer idiom; matches the '+' sub-label under the key).
+    // Number-entry mode only — in-call DTMF has no '+' tone, so this
+    // isn't wired there and 0 behaves normally.
+    //
+    // Implemented with an explicit onPressIn timer rather than
+    // Pressable's onLongPress: the user reported the '+' only
+    // appearing after lifting the finger — this way it lands at the
+    // 1s mark while the key is still held. The zeroLongFired flag
+    // makes the release-time onPress a no-op (see handleKeyPress).
+    handleZeroPressIn() {
+        if (!this.props.onDigit) {
+            return;
+        }
+        this.zeroLongFired = false;
+        this.zeroHoldTimer = setTimeout(() => {
+            this.zeroLongFired = true;
+            dtmf.stopTone();
+            dtmf.playTone(dtmf.DTMF_0, 150);
+            this.props.onDigit('+');
+        }, 1000);
+    }
+
+    handleZeroPressOut() {
+        // Stop the pending hold — but keep zeroLongFired as-is: if
+        // the timer already fired, the flag must survive until the
+        // onPress that follows this pressOut consumes it.
+        if (this.zeroHoldTimer) {
+            clearTimeout(this.zeroHoldTimer);
+            this.zeroHoldTimer = null;
+        }
+    }
+
+    componentWillUnmount() {
+        if (this.zeroHoldTimer) {
+            clearTimeout(this.zeroHoldTimer);
+        }
+    }
+
     renderKey(item, keyId) {
         const theme = this.props.theme;
         const isV3 = theme && theme.isV3;
-        const surfaceColor =
-            this.props.darkOnLight
-                ? 'rgba(255,255,255,0.10)'
-                : (isV3 ? theme.colors.elevation.level2 : '#f5f5f5');
-        const digitColor = this.props.darkOnLight
+        // Text-only keys sit directly on the host screen's
+        // background, so the glyph colour must follow the app theme:
+        // white-ish in dark mode (either the darkOnLight call-screen
+        // backdrop or the `dark` app theme), theme/dark ink in light
+        // mode. Relying on Paper's theme alone broke here — the
+        // host theme isn't always V3, which fell through to
+        // hardcoded black and vanished on dark backgrounds.
+        const onDark = this.props.darkOnLight || this.props.dark;
+        const digitColor = onDark
             ? '#ffffff'
             : (isV3 ? theme.colors.onSurface : '#212121');
-        const letterColor = this.props.darkOnLight
+        const letterColor = onDark
             ? 'rgba(255,255,255,0.7)'
             : (isV3 ? theme.colors.onSurfaceVariant : '#757575');
-        const rippleColor = this.props.darkOnLight
+        const rippleColor = onDark
             ? 'rgba(255,255,255,0.25)'
             : (isV3 ? theme.colors.primary : 'rgba(0,0,0,0.12)');
 
         const sizeScale = this.props.compact ? 0.78 : 1;
         const keySize = Math.round(KEY_SIZE * sizeScale);
 
-        // Placeholder cell — same outer footprint as a real key so
-        // the column stays aligned, but nothing rendered inside and
-        // no press behaviour. Used for the row-4 slot of the extra
-        // column (which only has backspace / - / _ in rows 1-3).
-        if (item.placeholder) {
-            return (
-                <View
-                    key={keyId}
-                    style={{
-                        width: keySize,
-                        height: keySize,
-                        marginHorizontal: 6,
-                        backgroundColor: 'transparent',
-                    }}
-                />
-            );
-        }
-
         return (
             <TouchableRipple
                 key={keyId}
                 onPress={() => this.handleKeyPress(item)}
+                // Hold 0 for 1s → '+' (number-entry mode only), fired
+                // mid-hold by a press-in timer; the release-time
+                // onPress is swallowed via zeroLongFired.
+                onPressIn={
+                    (this.props.onDigit && item.digit === '0')
+                        ? () => this.handleZeroPressIn()
+                        : undefined
+                }
+                onPressOut={
+                    (this.props.onDigit && item.digit === '0')
+                        ? () => this.handleZeroPressOut()
+                        : undefined
+                }
                 rippleColor={rippleColor}
                 borderless
                 style={[
@@ -179,59 +171,56 @@ class DTMFPadBase extends Component {
                     {
                         width: keySize,
                         height: keySize,
+                        // Round bounds kept for the borderless ripple
+                        // — the press feedback is a circle even though
+                        // the key itself has no visible surface.
                         borderRadius: keySize / 2,
-                        backgroundColor: surfaceColor,
                     },
-                    this.props.darkOnLight && styles.keyDarkOnLight,
                 ]}
             >
                 <View style={styles.keyContent}>
-                    {item.icon ? (
-                        // Icon-key variant — used by the 4th-column
-                        // backspace and × clear actions. The icon
-                        // sits as the SOLE child of keyContent so
-                        // its flex centering puts it dead-centre
-                        // inside the key. (Digit keys still get a
-                        // sub-letter row below the digit, which
-                        // shifts the digit up a bit; icon keys
-                        // skip that row so the icon stays centred
-                        // both horizontally and vertically.)
-                        <MaterialCommunityIcon
-                            name={item.icon}
-                            size={this.props.compact ? 20 : 24}
-                            color={digitColor}
-                        />
+                    <Text style={[
+                        styles.digit,
+                        this.props.compact && styles.digitCompact,
+                        // '#' renders optically low against the
+                        // digits' shared baseline — lift it slightly;
+                        // '*' draws high in the font box — bring it
+                        // down slightly.
+                        item.digit === '#' && styles.poundDigit,
+                        item.digit === '*' && styles.starDigit,
+                        { color: digitColor },
+                    ]}>
+                        {item.digit}
+                    </Text>
+                    {item.letters ? (
+                        <Text style={[
+                            styles.letters,
+                            this.props.compact && styles.lettersCompact,
+                            // The '+' under the 0 key is a dialable
+                            // symbol, not an ABC letter row — render
+                            // it 2pt bigger so it reads as such.
+                            item.letters === '+'
+                                && (this.props.compact
+                                    ? styles.lettersPlusCompact
+                                    : styles.lettersPlus),
+                            { color: letterColor },
+                        ]}>
+                            {item.letters}
+                        </Text>
                     ) : (
-                        <>
-                            <Text style={[
-                                styles.digit,
-                                this.props.compact && styles.digitCompact,
-                                { color: digitColor },
-                            ]}>
-                                {item.digit}
-                            </Text>
-                            {item.letters ? (
-                                <Text style={[
-                                    styles.letters,
-                                    this.props.compact && styles.lettersCompact,
-                                    { color: letterColor },
-                                ]}>
-                                    {item.letters}
-                                </Text>
-                            ) : (
-                                // Empty placeholder keeps every digit
-                                // key the same height so '1' / '*' / '#'
-                                // don't render shorter than the lettered
-                                // keys and break the grid alignment.
-                                <Text style={[
-                                    styles.letters,
-                                    this.props.compact && styles.lettersCompact,
-                                    styles.lettersPlaceholder,
-                                ]}>
-                                    {' '}
-                                </Text>
-                            )}
-                        </>
+                        // Empty placeholder keeps every digit key the
+                        // same height so '1' / '*' / '#' don't render
+                        // shorter than the lettered keys and break the
+                        // grid alignment. It also puts '*' and '#' at
+                        // the same (slightly high) position as the
+                        // digits — where the user wants them.
+                        <Text style={[
+                            styles.letters,
+                            this.props.compact && styles.lettersCompact,
+                            styles.lettersPlaceholder,
+                        ]}>
+                            {' '}
+                        </Text>
                     )}
                 </View>
             </TouchableRipple>
@@ -239,18 +228,9 @@ class DTMFPadBase extends Component {
     }
 
     render() {
-        // Build the per-row item list. When extraColumn is enabled
-        // we append the matching EXTRA_COLUMN entry to each row so
-        // the keypad renders 4 rows × 4 columns instead of the
-        // standard 3 columns. The extras are by-row-index so the
-        // top-to-bottom order is: backspace, -, _, blank.
-        const layout = this.props.extraColumn
-            ? KEY_LAYOUT.map((row, rIdx) => [...row, EXTRA_COLUMN[rIdx]])
-            : KEY_LAYOUT;
-
         return (
             <View style={[styles.grid, this.props.style]}>
-                {layout.map((row, rIdx) => (
+                {KEY_LAYOUT.map((row, rIdx) => (
                     <View
                         key={'row-' + rIdx}
                         style={[
@@ -279,25 +259,15 @@ DTMFPadBase.propTypes = {
     // (the call screen's dark backdrop) instead of inside a Paper
     // Dialog. Switches to white-on-translucent surfaces.
     darkOnLight: PropTypes.bool,
+    // dark: app-level dark theme. Switches the text-only keys to
+    // white glyphs so they stay visible on dark backgrounds (same
+    // palette darkOnLight uses, but driven by the theme toggle
+    // rather than the call-screen backdrop).
+    dark: PropTypes.bool,
     // onDigit: when set, key presses report the printable character
-    // ('1', '*', '#', '+', '0', '-', '_' …) to the consumer and the
-    // DTMF tone path is skipped. Used for number-entry into a text
-    // input.
+    // ('1', '*', '#', '+', '0' …) to the consumer and the DTMF tone
+    // path is skipped. Used for number-entry into a text input.
     onDigit: PropTypes.func,
-    // extraColumn: appends a 4th column to the keypad with the
-    // backspace / - / _ helper keys. Top-to-bottom order is
-    // backspace, -, _, blank. The backspace key reports via
-    // onBackspace; the - / _ keys report via onDigit like the rest
-    // of the grid.
-    extraColumn: PropTypes.bool,
-    // onBackspace: invoked when the 4th-column backspace key is
-    // pressed. Consumer should delete the last character of its
-    // bound input. Ignored if extraColumn is false.
-    onBackspace: PropTypes.func,
-    // onClear: invoked when the 4th-column × clear key is pressed.
-    // Consumer should empty its bound input. Ignored if extraColumn
-    // is false.
-    onClear: PropTypes.func,
     style: PropTypes.any,
     theme: PropTypes.object,
 };
@@ -369,25 +339,13 @@ const styles = StyleSheet.create({
         marginVertical: 5,
     },
     key: {
-        // Bumped from 6 → 10 so the gap between adjacent keys in a
-        // row is now 20 px instead of 12 px. The 4-column extra-
-        // column variant gets noticeably more usable touch
-        // separation, and the standard 3-column grid still fits
-        // comfortably on phone widths.
+        // 10px side margins → 20px gap between adjacent keys, so the
+        // grid keeps real touch separation even without visible key
+        // surfaces. Keys are text-only (no fill, no elevation/shadow)
+        // per user request — the tap target is still the full round
+        // KEY_SIZE area, shown only by the press ripple.
         marginHorizontal: 10,
-        // Subtle elevation so the keys feel pressable and read as
-        // distinct surfaces — matches Paper's elevated-surface idiom.
-        elevation: 2,
-        shadowColor: '#000',
-        shadowOpacity: 0.12,
-        shadowRadius: 2,
-        shadowOffset: { width: 0, height: 1 },
-    },
-    keyDarkOnLight: {
-        // Drop the elevation/shadow when sitting on a dark backdrop;
-        // glassy translucent fill carries the surface read instead.
-        elevation: 0,
-        shadowOpacity: 0,
+        backgroundColor: 'transparent',
     },
     keyContent: {
         flex: 1,
@@ -403,6 +361,14 @@ const styles = StyleSheet.create({
         fontSize: 18,
         lineHeight: 20,
     },
+    // Small optical lift for '#' (reported as sitting too low).
+    poundDigit: {
+        transform: [{ translateY: -2 }],
+    },
+    // Matching optical drop for '*' (drawn high in the font box).
+    starDigit: {
+        transform: [{ translateY: 2 }],
+    },
     letters: {
         fontSize: 10,
         fontWeight: '600',
@@ -412,6 +378,17 @@ const styles = StyleSheet.create({
     lettersCompact: {
         fontSize: 8,
         marginTop: 1,
+    },
+    // '+' sub-label (under 0): a dialable symbol, so much bigger than
+    // the ABC letter rows (bumped several times by user request).
+    lettersPlus: {
+        fontSize: 18,
+        lineHeight: 19,
+        fontWeight: '500',
+    },
+    lettersPlusCompact: {
+        fontSize: 15,
+        lineHeight: 16,
     },
     lettersPlaceholder: {
         opacity: 0,

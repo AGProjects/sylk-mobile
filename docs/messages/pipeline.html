@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylk — Message Pipeline</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171d26; --panel2:#1d2530; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#2a3340; --accent:#4aa3ff; --accent2:#7ee787; --warn:#ffb454; --bad:#ff7b72;
+    --code:#0b0f14; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 22px 96px}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.02em}
+  h2{font-size:21px;margin:42px 0 10px;padding-top:14px;border-top:1px solid var(--line);letter-spacing:-.01em}
+  h3{font-size:16px;margin:26px 0 8px;color:var(--accent)}
+  p{margin:10px 0}
+  .lede{color:var(--muted);font-size:16px;margin-top:0}
+  code{background:var(--code);color:#cdd9e5;border:1px solid var(--line);
+    padding:1px 6px;border-radius:6px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:var(--radius);
+    padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;border:none;padding:0}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .muted{color:var(--muted)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin:16px 0}
+  .grid{display:grid;gap:12px}
+  .cols-2{grid-template-columns:1fr 1fr}
+  @media(max-width:720px){.cols-2{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;background:var(--panel2)}
+  td code{white-space:nowrap}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    padding:2px 8px;border-radius:20px;border:1px solid var(--line)}
+  .t-in{color:var(--accent2);border-color:#2c5a36}
+  .t-out{color:var(--accent);border-color:#234a6e}
+  .t-sql{color:var(--warn);border-color:#5a4426}
+  .t-mem{color:#d2a8ff;border-color:#43345a}
+  .step{display:flex;gap:12px;margin:10px 0}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);font-weight:700}
+  .step .b{flex:1}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0;font-size:13px}
+  .flow .box{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 11px;white-space:nowrap}
+  .flow .arr{color:var(--muted)}
+  .key{color:var(--accent2)}
+  .callout{border-left:3px solid var(--accent);background:var(--panel);padding:10px 16px;border-radius:0 8px 8px 0;margin:16px 0}
+  .callout.warn{border-left-color:var(--warn)}
+  ul{margin:8px 0 8px 2px;padding-left:20px}
+  li{margin:5px 0}
+  .toc{columns:2;font-size:14px}
+  @media(max-width:720px){.toc{columns:1}}
+  .toc a{display:block;padding:2px 0}
+  footer{margin-top:60px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Message Pipeline</h1>
+  <p class="lede">How a chat message arrives, is stored, loaded, rendered and updated in the Sylk mobile app.</p>
+
+  <div class="panel">
+    <strong>TL;DR</strong>
+    <div class="flow">
+      <span class="box t-sql">SQLite</span><span class="arr">→</span>
+      <span class="box">app.js <code>getMessages()</code></span><span class="arr">→</span>
+      <span class="box t-mem">state.contactMessages</span><span class="arr">→</span>
+      <span class="box">props</span><span class="arr">→</span>
+      <span class="box">ReadyBox → ContactsListBox → ChatBox</span><span class="arr">→</span>
+      <span class="box">renderMessages → filteredMessages</span><span class="arr">→</span>
+      <span class="box">GiftedChat</span>
+    </div>
+    <p class="muted" style="margin-bottom:0">
+      <strong>SQLite</strong> is the durable source of truth. <strong><code>contactMessages</code></strong> is the
+      single in-memory source of truth for the <em>currently selected</em> conversation only. ChatBox renders from it;
+      it no longer holds its own message store.
+    </p>
+  </div>
+
+  <h2>Contents</h2>
+  <div class="toc">
+    <a href="#stores">1. Data stores</a>
+    <a href="#arrive">2. Arrival (incoming &amp; outgoing)</a>
+    <a href="#store">3. Storage</a>
+    <a href="#load">4. Loading</a>
+    <a href="#render">5. Rendering</a>
+    <a href="#update">6. Updates by id</a>
+    <a href="#metadata">7. Metadata overlay (labels / replies / location)</a>
+    <a href="#delete">8. Deletes &amp; clears</a>
+    <a href="#funcs">9. Function reference</a>
+    <a href="#invariants">10. Invariants</a>
+  </div>
+
+  <!-- ───────────────────────── 1 ───────────────────────── -->
+  <h2 id="stores">1. Data stores</h2>
+  <table>
+    <tr><th>Store</th><th>Where</th><th>Holds</th><th>Lifetime</th></tr>
+    <tr>
+      <td><span class="tag t-sql">SQL</span> <code>messages</code> table</td>
+      <td>SQLite</td>
+      <td>Every message for every contact (encrypted at rest where applicable).</td>
+      <td>Durable. The source of truth.</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-mem">mem</span> <code>state.contactMessages</code></td>
+      <td>app.js state</td>
+      <td>The <strong>selected contact's</strong> loaded window, sorted newest→oldest (DESC), overlay baked in.</td>
+      <td>Replaced on contact switch; patched on every live event.</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-mem">mem</span> <code>this.contactMessageIndex</code></td>
+      <td>app.js instance field</td>
+      <td><code>Map&lt;_id, message&gt;</code> over <code>contactMessages</code>.</td>
+      <td>Rebuilt whenever <code>contactMessages</code> is rebuilt.</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-mem">mem</span> <code>state.messagesMetadata</code></td>
+      <td>app.js state</td>
+      <td>Per-message arrays of side-channel metadata (labels, rotations, replies, location ticks).</td>
+      <td>For the selected contact; updated by <code>handleMessageMetadata()</code>.</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-mem">mem</span> <code>messagesMetadataById</code> / <code>…ByOriginalId</code></td>
+      <td>app.js (memoised)</td>
+      <td>Derived <code>{label,rotation,reply}</code> lookup maps, keyed by rendered <code>_id</code> and by origin <code>messageId</code>.</td>
+      <td>Recomputed only when <code>messagesMetadata</code> changes.</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <strong>One conversation at a time.</strong> The app holds the selected contact's messages in memory and nothing
+    else. Other contacts live only in SQL; their previews/unread live as scalars on the contact object
+    (<code>contact.lastMessage</code>, <code>contact.unread</code>). The legacy per-uri map
+    <code>state.messages[uri]</code> has been <em>retired</em>.
+  </div>
+
+  <!-- ───────────────────────── 2 ───────────────────────── -->
+  <h2 id="arrive">2. Arrival</h2>
+
+  <h3><span class="tag t-in">incoming</span> WebSocket / Push</h3>
+  <div class="step"><div class="n">1</div><div class="b"><code>handleIncomingMessage(message)</code> classifies the payload (drops control/IMDN/conference-signaling types; handles location ticks via <code>handleMessageMetadata()</code>).</div></div>
+  <div class="step"><div class="n">2</div><div class="b"><code>saveIncomingMessage()</code> persists the row to SQL and bumps the contact's <code>unread</code> / <code>lastMessage</code> scalars. <em>It does not render.</em></div></div>
+  <div class="step"><div class="n">3</div><div class="b">If the sender is the <strong>selected</strong> contact, <code>handleIncomingMessage</code> builds the GiftedChat bubble (<code>sylk2GiftedChat</code>) and calls <code>_appendContactMessage(uri, gMsg)</code>.</div></div>
+  <div class="step"><div class="n">4</div><div class="b">Encrypted bodies arrive ciphertext-first; the bubble is rendered when <code>decryptMessage()</code> resolves and calls <code>_appendContactMessage(uri, msg)</code> (with a dedup-by-id guard).</div></div>
+
+  <h3><span class="tag t-out">outgoing</span> User send</h3>
+  <div class="step"><div class="n">1</div><div class="b"><code>sendMessage()</code> persists the row (<code>saveOutgoingMessage</code>), optimistically calls <code>_appendContactMessage(uri, message)</code>, and ships it over the wire.</div></div>
+  <div class="step"><div class="n">2</div><div class="b">Multi-device carbons echo back via <code>outgoingMessage()</code>, which also routes through <code>_appendContactMessage</code> (dedup prevents doubles).</div></div>
+
+  <h3><span class="tag t-in">journal</span> Server-history replay</h3>
+  <p>At boot/sync, a batch replay walks journal entries, persists to SQL, and edits a <em>local</em> accumulator across many uris in one pass. At the end of the batch it re-derives <code>contactMessages</code> for the selected contact (only if the batch touched it) via <code>_buildContactMessages()</code>. Per-item index mirrors can't see a batched accumulator, so the batch re-derives once.</p>
+
+  <!-- ───────────────────────── 3 ───────────────────────── -->
+  <h2 id="store">3. Storage</h2>
+  <p>Every arrival path writes to SQL <em>first</em>; that write is unconditional and independent of whether the
+  conversation is open. The in-memory update is conditional: it only happens when the message belongs to the selected
+  contact (the <code>_append/_patch/_remove</code> helpers no-op otherwise).</p>
+  <div class="callout warn">
+    <strong>Rule.</strong> If a message arrives — or a state change occurs — for a uri that is <em>not</em> the selected
+    contact, it is saved to SQL only. When the user switches to that contact, the full view is booted from SQL.
+  </div>
+
+  <!-- ───────────────────────── 4 ───────────────────────── -->
+  <h2 id="load">4. Loading</h2>
+  <p>Loading happens on contact switch (and pagination). <code>getMessages(contact, filter)</code>:</p>
+  <div class="step"><div class="n">1</div><div class="b">Resolves <strong>all of the contact's uris</strong> (<code>getAllContactUris</code>) and runs a windowed SQL slice across them (category / pinned / date filters applied in SQL).</div></div>
+  <div class="step"><div class="n">2</div><div class="b">Converts rows to GiftedChat bubbles (<code>sql2GiftedChat</code>), decrypts inline where needed, builds <code>messagesMetadata</code>, into a <strong>local scratch map</strong>.</div></div>
+  <div class="step"><div class="n">3</div><div class="b">Publishes the result: <code>setState({ messagesMetadata, contactMessages: this._buildContactMessages(slice, messagesMetadata) })</code>. <code>_buildContactMessages</code> sorts DESC, bakes the overlay, and (re)builds the id index.</div></div>
+  <p><strong>Pagination</strong> — “load earlier” calls <code>getMessages</code> with a larger window, which rebuilds
+  <code>contactMessages</code> from the grown slice. <strong>Cold-start fast-load</strong> shows the just-tapped push
+  bubble first, then the tail, then the full slice supersedes it.</p>
+
+  <!-- ───────────────────────── 5 ───────────────────────── -->
+  <h2 id="render">5. Rendering</h2>
+  <div class="flow">
+    <span class="box">app.js <code>contactMessages</code></span><span class="arr">→ prop →</span>
+    <span class="box">ReadyBox</span><span class="arr">→</span>
+    <span class="box">ContactsListBox</span><span class="arr">→ {...props} →</span>
+    <span class="box">ChatBox</span>
+  </div>
+  <div class="step"><div class="n">1</div><div class="b">ChatBox's <code>_syncStateFromProps</code> (migrated from <code>UNSAFE_componentWillReceiveProps</code>, now driven by <code>componentDidUpdate</code>) sets <code>state.renderMessages</code> from the <code>contactMessages</code> prop. A change-detection merge preserves unchanged bubble refs.</div></div>
+  <div class="step"><div class="n">2</div><div class="b"><code>componentDidUpdate</code> derives <code>state.filteredMessages</code> from <code>renderMessages</code>: the in-memory filters (size / location / links / date-narrow), date-pill aggregation, local search, and a sort that is <em>skipped</em> when the list is already in the requested order (default desc, no search).</div></div>
+  <div class="step"><div class="n">3</div><div class="b"><code>filteredMessages</code> feeds GiftedChat (<code>inverted</code>), so newest renders at the bottom.</div></div>
+  <div class="callout">
+    <strong>What ChatBox no longer does:</strong> it doesn't keep a message store, doesn't read <code>messages[uri]</code>,
+    and doesn't compute the media-label / rotation / reply overlay per render — that's baked upstream
+    (see <a href="#metadata">§7</a>).
+  </div>
+
+  <!-- ───────────────────────── 6 ───────────────────────── -->
+  <h2 id="update">6. Updates by id</h2>
+  <p>State changes for an existing message (delivery receipts, read markers, file-transfer progress) patch a single
+  entry through the id index — no array scan to find the message.</p>
+  <table>
+    <tr><th>Event</th><th>Handler</th><th>Mirror</th></tr>
+    <tr><td>IMDN accepted/delivered/displayed/failed, pin/unpin</td><td><code>messageStateChanged</code> → <code>updateRenderMessageState</code></td><td><code>_patchContactMessage(id, updated)</code></td></tr>
+    <tr><td>File transfer progress / play / position / failed</td><td><code>fileTransferStateChanged</code> → <code>updateFileTransferBubble</code></td><td><code>_patchContactMessage(id, updated)</code></td></tr>
+    <tr><td>Call-trace enrich (tappable call bubble)</td><td><code>_enrichInMemoryCallMessage</code></td><td><code>_patchContactMessage(id, patched)</code></td></tr>
+    <tr><td>Conference message update</td><td><code>updateConferenceMessage</code></td><td><code>_patchContactMessage(id, updated)</code></td></tr>
+  </table>
+  <pre><code>_patchContactMessage(id, newMsg):
+  if (!contactMessageIndex.has(id)) return false;   // not the selected contact → no-op
+  contactMessageIndex.set(id, newMsg);
+  setState({ contactMessages: arr.map(m =&gt; m._id===id ? newMsg : m) });</code></pre>
+  <p class="muted">The index <code>has(id)</code> check doubles as the “is this the selected contact?” test. Membership is
+  O(1); the array rebuild is O(n) because React needs a fresh array reference.</p>
+
+  <!-- ───────────────────────── 7 ───────────────────────── -->
+  <h2 id="metadata">7. Metadata overlay</h2>
+  <p>Labels (media captions), rotations, and replies are transported as separate <code>application/sylk-message-metadata</code>
+  rows and collected in <code>messagesMetadata</code> (keyed by message id, value = array of <code>{action,value,…}</code>).
+  Rather than re-deriving this in ChatBox on every render, app.js owns it:</p>
+  <div class="step"><div class="n">1</div><div class="b"><strong>Bake on build:</strong> <code>_buildContactMessages</code> calls <code>_overlayMessage(msg, mm)</code> to stamp <code>text</code> (label), <code>rotation</code>, and <code>replyId</code> onto each bubble (last entry per action wins).</div></div>
+  <div class="step"><div class="n">2</div><div class="b"><strong>Re-bake on change:</strong> when a metadata tick lands for the selected contact, <code>handleMessageMetadata</code> re-bakes that one message via <code>_patchContactMessage</code>, so it survives the next merge.</div></div>
+  <div class="step"><div class="n">3</div><div class="b"><strong>Lookup maps:</strong> <code>messagesMetadataById</code> / <code>messagesMetadataByOriginalId</code> are derived (memoised) and passed to ChatBox. The reply-preview render reads them with a direct id lookup (<code>getMetadataByActionForMessage</code>) — no array walk.</div></div>
+  <div class="callout warn">
+    <strong>Location is the exception.</strong> Live-location bubbles still synthesise their tick text inside ChatBox's
+    <code>componentDidUpdate</code> (the <code>messagesMetadata</code> branch), because the map polyline needs the full
+    ordered tick trail. Baking the location trail app-side is a planned follow-up; until then
+    <code>messagesMetadata</code> still flows to ChatBox for location.
+  </div>
+
+  <!-- ───────────────────────── 8 ───────────────────────── -->
+  <h2 id="delete">8. Deletes &amp; clears</h2>
+  <ul>
+    <li><strong>Single message</strong> — <code>deleteMessage</code> / <code>deleteRenderMessage(Sync)</code> → <code>_removeContactMessage(id)</code> (SQL delete + index/array removal).</li>
+    <li><strong>Meeting-session wipe</strong> — removes every bubble matching a <code>sessionId</code> by filtering <code>contactMessages</code> directly and rebuilding the index.</li>
+    <li><strong>Conversation delete / purge</strong> — SQL rows removed; if it's the selected contact the view clears (navigation usually nulls <code>selectedContact</code> too).</li>
+    <li><strong>Reset / call-end / logout</strong> — clear <code>contactMessages: []</code> and <code>contactMessageIndex</code>.</li>
+  </ul>
+
+  <!-- ───────────────────────── 9 ───────────────────────── -->
+  <h2 id="funcs">9. Function reference</h2>
+  <table>
+    <tr><th>Function (app.js unless noted)</th><th>Role</th></tr>
+    <tr><td><code>getMessages(contact, filter)</code></td><td>Load a window from SQL → publish <code>contactMessages</code>.</td></tr>
+    <tr><td><code>_buildContactMessages(list, mm)</code></td><td>Sort DESC + bake overlay + rebuild id index. Returns the array.</td></tr>
+    <tr><td><code>_overlayMessage(msg, mm)</code></td><td>Stamp label/rotation/reply onto one bubble (ref-preserving).</td></tr>
+    <tr><td><code>_appendContactMessage(uri, msg)</code></td><td>Add a new bubble (selected contact only; dedups; re-sorts).</td></tr>
+    <tr><td><code>_patchContactMessage(id, newMsg)</code></td><td>Replace one bubble by id (O(1) lookup).</td></tr>
+    <tr><td><code>_removeContactMessage(id)</code></td><td>Remove one bubble by id.</td></tr>
+    <tr><td><code>_messagesFor(uri)</code> / <code>_messagesMap()</code></td><td>Compatibility shims: reconstruct the old per-uri shape from <code>contactMessages</code> for the few external readers (NavigationBar, Call, Conference).</td></tr>
+    <tr><td><code>handleMessageMetadata(uri, content, author)</code></td><td>Ingest a metadata tick → update <code>messagesMetadata</code> → re-bake the affected bubble (or inject a location bubble).</td></tr>
+    <tr><td><code>_buildMetadataLookups(mm)</code></td><td>Derive the <code>byId</code> / <code>byOriginalId</code> overlay maps.</td></tr>
+    <tr><td><code>updateRenderMessageState</code> / <code>updateFileTransferBubble</code></td><td>Apply a state change → <code>_patchContactMessage</code>.</td></tr>
+    <tr><td><code>_syncStateFromProps(prevProps)</code> <span class="muted">(ChatBox)</span></td><td>Set <code>renderMessages</code> from the <code>contactMessages</code> prop.</td></tr>
+    <tr><td><code>componentDidUpdate</code> <span class="muted">(ChatBox)</span></td><td>Derive <code>filteredMessages</code> (filters / pills / search / sort); live-location synthesis.</td></tr>
+  </table>
+
+  <!-- ───────────────────────── 10 ───────────────────────── -->
+  <h2 id="invariants">10. Invariants</h2>
+  <ul>
+    <li>SQLite is the durable source of truth; <code>contactMessages</code> is the in-memory source of truth for the open chat.</li>
+    <li>Exactly one conversation is held in memory. Non-selected events are SQL-only.</li>
+    <li>Every write path persists to SQL <em>and</em> mirrors into <code>contactMessages</code> through one of <code>_append</code> / <code>_patch</code> / <code>_remove</code> (or a <code>_buildContactMessages</code> rebuild).</li>
+    <li>The id index and <code>contactMessages</code> are always rebuilt together.</li>
+    <li><code>contactMessages</code> is always DESC-sorted with overlay baked; ChatBox does not re-sort (except for <code>asc</code> / active search) and does not re-overlay.</li>
+    <li>ChatBox owns no message store — it renders the prop.</li>
+  </ul>
+
+  <footer>
+    Sylk mobile · message pipeline · generated as living documentation of the app.js / ChatBox data flow.
+    Location-trail baking is the one remaining overlay that lives in ChatBox.
+  </footer>
+
+</div>
+</body>
+</html>

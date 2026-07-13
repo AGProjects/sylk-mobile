@@ -1,0 +1,2 @@
+Added H.264 baseline profile
+Bug fixes

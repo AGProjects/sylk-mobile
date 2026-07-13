@@ -42,7 +42,6 @@ function SearchBar(props) {
         showDialpadExpansion,
         onDialpadDigit,
         onDialpadBackspace,
-        onDialpadClear,
     } = props;
 
     return (
@@ -59,6 +58,7 @@ function SearchBar(props) {
                 showDialpad={showDialpad}
                 isDialpadActive={isDialpadActive}
                 onDialpadPress={onDialpadPress}
+                onBackspace={onDialpadBackspace}
                 showQr={showQr}
                 onQrPress={onQrPress}
                 autoFocus={autoFocus}
@@ -70,13 +70,14 @@ function SearchBar(props) {
             {showDialpadExpansion ? (
                 <View style={searchBarStyles.dialpadWrap}>
                     {/* Full-size keys (no `compact`) so the pad reads like a
-                        real phone keypad. `extraColumn` adds a 4th column
-                        (backspace, -, _) tailored to SIP user-part entry. */}
+                        real phone keypad — a standard 3×4 grid. Backspace
+                        lives in the search bar itself (URIInput renders it
+                        to the left of the clear-× while the pad is open).
+                        `dark` keeps the text-only keys visible on dark
+                        theme backgrounds. */}
                     <DTMFPad
                         onDigit={onDialpadDigit}
-                        extraColumn={true}
-                        onBackspace={onDialpadBackspace}
-                        onClear={onDialpadClear}
+                        dark={dark}
                     />
                 </View>
             ) : null}
@@ -107,18 +108,21 @@ SearchBar.propTypes = {
     showDialpadExpansion: PropTypes.bool,
     onDialpadDigit: PropTypes.func,
     onDialpadBackspace: PropTypes.func,
-    onDialpadClear: PropTypes.func,
 };
 
 const searchBarStyles = StyleSheet.create({
     dialpadWrap: {
-        marginTop: 6,
-        paddingVertical: 4,
-        // A faint divider/background separates the dialpad from the contact
-        // list immediately below it, so the keypad doesn't feel like it's
-        // floating over rows.
-        backgroundColor: 'rgba(0,0,0,0.03)',
-        borderRadius: 12,
+        // Glued flush to the search bar — the 6px marginTop that used
+        // to sit here left a visible gap (and let the bar's shadow
+        // show through) between the search bar and the pad. The faint
+        // gray wash + rounded corners this wrapper used to paint are
+        // gone too: with text-only keys the pad sits directly on the
+        // screen background, one flat view. Zero padding as well — the
+        // sliver of wrapper peeking out above the grid ("the green one
+        // is like 2px higher") was this wrapper's own top padding; the
+        // grid rows carry their own vertical margins already.
+        marginTop: 0,
+        paddingVertical: 0,
     },
 });
 

@@ -2120,13 +2120,10 @@ class NavigationBar extends Component {
         } else {
             title = 'Myself';
         }
-        // Two distinct icons for the two search modes — the contacts
-        // list uses an account+magnifier glyph (search through PEOPLE),
-        // and the in-chat search uses a text+magnifier glyph (search
-        // MESSAGES). Both flip to the universal close icon while the
-        // search bar is open. Previously a single 'magnify' icon was
-        // used for both, which read as ambiguous in the navbar.
-        let searchContactsIcon = this.props.searchContacts ? 'close' : 'account-search';
+        // In-chat search icon: text+magnifier glyph (search MESSAGES),
+        // flipping to the universal close icon while the search bar is
+        // open. The contacts-list search icon was removed from the
+        // navbar — the search field is always visible on the main list.
         let searchMessagesIcon = this.props.searchMessages ? 'close' : 'text-search';
 
 		function capitalizeFirstLetter(str) {
@@ -2824,19 +2821,15 @@ class NavigationBar extends Component {
                    );
                })()}
 
-                {/* Search icon (search messages within the open chat, OR
-                    search contacts on the list view). Positioned so it
-                    sits immediately to the LEFT of the kebab menu, with
-                    the DND bell on its own left in the contacts-list
-                    view. Stays visible during an active call too —
-                    the user often wants to find a contact or look up
-                    a previous message while a conference is up.
+                {/* Search-messages icon (within the open chat only).
+                    Positioned so it sits immediately to the LEFT of
+                    the kebab menu. Stays visible during an active call
+                    too — the user often wants to look up a previous
+                    message while a conference is up.
 
-                    Hidden entirely while the conference-invite picker
-                    is up (inviteContacts === true): the picker has its
-                    own pinned search bar — Blink/AB toggle + dialpad —
-                    and the navbar's search icon would only collide
-                    with it. */}
+                    The contacts-list search icon was removed entirely:
+                    the search field is always visible on the main list
+                    now, so there is nothing to toggle from the navbar. */}
                 {this.props.selectedContact ?
                     // Hide the "search messages" icon on the cover display —
                     // the NavBar is too cramped to also host a search UI there.
@@ -2849,17 +2842,7 @@ class NavigationBar extends Component {
                         onPress={this.props.toggleSearchMessages}
                         icon={searchMessagesIcon}
                     />)
-                :
-                this.props.inviteContacts ? null :
-				<IconButton
-                    key={'search-contacts-' + _navRemountKey}
-                    style={styles.whiteButton}
-                    size={navIconBtnSize}
-                    disabled={false}
-                    onPress={this.props.toggleSearchContacts}
-                    icon={searchContactsIcon}
-                />
-                }
+                : null}
 
                { (!this.props.selectedContact && !this.props.searchContacts && false) ?
                 <IconButton
@@ -2962,13 +2945,13 @@ class NavigationBar extends Component {
                     );
                 })()}
 
-                { /* Hide the kebab / overflow menu while a search
-                     mode is active in the main interface — the user
-                     wants the navbar trimmed down to just the search
-                     controls until search is dismissed. Applies to
-                     both contacts-search and messages-search; either
-                     flag being set suppresses the kebab. */ }
-                { (!this.props.searchContacts && !this.props.searchMessages) ?
+                { /* Hide the kebab / overflow menu only while the
+                     in-chat messages-search is active. The main
+                     (contacts-list) kebab stays visible during
+                     contacts search — the search field is always
+                     shown there now, so hiding the menu would leave
+                     the navbar without its primary actions. */ }
+                { !this.props.searchMessages ?
                   (this.props.selectedContact ?
                     <Menu
                         visible={this.state.menuVisible}

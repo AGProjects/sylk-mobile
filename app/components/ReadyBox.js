@@ -755,7 +755,12 @@ class ReadyBox extends Component {
         }
 
         if (!this.props.searchMessages && !this.props.searchContacts) {
-			return false;
+			// Main contacts list: the search field is always visible,
+			// even before the user enters search mode. Only hide the
+			// bar when a contact/chat is open and no search is active.
+			if (this.props.selectedContact) {
+				return false;
+			}
         }
 
 		if (this.state.messagesCategoryFilter == 'image') {
@@ -3133,7 +3138,6 @@ class ReadyBox extends Component {
                             }
                             onDialpadDigit={this.handleAbDialpadDigit}
                             onDialpadBackspace={this.handleAbDialpadBackspace}
-                            onDialpadClear={() => this.handleSearch('')}
                         />
                         : null}
 

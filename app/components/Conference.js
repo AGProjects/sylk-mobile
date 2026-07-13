@@ -407,7 +407,29 @@ class Conference extends React.Component {
             utils.timestampedLog('[call] Initial participants', this.props.participantsToInvite);
         }
 
+		// Fake ringback with a synthetic join delay (pre-Dec-2025
+		// behavior): the conference server answers almost immediately
+		// (no real 180 Ringing), so joining right away cuts the ring
+		// tone short on connect. Play the ringback first and only
+		// join after RINGBACK_DELAY, so the caller always hears a
+		// full ring cycle. callStateChanged → stopRingback still
+		// silences it as soon as the (delayed) join progresses.
+		const RINGBACK_DELAY = 3000;
+		this.props.startRingback();
+
+		setTimeout(() => {
+		// If the user cancelled / navigated away during the delay,
+		// don't join a conference nobody is looking at.
+		if (this.ended) {
+			this.props.stopRingback();
+			return;
+		}
+
 		let confCall = this.state.account.joinConference(this.state.room.toLowerCase(), options);
+
+		if (!confCall) {
+			this.props.stopRingback();
+		}
 
 		if (confCall) {
 			this.setState({currentCall: confCall});
@@ -463,6 +485,7 @@ class Conference extends React.Component {
 				}
 			});
 		}
+		}, RINGBACK_DELAY);
 
     }
 

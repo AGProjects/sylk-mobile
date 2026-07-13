@@ -1,0 +1,1 @@
+Fix clearing unread messages badge for conference contacts

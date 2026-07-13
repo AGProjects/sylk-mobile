@@ -1,0 +1,240 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sylk Mobile Journal Sync - Design</title>
+<style>
+:root{color-scheme:light dark}
+body{max-width:860px;margin:40px auto;padding:0 24px;
+ font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+ color:#1b1f24;background:#fff}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#0d1117}
+ code,pre{background:#161b22!important}th{background:#161b22!important}
+ tr:nth-child(even){background:#11151b!important}a{color:#58a6ff}}
+h1,h2,h3,h4{line-height:1.25;margin-top:1.6em}
+h1{border-bottom:2px solid #ddd;padding-bottom:.3em}
+h2{border-bottom:1px solid #eee;padding-bottom:.3em}
+code{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.88em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#f6f8fa;padding:14px 16px;border-radius:8px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.93em}
+th,td{border:1px solid #d0d7de;padding:6px 12px;text-align:left;vertical-align:top}
+th{background:#f6f8fa}tr:nth-child(even){background:#fafbfc}
+blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
+</style>
+</head><body>
+<h1>Sylk Mobile Journal Sync - Design</h1>
+<h2>Purpose</h2>
+<p><strong>Pull each account's message history onto the device and keep it current.</strong> The server
+keeps a per-account <em>journal</em> — an ordered log of message events (texts, file transfers,
+IMDN receipts, conversation/message removes, reads, location ticks). On launch and on
+reconnect the client syncs that journal into the local SQLite <code>messages</code> table so chats
+render offline and stay consistent across devices.</p>
+<p>The journal is ordered by <strong>delivery</strong>, not by message timestamp. A cursor
+(<code>last_sync_id</code> + <code>last_sync_timestamp</code>) marks how far the device has consumed it; each
+sync resumes from the cursor and fetches only what is newer.</p>
+<p>Operations can run online or offline; the cursor and the on-disk cache make the sync
+resumable and idempotent.</p>
+<p><strong>Disclaimer:</strong> always check the code for the actual reference and for undocumented
+changes. Documentation can always be out of date.</p>
+<p>The companion document <a href="../addressbook/addressbook.html"><code>../addressbook/addressbook.html</code></a>
+describes the addressbook, on which the first journal sync depends (see Chapter 2).</p>
+<hr />
+<h2>1. The three phases</h2>
+<p>A journal sync is <strong>request → download/cache → process</strong>, and the three are deliberately
+decoupled so a crash between them never loses or re-pulls data.</p>
+<ol>
+<li><strong>Request</strong> — <code>requestSyncConversations(lastId, options, uri)</code> decides the window
+   (cursor delta, or a 5-year window for a true first sync) and asks the SDK
+   (<code>account.syncConversations</code>) for a batch.</li>
+<li><strong>Download / cache</strong> — <code>syncConversations(messages)</code> receives a batch, writes it to disk
+   as JSON files under the account's journal folder (<code>writeJournal</code>), advances the durable
+   cursor for what was cached, and paginates until the server returns an empty batch.</li>
+<li><strong>Process</strong> — the cached files are read back, parsed, and applied to SQL
+   (<code>_syncConversations</code>), one file at a time; each file is deleted after it is applied.</li>
+</ol>
+<p>The key invariant: <strong>the cursor tracks what has been cached; processing is driven by the
+files on disk, not by the cursor.</strong> So the cursor may legitimately run ahead of processing,
+and nothing is skipped because the on-disk files remain the source of truth until applied.</p>
+<hr />
+<h2>2. Dependencies and ordering</h2>
+<p>The first journal sync has exactly <strong>one</strong> dependency: the <strong>addressbook import must be
+finished</strong>. It does <strong>not</strong> depend on encryption keys.</p>
+<ul>
+<li>The addressbook is marked synced by <code>_abMarkImportFinished(account)</code> — called at the end
+  of <code>syncGroupsTable</code> (the server-marker skip / ongoing reconcile path) and at the
+  fresh-migration clean-done. It records <code>_abImportDoneForAccount</code> and releases the
+  import-gated work (the deferred journal first sync <strong>and</strong> the import-key modal). It is
+  <strong>not</strong> fired from the migration guard itself, which on the skip path completes instantly
+  while the contact import still runs in <code>syncGroupsTable</code>.</li>
+<li><code>requestSyncConversations</code> defers a genuine first full sync (no <code>lastSyncId</code> and no
+  <code>lastSyncTimestamp</code>) until <code>_abImportDoneForAccount</code> matches the current account,
+  stashing the request in <code>_pendingFirstJournalSync</code>. A returning device already holds its
+  addressbook and a cursor, so it syncs immediately.</li>
+<li>Keys are <strong>not</strong> a gate. Encrypted messages are stored as ciphertext and decrypted on
+  demand or after a key is imported (Chapter 5). The order on a fresh device is therefore:
+  <strong>addressbook import → journal sync</strong>, regardless of whether a private key exists yet.</li>
+</ul>
+<hr />
+<h2>3. Download &amp; caching</h2>
+<ul>
+<li>The server batch is written to disk by <code>writeJournal</code>, chunked at <strong>500 messages per
+  file</strong>. Each file is named <code>&lt;lastMsgSafeTimestamp&gt;-&lt;lastMsgId&gt;.json</code> under
+  <code>&lt;DocumentDirectory&gt;/&lt;account&gt;/journal/</code>, so files sort oldest → newest by name.</li>
+<li>Remove/read/IMDN control types are filtered out of the <em>first</em>-sync cache write (they are
+  not durable history), but applied normally during processing.</li>
+<li>Pagination: on a first sync, each cached batch keeps <code>this.state.lastSyncId</code> <strong>null</strong> and
+  recurses with the batch's last id as the <code>since</code> cursor (<code>this.lastServerJournalId</code> holds
+  the in-memory position). When the server returns an empty batch, pagination ends and
+  processing begins.</li>
+</ul>
+<h3>First-sync window</h3>
+<p>When there is neither a <code>lastSyncId</code> nor a stored <code>last_sync_timestamp</code>,
+<code>requestSyncConversations</code> requests a <strong>5-year</strong> <code>since</code> window (a bare null/null request
+returns a truncated batch from the server). If a <code>last_sync_timestamp</code> exists it is used as
+the <code>since</code> fallback, so a pruned server id still resumes by time instead of re-downloading
+everything.</p>
+<hr />
+<h2>4. The cursor (<code>last_sync_id</code> / <code>last_sync_timestamp</code>)</h2>
+<p>The cursor lives in the <code>accounts</code> table and is mirrored in <code>state.lastSyncId</code> /
+<code>state.lastSyncTimestamp</code>. It is written by <code>saveLastSyncId(id, force, messageTimestamp,
+allowClear, durableOnly)</code>.</p>
+<ul>
+<li><strong>Owned by the sync, never by live deliveries.</strong> Live WebSocket arrivals call
+  <code>saveLastSyncId(..., force=false)</code> and <strong>do not</strong> advance the cursor. The journal is
+  delivery-ordered, so a re-delivered or echoed message carries a fresh-looking id/timestamp
+  but an <em>old</em> journal position; adopting it would rewind the cursor and re-download the
+  backlog. Only the authoritative sync (<code>force=true</code>) moves the cursor; any live message is
+  picked up and de-duplicated by <code>msg_id</code> on the next sync.</li>
+<li><strong>Cache-time checkpoint (<code>durableOnly=true</code>).</strong> As soon as a batch is written to disk, the
+  cursor is persisted to SQL <strong>without</strong> touching <code>state.lastSyncId</code> (which must stay null to
+  keep first-sync pagination going). This is what makes a crash mid-download safe: the next
+  launch reads the persisted cursor, fetches only newer journals, and processes the cached
+  files already on disk instead of re-downloading them.</li>
+<li><strong>Per-file checkpoint.</strong> During processing, after each cached file is applied, the cursor
+  advances (<code>force=true</code>) to that file's last id. Files apply oldest → newest, so the cursor
+  moves strictly forward and an interrupted processing pass resumes from the last applied
+  file.</li>
+<li><strong>Null-id protection.</strong> A <code>null</code> id only ever comes from the explicit refetch
+  (<code>allowClear=true</code>), which clears <code>last_sync_id</code> but <strong>preserves</strong> <code>last_sync_timestamp</code>
+  so a later sync resumes by time. Any other <code>null</code> is blocked and logged (it would trigger
+  a full re-download).</li>
+</ul>
+<hr />
+<h2>5. Encryption handling</h2>
+<p>Journal import does not require a key. Message rows carry an <code>encrypted</code> state:</p>
+<table>
+<thead>
+<tr>
+<th>value</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code> / <code>null</code></td>
+<td>not encrypted</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>encrypted ciphertext (not yet decrypted)</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>decrypted plaintext stored in <code>content</code></td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td>failed to decrypt (e.g. broken PGP envelope)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Encrypted messages are stored as <strong>ciphertext (<code>1</code>)</strong> and decrypted <strong>lazily on demand</strong>
+  at load/display time (<code>decryptMessage</code>). There is no bulk decrypt at boot.</li>
+<li><code>decryptMessage</code> bails immediately when there is no private key, so a keyless import never
+  marks messages <code>3</code>; they simply stay <code>1</code> until a key exists.</li>
+<li><strong>Only on key generation or import</strong> (<code>savePrivateKey</code>) does the client run
+  <code>UPDATE messages SET encrypted = 1 WHERE encrypted = 3</code> and retry the deferred sync — so
+  anything previously marked failed is re-queued for on-demand decryption. This is the sole
+  place that flip happens.</li>
+</ul>
+<p>Encrypted <strong>file</strong> attachments are not auto-downloaded without a private key
+(<code>autoDownloadFile denied — encrypted, no private key yet</code>); they download once the key is
+present.</p>
+<hr />
+<h2>6. Crash safety &amp; resumability</h2>
+<p>The cache + cursor design makes every interruption point recoverable:</p>
+<ul>
+<li><strong>Killed mid-download:</strong> the durable cache-time cursor points at the last cached batch.
+  Next launch fetches only newer journals; the already-cached files are processed from disk.</li>
+<li><strong>Killed mid-processing:</strong> processed files are deleted and the cursor advanced per file;
+  unprocessed files remain on disk. Next launch fetches newer (often none) and applies the
+  leftover cached files. The cursor may be ahead of processing, which is safe because
+  processing reads the on-disk files directly.</li>
+<li><strong>Pruned server id:</strong> <code>last_sync_timestamp</code> lets the sync resume by time instead of
+  restarting the whole backfill.</li>
+</ul>
+<hr />
+<h2>7. UI signal</h2>
+<p><code>firstSyncPending</code> drives the sync spinner. It is set when a sync round-trip starts and
+cleared by <code>clearFirstSyncPending</code> when the sync completes, with a <strong>15-second safety
+timeout</strong> so the spinner can never get stuck. Paginated batches reuse a single timeout
+window rather than resetting it each batch.</p>
+<hr />
+<h2>8. Code reference</h2>
+<p>All in <code>app/app.js</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>requestSyncConversations(lastId, options, uri)</code></td>
+<td>Decides the window (cursor delta / 5y first-sync), gates the first sync on addressbook-import-finished, arms the spinner, and asks the SDK for a batch.</td>
+</tr>
+<tr>
+<td><code>syncConversations(messages)</code></td>
+<td>Receives a batch: caches it to disk (<code>writeJournal</code>), advances the durable cache-time cursor, paginates, then drives the processing loop over cached files.</td>
+</tr>
+<tr>
+<td><code>writeJournal(messages, dir)</code></td>
+<td>Writes the batch to disk as 500-message JSON files named <code>&lt;timestamp&gt;-&lt;id&gt;.json</code>.</td>
+</tr>
+<tr>
+<td><code>_syncConversations(messages, file, firstSync)</code></td>
+<td>Applies one cached file's messages to SQL (insert/update, category/has_link, dedupe by <code>msg_id</code>).</td>
+</tr>
+<tr>
+<td><code>saveLastSyncId(id, force, messageTimestamp, allowClear, durableOnly)</code></td>
+<td>Persists the cursor. <code>force</code> = authoritative sync writer; <code>durableOnly</code> = SQL-only cache checkpoint that leaves <code>state.lastSyncId</code> untouched; <code>allowClear</code> = explicit refetch.</td>
+</tr>
+<tr>
+<td><code>_abMarkImportFinished(account)</code></td>
+<td>True "addressbook synced" hook (end of <code>syncGroupsTable</code> / migration clean-done). Sets <code>_abImportDoneForAccount</code> and releases the deferred first journal sync and the import-key modal. Idempotent per account.</td>
+</tr>
+<tr>
+<td><code>afterFirstSync()</code></td>
+<td>Post-first-sync tasks (welcome message, test numbers, push-permission prompt, etc.).</td>
+</tr>
+<tr>
+<td><code>clearFirstSyncPending(reason)</code></td>
+<td>Clears the sync spinner (idempotent; 15s timeout backstop).</td>
+</tr>
+<tr>
+<td><code>replayJournal()</code></td>
+<td>Re-dispatches queued <strong>outgoing</strong> journal ops (removes/reads/IMDN). Distinct from the inbound sync above.</td>
+</tr>
+<tr>
+<td><code>decryptMessage(message)</code></td>
+<td>Lazily decrypts a ciphertext row on demand; bails without a private key.</td>
+</tr>
+<tr>
+<td><code>savePrivateKey(keys)</code></td>
+<td>On key generation/import: stores keys, flips <code>encrypted 3 → 1</code>, and retries the deferred first sync.</td>
+</tr>
+</tbody>
+</table>
+</body></html>

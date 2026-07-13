@@ -176,6 +176,21 @@ class URIInput extends React.Component {
             && !this.props.isDialpadActive
             && typeof this.props.onCloseSearch !== 'function';
 
+        // Whether the dialpad toggle icon is rendered. Hidden while
+        // the pad is OPEN (per user request) — its flush-right slot
+        // is taken over by a close-× that dismisses the pad.
+        const _showDialpadBtn = this.props.showDialpad
+            && !this.props.isDialpadActive
+            && typeof this.props.onCloseSearch !== 'function';
+
+        // Pad-open state: the toggle icon above is replaced by an
+        // ALWAYS-visible close-× at the flush-right slot (right:4)
+        // that closes the dialpad view, with the backspace one
+        // stride to its left. The text-clear × is suppressed while
+        // the pad is open — the right edge belongs to close+backspace.
+        const _padOpen = this.props.isDialpadActive
+            && typeof this.props.onCloseSearch !== 'function';
+
         // Reserve right padding on the text input so long search text
         // ellipsizes BEFORE it slides underneath the overlay buttons
         // (user-reported bug: "too long search text gets under the
@@ -190,22 +205,37 @@ class URIInput extends React.Component {
         // out to just the clear-×'s `right` offset (offset + ~38px
         // button width − ~40px built-in slot). Anything more piles up
         // as dead space between the text and the × (the follow-up bug).
-        const _clearRight = (_showQrBtn && this.props.showDialpad)
+        const _clearRight = (_showQrBtn && _showDialpadBtn)
             ? 100
             : _showQrBtn
                 ? 52
-                : (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
+                : (this.state.inviteContacts && this.props.inviteEnabled && _showDialpadBtn)
                     ? 108
                     : (this.state.inviteContacts && this.props.inviteEnabled)
                         ? 56
                         : 48;
+        const _hasText =
+            this.state.defaultValue && this.state.defaultValue.length > 0;
+
+        // In-bar backspace, shown while the dialpad is open (it
+        // replaced the pad's removed 4th-column backspace key). Sits
+        // one IconButton stride (~44px) to the LEFT of the close-×
+        // (i.e. right:48 normally, right:96 when the Invite button
+        // shares the bar). Only renders while there's text to delete.
+        const _showBackspace = _hasText
+            && _padOpen
+            && typeof this.props.onBackspace === 'function';
+        const _backspaceRight =
+            (this.state.inviteContacts && this.props.inviteEnabled)
+                ? 96
+                : 48;
+
         // Only needed while there's text (the built-in slot is
         // position:absolute — zero-width — when the field is empty,
         // but then there's no long text to protect either).
-        const _inputPaddingRight =
-            this.state.defaultValue && this.state.defaultValue.length > 0
-                ? _clearRight
-                : 0;
+        const _inputPaddingRight = _hasText
+            ? (_padOpen ? _backspaceRight : _clearRight)
+            : 0;
 
         return (
             <View style={uriInputStyles.searchbarRow}>
@@ -223,6 +253,11 @@ class URIInput extends React.Component {
                     autoCorrect={false}
                     clearIcon={_suppressedClearIcon}
                     showClearIcon={false}
+                    // Paper only treats mode="bar" as bar-mode; our
+                    // "flat" falls into the view-mode branch, which
+                    // draws a Divider line under the bar by default —
+                    // the "clear line delimiter" the user reported.
+                    showDivider={false}
                     autoFocus={this.props.autoFocus}
                     style={[
                         uriInputStyles.searchbar,
@@ -238,6 +273,20 @@ class URIInput extends React.Component {
                     iconColor={darkColors.iconColor}
                     placeholderTextColor={darkColors.placeholderColor}
                 />
+                {/* Hairline under the search bar. Paper's own view-mode
+                    Divider (suppressed via showDivider={false} above)
+                    was too pronounced; this is the same idea drawn by
+                    hand, much dimmer, theme-aware. */}
+                <View
+                    style={[
+                        uriInputStyles.bottomHairline,
+                        {
+                            backgroundColor: this.props.dark
+                                ? 'rgba(255,255,255,0.08)'
+                                : 'rgba(0,0,0,0.06)',
+                        },
+                    ]}
+                />
                 {/* Custom × clear icon, overlaid INSIDE the search
                     bar at right:48 — i.e. immediately to the LEFT of
                     the dialpad toggle (which sits flush to the right
@@ -247,8 +296,10 @@ class URIInput extends React.Component {
                     dialpad and the × can sit beside it instead of
                     fighting for the same slot. Only rendered when
                     the field is non-empty — matches Paper's
-                    auto-hide-when-empty behaviour. */}
-                {this.state.defaultValue && this.state.defaultValue.length > 0 ? (
+                    auto-hide-when-empty behaviour — and suppressed
+                    while the dialpad is open (the right edge then
+                    belongs to the close-dialpad × and backspace). */}
+                {_hasText && !_padOpen ? (
                     <IconButton
                         icon="close"
                         size={22}
@@ -256,25 +307,46 @@ class URIInput extends React.Component {
                         accessibilityLabel="Clear search"
                         style={[
                             uriInputStyles.clearOverlay,
-                            // Shift the clear-× further left when other
-                            // overlays occupy the right edge. The
-                            // Invite button only renders once at least
-                            // one contact is selected (inviteEnabled),
-                            // so the layout collapses back to its
-                            // smaller forms while nothing is picked:
-                            //   invite + dialpad → 2 buttons to clear → right:108
-                            //   invite alone    → 1 button to clear → right:56
-                            //   dialpad alone   → 1 button to clear → right:48 (default)
-                            //   nothing         → right:48 (default)
-                            (_showQrBtn && this.props.showDialpad)
-                                ? uriInputStyles.clearOverlayQrAndDialpadMode
-                                : _showQrBtn
-                                    ? uriInputStyles.clearOverlayQrMode
-                                    : (this.state.inviteContacts && this.props.inviteEnabled && this.props.showDialpad)
-                                        ? uriInputStyles.clearOverlayInviteAndDialpadMode
-                                        : (this.state.inviteContacts && this.props.inviteEnabled)
-                                            ? uriInputStyles.clearOverlayInviteMode
-                                            : null,
+                            // Positioned by the same _clearRight the
+                            // input padding uses, so the × always
+                            // clears whatever set of overlays occupies
+                            // the right edge (QR / dialpad toggle /
+                            // Invite — see the _clearRight ladder
+                            // above) and never drifts out of sync
+                            // with the text padding.
+                            { right: _clearRight },
+                        ]}
+                        iconColor={darkColors.iconColor}
+                    />
+                ) : null}
+                {/* Close-dialpad × at the flush-right slot the toggle
+                    icon vacated. ALWAYS visible while the pad is open
+                    (regardless of text) — tapping it closes the
+                    dialpad view via the same toggle handler. */}
+                {_padOpen ? (
+                    <IconButton
+                        icon="close"
+                        size={22}
+                        onPress={this.props.onDialpadPress}
+                        accessibilityLabel="Close dialpad"
+                        style={uriInputStyles.dialpadOverlay}
+                        iconColor={darkColors.iconColor}
+                    />
+                ) : null}
+                {/* Backspace overlay, immediately to the LEFT of the
+                    close-dialpad ×. Rendered only while the dialpad is
+                    open and the field has text — it deletes the last
+                    character via onBackspace (the dialpad grid itself
+                    is a plain 3×4 pad with no backspace key). */}
+                {_showBackspace ? (
+                    <IconButton
+                        icon="backspace-outline"
+                        size={22}
+                        onPress={this.props.onBackspace}
+                        accessibilityLabel="Delete last character"
+                        style={[
+                            uriInputStyles.clearOverlay,
+                            { right: _backspaceRight },
                         ]}
                         iconColor={darkColors.iconColor}
                     />
@@ -316,35 +388,22 @@ class URIInput extends React.Component {
                     rightmost icon" spot across normal and invite
                     flows. Suppressed when onCloseSearch is provided
                     so the close-X owns the right edge. */}
-                {this.props.showDialpad && typeof this.props.onCloseSearch !== 'function' ? (
+                {_showDialpadBtn ? (
                     <IconButton
                         icon="dialpad"
                         size={22}
                         onPress={this.props.onDialpadPress}
-                        accessibilityLabel={
-                            this.props.isDialpadActive
-                                ? 'Hide dialpad'
-                                : 'Show dialpad'
-                        }
+                        accessibilityLabel="Show dialpad"
                         style={[
                             uriInputStyles.dialpadOverlay,
                             // When the QR button shares the bar it owns
                             // the rightmost slot (right:4); the dialpad
                             // shifts one stride left to sit beside it.
-                            // (When the dialpad is active the QR button
-                            // is hidden, so the pad stays flush right.)
                             _showQrBtn
                                 ? uriInputStyles.dialpadOverlayWithQr
                                 : null,
-                            this.props.isDialpadActive
-                                ? uriInputStyles.dialpadOverlayActive
-                                : null,
                         ]}
-                        iconColor={
-                            this.props.isDialpadActive
-                                ? '#ffffff'
-                                : '#27ae60'
-                        }
+                        iconColor="#27ae60"
                     />
                 ) : null}
                 {/* QR scan button overlaid INSIDE the search bar,
@@ -396,12 +455,12 @@ class URIInput extends React.Component {
                         accessibilityLabel="Invite selected contacts"
                         style={[
                             uriInputStyles.inviteOverlay,
-                            // When the dialpad is also rendered (in
-                            // the invite-to-conference picker), the
-                            // dialpad owns the rightmost slot (right:4)
-                            // so the Invite button shifts left to sit
-                            // beside it.
-                            this.props.showDialpad
+                            // The rightmost slot (right:4) belongs to
+                            // the dialpad toggle when closed, or the
+                            // close-dialpad × when open — in both
+                            // cases the Invite button shifts one
+                            // stride left to sit beside it.
+                            (_showDialpadBtn || _padOpen)
                                 ? uriInputStyles.inviteOverlayWithDialpad
                                 : null,
                             uriInputStyles.inviteOverlayEnabled,
@@ -414,11 +473,11 @@ class URIInput extends React.Component {
     }
 }
 
-// Searchbar height: 44 px (was 40, bumped ~10 % per user request).
-// Lands on Apple's 44 px minimum tap-target dead-on, still well
-// shorter than the original 56 px so the contacts list keeps the
-// vertical space the previous compression reclaimed.
-const SEARCHBAR_HEIGHT = 44;
+// Searchbar height: 50 px (history: 56 originally, compressed to 40,
+// then 44, now bumped again per user request). Comfortably above
+// Apple's 44 px minimum tap target while still a touch shorter than
+// the original 56 px bar.
+const SEARCHBAR_HEIGHT = 50;
 
 const uriInputStyles = StyleSheet.create({
     searchbarRow: {
@@ -427,9 +486,21 @@ const uriInputStyles = StyleSheet.create({
         // contacts-header layout above it.
         position: 'relative',
     },
+    // Hand-drawn dim divider under the bar (see render).
+    bottomHairline: {
+        height: StyleSheet.hairlineWidth,
+        width: '100%',
+    },
     searchbar: {
         height: SEARCHBAR_HEIGHT,
         minHeight: SEARCHBAR_HEIGHT,
+        // Kill Paper's default Searchbar elevation/shadow — it renders
+        // as a ~3px line/shadow under the bar (user-reported). The bar
+        // reads as a surface via its explicit background colour alone.
+        elevation: 0,
+        shadowOpacity: 0,
+        shadowColor: 'transparent',
+        borderBottomWidth: 0,
     },
     searchbarInput: {
         minHeight: SEARCHBAR_HEIGHT,
@@ -464,10 +535,6 @@ const uriInputStyles = StyleSheet.create({
         zIndex: 5,
         elevation: 5,
     },
-    dialpadOverlayActive: {
-        backgroundColor: '#27ae60',
-        borderRadius: 18,
-    },
     // QR scan button — pinned flush to the right edge (right:4),
     // taking the rightmost slot so it sits to the RIGHT of the
     // dialpad. The dialpad gets dialpadOverlayWithQr (right:52)
@@ -484,15 +551,6 @@ const uriInputStyles = StyleSheet.create({
     // button can own the right edge.
     dialpadOverlayWithQr: {
         right: 52,
-    },
-    // Clear-× offsets when the QR button is present:
-    //   • QR alone        → one button to clear → right:52
-    //   • QR + dialpad     → two buttons to clear → right:100
-    clearOverlayQrMode: {
-        right: 52,
-    },
-    clearOverlayQrAndDialpadMode: {
-        right: 100,
     },
     // Invite-mode action pair overlays. Right→left order:
     //   • Invite (account-plus, green when enabled) at right:4
@@ -512,33 +570,6 @@ const uriInputStyles = StyleSheet.create({
     },
     inviteOverlayEnabled: {
         backgroundColor: '#27ae60',
-    },
-    cancelInviteOverlay: {
-        position: 'absolute',
-        right: 56,
-        top: (SEARCHBAR_HEIGHT - 36) / 2,
-        margin: 0,
-        zIndex: 5,
-        elevation: 5,
-        backgroundColor: '#ffffff',
-        borderRadius: 18,
-    },
-    clearOverlayInviteMode: {
-        // Cancel button removed; clear-× now only has to clear the
-        // single Invite overlay at right:4 (~40px wide), so right:48
-        // (== the normal "shift one IconButton over" offset) is
-        // enough.
-        right: 56,
-    },
-    // invite + dialpad combo. Right→left order:
-    //   • Dialpad at right:4   (flush right)
-    //   • Invite  at right:52  (one IconButton stride over)
-    //   • Clear-× at right:108 (one stride past invite)
-    // Dialpad owns the rightmost slot in invite mode so the
-    // pad-toggle stays in the same place as it would in a non-invite
-    // search workflow — keeps muscle memory consistent.
-    clearOverlayInviteAndDialpadMode: {
-        right: 108,
     },
     // Invite button shifted left when the dialpad shares the bar.
     // ~52px stride past the dialpad (which sits at right:4) keeps a
@@ -560,6 +591,10 @@ URIInput.propTypes = {
     showDialpad: PropTypes.bool,
     isDialpadActive: PropTypes.bool,
     onDialpadPress: PropTypes.func,
+    // In-bar backspace overlay. Rendered to the left of the clear-×
+    // while the dialpad is open (isDialpadActive) and the field has
+    // text; deletes the last character of the bound input.
+    onBackspace: PropTypes.func,
     // QR scan button overlay. When showQr is true a QR icon renders
     // at the right edge of the Searchbar (to the right of the
     // dialpad) and calls onQrPress.

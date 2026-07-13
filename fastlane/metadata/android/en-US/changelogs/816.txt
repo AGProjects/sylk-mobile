@@ -1,0 +1,3 @@
+Fix autto selecting headset and speaker
+Added replace 0 rule for PSTN numbers
+Bug fixes

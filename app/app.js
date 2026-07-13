@@ -585,6 +585,21 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // numbers; per-account storage lets each pick its own.
         myPhoneNumber: '',
     }),
+    // ---- PSTN dialing rules (local, user-configured) ---------------------
+    // Unlike serverPstnSettings (mirrored from the server) these are
+    // per-account USER preferences that shape how dialed phone numbers
+    // are normalized at the SIP-call boundary (Call.js start() /
+    // ConferenceBox invites) BEFORE the server-config replacePlus
+    // rewrite runs.
+    pstn: Object.freeze({
+        // "Replace 0 with" — when a dialed tel URI's local part starts
+        // with a SINGLE 0 (e.g. 06…, NOT 00…), the leading 0 is
+        // replaced with this prefix. Example: '0031' turns 0612345678
+        // into 0031612345678 (Dutch national → international wire
+        // form). Empty string = rule disabled (default). Set from
+        // Preferences → Advanced → Audio Calls → Phone numbers.
+        replaceLeadingZero: '',
+    }),
     // ---- Live-location feature knobs ------------------------------------
     location: Object.freeze({
         // Heartbeat cadence (seconds). NavigationBar multiplies ×1000
@@ -4695,7 +4710,7 @@ class Sylk extends Component {
 			 }
 		 }
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.headsetIsPlugged && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			utils.timestampedLog('[proximity] in-call route change',
 				prevState.proximityNear, '->', this.state.proximityNear,
 				'useInCallManger=' + !!this.useInCallManger);
@@ -10206,16 +10221,62 @@ class Sylk extends Component {
 		logDevices("Selected device", [this.state.selectedDevice]); // wrap single object in array
 
         console.log('selectedDevice', this.state.selectedDevice);
+
+		// Headset-first starting route (API 31+ path). state.selectedDevice can
+		// be stale — typically BUILTIN_EARPIECE left over from the previous
+		// call's teardown — so starting with it puts the call on the earpiece
+		// even though a BT/USB/wired headset is connected. Prefer the headset,
+		// same USB > BT > wired priority as the legacy path above. Note that
+		// BT devices sometimes only enumerate as communication devices after
+		// the audio mode switches to IN_COMMUNICATION; that late-arrival case
+		// is handled by the CommunicationsDevicesChanged listener, which
+		// auto-selects a headset appearing mid-call.
+		const _outputs = this.state.audioOutputs || [];
+		const _headsetStart = _outputs.find(d => d.type === 'USB_HEADSET')
+			|| _outputs.find(d => d.type === 'BLUETOOTH_SCO')
+			|| _outputs.find(d => d.type === 'WIRED_HEADSET');
+		let _startDevice = _headsetStart || this.state.selectedDevice;
+		if (_headsetStart) {
+			this.setState({
+				selectedDevice: _headsetStart,
+				selectedAudioDevice: _headsetStart.type,
+				hasHeadset: true,
+				speakerPhoneEnabled: false,
+			});
+		} else if (this.state.isFolded) {
+			// Folded (flip closed), no headset: the earpiece is physically
+			// under the shell and the OS forces the speaker regardless of
+			// what setCommunicationDevice() asks. Start on Speaker explicitly
+			// so the UI matches and the route watchdog's desired route is
+			// Speaker from the outset (instead of a stale Earpiece it would
+			// then re-assert against the OS).
+			const _spk = _outputs.find(d => d.type === 'BUILTIN_SPEAKER')
+				|| { type: 'BUILTIN_SPEAKER', name: 'Speaker', id: '' };
+			_startDevice = _spk;
+			this.setState({
+				selectedDevice: _spk,
+				selectedAudioDevice: 'BUILTIN_SPEAKER',
+				speakerPhoneEnabled: true,
+			});
+		}
+
 		// In-app trace line so users can confirm what the call started with.
 		// Grep [audio] [device] in the trace log.
-		const _outs = (this.state.audioOutputs || []).map(d => d.type);
-		const _sel  = this.state.selectedDevice && this.state.selectedDevice.type
-			? this.state.selectedDevice.type
+		const _outs = _outputs.map(d => d.type);
+		const _sel  = _startDevice && _startDevice.type
+			? _startDevice.type
 			: 'none';
 		utils.timestampedLog('[audio] [device] call start',
 			'outputs=[' + (_outs.join(',') || 'none') + ']',
-			'selected=' + _sel);
-		AudioRouteModule.start(this.state.selectedDevice);
+			'selected=' + _sel,
+			'hasHeadset=' + !!_headsetStart);
+		// Route watchdog: this is the route the call should be on until the
+		// user (or the app) deliberately changes it.
+		if (_sel !== 'none') {
+			this._desiredAudioRoute = _sel;
+			this._routeReassertCount = 0;
+		}
+		AudioRouteModule.start(_startDevice);
     }
 
 	/** Emit one [disclaimer] log line per tracked disclaimer at app
@@ -10255,6 +10316,12 @@ class Sylk extends Component {
 	}
 
 	audioManagerStop() {
+		// Route watchdog: the call is over — stop enforcing any route so
+		// post-call device events aren't treated as unsolicited changes.
+		this._desiredAudioRoute = null;
+		this._routeReassertCount = 0;
+		this._lastRouteReassert = 0;
+
 		// Belt-and-braces: if the proximity sensor blacked the screen mid-call
 		// and the final transition to FAR never made it through (sensor stuck
 		// near while the user hangs up at the ear, listener already torn down,
@@ -10317,6 +10384,13 @@ class Sylk extends Component {
 
 		const selectedDevice = this.state.audioOutputs.find(device => device.type === deviceType);
 		console.log('[selectAudioDevice] resolved device object:', JSON.stringify(selectedDevice));
+
+		// Route watchdog bookkeeping: remember the route the app chose so the
+		// CommunicationsDevicesChanged listener can detect (and undo)
+		// unsolicited route changes made by the OS/Telecom mid-call. Reset the
+		// re-assert budget on every deliberate selection.
+		this._desiredAudioRoute = deviceType;
+		this._routeReassertCount = 0;
 
 		// Record that the user actively changed the audio device. Combined with
 		// the headset-presence check in componentDidUpdate, this hides Earpiece
@@ -10617,6 +10691,22 @@ class Sylk extends Component {
 							audioOutputs: audioOutputs,
 						});
 
+						const newTypes = audioOutputs.map(d => d.type);
+						const hasBT    = newTypes.includes('BLUETOOTH_SCO');
+						const hasWired = newTypes.includes('WIRED_HEADSET');
+						const hasUsb   = newTypes.includes('USB_HEADSET');
+
+						// USB counts as a headset for proximity gating —
+						// see setProximityChosenDevice / componentDidUpdate
+						// in-call route branch which read state.hasHeadset.
+						// This must be tracked on BOTH routing paths: it used
+						// to live only inside the InCallManager branch below,
+						// so on API 31+ hasHeadset stayed false forever — the
+						// proximity logic engaged with a BT headset connected
+						// and yanked the route onto the speaker at every
+						// call-state transition.
+						this.setState({hasHeadset: hasBT || hasWired || hasUsb});
+
 						// On Android < 31 (InCallManager path), getCommunicationDevice() is
 						// unavailable so the native event never reports which device is selected.
 						// Sync the UI with what InCallManager actually routes to:
@@ -10624,15 +10714,7 @@ class Sylk extends Component {
 						//     (InCallManager auto-routes to headsets when connected)
 						//   - BT/wired gone + currently selected was that headset → fall back to earpiece
 						if (this.useInCallManger) {
-							const newTypes = audioOutputs.map(d => d.type);
-							const hasBT    = newTypes.includes('BLUETOOTH_SCO');
-							const hasWired = newTypes.includes('WIRED_HEADSET');
-							const hasUsb   = newTypes.includes('USB_HEADSET');
 							const cur      = this.state.selectedAudioDevice;
-							// USB counts as a headset for proximity gating —
-							// see setProximityChosenDevice / componentDidUpdate
-							// in-call route branch which read state.hasHeadset.
-							this.setState({hasHeadset: hasBT || hasWired || hasUsb});
 
 							// Priority USB > BT > wired: when both USB and Bluetooth are
 							// connected, route to the USB headset.
@@ -10657,6 +10739,92 @@ class Sylk extends Component {
 									speakerPhoneEnabled: false,
 								});
 							}
+						} else if (this.activeCall && !this.state.userChangedAudioDevice) {
+							// API 31+: a headset appeared mid-call. BT devices are often
+							// only enumerated as communication devices AFTER the audio
+							// mode switches to IN_COMMUNICATION, i.e. just after
+							// AudioRouteModule.start() — so the call-start selection
+							// (audioManagerStart) never saw it. If the user hasn't
+							// manually picked a device, route to the headset now.
+							// Priority USB > BT > wired, same as everywhere else.
+							const cur = this.state.selectedAudioDevice;
+							const headsetType = hasUsb ? 'USB_HEADSET'
+								: hasBT ? 'BLUETOOTH_SCO'
+								: hasWired ? 'WIRED_HEADSET'
+								: null;
+							if (headsetType && cur !== headsetType &&
+									(!cur || cur === 'BUILTIN_EARPIECE' || cur === 'BUILTIN_SPEAKER')) {
+								utils.timestampedLog('[audio] [device] headset appeared mid-call — auto-selecting', headsetType);
+								this.selectAudioDevice(headsetType);
+								// selectAudioDevice marks userChangedAudioDevice=true
+								// (it's normally driven by user taps). This switch is
+								// automatic — clear the flag so the headset-first
+								// default in setProximityChosenDevice keeps working
+								// on later call-state transitions.
+								this.setState({userChangedAudioDevice: false});
+							}
+						}
+					}
+
+					// Route watchdog (Android API 31+). Telecom re-evaluates the call's
+					// audio route when the Connection transitions to ACTIVE and can yank
+					// the communication device off the route we set with no app-side
+					// request — observed on Razr 60 Ultra: BT selected during ringing
+					// (setActiveDeviceForCall + applyTelecomAudioRoute ROUTE_BLUETOOTH,
+					// device confirmed on BT), then ~1s after "Callkeep: active call"
+					// the device silently flips to BUILTIN_EARPIECE. If the reported
+					// device contradicts the route the app chose, the chosen device is
+					// still available, and there's an active call, re-assert the chosen
+					// route. Bounded retries (3, min 1s apart) so a route the OS
+					// legitimately forces (e.g. fold-closed → speaker, which anyway
+					// updates _desiredAudioRoute via selectAudioDevice) is eventually
+					// accepted instead of fought forever.
+					if (Platform.OS === 'android' && !this.useInCallManger
+							&& this.activeCall
+							&& this._desiredAudioRoute
+							&& selectedDevice.type
+							&& selectedDevice.type !== this._desiredAudioRoute) {
+						const desiredDev = audioOutputs.find(d => d.type === this._desiredAudioRoute);
+						const now = Date.now();
+						this._routeReassertCount = this._routeReassertCount || 0;
+						// Folded exception: with the flip closed the OS forces the
+						// speaker (earpiece is under the shell) — that's a legitimate
+						// route change, not one to fight. Adopt Speaker as desired.
+						// Headset routes still win: if the desired route is a headset
+						// we fall through and re-assert it (BT works while folded).
+						if ((isFoldedEvt || this.state.isFolded)
+								&& selectedDevice.type === 'BUILTIN_SPEAKER'
+								&& (this._desiredAudioRoute === 'BUILTIN_EARPIECE')) {
+							utils.timestampedLog('[audio] [watchdog] accepting SPEAKER (device folded)');
+							this._desiredAudioRoute = 'BUILTIN_SPEAKER';
+							this._routeReassertCount = 0;
+						} else if (desiredDev
+								&& this._routeReassertCount < 3
+								&& (!this._lastRouteReassert || now - this._lastRouteReassert > 1000)) {
+							this._routeReassertCount++;
+							this._lastRouteReassert = now;
+							utils.timestampedLog('[audio] [watchdog] unsolicited route change to',
+								selectedDevice.type, '— re-asserting', this._desiredAudioRoute,
+								'(attempt ' + this._routeReassertCount + ')');
+							const _wdUuid = this.activeCall ? this.activeCall.id : '';
+							if (AudioRouteModule.setActiveDeviceForCall) {
+								AudioRouteModule.setActiveDeviceForCall(_wdUuid, desiredDev);
+							} else {
+								AudioRouteModule.setActiveDevice(desiredDev);
+							}
+							// Don't sync UI state to the unsolicited device — keep
+							// showing the route we're re-asserting.
+							return;
+						}
+						if (!desiredDev || this._routeReassertCount >= 3) {
+							// Chosen device disappeared (headset disconnect) or the OS
+							// insists — accept the new route as the desired one so we
+							// stop treating subsequent events as unsolicited.
+							utils.timestampedLog('[audio] [watchdog] accepting route',
+								selectedDevice.type,
+								desiredDev ? '(re-assert budget exhausted)' : '(desired device gone)');
+							this._desiredAudioRoute = selectedDevice.type;
+							this._routeReassertCount = 0;
 						}
 					}
 
@@ -12692,6 +12860,26 @@ class Sylk extends Component {
      * Pass null/undefined to clear a key (it falls back to its
      * ACCOUNT_SETTINGS_DEFAULTS value the next time it's read).
      */
+    /**
+     * PSTN rules handed to Call / Conference. Merges the server-config
+     * rules (state.pstnRules, e.g. replacePlus from sylk-config.json)
+     * with the LOCAL user preference pstn.replaceLeadingZero
+     * (Preferences → Advanced → Audio Calls → Phone numbers) so the
+     * SIP-call boundary sees one rules object. The local rule only
+     * appears when non-empty, so downstream `typeof === 'string'`
+     * guards double as "rule enabled" checks.
+     */
+    getEffectivePstnRules() {
+        const rules = this.state.pstnRules || {};
+        const pstn = this.state.accountSetting && this.state.accountSetting.pstn;
+        const replaceLeadingZero = (pstn && typeof pstn.replaceLeadingZero === 'string')
+            ? pstn.replaceLeadingZero.trim()
+            : '';
+        return replaceLeadingZero
+            ? { ...rules, replaceLeadingZero }
+            : rules;
+    }
+
     async setAccountSetting(path, value) {
         if (!this.state.accountId) return;
         if (typeof path !== 'string' || path.indexOf('.') === -1) {
@@ -13736,6 +13924,23 @@ class Sylk extends Component {
         InCallManager.stopRingback();
     }
 
+    playHangupTone() {
+        // Short confirmation tone played when an established call ends.
+        // InCallManager.stop({busytone}) only knows the busy tone, so
+        // this plays hangup_tone.wav via SoundPlayer instead. Delay
+        // slightly so audioManagerStop()'s native teardown
+        // (AudioRouteModule.restoreAudioMode → MODE_NORMAL on Android)
+        // lands first; SoundPlayer uses MediaPlayer, which sounds
+        // thin/muffled while the device is still in MODE_IN_COMMUNICATION.
+        setTimeout(() => {
+            try {
+                SoundPlayer.playSoundFile('hangup_tone', 'wav');
+            } catch (e) {
+                utils.timestampedLog('Failed to play hangup tone:', e && e.message);
+            }
+        }, 300);
+    }
+
     resetGoToReadyTimer() {
         if (this.goToReadyTimer !== null) {
             clearTimeout(this.goToReadyTimer);
@@ -13787,6 +13992,24 @@ class Sylk extends Component {
         }
     }
 
+	/**
+	 * True when any headset (BT / wired / USB) is connected. Checks the
+	 * live audioOutputs list in addition to the state flags — setState is
+	 * async and on API 31+ BT devices can enumerate between the flag
+	 * update and the call-state transition, so relying on state.hasHeadset
+	 * alone can race and let the proximity logic steal the route from a
+	 * connected headset.
+	 */
+	headsetPresent() {
+		if (this.state.hasHeadset || this.state.headsetIsPlugged) {
+			return true;
+		}
+		const outputs = this.state.audioOutputs || [];
+		return outputs.some(d => d.type === 'BLUETOOTH_SCO'
+			|| d.type === 'WIRED_HEADSET'
+			|| d.type === 'USB_HEADSET');
+	}
+
 	setProximityChosenDevice() {
 		// This runs at call-state transitions (ringing / proceeding /
 		// early-media / established). The original "proximity set
@@ -13797,6 +14020,7 @@ class Sylk extends Component {
 				&& this.state.accountSetting.device
 				&& this.state.accountSetting.device.proximityEnabled),
 			'hasHeadset=' + !!this.state.hasHeadset,
+			'headsetPresent=' + this.headsetPresent(),
 			'folded=' + !!this.state.isFolded,
 			'near=' + !!this.state.proximityNear,
 			'useInCallManger=' + !!this.useInCallManger);
@@ -13807,7 +14031,7 @@ class Sylk extends Component {
 		// userChangedAudioDevice so this only sets the *default* at call
 		// start — once the user picks a device themselves, we don't yank
 		// the route back to the headset on a later call-state transition.
-		if ((this.state.hasHeadset || this.state.headsetIsPlugged) && !this.state.userChangedAudioDevice) {
+		if (this.headsetPresent() && !this.state.userChangedAudioDevice) {
 			const outputs = this.state.audioOutputs || [];
 			// Priority USB > BT > wired: when both USB and Bluetooth are
 			// connected, prefer the USB headset.
@@ -13830,7 +14054,21 @@ class Sylk extends Component {
 			return;
 		}
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.state.hasHeadset && !this.state.headsetIsPlugged && !this.state.isFolded) {
+		// Folded (flip closed) with no headset: earpiece is unusable and the
+		// OS forces the speaker anyway — make Speaker the explicit choice so
+		// the UI matches and the route watchdog doesn't fight the OS. Gated
+		// on userChangedAudioDevice like the headset default above.
+		if (this.state.isFolded && !this.state.userChangedAudioDevice) {
+			utils.timestampedLog('[proximity] setProximityChosenDevice -> SPEAKER (folded)');
+			if (this.useInCallManger) {
+				this.speakerphoneOn();
+			} else {
+				this.selectAudioDevice('BUILTIN_SPEAKER');
+			}
+			return;
+		}
+
+		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded) {
 			if (this.state.proximityNear) {
 				console.log('proximity set BUILTIN_EARPIECE')
 				utils.timestampedLog('[proximity] setProximityChosenDevice -> EARPIECE');
@@ -14558,11 +14796,29 @@ class Sylk extends Component {
                     play_busy_tone = false;
                 }
                 _termMark('before-audio-stop');
-                if (play_busy_tone) {
-                    //utils.timestampedLog('Play busy tone');
+                if (play_busy_tone && (oldState === 'established' || startTime)) {
+                    // Established call ended normally → play the real
+                    // hangup tone (hangup_tone.wav). Previously this
+                    // path went through InCallManager.stop({busytone})
+                    // which played the BUSY tone on every hangup.
+                    this.audioManagerStop();
+                    this.playHangupTone();
+                } else if (play_busy_tone) {
+                    // Outgoing call failed before establishing (busy,
+                    // not found, timeout, ...) → busy tone.
                     InCallManager.stop({busytone: '_BUNDLE_'});
                 } else {
                     this.audioManagerStop();
+                    // Conferences never take the busy-tone branch
+                    // (play_busy_tone is false for them), so play the
+                    // hangup tone here when an established conference
+                    // ends. Missed/cancelled conference invites (no
+                    // startTime, never established) stay silent, as
+                    // does the 1:1→conference escalation hangup
+                    // (skipNextHangupTone — not a conference call).
+                    if (this.isConference(call) && (oldState === 'established' || startTime)) {
+                        this.playHangupTone();
+                    }
                 }
                 _termMark('after-audio-stop');
 
@@ -46056,6 +46312,16 @@ return (
                     setEncryptionMode = {(mode) => this.setAccountSetting('rtp.encryptionMode', mode)}
                     dtmfMode = {this.state.accountSetting.rtp.dtmfMode || 'info'}
                     setDtmfMode = {(mode) => this.setAccountSetting('rtp.dtmfMode', mode)}
+                    /* Phone numbers: "Replace 0 with" dialing rule.
+                       When a dialed tel URI starts with a SINGLE 0
+                       (06…, not 00…) the leading 0 is replaced with
+                       this prefix (e.g. 0031) during tel normalization
+                       at the SIP-call boundary, BEFORE the replacePlus
+                       rewrite. Empty = disabled. */
+                    telReplaceLeadingZero = {(this.state.accountSetting.pstn
+                        && this.state.accountSetting.pstn.replaceLeadingZero) || ''}
+                    setTelReplaceLeadingZero = {(v) => this.setAccountSetting(
+                        'pstn.replaceLeadingZero', (v || '').trim())}
                     locationTickIntervalSec = {this.state.accountSetting.location.tickIntervalSec || 60}
                     setLocationTickIntervalSec = {(sec) => this.setAccountSetting('location.tickIntervalSec', sec)}
                     locationProximityMeters = {this.state.accountSetting.location.proximityMeters || 20}
@@ -46796,8 +47062,12 @@ return (
                    right before account.call() fires — so it
                    reaches the wire as e.g. `0040…` without
                    polluting state.targetUri (which stays at the
-                   canonical `+40…` for history / contact lookup). */
-                pstnRules = {this.state.pstnRules}
+                   canonical `+40…` for history / contact lookup).
+                   Merged with the local "Replace 0 with" preference
+                   (pstn.replaceLeadingZero) via getEffectivePstnRules
+                   so a single-leading-0 number is normalized (e.g.
+                   06… → 00316…) before the replacePlus rewrite. */
+                pstnRules = {this.getEffectivePstnRules()}
                 /* PSTN Caller-ID capture helper — flows down through
                    Conference → ConferenceBox so that inviting a phone
                    number into an in-progress conference triggers the
@@ -47015,7 +47285,7 @@ return (
 				disableFullScreen = {this.disableFullScreen}
 				sylkDomain = {this.state.sylkDomain}
 				conferenceSettings = {this.state.conferenceSettings}
-				pstnRules = {this.state.pstnRules}
+				pstnRules = {this.getEffectivePstnRules()}
 				/* Same PSTN Caller-ID capture helper as the other
 				   Call render site above — kept in lock-step so
 				   the second branch (incoming/Conference-only)

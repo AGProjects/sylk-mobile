@@ -1270,6 +1270,32 @@ class Call extends Component {
         // Skipped for conferences (room names never start with '+').
         let dialUri = this.state.targetUri;
         const rules = this.props.pstnRules;
+
+        // "Replace 0 with" rule (Preferences → Advanced → Audio Calls
+        // → Phone numbers, persisted at pstn.replaceLeadingZero and
+        // merged into pstnRules by app.js getEffectivePstnRules).
+        // Runs FIRST — during tel normalization, before the
+        // replacePlus rewrite below: a numeric local part starting
+        // with a SINGLE 0 (e.g. 0612345678, NOT 0031… which already
+        // carries the international-access 00 form) gets its leading
+        // 0 replaced by the configured prefix (0 → 0031 turns
+        // 0612345678 into 0031612345678). Ordering matters only for
+        // clarity here — a rewritten 00… number no longer matches the
+        // '+' rule anyway — but keeping it first mirrors the stated
+        // normalization pipeline: leading-0 → then '+'.
+        if (rules && typeof rules.replaceLeadingZero === 'string'
+                && rules.replaceLeadingZero.length > 0) {
+            const atIdx = dialUri.indexOf('@');
+            const localPart = atIdx > -1 ? dialUri.substring(0, atIdx) : dialUri;
+            const domainPart = atIdx > -1 ? dialUri.substring(atIdx) : '';
+            if (/^0\d+$/.test(localPart) && !localPart.startsWith('00')) {
+                const rewritten = rules.replaceLeadingZero + localPart.substring(1);
+                utils.timestampedLog('[pstn] replaceLeadingZero rule applied:',
+                                     localPart, '→', rewritten);
+                dialUri = rewritten + domainPart;
+            }
+        }
+
         if (rules && typeof rules.replacePlus === 'string') {
             const atIdx = dialUri.indexOf('@');
             const localPart = atIdx > -1 ? dialUri.substring(0, atIdx) : dialUri;

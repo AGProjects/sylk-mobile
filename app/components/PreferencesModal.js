@@ -35,7 +35,7 @@
 // (verbose stats overlay, force codec for testing).
 
 import React, { useState, useEffect } from 'react';
-import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet } from 'react-native';
+import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput } from 'react-native';
 import { Text, Button, Surface, Divider } from 'react-native-paper';
 import PropTypes from 'prop-types';
 
@@ -303,6 +303,15 @@ const PreferencesModal = ({
     // detectors.
     dtmfMode,
     setDtmfMode,
+    // Phone numbers — "Replace 0 with" dialing rule. When a dialed
+    // tel URI's local part starts with a SINGLE 0 (e.g. 06…, not
+    // 00…), the leading 0 is replaced with this prefix during tel
+    // normalization at the SIP-call boundary, BEFORE the server's
+    // replacePlus ('+' → '00') rewrite. Example: '0031' dials
+    // 0612345678 as 0031612345678. Empty string = disabled.
+    // Persisted via setAccountSetting('pstn.replaceLeadingZero').
+    telReplaceLeadingZero,
+    setTelReplaceLeadingZero,
     // Whether the in-call record control is shown on audio calls.
     // OFF by default — flipping it ON surfaces the record button in
     // AudioCallBox on subsequent calls. Per-device, persisted through
@@ -386,6 +395,23 @@ const PreferencesModal = ({
         ? videoProfile
         : VIDEO_PROFILE_DEFAULT;
     const currentAudioCodec = preferredAudioCodec || AUDIO_CODECS_DEFAULT;
+    // Draft for the "Replace 0 with" phone-number prefix input. Local
+    // state keeps the TextInput responsive; every (digits-only) change
+    // is committed straight through setTelReplaceLeadingZero — the
+    // same immediate-persist behaviour as the pill pickers. Re-seeded
+    // whenever the persisted value or modal visibility changes so a
+    // reopen always shows the stored value.
+    const [replaceZeroDraft, setReplaceZeroDraft] = useState(telReplaceLeadingZero || '');
+    useEffect(() => {
+        setReplaceZeroDraft(telReplaceLeadingZero || '');
+    }, [telReplaceLeadingZero, show]);
+    const handleReplaceZeroChange = (text) => {
+        const digits = (text || '').replace(/[^0-9]/g, '');
+        setReplaceZeroDraft(digits);
+        if (typeof setTelReplaceLeadingZero === 'function') {
+            setTelReplaceLeadingZero(digits);
+        }
+    };
     // Two independent UI controls back the single saved tri-state
     // encryptionMode string:
     //
@@ -1190,6 +1216,43 @@ const PreferencesModal = ({
                                         })}
                                     </View>
 
+                                    {/* Phone numbers — "Replace 0 with"
+                                        prefix. Rewrites a dialed number
+                                        that starts with a SINGLE 0
+                                        (06…, not 00…) so the leading 0
+                                        becomes this prefix, during tel
+                                        normalization BEFORE the '+'
+                                        rewrite at the SIP-call boundary
+                                        (Call.js start / conference
+                                        invites). Digits only; empty
+                                        disables the rule. */}
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                        Phone numbers: replace a leading 0 when dialing (e.g. 0031 dials 06… as 00316…).
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <Text style={{ fontSize: FS_BODY, color: '#333', marginRight: 8 }}>
+                                            Replace 0 with
+                                        </Text>
+                                        <TextInput
+                                            value={replaceZeroDraft}
+                                            onChangeText={handleReplaceZeroChange}
+                                            placeholder="0031"
+                                            placeholderTextColor="#bbb"
+                                            keyboardType="number-pad"
+                                            maxLength={8}
+                                            style={{
+                                                fontSize: FS_BODY,
+                                                color: '#333',
+                                                borderWidth: 1,
+                                                borderColor: '#ccc',
+                                                borderRadius: 6,
+                                                paddingVertical: Platform.OS === 'ios' ? 6 : 2,
+                                                paddingHorizontal: 10,
+                                                minWidth: 90,
+                                            }}
+                                        />
+                                    </View>
+
                                     {/* Auto-record toggle. The in-call
                                         record control is always visible
                                         in AudioCallBox; this preference
@@ -1667,6 +1730,8 @@ PreferencesModal.propTypes = {
     setEncryptionMode: PropTypes.func.isRequired,
     dtmfMode: PropTypes.oneOf(['rfc4733', 'info']),
     setDtmfMode: PropTypes.func,
+    telReplaceLeadingZero: PropTypes.string,
+    setTelReplaceLeadingZero: PropTypes.func,
     // Location prefs are not required — older callers / tests can omit
     // them and the modal renders the section with the in-code defaults
     // (1 min cadence, 20 m proximity).

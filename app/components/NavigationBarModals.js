@@ -297,6 +297,8 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     setEncryptionMode={nav.props.setEncryptionMode}
                     dtmfMode={nav.props.dtmfMode}
                     setDtmfMode={nav.props.setDtmfMode}
+                    telReplaceLeadingZero={nav.props.telReplaceLeadingZero}
+                    setTelReplaceLeadingZero={nav.props.setTelReplaceLeadingZero}
                     proximity={nav.props.proximity}
                     toggleProximity={nav.props.toggleProximity}
                     locationTickIntervalSec={nav.props.locationTickIntervalSec}
