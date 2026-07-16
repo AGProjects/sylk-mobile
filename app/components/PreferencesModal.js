@@ -35,9 +35,12 @@
 // (verbose stats overlay, force codec for testing).
 
 import React, { useState, useEffect } from 'react';
-import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput } from 'react-native';
+import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
 import { Text, Button, Surface, Divider } from 'react-native-paper';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import PropTypes from 'prop-types';
+
+import { NIGHT_BUBBLE_COLORS } from '../DarkModeManager';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import ThreeStopSlider from './ThreeStopSlider';
@@ -365,6 +368,15 @@ const PreferencesModal = ({
     // in sync with the persisted value.
     themeMode,
     setThemeMode,
+    // Night-theme incoming-bubble colour. The Night palette draws
+    // WHITE body text on incoming bubbles, so the swatches offered
+    // (NIGHT_BUBBLE_COLORS) are all white-text-safe tones — green
+    // (the historical default), blue, teal, brown, plum, slate.
+    // Persisted in accountSetting.device.bubbleColor; the setter also
+    // pushes the id into DarkModeManager.setNightBubbleColor() so the
+    // chat re-styles without a restart. Day theme is unaffected.
+    bubbleColor,
+    setBubbleColor,
     // Data Usage — per-network auto-download toggles for incoming
     // media (images / audio messages / files). Defaults applied in
     // app.js (ON for Wi-Fi, OFF for Mobile). The file-transfer pipeline
@@ -824,6 +836,69 @@ const PreferencesModal = ({
                                                 >
                                                     {opt.label}
                                                 </Button>
+                                            );
+                                        })}
+                                    </View>
+
+                                    {/* ── Night bubble colour ──────────────
+                                        Swatch row for the Night theme's
+                                        incoming-bubble background. Night
+                                        draws WHITE text on that bubble, so
+                                        every swatch is a white-text-safe
+                                        tone (see NIGHT_BUBBLE_COLORS in
+                                        DarkModeManager). Rendered right
+                                        under the theme pills since it's a
+                                        theme knob; always visible (the
+                                        active theme may be night via
+                                        'System') but labelled as Night-
+                                        only so Day users aren't confused
+                                        when nothing visibly changes. */}
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginTop: 10,
+                                            marginBottom: 4,
+                                            color: '#333',
+                                        }}
+                                    >
+                                        Night bubble color
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                        Background of received messages in the Night theme.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                        {NIGHT_BUBBLE_COLORS.map(opt => {
+                                            const selected = (bubbleColor || 'blue') === opt.id;
+                                            return (
+                                                <TouchableOpacity
+                                                    key={opt.id}
+                                                    accessibilityLabel={`${opt.label} bubble color`}
+                                                    accessibilityState={{ selected }}
+                                                    onPress={() => {
+                                                        if (typeof setBubbleColor === 'function') {
+                                                            setBubbleColor(opt.id);
+                                                        }
+                                                    }}
+                                                    style={{
+                                                        width: 36,
+                                                        height: 36,
+                                                        borderRadius: 18,
+                                                        backgroundColor: opt.color,
+                                                        marginRight: 10,
+                                                        marginBottom: 8,
+                                                        justifyContent: 'center',
+                                                        alignItems: 'center',
+                                                        // No border ring per user request —
+                                                        // selection is carried by the white
+                                                        // check alone.
+                                                    }}
+                                                >
+                                                    {/* White check on the selected swatch —
+                                                        doubles as a live proof that white
+                                                        glyphs read on this colour. */}
+                                                    {selected && <Icon name="check" size={18} color="#FFFFFF" />}
+                                                </TouchableOpacity>
                                             );
                                         })}
                                     </View>
@@ -1748,6 +1823,8 @@ PreferencesModal.propTypes = {
     // value is undefined.
     themeMode: PropTypes.oneOf(['system', 'day', 'night']),
     setThemeMode: PropTypes.func,
+    bubbleColor: PropTypes.oneOf(NIGHT_BUBBLE_COLORS.map(c => c.id)),
+    setBubbleColor: PropTypes.func,
     // Data Usage. Both are optional — older callers / tests that
     // haven't wired the section yet still render the modal without
     // the section misbehaving (the buttons short-circuit on a missing

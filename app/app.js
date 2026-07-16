@@ -528,6 +528,14 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
         // into the same SIP account can legitimately want different
         // themes (one in a bright office, one always at night).
         themeMode: 'system',
+        // Night-theme incoming-bubble colour (id into
+        // DarkModeManager's NIGHT_BUBBLE_COLORS — 'blue' / 'green' /
+        // 'teal' / 'brown' / 'plum' / 'slate'). The Night palette
+        // draws white text on the incoming bubble, so the choices are
+        // all white-text-safe tones; 'green' (the historical look)
+        // stays available as a swatch. Day theme is unaffected.
+        // Per-device for the same reason as themeMode.
+        bubbleColor: 'blue',
         // Show a member counter before each category / group label in the
         // contacts category bar (e.g. "100 All", "10 Recent", "4 Business").
         // Per-device UI preference. OFF by default; toggle on to prefix
@@ -1851,7 +1859,12 @@ class Sylk extends Component {
             transferedFilesSizes: {},
             searchMessages: false,
             searchContacts: false,
-            dark: false,
+            // Seed from the DarkModeManager singleton (which boots in
+            // 'system' mode tracking the OS Appearance) rather than a
+            // hardcoded false — otherwise the first paint is always
+            // Day, flashing light-on-dark until hydration or the
+            // dark-mode listener catches up. Default theme is System.
+            dark: DarkModeManager.isDark(),
             fullScreen: false,
             // True when ContactsListBox has an active reaction-bar
             // target (the floating quick-reaction emoji bar is up
@@ -1904,6 +1917,12 @@ class Sylk extends Component {
             // its keyboardVerticalOffset instead of a hardcoded 60dp
             // guess. null until the first layout pass.
             appBarHeight: null,
+            // Current actionless system message (formerly shown in the
+            // bottom snackbar). Mirrored up from NotificationCenter via
+            // onSystemMessageChanged and rendered by NavigationBar on
+            // its 2nd (subtitle) line in place of the account URI.
+            // null when no message is up.
+            navbarSystemMessage: null,
             addresBookLoaded: false,
             // True when the user has been asked for the OS contacts
             // permission and either denied or hit the "don't ask again"
@@ -12431,6 +12450,7 @@ class Sylk extends Component {
                 this.sendPublicKey();
             }
             
+            this._notificationCenter.postSystemNotification('Registered on server');
             this.setState({accountVerified: true,
                            enrollment: false,
                            registrationKeepalive: true,
@@ -12778,6 +12798,10 @@ class Sylk extends Component {
         // no-op when the resolved mode hasn't changed.
         try {
             DarkModeManager.setMode(dev.themeMode || 'system');
+            // Night-theme incoming-bubble colour rides along with the
+            // mode — push it before reading isDark so the first paint
+            // after hydration already carries the user's colour.
+            DarkModeManager.setNightBubbleColor(dev.bubbleColor || 'blue');
             this.setState({ dark: DarkModeManager.isDark() });
         } catch (e) {
             // Defensive — a missing/invalid stored value falls back
@@ -45507,6 +45531,16 @@ return (
                     <NotificationCenter
                       ref={this.notificationCenterRef}
                       inChatView={this.currentRoute === '/ready' && !!this.state.selectedContact}
+                      /* When the main navbar is mounted (/ready, not
+                         fullscreen), actionless system messages render
+                         on the navbar's subtitle line instead of the
+                         bottom bar. Other routes keep the bottom bar. */
+                      useNavbar={this.currentRoute === '/ready' && !this.state.fullScreen}
+                      onSystemMessageChanged={(text) => {
+                          if (text !== this.state.navbarSystemMessage) {
+                              this.setState({ navbarSystemMessage: text });
+                          }
+                      }}
                     />
 
                     {/* Set-caller-Id modal — opened by the PSTN pre-flight
@@ -46014,6 +46048,10 @@ return (
                 <NavigationBar
                     ref = {this.navigationBarRef}
                     notificationCenter = {this.notificationCenter}
+                    /* Actionless system message mirrored up from
+                       NotificationCenter — shown on the navbar's 2nd
+                       line in place of the account URI while visible. */
+                    systemMessage = {this.state.navbarSystemMessage}
                     userAgent = {USER_AGENT}
                     announceDataExport = {this.announceDataExport}
                     beginDnd = {this.beginDnd}
@@ -46340,6 +46378,16 @@ return (
                         try { DarkModeManager.setMode(mode); } catch (e) {}
                         this.setAccountSetting('device.themeMode', mode);
                     }}
+                    /* Night-theme incoming-bubble colour — same
+                       persist + push-into-singleton pattern as
+                       themeMode. Only affects the Night palette
+                       (white bubble text), so the swatches offered in
+                       Preferences are all white-text-safe tones. */
+                    bubbleColor = {(this.state.accountSetting.device && this.state.accountSetting.device.bubbleColor) || 'blue'}
+                    setBubbleColor = {(id) => {
+                        try { DarkModeManager.setNightBubbleColor(id); } catch (e) {}
+                        this.setAccountSetting('device.bubbleColor', id);
+                    }}
                     /* Data Usage: per-network auto-download toggles for
                        incoming media (images, audio messages, files).
                        Defaults: BOTH ON — Wi-Fi and Mobile — per the
@@ -46516,6 +46564,12 @@ return (
                 <ReadyBox
                     account = {this.state.account}
                     password = {this.state.password}
+                    /* PSTN dialing rules (server replacePlus merged with
+                       the local "Replace 0 with" preference). Flows down
+                       to ContactsListBox so contact search can expand a
+                       single-leading-0 phone query (e.g. 023) to its
+                       international forms (003123… / +3123…). */
+                    pstnRules = {this.getEffectivePstnRules()}
                     gotoDeletedSignal = {this.state.gotoDeletedSignal}
                     graveyardContacts = {this.state.graveyardContacts}
                     graveyardCount = {this.state.graveyardCount}

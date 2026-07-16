@@ -30,6 +30,45 @@ class NotificationCenter extends Component {
     componentWillUnmount() {
         //console.log('Notification Center will unmount');
         this.ended = true;
+        if (this._autoDismissTimer) {
+            clearTimeout(this._autoDismissTimer);
+            this._autoDismissTimer = null;
+        }
+    }
+
+    componentDidUpdate(prevProps, prevState) {
+        // Auto-dismiss timer. This used to be (re)armed inside render(),
+        // which only works while the bottom bar is actually rendered.
+        // Now that actionless system messages are surfaced on the
+        // NavigationBar subtitle line (render() returns null for them),
+        // the timer must live here so those messages still time out.
+        if (this.state.visible
+                && (prevState.visible !== this.state.visible
+                    || prevState.message !== this.state.message
+                    || prevState.title !== this.state.title)) {
+            if (this._autoDismissTimer) clearTimeout(this._autoDismissTimer);
+            this._autoDismissTimer = setTimeout(() => {
+                if (this.ended) return;
+                this.setState({ visible: false, message: null, title: null, action: null });
+            }, (this.state.autoDismiss || 4) * 1000);
+        }
+
+        // Mirror the current actionless system message up to app.js so
+        // NavigationBar can render it on its 2nd (subtitle) line instead
+        // of the bottom snackbar. Notifications WITH an action button
+        // (missed call, conference invite, uploads) keep using the
+        // bottom bar — a tappable action can't live in the navbar
+        // subtitle. null clears the navbar line on dismiss.
+        if (typeof this.props.onSystemMessageChanged === 'function') {
+            const _navbarText = (this.state.visible && !this.state.action)
+                ? ((this.state.title ? this.state.title + ' ' : '')
+                    + (this.state.message || '')).trim()
+                : null;
+            if (_navbarText !== this._lastNavbarText) {
+                this._lastNavbarText = _navbarText;
+                this.props.onSystemMessageChanged(_navbarText);
+            }
+        }
     }
 
     postSystemNotification(title, options={}) {    // eslint-disable-line space-infix-ops
@@ -168,10 +207,12 @@ class NotificationCenter extends Component {
         // navbar's 36 dp height exactly. State / action handling stays
         // the same (auto-dismiss via setTimeout below).
         if (!this.state.visible) return null;
-        if (this._autoDismissTimer) clearTimeout(this._autoDismissTimer);
-        this._autoDismissTimer = setTimeout(() => {
-            this.setState({ visible: false, message: null, title: null });
-        }, (this.state.autoDismiss || 4) * 1000);
+        // Actionless system messages are rendered on the NavigationBar's
+        // subtitle line while the main navbar is mounted (useNavbar prop,
+        // driven by app.js route state). Skip the bottom bar for those;
+        // componentDidUpdate has already pushed the text upward. Anything
+        // with an action button still renders the bottom bar below.
+        if (this.props.useNavbar && !this.state.action) return null;
         const theme = this.props.theme;
         const _txt = (this.state.title ? this.state.title + ' ' : '')
                    + (this.state.message || '');

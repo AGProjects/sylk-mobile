@@ -1183,6 +1183,56 @@ class ContactsListBox extends Component {
             if (qDigits && uriDigits.startsWith(qDigits)) {
                 return true;
             }
+
+            // "Replace 0 with" expansion. When the query starts with a
+            // SINGLE leading 0 (a nationally-formatted number, e.g.
+            // "023") and the Preferences → Phone numbers "Replace 0
+            // with" rule is set, treat that value as the country code
+            // and ALSO match the international forms of the same
+            // number. The stored preference may be either "31" or
+            // "0031" — normalize to the bare country code first.
+            // Example: pref 31 (or 0031), query "023" additionally
+            // matches contacts starting with "+3123…", "003123…" and
+            // "3123…" (uriDigits strips '+', so the cc+rest comparison
+            // covers both the +… and bare-cc storage forms; the
+            // 00cc+rest comparison covers the 00-prefixed form).
+            if (qDigits.length > 1 && qDigits[0] === '0' && qDigits[1] !== '0') {
+                const _rules = this.props.pstnRules;
+                const _pref = (_rules && typeof _rules.replaceLeadingZero === 'string')
+                    ? _rules.replaceLeadingZero
+                    : '';
+                const cc = _pref.replace(/\D/g, '').replace(/^0+/, '');
+                if (cc) {
+                    const rest = qDigits.substring(1);
+                    if (uriDigits.startsWith(cc + rest)
+                        || uriDigits.startsWith('00' + cc + rest)) {
+                        return true;
+                    }
+                }
+            }
+
+            // Reverse direction: the query is internationally formatted
+            // (+3123… / 003123… / 3123…) and the contact is stored
+            // nationally (023…). Strip the query down to cc-less
+            // national form and try the 0-prefixed match.
+            if (qDigits.length > 1) {
+                const _rules2 = this.props.pstnRules;
+                const _pref2 = (_rules2 && typeof _rules2.replaceLeadingZero === 'string')
+                    ? _rules2.replaceLeadingZero
+                    : '';
+                const cc2 = _pref2.replace(/\D/g, '').replace(/^0+/, '');
+                if (cc2) {
+                    let nationalRest = null;
+                    if (qDigits.startsWith('00' + cc2)) {
+                        nationalRest = qDigits.substring(2 + cc2.length);
+                    } else if (qDigits.startsWith(cc2)) {
+                        nationalRest = qDigits.substring(cc2.length);
+                    }
+                    if (nationalRest && uriDigits.startsWith('0' + nationalRest)) {
+                        return true;
+                    }
+                }
+            }
         }
 
         if (!this.state.selectedContact && contact.conference && contact.metadata && filter.length > 2 && contact.metadata.indexOf(filter) > -1) {
@@ -2000,6 +2050,10 @@ class ContactsListBox extends Component {
 
 ContactsListBox.propTypes = {
     account         : PropTypes.object,
+    // PSTN dialing rules (server replacePlus merged with the local
+    // "Replace 0 with" preference) — used by matchContact to expand
+    // phone-number searches to their international / national forms.
+    pstnRules       : PropTypes.object,
     password        : PropTypes.string.isRequired,
     callHistoryUrl: PropTypes.string,
     targetUri       : PropTypes.string,

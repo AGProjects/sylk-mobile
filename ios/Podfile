@@ -101,6 +101,11 @@ target 'sylk' do
   pod 'ReactCommon/turbomodule/core', :path => "../node_modules/react-native/ReactCommon"
   pod 'Yoga', :path => '../node_modules/react-native/ReactCommon/yoga'
   pod 'react-native-version-number', :path => '../node_modules/react-native-version-number'
+  # react-native-dtmf keeps its podspec in ios/ instead of the package
+  # root, so RN autolinking reports ios: null and never links it — the
+  # JS module resolves to null and dialpad key tones are silent on iOS.
+  # Link it manually here.
+  pod 'RNDtmf', :path => '../node_modules/react-native-dtmf/ios'
 
   pod 'DoubleConversion', :podspec => '../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec'
   pod 'glog', :podspec => '../node_modules/react-native/third-party-podspecs/glog.podspec'

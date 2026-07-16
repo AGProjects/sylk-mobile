@@ -50,6 +50,24 @@ const KEY_LAYOUT = [
 // prop is provided AND established, it also forwards the tone over
 // the wire via callKeepSendDtmf.
 class DTMFPadBase extends Component {
+    // Local key-click tone, tolerant of the native module being
+    // absent: react-native-dtmf resolves to null on platforms where
+    // it isn't linked (user-reported iOS crash: "Cannot read
+    // property 'stopTone' of null"). Silent keys are fine; the
+    // entered characters must still work.
+    playKeyTone(tone, duration) {
+        if (!dtmf || typeof dtmf.playTone !== 'function') {
+            return;
+        }
+        try {
+            dtmf.stopTone();
+            dtmf.playTone(dtmf['DTMF_' + tone], duration);
+        } catch (e) {
+            // Tone is best-effort feedback only — never let it
+            // take the keypad down.
+        }
+    }
+
     handleKeyPress(item) {
         // Number-entry mode (e.g. typing into the contacts search
         // bar): a digit-collecting consumer takes the printable
@@ -66,8 +84,7 @@ class DTMFPadBase extends Component {
                 return;
             }
             if (item.tone) {
-                dtmf.stopTone();
-                dtmf.playTone(dtmf['DTMF_' + item.tone], 150);
+                this.playKeyTone(item.tone, 150);
             }
             this.props.onDigit(item.digit);
             return;
@@ -75,8 +92,7 @@ class DTMFPadBase extends Component {
 
         DEBUG('DTMF tone was sent: ' + item.tone);
 
-        dtmf.stopTone();
-        dtmf.playTone(dtmf['DTMF_' + item.tone], 500);
+        this.playKeyTone(item.tone, 500);
 
         if (this.props.call && this.props.call.state === 'established'
             && this.props.callKeepSendDtmf) {
@@ -101,8 +117,7 @@ class DTMFPadBase extends Component {
         this.zeroLongFired = false;
         this.zeroHoldTimer = setTimeout(() => {
             this.zeroLongFired = true;
-            dtmf.stopTone();
-            dtmf.playTone(dtmf.DTMF_0, 150);
+            this.playKeyTone('0', 150);
             this.props.onDigit('+');
         }, 1000);
     }

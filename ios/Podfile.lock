@@ -1350,6 +1350,8 @@ PODS:
     - React-Core
   - RNDeviceInfo (8.4.0):
     - React-Core
+  - RNDtmf (1.0.0):
+    - React
   - RNExitApp (2.0.0):
     - React-Core
   - RNFastImage (8.6.3):
@@ -1529,6 +1531,7 @@ DEPENDENCIES:
   - "RNCAsyncStorage (from `../node_modules/@react-native-async-storage/async-storage`)"
   - "RNCPushNotificationIOS (from `../node_modules/@react-native-community/push-notification-ios`)"
   - RNDeviceInfo (from `../node_modules/react-native-device-info`)
+  - RNDtmf (from `../node_modules/react-native-dtmf/ios`)
   - RNExitApp (from `../node_modules/react-native-exit-app`)
   - RNFastImage (from `../node_modules/react-native-fast-image`)
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
@@ -1761,6 +1764,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-community/push-notification-ios"
   RNDeviceInfo:
     :path: "../node_modules/react-native-device-info"
+  RNDtmf:
+    :path: "../node_modules/react-native-dtmf/ios"
   RNExitApp:
     :path: "../node_modules/react-native-exit-app"
   RNFastImage:
@@ -1914,6 +1919,7 @@ SPEC CHECKSUMS:
   RNCAsyncStorage: b44e8a4e798c3e1f56bffccd0f591f674fb9198f
   RNCPushNotificationIOS: 6c4ca3388c7434e4a662b92e4dfeeee858e6f440
   RNDeviceInfo: 5cfc358ab602ac09f18edb3b9af2ca80362106f4
+  RNDtmf: 567ed921081378cc3f3c5bbb7720fae9c2cc648f
   RNExitApp: 4432b9b7cc5ccec9f91c94e507849891282befd4
   RNFastImage: 462a183c4b0b6b26fdfd639e1ed6ba37536c3b87
   RNFBApp: 4105e54d9ca4a1c10893a032268470f670181110
@@ -1938,6 +1944,6 @@ SPEC CHECKSUMS:
   WebRTC-SDK: ac5965a3cc2c258973466e3b1739ab0308bab0d0
   Yoga: a813a6d82538ccba91c54406404e3ed80b48a692
 
-PODFILE CHECKSUM: 8ccdee2be213b371cbf7a3ca21c9a6e5d1dc61ec
+PODFILE CHECKSUM: eb5ad923045e9627bb054bc12f1638e694e34b1b
 
 COCOAPODS: 1.16.2

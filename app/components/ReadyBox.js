@@ -38,6 +38,7 @@ import ContactsCategoryBar from './ContactsCategoryBar';
 import ChatFilterSortBar from './ChatFilterSortBar';
 import ContactSelectFab from './ContactSelectFab';
 import SearchBar from './SearchBar';
+import { DTMFPad } from './DTMFModal';
 import {
     isVideoConferenceUri,
     isAnonymousUri,
@@ -759,6 +760,15 @@ class ReadyBox extends Component {
 			// even before the user enters search mode. Only hide the
 			// bar when a contact/chat is open and no search is active.
 			if (this.props.selectedContact) {
+				return false;
+			}
+			// Mobile (phone) landscape: vertical room is scarce, so the
+			// always-visible search field is hidden and replaced by a
+			// search icon in the NavigationBar (which toggles
+			// searchContacts — once that's on, this gate is skipped and
+			// the bar shows). Tablets and folded cover displays keep the
+			// always-visible bar.
+			if (this.props.isLandscape && !this.props.isTablet && !this.props.isFolded) {
 				return false;
 			}
         }
@@ -3033,6 +3043,24 @@ class ReadyBox extends Component {
             !this.props.selectedContact
         );
 
+        // Phone-landscape dialpad split. In landscape on a phone there
+        // is no vertical room to stack search bar + dialpad + results,
+        // so the dialpad moves into a LEFT column and the contacts
+        // results render in a RIGHT column beside it (see the wrapper
+        // around <ContactsListBox> below). The stacked in-bar dialpad
+        // expansion (SearchBar's showDialpadExpansion) is suppressed
+        // while this mode is active so the pad isn't rendered twice.
+        // Tablets and folded cover displays keep the stacked layout.
+        const dialpadSideBySide =
+            this.state.showAbDialpad
+            && this.props.isLandscape
+            && !this.props.isTablet
+            && !this.props.isFolded
+            && !this.props.shareToContacts
+            && !this.props.searchMessages
+            && !this.props.keyboardVisible
+            && !this.props.showQRCodeScanner;
+
         return (
             <Fragment>
                 <View style={[styles.container, containerExtraStyles]}>
@@ -3135,6 +3163,10 @@ class ReadyBox extends Component {
                                 && !this.props.shareToContacts
                                 && !this.props.inviteContacts
                                 && !this.props.searchMessages
+                                // Phone landscape: the pad renders in a
+                                // left column beside the results instead
+                                // of stacked under the search bar.
+                                && !dialpadSideBySide
                             }
                             onDialpadDigit={this.handleAbDialpadDigit}
                             onDialpadBackspace={this.handleAbDialpadBackspace}
@@ -3314,6 +3346,9 @@ class ReadyBox extends Component {
                            && !this.props.shareToContacts
                            && !this.props.searchMessages
                            && !this.props.keyboardVisible
+                           // Phone landscape: pad moves to a left column
+                           // beside the picker list (see below).
+                           && !dialpadSideBySide
                        }
                        onDialpadDigit={this.handleAbDialpadDigit}
                        onDialpadBackspace={this.handleAbDialpadBackspace}
@@ -3328,6 +3363,11 @@ class ReadyBox extends Component {
                         containerStyle={containerStyles.QRCodeScanner}
                      />
                       :
+					(() => {
+					// The contacts list itself, built once so the
+					// phone-landscape dialpad split below can reuse it
+					// without duplicating this prop block.
+					const _contactsList = (
 					<ContactsListBox
 						allContacts={this.props.allContacts}
 						graveyardContacts={this.props.graveyardContacts}
@@ -3470,8 +3510,35 @@ class ReadyBox extends Component {
 						sendAudioFile = {this.sendAudioFile}
 						insets = {this.props.insets}
 						appState = {this.props.appState}
+						pstnRules = {this.props.pstnRules}
 					/>
+					);
+					if (!dialpadSideBySide) {
+						return _contactsList;
 					}
+					// Phone-landscape dialpad split: two columns —
+					// dial pad on the LEFT, contacts results on the
+					// RIGHT. Landscape has no vertical room to stack
+					// the pad under the search bar (the stacked
+					// showDialpadExpansion is suppressed above while
+					// this mode is active). `compact` shrinks the keys
+					// ~22% so the 4-row grid fits the short landscape
+					// viewport; the column centers it vertically.
+					return (
+						<View style={{flex: 1, flexDirection: 'row'}}>
+							<View style={{justifyContent: 'center', paddingHorizontal: 8}}>
+								<DTMFPad
+									compact
+									onDigit={this.handleAbDialpadDigit}
+									dark={this.props.dark}
+								/>
+							</View>
+							<View style={{flex: 1}}>
+								{_contactsList}
+							</View>
+						</View>
+					);
+					})()}
 
                     <ContactSelectFab
                         visible={this.props.contactSelectMode}
@@ -3701,6 +3768,10 @@ ReadyBox.propTypes = {
 	remoteConferenceRoom: PropTypes.string,
 	remoteConferenceDomain: PropTypes.string,
 	addressBookContacts: PropTypes.array,
+	// PSTN dialing rules (replacePlus + the local "Replace 0 with"
+	// preference). Forwarded to ContactsListBox for phone-number
+	// search expansion.
+	pstnRules: PropTypes.object,
 };
 
 export default ReadyBox;

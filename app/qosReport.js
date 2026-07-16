@@ -134,6 +134,45 @@ export function formatQosReport(record, userAgent) {
     }
     L.push('');
 
+    // ---- LOSS LOCALIZATION (server-side hop analysis) ----------------
+    // srv.loss_analysis is produced by sylk-qos-server >= 0.3: hop-by-hop
+    // packet counts (MediaProxy NIC / Janus NIC / this device) per direction
+    // plus plain-language findings. The 'Janus -> client (wire)' hop arrives
+    // without a received count (the server can't see this phone's NIC) — we
+    // complete it here with our own packetsReceived.
+    const la = srv.loss_analysis;
+    if (la && !la.probe && (la.findings || la.hops)) {
+        L.push(divider('Loss localization'));
+        const hops = la.hops || {};
+        const hopRows = (list, clientRecv) => {
+            const rows = [['hop', 'sent', 'received', 'lost']];
+            (list || []).forEach((h) => {
+                let recv = h.received;
+                let lost = h.lost;
+                if (recv == null && clientRecv != null && /client/i.test(h.hop || '')) {
+                    recv = clientRecv;
+                    lost = (h.sent != null) ? (h.sent - recv) : null;
+                }
+                rows.push([h.hop, pkts(h.sent), recv == null ? '?' : recv,
+                           lost == null ? '?' : (lost < 0 ? 0 : lost)]);
+            });
+            return rows;
+        };
+        if (Array.isArray(hops.inbound) && hops.inbound.length) {
+            L.push('inbound (far end → this device)');
+            L.push(...table(hopRows(hops.inbound, cli.packetsReceived), true));
+        }
+        if (Array.isArray(hops.outbound) && hops.outbound.length) {
+            L.push('outbound (this device → far end)');
+            L.push(...table(hopRows(hops.outbound), true));
+        }
+        (la.findings || []).forEach((f) => L.push('  • ' + f));
+        if (la.confidence && la.confidence.indexOf('low') === 0) {
+            L.push('  (confidence: ' + la.confidence + ')');
+        }
+        L.push('');
+    }
+
     // ---- RECONCILIATION --------------------------------------------
     L.push(divider('RECONCILIATION'));
     const haveClient = !!(record && record.client && (record.client.domain
@@ -282,6 +321,39 @@ export function formatQosReportHtml(record, userAgent) {
         H.push('<div class="kv">loss in ' + fmt(cli.lossIn, '%') + ' &middot; out ' + fmt(cli.lossOut, '%')
             + ' &middot; conceal ' + fmt(cli.concealPct, '%') + ' &middot; jitter ' + fmt(cli.jbDelayMs, 'ms')
             + ' &middot; flushes ' + fmt(cli.jbFlushes) + ' &middot; pps ' + fmt(cli.ppsRecv) + '</div>');
+    }
+
+    // ---- LOSS LOCALIZATION (server-side hop analysis) ----
+    const la = srv.loss_analysis;
+    if (la && !la.probe && (la.findings || la.hops)) {
+        H.push('<h2>Loss localization</h2>');
+        const hops = la.hops || {};
+        const hopTbl = (list, clientRecv) => {
+            const rows = [['hop', 'sent', 'received', 'lost']];
+            (list || []).forEach((h) => {
+                let recv = h.received;
+                let lost = h.lost;
+                if (recv == null && clientRecv != null && /client/i.test(h.hop || '')) {
+                    recv = clientRecv;
+                    lost = (h.sent != null) ? (h.sent - recv) : null;
+                }
+                rows.push([h.hop, h.sent == null ? '?' : h.sent, recv == null ? '?' : recv,
+                           lost == null ? '?' : (lost < 0 ? 0 : lost)]);
+            });
+            return tbl(rows, [1, 2, 3], true);
+        };
+        if (Array.isArray(hops.inbound) && hops.inbound.length) {
+            H.push('<h3>inbound &middot; far end &rarr; this device</h3>');
+            H.push(hopTbl(hops.inbound, cli.packetsReceived));
+        }
+        if (Array.isArray(hops.outbound) && hops.outbound.length) {
+            H.push('<h3>outbound &middot; this device &rarr; far end</h3>');
+            H.push(hopTbl(hops.outbound));
+        }
+        (la.findings || []).forEach((f) => H.push('<div class="kv">&bull; ' + esc(f) + '</div>'));
+        if (la.confidence && la.confidence.indexOf('low') === 0) {
+            H.push('<div class="note">confidence: ' + esc(la.confidence) + '</div>');
+        }
     }
 
     // ---- RECONCILIATION ----

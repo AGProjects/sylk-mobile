@@ -64,6 +64,32 @@ const VALID_MODES = ['system', 'day', 'night'];
 const SYLK_BLUE_DEEP   = '#436294';
 const SYLK_BLUE_BRIGHT = '#007CB5';
 
+// Night-theme incoming-bubble colour choices. The Night palette draws
+// WHITE body text on the incoming bubble, so every colour offered
+// here must hold ~AA contrast against #FFFFFF — mid-dark, muted
+// tones only (no pastels). 'blue' is the default (kept first);
+// 'green' preserves the historical ChatBubble literal for users who
+// prefer the original look. Persisted (by id, not hex — lets us tune
+// a hue later without invalidating stored prefs) in
+// accountSetting.device.bubbleColor; app.js pushes the stored id
+// into setNightBubbleColor() at account hydration and
+// PreferencesModal offers the swatches.
+export const NIGHT_BUBBLE_COLORS = [
+    { id: 'blue',  label: 'Blue',  color: '#3B6EA5' },
+    { id: 'green', label: 'Green', color: 'green'   },
+    { id: 'teal',  label: 'Teal',  color: '#00796B' },
+    { id: 'brown', label: 'Brown', color: '#795548' },
+    { id: 'plum',  label: 'Plum',  color: '#7E57C2' },
+    { id: 'slate', label: 'Slate', color: '#546E7A' },
+];
+
+const DEFAULT_NIGHT_BUBBLE_COLOR_ID = 'blue';
+
+function resolveNightBubbleColor(id) {
+    const entry = NIGHT_BUBBLE_COLORS.find(c => c.id === id);
+    return entry || NIGHT_BUBBLE_COLORS[0];
+}
+
 const DAY_THEME = {
     name: 'day',
     isDark: false,
@@ -134,9 +160,11 @@ const NIGHT_THEME = {
     textSecondary: '#B0B0B0',
     divider: '#2A2A2A',
     chatBackground: '#0B141A',
-    // Original ChatBubble.js literals: leftColor='green', rightColor='#fff'.
-    // Kept verbatim so Night mode reproduces today's look exactly.
-    bubbleIncoming: 'green',
+    // Incoming default is the NIGHT_BUBBLE_COLORS 'blue' tone (the
+    // historical 'green' literal remains available as a swatch in
+    // Preferences → Night bubble color). Outgoing keeps the original
+    // ChatBubble literal.
+    bubbleIncoming: '#3B6EA5',
     bubbleOutgoing: '#FFFFFF',
     bubbleIncomingText: '#FFFFFF',
     bubbleOutgoingText: '#111B21',
@@ -154,6 +182,15 @@ class DarkModeManager {
     this.dark = this.systemIsDark;
     this.listeners = [];
     this.themeListeners = [];
+
+    // Night-theme incoming-bubble colour override (id into
+    // NIGHT_BUBBLE_COLORS). In-memory mirror only — persistence lives
+    // in accountSetting.device.bubbleColor, same split as `mode`.
+    this.nightBubbleColorId = DEFAULT_NIGHT_BUBBLE_COLOR_ID;
+    // Derived-theme cache so getTheme() keeps returning a stable
+    // object reference between colour changes (some consumers
+    // reference-compare the palette).
+    this._nightThemeCache = NIGHT_THEME;
 
     // Listen to OS theme changes. Only the 'system' mode propagates
     // these — explicit day/night overrides ignore the OS toggle.
@@ -204,7 +241,30 @@ class DarkModeManager {
   }
 
   getTheme() {
-    return this.dark ? NIGHT_THEME : DAY_THEME;
+    return this.dark ? this._nightThemeCache : DAY_THEME;
+  }
+
+  // ─── Night bubble colour ─────────────────────────────────────────
+  // Only the NIGHT palette takes the override: its incoming bubble
+  // draws white body text, so the offered colours are all picked for
+  // contrast against white. The Day palette keeps its white bubble +
+  // dark text and is not affected.
+
+  getNightBubbleColor() {
+    return this.nightBubbleColorId;
+  }
+
+  setNightBubbleColor(id) {
+    const entry = resolveNightBubbleColor(id);
+    if (entry.id === this.nightBubbleColorId) return;
+    this.nightBubbleColorId = entry.id;
+    this._nightThemeCache = entry.id === DEFAULT_NIGHT_BUBBLE_COLOR_ID
+        ? NIGHT_THEME
+        : { ...NIGHT_THEME, bubbleIncoming: entry.color };
+    // Fire the theme listeners so mounted consumers (navbar, chat)
+    // pick up the new palette without waiting for a remount — same
+    // path a Day/Night flip takes.
+    this.notifyListeners();
   }
 
   // For classes to subscribe to changes

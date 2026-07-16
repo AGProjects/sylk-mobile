@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, AppState, Keyboard } from 'react-native';
 import { Searchbar, IconButton } from 'react-native-paper';
 import autoBind from 'auto-bind';
 
@@ -25,6 +25,43 @@ class URIInput extends React.Component {
     componentDidMount() {
         if (this.props.autoFocus) {
             this.uriInput.current.focus();
+        }
+        // Guard against Android restoring focus to the search field
+        // (and popping the keyboard) when the app is brought back to
+        // the foreground. The keyboard should only reappear on resume
+        // if the field was ACTUALLY focused by the user when the app
+        // was backgrounded — otherwise we blur the OS-restored focus.
+        this._wasFocusedOnBackground = false;
+        this._appStateSub = AppState.addEventListener('change', this.onAppStateChange);
+    }
+
+    componentWillUnmount() {
+        if (this._appStateSub && typeof this._appStateSub.remove === 'function') {
+            this._appStateSub.remove();
+        }
+        this._appStateSub = null;
+        if (this._resumeBlurTimer) {
+            clearTimeout(this._resumeBlurTimer);
+            this._resumeBlurTimer = null;
+        }
+    }
+
+    onAppStateChange(next) {
+        const input = this.uriInput.current;
+        if (next === 'background' || next === 'inactive') {
+            this._wasFocusedOnBackground = !!(input && input.isFocused && input.isFocused());
+        } else if (next === 'active' && !this._wasFocusedOnBackground) {
+            // Focus restoration happens shortly after 'active' fires,
+            // so check on a short delay: if the field grabbed focus
+            // the user never gave it, drop it and hide the keyboard.
+            this._resumeBlurTimer = setTimeout(() => {
+                this._resumeBlurTimer = null;
+                const inp = this.uriInput.current;
+                if (inp && inp.isFocused && inp.isFocused()) {
+                    inp.blur();
+                    Keyboard.dismiss();
+                }
+            }, 80);
         }
     }
 
@@ -166,21 +203,27 @@ class URIInput extends React.Component {
         // the dialpad icon).
         const _suppressedClearIcon = () => null;
 
+        const _hasText =
+            this.state.defaultValue && this.state.defaultValue.length > 0;
+
         // Whether the QR scan button is actually rendered. It's offered
         // when the host enables it (showQr) but hidden while the dialpad
-        // view is open (isDialpadActive) — the two right-edge controls
-        // don't coexist — and in close-search (folded) mode where the
-        // close-X owns the right edge. Drives the dialpad's right-edge
-        // shift and the clear-× offsets so they stay in sync.
+        // view is open (isDialpadActive), while the field has TEXT (the
+        // toggles are only available on an empty search bar — with text
+        // the right edge belongs to the clear-×), and in close-search
+        // (folded) mode where the close-X owns the right edge.
         const _showQrBtn = this.props.showQr
             && !this.props.isDialpadActive
+            && !_hasText
             && typeof this.props.onCloseSearch !== 'function';
 
         // Whether the dialpad toggle icon is rendered. Hidden while
-        // the pad is OPEN (per user request) — its flush-right slot
-        // is taken over by a close-× that dismisses the pad.
+        // the pad is OPEN (its flush-right slot is taken over by a
+        // close-× that dismisses the pad) and, like the QR button,
+        // whenever the field has text.
         const _showDialpadBtn = this.props.showDialpad
             && !this.props.isDialpadActive
+            && !_hasText
             && typeof this.props.onCloseSearch !== 'function';
 
         // Pad-open state: the toggle icon above is replaced by an
@@ -205,17 +248,18 @@ class URIInput extends React.Component {
         // out to just the clear-×'s `right` offset (offset + ~38px
         // button width − ~40px built-in slot). Anything more piles up
         // as dead space between the text and the × (the follow-up bug).
-        const _clearRight = (_showQrBtn && _showDialpadBtn)
-            ? 100
-            : _showQrBtn
-                ? 52
-                : (this.state.inviteContacts && this.props.inviteEnabled && _showDialpadBtn)
-                    ? 108
-                    : (this.state.inviteContacts && this.props.inviteEnabled)
-                        ? 56
-                        : 48;
-        const _hasText =
-            this.state.defaultValue && this.state.defaultValue.length > 0;
+        // The clear-× only renders while there's text, and the QR /
+        // dialpad toggles only render while there ISN'T — so the ×
+        // never has to clear them anymore. It only steps left of:
+        //   • the Invite button (invite mode, contacts selected), or
+        //   • the close-search ↑ in folded mode;
+        // otherwise it sits flush right in the vacated toggle slot.
+        const _clearRight =
+            (this.state.inviteContacts && this.props.inviteEnabled)
+                ? 56
+                : typeof this.props.onCloseSearch === 'function'
+                    ? 48
+                    : 4;
 
         // In-bar backspace, shown while the dialpad is open (it
         // replaced the pad's removed 4th-column backspace key). Sits
@@ -321,14 +365,19 @@ class URIInput extends React.Component {
                 ) : null}
                 {/* Close-dialpad × at the flush-right slot the toggle
                     icon vacated. ALWAYS visible while the pad is open
-                    (regardless of text) — tapping it closes the
-                    dialpad view via the same toggle handler. */}
+                    (regardless of text) — tapping it clears whatever
+                    was typed AND closes the dialpad view (per user
+                    request: "the search bar must be cleared when X
+                    is clicked"). */}
                 {_padOpen ? (
                     <IconButton
                         icon="close"
                         size={22}
-                        onPress={this.props.onDialpadPress}
-                        accessibilityLabel="Close dialpad"
+                        onPress={() => {
+                            this.props.onChange('');
+                            this.props.onDialpadPress();
+                        }}
+                        accessibilityLabel="Clear search and close dialpad"
                         style={uriInputStyles.dialpadOverlay}
                         iconColor={darkColors.iconColor}
                     />

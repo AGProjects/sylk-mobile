@@ -2212,6 +2212,19 @@ class NavigationBar extends Component {
             subtitle = _warmupLine;
         }
 
+        // System-message override — actionless notifications that used
+        // to render in the bottom snackbar (posted via
+        // NotificationCenter.postSystemNotification and mirrored up
+        // through app.js state.navbarSystemMessage). While one is
+        // visible it takes over the subtitle line, trumping even the
+        // warmup line: these are transient (~5 s) and usually explain
+        // WHY something just happened (permission denied, call
+        // rejected, …), so they must not be masked.
+        const _systemMessage = this.props.systemMessage;
+        if (_systemMessage) {
+            subtitle = _systemMessage;
+        }
+
         let backButtonTitle = 'Back to call';
 
         if (this.showBackToCallButton) {
@@ -2699,9 +2712,11 @@ class NavigationBar extends Component {
                    the slot — if needed later we can render a tiny
                    "sync-only" pill in another corner. */}
                {(() => {
-                   // Bell (DND toggle + first-sync indicator) temporarily hidden
-                   // — re-enable by flipping _SHOW_BELL back to true.
-                   const _SHOW_BELL = false;
+                   // Bell (DND toggle + first-sync indicator). Was
+                   // temporarily hidden behind this kill switch;
+                   // revived per user request — flip to false to
+                   // hide it again.
+                   const _SHOW_BELL = true;
                    if (!_SHOW_BELL) return null;
                    const _activeShares = Object.keys(this.state.activeLocationShares || {}).length;
                    const _bellVisible = !this.props.selectedContact
@@ -2729,7 +2744,23 @@ class NavigationBar extends Component {
                            style={{
                                width: _box,
                                height: _box,
-                               marginRight: 10,
+                               // Align the bell glyph with the other
+                               // right-side navbar icons (e.g. the
+                               // search-messages icon shown when a
+                               // contact is selected). A plain Paper
+                               // IconButton occupies (navIconBtnSize
+                               // + 16) plus its default 6dp margin on
+                               // each side (styles.whiteButton doesn't
+                               // override margin). This slot is _box =
+                               // navIconBtnSize + 24 wide (room for
+                               // the sync ring) — 4dp wider per side —
+                               // so give it 6 - 4 = 2dp side margins
+                               // to put the bell's centre exactly
+                               // where the search icon's centre sits.
+                               // The spinning ring may overflow the
+                               // 2dp gap slightly — harmless, it's
+                               // pointerEvents:none.
+                               marginHorizontal: 2,
                                alignItems: 'center',
                                justifyContent: 'center',
                            }}
@@ -2827,9 +2858,10 @@ class NavigationBar extends Component {
                     too — the user often wants to look up a previous
                     message while a conference is up.
 
-                    The contacts-list search icon was removed entirely:
-                    the search field is always visible on the main list
-                    now, so there is nothing to toggle from the navbar. */}
+                    The contacts-list search icon exists only on phone
+                    landscape (see below) — everywhere else the search
+                    field is always visible on the main list, so there
+                    is nothing to toggle from the navbar. */}
                 {this.props.selectedContact ?
                     // Hide the "search messages" icon on the cover display —
                     // the NavBar is too cramped to also host a search UI there.
@@ -2842,6 +2874,33 @@ class NavigationBar extends Component {
                         onPress={this.props.toggleSearchMessages}
                         icon={searchMessagesIcon}
                     />)
+                : null}
+
+                {/* Contacts-list search icon — PHONE LANDSCAPE ONLY.
+                    In that orientation vertical pixels are scarce, so
+                    ReadyBox hides the always-visible search field (see
+                    ReadyBox#showSearchBar) and this icon takes over:
+                    tapping it toggles searchContacts, which brings the
+                    search bar back for the duration of the search. The
+                    icon flips to the universal close glyph while search
+                    is active. Portrait phones, tablets and folded cover
+                    displays keep the always-visible field and never
+                    show this icon. Hidden in invite-to-conference mode,
+                    which pins its own picker search bar to the list. */}
+                {(!this.props.selectedContact
+                    && !this.props.inviteContacts
+                    && this.props.isLandscape
+                    && !this.props.isTablet
+                    && !this.props.isFolded) ?
+                    <IconButton
+                        key={'search-contacts-' + _navRemountKey}
+                        style={styles.whiteButton}
+                        size={navIconBtnSize}
+                        disabled={false}
+                        onPress={this.props.toggleSearchContacts}
+                        icon={this.props.searchContacts ? 'close' : 'magnify'}
+                        accessibilityLabel={this.props.searchContacts ? 'Close search' : 'Search contacts'}
+                    />
                 : null}
 
                { (!this.props.selectedContact && !this.props.searchContacts && false) ?
@@ -3476,6 +3535,10 @@ class NavigationBar extends Component {
 
 NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
+    // Actionless system message (from NotificationCenter via app.js).
+    // Rendered on the 2nd navbar line in place of the account URI
+    // while visible; null when no message is up.
+    systemMessage      : PropTypes.string,
     logout             : PropTypes.func.isRequired,
     // (accountId, password) => void. Logs the current account out
     // and signs back in as the supplied one. Used by SwitchAccountModal

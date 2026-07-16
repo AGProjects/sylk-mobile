@@ -7615,6 +7615,19 @@ class ChatBox extends Component {
 			   
 			    const isIncoming = currentMessage.direction === 'incoming';
 
+				    // Same Day-mode fix as the image/video branches:
+				    // direction-only colours rendered white-on-white on an
+				    // incoming bubble in Day theme (theme.bubbleIncoming =
+				    // '#FFFFFF'). Take the text colour from the active
+				    // theme's bubble-text keys so contrast holds in both
+				    // modes. Links keep the standard link blue except on the
+				    // dark incoming (green) bubble, where white reads better.
+				    const _htmlTheme = DarkModeManager.getTheme();
+				    const htmlTextColor = isIncoming
+				        ? _htmlTheme.bubbleIncomingText
+				        : _htmlTheme.bubbleOutgoingText;
+				    const htmlLinkColor = (isIncoming && _htmlTheme.isDark) ? '#FFFFFF' : '#1DA1F2';
+
 				    const isWideHtml = /<table|<tr|<td|<th/i.test(html);
 
 				    // The fullscreen affordance used to be gated on TABLE markup
@@ -7665,16 +7678,22 @@ class ChatBox extends Component {
 					ignoredStyles={['height', 'width', 'minWidth', 'minHeight', 'maxWidth', 'maxHeight', 'position', 'top', 'right', 'bottom', 'left', 'transform', 'zIndex', 'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']}
 					customHTMLElementModels={customHTMLElementModels}
 					domVisitors={htmlDomVisitors}
+					// baseStyle themes the DEFAULT text colour so tags not
+					// listed in tagsStyles (div, li, td, headings, bare
+					// text…) are readable too — previously they fell back
+					// to render-html's black default, invisible on the dark
+					// theme's green incoming bubble.
+					baseStyle={{ color: htmlTextColor }}
 					  tagsStyles={{
 						span: {
-						  color: isIncoming ? '#FFFFFF' : '#000000',
+						  color: htmlTextColor,
 						  backgroundColor: 'transparent',
 						},
 						p: {
-						  color: isIncoming ? '#FFFFFF' : '#000000',
+						  color: htmlTextColor,
 						},
 						a: {
-						  color: isIncoming ? '#FFFFFF' : '#1DA1F2',
+						  color: htmlLinkColor,
 						  textDecorationLine: 'underline',
 						}
 					  }}

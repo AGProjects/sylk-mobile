@@ -309,6 +309,8 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     setLocationPrivacyRadiusMeters={nav.props.setLocationPrivacyRadiusMeters}
                     themeMode={nav.props.themeMode}
                     setThemeMode={nav.props.setThemeMode}
+                    bubbleColor={nav.props.bubbleColor}
+                    setBubbleColor={nav.props.setBubbleColor}
                     autoDownloadOnWifi={nav.props.autoDownloadOnWifi}
                     setAutoDownloadOnWifi={nav.props.setAutoDownloadOnWifi}
                     autoDownloadOnMobile={nav.props.autoDownloadOnMobile}

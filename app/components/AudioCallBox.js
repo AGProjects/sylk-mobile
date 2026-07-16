@@ -1581,7 +1581,8 @@ class AudioCallBox extends Component {
             <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={this._cycleViz}
-                style={[{ alignSelf: 'stretch', alignItems: 'center' }, _vuLift]}
+                /* marginTop: 20 per "add 20px margin on top of vu meters bar" */
+                style={[{ alignSelf: 'stretch', alignItems: 'center', marginTop: 20 }, _vuLift]}
             >
                 {body}
                 <Text style={{ fontSize: 9, opacity: 0.5, marginTop: 2 }}>
@@ -2619,11 +2620,13 @@ class AudioCallBox extends Component {
         // new device class, bump the matching branch — don't cap the
         // overall maximum, since over-lifting on small phones would
         // push the pill into the AudioSpeedometer above it.
-        let bottomOffset = 130;
+        // All branches dropped 20 px per "shift record pill 20px down"
+        // (rides along with the button bar's matching +20 top shift).
+        let bottomOffset = 110;
         if (this.props.isTablet) {
-            bottomOffset = this.state.isLandscape ? 150 : 200;
+            bottomOffset = this.state.isLandscape ? 130 : 180;
         } else if (this.state.isLandscape) {
-            bottomOffset = 90;
+            bottomOffset = 70;
         }
         return (
             <View
@@ -2767,13 +2770,15 @@ class AudioCallBox extends Component {
                         awaitingStart={this.props.awaitingUserCallStart}
                         hasCall={!!callObj}
                     />
+                    {/* Remote party's client (SIP/Blink/WebRTC) User-Agent,
+                        shown directly under the speedometer dial (above
+                        the VU meters, per "move Remote UA label under
+                        the speedometer"). */}
+                    {this._renderRemoteUserAgent()}
                     {/* VU meters ONLY when media is actually flowing
                         (mediaFlowing) — i.e. below the half-dial, never while
                         the calling/reconnecting circle is shown. */}
                     {(!showOld && mediaFlowing) ? this._renderRemoteVuMeter() : null}
-                    {/* Remote party's client (SIP/Blink/WebRTC) User-Agent,
-                        shown directly under the speedometer dial. */}
-                    {this._renderRemoteUserAgent()}
                 </View>
                 {/* Footer (zRTP pill) rendered ONCE as a sibling of
                     both stats views, so its container width is the
@@ -3058,7 +3063,13 @@ class AudioCallBox extends Component {
             + '-' + Math.round(_cbW) + 'x' + Math.round(_cbH);
 
         let extraStyles = {};
-        let extraButtonContainerClass = {};       
+        // top: +20 per "shift extraButtonContainer 20px down". Uses `top`
+        // (relative offset) rather than transform so it doesn't clobber
+        // landscapeButtonContainer's existing translateY:30.
+        // Skip the shift when folded: foldedButtonContainer is
+        // position:absolute + bottom-pinned, and a `top` there would
+        // stretch the bar instead of moving it.
+        let extraButtonContainerClass = this.props.isFolded ? {} : { top: 20 };
         let container = styles.container;
         
         // ZRTP indicator — rendered inline below the TrafficStats packet

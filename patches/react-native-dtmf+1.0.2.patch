@@ -10,3 +10,52 @@ index b025dcd..d420274 100644
 +    implementation 'com.facebook.react:react-native:+'
  }
    
+diff --git a/node_modules/react-native-dtmf/ios/ToneGenerator.m b/node_modules/react-native-dtmf/ios/ToneGenerator.m
+index 5b1a931..a8c8023 100644
+--- a/node_modules/react-native-dtmf/ios/ToneGenerator.m
++++ b/node_modules/react-native-dtmf/ios/ToneGenerator.m
+@@ -9,6 +9,9 @@
+ #import "ToneGenerator.h"
+ 
+ static AudioUnit toneUnit;
++// Bumped on every startTone; scheduled auto-stops only fire if they
++// belong to the latest tone (see startTone).
++static int toneGeneration = 0;
+ static double sampleRate = 8000.0;
+ static int freq1 = 1;
+ static int freq2 = 1;
+@@ -51,15 +54,30 @@ void startTone(int dtmf, int durationMs) {
+   // Start playback
+   err = AudioOutputUnitStart(toneUnit);
+     
+-  // Stop the tone after durationMs (or until stopTone is called)
+-  dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)((durationMs/1000) * NSEC_PER_SEC));
++  // Stop the tone after durationMs (or until stopTone is called).
++  // NOTE two fixes vs upstream:
++  //   1. durationMs/1000 was INTEGER division — any duration under
++  //      1000ms computed to 0s, so the tone was stopped the instant
++  //      it started (silent short tones).
++  //   2. The scheduled stop captures a generation counter so a stale
++  //      timer from a previous key press can't kill the tone of the
++  //      key pressed after it ("I hear it once" bug).
++  int generation = ++toneGeneration;
++  dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)durationMs * NSEC_PER_SEC / 1000);
+   dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+-    stopTone();
++    if (generation == toneGeneration) {
++      stopTone();
++    }
+   });
+ }
+ 
+ void stopTone() {
+-  // Tear it down in reverse
++  // Tear it down in reverse. Guard against double-stop: the JS side
++  // calls stopTone() before every playTone() and a scheduled stop may
++  // already have fired — tearing down a nil unit is undefined.
++  if (toneUnit == nil) {
++    return;
++  }
+   AudioOutputUnitStop(toneUnit);
+   AudioUnitUninitialize(toneUnit);
+   AudioComponentInstanceDispose(toneUnit);
