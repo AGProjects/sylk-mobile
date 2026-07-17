@@ -1629,6 +1629,11 @@ class Sylk extends Component {
 			passwordRecoveryUrl: 'https://mdns.sipthor.net/sip_login_reminder.phtml',
 			deleteAccountUrl: 'http://delete.sylk.link',
             configurationJson: null,
+            // Server addressbook (XCAP) capability — OPT-IN via the server's
+            // sylk-config.json key addressBookServer (true/"true"/"True"/1/"1").
+            // Defaults to false: without the server's explicit hint the client
+            // keeps all contacts LOCAL and performs no XCAP/[ab] operations.
+            addressBookServer: false,
             serverIsValid: true,
             terminatedReason: null,
             inFocus: true,
@@ -2450,7 +2455,33 @@ class Sylk extends Component {
 		        this._configRetryInFlight = false;
 		    });
 	  }
-	  
+
+	  // Unconditional server-config refresh, fired on EVERY sign-in.
+	  // Unlike maybeRetryServerConfiguration() this does NOT bail when a
+	  // cached config exists: the cache may predate server-side capability
+	  // changes (e.g. addressBookServer appearing in sylk-config.json).
+	  // downloadSylkConfiguration() diffs against the cache, applies via
+	  // initConfiguration() and re-persists, so repeated calls are cheap and
+	  // safe. Shares the in-flight flag with the retry path. Fire-and-forget.
+	  refreshServerConfiguration(reason) {
+		const domain = this.state.sylkDomain || this.state.defaultDomain;
+		if (!domain) return;
+		if (this._configRetryInFlight) return;
+
+		const url = this.state.configurationUrl || ('https://' + domain + '/sylk-config.json');
+		utils.timestampedLog('[config] sign-in refresh (reason:', reason + ')', url);
+		this._configRetryInFlight = true;
+		this.downloadSylkConfiguration(domain, url)
+		    .catch((e) => {
+		        console.log('[config] sign-in refresh failed:', e);
+		        utils.timestampedLog('[config] sign-in refresh failed:',
+		                             e && e.message ? e.message : String(e));
+		    })
+		    .finally(() => {
+		        this._configRetryInFlight = false;
+		    });
+	  }
+
 	 stopWatchingNetwork() {
 		if (this.unsubscribeNetInfo) {
 		  this.unsubscribeNetInfo();
@@ -2942,7 +2973,7 @@ class Sylk extends Component {
 			utils.timestampedLog('[config] discovery URL (checkOnly)', configurationUrl);
 			await this.downloadSylkConfiguration(domain, configurationUrl, checkOnly);
 		} else if (configurationUrl) {
-			//console.log('Sylkserver configuration URL', configurationUrl);
+			console.log('Sylkserver configuration URL', configurationUrl);
 			utils.timestampedLog('[config] discovery URL', configurationUrl);
 			this.setState({ configurationUrl: configurationUrl });
 			await this.downloadSylkConfiguration(domain, configurationUrl, false, closeConnection, force);
@@ -4625,6 +4656,14 @@ class Sylk extends Component {
 			 // switch; re-evaluate the addressbook now (gated, so a no-op until
 			 // server data + settings are also ready for this account).
 			 if (this._abMaybeRun) this._abMaybeRun('contactsLoaded');
+	     }
+
+	     if (this.state.addressBookServer !== prevState.addressBookServer) {
+			 utils.timestampedLog('[ab] addressBookServer changed: '
+			     + prevState.addressBookServer + ' -> ' + this.state.addressBookServer);
+			 // The sign-in config refresh can flip this AFTER registration; without
+			 // this edge nothing re-evaluates the addressbook until next sign-in.
+			 if (this.state.addressBookServer && this._abMaybeRun) this._abMaybeRun('addressBookServerEnabled');
 	     }
 
 		 if (!utils.deepEqual(this.state.keyStatus, prevState.keyStatus)) {
@@ -9198,7 +9237,22 @@ class Sylk extends Component {
 
             const testNumbers = Array.isArray(configuration.testNumbers) ? configuration.testNumbers: [];
 
+            // Server addressbook (XCAP) capability — OPT-IN. Only when the
+            // server publishes addressBookServer: true / "true" / "True" /
+            // 1 / "1" does the client perform server addressbook operations
+            // (XCAP sync, migration, contact/group replication, key escrow).
+            // Absent or any other value means this deployment has NO XCAP
+            // backend: contacts stay LOCAL and no [ab] server traffic is
+            // attempted (writes against a missing backend hang or fail
+            // forever — 2026-07-17 incident on domain.sylk.link).
+            const _abRaw = configuration.addressBookServer;
+            const addressBookServer = (_abRaw === true || _abRaw === 1
+                || (typeof _abRaw === 'string' && ['1', 'true'].indexOf(_abRaw.trim().toLowerCase()) !== -1));
+            utils.timestampedLog('[config] addressBookServer = ' + addressBookServer
+                + (addressBookServer ? '' : ' (contacts stay local, no XCAP operations)'));
+
 			this.setState({
+			               addressBookServer: addressBookServer,
 			               defaultDomain: configuration.defaultDomain,
 			               enrollmentUrl: configuration.enrollmentUrl,
 			               wsUrl: configuration.wsServer,
@@ -13335,7 +13389,32 @@ class Sylk extends Component {
 							// stores).
 							this._applyAccountSettings(item.account);
 							this.changeRoute('/ready', 'start_up');
-							setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
+							// The account URI's @-domain is the source of truth
+							// for WHICH Sylk server to register on (same rule as
+							// switchAccount). The persisted sylkDomain/wsUrl are
+							// whatever server was active LAST — after enrolling
+							// on another server and restarting, that's the WRONG
+							// one: registration fails with "403 This domain is
+							// not served here" while the whole session keeps the
+							// other server's configuration
+							// (configurations[domain.sylk.link] applied to
+							// ag@sylk.link — 2026-07-17 incident). Cross-server:
+							// arm signIn and re-discover the account's own
+							// server, exactly like switchAccount's cross-server
+							// path; the new connection's 'ready' event completes
+							// the registration.
+							const _autoDomain = (typeof item.account === 'string' && item.account.indexOf('@') > -1)
+								? item.account.split('@')[1] : null;
+							if (_autoDomain && this.state.sylkDomain && _autoDomain !== this.state.sylkDomain) {
+								console.log('Auto login cross-server:', item.account, 'lives on', _autoDomain,
+									'but current server is', this.state.sylkDomain, '— discovering', _autoDomain);
+								this.signOut = false;
+								this.signIn = true;
+								this.setState({ password: password, serverSettingsUrl: '', traceURL: '' });
+								setTimeout(() => { this.lookupSylkServer(_autoDomain, false, true); }, 10);
+							} else {
+								setTimeout(() => {this.handleRegistration(account, password, 'loadAccounts');}, 10);
+							}
 						}
 					}
 				}
@@ -13436,6 +13515,10 @@ class Sylk extends Component {
                     keyStatus.existsLocal = false;
 					console.log('[account] [pgp] private keys not saved');
                 }
+                // The keys row for THIS account has now been read — only from
+                // this point on may generateKeysIfNecessary trust existsLocal
+                // and decide about generating keys / showing import modals.
+                this._keysLoadedForAccount = this.state.accountId;
 
 				// last_sync_timestamp is stored as JSON.stringify(Date) → a
 				// quoted ISO string. Parse it back into a Date so it can be
@@ -13592,7 +13675,6 @@ class Sylk extends Component {
 					const _source = _cached
 						? 'configurations[' + _domain + ']'
 						: (_configJson ? 'state.configurationJson' : 'state slots only');
-					/*
 					console.log('[account] [load] server config dump (source=' + _source + '):',
 						JSON.stringify({
 							sylkDomain:        this.state.sylkDomain,
@@ -13606,7 +13688,6 @@ class Sylk extends Component {
 							serverSettingsUrlInConfig: _picked ? (_picked.serverSettingsUrl || null) : null,
 						})
 					);
-					*/
 				} catch (e) {
 					console.log('[account] [load] server config dump failed:', e && e.message);
 				}
@@ -15706,6 +15787,12 @@ class Sylk extends Component {
         // can't happen until well after this resolves).
         this._hydrateMeetingHandshakeState(accountId);
 
+        // The server config must be re-checked on every sign-in: the cached
+        // copy is applied synchronously for a fast start, but the server may
+        // have changed since it was written. Runs after the fast-path bails
+        // above so already-registered foregroundings don't re-fetch.
+        this.refreshServerConfiguration('signin-' + origin);
+
         if (this.state.connection === null) {
 			console.log('[signin] path A: connection is null, connectToSylkServer()');
 			this.connectToSylkServer(false, 'handleRegistration-pathA');
@@ -15977,13 +16064,25 @@ class Sylk extends Component {
                         ab.removeListener('dataUpdated', this._abOnDataUpdated);
                         ab.removeListener('dataDeleted', this._abOnDataDeleted);
                         ab.removeListener('dataUpdateFailed', this._abUpdateFailed);
-                        ab.on('dataLoaded', this._abOnDataLoaded);
-                        ab.on('dataCacheLoaded', this._abOnDataCacheLoaded);
-                        ab.on('dataUpdated', this._abOnDataUpdated);
-                        ab.on('dataDeleted', this._abOnDataDeleted);
-                        ab.on('dataUpdateFailed', this._abUpdateFailed);
+                        if (this.state.addressBookServer) {
+                            ab.on('dataLoaded', this._abOnDataLoaded);
+                            ab.on('dataCacheLoaded', this._abOnDataCacheLoaded);
+                            ab.on('dataUpdated', this._abOnDataUpdated);
+                            ab.on('dataDeleted', this._abOnDataDeleted);
+                            ab.on('dataUpdateFailed', this._abUpdateFailed);
+                        }
                     } else {
                         console.log('[ab] addressbook not available on connection (old lib?)');
+                    }
+                    if (!this.state.addressBookServer) {
+                        // This deployment has NO server addressbook (the server
+                        // config did not publish addressBookServer=true), so
+                        // there is nothing to import: release the import-gated
+                        // work (deferred journal first sync, import-key modal,
+                        // call-history replay) right away — it would otherwise
+                        // wait forever for an addressbook sync that never runs.
+                        utils.timestampedLog('[ab] server addressbook disabled by server config — contacts stay local');
+                        this._abMarkImportFinished(account.id);
                     }
                 } catch (e) {
                     console.log('[ab] failed to attach addressbook preview listeners', e && e.message);
@@ -16038,6 +16137,19 @@ class Sylk extends Component {
 
         if (!this.state.accountId) {
 			return;
+        }
+
+        // NEVER decide before this account's keys row has been read from SQL.
+        // On startup / account switch, checkIfKeyExists can answer BEFORE
+        // loadSylkAccount finishes loading the private key, so existsLocal is
+        // still stale/false here — and the "import your key from another Sylk
+        // device" modal fired on the very device that OWNS the key
+        // (2026-07-17 incident, switching back to ag@sylk.link). A later call
+        // always follows once the keys are loaded (loadSylkAccount triggers
+        // the keyStatus update path), so deferring here loses nothing.
+        if (this._keysLoadedForAccount !== this.state.accountId) {
+            console.log('[pgp] keys check deferred — local keys not loaded yet for', this.state.accountId);
+            return;
         }
 
         let keyStatus = this.state.keyStatus;
@@ -20116,7 +20228,7 @@ class Sylk extends Component {
     // transaction, many rows) so the two paths can never drift apart.
     _contactsInsertColumns = "contact_id, remote_id, account, uri, uris, email, photo, timestamp, name, organization, unread_messages, tags, participants, public_key, direction, last_call_media, conference, last_call_id, last_call_duration, last_call_timestamp, properties, local_properties, last_message, last_message_id";
 
-    _buildContactInsertParams(uri, contact) {
+    _buildContactInsertParams(uri, contact, account=null) {
         let unreadCount = contact?.unread?.length;
         if (typeof unreadCount !== "number" || isNaN(unreadCount)) {
             unreadCount = 0;
@@ -20137,7 +20249,11 @@ class Sylk extends Component {
         return [
             contact.id,
             contact.remote_id || '',
-            this.state.accountId,
+            // Account OWNING the row. Callers that build params across an
+            // await boundary (bulk import) pass the account captured at pass
+            // start; a live read of this.state.accountId here could stamp the
+            // rows with '' (mid-logout) or the NEXT account (post-switch).
+            account || this.state.accountId,
             uri,
             uris,
             contact.email || '',
@@ -20177,7 +20293,7 @@ class Sylk extends Component {
     // the caller can fall back to the per-contact saveSylkContact path.
     // INSERT OR IGNORE keeps a stray duplicate from aborting the whole batch
     // (the fresh-import gate means collisions are not expected anyway).
-    _bulkInsertContacts(contacts) {
+    _bulkInsertContacts(contacts, account=null) {
         return new Promise((resolve, reject) => {
             if (!contacts || !contacts.length) {
                 resolve(true);
@@ -20188,7 +20304,7 @@ class Sylk extends Component {
             this.db.transaction(
                 (trans) => {
                     for (const { uri, contact } of contacts) {
-                        trans.executeSql(sql, this._buildContactInsertParams(uri, contact));
+                        trans.executeSql(sql, this._buildContactInsertParams(uri, contact, account));
                     }
                 },
                 (error) => reject(error),   // whole transaction rolled back
@@ -20198,8 +20314,21 @@ class Sylk extends Component {
     }
 
     async saveSylkContact(uri, contact, origin=null) {
+        // Capture the account BEFORE the readiness wait. A save issued for
+        // account A that parks here across a logout/switch used to resume
+        // once the NEXT account's contacts finished loading and write A's
+        // contact into B's account — that is how a previous account's self
+        // contact (with its public key and history metadata) appeared inside
+        // a freshly enrolled account. Such a write belongs to a session that
+        // no longer exists: drop it.
+        const _accAtEntry = this.state.accountId;
         await this.waitForContactsLoaded();
-    
+        if (!_accAtEntry || this.state.accountId !== _accAtEntry) {
+            utils.timestampedLog('[contact] save dropped for ' + uri + ' (origin= ' + origin
+                + ') — account changed during wait (' + (_accAtEntry || 'none') + ' -> ' + (this.state.accountId || 'none') + ')');
+            return;
+        }
+
         //console.log('save [contact]', contact?.id, uri, contact?.timestamp, 'by', origin);
 
         // Diagnostic: bumping the SELF contact (the row keyed by our
@@ -30160,7 +30289,10 @@ class Sylk extends Component {
         // A returning device already holds its addressbook + a cursor, so only
         // the genuine first full sync waits here.
         const _firstFullSync = (lastId == null && !this.state.lastSyncId && !this.state.lastSyncTimestamp);
-        if (_firstFullSync && this._abImportDoneForAccount !== this.state.account.id) {
+        // Only wait for the addressbook import when this deployment HAS a
+        // server addressbook — with addressBookServer=false no import will
+        // ever run, and waiting here would park the first sync forever.
+        if (_firstFullSync && this.state.addressBookServer && this._abImportDoneForAccount !== this.state.account.id) {
             console.log('Wait for [journal] first sync until addressbook import is finished');
             this._pendingFirstJournalSync = { lastId, options, uri };
             return;
@@ -30204,10 +30336,26 @@ class Sylk extends Component {
             this.setState({journalSyncActive: true});
         }
         if (this._firstSyncTimeoutId) clearTimeout(this._firstSyncTimeoutId);
+        // TWO-STAGE safety net. Until the FIRST batch of this round has
+        // arrived, allow only 30s: a journal server that answers at all sends
+        // its first reply almost immediately, so 30s of silence means the
+        // backend is down (2026-07-17 incident: the replay request was never
+        // answered and the full-screen "Sync messages from server" overlay
+        // blocked the app for the whole 3-minute window, again after every
+        // reconnect). Once batches flow, each re-request re-arms this timer
+        // with the full 3-minute INACTIVITY window, so a long paginated first
+        // sync is never cut mid-flight.
+        const _gotFirstBatch = !!(this.lastServerJournalId || this.state.lastSyncId);
         this._firstSyncTimeoutId = setTimeout(() => {
-            console.log('firstSyncPending: 3min safety timeout fired');
+            console.log('firstSyncPending: ' + (_gotFirstBatch ? '3min inactivity' : '30s no-response')
+                + ' safety timeout fired');
+            // Unlatch the request guard so the next natural trigger
+            // (reconnect, registration, foreground) can retry the sync —
+            // leaving it set silently blocked every future sync attempt
+            // until the websocket recycled.
+            this.syncRequested = false;
             this.clearFirstSyncPending('timeout');
-        }, 180000);
+        }, _gotFirstBatch ? 180000 : 30000);
 
         if (uri) {
 			this.setState({refetchMessagesForUri: uri});
@@ -40532,6 +40680,18 @@ class Sylk extends Component {
 	        // only duplicates work and competes for the SQLite connection. A
 	        // dataUpdated after the migration re-runs this normally.
 	        if (this._abMigrationRunning) return;
+	        // ABORT GUARD — this pass runs across many awaits; a logout or
+	        // account switch mid-pass used to let the tail of the pass import
+	        // the OLD account's server contacts/groups on top of the reset (or
+	        // next) account's state (2026-07-17 incident: logout raced an
+	        // in-flight reconcile, resetState wiped the contact index, the pass
+	        // then saw all 81 server contacts + 10 groups of the old account as
+	        // "server-only" and re-imported them, leaking into the freshly
+	        // enrolled account). Capture the account + generation now and bail
+	        // at every write boundary if either changed. resetState bumps
+	        // _abGeneration on every logout/switch.
+	        const _passGen = this._abGeneration || 0;
+	        const _stale = () => (this.state.accountId !== account || (this._abGeneration || 0) !== _passGen);
 	        const groups = ab.groups || [];
 
 	        // SAFETY GATE — never reconcile against a failed/empty fetch.
@@ -40545,13 +40705,21 @@ class Sylk extends Component {
 	        const _serverContacts = ab.contacts || [];
 	        const _localCount = (this.state.allContacts || []).length;
 	        const _localLinked = (this.state.allContacts || []).filter(c => c && c.remote_id).length;
-	        // ZERO CONTACTS AND ZERO GROUPS from the server while we hold ANY local
-	        // contacts is an ANOMALY (a failed/partial XCAP fetch returns an empty
-	        // addressbook), never a real "everything was deleted". Acting on it
-	        // would strip every group tag and mangle state. Bail — the next good
-	        // fetch reconciles normally. (A genuinely fresh account has 0 local
-	        // contacts, so it is not caught here and still seeds.)
-	        if (_serverContacts.length === 0 && groups.length === 0 && _localCount > 0) {
+	        // ZERO CONTACTS AND ZERO GROUPS from the server while we hold local
+	        // contacts LINKED TO THE SERVER (remote_id) is an ANOMALY (a
+	        // failed/partial XCAP fetch returns an empty addressbook), never a
+	        // real "everything was deleted". Acting on it would strip every
+	        // group tag and mangle state. Bail — the next good fetch reconciles
+	        // normally. Linked locals are the tell: they prove the server once
+	        // stored these contacts, so "server empty" contradicts our state.
+	        // With ZERO linked locals (fresh deployment, purged account, or
+	        // local-only contacts that never migrated) an empty server is
+	        // CONSISTENT — nothing could have been lost — and gating on plain
+	        // _localCount used to wedge first-migration forever (2026-07-17:
+	        // fresh XCAP backend, 2 local-only contacts, every sign-in latched
+	        // the anomaly and no seed ever happened). Let those proceed so
+	        // migration can seed the server.
+	        if (_serverContacts.length === 0 && groups.length === 0 && _localLinked > 0) {
 	            utils.timestampedLog('[ab] [get] ANOMALY: empty server snapshot (0 contacts, 0 groups) while '
 	                + _localCount + ' local contacts exist (' + _localLinked + ' server-linked)'
 	                + ' — treating as FAILED FETCH, skipping reconciliation');
@@ -41214,6 +41382,7 @@ class Sylk extends Component {
 	        // contact. Falls back to per-contact saveSylkContact if bulk fails.
 	        const _preparedImports = [];
 	        for (const s of serverOnlyList) {
+	            if (_stale()) { utils.timestampedLog('[ab] [get] import aborted — account changed mid-pass'); return; }
 	            const newUri = this._abNormServerUri(this._abChosenDefaultUri(s)) || this._abServerUris(s)[0];
 	            if (!newUri) continue;
 	            const _claimKey = newUri.toLowerCase();
@@ -41286,13 +41455,14 @@ class Sylk extends Component {
 	        // carries full dedup + UNIQUE->UPDATE handling. Returning devices
 	        // (_abImportDoneForAccount already set) and single late additions keep
 	        // the per-contact path unchanged.
+	        if (_stale()) { utils.timestampedLog('[ab] [get] pass aborted before persist — account changed mid-pass'); return; }
 	        if (_preparedImports.length) {
 	            const _firstImport = this._abImportDoneForAccount !== this.state.accountId;
 	            let _bulkOk = false;
 	            if (_firstImport && _preparedImports.length > 1) {
 	                this._abBulkMode = true;
 	                try {
-	                    await this._bulkInsertContacts(_preparedImports);
+	                    await this._bulkInsertContacts(_preparedImports, account);
 	                    _bulkOk = true;
 	                    _reconcileChanged = true;
 	                    utils.timestampedLog('[ab] [get] bulk-inserted ' + _preparedImports.length + ' server contacts');
@@ -41305,6 +41475,7 @@ class Sylk extends Component {
 	            }
 	            if (!_bulkOk) {
 	                for (const { uri, contact } of _preparedImports) {
+	                    if (_stale()) { utils.timestampedLog('[ab] [get] per-contact import aborted — account changed mid-pass'); return; }
 	                    await this.saveSylkContact(uri, contact, 'addressbook-import');
 	                    _reconcileChanged = true;
 	                }
@@ -41324,6 +41495,7 @@ class Sylk extends Component {
 		// Idempotent: once put the contact gains a remote_id and drops out
 		// of unlinkedList on the next sync.
 		for (const c of unlinkedList) {
+			if (_stale()) { utils.timestampedLog('[ab] [get] live put aborted — account changed mid-pass'); return; }
 			if (!c || c.deleted) continue;            // skip soft-deleted (local trash)
 			if (this._abIsIpDomain(c.uri)) continue;  // never put IP junk
 			utils.timestampedLog('[ab] [get] put local-not-put → server '
@@ -41364,6 +41536,7 @@ class Sylk extends Component {
 				if (this._abIsConferenceUri(c.uri) && !this._abIsConferenceAnomaly(c.uri)) addMember('conference', c);
 			});
 			for (const n of grpLocalOnlyNames) {
+				if (_stale()) { utils.timestampedLog('[ab] [get] group put aborted — account changed mid-pass'); return; }
 				if (this._abIsPurgeGroup(n)) continue;     // never create junk groups
 				// Never put the local-authoritative dynamic groups (messages/
 				// chat/calls/recent/missed). Their membership is per-device call
@@ -41425,6 +41598,7 @@ class Sylk extends Component {
 	        // appeared as a group but mi@ wasn't in it on the other phone).
 	        // Non-replicating origin: the contact is already a server member.
 	        for (const g of sGroups) {
+	            if (_stale()) { utils.timestampedLog('[ab] [get] group adopt aborted — account changed mid-pass'); return; }
 	            const gName = this._abCapitalizeGroup(g.name);
 	            const key = gName.toLowerCase();
 	            if (key === 'conference') continue;                // URI-derived, handled separately
@@ -41479,6 +41653,7 @@ class Sylk extends Component {
 	                    + ' — skipping offline group-deletion strip (treating as partial fetch)');
 	            } else {
 	                for (const n of grpLocalOnlyNames) {
+	                    if (_stale()) { utils.timestampedLog('[ab] [get] group strip aborted — account changed mid-pass'); return; }
 	                    if (n === 'conference' || this._abAutoLocalGroups.has(n)) continue;
 	                    if (!prevSeen.has(n)) continue; // never on server -> new local group, keep
 	                    const tag = this._abGroupNameToTag(this._abCapitalizeGroup(n));
@@ -41543,7 +41718,19 @@ class Sylk extends Component {
 	// Promisified addressbook call (fn takes a node-style cb(err)); the method tag
 	// and optional _abCtx sub-tag are derived from the label.
 	_abExec = (label, fn) => new Promise((resolve) => {
+	    // FINAL CHOKE POINT for every XCAP write. No server addressbook on
+	    // this deployment → no write leaves the device, whatever path asked.
+	    if (!this.state.addressBookServer) {
+	        utils.timestampedLog('[ab] ' + label + ' skipped — no server addressbook (addressBookServer=false)');
+	        resolve(false);
+	        return;
+	    }
 	    const tag = (this._abCtx || '') + this._abMethodTag(label);
+	    // Record every XCAP write issued during the current reconcile pass
+	    // (_abPassWrites is non-null only while _abRunReconcile is active);
+	    // consecutive passes with identical write sets trigger the
+	    // exponential backoff in _abRunReconcile's finally block.
+	    if (this._abPassWrites) this._abPassWrites.push(label);
 	    try {
 	        fn((err) => {
 	            if (err) { utils.timestampedLog('[ab] ' + tag + label + ' FAILED: ' + (err && err.message ? err.message : err)); this._abFailCount = (this._abFailCount || 0) + 1; }
@@ -42372,6 +42559,7 @@ class Sylk extends Component {
 	_abReady = () => {
 	    const acc = this.state.accountId;
 	    return !!(acc
+	        && this.state.addressBookServer === true  // server publishes XCAP support (sylk-config addressBookServer) — without it, no [ab] server ops at all
 	        && this.state.connection && this.state.connection.state === 'ready'
 	        && this.state.contactsLoaded
 	        && this._contactsAccountId === acc        // local contacts loaded for THIS account
@@ -42393,14 +42581,30 @@ class Sylk extends Component {
 	//      One-pass-at-a-time keeps every write serialized.
 	// A change that arrives mid-pass sets _abRerunPending; we then run ONE more
 	// pass AFTER a delay — never re-entering in real time.
+	// Exponential reconcile backoff. When consecutive passes issue an
+	// IDENTICAL set of XCAP writes, the server is accepting-but-not-persisting
+	// (or silently rejecting) them — e.g. the XCAP backend is down while the
+	// websocket API still answers. Re-running at the base cadence then turns
+	// into a tight write loop: every own write emits dataUpdated, which
+	// schedules the next pass, which re-issues the same writes (2026-07-17
+	// incident: addGroup "Test" + self-key escrow re-put every ~750ms,
+	// indefinitely). Each repeat doubles the wait before the next pass,
+	// capped at 5 minutes; any pass that writes nothing (converged) or writes
+	// something DIFFERENT (real new work) resets the backoff immediately.
+	_abNextDelay = (base) => {
+	    const n = this._abWriteRepeat || 0;
+	    return n ? Math.min(base * Math.pow(2, n), 300000) : base;
+	};
+
 	_abMaybeRun = (source) => {
 	    if (!this._abReady()) return;
 	    this._abPendingSource = source;
 	    if (this._abDebounceTimer) return;            // a reconcile is already scheduled
+	    const _delay = this._abNextDelay(500);
 	    this._abDebounceTimer = setTimeout(() => {
 	        this._abDebounceTimer = null;
 	        this._abRunReconcile(this._abPendingSource);
-	    }, 500);
+	    }, _delay);
 	};
 
 	// The actual reconcile body, guarded so it never overlaps itself. All XCAP
@@ -42409,11 +42613,23 @@ class Sylk extends Component {
 	_abRunReconcile = async (source) => {
 	    if (this._abReconcileRunning) { this._abRerunPending = true; return; }
 	    this._abReconcileRunning = true;
+	    // Account/generation snapshot: if a logout or account switch lands
+	    // while this pass is awaiting, every step below must stop — the pass
+	    // belongs to a session that no longer exists (see syncGroupsTable's
+	    // _stale guards for the incident this prevents).
+	    const _acc = this.state.accountId;
+	    const _gen = this._abGeneration || 0;
+	    const _stale = () => (this.state.accountId !== _acc || (this._abGeneration || 0) !== _gen);
+	    // Collect the labels of every XCAP write issued during THIS pass
+	    // (recorded by _abExec); compared against the previous pass in the
+	    // finally block to drive the exponential backoff above.
+	    this._abPassWrites = [];
 	    try {
 	        if (!this._abReady()) return;
 	        // Sync-status + self reconcile run on ANY server data, including a cache
 	        // load on switch-back (so [ab] [get] appears for a cached addressbook too).
 	        await this.syncGroupsTable();
+	        if (_stale()) { utils.timestampedLog('[ab] reconcile aborted — account changed mid-pass'); return; }
 	        // ANOMALY LATCH — syncGroupsTable just bailed on an empty/failed
 	        // server snapshot. NOTHING below may write to XCAP: the snapshot is
 	        // not trustworthy (selfServerContact/serverKeys both read as absent
@@ -42432,23 +42648,41 @@ class Sylk extends Component {
 	            // authoritative load (not only at migration time). Awaited in
 	            // sequence (not fired in parallel) so these self-contact writes
 	            // never race the group/contact sync above for the document lock.
-	            const _acc = this.state.accountId;
+	            const _escrowAcc = this.state.accountId;
 	            try { await this._abMigrateOnce(source); } catch (e) { /* keys still escrowed below */ }
-	            await this._abEnsureSelfKeys(_acc);
+	            if (_stale()) { utils.timestampedLog('[ab] key escrow skipped — account changed mid-pass'); return; }
+	            await this._abEnsureSelfKeys(_escrowAcc);
 	        }
 	    } catch (e) {
 	        console.log('[ab] _abRunReconcile error', e && e.message);
 	    } finally {
+	        // Backoff accounting: a pass that issued EXACTLY the same writes as
+	        // the previous pass means nothing we wrote persisted server-side —
+	        // repeating at base cadence is a loop, not progress. A converged
+	        // pass (no writes) or a different write set resets the streak.
+	        const _sig = (this._abPassWrites || []).slice().sort().join('|');
+	        this._abPassWrites = null;   // stop recording user-triggered writes outside a pass
+	        if (_sig && _sig === this._abLastPassSig) {
+	            this._abWriteRepeat = (this._abWriteRepeat || 0) + 1;
+	            utils.timestampedLog('[ab] backoff: identical write set repeated '
+	                + this._abWriteRepeat + 'x (server not persisting our writes?) — next pass in '
+	                + Math.round(this._abNextDelay(500) / 1000) + 's');
+	        } else {
+	            this._abWriteRepeat = 0;
+	        }
+	        this._abLastPassSig = _sig;
 	        this._abReconcileRunning = false;
 	        if (this._abRerunPending) {
 	            this._abRerunPending = false;
 	            // One more pass, AFTER a delay — picks up anything that changed
 	            // while we were running, without a real-time re-entry storm.
+	            // The delay grows exponentially while passes keep re-issuing
+	            // the same writes (see _abNextDelay).
 	            if (!this._abDebounceTimer) {
 	                this._abDebounceTimer = setTimeout(() => {
 	                    this._abDebounceTimer = null;
 	                    this._abRunReconcile(source);
-	                }, 1500);
+	                }, this._abNextDelay(1500));
 	            }
 	        }
 	    }
@@ -43181,6 +43415,7 @@ class Sylk extends Component {
 
     async replicateContact(contact) {
 		try {
+			if (!this.state.addressBookServer) return;   // contacts are local-only on this deployment
 			const ab = this.state.connection && this.state.connection.addressbook;
 			if (!ab || !contact || !contact.uri) return;
 			if (this._abIsIpDomain(contact.uri)) return; // never put IP junk
@@ -43286,6 +43521,10 @@ class Sylk extends Component {
     // Replicate a contact then its group membership in order (contact first so its
     // remote_id exists before membership is set).
     async _abReplicateToServer(contact) {
+		// No server addressbook on this deployment: contacts are local-only,
+		// and nothing must be queued for retry against a backend that does
+		// not exist (the pending-put queue would only grow forever).
+		if (!this.state.addressBookServer) return;
 		const account = this.state.accountId;
 		// Detect a transport/connection-level failure during replication via _abFailCount
 		// (only this contact's ops run here). XCAP failures arrive via dataUpdateFailed.
@@ -43439,7 +43678,7 @@ class Sylk extends Component {
         let isUUID = uri.match(uuidPattern);
 
         if (!isUUID && !isNumber && !utils.isEmailAddress(uri) && username !== '*') {
-            console.log('Sanitize check failed for uri:', uri);
+            //console.log('Sanitize check failed for uri:', uri);
             conferenceObject = utils.parseSylkConferenceUrl(uri);
             if (!conferenceObject) {
 				return null;
@@ -47512,6 +47751,30 @@ return (
         this.contactIndex = {};
         this.contactsIndexes = {};
         this.cdu_counter = 1;
+
+        // Addressbook reconcile teardown. A reconcile pass scheduled or
+        // in-flight for the account we are leaving must never complete its
+        // writes: bumping the generation makes every _stale() guard inside
+        // syncGroupsTable/_abRunReconcile bail, and clearing the debounce
+        // timer drops any pass that hasn't started yet. Also forget the
+        // per-account reconcile caches so the next account starts clean
+        // instead of inheriting the previous account's import claims,
+        // server-data stamps and backoff counters. Without this, an in-flight
+        // pass re-imported the ENTIRE previous account's server addressbook
+        // (contacts + groups) after the contact index was wiped above.
+        this._abGeneration = (this._abGeneration || 0) + 1;
+        if (this._abDebounceTimer) {
+            clearTimeout(this._abDebounceTimer);
+            this._abDebounceTimer = null;
+        }
+        this._abRerunPending = false;
+        this._abPendingSource = null;
+        this._abServerDataAccount = null;
+        this._abAuthoritativeDataAccount = null;
+        this._abImportClaim = null;
+        this._abSnapshotAnomaly = false;
+        this._abLastPassSig = '';
+        this._abWriteRepeat = 0;
 
         // Reset the one-time "storage up to date" banner so the NEXT account's
         // first sync can show it again, and cancel a pending auto-hide timer so

@@ -1,0 +1,4 @@
+Dialpad improvements
+Fix html chat rendering on day them
+Added chat bachground theme settings
+Improve search contacts flow
