@@ -74,6 +74,10 @@ export default class CallManager extends events.EventEmitter {
         this._cancelledCalls = new Map();
         this._alertedCalls = new Map();
         this._terminatedCalls = new Map();
+        // Outgoing CallKit calls we've already reported as connected via
+        // reportConnectedOutgoingCall(). Keyed by callUUID so the connected
+        // date is reported to CallKit exactly once per call.
+        this._outgoingConnected = new Map();
         this.unmounted = isUnmountedFunc;
 
         this.webSocketActions = new Map();
@@ -275,6 +279,42 @@ export default class CallManager extends events.EventEmitter {
         this.backToForeground();
     }
 
+    reportConnectedOutgoingCall(callUUID) {
+        // iOS: CallKit does not advance the in-call timer shown in the
+        // Dynamic Island / lock screen for an OUTGOING call until the app
+        // reports it connected via reportOutgoingCallWithUUID:connectedAtDate:.
+        // INCOMING calls get that connected timestamp for free when the
+        // CXAnswerCallAction is fulfilled — which is why their timer runs —
+        // but an outgoing call has no answer action, so without this report
+        // its timer stays frozen at 00:00. Note setCurrentCallActive() is a
+        // no-op on iOS in react-native-callkeep (see its index.js), so it
+        // never performed this step despite the name.
+        if (Platform.OS !== 'ios') {
+            return;
+        }
+
+        // A conference that reuses an answered incoming-push CallKit UUID is
+        // already a connected INCOMING call — its timer runs correctly and it
+        // must not be re-reported as an outgoing connection.
+        if (this._reusedPushConferences.has(callUUID)) {
+            return;
+        }
+
+        // Report the connected date exactly once per call. Reporting it again
+        // would move the timer's origin and make the elapsed time jump.
+        if (this._outgoingConnected.has(callUUID)) {
+            return;
+        }
+
+        if (!this.callKeep || typeof this.callKeep.reportConnectedOutgoingCallWithUUID !== 'function') {
+            return;
+        }
+
+        utils.timestampedLog('Callkeep: report outgoing call connected (start Dynamic Island timer)', callUUID);
+        this._outgoingConnected.set(callUUID, Date.now());
+        this.callKeep.reportConnectedOutgoingCallWithUUID(callUUID);
+    }
+
     endCalls() {
         //utils.timestampedLog('Callkeep: end all calls');
         this.callKeep.endAllCalls();
@@ -367,6 +407,10 @@ export default class CallManager extends events.EventEmitter {
 
         if (this._reusedPushConferences.has(callUUID)) {
             this._reusedPushConferences.delete(callUUID);
+        }
+
+        if (this._outgoingConnected.has(callUUID)) {
+            this._outgoingConnected.delete(callUUID);
         }
     }
 

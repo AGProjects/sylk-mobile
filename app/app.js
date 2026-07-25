@@ -14851,6 +14851,14 @@ class Sylk extends Component {
 
                 if (direction === 'outgoing') {
                     this.stopRingback();
+                    // Start CallKit's Dynamic Island / lock-screen call timer
+                    // for the outgoing call. iOS only advances that timer once
+                    // the call is reported connected; incoming calls get this
+                    // automatically when the CallKit answer action is fulfilled,
+                    // but outgoing calls must report it explicitly or the timer
+                    // stays frozen at 00:00. (setCurrentCallActive above is a
+                    // no-op on iOS in react-native-callkeep, so it never did.)
+                    this.callKeeper.reportConnectedOutgoingCall(callUUID);
                 }
 
                 // Honour the captured pre-call device pick. If the user
@@ -14941,6 +14949,12 @@ class Sylk extends Component {
 
                 if (direction === 'outgoing') {
                     this.stopRingback();
+                    // See 'established' above — report the outgoing call as
+                    // connected so CallKit starts the Dynamic Island timer.
+                    // 'accepted' (remote answered) can arrive before or without
+                    // a separate 'established' tick for some outgoing calls, so
+                    // report here too; reportConnectedOutgoingCall is idempotent.
+                    this.callKeeper.reportConnectedOutgoingCall(callUUID);
                 }
                 break;
 
