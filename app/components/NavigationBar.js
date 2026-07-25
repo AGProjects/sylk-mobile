@@ -3,7 +3,7 @@ import { Alert, Animated, AppState, Easing, Linking, Image, NativeModules, Platf
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text, IconButton, Button, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
-import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from  '@react-native-vector-icons/material-design-icons';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { Keyboard } from 'react-native';
 import BackgroundTimer from 'react-native-background-timer';
@@ -77,7 +77,7 @@ import {openSettings, check, request, PERMISSIONS, RESULTS} from 'react-native-p
 import SylkAppbarContent from './SylkAppbarContent';
 import DarkModeManager from '../DarkModeManager';
 import UserIcon from './UserIcon';
-import {Gravatar, GravatarApi} from 'react-native-gravatar';
+import {Gravatar, GravatarApi} from '../gravatar';
 import * as Progress from 'react-native-progress';
 // `storage` (AsyncStorage wrapper) was previously used here to
 // persist live-share state under a single global key. That state

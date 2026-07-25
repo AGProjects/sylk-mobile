@@ -26,7 +26,7 @@ import { Button, IconButton, Portal, Text as PaperText } from 'react-native-pape
 // other participants. The handle is released the moment the modal
 // unmounts (visible=false), freeing the camera before sylkrtc
 // re-engages its own capture on Accept.
-import { RNCamera } from 'react-native-camera';
+import CameraPreview from './CameraPreview';
 
 
 class StartCameraPreviewModal extends React.Component {
@@ -132,14 +132,9 @@ class StartCameraPreviewModal extends React.Component {
                                 zIndex: 2,
                             }}
                         >
-                            <RNCamera
+                            <CameraPreview
                                 style={{ flex: 1 }}
-                                type={this.state.cameraFacing === 'back'
-                                    ? RNCamera.Constants.Type.back
-                                    : RNCamera.Constants.Type.front}
-                                captureAudio={false}
-                                androidCameraPermissionOptions={null}
-                                iosCameraPermissionOptions={null}
+                                facing={this.state.cameraFacing === 'back' ? 'back' : 'front'}
                             />
                             <View style={{ position: 'absolute', top: 12, right: 12 }}>
                                 <IconButton

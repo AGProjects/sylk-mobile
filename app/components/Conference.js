@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 import assert from 'assert';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import ConferenceBox from './ConferenceBox';
 import LocalMedia from './LocalMedia';

@@ -486,7 +486,7 @@ public class IncomingCallService extends Service {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				SylkLogger.d("[call] [service] EXTRA: " + key + " = " + extras.get(key));
+				//SylkLogger.d("[call] [service] EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 

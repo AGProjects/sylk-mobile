@@ -6,7 +6,7 @@ import autoBind from 'auto-bind';
 import { Portal, Dialog, TextInput, Button, Snackbar, Surface } from 'react-native-paper';
 import { Modal, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView } from 'react-native';
 
-import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import MaterialCommunityIcons from '@react-native-vector-icons/material-design-icons';
 import LoadingScreen from './LoadingScreen';
 
 import styles from '../assets/styles/blink/_EnrollmentModal.scss';

@@ -78,6 +78,7 @@
       android:theme="@style/AppTheme"
       android:requestLegacyExternalStorage="true"
       android:networkSecurityConfig="@xml/network_security_config"
+      android:enableOnBackInvokedCallback="false"
       tools:replace="android:allowBackup">
 
       <!-- Foldable support: tells the OS the app correctly handles size changes
@@ -163,6 +164,25 @@
       <intent-filter>
           <action android:name="android.intent.action.MAIN" />
           <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+
+      <!-- Bluetooth-headset redial hotkey. A long-press on the call
+           button of an HFP headset (e.g. Plantronics Voyager) makes
+           the headset send AT+BVRA (voice dial); Android turns that
+           into one of these two intents and shows a "Complete action
+           using" chooser. Declaring them here puts Sylk in that
+           chooser — once picked (or set as Always), the long-press
+           lands in MainActivity.handleIntent, which forwards it to
+           JS (headsetRedial in app.js) to redial the last dialed
+           URI. Single/double-tap when idle stays inside the OS
+           Bluetooth stack (AT+BLDN) and cannot be intercepted. -->
+      <intent-filter>
+          <action android:name="android.intent.action.VOICE_COMMAND" />
+          <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+      <intent-filter>
+          <action android:name="android.speech.action.VOICE_SEARCH_HANDSFREE" />
+          <category android:name="android.intent.category.DEFAULT" />
       </intent-filter>
 
       <intent-filter

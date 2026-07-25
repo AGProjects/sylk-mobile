@@ -6,7 +6,7 @@ import { RTCView } from 'react-native-webrtc';
 import UserIcon from './UserIcon';
 import VuMeter from './VuMeter';
 import { Avatar, List, Text } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import DarkModeManager from '../DarkModeManager';
 import utils from '../utils';
 

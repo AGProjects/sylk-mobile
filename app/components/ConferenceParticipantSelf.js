@@ -2,12 +2,11 @@ import React, { Component } from 'react';
 import { View, Platform, Text, TouchableOpacity, Dimensions } from   'react-native';
 import PropTypes from 'prop-types';
 //const hark              = require('hark');
-import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from  '@react-native-vector-icons/material-design-icons';
 import { RTCView } from 'react-native-webrtc';
 import { Surface } from 'react-native-paper';
 import LinearGradient from 'react-native-linear-gradient';
 import { StyleSheet } from 'react-native';
-import { Tooltip } from 'react-native-elements';
 
 const styles = StyleSheet.create({
   container: {

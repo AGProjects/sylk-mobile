@@ -9,7 +9,7 @@ import { StyleSheet } from 'react-native';
 import { Platform, Dimensions} from 'react-native';
 import momentFormat from 'moment-duration-format';
 import { Text, Appbar, Menu, Divider } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import utils from '../utils';
 
@@ -499,20 +499,25 @@ class ConferenceHeader extends React.Component {
 				// max(left, right). Negative marginLeft = -paperPad
 				// cancels Paper's left padding so the Appbar's left
 				// edge sits flush at x=0 of its parent (Orange).
-				// Width must MATCH the parent's width or Red will
-				// visibly overflow Orange on the right (audio mode)
-				// or stop short of Orange on the right (video mode):
-				//   • Audio view: ConferenceBox sets
-				//     conferenceHeader.width = width - rightInset
-				//     - leftInset (a sized View).
-				//   • Video view: conferenceHeader is an absolute
-				//     overlay with left:0, right:0 filling the
-				//     container (= `width` pixels in iOS landscape).
+				// Width must MATCH the parent's width, and since
+				// ConferenceBox now sizes the audio-view navbar
+				// container edge-to-edge on both platforms
+				// (marginLeft:-leftInset + width:width — see the
+				// "Navbar spans edge-to-edge" comment there), the
+				// parent is `width` pixels in BOTH views:
+				//   • Audio view: a sized View spanning the full
+				//     window width.
+				//   • Video view: an absolute overlay with left:0,
+				//     right:0 filling the container.
+				// The old audioOnly narrowing (width - rightInset -
+				// leftInset) matched the audio parent's previous
+				// safe-area-inset sizing; after the ConferenceBox
+				// change it left a leftInset+rightInset-wide gap at
+				// the right edge of the phone in the audio & chat
+				// views, while video rendered flush.
 				const paperPad = Math.max(leftInset, rightInset);
 				appBarContainer.marginLeft = -paperPad;
-				appBarContainer.width = this.props.audioOnly
-					? width - rightInset - leftInset
-					: width;
+				appBarContainer.width = width;
 			}
         } else {
 			if (Platform.Version < 34) {
@@ -527,7 +532,13 @@ class ConferenceHeader extends React.Component {
         // system clock/battery icons.
         // When the strip is shown, the Appbar's own marginTop:-topInset
         // is neutralised so it doesn't pull up behind the strip.
-        const _showConfBrandStrip = !this.state.isLandscape;
+        // Disabled — same decision as the main NavigationBar
+        // (_showBrandStrip=false) and CallOverlay
+        // (_showCallBrandStrip=false): the strip is decorative and
+        // reclaims vertical space on the call surface. Was
+        // `!this.state.isLandscape` (portrait-only) — flip back to
+        // that expression to restore the strip.
+        const _showConfBrandStrip = false;
         // In-call brand strip is intentionally pinned to the DARK
         // (Night) palette regardless of the active theme. The
         // conference surface (audio tiles / video grid) is dark, so a

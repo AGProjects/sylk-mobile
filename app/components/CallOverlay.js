@@ -8,7 +8,7 @@ import moment from 'moment';
 import momentFormat from 'moment-duration-format';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider } from 'react-native-paper';
-import Icon from  'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from  '@react-native-vector-icons/material-design-icons';
 import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
 import { Platform, Dimensions} from 'react-native';
@@ -35,11 +35,24 @@ class CallOverlay extends React.Component {
 
         this.state = {
             call: this.props.call,
-            terminatedReason: this.props.terminatedReason,
+            // Fresh-mount hygiene: only inherit the parent's
+            // terminatedReason / startTime when this overlay mounts
+            // onto an already-terminated call (the post-hangup summary
+            // view). On a brand-new outgoing call the parent often
+            // still carries the PREVIOUS call's values — its setState
+            // clearing them races with the new call UI mounting — and
+            // seeding them here painted the old call's fate ("Call
+            // ended after X" / stale SIP reason) on the status line
+            // during the pre-dial window, and a stale startTime made
+            // the timer jump to the old call's elapsed time the moment
+            // the new call established.
+            terminatedReason: (this.props.call && this.props.call.state === 'terminated')
+                ? this.props.terminatedReason : null,
             media: this.props.media ? this.props.media : 'audio',
             callState: this.props.call ? this.props.call.state : null,
             direction: this.props.call ? this.props.call.direction: null,
-            startTime: this.props.callState ? this.props.callState.startTime : null,
+            startTime: (this.props.call && this.props.callState)
+                ? this.props.callState.startTime : null,
             remoteUri: this.props.remoteUri,
             localMedia: this.props.localMedia,
             remoteDisplayName: this.props.remoteDisplayName,
@@ -60,6 +73,13 @@ class CallOverlay extends React.Component {
         this.finalDuration = null;
         this.timer = null;
         this._isMounted = true;
+        // Latch: has this overlay instance ever owned a live call
+        // object? Until it does, the parent's terminatedReason /
+        // callState.startTime props describe the PREVIOUS call and
+        // must not be mirrored into state (see the generic-props
+        // mirror in cWRP). Set once a call object exists at mount or
+        // arrives via cWRP.
+        this._everHadCall = !!this.props.call;
     }
 
     componentDidMount() {
@@ -143,6 +163,7 @@ class CallOverlay extends React.Component {
         if (nextProps.call !== null && nextProps.call !== this.state.call) {
            console.log('Next call:', nextProps.call?.id);
            _callJustSwitched = true;
+           this._everHadCall = true;
 
             if (this.state.call !== null) {
 			   console.log('Previous call', this.state.call?.id);
@@ -226,19 +247,27 @@ class CallOverlay extends React.Component {
         // is now in state.call, and we'd rather keep the freshly
         // seeded nextProps.call.state from the reset block than mirror
         // any stale parent-side value.
+        // Per-call fields (terminatedReason, startTime) are only
+        // mirrored once this overlay instance has a live call to pin
+        // them to. Before that (fresh mount, outgoing call still
+        // dialing) the parent's values describe the PREVIOUS call —
+        // app.js clears them asynchronously — and mirroring them
+        // painted the old call's fate on the status line / fed the
+        // old startTime to the duration timer.
+        const _ownsCall = this._everHadCall || !!nextProps.call;
         const _genericUpdate = {
             remoteDisplayName: nextProps.remoteDisplayName,
             remoteUri: nextProps.remoteUri,
             media: nextProps.media,
             localMedia: nextProps.localMedia,
-            startTime: nextProps.callState ? nextProps.callState.startTime : null,
+            startTime: (_ownsCall && nextProps.callState) ? nextProps.callState.startTime : null,
             isLandscape: nextProps.isLandscape,
             enableMyVideo: nextProps.enableMyVideo,
             availableAudioDevices: nextProps.availableAudioDevices,
             selectedAudioDevice: nextProps.selectedAudioDevice,
             insets: nextProps.insets
         };
-        if (!_callJustSwitched) {
+        if (!_callJustSwitched && _ownsCall) {
             _genericUpdate.terminatedReason = nextProps.terminatedReason;
         }
         this.setState(_genericUpdate);
@@ -536,6 +565,20 @@ class CallOverlay extends React.Component {
                 callDetail = callDetail + ' ' + this.props.info;
             }
 
+            // System-notification takeover of the status line. While a
+            // NotificationCenter message is active (app.js mirrors it
+            // into navbarSystemMessage and threads it here through
+            // Call → AudioCallBox / VideoBox), show it on this second
+            // line INSTEAD of the duration/state text — the exact
+            // same treatment the main-screen NavigationBar gives its
+            // subtitle line. When the message auto-dismisses the prop
+            // goes back to null and the next render restores the
+            // duration/state. The black bottom snackbar is suppressed
+            // on /call by NotificationCenter's useNavbar prop.
+            if (this.props.systemMessage) {
+                callDetail = this.props.systemMessage;
+            }
+
             // Title shown above the callDetail line. Always prefer the
             // peer's display name if known — even when media is null
             // (call just terminated, or hasn't established yet). The
@@ -724,11 +767,44 @@ class CallOverlay extends React.Component {
 					) : null}
 					*/}
 
+                {/* Quick-access Swap video button — sits directly LEFT
+                    of the kebab menu and performs the same action as
+                    the kebab's "Swap video" row (handleMenu('swapVideo')
+                    → this.props.swapVideo(), which flips the PIP
+                    thumbnail and the full-screen video). Same gate as
+                    that menu row: p2p VIDEO call, established. Icon
+                    matches the menu row's camera-switch glyph so the
+                    two surfaces read as the same action. When shown, it
+                    takes over the 50 dp left separation the kebab
+                    anchor otherwise carries (see the anchor style
+                    below) so the pair sits snug without a dead gap
+                    between them. */}
+                {this.state.media === 'video'
+                        && this.state.callState == "established"
+                        && typeof this.props.swapVideo === 'function' ? (
+                    <View style={{ marginLeft: 50 }}>
+                        <Appbar.Action
+                            key={'co-swap-' + _overlayRemountKey}
+                            color="white"
+                            icon="camera-switch"
+                            accessibilityLabel="Swap video"
+                            onPress={() => this.handleMenu('swapVideo')}
+                        />
+                    </View>
+                ) : null}
+
                 <Menu
                     visible={this.state.menuVisible}
                     onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
                     anchor={
-                    <View style={{ marginLeft: 50 }}>
+                    /* marginLeft 50 separates the kebab from the title
+                       block — but when the quick-access Swap button is
+                       rendered (video + established) the separation
+                       moves onto THAT button's wrapper instead, so the
+                       kebab sits flush next to it. */
+                    <View style={{ marginLeft: (this.state.media === 'video'
+                            && this.state.callState == "established"
+                            && typeof this.props.swapVideo === 'function') ? 0 : 50 }}>
                         <Appbar.Action
                             key={'co-menu-' + _overlayRemountKey}
                             ref={this.menuRef}
@@ -918,6 +994,16 @@ class CallOverlay extends React.Component {
         // pixels on the call surface.
         if (!header) return null;
         if (this.state.isLandscape) return header;
+        // In-call brand strip disabled — same decision as the main
+        // NavigationBar (_showBrandStrip = false there): the strip is
+        // decorative and eats vertical space on the call surface, and
+        // with the main-screen strip gone it read as a stray "Blink"
+        // band appearing only during calls. Returning the bare header
+        // here matches the landscape path above, so the Appbar keeps
+        // its own marginTop/inset handling exactly as before the
+        // strip existed. Flip to true to restore the logo strip.
+        const _showCallBrandStrip = false;
+        if (!_showCallBrandStrip) return header;
         const _stripLeftInset = this.state.insets.left || 0;
         // In-call brand strip is intentionally pinned to the DARK
         // (Night) palette regardless of the active theme. The call
@@ -967,6 +1053,7 @@ class CallOverlay extends React.Component {
 
 CallOverlay.propTypes = {
     show: PropTypes.bool.isRequired,
+    systemMessage: PropTypes.string,
     remoteUri: PropTypes.string,
     localMedia: PropTypes.object,
     remoteDisplayName: PropTypes.string,

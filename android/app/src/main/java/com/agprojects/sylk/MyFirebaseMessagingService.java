@@ -1687,8 +1687,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 							}
 							return;
 						} else {
-							SylkLogger.d("[call] [fcm] sipBridge dedupe miss: fromUri host '" + host
-									+ "' != configured sipBridge '" + sipBridgeDomain + "' (callId=" + callId + ")");
+							//SylkLogger.d("[call] [fcm] sipBridge dedupe miss: fromUri host '" + host + "' != configured sipBridge '" + sipBridgeDomain + "' (callId=" + callId + ")");
 						}
 					}
 				} else {

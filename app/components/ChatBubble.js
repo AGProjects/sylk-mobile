@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 import { View, TouchableOpacity, Text, Image, Dimensions } from 'react-native';
 import { Bubble } from 'react-native-gifted-chat';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import utils from '../utils';
 import DarkModeManager from '../DarkModeManager';
 

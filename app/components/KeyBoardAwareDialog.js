@@ -1,7 +1,7 @@
 import React, { memo, useState, useEffect } from 'react';
 import { View, Dimensions, Platform } from 'react-native';
 import { Dialog } from 'react-native-paper';
-import KeyboardSpacer from 'react-native-keyboard-spacer';
+import KeyboardSpacer from './KeyboardSpacer';
 
 const windowHeight = Dimensions.get('window').height;
 const halfWindowHeight = windowHeight / 2;

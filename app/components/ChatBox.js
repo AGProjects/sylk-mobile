@@ -20,18 +20,18 @@ import { GiftedChat, MessageText, Send, InputToolbar, Day, Message, SystemMessag
 // that GiftedChat's built-in long-press path supplies. Without this the
 // menu button can't call `context.actionSheet().showActionSheetWithOptions(...)`.
 import { GiftedChatContext } from 'react-native-gifted-chat/lib/GiftedChatContext';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
+import Icon from '@react-native-vector-icons/material-design-icons'
 import MessageInfoModal from './MessageInfoModal';
 import EditMessageModal from './EditMessageModal';
 import ShareMessageModal from './ShareMessageModal';
 import DeleteMessageModal from './DeleteMessageModal';
 import CustomChatActions from './ChatActions';
 import FileViewer from 'react-native-file-viewer';
-import DocumentPicker from 'react-native-document-picker';
+import DocumentPicker from '../documentPicker';
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import { IconButton } from 'react-native-paper';
 import ImageViewer from 'react-native-image-zoom-viewer';
-import KeyboardSpacer from 'react-native-keyboard-spacer';
+import KeyboardSpacer from './KeyboardSpacer';
 import { Keyboard } from 'react-native';
 import { StatusBar } from 'react-native';
 import { createThumbnail } from "react-native-create-thumbnail";
@@ -74,7 +74,7 @@ import Video from 'react-native-video';
 const RNFS = require('react-native-fs');
 import CameraRoll from "@react-native-camera-roll/camera-roll";
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
-import FastImage from 'react-native-fast-image';
+import FastImage from '@d11/react-native-fast-image';
 import { ActivityIndicator, Alert } from 'react-native';
 import dayjs from 'dayjs';
 
@@ -10525,6 +10525,12 @@ scrollToMessage(id) {
                           : null
                   )}
                   renderMessage={(props) => {
+                      // gifted-chat's MessageContainer passes a `key` inside this
+                      // props object. Spreading it into <Message {...props}/> trips
+                      // React's "A props object containing a key prop is being spread
+                      // into JSX" warning. The FlatList already keys each row via its
+                      // keyExtractor, so strip key here and spread only the rest.
+                      const { key: _key, ...rest } = props;
                       // Image-attach preview: collapse gifted-chat's
                       // built-in avatar gutter (renderAvatar={null}
                       // makes Avatar return null) and zero out the
@@ -10539,13 +10545,13 @@ scrollToMessage(id) {
                       const isCallRec = props.currentMessage?.metadata?.call_recording === true;
                       if (isCallRec) {
                           return this.renderMessageRow(
-                              <Message {...props} renderAvatar={null} />,
+                              <Message {...rest} renderAvatar={null} />,
                               props.currentMessage
                           );
                       }
                       if (!isPreview) {
                           return this.renderMessageRow(
-                              <Message {...props} />,
+                              <Message {...rest} />,
                               props.currentMessage
                           );
                       }
@@ -10553,7 +10559,7 @@ scrollToMessage(id) {
                       return this.renderMessageRow(
                           (
                               <Message
-                                  {...props}
+                                  {...rest}
                                   renderAvatar={null}
                                   containerStyle={{
                                       left: previewRowStyle,
@@ -11467,7 +11473,6 @@ scrollToMessage(id) {
                 <Video
                     ref={(r) => { this._iosAudioRef = r; }}
                     source={{ uri: this.state.iosAudio.path }}
-                    audioOnly={true}
                     paused={this.state.iosAudio.paused}
                     ignoreSilentSwitch="ignore"
                     playInBackground={false}

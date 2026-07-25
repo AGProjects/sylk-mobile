@@ -13,7 +13,7 @@ import {
     SafeAreaView,
 } from 'react-native';
 import { Text, Button, Surface, Checkbox, Chip } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import { anonymizeEmails } from '../utils';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /

@@ -43,7 +43,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { View, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
-import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import MaterialCommunityIcon from '@react-native-vector-icons/material-design-icons';
 
 // ── Visual tokens ─────────────────────────────────────────────
 // Change a value here → every PlatformToggle in the app picks it

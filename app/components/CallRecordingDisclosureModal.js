@@ -112,7 +112,14 @@ class CallRecordingDisclosureModal extends Component {
                         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                     >
-                        <Surface style={[containerStyles.modalSurface, { padding: 6, maxWidth: _isLandscape ? Math.min(560, _winW * 0.85) : undefined, alignSelf: 'center' }]}>
+                        {/* Explicit `width`, NOT maxWidth: paper v5's iOS
+                            Surface splits styles across two shadow-layer
+                            views — width/alignSelf go to the outer one,
+                            maxWidth to the inner one — so with maxWidth
+                            the outer white card stretched full-width in
+                            landscape/tablet while the content stayed
+                            capped in its left half. */}
+                        <Surface style={[containerStyles.modalSurface, { padding: 6, width: _isLandscape ? Math.min(560, _winW * 0.85) : undefined, alignSelf: 'center' }]}>
                             {/* Title — override the shared
                                 containerStyles.title (24pt, 14pt
                                 padding) with a tighter version so

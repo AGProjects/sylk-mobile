@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Modal, View, Image, ActivityIndicator, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
 import { Text, Button, Surface, TextInput, Switch, Checkbox, Divider } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import { validateCallerId, validateSipPassword, isPlaceholderCallerId } from '../accountInfo';
 import UserIcon from './UserIcon';
 import PlatformToggle from './PlatformToggle';
-import {Gravatar, GravatarApi} from 'react-native-gravatar';
+import {Gravatar, GravatarApi} from '../gravatar';
 import {Keyboard} from 'react-native';
 import CryptoJS from "crypto-js";
 

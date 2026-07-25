@@ -1284,45 +1284,22 @@ function copyToClipboard(text) {
     return true;
 }
 
-function findContact(uri) {
-    return new Promise((resolve, reject) => {
-        //console.log('findContact')
-        Contacts.checkPermission((err, permission) => {
-            if (err) {
-                //log the error
-                console.log(err);
-                return reject(err);
-            }
-
-            if (permission === 'authorized') {
-                //console.log('HELLO', uri);
-                Contacts.getContactsByEmailAddress(uri, (err, contacts) => {
-                    if (err) {
-                        console.log('error getting contacts by email')
-                        return reject(err);
-                    }
-
-                    if (contacts) {
-                        return resolve(contacts)
-                    }
-
-                    Contacts.getContactsMatchingString(uri, (err2, contacts2) => {
-                        if (err2) {
-                            console.log('error matching string')
-                            return reject(err2);
-                        }
-                        console.log(contacts);
-                        resolve(contacts2)
-                    });
-
-                })
-
-            } else {
-                console.log('not authortised')
-                reject(new Error('Not Authorised'))
-            }
-        })
-    })
+async function findContact(uri) {
+    // react-native-contacts 8.x is Promise-based: checkPermission /
+    // getContactsByEmailAddress / getContactsMatchingString take no
+    // callback and return Promises. The old callback form silently
+    // never resolved (the callback was never invoked), hanging any
+    // awaiter — migrated to async/await.
+    const permission = await Contacts.checkPermission();
+    if (permission !== 'authorized') {
+        console.log('not authorised');
+        throw new Error('Not Authorised');
+    }
+    const byEmail = await Contacts.getContactsByEmailAddress(uri);
+    if (byEmail) {
+        return byEmail;
+    }
+    return await Contacts.getContactsMatchingString(uri);
 }
 
 function generateSillyName() {

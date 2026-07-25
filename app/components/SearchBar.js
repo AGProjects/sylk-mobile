@@ -32,6 +32,7 @@ function SearchBar(props) {
         autoFocus,
         // normal-mode only
         onCloseSearch,
+        onSearchFocus,
         showQr,
         onQrPress,
         // invite-mode only
@@ -55,6 +56,7 @@ function SearchBar(props) {
                 searchMessages={searchMessages}
                 contactSource={contactSource}
                 onCloseSearch={onCloseSearch}
+                onSearchFocus={onSearchFocus}
                 showDialpad={showDialpad}
                 isDialpadActive={isDialpadActive}
                 onDialpadPress={onDialpadPress}

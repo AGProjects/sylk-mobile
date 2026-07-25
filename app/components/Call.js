@@ -32,6 +32,19 @@ export const MEDIA_LOST_CONTENT_TYPE = 'application/sylk-media-lost';
 const MEDIA_LOSS_POLL_MS = 2000;
 const MEDIA_LOSS_THRESHOLD_MS = 15000;
 
+// Custom header carrying the client identity end-to-end.
+//
+// The real SIP User-Agent header cannot be used for this: Janus's SIP
+// plugin sets its own User-Agent on outgoing requests (from
+// janus.plugin.sip.jcfg user_agent), so adding another would produce a
+// duplicate — and on the RECEIVING side Sofia-SIP parses User-Agent
+// into a typed field that never lands in the unknown-header list Janus
+// forwards, so it would be invisible to the callee anyway (see the
+// NOTE on incomingHeaderPrefixes in app.js). Mirroring it in an X-
+// header rides the existing X-* pass-through instead: it survives
+// Janus → OpenSIPS → Janus and surfaces in call.headers on the peer.
+export const USER_AGENT_HEADER_NAME = 'X-Sylk-User-Agent';
+
 // Build getUserMedia constraints for the audio→video upgrade path
 // that match the initial-video path's profile (set once at app
 // startup via setVideoEncoderTarget in app.js). Previously the
@@ -306,7 +319,15 @@ class Call extends Component {
                       // AudioCallBox / LocalMedia would fire a brand-
                       // new auto-start countdown on the post-call
                       // screen.
+                      // skipCountdown: the parent marked this outgoing
+                      // call as pre-committed — e.g. started by the
+                      // Bluetooth-headset redial hotkey or another
+                      // handsfree path — so the camera-preview
+                      // Start-call countdown must not gate the INVITE:
+                      // go straight to making the call. Mirrors the
+                      // Conference component's skipCountdown prop.
                       userStartedCall: this.props.reconnectingCall === true
+                          || this.props.skipCountdown === true
                           || this.props.call != null,
                       // Mid-call audio→video upgrade prompt state.
                       // upgradePromptMode = 'outgoing' when the user
@@ -405,6 +426,43 @@ class Call extends Component {
         }
     }
 
+    // Build the extra X- headers attached to what we send out: the
+    // outgoing INVITE (placing a call) or the 200 OK (answering one).
+    // Central place so both directions stay symmetric:
+    //   - X-Sylk-ZRTP capability advert (only when the local encryption
+    //     mode will actually run the handshake — see
+    //     shouldAdvertiseZrtpCapability in CallZrtp.js)
+    //   - X-Sylk-User-Agent with the local client identity, always
+    // The identity string is NOT rebuilt here: app.js already computes
+    // the canonical USER_AGENT constant (e.g. "Blink Mobile 1.2.3
+    // (motorola razr 60 ultra on Android 15)") — the same one shown in
+    // NavigationBar and attached to QoS reports — and passes it down as
+    // the userAgent prop, so all surfaces stay in lockstep.
+    // Logs the full set so the wire content is visible in applog next
+    // to the 'extra SIP headers from sylk-server' receive-side lines.
+    // `source` is just the log label: 'INVITE' or '200 OK'.
+    _buildOutgoingHeaders(source) {
+        const headers = [];
+        if (shouldAdvertiseZrtpCapability()) {
+            headers.push({name: ZRTP_CAPABILITY_HEADER_NAME, value: ZRTP_CAPABILITY_HEADER_VALUE});
+        }
+        const localUserAgent = (this.props.userAgent || '').trim();
+        if (localUserAgent) {
+            headers.push({name: USER_AGENT_HEADER_NAME, value: localUserAgent});
+        }
+        const _cid = (this.state.call
+            && (this.state.call._callId || this.state.call.callId || this.state.call.id))
+            || this.state.callUUID || '?';
+        try {
+            const dump = headers.map(h => h.name + '=' + h.value).join('; ');
+            utils.timestampedLog('[call] [headers] call_id=' + _cid,
+                'extra SIP headers sent on ' + source + ': ' + dump);
+        } catch (e) {
+            // logging must never break call setup
+        }
+        return headers;
+    }
+
     // Parse the X-Sylk-ZRTP header out of the given headers payload and,
     // if present + parseable, stash a non-null capability descriptor on
     // the sylkrtc Call as call._peerSupportsZrtp. startZrtpForCall and
@@ -490,6 +548,45 @@ class Call extends Component {
         if (!call) {
             return null;
         }
+
+        // Preferred source: the peer's X-Sylk-User-Agent header, which Sylk
+        // Mobile now sends on both the INVITE and the 200 OK (see
+        // _buildOutgoingHeaders). The header list MUST be chosen by
+        // direction, because sylkrtc's call.headers is direction-dependent:
+        //
+        //   INCOMING call: call.headers holds the REMOTE caller's INVITE
+        //   headers (sylkrtc's _initIncoming sets _headers from the
+        //   incoming-session event). This IS the peer's identity.
+        //
+        //   OUTGOING call: call.headers holds OUR OWN INVITE headers
+        //   (sylkrtc's _initOutgoing does `this._headers = options.headers`,
+        //   i.e. the exact array _buildOutgoingHeaders produced, including
+        //   our local X-Sylk-User-Agent). Reading it here would echo the
+        //   LOCAL client identity back as if it were the remote's — the
+        //   bug this guard prevents. The peer's identity on an outgoing
+        //   call lives only in call._acceptedHeaders (the 200 OK response
+        //   headers, stashed in callStateChanged on the 'accepted' event).
+        //
+        // So: outgoing → 200 OK headers only; incoming → INVITE headers
+        // only. When the chosen list carries no X-Sylk-User-Agent (e.g. a
+        // plain SIP callee, or SylkServer answering with only its Server
+        // header and no X-Sylk-User-Agent), we fall through to the SDP s=
+        // sniffing below — which yields the correct remote token such as
+        // 's=SylkServer-6.7.0'.
+        const outgoingCall = call.direction === 'outgoing';
+        const headerLists = outgoingCall
+            ? [call._acceptedHeaders]
+            : [call.headers];
+        for (const list of headerLists) {
+            if (list && list.length) {
+                const uaHeader = list.find(h => h && h.name
+                    && h.name.toLowerCase() === USER_AGENT_HEADER_NAME.toLowerCase());
+                if (uaHeader && uaHeader.value && String(uaHeader.value).trim()) {
+                    return String(uaHeader.value).trim();
+                }
+            }
+        }
+
         const offerSdp = call._incomingSdp || null;
         // Prefer sylkrtc's RAW answer SDP (call._answerSdp). The native
         // PC re-serializes SDP on setRemoteDescription and libwebrtc
@@ -826,6 +923,14 @@ class Call extends Component {
             this.setState(_patch);
         }
 
+        // skipCountdown flipping true after mount (parent marked this
+        // outgoing call as pre-committed — headset redial / handsfree
+        // start): same semantics as the constructor branch, skip the
+        // Start-call gate and countdown and fire the INVITE.
+        if (nextProps.skipCountdown === true && !this.state.userStartedCall) {
+            this.setState({userStartedCall: true});
+        }
+
         if (nextProps.targetUri !== this.state.targetUri && this.state.direction === 'outgoing') {
             this.setState({targetUri: nextProps.targetUri});
         }
@@ -879,11 +984,10 @@ class Call extends Component {
             // Mirror the outgoing-INVITE advertisement: when we accept
             // an incoming call we also need to tell the caller we
             // support the handshake, otherwise their startZrtpForCall
-            // sees no flag and refuses to probe. Gate on the local
-            // encryption mode same as for outgoing.
-            if (shouldAdvertiseZrtpCapability()) {
-                options.headers = [{name: ZRTP_CAPABILITY_HEADER_NAME, value: ZRTP_CAPABILITY_HEADER_VALUE}];
-            }
+            // sees no flag and refuses to probe. The ZRTP gate lives in
+            // _buildOutgoingHeaders; X-Sylk-User-Agent is always included so
+            // the caller learns our client identity from the 200 OK.
+            options.headers = this._buildOutgoingHeaders('200 OK');
             utils.timestampedLog('[call] [ui] call_id=' + _cid,
                 '12 answerCall_invoked — call.answer() next');
 
@@ -992,6 +1096,15 @@ class Call extends Component {
         // Both startZrtpForCall and dispatchIncomingZrtp consult the
         // resulting call._peerSupportsZrtp flag before doing anything.
         if (newState === 'accepted' && this.state.call) {
+            // Stash the 200 OK headers on the sylkrtc Call object.
+            // call.headers only carries the INVITE headers for INCOMING
+            // calls (set in _initIncoming); on the outgoing side the
+            // response headers exist solely on this event payload, so
+            // without stashing them _extractRemoteUserAgent would have
+            // nothing to read the callee's X-Sylk-User-Agent from.
+            if (data && data.headers && data.headers.length) {
+                this.state.call._acceptedHeaders = data.headers;
+            }
             this._detectPeerZrtpCapability(this.state.call, data && data.headers, '200 OK');
             // NOTE: do NOT expect the callee's answer SDP here. On an
             // OUTGOING call sylkrtc emits 'accepted' BEFORE it runs
@@ -1031,7 +1144,7 @@ class Call extends Component {
                 const establishedUa = this._extractRemoteUserAgent(currentCall);
                 if (establishedUa) {
                     this.setState({remoteUserAgent: establishedUa});
-                    utils.timestampedLog('[call] [ua] remote client (callee answer s=):',
+                    utils.timestampedLog('[call] [ua] remote client (X-Sylk-User-Agent header or callee answer s=):',
                         establishedUa,
                         'direction=', this.state.direction);
                 } else {
@@ -1254,11 +1367,11 @@ class Call extends Component {
         // zrtp_mandatory). 'sdes' mode means the user opted out of
         // E2EE; sending X-Sylk-ZRTP in that case would be a lie and
         // cause the peer to wait for a probe that never comes. The
-        // shouldAdvertiseZrtpCapability helper in CallZrtp.js owns the
-        // decision so the rule is in one place.
-        if (shouldAdvertiseZrtpCapability()) {
-            options.headers = [{name: ZRTP_CAPABILITY_HEADER_NAME, value: ZRTP_CAPABILITY_HEADER_VALUE}];
-        }
+        // shouldAdvertiseZrtpCapability helper (via _buildOutgoingHeaders)
+        // owns the decision so the rule is in one place. X-Sylk-User-Agent is
+        // always included so the callee learns our client identity from
+        // the INVITE.
+        options.headers = this._buildOutgoingHeaders('INVITE');
 
         // PSTN dialing rule applied at the SIP-call boundary, NOT in
         // app.js's callKeepStartCall. Keeping the rewrite here means
@@ -1611,6 +1724,7 @@ class Call extends Component {
             if (this.state.audioOnly || this.state.forceAudioView) {
                 box = (
                     <AudioCallBox
+                        systemMessage = {this.props.navbarSystemMessage}
                         remoteUri = {this.state.remoteUri}
                         remoteDisplayName = {this.state.remoteDisplayName}
                         remoteUserAgent = {this.state.remoteUserAgent}
@@ -1715,6 +1829,7 @@ class Call extends Component {
 
                     box = (
                         <VideoBox
+                            systemMessage = {this.props.navbarSystemMessage}
                             remoteUri = {this.state.remoteUri}
                             remoteDisplayName = {this.state.remoteDisplayName}
                             remoteUserAgent = {this.state.remoteUserAgent}
@@ -1723,6 +1838,7 @@ class Call extends Component {
                             call = {this.state.call}
                             markZrtpVerified = {this.props.markZrtpVerified}
                         resetContactZrtp = {this.props.resetContactZrtp}
+                            saveVideoCallPrefs = {this.props.saveVideoCallPrefs}
                             accountId={this.state.accountId}
                             connection = {this.state.connection}
                             localMedia = {this.state.localMedia}
@@ -1831,6 +1947,7 @@ class Call extends Component {
         } else {
             box = (
                 <AudioCallBox
+                    systemMessage = {this.props.navbarSystemMessage}
                     remoteUri = {this.state.remoteUri}
                     remoteDisplayName = {this.state.remoteDisplayName}
                     remoteUserAgent = {this.state.remoteUserAgent}
@@ -1999,6 +2116,8 @@ class Call extends Component {
 }
 
 Call.propTypes = {
+    skipCountdown           : PropTypes.bool,
+    userAgent               : PropTypes.string,
     targetUri               : PropTypes.string,
     pstnRules               : PropTypes.object,
     account                 : PropTypes.object,

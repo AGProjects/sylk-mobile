@@ -4,7 +4,7 @@ import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu, Surf
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import uuid from 'react-native-uuid';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import EscalateConferenceModal from './EscalateConferenceModal';
 import MediaInfoPanel from './MediaInfoPanel';
@@ -3478,6 +3478,7 @@ class AudioCallBox extends Component {
                 )}
                 <CallOverlay style={styles.callStatus}
                     show={true}
+                    systemMessage={this.props.systemMessage}
                     remoteUri={this.state.remoteUri}
                     remoteDisplayName={this.state.remoteDisplayName}
                     call={this.state.call}

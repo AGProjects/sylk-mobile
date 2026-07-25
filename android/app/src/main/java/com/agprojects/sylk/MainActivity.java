@@ -176,9 +176,60 @@ public class MainActivity extends ReactActivity {
 			}
 		}
 
+        // Bluetooth-headset redial hotkey. Long-press on the call
+        // button of an HFP headset (e.g. Plantronics Voyager) sends
+        // AT+BVRA; Android converts it to ACTION_VOICE_COMMAND (or
+        // VOICE_SEARCH_HANDSFREE on some OEMs) and launches whichever
+        // app the user picked in the "Complete action using" chooser.
+        // The matching intent-filters live on this activity in the
+        // manifest. Forward to JS, which redials the last dialed URI
+        // (headsetRedial in app.js).
+        if (Intent.ACTION_VOICE_COMMAND.equals(action)
+                || "android.speech.action.VOICE_SEARCH_HANDSFREE".equals(action)) {
+            SylkLogger.d("[app] Headset voice-command intent: " + action);
+            emitVoiceCommandIntent(action);
+        }
+
         // ACTION_MAIN = normal launcher start
         // Other intent types (SEND, calls, notifications)
         // are already handled by RN / CallKeep services
+    }
+
+    /**
+     * Forward a headset voice-command intent to JS.
+     *
+     * Warm start (app already running): emit a SylkVoiceCommand
+     * device event — app.js listens next to SylkDeepLink and redials
+     * immediately.
+     *
+     * Cold start (JS not bundled yet, ReactContext == null): stamp
+     * pendingVoiceCommandTs into SylkPrefs. The App constructor
+     * consumes it synchronously via
+     * SylkBridge.consumeVoiceCommandTs() and arms a deferred redial
+     * that registrationStateChanged fires once the account is
+     * registered — dialing before registration would fail. The
+     * timestamp lets JS discard stale stamps (e.g. a press that
+     * never resulted in a full app start).
+     */
+    private void emitVoiceCommandIntent(String action) {
+        try {
+            ReactContext context = getReactInstanceManager().getCurrentReactContext();
+            if (context == null) {
+                getSharedPreferences("SylkPrefs", MODE_PRIVATE)
+                    .edit()
+                    .putLong("pendingVoiceCommandTs", System.currentTimeMillis())
+                    .apply();
+                SylkLogger.d("[app] emitVoiceCommandIntent: ReactContext null — stamped pendingVoiceCommandTs");
+                return;
+            }
+            WritableMap payload = Arguments.createMap();
+            payload.putString("source", action);
+            context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                .emit("SylkVoiceCommand", payload);
+            SylkLogger.d("[app] emitVoiceCommandIntent: emitted SylkVoiceCommand");
+        } catch (Throwable t) {
+            SylkLogger.w("[app] emitVoiceCommandIntent failed: " + t.getMessage());
+        }
     }
 
 	private void emitShareIntent(Intent intent) {

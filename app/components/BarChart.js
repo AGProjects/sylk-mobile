@@ -1,7 +1,14 @@
 import React from 'react';
 import { View, Text } from 'react-native';
 import PropTypes from 'prop-types';
-import { BarChart } from 'react-native-svg-charts';
+import Svg, { Rect } from 'react-native-svg';
+
+// Traffic-stats bar charts for the in-call quality panel (imported as
+// TrafficStats). Reimplemented 2026-07-23 on plain react-native-svg (already
+// a dependency) after removing the dead react-native-svg-charts — that library
+// pinned an ancient react-native-svg and blocked the svg 12→15 bump. The old
+// usage was two trivial vertical bar charts, so a ~30-line Rect renderer
+// replaces it 1:1 (no victory-native / Skia / reanimated needed).
 
 // We deliberately don't import the SCSS module here. Its `.container`
 // uses `margin: 0 auto` and `flex: 1`, neither of which translates
@@ -30,6 +37,52 @@ const LABEL_BASE = {
     backgroundColor: 'transparent',
 };
 
+// Minimal drop-in for react-native-svg-charts' <BarChart>: vertical bars, one
+// per data point, spanning the measured width, scaled to the series max and
+// growing from the bottom, with a small gap between bars and an optional
+// top/bottom contentInset. Width is measured via onLayout (the old library
+// auto-filled its parent's width, which here is the fixed 170-wide container).
+const BarChart = ({ data, height, fill, contentInset }) => {
+    const [width, setWidth] = React.useState(0);
+    const inTop = (contentInset && contentInset.top) || 0;
+    const inBottom = (contentInset && contentInset.bottom) || 0;
+    const plotHeight = Math.max(0, height - inTop - inBottom);
+
+    const values = (data || []).map((v) => (Number.isFinite(v) && v > 0 ? v : 0));
+    const n = values.length || 1;
+    // Guard against an all-zero series (flat baseline on a healthy call):
+    // max of at least 1 avoids divide-by-zero and simply renders no visible
+    // bars, matching the old library's flat-baseline behavior.
+    const max = Math.max(1, ...values);
+
+    // Matches react-native-svg-charts' default inner spacing (~0.05 gap).
+    const step = width / n;
+    const barWidth = step * 0.95;
+
+    return (
+        <View style={{ height }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+            {width > 0 ? (
+                <Svg width={width} height={height}>
+                    {values.map((val, i) => {
+                        const barH = (val / max) * plotHeight;
+                        const x = i * step + (step - barWidth) / 2;
+                        const y = inTop + (plotHeight - barH);
+                        return (
+                            <Rect
+                                key={i}
+                                x={x}
+                                y={y}
+                                width={barWidth}
+                                height={barH}
+                                fill={fill}
+                            />
+                        );
+                    })}
+                </Svg>
+            ) : null}
+        </View>
+    );
+};
 
 const TrafficStats = (props) => {
     const { data, isTablet, isLandscape, isFolded, footer } = props;
@@ -116,9 +169,9 @@ const TrafficStats = (props) => {
     return (
         <View style={CONTAINER_STYLE}>
             <BarChart
-                style={{ height: chartHeight }}
+                height={chartHeight}
                 data={latencyQueue}
-                svg={{ fill: latencyColor }}
+                fill={latencyColor}
                 contentInset={{ top: 5, bottom: 5 }}
             />
             <View style={LABEL_WRAP}>
@@ -128,9 +181,9 @@ const TrafficStats = (props) => {
             </View>
 
             <BarChart
-                style={{ height: chartHeight }}
+                height={chartHeight}
                 data={packetLossQueue}
-                svg={{ fill: lossColor }}
+                fill={lossColor}
                 contentInset={{ top: 5, bottom: 5 }}
             />
             {lossLabel ? (
@@ -155,4 +208,3 @@ TrafficStats.propTypes = {
 };
 
 export default TrafficStats;
-

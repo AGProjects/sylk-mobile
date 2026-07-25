@@ -18,8 +18,7 @@ import autoBind from 'auto-bind';
 
 import { Button, TextInput, Title, Subheading, IconButton, Surface, Divider } from 'react-native-paper';
 import EnrollmentModal from './EnrollmentModal';
-import QRCodeScanner from 'react-native-qrcode-scanner';
-import { RNCamera } from 'react-native-camera';
+import QRScanner from './QRScanner';
 import storage from '../storage';
 import { StyleSheet } from 'react-native';
 import containerStyles from '../assets/styles/ContainerStyles';
@@ -771,10 +770,9 @@ class RegisterForm extends Component {
             <View style={containerClass}>
 				<Title style={styles.title}>Blink</Title>
                 <Subheading style={styles.subtitle}>Scan domain...</Subheading>
-				<QRCodeScanner
+				<QRScanner
 					onRead={this.QRCodeRead}
 					showMarker={true}
-					flashMode={RNCamera.Constants.FlashMode.off}
 					containerStyle={styles.QRcodeContainer}
 				 />
 			</View>

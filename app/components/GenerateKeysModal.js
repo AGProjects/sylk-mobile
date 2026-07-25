@@ -6,7 +6,7 @@ import { Text, Button, Surface } from 'react-native-paper';
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_GenerateKeysModal.scss';
 
-const GenerateKeysModal = ({ show = false, close, generateKeysFunc, confirm: propConfirm, confirm_again: propConfirmAgain }) => {
+const GenerateKeysModal = ({ show = false, close, generateKeysFunc, confirm: propConfirm = false, confirm_again: propConfirmAgain = false }) => {
   const [confirm, setConfirm] = useState(false);
   const [confirmAgain, setConfirmAgain] = useState(false);
 
@@ -97,12 +97,6 @@ GenerateKeysModal.propTypes = {
   generateKeysFunc: PropTypes.func,
   confirm: PropTypes.bool,
   confirm_again: PropTypes.bool,
-};
-
-GenerateKeysModal.defaultProps = {
-  show: false,
-  confirm: false,
-  confirm_again: false,
 };
 
 export default GenerateKeysModal;

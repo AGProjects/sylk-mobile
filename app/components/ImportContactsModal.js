@@ -80,7 +80,12 @@ const ImportContactsModal = (props) => {
   const _scrollMaxHeight = _isLandscape
     ? Math.max(140, Math.floor(_winH * 0.55))
     : Math.min(360, Math.floor(_winH * 0.55));
-  const _surfaceExtra = _isLandscape ? { alignSelf: 'center', maxWidth: Math.min(560, _winW * 0.85) } : null;
+  // Explicit `width`, NOT maxWidth: paper v5's iOS Surface splits styles
+  // across two shadow-layer views — width/alignSelf go to the outer one,
+  // maxWidth to the inner one — so with maxWidth the outer white card
+  // stretched full-width in landscape/tablet while the content stayed
+  // capped in its left half. A single explicit width keeps both in sync.
+  const _surfaceExtra = _isLandscape ? { alignSelf: 'center', width: Math.min(560, _winW * 0.85) } : null;
 
   return (
     <Modal style={containerStyles.container} visible={!!props.show} transparent animationType="fade"

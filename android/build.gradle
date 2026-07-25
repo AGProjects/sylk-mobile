@@ -2,16 +2,18 @@
 def REACT_NATIVE_VERSION = new File(['node', '--print',"JSON.parse(require('fs').readFileSync(require.resolve('react-native/package.json'), 'utf-8')).version"].execute(null, rootDir).text.trim())
 
 buildscript {
-    ext.kotlin_version = '1.9.10'
+    ext.kotlin_version = '1.9.24'
 
     ext {
-        buildToolsVersion = "34.0.0"
-        minSdkVersion = 24
-        compileSdkVersion = 35
-        targetSdkVersion = 35
+        buildToolsVersion = "36.0.0"
+        // Bumped 24 -> 26 for react-native-vision-camera (requires minSdk 26).
+        // Drops Android 7.0/7.1 (API 24-25). 2026-07-23.
+        minSdkVersion = 26
+        compileSdkVersion = 36
+        targetSdkVersion = 36
         //supportLibVersion = "30.0.0"
         ndkVersion = "25.1.8937393"
-        kotlinVersion = "1.8.0"
+        kotlinVersion = "1.9.24"
     }
     repositories {
         google()
@@ -19,7 +21,8 @@ buildscript {
     }
     dependencies {
         //classpath("com.android.tools.build:gradle")
-        classpath("com.android.tools.build:gradle:8.6.0")
+        // AGP 8.9.1+ officially supports compileSdk 36 (requires Gradle 8.11.1+)
+        classpath("com.android.tools.build:gradle:8.9.2")
         classpath("com.facebook.react:react-native-gradle-plugin")
         //classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
@@ -40,8 +43,8 @@ subprojects { subproject ->
             }
 
             // Override compileSdkVersion and targetSdkVersion for all modules
-            project.android.compileSdkVersion = 35
-            project.android.defaultConfig.targetSdkVersion = 35
+            project.android.compileSdkVersion = 36
+            project.android.defaultConfig.targetSdkVersion = 36
         }
     }
 }

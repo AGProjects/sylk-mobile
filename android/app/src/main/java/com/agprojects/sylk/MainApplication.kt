@@ -14,7 +14,7 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.load
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.facebook.react.flipper.ReactNativeFlipper
+import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.SoLoader
 
 import com.agprojects.sylk.SylkBridgePackage
@@ -70,26 +70,19 @@ class MainApplication : Application(), ReactApplication {
     // appear in metro.log / the in-app log view (our logcat capture
     // filters to the SYLK_APP tag and would otherwise drop them).
     SylkLogger.installCrashHandler()
-    SoLoader.init(this, false)
+    // RN 0.76: SoLoader.init now takes an SoMapping. OpenSourceMergedSoMapping
+    // is the OSS default (replaces the old `SoLoader.init(this, false)` form).
+    SoLoader.init(this, OpenSourceMergedSoMapping)
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
-    // Flipper init is a DEBUG-only diagnostic. The dangerous part of
-    // calling it unconditionally is `reactNativeHost.reactInstanceManager`
-    // — that getter eagerly creates the React bridge, which iterates
-    // getPackages() and calls createNativeModules() on every package.
-    // That spawns AudioRouteModule, BluetoothScoManager, UnreadModule,
-    // etc. at Application.onCreate time — even when the process was
-    // started solely to run MyFirebaseMessagingService for an incoming
-    // chat push and there is no Activity in sight (canonical symptom:
-    // `[audio] AudioRouteModule init` appearing in APPLOG right after
-    // a swipe-kill + push). The native side now writes the message
-    // straight into sylk.db without ever needing the RN bridge, so
-    // keep the bridge cold until MainActivity actually starts.
-    if (BuildConfig.DEBUG) {
-      ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
-    }
+    // Flipper was removed in React Native 0.76, so there is no longer a
+    // debug-only Flipper init here. (The previous concern — that
+    // ReactNativeFlipper.initializeFlipper eagerly built the RN bridge at
+    // Application.onCreate via reactNativeHost.reactInstanceManager, spinning
+    // up AudioRouteModule/UnreadModule/etc. on a push-only process start — is
+    // now moot; the bridge stays cold until MainActivity actually starts.)
 
     // Eagerly register our self-managed PhoneAccount so the Telecom framework
     // already knows about it the moment the first FCM push arrives. Idempotent

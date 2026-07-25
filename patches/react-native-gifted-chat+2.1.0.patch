@@ -23,3 +23,53 @@ index 6202ad9..d3d446f 100644
              next.image !== current.image ||
              next.video !== current.video ||
              next.audio !== current.audio ||
+diff --git a/node_modules/react-native-gifted-chat/lib/Avatar.js b/node_modules/react-native-gifted-chat/lib/Avatar.js
+--- a/node_modules/react-native-gifted-chat/lib/Avatar.js
++++ b/node_modules/react-native-gifted-chat/lib/Avatar.js
+@@ -33,7 +33,24 @@
+         },
+     }),
+ };
+-export function Avatar(props) {
++export function Avatar(_props) {
++    // React 18.3+ deprecates defaultProps on function components; gifted-chat
++    // still ships Avatar.defaultProps, which logs a warning on every render.
++    // Apply the same defaults inline (so both this destructure AND the direct
++    // props.* reads below get them) and drop the defaultProps block.
++    const props = {
++        renderAvatarOnTop: false,
++        showAvatarForEveryMessage: false,
++        position: 'left',
++        currentMessage: { user: null },
++        previousMessage: {},
++        nextMessage: {},
++        containerStyle: {},
++        imageStyle: {},
++        onPressAvatar: () => { },
++        onLongPressAvatar: () => { },
++        ..._props,
++    };
+     const { renderAvatarOnTop, showAvatarForEveryMessage, containerStyle, position, currentMessage, renderAvatar, previousMessage, nextMessage, imageStyle, } = props;
+     const messageToCompare = renderAvatarOnTop ? previousMessage : nextMessage;
+     const computedStyle = renderAvatarOnTop ? 'onTop' : 'onBottom';
+@@ -76,20 +93,6 @@
+       {renderAvatarComponent()}
+     </View>);
+ }
+-Avatar.defaultProps = {
+-    renderAvatarOnTop: false,
+-    showAvatarForEveryMessage: false,
+-    position: 'left',
+-    currentMessage: {
+-        user: null,
+-    },
+-    previousMessage: {},
+-    nextMessage: {},
+-    containerStyle: {},
+-    imageStyle: {},
+-    onPressAvatar: () => { },
+-    onLongPressAvatar: () => { },
+-};
+ Avatar.propTypes = {
+     renderAvatarOnTop: PropTypes.bool,
+     showAvatarForEveryMessage: PropTypes.bool,

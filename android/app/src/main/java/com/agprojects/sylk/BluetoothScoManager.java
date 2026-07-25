@@ -23,6 +23,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
@@ -45,6 +46,12 @@ public class BluetoothScoManager {
     private int retryCount = 0;
     private static final int MAX_RETRIES = 3;
     private static final int RETRY_DELAY_MS = 2000;
+    // Minimum time a SCO session must stay CONNECTED before a subsequent
+    // disconnect is treated as a genuine drop (refreshing the retry
+    // budget) rather than a connect→disconnect bounce (which keeps
+    // burning the budget down). See the SCO receiver for the rationale.
+    private static final long STABLE_MS = 10000;
+    private long scoConnectedAtMs = 0;
     private boolean userRequestedSco = false;
 	private BluetoothEventListener eventListener;
 
@@ -89,13 +96,36 @@ public class BluetoothScoManager {
 							return;
 						}
 
+                        // Retry budget. Two fixes over the original:
+                        //   1. The retry used to call startScoIfNeeded(),
+                        //      which RESETS retryCount — so MAX_RETRIES
+                        //      never bounded anything and every log line
+                        //      said "retry 1" forever. Retries now go
+                        //      through retrySco(), which leaves the
+                        //      counter alone.
+                        //   2. A CONNECTED event used to reset the budget
+                        //      immediately, so a connect→disconnect bounce
+                        //      loop (OS repeatedly failing to hold SCO,
+                        //      e.g. phantom bonded headset or Telecom
+                        //      route tug-of-war) also retried forever.
+                        //      The budget now only refreshes when the
+                        //      SCO session survived STABLE_MS — a genuine
+                        //      mid-call drop gets fresh retries, a bounce
+                        //      burns through the budget and stops.
+                        if (scoConnectedAtMs > 0
+                                && System.currentTimeMillis() - scoConnectedAtMs >= STABLE_MS) {
+                            retryCount = 0;
+                        }
+                        scoConnectedAtMs = 0;
                         if (retryCount < MAX_RETRIES) {
                             retryCount++;
-                            SylkLogger.d("[audio] [bt] SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + ")");
-                            handler.postDelayed(BluetoothScoManager.this::startScoIfNeeded, RETRY_DELAY_MS);
+                            SylkLogger.d("[audio] [bt] SCO disconnected, retrying in " + RETRY_DELAY_MS + "ms (retry " + retryCount + "/" + MAX_RETRIES + ")");
+                            handler.postDelayed(BluetoothScoManager.this::retrySco, RETRY_DELAY_MS);
+                        } else {
+                            SylkLogger.d("[audio] [bt] SCO retry budget exhausted — giving up until next explicit request");
                         }
                     } else if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-                        retryCount = 0;
+                        scoConnectedAtMs = System.currentTimeMillis();
                         if (scoConnectedListener != null) {
                             scoConnectedListener.onScoConnected();
                         }
@@ -177,14 +207,58 @@ public class BluetoothScoManager {
         }
     }
 
+	/**
+	 * Internal retry entry used by the SCO receiver's postDelayed. Unlike
+	 * startScoIfNeeded() it does NOT reset the retry budget and does NOT
+	 * re-arm userRequestedSco — a cancelled/stopped session stays stopped.
+	 */
+	private void retrySco() {
+		if (!userRequestedSco) return;
+		if (isHeadsetConnected() && !audioManager.isBluetoothScoOn()) {
+			SylkLogger.d("[audio] [bt] Retrying Bluetooth SCO (attempt " + retryCount + "/" + MAX_RETRIES + ")");
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+				// API 31+: SCO establishment is driven by the standing
+				// setCommunicationDevice request — nothing to re-issue here.
+			} else {
+				audioManager.startBluetoothSco();
+				audioManager.setBluetoothScoOn(true);
+			}
+		}
+	}
+
 	public void stopScoIfActive() {
+		// Full teardown, unconditionally:
+		//   * cancel any pending retry callbacks (a queued retry used to
+		//     re-arm the whole loop after stop),
+		//   * drop the userRequestedSco latch so late SCO events don't
+		//     schedule fresh retries,
+		//   * clear a STANDING BT communication-device request even when
+		//     SCO happens to be down at this exact moment. The old code
+		//     only cleared inside isBluetoothScoOn() — during a
+		//     connect/disconnect bounce the call could end in the "down"
+		//     phase, the clear was skipped, and the leaked request made
+		//     the OS keep trying to establish SCO forever (continuous
+		//     CONNECT/DISCONNECT logging long after hangup).
+		handler.removeCallbacksAndMessages(null);
+		userRequestedSco = false;
+		retryCount = MAX_RETRIES; // prevent retry
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+			try {
+				AudioDeviceInfo cur = audioManager.getCommunicationDevice();
+				if (cur != null && cur.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+					SylkLogger.d("[audio] [bt] Clearing standing BT communication-device request");
+					audioManager.clearCommunicationDevice();
+				}
+			} catch (Exception e) {
+				SylkLogger.w("[audio] [bt] clearCommunicationDevice on stop failed: " + e.getMessage());
+			}
+		}
 		if (audioManager.isBluetoothScoOn()) {
 			SylkLogger.d("[audio] [bt] Stopping Bluetooth SCO...");
 			audioManager.clearCommunicationDevice();
 			audioManager.stopBluetoothSco();
 			audioManager.setBluetoothScoOn(false);
 		}
-		retryCount = MAX_RETRIES; // prevent retry
 	}
 
     public void release() {

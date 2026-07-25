@@ -14,7 +14,7 @@ import { FlatList, View, Platform, StyleSheet, TouchableHighlight, TouchableOpac
 // restored afterwards.
 const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
 import { IconButton, Title, Button, Colors, Text, ActivityIndicator, Switch, Checkbox, Menu } from 'react-native-paper';
-import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import MaterialCommunityIcon from '@react-native-vector-icons/material-design-icons';
 import { useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 // react-native-sound-level was previously used to drive the recording
 // VuMeter, but it conflicted with audioRecorderPlayer on iOS (both open
@@ -53,8 +53,7 @@ import { planPropsReconcile } from './propsReconciler';
 import ConfirmActionModal from './ConfirmActionModal';
 import utils from '../utils';
 import {Keyboard} from 'react-native';
-import QRCodeScanner from 'react-native-qrcode-scanner';
-import { RNCamera } from 'react-native-camera';
+import QRScanner from './QRScanner';
 import AudioWaveform from './AudioWaveform';
 import VuMeter from './VuMeter';
 import MicSpectrumBars from './MicSpectrumBars';
@@ -63,7 +62,7 @@ import SpectrumRecorder from './SpectrumRecorder';
 import AudioProgressSlider from './AudioProgressSlider';
 
 import uuid from 'react-native-uuid';
-import fileType from 'react-native-file-type';
+import fileType from '../fileType';
 import AudioRecorderPlayer, {
     AudioEncoderAndroidType,
     AudioSourceAndroidType,
@@ -3129,6 +3128,7 @@ class ReadyBox extends Component {
                         <SearchBar
                             containerStyle={URIContainerClass}
                             defaultValue={this.props.searchMessages ? this.state.searchString : this.state.targetUri}
+                            onSearchFocus={this.kickUnifiedSearchAddressBookLoad}
                             onChange={this.handleSearch}
                             onSelect={this.handleTargetSelect}
                             shareToContacts={this.props.shareToContacts}
@@ -3356,10 +3356,9 @@ class ReadyBox extends Component {
                    : null}
 
                    {this.props.showQRCodeScanner ?
-                    <QRCodeScanner
+                    <QRScanner
                         onRead={this.QRCodeRead}
                         showMarker={true}
-                        flashMode={RNCamera.Constants.FlashMode.off}
                         containerStyle={containerStyles.QRCodeScanner}
                      />
                       :

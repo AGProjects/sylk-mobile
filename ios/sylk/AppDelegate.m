@@ -17,7 +17,6 @@
 #import "RNCallKeep.h"
 #import "RNVoipPushNotificationManager.h"
 #import <UserNotifications/UserNotifications.h>
-#import <RNCPushNotificationIOS.h>
 #import <RNBackgroundDownloader.h>
 #import <React/RCTLinkingManager.h>
 #import <sqlite3.h>
@@ -83,8 +82,20 @@
     [FIRApp configure];
   }
     
+  // Cold-start remote-notification stash (replaces RNCPushNotificationIOS
+  // getInitialNotification). Present when a remote push launched the app.
+  NSDictionary *launchNotification = launchOptions[UIApplicationLaunchOptionsRemoteNotificationKey];
+  if ([launchNotification isKindOfClass:[NSDictionary class]]) {
+      self.initialRemoteNotification = launchNotification;
+  }
+
  // React Native setup
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
+  // Keep a reference for the notification emit paths
+  // (didReceiveRemoteNotification / didReceiveNotificationResponse) and
+  // APNSTokenModule lookups. self.bridge was declared but never assigned
+  // before 2026-07-22, which silently nil'd every bridge-dependent emit.
+  self.bridge = bridge;
   RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
                                                    moduleName:@"Sylk"
                                             initialProperties:nil];
@@ -686,6 +697,25 @@
            return;
        }
 
+       // Foreground dedupe for raw remote message pushes (2026-07-22).
+       // While the app is active, JS always posts an enriched local
+       // banner ("New message / From <display name>") for every incoming
+       // message — from the websocket delivery path and/or
+       // onRemoteNotification, throttled to one per sender — so also
+       // presenting the raw APNs alert yields two banners, the raw one
+       // titled with the bare URI. Local posts always carry display_name
+       // in their data dict; raw server pushes never do. Suppress the
+       // raw one while active. Background deliveries never reach
+       // willPresentNotification, so lock-screen/background banners are
+       // unaffected.
+       if ([event isEqualToString:@"message"]
+           && data[@"display_name"] == nil
+           && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+           [SylkLogger log:@"[app] Skip raw remote message banner while active (JS posts the enriched local)"];
+           completionHandler(UNNotificationPresentationOptionNone);
+           return;
+       }
+
        // If you want to apply filtering:
        BOOL allow = [self shouldDisplayMessageFromPayload:data];
 
@@ -751,11 +781,10 @@ continueUserActivity:(NSUserActivity *)userActivity
 #endif
 }
 
-#pragma mark - RNCPushNotificationIOS hooks
-- (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
-{
-  [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
-}
+#pragma mark - Remote notification registration
+// (didRegisterUserNotificationSettings removed 2026-07-22 with
+// RNCPushNotificationIOS — it only forwarded to that lib and the
+// UIUserNotificationSettings API it serviced is long deprecated.)
 
 - (NSString *)hexStringFromDeviceToken:(NSData *)deviceToken {
     const unsigned char *dataBuffer = (const unsigned char *)[deviceToken bytes];
@@ -780,15 +809,11 @@ continueUserActivity:(NSUserActivity *)userActivity
 
     // Also register with FIRMessaging
     [FIRMessaging messaging].APNSToken = deviceToken;
-
-    // RNCPushNotificationIOS still expects this
-    [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
 }
 
 - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
 {
   [SylkLogger log:@"[app] Failed to register for remote notifications: %@", error];
-  [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
 }
 
 - (void)application:(UIApplication *)application
@@ -865,8 +890,17 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
     }
 
     // --- Deliver notification to React Native ---
-    [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo
-                                 fetchCompletionHandler:completionHandler];
+    // Replaces the RNCPushNotificationIOS forward: emit the raw userInfo
+    // straight to JS (onRemoteNotification listens for
+    // SylkRemoteNotification). RCTEventDispatcher queues the emit until
+    // JS is up; if the bridge isn't created yet the launch-time
+    // getInitialNotification path covers it.
+    RCTBridge *bridge = self.bridge;
+    if (bridge != nil) {
+        [bridge.eventDispatcher sendDeviceEventWithName:@"SylkRemoteNotification"
+                                                   body:(userInfo ?: @{})];
+    }
+    completionHandler(UIBackgroundFetchResultNewData);
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
@@ -890,6 +924,14 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
   @try {
       NSDictionary *userInfo = response.notification.request.content.userInfo;
       NSDictionary *data = userInfo[@"data"];
+
+      // Cold-start tap: the bridge isn't created yet, so no emit can
+      // reach JS. Stash the payload where the launch-time
+      // getInitialNotification path (APNSTokenModule) will find it.
+      if (self.bridge == nil && [userInfo isKindOfClass:[NSDictionary class]]) {
+          self.initialRemoteNotification = userInfo;
+      }
+
       if ([data isKindOfClass:[NSDictionary class]]) {
           NSString *event = data[@"event"];
           NSString *fromUri = data[@"from_uri"];
@@ -915,20 +957,37 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
               } else {
                   [SylkLogger log:@"[app] SylkPushTapped skip: bridge nil (cold-start path will use getInitialNotification)"];
               }
+          } else {
+              // Non-message taps (e.g. the "Live location stopped" banner's
+              // location_stopped event) used to reach JS through
+              // RNCPushNotificationIOS's 'localNotification' event. Emit the
+              // inner data dict directly instead; JS routes it in
+              // onLocalNotification via the SylkNotificationTapped listener.
+              // Message taps stay on the dedicated SylkPushTapped fast path
+              // above — emitting both here would double-navigate.
+              RCTBridge *tapBridge = self.bridge;
+              if (tapBridge != nil) {
+                  [tapBridge.eventDispatcher
+                      sendDeviceEventWithName:@"SylkNotificationTapped"
+                                         body:data];
+                  [SylkLogger log:@"[app] SylkNotificationTapped emitted event=%@", event];
+              }
           }
       }
   } @catch (NSException *exc) {
       [SylkLogger log:@"[app] SylkPushTapped emit threw: %@", exc.reason];
   }
 
-  [RNCPushNotificationIOS didReceiveNotificationResponse:response];
+  // (RNCPushNotificationIOS forward removed 2026-07-22 — the two emits
+  // above plus the cold-start stash fully replace its
+  // 'notification'/'localNotification' JS events for this app.)
   completionHandler();
 }
 
-- (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
-{
-  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
-}
+// (application:didReceiveLocalNotification: removed 2026-07-22 — it only
+// forwarded the long-deprecated UILocalNotification API to
+// RNCPushNotificationIOS; modern taps arrive via
+// userNotificationCenter:didReceiveNotificationResponse: above.)
 
 #pragma mark - VoIP push handlers
 - (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type
@@ -1571,11 +1630,24 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
-                const char *col = (const char *)sqlite3_column_text(stmt, 0);
-                if (col) {
-                    NSString *active = [NSString stringWithUTF8String:col];
-                    enabled = [active isEqualToString:@"1"];
+                // accounts.active may be stored as INTEGER 1, TEXT '1',
+                // or REAL 1.0 — the JS sqlite layer binds JS numbers as
+                // doubles, so rows written by saveSqlAccount carry 1.0.
+                // sqlite3_column_int coerces all of those to 1. (Fixed
+                // 2026-07-22: the old exact string compare against "1"
+                // rejected '1.0', so every background push insert was
+                // dropped as "account disabled". JS never noticed —
+                // its own check is a loose `active == 1`.)
+                int activeVal = sqlite3_column_int(stmt, 0);
+                enabled = (activeVal == 1);
+                if (!enabled) {
+                    const char *col = (const char *)sqlite3_column_text(stmt, 0);
+                    [SylkLogger log:@"[message] [apns] isAccountEnabled: row for %@ has active='%s' (want 1)",
+                        account, col ?: "(null)"];
                 }
+            } else {
+                [SylkLogger log:@"[message] [apns] isAccountEnabled: NO accounts row matches '%@' in %@",
+                    account, dbPath];
             }
         }
         if (stmt) sqlite3_finalize(stmt);
@@ -1635,6 +1707,37 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     if (![self isAccountEnabled:account]) {
         [SylkLogger log:@"[message] [apns] insert: account %@ is disabled, dropping", account];
         return;
+    }
+
+    // Keep the shared display-name map warm for SylkNotificationService:
+    // a brand-new sender's first push carries from_display_name before JS
+    // has ever loaded them as a contact, so merge it here and the NSE can
+    // already retitle their second message. JS's bulk sync
+    // (syncContactDisplayNames) replaces the whole map on the next
+    // contacts load, keeping renames/deletions honest.
+    if (displayName.length > 0 && ![displayName isEqualToString:fromUri]) {
+        @try {
+            NSUserDefaults *shared =
+                [[NSUserDefaults alloc] initWithSuiteName:@"group.com.agprojects.sylk-ios"];
+            NSMutableDictionary *names =
+                [[shared dictionaryForKey:@"contactDisplayNames"] mutableCopy]
+                    ?: [NSMutableDictionary new];
+            NSString *key = [fromUri lowercaseString];
+            // Fill-gaps ONLY: the map is owned by JS's bulk sync, which
+            // writes the RECEIVER's locally-saved contact names — those
+            // are authoritative and must never be overwritten by the
+            // sender-declared push name. Only add an entry when the uri
+            // is entirely unknown (first message from a new sender,
+            // before JS has ever loaded them as a contact).
+            if (names[key] == nil) {
+                names[key] = displayName;
+                [shared setObject:names forKey:@"contactDisplayNames"];
+                [SylkLogger log:@"[push] display-name map add (new sender): %@ -> %@ (%lu total)",
+                    key, displayName, (unsigned long)names.count];
+            }
+        } @catch (NSException *e) {
+            // map update is best-effort; never block the SQL insert
+        }
     }
 
     NSString *dbPath = [self sylkDatabasePath];

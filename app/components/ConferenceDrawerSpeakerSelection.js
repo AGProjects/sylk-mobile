@@ -4,7 +4,7 @@ import autoBind from 'auto-bind';
 import { FlatList, TouchableOpacity, View, Text } from 'react-native';
 import { Button } from 'react-native-paper';
 import { SwipeRow } from 'react-native-swipe-list-view';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import ConferenceDrawerParticipant from './ConferenceDrawerParticipant';
 
 import styles from '../assets/styles/blink/_ConferenceDrawerSpeakerSelection.scss';

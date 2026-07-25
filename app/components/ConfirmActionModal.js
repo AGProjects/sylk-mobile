@@ -7,6 +7,7 @@ import {
     Modal,
     TouchableWithoutFeedback,
     StyleSheet,
+    useWindowDimensions,
 } from 'react-native';
 import { Button, Surface } from 'react-native-paper';
 
@@ -35,6 +36,19 @@ import containerStyles from '../assets/styles/ContainerStyles';
 const ConfirmActionModal = ({ visible, title, message, actions, onDismiss }) => {
     const _actions = Array.isArray(actions) ? actions : [];
 
+    // Card width, computed as an EXPLICIT `width` rather than
+    // `maxWidth: 440` + `width: '100%'`. On iOS, react-native-paper v5
+    // renders Surface as TWO nested views (shadow layers) and splits the
+    // incoming style between them: `width`/`alignSelf`/margins go to the
+    // OUTER view while `maxWidth`/padding go to the INNER one. With the
+    // old maxWidth pattern the outer white card stretched to 100% of a
+    // landscape/tablet screen while the content stayed capped at 440 in
+    // its left half. A single explicit `width` lands on the outer layer,
+    // so both layers agree. useWindowDimensions keeps it correct across
+    // rotation. The 32 accounts for the overlay's 16px padding per side.
+    const { width: _winW } = useWindowDimensions();
+    const _cardWidth = Math.min(440, _winW - 32);
+
     return (
         <Modal
             visible={!!visible}
@@ -47,7 +61,7 @@ const ConfirmActionModal = ({ visible, title, message, actions, onDismiss }) => 
                 <View style={containerStyles.overlay}>
                     {/* Block dismiss when taps land inside the card. */}
                     <TouchableWithoutFeedback onPress={() => {}}>
-                        <Surface style={[containerStyles.modalSurface, styles.card]}>
+                        <Surface style={[containerStyles.modalSurface, styles.card, { width: _cardWidth }]}>
                             {title ? <Text style={styles.title}>{title}</Text> : null}
                             {message ? <Text style={styles.body}>{message}</Text> : null}
 
@@ -82,12 +96,10 @@ const ConfirmActionModal = ({ visible, title, message, actions, onDismiss }) => 
 const styles = StyleSheet.create({
     card: {
         padding: 16,
-        // Keep the card comfortably inside both margins. The overlay
-        // already pads 16 on each side; this just caps the width on
-        // wide (landscape / tablet) screens so the dialog doesn't
-        // stretch awkwardly.
-        maxWidth: 440,
-        width: '100%',
+        // Width is set inline (see _cardWidth in the component) as an
+        // explicit `width`, NOT maxWidth — paper v5's iOS Surface routes
+        // maxWidth to its inner shadow layer only, which made the outer
+        // card overflow to the right in landscape/tablet.
         alignSelf: 'center',
     },
     title: {

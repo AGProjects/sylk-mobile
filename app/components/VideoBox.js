@@ -19,12 +19,12 @@ import DeferredRTCView from './DeferredRTCView';
 // only so its camera handle is released before we re-engage the
 // webrtc capture pipeline. webrtc still owns the camera for the
 // actual call; RNCamera only borrows it briefly for the preview.
-import { RNCamera } from 'react-native-camera';
+import CameraPreview from './CameraPreview';
 import {StatusBar} from 'react-native';
-import Immersive from 'react-native-immersive';
+import Immersive from '../immersive';
 import { StyleSheet } from 'react-native';
 import { Surface } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import CallOverlay from './CallOverlay';
 import NetworkSpeedometer from './NetworkSpeedometer';
@@ -312,7 +312,7 @@ class VideoBox extends Component {
                 const leftInset = insets.left || 0;
                 const rightInset = insets.right || 0;
                 const bottomInset = insets.bottom || 0;
-                const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+                const headerBarHeight = 60; // call appbar only — the 34dp Blink brand strip was removed (CallOverlay._showCallBrandStrip=false), so portrait no longer adds it
 
                 const parentScreenY = topInset;
                 // SafeAreaView's left-padding behaviour differs by
@@ -481,6 +481,20 @@ class VideoBox extends Component {
             this.setState({audioMuted: nextProps.muted});
         }
 
+        // System-notification reveal. Messages from NotificationCenter
+        // render on the CallOverlay appbar's status line (instead of
+        // the black bottom snackbar) — but in a video call the appbar
+        // auto-hides into fullscreen after a few seconds. If a NEW
+        // message arrives while the appbar is hidden, bring it back so
+        // the message is actually seen, then re-arm the auto-hide
+        // timer so the appbar tucks away again afterwards.
+        if (nextProps.systemMessage
+            && nextProps.systemMessage !== this.props.systemMessage
+            && !this.state.callOverlayVisible) {
+            this.toggleFullScreen();
+            this.armOverlayTimer();
+        }
+
         if (nextProps.hasOwnProperty('info')) {
             this.setState({info: nextProps.info});
         }
@@ -576,12 +590,12 @@ class VideoBox extends Component {
             const _resolvedTracks = (_resolvedLocalStream
                 && typeof _resolvedLocalStream.getTracks === 'function')
                   ? _resolvedLocalStream.getTracks() : [];
-            console.log('[video-preview] VideoBox cWRP localStream',
+            /* console.log('[video-preview] VideoBox cWRP localStream',
                 'call_id=' + ((nextProps.call && (nextProps.call.id || nextProps.call._callId)) || '?'),
                 'src=' + _src,
                 'resolved=' + (_resolvedLocalStream ? 'set' : 'null'),
                 'tracks=' + _resolvedTracks.length,
-                'changed=' + (_resolvedLocalStream !== this.state.localStream));
+                'changed=' + (_resolvedLocalStream !== this.state.localStream)); */
         } catch (e) {
             console.log('[video-preview] cWRP trace threw:', (e && e.message) || String(e));
         }
@@ -624,6 +638,13 @@ class VideoBox extends Component {
         if (_streamTransitionedToSet) {
             try { this._attachLocalVideoTrackListeners(_resolvedLocalStream); }
             catch (_) { /* listener wiring is best-effort */ }
+            // Deferred camera-preference application: the mount-time
+            // _applyVideoCallPrefs call couldn't switch cameras if no
+            // local video track existed yet. Now that the stream has
+            // landed, retry with it directly (setState above hasn't
+            // committed, so pass the stream instead of reading state).
+            try { this._applyVideoCallPrefs(_resolvedLocalStream); }
+            catch (_) { /* pref application is best-effort */ }
         }
 
         // Preview-only-detach retry loop.
@@ -978,7 +999,7 @@ class VideoBox extends Component {
         const insets = this.state.insets || {};
         const topInset = insets.top || 0;
         const leftInset = insets.left || 0;
-        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+        const headerBarHeight = 60; // call appbar only — the 34dp Blink brand strip was removed (CallOverlay._showCallBrandStrip=false), so portrait no longer adds it
         let x, y;
         if (this.state.fullScreen) {
             // Pull above the safe-area inset to reach the actual
@@ -1020,7 +1041,7 @@ class VideoBox extends Component {
         // Mirror the previous corner math: in fullscreen the thumb
         // sits flush with the top; otherwise it clears the header
         // bar.
-        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+        const headerBarHeight = 60; // call appbar only — the 34dp Blink brand strip was removed (CallOverlay._showCallBrandStrip=false), so portrait no longer adds it
         const y = this.state.fullScreen ? Math.max(0, topInset) : headerBarHeight;
         const x = Math.max(0, width - w - rightInset);
         return { x, y };
@@ -1447,6 +1468,12 @@ class VideoBox extends Component {
         // class of bug — without them, applog gives no signal that the
         // camera stopped producing.
         this._attachLocalVideoTrackListeners(this.state.localStream);
+
+        // Restore this contact's saved video-call layout (last used
+        // camera, swapped views, self-view mirror visibility). If the
+        // local stream hasn't landed yet (incoming accept), the camera
+        // part is retried from cWRP when the stream arrives.
+        this._applyVideoCallPrefs();
 
         this.armOverlayTimer();
 
@@ -2011,6 +2038,104 @@ class VideoBox extends Component {
 		return null;
 	}
 
+    /* ─── Per-contact video-call preferences ──────────────────────
+     * last_camera / video_swapped / show_mirror are remembered PER
+     * CONTACT, device-only (contact.localProperties in the local SQL
+     * contacts table — never synced to the server, same store as the
+     * ZRTP cache). Read back at mount via _applyVideoCallPrefs so a
+     * video call with the same contact starts on the camera / swap /
+     * mirror layout the user last used with them; written on every
+     * user toggle via _persistVideoCallPrefs → props.saveVideoCallPrefs
+     * (app.js). */
+
+    _getVideoCallPrefs() {
+        const contact = this.state.callContact || this.props.callContact;
+        return (contact && contact.localProperties
+            && contact.localProperties.videoCallPrefs) || null;
+    }
+
+    /**
+     * Persist the current camera / swap / mirror choices for this
+     * contact. `overrides` carries the value(s) that just changed —
+     * setState is async, so callers pass the new value explicitly
+     * instead of relying on this.state having updated already.
+     */
+    _persistVideoCallPrefs(overrides = {}) {
+        try {
+            if (typeof this.props.saveVideoCallPrefs !== 'function') return;
+            const contact = this.state.callContact || this.props.callContact;
+            const uri = (contact && contact.uri) || this.state.remoteUri || this.props.remoteUri;
+            if (!uri) return;
+            const prefs = Object.assign({
+                last_camera: this.state.cameraFacing || 'front',
+                video_swapped: !!this.state.swapVideo,
+                show_mirror: !!this.state.enableMyVideo
+            }, overrides);
+            this.props.saveVideoCallPrefs(uri, prefs);
+        } catch (e) {
+            console.log('[video-prefs] persist failed:', e && e.message);
+        }
+    }
+
+    /**
+     * Apply this contact's saved video-call preferences.
+     *
+     * swap / mirror are pure UI state and are applied exactly once, at
+     * mount. The camera switch needs a live local video track; on
+     * incoming accept the stream can land AFTER mount (via cWRP), so
+     * the camera part keeps retrying — cWRP calls back in with the
+     * freshly resolved stream — until a track exists. streamOverride
+     * lets that cWRP call pass the new stream before setState lands.
+     */
+    _applyVideoCallPrefs(streamOverride) {
+        const prefs = this._getVideoCallPrefs();
+        if (!prefs) {
+            this._videoPrefsUiApplied = true;
+            this._videoPrefsCameraApplied = true;
+            return;
+        }
+
+        const update = {};
+
+        if (!this._videoPrefsUiApplied) {
+            this._videoPrefsUiApplied = true;
+            if (typeof prefs.video_swapped === 'boolean'
+                && prefs.video_swapped !== this.state.swapVideo) {
+                update.swapVideo = prefs.video_swapped;
+            }
+            if (typeof prefs.show_mirror === 'boolean'
+                && prefs.show_mirror !== this.state.enableMyVideo) {
+                update.enableMyVideo = prefs.show_mirror;
+            }
+        }
+
+        if (!this._videoPrefsCameraApplied) {
+            if (prefs.last_camera !== 'back') {
+                // front is the constructor default — nothing to switch
+                this._videoPrefsCameraApplied = true;
+            } else if ((this.state.cameraFacing || 'front') === 'back') {
+                this._videoPrefsCameraApplied = true;
+            } else {
+                const localStream = streamOverride || this.state.localStream;
+                const track = localStream && localStream.getVideoTracks
+                    && localStream.getVideoTracks()[0];
+                if (track) {
+                    track._switchCamera();
+                    update.mirror = !this.state.mirror;
+                    update.cameraFacing = 'back';
+                    this._videoPrefsCameraApplied = true;
+                }
+                // no track yet — leave the guard unset so the next
+                // cWRP stream transition retries
+            }
+        }
+
+        if (Object.keys(update).length > 0) {
+            console.log('[video-prefs] applying saved prefs:', JSON.stringify(prefs));
+            this.setState(update);
+        }
+    }
+
     toggleCamera(event) {
         if (event && event.preventDefault) {
             event.preventDefault();
@@ -2018,11 +2143,13 @@ class VideoBox extends Component {
         const localStream = this.state.localStream;
         if (localStream && localStream.getVideoTracks().length > 0) {
             const track = localStream.getVideoTracks()[0];
+            const newFacing = this.state.cameraFacing === 'front' ? 'back' : 'front';
             track._switchCamera();
             this.setState({
                 mirror: !this.state.mirror,
-                cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front'
+                cameraFacing: newFacing
             });
+            this._persistVideoCallPrefs({last_camera: newFacing});
         }
     }
 
@@ -2052,6 +2179,7 @@ class VideoBox extends Component {
                 mirror: !this.state.mirror,
                 cameraFacing: facing
             });
+            this._persistVideoCallPrefs({last_camera: facing});
         }
     }
 
@@ -2075,16 +2203,14 @@ class VideoBox extends Component {
         // shown when it matters — at the moment of choice.
         const mainIcon = 'video';
 
-        // Pick the swap icon so its diagonal points through the corner
-        // where the PIP thumbnail currently sits. Thumb in topLeft or
-        // bottomRight → use the "\" diagonal; thumb in topRight or
-        // bottomLeft → use the "/" diagonal. That way the arrow's top
-        // tip points to the thumb when it's at the top, and its bottom
-        // tip points to the thumb when it's at the bottom.
-        const corner = this.state.myVideoCorner;
-        const swapIcon = (corner === 'topLeft' || corner === 'bottomRight')
-            ? 'arrow-top-left-bottom-right-bold'
-            : 'arrow-top-right-bottom-left-bold';
+        // Swap-video row icon: same `camera-switch` glyph the
+        // CallOverlay navbar quick-access swap button and the kebab's
+        // "Swap video" row use, so all three surfaces read as the same
+        // action. (Previously a corner-aware diagonal double-headed
+        // arrow — arrow-top-left-bottom-right-bold /
+        // arrow-top-right-bottom-left-bold depending on which corner
+        // the PIP thumbnail sat in.)
+        const swapIcon = 'camera-switch';
 
         // Build the camera options. When the camera is currently in
         // use (not muted), drop the active one so the user only sees
@@ -2153,9 +2279,8 @@ class VideoBox extends Component {
             },
             {
                 key: 'swap',
-                // Diagonal two-headed arrow — chosen so its diagonal
-                // passes through the corner where the PIP thumbnail
-                // currently sits (see swapIcon computation above).
+                // camera-switch — matches the CallOverlay navbar swap
+                // button and kebab row (see swapIcon above).
                 icon: swapIcon,
                 label: 'Swap Video',
                 onPress: () => this.swapVideo()
@@ -2446,14 +2571,22 @@ class VideoBox extends Component {
     }
 
     toggleMyVideo() {
-        this.setState({enableMyVideo: !this.state.enableMyVideo});    
+        const newShowMirror = !this.state.enableMyVideo;
+        this.setState({enableMyVideo: newShowMirror});
+        this._persistVideoCallPrefs({show_mirror: newShowMirror});
     }
 
     swapVideo() {
-        if (!this.state.swapVideo) {
-			this.setState({enableMyVideo: false});    
+        const turningOn = !this.state.swapVideo;
+        if (turningOn) {
+			this.setState({enableMyVideo: false});
         }
-        this.setState({swapVideo: !this.state.swapVideo});    
+        this.setState({swapVideo: turningOn});
+        // Turning swap ON also hides the self-view (above) — record
+        // both so the restored layout matches what the user sees.
+        this._persistVideoCallPrefs(turningOn
+            ? {video_swapped: true, show_mirror: false}
+            : {video_swapped: false});
     }
     
     get localStreamUrl() {
@@ -2681,7 +2814,7 @@ class VideoBox extends Component {
         // video thumbnails / overlay content positioned UNDER the
         // brand strip in portrait. Adding the strip height in
         // portrait pushes them clear.
-        const headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+        const headerBarHeight = 60; // call appbar only — the 34dp Blink brand strip was removed (CallOverlay._showCallBrandStrip=false), so portrait no longer adds it
 
 		let { width, height } = Dimensions.get('window');
         
@@ -3161,7 +3294,7 @@ class VideoBox extends Component {
             // Same brand-strip adjustment as the headerBarHeight
             // above — portrait adds the 34dp Blink strip on top of
             // the 60dp Appbar.
-            const _headerBarHeight = 60 + (this.state.isLandscape ? 0 : 34);
+            const _headerBarHeight = 60; // call appbar only — brand strip removed, no portrait extra
             try {
                 console.log('[video-preview] modal render (RNCamera)',
                     'cameraFacing=' + this.state.cameraFacing,
@@ -3263,19 +3396,14 @@ class VideoBox extends Component {
                         overflow: 'hidden',
                         backgroundColor: '#222',
                     }}>
-                        <RNCamera
+                        <CameraPreview
                             style={{flex: 1}}
-                            type={this.state.cameraFacing === 'back'
-                                ? RNCamera.Constants.Type.back
-                                : RNCamera.Constants.Type.front}
-                            captureAudio={false}
-                            // No permission prompts here — by the time the
-                            // modal is up sylkrtc has already obtained
-                            // camera permission via its own getUserMedia
-                            // flow. RNCamera will reuse the granted
-                            // permission and just open a capture session.
-                            androidCameraPermissionOptions={null}
-                            iosCameraPermissionOptions={null}
+                            // By the time this modal is up sylkrtc has already
+                            // obtained camera permission via its own getUserMedia
+                            // flow; CameraPreview reuses it and just opens a
+                            // preview session. See CameraPreview.js on the
+                            // webrtc↔camera handoff.
+                            facing={this.state.cameraFacing === 'back' ? 'back' : 'front'}
                         />
                         {/* Top-right camera-flip button — same icon /
                             size / placement / styling as the audio→
@@ -3497,6 +3625,7 @@ class VideoBox extends Component {
                 />
                 <CallOverlay
                     show = {show}
+                    systemMessage = {this.props.systemMessage}
                     remoteUri = {this.state.remoteUri}
                     remoteDisplayName = {this.state.remoteDisplayName}
                     photo = {this.state.photo}
@@ -3533,43 +3662,11 @@ class VideoBox extends Component {
 					switchCallView = {this.props.switchCallView}
                 />
 
-                {/* Remote party's client (SIP/Blink/WebRTC) User-Agent.
-                    Same source as the audio screen (User-Agent / Server
-                    SIP header forwarded by sylk-server, passed down from
-                    Call.js). Shown as a subtle line just under the header
-                    once the call is established. */}
-                {(this.props.remoteUserAgent
-                    && this.state.call
-                    && this.state.call.state === 'established'
-                    && !this.state.reconnectingCall) ?
-                    <View
-                        pointerEvents="none"
-                        style={{
-                            position: 'absolute',
-                            top: 64 + (this.state.insets.top || 0),
-                            left: 0,
-                            right: 0,
-                            alignItems: 'center',
-                            zIndex: 999,
-                        }}
-                    >
-                        <Text
-                            numberOfLines={2}
-                            ellipsizeMode="tail"
-                            style={{
-                                color: 'rgba(255, 255, 255, 0.7)',
-                                fontSize: 12,
-                                textAlign: 'center',
-                                paddingHorizontal: 24,
-                                textShadowColor: 'rgba(0, 0, 0, 0.75)',
-                                textShadowOffset: { width: 0, height: 1 },
-                                textShadowRadius: 2,
-                            }}
-                        >
-                            {this.props.remoteUserAgent}
-                        </Text>
-                    </View>
-                : null}
+                {/* Remote party's User-Agent moved into the network HUD:
+                    it renders under the speedometers, only while the HUD
+                    is expanded (showUsage) — see the NetworkSpeedometer
+                    block below. The always-on label that used to float
+                    here over the video was removed on request. */}
 
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer]}>
@@ -3671,7 +3768,10 @@ class VideoBox extends Component {
 					    PIP is removed; the user can bring it back
 					    via the video picker's "Show myself" toggle. */}
 					<TouchableOpacity
-					    onPress={() => this.setState({enableMyVideo: false})}
+					    onPress={() => {
+					        this.setState({enableMyVideo: false});
+					        this._persistVideoCallPrefs({show_mirror: false});
+					    }}
 					    accessibilityRole="button"
 					    accessibilityLabel="Close self-view"
 					    hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
@@ -3829,6 +3929,32 @@ class VideoBox extends Component {
                                     audioCodec={this.props.audioCodec}
                                     showResolution
                                 />
+                                {/* Remote party's client User-Agent (SIP
+                                    User-Agent / Server header forwarded by
+                                    sylk-server via Call.js). Glued under
+                                    the speedometers inside the same HUD
+                                    box, so it's only visible while the
+                                    HUD is expanded and moves with it when
+                                    dragged. Replaces the always-on label
+                                    that used to float over the video. */}
+                                {this.props.remoteUserAgent ? (
+                                    <Text
+                                        numberOfLines={2}
+                                        ellipsizeMode="tail"
+                                        style={{
+                                            color: 'rgba(255, 255, 255, 0.7)',
+                                            fontSize: 11,
+                                            textAlign: 'center',
+                                            maxWidth: 220,
+                                            alignSelf: 'center',
+                                            paddingHorizontal: 6,
+                                            paddingTop: 2,
+                                            paddingBottom: 2,
+                                        }}
+                                    >
+                                        {this.props.remoteUserAgent}
+                                    </Text>
+                                ) : null}
                             </TouchableOpacity>
                         ) : (
                             <TouchableOpacity

@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { Platform } from 'react-native';
 import { Text, Button, Surface, Checkbox } from 'react-native-paper';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import { TouchableWithoutFeedback, View, KeyboardAvoidingView, Modal } from 'react-native';
+import { TouchableWithoutFeedback, View, KeyboardAvoidingView, ScrollView, Modal } from 'react-native';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -68,10 +67,8 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
               <Surface style={containerStyles.modalSurface}>
                 <Text style={containerStyles.title}>{title}</Text>
 
-                <KeyboardAwareScrollView
-                  enableOnAndroid={true}
-                  enableAutomaticScroll={true}
-                  extraScrollHeight={120}
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+                <ScrollView
                   keyboardShouldPersistTaps="handled"
                 >
                   <Text style={styles.body}>{bodyText1}</Text>
@@ -111,7 +108,8 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
                       <Text style={[styles.status, { marginBottom: 20 }]}>{status}</Text>
                     </View>
                   )}
-                </KeyboardAwareScrollView>
+                </ScrollView>
+                </KeyboardAvoidingView>
               </Surface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>

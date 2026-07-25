@@ -567,7 +567,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 
     private boolean hasBluetoothScoDeviceNew() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false;
-    
+
+        // Require the HFP profile to actually be connected, not just a SCO
+        // entry in the HAL's list — bonded-but-disconnected headsets can
+        // linger there (phantom device, see getAudioOutputs).
+        if (!isBluetoothConnected()) return false;
+
         List<AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
         for (AudioDeviceInfo dev : devices) {
             if (dev.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) return true;
@@ -1205,6 +1210,22 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         */
 
         pendingBtDevice = null;
+
+        // Drop any STANDING communication-device request before the mode
+        // restore. A BT request left standing after hangup makes the OS
+        // keep trying to establish SCO for it (connect → no active audio
+        // → disconnect → retry) in an endless loop long after the call —
+        // observed as continuous BT SCO CONNECT/DISCONNECT logging on the
+        // Razr. BluetoothScoManager.stopScoIfActive() below also clears
+        // it, but only when scoManager exists; this covers every path.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                audioManager.clearCommunicationDevice();
+            } catch (Exception e) {
+                SylkLogger.w("[audio] clearCommunicationDevice at stop failed: " + e.getMessage());
+            }
+        }
+
         // ALWAYS restore to MODE_NORMAL when a call ends.
         //
         // Previously we preferred preCallMode (the snapshot taken at FCM
@@ -1350,8 +1371,45 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
      * route mask. Errors and missing-connection cases are logged and swallowed
      * — the AudioManager step still runs after this returns.
      */
+    // Retry budget for the Telecom-layer route pin. The self-managed
+    // Connection for an OUTGOING call is created asynchronously by
+    // Telecom (placeCall → onCreateOutgoingConnection), typically a few
+    // hundred ms after JS calls setActiveDeviceForCall at call start —
+    // so the first pin attempt often finds no Connection ("no Connection
+    // registered for uuid=..." in the field trace) and used to give up.
+    // Without the Telecom pin, video calls (whose Telecom default route
+    // is the SPEAKER) enter a route tug-of-war: our setCommunicationDevice
+    // asserts BT, Telecom re-applies speaker, SCO bounces connect/
+    // disconnect for the whole ringing phase and actual audio plays on
+    // the speaker while the UI shows BT. Retrying until the Connection
+    // registers pins the route within ~1 s of creation and the bounce
+    // stops. Retries no-op once stop() clears `started`.
+    // 30 × 500ms = 15s of cover. Field trace showed the outgoing VIDEO
+    // call's Connection being created ~6s after audioManagerStart (the
+    // camera-preview countdown delays callKeeper.startCall), so the
+    // previous 10-attempt/5s budget expired one second too early. JS also
+    // re-pins at the 'progress' call state (right after the Connection is
+    // created), so this is a belt-and-braces backstop.
+    private static final int TELECOM_PIN_MAX_ATTEMPTS = 30;
+    private static final int TELECOM_PIN_RETRY_MS = 500;
+
+    // Latest requested route per call — a delayed retry only applies if it
+    // still matches, so a user switching devices mid-retry can't have an
+    // older pending pin land on top of the newer choice.
+    private final java.util.concurrent.ConcurrentHashMap<String, String> latestTelecomRoute =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private void applyTelecomAudioRoute(String callUuid, String type) {
+        if (callUuid != null && type != null) {
+            latestTelecomRoute.put(callUuid, type);
+        }
+        applyTelecomAudioRoute(callUuid, type, 0);
+    }
+
+    private void applyTelecomAudioRoute(String callUuid, String type, int attempt) {
         if (type == null) return;
+        // Superseded by a newer request for this call? Drop this (retry) pass.
+        if (callUuid != null && !type.equals(latestTelecomRoute.get(callUuid))) return;
         int route;
         if (type.equals("BUILTIN_SPEAKER")) {
             route = CallAudioState.ROUTE_SPEAKER;
@@ -1382,7 +1440,20 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
         }
 
         if (conn == null) {
-            SylkLogger.d("[audio] applyTelecomAudioRoute: no Connection registered for uuid=" + callUuid);
+            if (attempt < TELECOM_PIN_MAX_ATTEMPTS) {
+                SylkLogger.d("[audio] applyTelecomAudioRoute: no Connection yet for uuid=" + callUuid
+                        + " — retrying in " + TELECOM_PIN_RETRY_MS + "ms (attempt "
+                        + (attempt + 1) + "/" + TELECOM_PIN_MAX_ATTEMPTS + ")");
+                handler.postDelayed(() -> {
+                    // The call may have ended (or the module stopped) while
+                    // we waited — don't pin a route for a dead call.
+                    if (!started) return;
+                    applyTelecomAudioRoute(callUuid, type, attempt + 1);
+                }, TELECOM_PIN_RETRY_MS);
+            } else {
+                SylkLogger.d("[audio] applyTelecomAudioRoute: no Connection registered for uuid="
+                        + callUuid + " after " + TELECOM_PIN_MAX_ATTEMPTS + " attempts — giving up");
+            }
             return;
         }
 
@@ -1647,6 +1718,14 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
 					currentRoute = type;
 					return true;
 				} else if (type != null && type.startsWith("BLUETOOTH")) {
+					// Phantom guard: never route to a BT device whose HFP
+					// profile isn't actually connected (bonded-but-absent
+					// headset lingering in the HAL list). Attempting it puts
+					// the OS in an endless SCO connect/disconnect bounce.
+					if (!isBluetoothConnected()) {
+						SylkLogger.d("[audio] BT route requested but HFP profile not connected — ignoring phantom device");
+						return false;
+					}
 					// BT routing: do NOT call clearCommunicationDevice() here —
 					// clearing the routing context before SCO establishment prevents
 					// the system from establishing SCO on Motorola and similar devices.
@@ -2168,7 +2247,12 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
                 // this only appears in GET_DEVICES_INPUTS once SCO is actually
                 // engaged — see prepareBluetoothInputForRecording, which starts
                 // SCO before the recorder opens the mic.
-                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: typeName = "BLUETOOTH_SCO"; break;
+                // Phantom filter: same as getAudioOutputs — a bonded-but-
+                // disconnected headset can linger in the HAL list; only
+                // report it when the HFP profile is actually connected.
+                case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+                    if (!isBluetoothConnected()) continue;
+                    typeName = "BLUETOOTH_SCO"; break;
                 case AudioDeviceInfo.TYPE_AUX_LINE: typeName = "AUX_LINE"; break;
                 case AudioDeviceInfo.TYPE_LINE_ANALOG: typeName = "LINE_ANALOG"; break;
                 default: continue; // skip unknowns
@@ -2212,10 +2296,27 @@ public class AudioRouteModule extends ReactContextBaseJavaModule implements Life
     
         for (AudioDeviceInfo device : outputs) {
             int type = device.getType();
-    
+
             // Skip Bluetooth A2DP (same as original)
             if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) continue;
-    
+
+            // Phantom-headset filter. On some devices (Razr 60 Ultra
+            // observed) the HAL keeps listing a BONDED-but-disconnected
+            // HFP headset as an available SCO output — e.g. "Poly
+            // VLegend 50" showing up while only a DENON A2DP amp was
+            // actually connected. Routing to such a phantom makes the
+            // OS try to establish SCO to a headset that isn't there:
+            // connect→fail→earpiece→retry, an endless bounce with
+            // ringback stuck on the speaker while the UI shows BT.
+            // Only report a SCO output when the HEADSET (HFP) profile
+            // is actually connected at the Bluetooth-adapter level.
+            if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && !isBluetoothConnected()) {
+                SylkLogger.d("[audio] Skipping phantom BT SCO output "
+                        + (device.getProductName() != null ? device.getProductName() : "?")
+                        + " — HFP profile not connected");
+                continue;
+            }
+
             // Skip unknowns — keep same behavior as getAudioInputs()
             if (!isKnownOutputType(type)) continue;
     

@@ -1,15 +1,14 @@
 import React, { Component, Fragment } from 'react';
 import { View, SafeAreaView, FlatList, Platform, StyleSheet } from 'react-native';
-import { Badge } from 'react-native-elements';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import momentFormat from 'moment-duration-format';
-import { Card, Text } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { Card, Text, Badge } from 'react-native-paper';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import uuid from 'react-native-uuid';
 import UserIcon from './UserIcon';
-import { Gravatar } from 'react-native-gravatar';
+import { Gravatar } from '../gravatar';
 import { GiftedChat } from 'react-native-gifted-chat';
 
 import utils from '../utils';
@@ -547,13 +546,21 @@ class ContactCard extends Component {
 				<View style={styles.rightContent}>
 				  <View style={styles.unreadRow}>
 					{unread ? (
-					  <Badge
-						value={unread}
-						status="error"
-						textStyle={styles.badgeTextStyle}
-						badgeStyle={styles.badgeInnerStyle}
-						containerStyle={[styles.badgeContainer, isDark && darkStyles.badgeContainer]}
-					  />
+					  // Folded from react-native-elements' <Badge/> onto
+					  // react-native-paper's Badge (2026-07-23). Same look:
+					  // the outer View reproduces RNE's containerStyle; the
+					  // paper Badge is the red pill (RNE 'error' red #ff190c;
+					  // paper Badge has no white ring so badgeInnerStyle's
+					  // borderWidth:0 is no longer needed); badgeTextStyle
+					  // carries the Android digit-centering fixes.
+					  <View style={[styles.badgeContainer, isDark && darkStyles.badgeContainer]}>
+						<Badge
+						  size={20}
+						  style={[styles.badgeTextStyle, { backgroundColor: '#ff190c' }]}
+						>
+						  {unread}
+						</Badge>
+					  </View>
 					) : null}
 					{contact.timestamp && (
 					<Text style={[styles.timestamp, isDark && darkStyles.timestamp]}>

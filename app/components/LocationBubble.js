@@ -9,7 +9,7 @@ import {
     Platform,
     Dimensions,
 } from 'react-native';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 // FastImage replaces RN's built-in <Image> for the map tile grid
 // because RN's default cache is unreliable across app restarts —
 // memory-only on Android, opaque eviction on iOS — which means a
@@ -18,7 +18,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 // FastImage maintains a real persistent on-disk cache (Glide on
 // Android, SDWebImage on iOS) so once the user has viewed a tile
 // it renders from disk on the next paint, even with no network.
-import FastImage from 'react-native-fast-image';
+import FastImage from '@d11/react-native-fast-image';
 // react-native-svg is the standard RN path-drawing surface; we use
 // it here ONLY for the trail polyline overlay on top of the
 // stitched tile grid. The Polyline itself is cheap (a single SVG

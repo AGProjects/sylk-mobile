@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { Platform, View, TextInput, Clipboard, Modal, KeyboardAvoidingView, TouchableWithoutFeedback } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import OpenPGP from 'react-native-fast-openpgp';
 import { decode as atob } from 'base-64';
 

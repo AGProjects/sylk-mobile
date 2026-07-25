@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions } from 'react-native';
 import { Text, Button, Surface, Checkbox } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_DeleteMessageModal.scss';

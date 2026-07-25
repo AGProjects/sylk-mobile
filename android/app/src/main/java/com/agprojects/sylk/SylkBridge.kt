@@ -1,8 +1,15 @@
 // SylkBridge.kt
 package com.agprojects.sylk
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import com.facebook.react.bridge.ActivityEventListener
+import com.facebook.react.bridge.BaseActivityEventListener
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
@@ -15,12 +22,56 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
 
     companion object {
         private const val TAG = "SYLK_APP"
+        // Inlined from react-native-draw-overlay (2026-07-22).
+        private const val DRAW_OVER_OTHER_APP_PERMISSION_REQUEST_CODE = 1222
+        private const val DRAW_OVERLAY_ERROR = "Permission was not granted"
     }
 
     override fun getName(): String = "SylkBridge"
 
     private val prefs: SharedPreferences =
         reactContext.getSharedPreferences("SylkPrefs", Context.MODE_PRIVATE)
+
+    // ---------------------------------------------------------------
+    // Inlined from the dead, patched react-native-draw-overlay package
+    // (2026-07-22). Provides the two methods JS used to check / request
+    // the "display over other apps" (SYSTEM_ALERT_WINDOW) permission,
+    // needed so the incoming-call alert panel can appear over the lock
+    // screen and other apps. The ask path launches the system settings
+    // screen and resolves the stored promise from onActivityResult —
+    // hence the ActivityEventListener registered below (SylkBridge had
+    // no activity-result plumbing before this). Android-only, matching
+    // the removed native module (it never existed on iOS).
+    // ---------------------------------------------------------------
+    private var drawOverlayPromise: Promise? = null
+
+    private val drawOverlayActivityEventListener: ActivityEventListener =
+        object : BaseActivityEventListener() {
+            override fun onActivityResult(
+                activity: Activity?,
+                requestCode: Int,
+                resultCode: Int,
+                data: Intent?
+            ) {
+                super.onActivityResult(activity, requestCode, resultCode, data)
+                if (requestCode == DRAW_OVER_OTHER_APP_PERMISSION_REQUEST_CODE) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        if (activity != null && Settings.canDrawOverlays(activity.applicationContext)) {
+                            drawOverlayPromise?.resolve(true)
+                        } else {
+                            drawOverlayPromise?.reject(Throwable(DRAW_OVERLAY_ERROR))
+                        }
+                    } else {
+                        drawOverlayPromise?.resolve(true)
+                    }
+                    drawOverlayPromise = null
+                }
+            }
+        }
+
+    init {
+        reactContext.addActivityEventListener(drawOverlayActivityEventListener)
+    }
 
     @ReactMethod
     fun setActiveChat(chatId: String?) {
@@ -155,5 +206,108 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
     @ReactMethod(isBlockingSynchronousMethod = true)
     fun getSystemFontWeightAdjustment(): Int {
         return prefs.getInt("systemFontWeightAdjustment", 0)
+    }
+
+    /**
+     * Single-shot synchronous read of the Bluetooth-headset
+     * voice-command stamp. MainActivity.emitVoiceCommandIntent writes
+     * pendingVoiceCommandTs when an ACTION_VOICE_COMMAND /
+     * VOICE_SEARCH_HANDSFREE intent (long-press on an HFP headset
+     * call button, e.g. Plantronics Voyager) cold-starts the app
+     * before the ReactContext exists. The App constructor consumes it
+     * to arm a deferred redial of the last dialed URI, fired once
+     * registration completes (headsetRedial in app.js).
+     *
+     * Returns the epoch-millis timestamp of the press (and atomically
+     * clears the pref), or 0 when no press is pending. Returned as
+     * Double because the RN sync bridge has no Long.
+     */
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun consumeVoiceCommandTs(): Double {
+        val ts = prefs.getLong("pendingVoiceCommandTs", 0L)
+        if (ts != 0L) {
+            prefs.edit().remove("pendingVoiceCommandTs").apply()
+        }
+        return ts.toDouble()
+    }
+
+    // Inlined from the dead react-native-minimize package (2026-07-22):
+    // sends the app to the background by launching the HOME intent —
+    // identical behavior to the removed lib's minimizeApp(). Used by
+    // the phone-was-locked / screen-off call-teardown paths in app.js
+    // (Android-only flows).
+    @ReactMethod
+    fun minimizeApp() {
+        try {
+            val startMain = android.content.Intent(android.content.Intent.ACTION_MAIN)
+            startMain.addCategory(android.content.Intent.CATEGORY_HOME)
+            startMain.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+            reactApplicationContext.startActivity(startMain)
+        } catch (e: Exception) {
+            SylkLogger.e("[bridge] minimizeApp failed: ${e.message}")
+        }
+    }
+
+    // Inlined from the dead react-native-immersive package (2026-07-22):
+    // sticky-immersive fullscreen toggle used by the video call /
+    // conference UI. Same SYSTEM_UI flags as the removed lib. The API is
+    // deprecated on 30+ but byte-identical to what the lib did — revisit
+    // with a WindowInsetsController migration when edge-to-edge work
+    // lands (post-RN-upgrade).
+    @ReactMethod
+    fun setImmersive(isOn: Boolean) {
+        val activity = currentActivity ?: return
+        activity.runOnUiThread {
+            try {
+                @Suppress("DEPRECATION")
+                activity.window.decorView.systemUiVisibility = if (isOn) {
+                    (android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                        or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                } else {
+                    android.view.View.SYSTEM_UI_FLAG_VISIBLE
+                }
+            } catch (e: Exception) {
+                SylkLogger.e("[bridge] setImmersive failed: ${e.message}")
+            }
+        }
+    }
+
+    // Inlined from the dead, patched react-native-draw-overlay package
+    // (2026-07-22). Launches the system "display over other apps"
+    // settings screen if the SYSTEM_ALERT_WINDOW permission isn't granted
+    // yet, and resolves the promise from onActivityResult above once the
+    // user returns; resolves immediately if already granted. Byte-for-byte
+    // the removed lib's askForDisplayOverOtherAppsPermission().
+    @ReactMethod
+    fun askForDisplayOverOtherAppsPermission(promise: Promise) {
+        drawOverlayPromise = promise
+        if (!Settings.canDrawOverlays(reactApplicationContext)) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + reactApplicationContext.packageName)
+            )
+            reactApplicationContext.startActivityForResult(
+                intent, DRAW_OVER_OTHER_APP_PERMISSION_REQUEST_CODE, null
+            )
+        } else {
+            promise.resolve(true)
+        }
+    }
+
+    // Inlined from react-native-draw-overlay's locally-patched
+    // checkForDisplayOverOtherAppsPermission(): rejects when the overlay
+    // permission is missing (JS opens app settings on the rejection),
+    // resolves(true) when already granted.
+    @ReactMethod
+    fun checkForDisplayOverOtherAppsPermission(promise: Promise) {
+        if (!Settings.canDrawOverlays(reactApplicationContext)) {
+            promise.reject(Throwable(DRAW_OVERLAY_ERROR))
+        } else {
+            promise.resolve(true)
+        }
     }
 }

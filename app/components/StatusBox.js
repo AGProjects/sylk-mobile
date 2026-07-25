@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Text, StyleSheet } from 'react-native';
 import { Snackbar } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons'; // adjust import if needed
+import Icon from '@react-native-vector-icons/material-design-icons'; // adjust import if needed
 import PropTypes from 'prop-types';
 //import styles from '../assets/styles/blink/_StatusBox.scss';
 

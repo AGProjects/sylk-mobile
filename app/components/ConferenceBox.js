@@ -13,11 +13,11 @@ import { IconButton, Appbar, Modal, Surface, Paragraph, Text, Menu, Button } fro
 import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated, Easing} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import DocumentPicker from 'react-native-document-picker';
+import Icon from '@react-native-vector-icons/material-design-icons';
+import DocumentPicker from '../documentPicker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import VideoPlayer from 'react-native-video-player';
-import Immersive from 'react-native-immersive';
+import Video from 'react-native-video';
+import Immersive from '../immersive';
 import { getStatusBarHeight } from 'react-native-status-bar-height';
 
 import { useEffect, useRef } from 'react';
@@ -67,7 +67,6 @@ import UpgradeVideoModal from './UpgradeVideoModal';
 import StartCameraPreviewModal from './StartCameraPreviewModal';
 import AudioWaveform from './AudioWaveform';
 import ChatBubble from './ChatBubble';
-import KeyboardSpacer from 'react-native-keyboard-spacer';
 import InCallManager from 'react-native-incall-manager';
 
 import xss from 'xss';
@@ -81,7 +80,10 @@ import {
 } from './conferenceRecordingDisclosure';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 
-import md5 from "react-native-md5";
+import CryptoJS from 'crypto-js';
+// Drop-in for the removed react-native-md5 package (same hex_md5 API,
+// keeps the transfer_id values identical across app versions).
+const md5 = { hex_md5: (s) => CryptoJS.MD5(s).toString() };
 import FileViewer from 'react-native-file-viewer';
 import _ from 'lodash'; import { produce } from "immer"
 import moment from 'moment';
@@ -134,6 +136,15 @@ function useLogChanges(label, value) {
 }
 
 const conferenceHeaderHeight = 60;
+
+// Height of the "Blink" brand strip that used to render above the
+// conference Appbar in portrait. The strip is currently disabled
+// (_showConfBrandStrip = false in ConferenceHeader.js), so the
+// portrait navbar offsets must NOT reserve space for it — doing so
+// left a 34 dp gap between the overlay navbar and the video view
+// (reported on iOS portrait). If the strip is ever re-enabled,
+// restore this to 34 to keep the media surface below it.
+const conferenceBrandStripHeight = 0;
 
   // Audio-device icon map — use the shared utils map so this picker
   // stays in lockstep with AudioCallBox / VideoBox / LocalMedia /
@@ -2590,14 +2601,16 @@ class ConferenceBox extends Component {
 
         return (
         <View style={styles.videoContainer}>
-            <VideoPlayer
-                video={{ uri: currentMessage.video}}
-                autoplay={false}
-                pauseOnPress={true}
-                showDuration={true}
-                controlsTimeout={2}
-                fullScreenOnLongPress={true}
-                customStyles={styles.videoPlayer}
+            {/* Same base react-native-video player ChatBox uses (dropped the
+                react-native-video-player wrapper with the v5→v6 bump). Native
+                `controls` covers the wrapper's pauseOnPress / showDuration /
+                fullscreen. Starts paused (was autoplay={false}). */}
+            <Video
+                source={{ uri: currentMessage.video }}
+                style={{ width: 240, height: 180, backgroundColor: 'black' }}
+                controls={true}
+                resizeMode="contain"
+                paused={true}
             />
         </View>
         );
@@ -6084,7 +6097,7 @@ class ConferenceBox extends Component {
         // visible position.
         const _navbarOffset = this.fullScreen
             ? 0
-            : conferenceHeaderHeight + (this.state.isLandscape ? 0 : 34);
+            : conferenceHeaderHeight + (this.state.isLandscape ? 0 : conferenceBrandStripHeight);
         const y = _navbarOffset + 12 + topInset;
         const x = this.state.isLandscape ? 12 : leftInset + 12;
         return { x, y };
@@ -11018,15 +11031,15 @@ class ConferenceBox extends Component {
 			borderColor: 'magenta'      // magenta = buttonsContainer (floating)
 		};
 
-		// Visible-navbar offset: in portrait the conference header
-		// is 60 dp Paper Appbar + 34 dp brand strip (overflow:visible
-		// pushes the strip ABOVE the 60 dp box). In landscape only
-		// the 60 dp Appbar shows. Applied to the mediaContainer
-		// below — for absolute children paddingTop on the parent has
-		// no effect; we have to set top: <offset> directly.
+		// Visible-navbar offset: the 60 dp Paper Appbar, plus the
+		// brand strip height when the portrait strip is enabled
+		// (currently 0 — strip hidden, see conferenceBrandStripHeight).
+		// Applied to the mediaContainer below — for absolute children
+		// paddingTop on the parent has no effect; we have to set
+		// top: <offset> directly.
 		const _navbarOffset = this.fullScreen
 		    ? 0
-		    : conferenceHeaderHeight + (this.state.isLandscape ? 0 : 34);
+		    : conferenceHeaderHeight + (this.state.isLandscape ? 0 : conferenceBrandStripHeight);
 		conferenceContainer = {
 		  flex: 1,
 		  flexDirection: this.state.isLandscape ? 'row' : 'column',
@@ -11746,12 +11759,12 @@ class ConferenceBox extends Component {
 				  style={
 					_isSoloFullscreen
 					  ? (() => {
-						  // TOP offset accounts for the visible navbar.
-						  // Portrait navbar = 60 dp Paper Appbar + 34 dp
-						  // brand strip above it (overflow:visible).
-						  // Landscape suppresses the strip. In fullscreen
-						  // the chrome is hidden so the wrapper fills
-						  // the canvas.
+						  // TOP offset accounts for the visible navbar:
+						  // the 60 dp Paper Appbar plus the portrait
+						  // brand strip height (currently 0 — strip
+						  // hidden, see conferenceBrandStripHeight).
+						  // In fullscreen the chrome is hidden so the
+						  // wrapper fills the canvas.
 						  //
 						  // BOTTOM: 0 normally. On iOS portrait we push
 						  // it past the SafeAreaView bottom inset
@@ -11761,9 +11774,8 @@ class ConferenceBox extends Component {
 						  // the bottom part of the screen too". iOS
 						  // has no Android-style system buttons at the
 						  // bottom to reserve space for.
-						  const _stripHeight = 34;
 						  const _navbarH = conferenceHeaderHeight
-						    + (this.state.isLandscape ? 0 : _stripHeight);
+						    + (this.state.isLandscape ? 0 : conferenceBrandStripHeight);
 						  const _bottom = (Platform.OS === 'ios' && !this.state.isLandscape)
 						    ? -bottomInset
 						    : 0;

@@ -2,7 +2,7 @@ import React, { Component, Fragment } from 'react';
 import { View, Platform, TouchableHighlight, TouchableOpacity, DeviceEventEmitter, NativeModules, Keyboard, Modal, BackHandler } from 'react-native';
 const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
 import { IconButton, Title, Button, Text, ActivityIndicator, Menu } from 'react-native-paper';
-import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import MaterialCommunityIcon from '@react-native-vector-icons/material-design-icons';
 import { check as checkPermission, PERMISSIONS as RNP_PERMISSIONS, RESULTS as RNP_RESULTS } from 'react-native-permissions';
 import autoBind from 'auto-bind';
 
@@ -1423,9 +1423,8 @@ class AudioRecorder extends Component {
                                     }}>
                                         <View style={{
                                             flexDirection: 'column',
-                                            alignItems: 'flex-end',
+                                            alignItems: 'center',
                                             justifyContent: 'center',
-                                            paddingRight: 8,
                                         }}>
                                             {/* "Recording of X" title removed —
                                                 the clip length now lives in the
@@ -1505,40 +1504,26 @@ class AudioRecorder extends Component {
                                                 width={sliderWidth}
                                                 durationSec={this.state.recordingDuration || 0}
                                             />
-                                        </View>
-                                        {/* Play/pause button — same shape
-                                            and palette as the bubble's
-                                            playButton in
-                                            ContactsListBox.renderMessageAudio
-                                            (TouchableHighlight wrapper at
-                                            48×48 with 24 radius hosting
-                                            an IconButton with the blue
-                                            `playAudioButton` style). */}
-                                        <TouchableHighlight
-                                            onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
-                                            underlayColor="transparent"
-                                            style={[
-                                                {
-                                                    height: 48,
-                                                    width: 48,
-                                                    justifyContent: 'center',
-                                                    borderRadius: 24,
-                                                    alignSelf: 'flex-end',
-                                                    marginLeft: 0,
-                                                },
-                                            ]}>
-                                            <IconButton
-                                                size={28}
-                                                onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
+                                            {/* Play/pause — centered under the duration
+                                                scale, matching the chat-message playback
+                                                card. Only the IconButton carries onPress
+                                                (wrapper is a plain View); a Touchable
+                                                wrapper here double-fires and the pause is
+                                                undone by an instant resume. */}
+                                            <View
                                                 style={{
-                                                    backgroundColor: 'rgba(69, 114, 166, 1)',
-                                                    marginLeft: 0,
-                                                    marginRight: 0,
-                                                }}
-                                                iconColor="white"
-                                                icon={isPlaying ? 'pause' : 'play'}
-                                            />
-                                        </TouchableHighlight>
+                                                    height: 48, width: 48, justifyContent: 'center',
+                                                    borderRadius: 24, alignSelf: 'center', marginTop: 12,
+                                                }}>
+                                                <IconButton
+                                                    size={28}
+                                                    onPress={isPlaying ? this.pausePreviewAudio : this.previewAudio}
+                                                    style={{ backgroundColor: 'rgba(69, 114, 166, 1)', marginLeft: 0, marginRight: 0 }}
+                                                    iconColor="white"
+                                                    icon={isPlaying ? 'pause' : 'play'}
+                                                />
+                                            </View>
+                                        </View>
                                     </View>
                                 );
                             })()}

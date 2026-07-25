@@ -37,7 +37,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
 import { Text, Button, Surface, Divider } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import PropTypes from 'prop-types';
 
 import { NIGHT_BUBBLE_COLORS } from '../DarkModeManager';

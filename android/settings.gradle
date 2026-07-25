@@ -1,9 +1,13 @@
+pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex -> ex.autolinkLibrariesFromCommand() }
+
 rootProject.name = 'Sylk'
 
-include ':react-native-video'
-project(':react-native-video').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-video/android-exoplayer')
-
-
-apply from: file("../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesSettingsGradle(settings)
 include ':app'
+// Top-level includeBuild (in addition to the pluginManagement one above):
+// provides the composite-build substitution for the
+// `com.facebook.react:react-native-gradle-plugin` buildscript classpath
+// referenced in build.gradle. Both entries are required (matches the
+// stock RN 0.76 template).
 includeBuild('../node_modules/@react-native/gradle-plugin')

@@ -14,7 +14,7 @@ import {
     Clipboard,
 } from 'react-native';
 import { Button, Surface, ActivityIndicator, IconButton } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 // Share the same Modal + Surface shell the other dialogs use, so the
 // rounded-corner card and dimmed backdrop match EditContactModal and

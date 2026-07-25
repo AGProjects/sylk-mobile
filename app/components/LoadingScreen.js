@@ -2,7 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { View } from 'react-native';
 import { Title, Modal, Portal, ActivityIndicator, Colors } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import styles from '../assets/styles/blink/_LoadingScreen.scss';
 
 import { red } from '../assets/styles/colors'; 

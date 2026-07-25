@@ -5,6 +5,10 @@ import { Alert, View, Dimensions, SafeAreaView, ImageBackground, AppState, Linki
 import { DeviceEventEmitter, BackHandler } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Provider as PaperProvider, DefaultTheme, ActivityIndicator, Modal, Title} from 'react-native-paper';
+// react-native-vector-icons per-family migration: paper's string-name icons
+// (IconButton/Menu.Item/TextInput.Icon/Appbar.Action) resolve through its
+// settings.icon component, wired to the new material-design-icons package.
+import MaterialDesignIcons from '@react-native-vector-icons/material-design-icons';
 import { registerGlobals, RTCAudioSession } from 'react-native-webrtc';
 import { Router, Route, Link, Switch } from 'react-router-native';
 import history from './history';
@@ -12,29 +16,59 @@ import Logger from "../Logger";
 import autoBind from 'auto-bind';
 import messaging from '@react-native-firebase/messaging';
 import { getMessaging, getToken } from '@react-native-firebase/messaging';
-import RNMinimize from 'react-native-minimize';
+// Inlined replacement for the dead react-native-minimize package —
+// same minimizeApp() API, served natively by SylkBridge (used only on
+// Android paths: phone-was-locked / screen-off call teardown).
+const RNMinimize = {
+    minimizeApp: () => {
+        try {
+            NativeModules.SylkBridge.minimizeApp();
+        } catch (e) {
+            console.log('minimizeApp failed:', e && e.message);
+        }
+    },
+};
 import { NativeEventEmitter, NativeModules } from 'react-native';
-import PushNotificationIOS from "@react-native-community/push-notification-ios";
-import PushNotification, {Importance} from "react-native-push-notification";
 import VoipPushNotification from 'react-native-voip-push-notification';
 import { getApp } from '@react-native-firebase/app';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Proximity from 'react-native-proximity';
+import Proximity from './proximity';
 
 import { Appearance } from 'react-native';
-import ImageResizer from 'react-native-image-resizer';
-import { Video as VideoCompressor } from 'react-native-compressor';
+import { Video as VideoCompressor, Image as ImageCompressor } from 'react-native-compressor';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import debug from 'react-native-debug';
 
 import uuid from 'react-native-uuid';
-import { getUniqueId, getBundleId, isTablet, getPhoneNumber} from 'react-native-device-info';
-import RNDrawOverlay from 'react-native-draw-overlay';
+import { getUniqueIdSync, getBundleId, isTablet } from 'react-native-device-info';
+import RNDrawOverlay from './drawOverlay';
 import Contacts from 'react-native-contacts';
 import BackgroundTimer from 'react-native-background-timer';
 import DeepLinking from 'react-native-deep-linking';
 import base64 from 'react-native-base64';
-import SoundPlayer from 'react-native-sound-player';
+import Sound from 'react-native-sound';
+
+// Drop-in replacement for the removed react-native-sound-player package.
+// Lazily loads (and caches) bundled sounds (res/raw on Android, main app
+// bundle on iOS) via react-native-sound, which is already used elsewhere
+// (ReadyBox, AudioRecorder, ChatBox).
+const _bundledSounds = {};
+function playBundledSound(filename) {
+    const cached = _bundledSounds[filename];
+    if (cached) {
+        cached.stop(() => cached.play());
+        return;
+    }
+    const s = new Sound(filename, Sound.MAIN_BUNDLE, (e) => {
+        if (e) {
+            console.log('Failed to load sound', filename, ':', e.message);
+            return;
+        }
+        _bundledSounds[filename] = s;
+        console.log('Play sound file', filename);
+        s.play();
+    });
+}
 import OpenPGP from "react-native-fast-openpgp";
 import exportAnnounce from './ExportAnnounce';
 import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams, registerZrtpRs1Handlers, setLocalDeviceId } from './components/CallZrtp';
@@ -45,11 +79,66 @@ import DeviceInfo from 'react-native-device-info';
 import RNBackgroundDownloader from '@kesha-antonov/react-native-background-downloader'
 import {check, request, PERMISSIONS, RESULTS, openSettings} from 'react-native-permissions';
 import {decode as atob, encode as btoa} from 'base-64';
-import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
+import notifee, { AndroidImportance, AndroidStyle, EventType } from '@notifee/react-native';
+
+// Replacement for react-native-push-notification's localNotification()
+// (the lib is dead; notifee is already a dependency). Ensures the
+// 'sylk-messages' channel exists — the old lib carried the channel
+// registration with it. createChannel is idempotent: Android ignores
+// re-creates of an existing id, so calling it on every notification is
+// safe and also heals fresh installs where the channel never existed.
+// skipInForeground mirrors the old ignoreInForeground:true behavior
+// (message notifications are suppressed while the app is active; the
+// in-app chat UI is the notification in that case).
+async function displayAndroidMessageNotification({title, body, subtitle, data, skipInForeground}) {
+    if (skipInForeground && AppState.currentState === 'active') {
+        return;
+    }
+    try {
+        await notifee.createChannel({
+            id: 'sylk-messages',
+            name: 'Messages',
+            importance: AndroidImportance.HIGH,
+        });
+        await notifee.displayNotification({
+            title: title,
+            body: body,
+            data: data || {},
+            android: {
+                channelId: 'sylk-messages',
+                largeIcon: 'ic_launcher',
+                subtitle: subtitle,
+                autoCancel: true,
+                onlyAlertOnce: true,
+                showTimestamp: true,
+                style: { type: AndroidStyle.BIGTEXT, text: body },
+                pressAction: { id: 'default' },
+            },
+        });
+        console.log('displayAndroidMessageNotification displayed:', title, '-', body);
+    } catch (e) {
+        console.log('displayAndroidMessageNotification failed:', e && e.message);
+    }
+}
+
+// iOS local-notification post, replacing RNCPushNotificationIOS's
+// addNotificationRequest / presentLocalNotification (2026-07-22). The
+// native side (APNSTokenModule.postLocalNotification) attaches userInfo
+// verbatim, so AppDelegate's willPresentNotification foreground logic
+// (which reads userInfo["data"]) behaves exactly as before. Callers own
+// the {data: ...} envelope contract.
+function postIosLocalNotification(id, title, body, userInfo) {
+    try {
+        NativeModules.APNSTokenModule.postLocalNotification(
+            id || '', title || '', body || '', 'default', userInfo || {});
+    } catch (e) {
+        console.log('postIosLocalNotification failed:', e && e.message);
+    }
+}
 import mime from 'react-native-mime-types';
 import { StatusBar } from 'react-native';
 import { LogBox } from 'react-native';
-import Immersive from 'react-native-immersive';
+import Immersive from './immersive';
 import RNBlobUtil from 'react-native-blob-util';
 import NetInfo from "@react-native-community/netinfo";
 import { SafeAreaProvider, SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
@@ -904,7 +993,7 @@ import {
 import { getQosResult, loadQosResultFromDisk } from '../qos/qos-stats';
 import { formatQosReport, formatQosReportHtml, reconcileQos, qosSummaryLine } from './qosReport';
 import { readAcknowledged as readLocationDisclosure } from './components/locationDisclosure';
-import fileType from 'react-native-file-type';
+import fileType from './fileType';
 import path from 'react-native-path';
 
 import DarkModeManager from './DarkModeManager';
@@ -1104,10 +1193,6 @@ function logDevices(label, devices) {
   });
 }
 
-function checkIosPermissions() {
-    return new Promise(resolve => PushNotificationIOS.checkPermissions(resolve));
-}
-
 const KeyOptions = {
   cipher: "aes256",
   hash: "sha512",
@@ -1155,7 +1240,16 @@ const version = '1.0.0';
 const MAX_LOG_LINES = 5000;
 const MAX_LOG_BYTES = 1000000;
 
-let deviceId = getUniqueId();
+let deviceId = getUniqueIdSync();
+
+// react-native-device-info removed getPhoneNumber() in v11: Android's
+// TelephonyManager.getLine1Number() returns empty on Android 11+ for apps
+// without carrier privileges, so SIM MSISDN auto-capture is no longer
+// reliably available. Auto-capture is retired here — this stub keeps the
+// (Android-only) call sites working; they already fall back to the user
+// entering their Mobile number in My Account. Returns '' so the downstream
+// isPhoneNumber()/non-empty guards drop it exactly like the old 'unknown'.
+const getPhoneNumber = async () => '';
 
 if (Platform.OS == 'ios') {
     bundleId = `${bundleId}.${__DEV__ ? 'dev' : 'prod'}`;
@@ -1373,6 +1467,31 @@ class Sylk extends Component {
             console.log('[chat-overlay] consumeLaunchMessageUri (ctor) failed', e && e.message);
         }
 
+        // Cold-start Bluetooth-headset redial. When a long-press on an
+        // HFP headset call button (ACTION_VOICE_COMMAND) launches the
+        // app from scratch, MainActivity can't emit SylkVoiceCommand —
+        // JS isn't bundled yet — so it stamps pendingVoiceCommandTs
+        // into SylkPrefs instead (mirror of launchMessageUri above).
+        // Consume it here and arm _pendingHeadsetRedial; the actual
+        // redial fires from registrationStateChanged → 'registered',
+        // because dialing before the account is up would fail. Stamps
+        // older than 2 minutes are discarded as stale (a press that
+        // never resulted in a prompt app start shouldn't surprise the
+        // user with a call much later).
+        this._pendingHeadsetRedial = false;
+        try {
+            const _SylkBridgeVc = NativeModules && NativeModules.SylkBridge;
+            const _vcTs = _SylkBridgeVc && typeof _SylkBridgeVc.consumeVoiceCommandTs === 'function'
+                ? _SylkBridgeVc.consumeVoiceCommandTs()
+                : 0;
+            if (_vcTs && (Date.now() - _vcTs) < 120000) {
+                this._pendingHeadsetRedial = true;
+                utils.timestampedLog('[headset-redial] cold-start voice command consumed — redial armed for registration');
+            }
+        } catch (e) {
+            console.log('[headset-redial] consumeVoiceCommandTs (ctor) failed', e && e.message);
+        }
+
         // Make this App instance available to non-React modules
         // (locationDisclosure / callRecordingDisclosure) that need to
         // read or write state.accountSetting through a singleton
@@ -1531,7 +1650,7 @@ class Sylk extends Component {
         // written on every tick and we don't want renders for that.
         this.meetingSessions = {};
 
-		this.deviceId = getUniqueId();
+		this.deviceId = getUniqueIdSync();
 		this.contactIndex = {};
 		this.contactsIndexes = {};
 		this.lastLookupKey = null;
@@ -2243,7 +2362,7 @@ class Sylk extends Component {
             DeepLinking.addScheme(scheme);
         }
 
-        this.sqlTableVersions = {'messages': 19,
+        this.sqlTableVersions = {'messages': 20,
                                  // accounts bumped 21→22: + ab_migration column
                                  // accounts bumped 22→23: + install_date column
                                  // contacts bumped 14→15: + deleted_timestamp column
@@ -2287,6 +2406,26 @@ class Sylk extends Component {
 						this.eventFromUrl(_url);
 					} catch (e) {
 						console.log('[app] SylkDeepLink eventFromUrl threw', e && e.message);
+					}
+				}
+			);
+
+			// Bluetooth-headset redial hotkey (warm start).
+			// MainActivity.emitVoiceCommandIntent forwards the
+			// ACTION_VOICE_COMMAND / VOICE_SEARCH_HANDSFREE intent —
+			// a long-press on the call button of an HFP headset such
+			// as the Plantronics Voyager — as this event while the
+			// app is running. Redial the last dialed URI immediately.
+			// (Cold start goes through the pendingVoiceCommandTs
+			// SharedPreferences stamp consumed in the constructor.)
+			DeviceEventEmitter.addListener('SylkVoiceCommand',
+				(payload) => {
+					utils.timestampedLog('[headset-redial] voice command event, source=',
+						(payload && payload.source) || 'unknown');
+					try {
+						this.headsetRedial('voice-command');
+					} catch (e) {
+						console.log('[headset-redial] headsetRedial threw', e && e.message);
 					}
 				}
 			);
@@ -3817,12 +3956,14 @@ class Sylk extends Component {
 		  // Permission-gated: load only on explicit Phonebook tap so the OS prompt
 		  // appears on user intent. Re-prompts until granted; skips only when already
 		  // authorized AND contacts already fetched (addresBookLoaded also flips on denial).
-		  const permission = await new Promise((resolve, reject) => {
-			Contacts.checkPermission((err, permission) => {
-			  if (err) return reject(err);
-			  resolve(permission);
-			});
-		  });
+		  let permission;
+		  try {
+			permission = await Contacts.checkPermission();
+		  } catch (e) {
+			console.log('[ab] checkPermission threw:', e && e.message, e);
+			return;
+		  }
+		  console.log('[ab] checkPermission ->', permission);
 
 		  //console.log('AB Contacts permission:', permission);
 
@@ -3842,19 +3983,12 @@ class Sylk extends Component {
 		  if (Platform.OS === 'android') {
 			await this.requestContactsPermission(); // make this return a Promise too
 		  } else {
-			await new Promise((resolve, reject) => {
-			  Contacts.requestPermission((err, permission) => {
-				if (err) return reject(err);
-				resolve(permission);
-			  });
-			});
+			await Contacts.requestPermission();
 		  }
 
 		  // Re-check OS permission and snapshot into state.abPermissionDenied,
 		  // which ReadyBox watches to show the "open Settings" banner.
-		  const finalPermission = await new Promise((resolve, reject) => {
-			Contacts.checkPermission((err, p) => err ? reject(err) : resolve(p));
-		  });
+		  const finalPermission = await Contacts.checkPermission();
 		  if (finalPermission === 'authorized') {
 			this.setState({ abPermissionDenied: false });
 			// Android's requestContactsPermission fetches on grant; iOS does not,
@@ -3871,12 +4005,13 @@ class Sylk extends Component {
 	async getABContacts() {
 		  //console.log('getABContacts');
 		
-		  const contacts = await new Promise((resolve, reject) => {
-			Contacts.getAll((err, contacts) => {
-			  if (err) return reject(err);
-			  resolve(contacts);
-			});
-		  });
+		  let contacts;
+		  try {
+			contacts = await Contacts.getAll();
+		  } catch (e) {
+			console.log('[ab] Contacts.getAll threw:', e && e.message, e);
+			throw e;
+		  }
 		
 		  console.log('getABContacts returned', contacts.length, 'contacts');
 		
@@ -4235,6 +4370,8 @@ class Sylk extends Component {
                                myInvitedParties: myInvitedParties,
                                blockedUris: blockedUris
                                });
+
+                this.syncDisplayNamesToNative(finalContacts);
 
                 try {
                     const _ts = finalContacts.filter(c => c && c.lastCallTimestamp != null);
@@ -5196,6 +5333,7 @@ class Sylk extends Component {
                                      unix_timestamp INTEGER default 0, 
                                      sender TEXT, 
                                      content BLOB, 
+                                     content_encrypted BLOB,
                                      content_type TEXT, 
                                      metadata TEXT, 
                                      from_uri TEXT, 
@@ -5526,6 +5664,7 @@ class Sylk extends Component {
                                                 18: [{query: 'alter table messages add column has_link INTEGER', params: []},
                                                      {query: 'CREATE INDEX IF NOT EXISTS idx_messages_contact_category_link_ts ON messages(account, from_uri, to_uri, category, has_link, unix_timestamp)', params: []}],
                                                 19: [{query: 'alter table messages add column origin TEXT', params: []}],
+                                                20: [{query: 'alter table messages add column content_encrypted BLOB', params: []}],
                                                 },
                                    'contacts': {2: [{query: 'alter table contacts add column participants TEXT', params: []}],
                                                 3: [{query: 'alter table contacts add column direction TEXT', params: []},
@@ -6728,7 +6867,7 @@ class Sylk extends Component {
 
     changeRoute(route, reason) {
         console.log('Route', route, 'with reason', reason);
-        utils.timestampedLog('[app] Route', this.currentRoute, '->', route, ':', reason);
+        utils.timestampedLog('[app] Route', this.currentRoute, '->', route, ':', reason, 'inCall=' + (this.activeCall ? true : false));
 
         // Drive the native in-conference flag off route transitions.
         // outgoingConference also sets the flag on conference start,
@@ -6809,6 +6948,40 @@ class Sylk extends Component {
 
         if (this.currentRoute === route) {
             if (route === '/ready') {
+                // Stale-call guard. When we're asked to route to /ready but
+                // the route is ALREADY /ready, the currentCall/incomingCall
+                // teardown far below (the `route === '/ready' && reason !==
+                // 'back to home'` block that nulls them) is skipped by the
+                // early `return` at the end of this branch. A call that ended
+                // WITHOUT a JS 'terminated' stateChanged reaching
+                // callStateChanged — e.g. an incoming push call the caller
+                // cancels, then torn down via the WSS-disconnect "not held
+                // for revival" -> hangupCall('connection_failed') -> delayed
+                // changeRoute('/ready') path — is therefore left stranded in
+                // state. activeCall (= currentCall || incomingCall) stays
+                // truthy, so the main UI is locked into the reduced "in-call"
+                // menu set even though nothing is live.
+                //
+                // Only clear a call we can prove is dead: its sylkrtc Call
+                // object is gone from CallManager OR already 'terminated'. A
+                // live ringing incoming call (state 'incoming') or an
+                // established call is left untouched.
+                const _stale = this.state.currentCall || this.state.incomingCall;
+                if (_stale) {
+                    const _live = (this.callKeeper && this.callKeeper._calls)
+                        ? this.callKeeper._calls.get(_stale.id) : null;
+                    if (!_live || _stale.state === 'terminated' || _live.state === 'terminated') {
+                        utils.timestampedLog('[app] clearing stale call state on /ready',
+                            _stale.id, 'state=' + _stale.state, 'reason=' + reason);
+                        this.setState({
+                            currentCall: null,
+                            incomingCall: null,
+                            outgoingCallUUID: null,
+                            reconnectingCall: false,
+                            muted: false
+                        });
+                    }
+                }
                 if (this.state.selectedContact) {
                     if (this.state.callContact) {
                         if (this.state.callContact.uri !== this.state.selectedContact.uri && this.state.selectedContact.uri in messages) {
@@ -7193,12 +7366,14 @@ class Sylk extends Component {
 			VoipPushNotification.removeEventListener('register', this._boundOnPushkitRegistered);
 			VoipPushNotification.removeEventListener('notification', this._onNotificationReceivedBackground,);
 			VoipPushNotification.removeEventListener('localNotification', this._onLocalNotificationReceivedBackground,);
-			if (this._onLocalNotification) {
-				PushNotificationIOS.removeEventListener('localNotification', this._onLocalNotification);
+			if (this._notificationTapListener) {
+				this._notificationTapListener.remove();
+				this._notificationTapListener = null;
 			}
-			if (this._onRemoteNotification) {
-				PushNotificationIOS.removeEventListener('notification', this._onRemoteNotification);
-			}    
+			if (this._remoteNotificationListener) {
+				this._remoteNotificationListener.remove();
+				this._remoteNotificationListener = null;
+			}
 		}
 	  
 		this.closeConnection();
@@ -10022,8 +10197,17 @@ class Sylk extends Component {
 			this._onLocalNotification = this.onLocalNotification.bind(this);
 			this._onRemoteNotification = this.onRemoteNotification.bind(this);
 
-			PushNotificationIOS.addEventListener('localNotification', this._onLocalNotification);
-			PushNotificationIOS.addEventListener('notification', this._onRemoteNotification);
+			// Replaces RNCPushNotificationIOS's 'notification' /
+			// 'localNotification' events (2026-07-22): AppDelegate now emits
+			// the raw APNs userInfo as SylkRemoteNotification from
+			// didReceiveRemoteNotification, and the inner data dict of
+			// non-message taps as SylkNotificationTapped from
+			// didReceiveNotificationResponse (message taps stay on the
+			// dedicated SylkPushTapped fast path below).
+			this._remoteNotificationListener = DeviceEventEmitter.addListener(
+				'SylkRemoteNotification', this._onRemoteNotification);
+			this._notificationTapListener = DeviceEventEmitter.addListener(
+				'SylkNotificationTapped', this._onLocalNotification);
 
 			// Warm-start push-tap fast path on iOS. AppDelegate's
 			// userNotificationCenter:didReceiveNotificationResponse:
@@ -10048,8 +10232,10 @@ class Sylk extends Component {
 				}
 			});
 
-			// initial notification if app launched from push
-			const initialNotification = await PushNotificationIOS.getInitialNotification();
+			// initial notification if app launched from push (native stash
+			// in AppDelegate, read-and-clear; returns the raw userInfo dict
+			// or null — same shape onRemoteNotification now consumes)
+			const initialNotification = await NativeModules.APNSTokenModule.getInitialNotification();
 			if (initialNotification) {
 				this.onRemoteNotification(initialNotification);
 				// Cold-start tap on iOS: the AppDelegate's
@@ -10061,7 +10247,7 @@ class Sylk extends Component {
 				// navigate as the warm-start path so the launch tap
 				// also opens the chat directly.
 				try {
-					const _data = initialNotification && initialNotification._data && initialNotification._data.data;
+					const _data = initialNotification && initialNotification.data;
 					if (_data && _data.event === 'message' && _data.from_uri) {
 						utils.timestampedLog('[app] iOS cold-start initialNotification message from=', _data.from_uri);
 						this.setState({chatOpenLoading: true, chatOpenUri: _data.from_uri});
@@ -10243,6 +10429,16 @@ class Sylk extends Component {
 		// disappears once the user actively switches away while a headset is present.
 		this.setState({ userChangedAudioDevice: false });
 
+		// Proximity sensor is owned by incall-manager (see app/proximity.js).
+		// Start it explicitly on EVERY platform: on Android <31 InCallManager.start()
+		// below auto-starts it too, but the native isProximityRegistered guard makes
+		// this a harmless no-op there; on Android >=31 and iOS InCallManager.start()
+		// is never called (native AudioRouteModule / CallKeep own audio), so this is
+		// the only thing that turns the sensor on. Idempotent + best-effort.
+		try { InCallManager.startProximitySensor(); } catch (e) {
+			utils.timestampedLog('[proximity] startProximitySensor failed', e && e.message);
+		}
+
 		if (this.useInCallManger) {
 		    InCallManager.start({media: 'audio'});
 			// AudioRouteModule is not used for routing on Android < 31, but we still
@@ -10350,6 +10546,32 @@ class Sylk extends Component {
 			this._routeReassertCount = 0;
 		}
 		AudioRouteModule.start(_startDevice);
+
+		// Pin the starting route at the TELECOM layer too
+		// (setActiveDeviceForCall → applyTelecomAudioRoute + the
+		// AudioManager communication device). AudioRouteModule.start()
+		// above only sets the AudioManager side; during ringing —
+		// especially video calls, whose Telecom default route is the
+		// speaker — Telecom keeps re-applying its own route on top of
+		// ours. On the Razr this showed as a BT⇄earpiece tug-of-war for
+		// the whole pre-connect phase (ringback on the speaker, BT icon
+		// in the UI) that only settled when the established-state
+		// watchdog re-asserted through Telecom. Asserting both layers
+		// at call start makes the route stick from the first ring.
+		try {
+			const _tcUuid = (this.activeCall && this.activeCall.id)
+				|| this.state.outgoingCallUUID
+				|| this.state.incomingCallUUID
+				|| '';
+			if (_tcUuid && _startDevice && _startDevice.type
+					&& AudioRouteModule.setActiveDeviceForCall) {
+				utils.timestampedLog('[audio] [device] pinning telecom route for call',
+					_tcUuid, 'to', _startDevice.type);
+				AudioRouteModule.setActiveDeviceForCall(_tcUuid, _startDevice);
+			}
+		} catch (e) {
+			console.log('[audio] telecom route pin failed:', e && e.message);
+		}
     }
 
 	/** Emit one [disclaimer] log line per tracked disclaimer at app
@@ -10402,6 +10624,13 @@ class Sylk extends Component {
 		// Force it back on here. iOS is a no-op.
 		try { InCallManager.turnScreenOn(); } catch (e) {
 			utils.timestampedLog('[proximity] audioManagerStop turnScreenOn failed', e && e.message);
+		}
+
+		// Stop the incall-manager proximity sensor. Placed before the
+		// useInCallManger early-return below so it runs on ALL platforms
+		// (Android <31's InCallManager.stop() also stops it — idempotent no-op).
+		try { InCallManager.stopProximitySensor(); } catch (e) {
+			utils.timestampedLog('[proximity] stopProximitySensor failed', e && e.message);
 		}
 
 		// Audio-mode diagnostic — capture the system's AudioManager mode
@@ -11033,11 +11262,14 @@ class Sylk extends Component {
 		  //console.log('FCM in-app foreground event:', remoteMessage.data.event);
 
 		  if (Platform.OS === 'ios') {
-		      PushNotificationIOS.presentLocalNotification({
-			      alertTitle: remoteMessage.notification?.title,
-			      alertBody: remoteMessage.notification?.body,
-			      userInfo: remoteMessage.data,
-			  });
+		      // Same userInfo attached verbatim as the old
+		      // presentLocalNotification did — foreground display policy
+		      // stays with AppDelegate's willPresentNotification.
+		      postIosLocalNotification(
+			      '', // autogenerate id
+			      remoteMessage.notification?.title,
+			      remoteMessage.notification?.body,
+			      remoteMessage.data);
 		  } else {
 		      const msg = normalizeMessage(remoteMessage);
 			  this.handleFirebasePush(msg);
@@ -11132,41 +11364,13 @@ class Sylk extends Component {
         */
     }
 
-    postAndroidMessageNotification(uri, content) {
-        //https://www.npmjs.com/package/react-native-push-notification
-        console.log('postAndroidMessageNotification', content);
-
-        PushNotification.localNotification({
-          /* Android Only Properties */
-          channelId: "sylk-messages", // (required) channelId, if the channel doesn't exist, notification will not trigger.
-          showWhen: true, // (optional) default: true
-          autoCancel: true, // (optional) default: true
-          largeIcon: "ic_launcher", // (optional) default: "ic_launcher". Use "" for no large icon.
-          largeIconUrl: "https://icanblink.com/apple-touch-icon-180x180.png", // (optional) default: undefined
-          smallIcon: "", // (optional) default: "ic_notification" with fallback for "ic_launcher". Use "" for default small icon.
-          bigText: content, // (optional) default: "message" prop
-          subText: "New message", // (optional) default: none
-          //bigPictureUrl: "https://www.example.tld/picture.jpg", // (optional) default: undefined
-          bigLargeIcon: "ic_launcher", // (optional) default: undefined
-          color: "red", // (optional) default: system default
-          vibrate: true, // (optional) default: true
-          vibration: 100, // vibration length in milliseconds, ignored if vibrate=false, default: 1000
-          priority: "high", // (optional) set notification priority, default: high
-          ignoreInForeground: true, // (optional) if true, the notification will not be visible when the app is in the foreground (useful for parity with how iOS notifications appear). should be used in combine with `com.dieam.reactnativepushnotification.notification_foreground` setting
-          onlyAlertOnce: true, // (optional) alert will open only once with sound and notify, default: false
-          invokeApp: true, // (optional) This enable click on actions to bring back the application to foreground or stay in background, default: true
-          /* iOS and Android properties */
-          id: 0, // (optional) Valid unique 32 bit integer specified as string. default: Autogenerated Unique ID
-          title: uri, // (optional)
-          message: content, // (required)
-          //picture: "https://www.example.tld/picture.jpg", // (optional) Display an picture with the notification, alias of `bigPictureUrl` for Android. default: undefined
-          userInfo: {}, // (optional) default: {} (using null throws a JSON value '<null>' error)
-          playSound: false, // (optional) default: true
-          soundName: "default", // (optional) Sound to play when the notification is shown. Value of 'default' plays the default sound. It can be set to a custom sound such as 'android.resource://com.xyz/raw/my_sound'. It will look for the 'my_sound' audio file in 'res/raw' directory and play it. default: 'default' (default sound is played)
-          number: 10, // (optional) Valid 32 bit integer specified as string. default: none (Cannot be zero)
-          repeatType: "day", // (optional) Repeating interval. Check 'Repeating Notifications' section for more info.
-        });
-    }
+    // (postAndroidMessageNotification was removed 2026-07-22: both of its
+    // call sites were unreachable — the message-banner branch was gated on
+    // an appState value RN never produces, and the DND missed-call branch
+    // is absorbed natively by MyFirebaseMessagingService before JS wakes.
+    // Android message/missed-call banners are native-only by design;
+    // JS-side notifee display remains for the "Until we meet" proximity
+    // notifications via displayAndroidMessageNotification.)
 
     handleFirebasePushInteraction(notification) {
         let data = notification;
@@ -11400,7 +11604,11 @@ class Sylk extends Component {
     }
 
     onRemoteNotification(notification) {
-		const data = notification._data?.data;
+		// `notification` is the raw APNs userInfo dict, emitted by
+		// AppDelegate as SylkRemoteNotification (or returned by the
+		// cold-start getInitialNotification). Formerly this was
+		// RNCPushNotificationIOS's wrapper object (notification._data.data).
+		const data = notification && notification.data;
 
 		if (!data) {
 			console.log('No data found in notification');
@@ -11461,9 +11669,28 @@ class Sylk extends Component {
 	sendLocalNotification(title, body, userInfo) {
 		console.log('sendLocalNotification', userInfo);
 
-		const from = userInfo.from_uri;
+		// Callers pass either the flat data dict or the {data: ...}
+		// envelope; normalize to the inner dict before reading fields.
+		// (The envelope shape used to fall through the from_uri check
+		// below, silently dropping every notifyIncomingMessage banner.)
+		const innerInfo = userInfo && userInfo.data ? userInfo.data : (userInfo || {});
+		const from = innerInfo.from_uri;
 
 		if (!from) {
+			return;
+		}
+
+		// Background message banners are carried by the server push,
+		// retitled with the locally-saved contact name by the
+		// SylkNotificationService extension — a JS-side local post
+		// would only duplicate them (2026-07-22). Foreground ('active')
+		// keeps the JS post, because willPresentNotification suppresses
+		// the raw push banner while the app is active. Non-message
+		// events (location_stopped, meeting milestones) pass through:
+		// they have no server push behind them.
+		if (Platform.OS === 'ios' && innerInfo.event === 'message'
+				&& this.state.appState !== 'active') {
+			console.log('[sendLocalNotification] skip background message banner (server push carries it)');
 			return;
 		}
 
@@ -11473,7 +11700,7 @@ class Sylk extends Component {
 		// nothing — the user is the one who just sent the thing —
 		// and they're especially noisy for cross-device call-
 		// recording sync (one banner per recording on every device).
-		const to = userInfo.to_uri;
+		const to = innerInfo.to_uri;
 		if (from && to && this.state.accountId
 				&& from === this.state.accountId
 				&& to === this.state.accountId) {
@@ -11496,7 +11723,7 @@ class Sylk extends Component {
 		// once-per-session. The proximity-met "Meeting succeeded"
 		// path shares the property. Bypass the per-uri throttle for
 		// these explicitly-marked events.
-		const event = userInfo && userInfo.event;
+		const event = innerInfo.event;
 		const bypassThrottle = event === 'meeting_arrived'
 			|| event === 'meeting_succeeded'
 			|| event === 'meeting_proximity_alert';
@@ -11533,18 +11760,51 @@ class Sylk extends Component {
 		// in iOS 17 — on iOS 17+ it silently no-ops. addNotificationRequest is
 		// the modern replacement and is what triggers willPresentNotification
 		// when the app is foregrounded.
-		const inner = (wrappedUserInfo && wrappedUserInfo.data) || {};
-		const reqId = inner.message_id
-			? `msg-${inner.message_id}`
+		const reqId = innerInfo.message_id
+			? `msg-${innerInfo.message_id}`
 			: `msg-${from}-${now}`;
 
-		PushNotificationIOS.addNotificationRequest({
-			id: reqId,
-			title: title,
-			body: body,
-			sound: 'default',
-			userInfo: wrappedUserInfo,
-		});
+		postIosLocalNotification(reqId, title, body, wrappedUserInfo);
+	}
+
+	// Push the {uri: display_name} map into the shared app-group defaults
+	// (via APNSTokenModule.syncContactDisplayNames) so the
+	// SylkNotificationService extension can retitle incoming message
+	// pushes with the locally-known display name — the server only knows
+	// the bare URI. Whole-map replace, one bridge call per contacts load.
+	// Point update for one contact create/rename — keeps the iOS
+	// notification-extension map fresh immediately (the bulk sync below
+	// only runs on full contacts loads). Called from saveSylkContact.
+	// An empty or uri-echo name removes the entry (the native side
+	// handles that), so the banner falls back to the push title.
+	updateDisplayNameInNativeMap(uri, name) {
+		if (Platform.OS !== 'ios' || !uri) {
+			return;
+		}
+		try {
+			NativeModules.APNSTokenModule.setContactDisplayName(
+				String(uri).toLowerCase(), name ? String(name) : '');
+		} catch (e) {
+			console.log('updateDisplayNameInNativeMap failed:', e && e.message);
+		}
+	}
+
+	syncDisplayNamesToNative(contacts) {
+		if (Platform.OS !== 'ios') {
+			return;
+		}
+		try {
+			const map = {};
+			(contacts || []).forEach((c) => {
+				if (c && c.uri && c.name && c.name !== c.uri) {
+					map[String(c.uri).toLowerCase()] = String(c.name);
+				}
+			});
+			NativeModules.APNSTokenModule.syncContactDisplayNames(map);
+			console.log('[push] display-name map: sent', Object.keys(map).length, 'contacts to shared defaults');
+		} catch (e) {
+			console.log('syncDisplayNamesToNative failed:', e && e.message);
+		}
 	}
 
     updateTotalUread() {
@@ -11557,29 +11817,27 @@ class Sylk extends Component {
        console.log('Total unread messages', total_unread)
 
        if (Platform.OS === 'ios') {
-           PushNotification.setApplicationIconBadgeNumber(total_unread);
+           // notifee replaces react-native-push-notification's
+           // setApplicationIconBadgeNumber (same UNUserNotificationCenter
+           // badge underneath).
+           notifee.setBadgeCount(total_unread);
        } else {
             ShortcutBadge.setCount(total_unread);
        }
     }
     
     onLocalNotification(notification) {
-        // when touch push notification in iOS
-		const notification_data = notification.getData();
-		const data = notification_data.data ? notification_data.data : notification_data;
+        // Tap on a non-message notification banner on iOS. `notification`
+        // is the inner data dict emitted by AppDelegate as
+        // SylkNotificationTapped (message taps arrive via the dedicated
+        // SylkPushTapped fast path instead — see the listener setup).
+        // Formerly RNCPushNotificationIOS's 'localNotification' event.
+		const data = notification || {};
         console.log('onLocalNotification', data);
 
   	    const eventType = data.event;
 
-		if (eventType === 'message') {
-			const from = data.from_uri;
-
-			if (!this.state.selectedContact) {
-				this.updateTotalUread();
-			}
-
-			this.selectChatContact(from);
-		} else if (eventType === 'location_stopped') {
+		if (eventType === 'location_stopped') {
 			// User tapped the "Live location stopped" banner. iOS brings
 			// the app forward first; from here we'd like to hand them
 			// off to Sylk's Settings pane so they can flip Location to
@@ -11707,7 +11965,9 @@ class Sylk extends Component {
 
     _handleAndroidFocus = nextFocus => {
         //utils.timestampedLog('----- Android APP in focus');
-        PushNotification.cancelAllLocalNotifications();
+        // Clear displayed notifications on focus (formerly
+        // PushNotification.cancelAllLocalNotifications).
+        notifee.cancelDisplayedNotifications();
 
         this.setState({inFocus: true});
         this.refreshNavigationItems();
@@ -12429,6 +12689,19 @@ class Sylk extends Component {
             if (this._switchInProgressTimer) {
                 clearTimeout(this._switchInProgressTimer);
                 this._switchInProgressTimer = null;
+            }
+
+            // Deferred Bluetooth-headset redial (see headsetRedial).
+            // Armed either by the constructor's pendingVoiceCommandTs
+            // consume (voice-command intent cold-started the app) or
+            // by headsetRedial itself when the press arrived while
+            // unregistered. Small delay so the account/UI state
+            // settles before the outgoing call kicks off.
+            if (this._pendingHeadsetRedial) {
+                this._pendingHeadsetRedial = false;
+                setTimeout(() => {
+                    this.headsetRedial('registered-deferred');
+                }, 1500);
             }
 
             // Disclaimer audit log. Emits one [disclaimer] line per
@@ -13242,6 +13515,56 @@ class Sylk extends Component {
     }
 
     /**
+     * Persist per-contact video-call preferences, DEVICE-ONLY.
+     * Stored under contact.localProperties.videoCallPrefs — the local
+     * SQL contacts table's localProperties column is never synced to
+     * the server (same store as the per-contact ZRTP cache and codec
+     * overrides), so these never leave the device.
+     *
+     * prefs: { last_camera: 'front'|'back',
+     *          video_swapped: boolean,
+     *          show_mirror: boolean }
+     *
+     * Written by VideoBox on every user toggle (camera switch, video
+     * swap, mirror hide/show) via the saveVideoCallPrefs prop; read
+     * back by VideoBox._applyVideoCallPrefs at mount so the next video
+     * call with this contact starts on the same camera / layout.
+     */
+    async saveVideoCallPrefs(uri, prefs) {
+        if (!uri || !prefs) return;
+        try {
+            // create=true: after a first-ever call to a new URI the
+            // contact row may not exist yet — mint it so the prefs
+            // still stick (saveSylkContact below persists it).
+            const contact = this.lookupContact(uri, true);
+            if (!contact) {
+                utils.timestampedLog('[video-prefs] no contact for', uri, '— prefs not saved');
+                return;
+            }
+            contact.localProperties = contact.localProperties || {};
+            contact.localProperties.videoCallPrefs = {
+                ...(contact.localProperties.videoCallPrefs || {}),
+                ...prefs
+            };
+
+            // Mirror onto a possibly-stale state.callContact reference
+            // so the in-call UI reads the fresh values without waiting
+            // for the SQL round-trip (same pattern as markZrtpVerified —
+            // see the comment there on why callContact can go stale).
+            const sc = this.state.callContact;
+            if (sc && sc.uri === uri && sc !== contact) {
+                sc.localProperties = sc.localProperties || {};
+                sc.localProperties.videoCallPrefs = contact.localProperties.videoCallPrefs;
+            }
+
+            await this.saveSylkContact(uri, contact, 'videoCallPrefs');
+            //console.log('[video-prefs] saved for', uri, JSON.stringify(contact.localProperties.videoCallPrefs));
+        } catch (e) {
+            console.log('[video-prefs] save failed for', uri, e && e.message);
+        }
+    }
+
+    /**
      * Restore the encryption mode to the user's account-level
      * preference. Call when ending a call where a per-contact
      * encryption override was applied, so subsequent calls use the
@@ -14032,14 +14355,14 @@ class Sylk extends Component {
     playHangupTone() {
         // Short confirmation tone played when an established call ends.
         // InCallManager.stop({busytone}) only knows the busy tone, so
-        // this plays hangup_tone.wav via SoundPlayer instead. Delay
+        // this plays hangup_tone.wav ourselves instead. Delay
         // slightly so audioManagerStop()'s native teardown
         // (AudioRouteModule.restoreAudioMode → MODE_NORMAL on Android)
-        // lands first; SoundPlayer uses MediaPlayer, which sounds
-        // thin/muffled while the device is still in MODE_IN_COMMUNICATION.
+        // lands first; MediaPlayer output sounds thin/muffled while
+        // the device is still in MODE_IN_COMMUNICATION.
         setTimeout(() => {
             try {
-                SoundPlayer.playSoundFile('hangup_tone', 'wav');
+                playBundledSound('hangup_tone.wav');
             } catch (e) {
                 utils.timestampedLog('Failed to play hangup tone:', e && e.message);
             }
@@ -14430,7 +14753,33 @@ class Sylk extends Component {
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
 
-                if (!this.isConference(call)) {
+                // Media-type speaker default, but ONLY when no headset is
+                // connected and the user hasn't picked a device. This used
+                // to call speakerphoneOn() unconditionally for video —
+                // which is why video-call ringback played on the SPEAKER
+                // while a BT headset was connected and shown as selected:
+                // 'progress' fires the moment the ringback starts, and the
+                // forced speaker overrode the BT route audioManagerStart
+                // had set. (Audio calls were unaffected because their
+                // speakerphoneOff() is a no-op when the speaker isn't on.)
+                if (this.headsetPresent() || this.state.userChangedAudioDevice) {
+                    // Headset in charge — instead of forcing anything,
+                    // re-assert the current route at the TELECOM layer.
+                    // The Connection was created by callKeeper.startCall
+                    // just before 'progress', which on video calls can be
+                    // several seconds after audioManagerStart (camera
+                    // preview countdown) — late enough for the native
+                    // pin's retry budget to have expired. Telecom's
+                    // video-call default is the speaker, so without this
+                    // re-pin it can still yank the route now.
+                    if (Platform.OS === 'android' && !this.useInCallManger
+                            && this.state.selectedDevice && this.state.selectedDevice.type
+                            && AudioRouteModule.setActiveDeviceForCall) {
+                        utils.timestampedLog('[audio] [device] progress — re-pinning',
+                            this.state.selectedDevice.type, 'for call', callUUID);
+                        AudioRouteModule.setActiveDeviceForCall(callUUID, this.state.selectedDevice);
+                    }
+                } else if (!this.isConference(call)) {
                     if (mediaType === 'video') {
                         this.speakerphoneOn();
                     } else {
@@ -17349,6 +17698,65 @@ class Sylk extends Component {
              });
     }
 
+    /**
+     * Bluetooth-headset redial hotkey. Fired when the user long-presses
+     * the call button of an HFP headset (e.g. Plantronics Voyager)
+     * while no call is in progress: the headset sends AT+BVRA, Android
+     * turns it into ACTION_VOICE_COMMAND, and MainActivity forwards it
+     * here (SylkVoiceCommand event on warm start, pendingVoiceCommandTs
+     * pref + registrationStateChanged deferral on cold start).
+     *
+     * Redials the last dialed URI (stored by callKeepStartCall) as an
+     * audio call, immediately and without confirmation — the whole
+     * point is pocket-dialing-free handsfree redial. During ringing or
+     * an active call the same button is handled by the OS telecom
+     * stack via CallKeep (answer/hangup), so this only ever runs idle.
+     */
+    async headsetRedial(source) {
+        if (this.state.currentCall || this.state.incomingCall) {
+            utils.timestampedLog('[headset-redial] ignored — a call is already in progress');
+            return;
+        }
+
+        if (this.state.registrationState !== 'registered') {
+            // Cold start still registering, or the connection dropped
+            // while backgrounded. Arm the deferred redial —
+            // registrationStateChanged fires it on 'registered' — and
+            // nudge the connection so that happens promptly.
+            utils.timestampedLog('[headset-redial] not registered yet — deferring redial (source=', source, ')');
+            this._pendingHeadsetRedial = true;
+            try { this.respawnConnection('headset-redial'); } catch (e) { /* best effort */ }
+            return;
+        }
+
+        let last = this._lastDialedUri;
+        if (!last || !last.uri) {
+            try {
+                last = await storage.get('lastDialedUri');
+            } catch (e) {
+                last = null;
+            }
+        }
+
+        if (!last || !last.uri) {
+            utils.timestampedLog('[headset-redial] nothing to redial — no last dialed uri');
+            if (this._notificationCenter) {
+                this._notificationCenter.postSystemNotification('No recent call to redial');
+            }
+            return;
+        }
+
+        // Repeat the last call's media: a video call redials as video,
+        // an audio call as audio (last.video stored by callKeepStartCall).
+        utils.timestampedLog('[headset-redial] redialing', last.uri,
+            '(source=', source, ', video=', !!last.video, ')');
+        // skipCountdown: a headset-initiated redial is already an explicit
+        // "make the call" gesture — go straight to the INVITE instead of
+        // parking on the camera-preview Start-call countdown (the user may
+        // not even be looking at the phone).
+        this.callKeepStartCall(last.uri, {audio: true, video: !!last.video, skipCountdown: true});
+    }
+
     async callKeepStartCall(targetUri, options) {
         console.log('callKeepStartCall', options);
 
@@ -17550,6 +17958,16 @@ class Sylk extends Component {
         // line ~9863).
         if (!options.conference) {
             this.addHistoryEntry(targetUri, callUUID, 'outgoing');
+            // Remember the target for the Bluetooth-headset redial
+            // hotkey (headsetRedial): in memory for warm redials,
+            // persisted so redial still works right after an app
+            // restart. Stored at the same point as the history entry
+            // above — even a call that is later blocked by the
+            // caller-id / mic gates counts as "last dialed", matching
+            // what the Recent list shows. Conference starts are
+            // deliberately excluded.
+            this._lastDialedUri = {uri: targetUri, video: !!options.video, ts: Date.now()};
+            storage.set('lastDialedUri', this._lastDialedUri);
         }
 
         if (options.conference) {
@@ -18360,6 +18778,41 @@ class Sylk extends Component {
             setTimeout(() => {
                  this.changeRoute('/ready', reason);
             }, 6000);
+        } else if (reason === 'connection_failed') {
+            // Defensive, changeRoute-independent teardown. 'connection_failed'
+            // is fired only from the WSS-disconnect "not held for revival"
+            // path (see hangupCall(callUUID, 'connection_failed') above),
+            // where the call is already terminated and definitively dead.
+            // Historically the only state cleanup was the delayed
+            // changeRoute('/ready') below — which no-ops when the app is
+            // already on /ready, stranding the dead call in
+            // state.currentCall / state.incomingCall and locking the UI into
+            // the reduced "in-call" menu set (activeCall stays truthy).
+            // Clear it here directly so cleanup never depends on the route
+            // flip. Scope the clear to state that actually points at THIS
+            // call (matched by callUUID) so a different, live call can never
+            // be clobbered. The /call post-hangup window stays intact — the
+            // render keeps the last call mounted via _lastActiveCallId.
+            utils.timestampedLog('[app] Will go to ready in 6 seconds (connection_failed)');
+            const _clear = {};
+            if (this.state.currentCall && this.state.currentCall.id === callUUID) {
+                _clear.currentCall = null;
+                _clear.outgoingCallUUID = null;
+                _clear.reconnectingCall = false;
+                _clear.muted = false;
+            }
+            if (this.state.incomingCall && this.state.incomingCall.id === callUUID) {
+                _clear.incomingCall = null;
+            }
+            if (Object.keys(_clear).length > 0) {
+                utils.timestampedLog('[app] connection_failed: clearing stale call state',
+                    callUUID, 'fields=' + Object.keys(_clear).join(','));
+                this.setState(_clear);
+            }
+
+            setTimeout(() => {
+                 this.changeRoute('/ready', reason);
+            }, 6000);
         } else {
             utils.timestampedLog('[app] Will go to ready in 6 seconds (hangup)');
             setTimeout(() => {
@@ -18734,11 +19187,9 @@ class Sylk extends Component {
             this.handleRegistration(this.state.accountId, this.state.password, 'backToForeground');
         }
 
-        PushNotification.popInitialNotification((notification) => {
-            if (notification) {
-                console.log('Initial push notification', notification);
-            }
-        });
+        // (react-native-push-notification's popInitialNotification was
+        // only logged here; cold-start push routing happens natively via
+        // SylkDeepLink / FCM service, so nothing to replace.)
     }
 
     // Deferred + deduped wrapper around backToForeground.
@@ -19439,10 +19890,14 @@ class Sylk extends Component {
         }
 
         if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+            // Effectively unreachable on Android: MyFirebaseMessagingService
+            // enforces privacy.dnd natively (drops the push and posts the
+            // silent "Missed call … (Do Not Disturb)" banner on
+            // rejected_calls_channel), so JS never sees the call. Kept as
+            // defense in depth for a stale stashed push replayed by
+            // checkPendingActions — don't ring, and don't post a duplicate
+            // notification (the native one already exists).
             console.log('Do not disturb is enabled');
-			if (Platform.OS === 'android') {
-				this.postAndroidMessageNotification(from, 'missed call');
-			}
             return;
         }
 
@@ -20365,6 +20820,11 @@ class Sylk extends Component {
             console.error('No contact was be created');
             return;
         }
+
+        // Keep the iOS notification-extension display-name map in step
+        // with every contact create/edit (covers both the INSERT path
+        // below and the UNIQUE-constraint fallback to updateSylkContact).
+        this.updateDisplayNameInNativeMap(uri, contact.name);
 
         // URI-dedup guard. The contacts table is keyed by (account,
         // contact_id), so two paths that each mint a FRESH contact_id for the
@@ -21927,21 +22387,24 @@ class Sylk extends Component {
 
 		async resizeBeforeUpload(localUrl, size=2400) {
 		  //console.log('Image to resize', localUrl);
+		  // Uses react-native-compressor (already used for video transcoding
+		  // below) instead of the dead react-native-image-resizer package.
+		  // Returns the same { path, size } shape the caller expects.
+		  // compress() with 'manual' scales the image down to fit
+		  // maxWidth/maxHeight (never upscales) and re-encodes as JPEG,
+		  // stripping metadata like the old keepMeta:false did.
 		  try {
-			const resized = await ImageResizer.createResizedImage(
-			  localUrl,          // image URI
-			  size,               // width
-			  size,               // height
-			  'JPEG',            // format
-			  95,                // quality
-			  0,                 // rotation
-			  undefined,         // outputPath
-			  false,             // keepMeta (false = strip EXIF)
-			  { onlyScaleDown: true } // don't upscale smaller images
-			);
-		
-			//console.log('Image resized:', resized);
-			return resized;  // new file path to upload
+			const uri = await ImageCompressor.compress(localUrl, {
+			  compressionMethod: 'manual',
+			  maxWidth: size,
+			  maxHeight: size,
+			  quality: 0.95,
+			  output: 'jpg'
+			});
+			const path = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
+			const stat = await RNFS.stat(path);
+			//console.log('Image resized:', uri);
+			return { uri: uri, path: path, size: stat.size };  // new file to upload
 		  } catch (err) {
 			console.error('Image resize failed:', err);
 			return null;
@@ -25867,6 +26330,13 @@ class Sylk extends Component {
         
         //console.log('decryptMessage', id);
 
+        // Preserve the original encrypted payload before the row's
+        // `content` column gets overwritten with plaintext below, so
+        // the ciphertext can be recovered later (re-decrypt, export,
+        // audit). Captured here because `message.content` is the exact
+        // blob passed to OpenPGP.decrypt.
+        const _origEncrypted = message.content;
+
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
             // utils.timestampedLog('[message]', id, 'decrypted', 'from', uri);
             if (uri in decryptingMessages) {
@@ -26049,8 +26519,8 @@ class Sylk extends Component {
             // COALESCE fills only a still-NULL category, so an already-stamped
             // row (text/image/…) is never disturbed.
             const _cat = this._classifyMessageCategory(message.content_type, null, null, content);
-            let params = [content, _hl, _cat, id, this.state.accountId];
-            this.ExecuteQuery("update messages set encrypted = 2, content = ?, has_link = ?, category = COALESCE(category, ?) where msg_id = ? and account = ?", params).then((result) => {
+            let params = [content, _origEncrypted, _hl, _cat, id, this.state.accountId];
+            this.ExecuteQuery("update messages set encrypted = 2, content = ?, content_encrypted = COALESCE(content_encrypted, ?), has_link = ?, category = COALESCE(category, ?) where msg_id = ? and account = ?", params).then((result) => {
                 if (this.state.selectedContact && this.state.selectedContact.uri === uri && pending_messages.length === 0) {
                     this.confirmRead(uri, 'sql saved read');
                 }
@@ -26684,6 +27154,9 @@ class Sylk extends Component {
                 if (item.encrypted === 1) {
                     if (!privateKey) return null;
                     try {
+                        // Preserve the ciphertext before `content` is
+                        // overwritten with plaintext in the row below.
+                        const _origEncrypted = item.content;
                         content = await OpenPGP.decrypt(item.content, privateKey);
                         // Persist plaintext + encrypted=2 + has_link
                         // so the later full getMessages slice doesn't
@@ -26697,8 +27170,8 @@ class Sylk extends Component {
                             // (action lives in content). COALESCE only fills NULL.
                             const _cat = this._classifyMessageCategory(item.content_type, null, null, content);
                             await this.ExecuteQuery(
-                                'UPDATE messages SET content = ?, encrypted = 2, has_link = ?, category = COALESCE(category, ?) WHERE account = ? AND msg_id = ?',
-                                [content, _hl, _cat, accountId, item.msg_id]
+                                'UPDATE messages SET content = ?, content_encrypted = COALESCE(content_encrypted, ?), encrypted = 2, has_link = ?, category = COALESCE(category, ?) WHERE account = ? AND msg_id = ?',
+                                [content, _origEncrypted, _hl, _cat, accountId, item.msg_id]
                             );
                         } catch (uErr) { /* best-effort */ }
                         item.content = content;
@@ -29857,13 +30330,13 @@ class Sylk extends Component {
         }
 
         try {
-          //SoundPlayer.playSoundFile('message_received', 'wav');
+          //playBundledSound('message_received.wav');
           if (direction === 'incoming') {
             this.incoming_sound_ts = Date.now();
-            SoundPlayer.playSoundFile('beluga_in', 'wav');
+            playBundledSound('beluga_in.wav');
           } else {
             this.outgoing_sound_ts = Date.now();
-            SoundPlayer.playSoundFile('beluga_out', 'wav');
+            playBundledSound('beluga_out.wav');
           }
         } catch (e) {
           console.log('Error playing', direction,' sound:', e);
@@ -32476,7 +32949,6 @@ class Sylk extends Component {
         const isMetadata = message.contentType === 'application/sylk-message-metadata';
         let isLocationOriginTick = false;
         let isLocationFollowup = false;
-        let friendlyNotifBody = null;
 
         if (isMetadata) {
             try {
@@ -32486,9 +32958,6 @@ class Sylk extends Component {
                         isLocationFollowup = true;
                     } else {
                         isLocationOriginTick = true;
-                        const contact = this.lookupContact(message.sender.uri);
-                        const displayName = (contact && contact.name) || message.sender.uri;
-                        friendlyNotifBody = `\uD83D\uDCCD Live location from ${displayName}`;
                     }
                 }
             } catch (e) {
@@ -32503,16 +32972,11 @@ class Sylk extends Component {
             return;
         }
 
-        if (!this.state.selectedContact || this.state.selectedContact.uri !== message.sender.uri) {
-            if (this.state.appState === 'foreground') {
-				if (Platform.OS === 'android') {
-					// For a location origin tick, swap the raw JSON for the
-					// friendly body so the system notification reads well.
-					const notifBody = isLocationOriginTick ? friendlyNotifBody : content;
-					this.postAndroidMessageNotification(message.sender.uri, notifBody);
-                }
-            }
-        }
+        // NOTE: an Android JS-side message banner used to be "posted" here,
+        // guarded by `appState === 'foreground'` — a value RN's AppState
+        // never produces ('active'/'background'/'inactive'), so the branch
+        // never executed. Removed 2026-07-22: the native FCM service is the
+        // sole source of Android message banners by design.
 
 		if (isMetadata) {
 			// Fire an iOS local notification for the origin location share
@@ -35882,26 +36346,16 @@ class Sylk extends Component {
 				// so AppDelegate's willPresentNotification handler can read
 				// userInfo["data"]["event"] and show the banner in foreground.
 				const inner = {from_uri: uri, event: 'meeting_proximity_near'};
-				PushNotificationIOS.addNotificationRequest({
-					id: `meeting-near-${uri}-${Date.now()}`,
+				postIosLocalNotification(
+					`meeting-near-${uri}-${Date.now()}`,
+					title, body, { data: inner });
+			} else {
+				displayAndroidMessageNotification({
 					title: title,
 					body: body,
-					sound: 'default',
-					userInfo: { data: inner },
-				});
-			} else {
-				PushNotification.localNotification({
-					channelId: 'sylk-messages',
-					title,
-					message: body,
-					bigText: body,
-					subText: 'Until we meet',
-					autoCancel: true,
-					playSound: true,
-					soundName: 'default',
-					priority: 'high',
-					vibrate: true,
-					userInfo: {from_uri: uri, event: 'meeting_proximity_near'},
+					subtitle: 'Until we meet',
+					data: {from_uri: uri, event: 'meeting_proximity_near'},
+					skipInForeground: false,
 				});
 			}
 		} catch (e) {
@@ -35912,10 +36366,10 @@ class Sylk extends Component {
 
 	// Cross-platform local notification for the proximity-met event.
 	// iOS path mirrors the existing sendLocalNotification wrapper;
-	// Android path mirrors postAndroidMessageNotification's use of the
-	// "sylk-messages" channel so we inherit the already-registered
-	// channel config (vibration, importance, icon) instead of minting
-	// a new one just for this. Both paths are fire-and-forget — a failed
+	// Android path uses displayAndroidMessageNotification (notifee) on
+	// the "sylk-messages" channel so we inherit the shared channel
+	// config (vibration, importance, icon) instead of minting a new
+	// one just for this. Both paths are fire-and-forget — a failed
 	// notification must not block the session teardown.
 	_showMeetingProximityNotification(uri, distance) {
 		// Title = peer's display name (falls back to uri if no cached
@@ -35943,26 +36397,16 @@ class Sylk extends Component {
 				// the {data: ...} envelope so AppDelegate's willPresent
 				// handler renders the banner in foreground.
 				const inner = {from_uri: uri, event: 'meeting_proximity_met'};
-				PushNotificationIOS.addNotificationRequest({
-					id: `meeting-met-${uri}-${Date.now()}`,
+				postIosLocalNotification(
+					`meeting-met-${uri}-${Date.now()}`,
+					title, body, { data: inner });
+			} else {
+				displayAndroidMessageNotification({
 					title: title,
 					body: body,
-					sound: 'default',
-					userInfo: { data: inner },
-				});
-			} else {
-				PushNotification.localNotification({
-					channelId: 'sylk-messages',
-					title,
-					message: body,
-					bigText: body,
-					subText: 'Until we meet',
-					autoCancel: true,
-					playSound: true,
-					soundName: 'default',
-					priority: 'high',
-					vibrate: true,
-					userInfo: {from_uri: uri, event: 'meeting_proximity_met'},
+					subtitle: 'Until we meet',
+					data: {from_uri: uri, event: 'meeting_proximity_met'},
+					skipInForeground: false,
 				});
 			}
 		} catch (e) {
@@ -37167,9 +37611,12 @@ class Sylk extends Component {
         // (decrypt-time path fills it); compute eagerly when the
         // body is clear.
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action, _cat, _hl];
+        // Preserve the original ciphertext when we stored decrypted
+        // plaintext (encrypted=2); null when the row wasn't decrypted here.
+        const content_encrypted = decryptedBody !== null ? message.content : null;
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action, _cat, _hl, content_encrypted];
         this._normalizeInsertUris(params, 8, 9);
-        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
 
             if (message.contentType === 'application/sylk-file-transfer') {
@@ -37790,7 +38237,10 @@ class Sylk extends Component {
         const _cat = this._classifyMessageCategory(message.contentType, message.metadata, null, content);
         // Encrypted text → has_link NULL (decrypt path fills it).
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl];
+        // When we stored the decrypted plaintext (encrypted=2), keep the
+        // original ciphertext so it can be recovered later; null otherwise.
+        const content_encrypted = info?.decryptedBody ? message.content : null;
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl, content_encrypted];
         this.pendingNewSQLMessages.push(params);
 
         if (this.pendingNewSQLMessages.length > 49) {
@@ -37912,11 +38362,11 @@ class Sylk extends Component {
 		INSERT INTO messages (
 		  account, encrypted, msg_id, timestamp, unix_timestamp,
 		  content, content_type, metadata, from_uri, to_uri,
-		  direction, pending, sent, received, state, disposition_notification, category, has_link
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  direction, pending, sent, received, state, disposition_notification, category, has_link, content_encrypted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`;
 
-        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state, disposition_notification, category, has_link) VALUES ";
+        let query = "INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, state, disposition_notification, category, has_link, content_encrypted) VALUES ";
 
         let pendingNewSQLMessages = this.pendingNewSQLMessages;
         this.pendingNewSQLMessages = [];
@@ -38295,6 +38745,13 @@ class Sylk extends Component {
         let uri = message.sender.uri;
         let contact;
 
+        // Capture the original wire payload up front. When the message was
+        // encrypted (decryptedBody !== null) this is the ciphertext we want
+        // to preserve in content_encrypted. Captured here because the
+        // call-recording reroute below can overwrite message.content with a
+        // rewritten JSON body.
+        const _origWireContent = message.content;
+
         // Reject messages with an empty/malformed sender URI before they are
         // persisted. Every incoming message — websocket delivery and push
         // replay (incomingMessageFromPush builds sender:{uri: from} from a
@@ -38619,10 +39076,14 @@ class Sylk extends Component {
         // Incoming text typically arrives encrypted; eagerly
         // classify only when content is clear (encrypted falsy).
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification, expire, _cat, _hl];
+        // When decryptedBody is present we store plaintext (encrypted=2);
+        // preserve the original ciphertext (captured before any reroute
+        // rewrite) so it can be recovered later. null when not encrypted.
+        const content_encrypted = decryptedBody !== null ? _origWireContent : null;
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", received, related_action, related_msg_id, disposition_notification, expire, _cat, _hl, content_encrypted];
 
         this._normalizeInsertUris(params, 8, 9);
-        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 			//console.log('saveIncomingMessage SQL OK');
 
 			// Round the websocket timestamp to second precision so it matches
@@ -38943,7 +39404,10 @@ class Sylk extends Component {
         // Sync bulk inserts arrive with ciphertext when encrypted;
         // skip eager has_link, decrypt path handles it.
         const _hl = encrypted ? null : this._hasLinkInText(message.contentType, content);
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state, disposition_notification, _cat, _hl];
+        // Preserve the original ciphertext when we stored decrypted
+        // plaintext (encrypted=2); null when the row wasn't decrypted here.
+        const content_encrypted = info?.decryptedBody ? message.content : null;
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, metadata, message.sender.uri, this.state.account.id, "incoming", pending, sent, received, message.state, disposition_notification, _cat, _hl, content_encrypted];
 
         this.pendingNewSQLMessages.push(params);
         
@@ -42893,7 +43357,10 @@ class Sylk extends Component {
 			'changed =', changedUris);
 
        if (Platform.OS === 'ios') {
-           PushNotification.setApplicationIconBadgeNumber(total_unread);
+           // notifee replaces react-native-push-notification's
+           // setApplicationIconBadgeNumber (same UNUserNotificationCenter
+           // badge underneath).
+           notifee.setBadgeCount(total_unread);
        } else {
             // Diagnostic snapshot of every counter source involved in the
             // launcher-badge calculation. Split across multiple lines, one
@@ -45568,7 +46035,7 @@ const _appBgImage = DarkModeManager.getTheme().isDark
 return (
   <GestureHandlerRootView style={{ flex: 1 }}>
   <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-    <PaperProvider theme={theme}>
+    <PaperProvider theme={theme} settings={{ icon: (props) => <MaterialDesignIcons {...props} /> }}>
       <Router history={history}>
         <ImageBackground
           source={_appBgImage}
@@ -45773,8 +46240,14 @@ return (
                       /* When the main navbar is mounted (/ready, not
                          fullscreen), actionless system messages render
                          on the navbar's subtitle line instead of the
-                         bottom bar. Other routes keep the bottom bar. */
-                      useNavbar={this.currentRoute === '/ready' && !this.state.fullScreen}
+                         bottom bar. On /call the CallOverlay appbar
+                         does the same job with its second (status)
+                         line — navbarSystemMessage is threaded down
+                         via <Call> to AudioCallBox / VideoBox →
+                         CallOverlay — so the black bottom bar is
+                         skipped there too. Other routes (conference,
+                         login, …) keep the bottom bar. */
+                      useNavbar={(this.currentRoute === '/ready' || this.currentRoute === '/call') && !this.state.fullScreen}
                       onSystemMessageChanged={(text) => {
                           if (text !== this.state.navbarSystemMessage) {
                               this.setState({ navbarSystemMessage: text });
@@ -47346,6 +47819,12 @@ return (
                    pre-connection bar so the audio-device picker
                    hides and only the red hangup button remains. */
                 key = {_callMountKey}
+                /* Canonical local client identity ("Blink Mobile x.y.z
+                   (<device> on <platform>)") — Call.js sends it to the
+                   peer as the X-Sylk-User-Agent header on the outgoing
+                   INVITE / 200 OK (see _buildOutgoingHeaders). Same
+                   constant NavigationBar shows and QoS reports embed. */
+                userAgent = {USER_AGENT}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 /* PSTN dialing rules from the per-domain
@@ -47380,6 +47859,16 @@ return (
                 myKeys = {this.state.keys}
                 markZrtpVerified = {this.markZrtpVerified}
                 resetContactZrtp = {this.resetContactZrtp}
+                saveVideoCallPrefs = {this.saveVideoCallPrefs}
+                navbarSystemMessage = {this.state.navbarSystemMessage}
+                /* Pre-committed outgoing call (Bluetooth-headset redial
+                   or another handsfree start passed skipCountdown in
+                   callKeepStartCall options, stashed in outgoingMedia):
+                   Call.js skips the camera-preview Start-call gate and
+                   its auto-start countdown, firing the INVITE straight
+                   away. Media-loss reconnects are covered separately by
+                   the reconnectingCall prop below. */
+                skipCountdown = {!!(this.outgoingMedia && this.outgoingMedia.skipCountdown)}
                 connection = {this.state.connection}
                 registrationState = {this.state.registrationState}
                 localMedia = {this.state.localMedia}

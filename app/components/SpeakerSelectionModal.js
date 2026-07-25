@@ -13,7 +13,7 @@ import {
     Platform
 } from 'react-native';
 import { Surface, Text, Button } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 // Speaker layout modes correspond directly to how the conference
 // matrix renders downstream:

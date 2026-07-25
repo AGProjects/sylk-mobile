@@ -15,6 +15,13 @@
 // Needed for APNSTokenModule to send cached tokens
 @property (nonatomic, strong) NSString *cachedAPNSToken;
 
+// Cold-start notification stash (replaces RNCPushNotificationIOS's
+// getInitialNotification). Set from launchOptions in
+// didFinishLaunchingWithOptions (push-launched) or from
+// didReceiveNotificationResponse when the bridge isn't up yet
+// (tap-launched). Read-and-cleared by APNSTokenModule.getInitialNotification.
+@property (nonatomic, strong) NSDictionary *initialRemoteNotification;
+
 // Reference to the bridge (required to get module instance)
 @property (nonatomic, strong) RCTBridge *bridge;
 

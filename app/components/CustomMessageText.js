@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, Linking, Dimensions } from 'react-native';
 import ParsedText from 'react-native-parsed-text';
-import Icon from 'react-native-vector-icons/FontAwesome';
+import Icon from '@react-native-vector-icons/fontawesome';
 import DarkModeManager from '../DarkModeManager';
 
 // Hard pixel cap for the text row. Computed once per screen size so

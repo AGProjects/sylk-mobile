@@ -91,7 +91,25 @@ class URIInput extends React.Component {
 
     onInputClick(event) {
         if (!this.clicked) {
-            this.uriInput.current.select();
+            // `.select()` is a web/DOM-only API on <input>. React Native's
+            // TextInput ref (what Paper's Searchbar forwards to) has no
+            // select() — calling it here crashed with
+            // "this.uriInput.current.select is not a function" the moment
+            // the field was tapped on Android. Guard for both: use select()
+            // on web, and the native setSelection(start, end) equivalent on
+            // device to highlight the existing text on first tap.
+            const input = this.uriInput.current;
+            if (input) {
+                if (typeof input.select === 'function') {
+                    input.select();
+                } else if (typeof input.setSelection === 'function') {
+                    const len =
+                        (this.state.defaultValue && this.state.defaultValue.length) || 0;
+                    if (len > 0) {
+                        input.setSelection(0, len);
+                    }
+                }
+            }
             this.clicked = true;
         }
         // Notify the host that the user has explicitly tapped the
@@ -106,6 +124,21 @@ class URIInput extends React.Component {
                 this.props.onSearchFocus();
             } catch (e) {
                 // Swallow — focus-side prompts are best-effort.
+            }
+        }
+    }
+
+    onInputFocus(event) {
+        // Native tap on the search field fires onFocus — RN TextInput
+        // has no onPress, so onInputClick (web-only) never runs on the
+        // device. This is the reliable "user tapped search" signal on
+        // Android/iOS. Kick the address-book load here.
+        console.log('[ab] URIInput onFocus -> onSearchFocus type=', typeof this.props.onSearchFocus);
+        if (typeof this.props.onSearchFocus === 'function') {
+            try {
+                this.props.onSearchFocus();
+            } catch (e) {
+                console.log('[ab] URIInput onSearchFocus threw', e && e.message);
             }
         }
     }
@@ -291,6 +324,7 @@ class URIInput extends React.Component {
                     placeholder={placeholder}
                     onChangeText={this.onInputChange}
                     onKeyDown={this.onInputKeyDown}
+                    onFocus={this.onInputFocus}
                     onBlur={this.onInputBlur}
                     onPress={this.onInputClick}
                     autoCapitalize="none"
@@ -347,7 +381,22 @@ class URIInput extends React.Component {
                     <IconButton
                         icon="close"
                         size={22}
-                        onPress={() => this.props.onChange('')}
+                        onPress={() => {
+                            this.props.onChange('');
+                            // Clearing the search also ends the typing
+                            // session: drop focus and collapse the
+                            // raised soft keyboard (per user request —
+                            // "when Search contact bar X is pressed,
+                            // we must collapse the raised keyboard
+                            // too"). Blur first so Android doesn't
+                            // immediately re-summon the keyboard for
+                            // the still-focused field.
+                            const inp = this.uriInput.current;
+                            if (inp && inp.blur) {
+                                inp.blur();
+                            }
+                            Keyboard.dismiss();
+                        }}
                         accessibilityLabel="Clear search"
                         style={[
                             uriInputStyles.clearOverlay,

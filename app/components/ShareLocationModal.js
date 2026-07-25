@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions } from 'react-native';
 import { Text, Button, Surface, RadioButton, Checkbox } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import PrivacyRadiusSlider from './PrivacyRadiusSlider';
 // StaticMap is the slippy-map tile renderer used by LocationBubble.
 // Reused here in meet-mode to draw the destination preview once the

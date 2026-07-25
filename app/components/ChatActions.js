@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types'
 import React from 'react'
 import autoBind from 'auto-bind';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons'
+import Icon from '@react-native-vector-icons/material-design-icons'
 import AudioRecorderPlayer from 'react-native-audio-recorder-player'
 import {TouchableOpacity, View, Platform} from 'react-native'
 

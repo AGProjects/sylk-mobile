@@ -17,10 +17,10 @@ import {
   ScrollView,
 } from 'react-native';
 
-import FastImage from 'react-native-fast-image';
+import FastImage from '@d11/react-native-fast-image';
 import ImageViewer from 'react-native-image-zoom-viewer';
 import { IconButton, Checkbox} from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
 const windowDims = Dimensions.get('window');

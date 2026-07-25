@@ -4,7 +4,7 @@ import autoBind from 'auto-bind';
 import { View, Text, Dimensions, TouchableHighlight, TouchableOpacity, TouchableWithoutFeedback, Platform, StyleSheet } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import { IconButton, Button, Text as PaperText } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 
 import CallOverlay from './CallOverlay';
 import styles from '../assets/styles/LocalMediaStyles';

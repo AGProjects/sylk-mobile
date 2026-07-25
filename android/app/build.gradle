@@ -5,6 +5,17 @@ apply plugin: "com.facebook.react"
 import com.android.build.OutputFile
 
 /**
+ * RN 0.76 autolinking. Replaces the old
+ * `applyNativeModulesAppBuildGradle(project)` apply-from line (removed
+ * below) and pairs with `autolinkLibrariesFromCommand()` in
+ * settings.gradle. Defaults (root = ../.., reactNativeDir =
+ * ../../node_modules/react-native) match this project's layout.
+ */
+react {
+    autolinkLibrariesWithApp()
+}
+
+/**
  * The react.gradle file registers a task for each build variant (e.g. bundleDebugJsAndAssets
  * and bundleReleaseJsAndAssets).
  * These basically call `react-native bundle` with the correct arguments during the Android build
@@ -153,8 +164,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
         missingDimensionStrategy "react-native-camera", "general"
-        versionCode 820
-        versionName "8.2.0"
+        versionCode 821
+        versionName "8.2.1"
         multiDexEnabled true
     }
 
@@ -207,7 +218,6 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
-    implementation("com.facebook.react:flipper-integration")
 
     implementation "androidx.core:core:1.12.0"
 
@@ -239,5 +249,6 @@ dependencies {
 //}
 
 apply plugin: 'com.google.gms.google-services'  // Google Play services Gradle plugin
-apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")
-apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
+// react-native-vector-icons per-family migration (2026-07-24): the monolithic
+// fonts.gradle is gone; the @react-native-vector-icons/* packages each ship an
+// autolinked copyFonts task, so no manual apply is needed here.

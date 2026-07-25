@@ -12,7 +12,7 @@ import {
     Linking,
 } from 'react-native';
 import { Text, Button } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from '@react-native-vector-icons/material-design-icons';
 import { WebView } from 'react-native-webview';
 
 import containerStyles from '../assets/styles/ContainerStyles';

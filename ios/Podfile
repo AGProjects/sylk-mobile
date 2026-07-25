@@ -1,5 +1,12 @@
 ENV['SWIFT_VERSION'] = '5'
 
+# iOS has no newArchEnabled flag like Android's gradle.properties. On RN 0.76,
+# use_react_native! defaults RCT_NEW_ARCH_ENABLED to 1 when unset, which builds
+# the pods for the New Architecture while the app still runs old arch — the
+# mismatch breaks FastImage and other native view managers at runtime. Pin it
+# off until the planned New-Arch flip (flip this + Android's newArchEnabled together).
+ENV['RCT_NEW_ARCH_ENABLED'] = '0'
+
 source 'https://cdn.cocoapods.org'
 
 #platform :ios, '12.0'
@@ -8,26 +15,63 @@ source 'https://cdn.cocoapods.org'
 #require_relative '../node_modules/react-native/scripts/react_native_pods_spec'
 #install! 'cocoapods', :deterministic_uuids => false
 
-# Resolve react_native_pods.rb with node to allow for hoisting
-require Pod::Executable.execute_command('node', ['-p',
-  'require.resolve(
-    "react-native/scripts/react_native_pods.rb",
-    {paths: [process.argv[1]]},
-    )', __dir__]).strip
+# Generic `node_require` so we can resolve both react-native's and
+# react-native-permissions' Podfile scripts through node (allows hoisting).
+def node_require(script)
+  require Pod::Executable.execute_command('node', ['-p',
+    "require.resolve(
+      '#{script}',
+      {paths: [process.argv[1]]},
+    )", __dir__]).strip
+end
+
+node_require('react-native/scripts/react_native_pods.rb')
+# react-native-permissions v5 replaced the per-permission `Permission-*` pods
+# with a setup_permissions() helper that rewrites RNPermissions.podspec to
+# compile only the handlers we list (called after prepare_react_native_project!
+# below). Require its setup script here.
+node_require('react-native-permissions/scripts/setup.rb')
+
+# ---- Xcode 26 objectVersion 70 compatibility -------------------------------
+# Xcode 26 re-stamps ios/sylk.xcodeproj to `objectVersion = 70` on every save,
+# but the installed Xcodeproj gem (1.27.0, via the global CocoaPods 1.16.2)
+# only maps object versions up to 77 and aborts pod install with:
+#   [Xcodeproj] Unable to find compatibility version string for object version `70`.
+# CocoaPods copies the user project's object version onto the generated Pods
+# project, so it hits the same gap. Teach Xcodeproj the mapping here — this runs
+# on every `pod install`, so it survives Xcode re-writing 70 (a one-off edit to
+# the .pbxproj does not). Remove once a released xcodeproj gem maps 70 natively.
+require 'xcodeproj'
+unless Xcodeproj::Constants::COMPATIBILITY_VERSION_BY_OBJECT_VERSION.key?(70)
+  _patched_obj_versions = Xcodeproj::Constants::COMPATIBILITY_VERSION_BY_OBJECT_VERSION.dup
+  _patched_obj_versions[70] = 'Xcode 16.0'
+  Xcodeproj::Constants.send(:remove_const, :COMPATIBILITY_VERSION_BY_OBJECT_VERSION)
+  Xcodeproj::Constants.const_set(:COMPATIBILITY_VERSION_BY_OBJECT_VERSION, _patched_obj_versions.freeze)
+end
 
 platform :ios, 15.1
 prepare_react_native_project!
 
-# If you are using a `react-native-flipper` your iOS build will fail when `NO_FLIPPER=1` is set.
-# because `react-native-flipper` depends on (FlipperKit,...) that will be excluded
-#
-# To fix this you can also exclude `react-native-flipper` using a `react-native.config.js`
-# ```js
-# module.exports = {
-#   dependencies: {
-#     ...(process.env.NO_FLIPPER ? { 'react-native-flipper': { platforms: { ios: null } } } : {}),
-# ```
-flipper_config = ENV['NO_FLIPPER'] == "1" ? FlipperConfiguration.disabled : FlipperConfiguration.enabled
+# react-native-permissions v5 handler selection — replaces the old per-handler
+# `pod 'Permission-*'` lines. setup_permissions() rewrites RNPermissions.podspec
+# so ONLY these handlers are compiled into the (autolinked) RNPermissions pod.
+# Keep this list in sync with the permissions the app actually check()/request()s
+# and with the Info.plist usage descriptions. LocationAlways + LocationWhenInUse
+# are both required so check()/request() can distinguish 'Always' from 'While
+# Using' authorization (otherwise both LOCATION_ALWAYS and LOCATION_WHEN_IN_USE
+# come back UNAVAILABLE and the upfront share-location probe can't tell whether
+# background sharing will work).
+setup_permissions([
+  'Camera',
+  'Microphone',
+  'Contacts',
+  'PhotoLibrary',
+  'MediaLibrary',
+  'LocationAlways',
+  'LocationWhenInUse',
+])
+
+# Flipper was removed in React Native 0.76 — no flipper_configuration below.
 
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
@@ -47,71 +91,38 @@ target 'sylk' do
   config = use_native_modules!
   use_react_native!(
     :path => config[:reactNativePath],
-    # Enables Flipper.
-    #
-    # Note that if you have use_frameworks! enabled, Flipper will not work and
-    # you should disable the next line.
-    :flipper_configuration => flipper_config,
     # An absolute path to your application root.
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
-  permissions_path = '../node_modules/react-native-permissions/ios'
   pod 'Firebase', :modular_headers => true
   pod 'FirebaseCoreInternal', :modular_headers => true
   pod 'GoogleUtilities', :modular_headers => true
   pod 'FirebaseCore', :modular_headers => true
-  pod 'Permission-Contacts', :path => "#{permissions_path}/Contacts"
-  pod 'Permission-Microphone', :path => "#{permissions_path}/Microphone"
-  pod 'Permission-Camera', :path => "#{permissions_path}/Camera"
-  pod 'Permission-PhotoLibrary', :path => "#{permissions_path}/PhotoLibrary"
-  pod 'Permission-MediaLibrary', :path => "#{permissions_path}/MediaLibrary"
-  # Needed so react-native-permissions' check()/request() can distinguish
-  # 'Always' from 'While Using' location authorization. Without these the
-  # JS side returns UNAVAILABLE for both LOCATION_ALWAYS and
-  # LOCATION_WHEN_IN_USE and our upfront share-location probe can't tell
-  # whether background sharing will work.
-  pod 'Permission-LocationAlways', :path => "#{permissions_path}/LocationAlways"
-  pod 'Permission-LocationWhenInUse', :path => "#{permissions_path}/LocationWhenInUse"
-  pod 'FBLazyVector', :path => "../node_modules/react-native/Libraries/FBLazyVector"
-  # pod 'FBReactNativeSpec', :path => "../node_modules/react-native/Libraries/FBReactNativeSpec"
-  pod 'FBReactNativeSpec', :path => "../node_modules/react-native/React/FBReactNativeSpec"
-  pod 'RCTRequired', :path => "../node_modules/react-native/Libraries/RCTRequired"
-  pod 'RCTTypeSafety', :path => "../node_modules/react-native/Libraries/TypeSafety"
-  pod 'React', :path => '../node_modules/react-native/'
-  pod 'React-Core', :path => '../node_modules/react-native/', :modular_headers => true
-  pod 'React-CoreModules', :path => '../node_modules/react-native/React/CoreModules'
-  pod 'React-Core/DevSupport', :path => '../node_modules/react-native/'
-  pod 'React-RCTActionSheet', :path => '../node_modules/react-native/Libraries/ActionSheetIOS'
-  pod 'React-RCTAnimation', :path => '../node_modules/react-native/Libraries/NativeAnimation'
-  pod 'React-RCTBlob', :path => '../node_modules/react-native/Libraries/Blob'
-  pod 'React-RCTImage', :path => '../node_modules/react-native/Libraries/Image'
-  pod 'React-RCTLinking', :path => '../node_modules/react-native/Libraries/LinkingIOS'
-  pod 'React-RCTNetwork', :path => '../node_modules/react-native/Libraries/Network'
-  pod 'React-RCTSettings', :path => '../node_modules/react-native/Libraries/Settings'
-  pod 'React-RCTText', :path => '../node_modules/react-native/Libraries/Text'
-  pod 'React-RCTVibration', :path => '../node_modules/react-native/Libraries/Vibration'
-  pod 'React-Core/RCTWebSocket', :path => '../node_modules/react-native/'
-
-  pod 'React-cxxreact', :path => '../node_modules/react-native/ReactCommon/cxxreact'
-  pod 'React-jsi', :path => '../node_modules/react-native/ReactCommon/jsi'
-  #pod 'React-jsiexecutor', :path => '../node_modules/react-native/ReactCommon/jsiexecutor'
-  #pod 'React-jsinspector', :path => '../node_modules/react-native/ReactCommon/jsinspector'
-#  pod 'React-callinvoker', :path => "../node_modules/react-native/ReactCommon"
-  pod 'React-callinvoker', :path => "../node_modules/react-native/ReactCommon/callinvoker"
-  pod 'ReactCommon/turbomodule/core', :path => "../node_modules/react-native/ReactCommon"
-  pod 'Yoga', :path => '../node_modules/react-native/ReactCommon/yoga'
-  pod 'react-native-version-number', :path => '../node_modules/react-native-version-number'
+  # react-native-compressor and react-native-video are Swift pods that depend on
+  # DoubleConversion / glog / RCT-Folly (C++ pods with no module map). Built as
+  # static libraries, Swift can't import them without a module map. Re-declare
+  # each with the SAME podspec source use_react_native! uses (so it merges
+  # rather than conflicting on "multiple sources") and add :modular_headers.
+  pod 'DoubleConversion', :podspec => '../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec', :modular_headers => true
+  pod 'glog', :podspec => '../node_modules/react-native/third-party-podspecs/glog.podspec', :modular_headers => true
+  pod 'RCT-Folly', :podspec => '../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec', :modular_headers => true
+  # react-native-permissions handlers are now selected via setup_permissions()
+  # near the top of this Podfile (v5); the RNPermissions pod itself is autolinked.
+  # RN 0.76: the core React pods (React, React-Core, RCTRequired, RCTTypeSafety,
+  # FBLazyVector, FBReactNativeSpec, Yoga, React-cxxreact, React-jsi,
+  # React-callinvoker, ReactCommon/turbomodule, and every React-RCT* library)
+  # are now declared by use_react_native! above. Listing them by hand duplicates
+  # and conflicts — RCTRequired even moved from Libraries/RCTRequired to
+  # Libraries/Required, which is the "multiple dependencies with different
+  # sources for RCTRequired" error. react-native-version-number is autolinked,
+  # so it's gone too. Only pods RN can't provide are kept below.
   # react-native-dtmf keeps its podspec in ios/ instead of the package
   # root, so RN autolinking reports ios: null and never links it — the
   # JS module resolves to null and dialpad key tones are silent on iOS.
   # Link it manually here.
   pod 'RNDtmf', :path => '../node_modules/react-native-dtmf/ios'
 
-  pod 'DoubleConversion', :podspec => '../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec'
-  pod 'glog', :podspec => '../node_modules/react-native/third-party-podspecs/glog.podspec'
-  #pod 'Folly', :podspec => '../node_modules/react-native/third-party-podspecs/Folly.podspec'
-  pod 'RCT-Folly', :podspec => "../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec"
-  #pod 'Folly', :podspec => '../node_modules/react-native/third-party-podspecs/Folly.podspec'
+  # DoubleConversion / glog / RCT-Folly are also provided by use_react_native! in 0.76.
   target 'sylkTests' do
     inherit! :search_paths
     # Pods for testing
@@ -170,18 +181,6 @@ post_install do |installer|
       end
 
     end
-
-    if target.name == 'Flipper'
-      file_path = 'Pods/Flipper/xplat/Flipper/FlipperTransportTypes.h'
-      contents = File.read(file_path)
-      unless contents.include?('#include <functional>')
-        File.chmod(0755, file_path)
-        File.open(file_path, 'w') do |file|
-          file.puts('#include <functional>')
-          file.puts(contents)
-        end
-      end
-    end
   end
 
   # ---- RCT-Folly / Flipper-Folly CacheLocality fix --------------------------
@@ -211,6 +210,32 @@ post_install do |installer|
       Pod::UI.puts "Folly CacheLocality patch: relaxed static_assert in #{path}"
     end
   end
+  # ---- fmt consteval fix (Xcode 26 / Apple clang 17+) ------------------------
+  # fmt 11.0.2 (pulled by RCT-Folly) enables consteval for Apple clang >= 14, but
+  # Xcode 26 clang rejects fmt's own FMT_STRING consteval calls with
+  # "basic_format_string ... is not a constant expression" (fmtlib/fmt#4740). The
+  # project must stay on C++20 (RCT-Folly / iOS 26 SDK), so the C++17 downgrade
+  # isn't an option, and a -D define is overridden by base.h's own unconditional
+  # #define. Force FMT_USE_CONSTEVAL 0 in base.h — what fmt already does for other
+  # broken-consteval toolchains. Idempotent; re-applied each pod install. Remove
+  # when fmt / Xcode fix the consteval interaction.
+  Dir.glob('Pods/fmt/include/fmt/base.h').each do |path|
+    src = File.read(path)
+    next if src.include?('RN/Xcode26 fmt consteval workaround')
+    anchor = "#if FMT_USE_CONSTEVAL\n#  define FMT_CONSTEVAL consteval"
+    if src.include?(anchor)
+      patched = src.sub(anchor,
+        "// RN/Xcode26 fmt consteval workaround: Apple clang 17+ rejects fmt's\n" \
+        "// FMT_STRING consteval calls (fmtlib/fmt#4740). Force off.\n" \
+        "#undef FMT_USE_CONSTEVAL\n#define FMT_USE_CONSTEVAL 0\n" \
+        "#if FMT_USE_CONSTEVAL\n#  define FMT_CONSTEVAL consteval")
+      File.write(path, patched)
+      Pod::UI.puts "fmt consteval fix: forced FMT_USE_CONSTEVAL 0 in #{path}"
+    else
+      Pod::UI.warn "fmt consteval fix: anchor not found in #{path} — verify by hand."
+    end
+  end
+
   # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
   react_native_post_install(
     installer,
