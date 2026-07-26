@@ -1,0 +1,12 @@
+  * Fix removing message when processing journal
+  * Fix non ending spinner at start from push click
+  * Fix width of confirmation modal on landscape mode
+  * Handle local and remote user agent during call
+  * Added swap video icon in p2p video call navbar
+  * Skip coundown on redial
+  * Show UA label under speedometer
+  * Fix for Android BT headset selection
+  * Redial last call on BT press
+  * Save video preferences per contact
+  * Migrate to RN 0.76
+  * Increase target Android API level 36

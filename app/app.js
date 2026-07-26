@@ -1840,7 +1840,7 @@ class Sylk extends Component {
             // the spinner instead of the contacts list. componentDidMount
             // then calls selectChatContact(from) so the chat view
             // actually mounts under the overlay.
-            chatOpenLoading: !!this._launchMessageFrom,
+            chatOpenLoading: false, // spinner disabled on app-start-from-chat-push (was: !!this._launchMessageFrom)
             chatOpenUri: this._launchMessageFrom || null,
             // Stub contact pre-seeded ABOVE via this.newContact(...)
             // when the launch was a sylk://message tap, so ReadyBox
@@ -10222,7 +10222,7 @@ class Sylk extends Component {
 				if (!_from) return;
 				utils.timestampedLog('[app] SylkPushTapped received fromUri=', _from);
 				try {
-					this.setState({chatOpenLoading: true, chatOpenUri: _from});
+					this._armChatOpenSpinner(_from);
 					this.selectChatContact(_from);
 					this._fastLoadInitialMessages(_from).catch(e => {
 						console.log('[chat-fast] (SylkPushTapped) threw:', e && e.message);
@@ -10250,7 +10250,7 @@ class Sylk extends Component {
 					const _data = initialNotification && initialNotification.data;
 					if (_data && _data.event === 'message' && _data.from_uri) {
 						utils.timestampedLog('[app] iOS cold-start initialNotification message from=', _data.from_uri);
-						this.setState({chatOpenLoading: true, chatOpenUri: _data.from_uri});
+						/* spinner disabled on app-start-from-chat-push */ // this.setState({chatOpenLoading: true, chatOpenUri: _data.from_uri});
 						this.selectChatContact(_data.from_uri);
 						this._fastLoadInitialMessages(_data.from_uri).catch(e => {
 							console.log('[chat-fast] (iOS cold-start) threw:', e && e.message);
@@ -11874,6 +11874,43 @@ class Sylk extends Component {
 		}
     }
   
+    // Arm the chat-open overlay spinner WITH a per-call watchdog.
+    //
+    // Every warm-start notification tap that raises chatOpenLoading routes
+    // through here so the overlay is ALWAYS self-limiting. Previously the
+    // only guaranteed clear was a 20s timeout armed once in componentDidMount
+    // (cold start only), so a warm tap whose conditional clear path missed —
+    // the raw push `from` not string-matching the normalized contact.uri the
+    // loaders compare against, the chat already open so selectedContact never
+    // changes (getMessages not called), or _fastLoadInitialMessages taking an
+    // early return — left the spinner spinning forever.
+    //
+    // We also resolve the raw push URI to the canonical contact.uri (the same
+    // value getMessages / _fastLoadInitialMessages compare against) so the
+    // normal clear fires promptly instead of only when the watchdog expires.
+    _armChatOpenSpinner(rawUri) {
+        let uri = rawUri;
+        try {
+            const c = this.lookupContact(rawUri);
+            if (c && c.uri) uri = c.uri;
+        } catch (e) { /* fall back to the raw uri */ }
+
+        if (this._chatOpenWatchdog) {
+            clearTimeout(this._chatOpenWatchdog);
+            this._chatOpenWatchdog = null;
+        }
+
+        this.setState({chatOpenLoading: true, chatOpenUri: uri});
+
+        this._chatOpenWatchdog = setTimeout(() => {
+            this._chatOpenWatchdog = null;
+            if (!this.unmounted && this.state.chatOpenLoading) {
+                utils.timestampedLog('[chat-overlay] watchdog cleared stuck chatOpenLoading for', this.state.chatOpenUri);
+                this.setState({chatOpenLoading: false, chatOpenUri: null});
+            }
+        }, 12000);
+    }
+
     selectChatContact(uri) {
         console.log('-- selectChatContact', uri);
         const chatContact = this.lookupContact(uri, true, true);
@@ -19491,7 +19528,7 @@ class Sylk extends Component {
 				 // contacts hydrate, getMessages SQL slice) finishes.
 				 // Cleared by getMessages once the SQL slice resolves
 				 // (see the setState in the slice .then callback).
-				 this.setState({chatOpenLoading: true, chatOpenUri: from});
+				 this._armChatOpenSpinner(from);
                  this.selectChatContact(from);
                  // Fast-path: ALSO fire here so warm-start /
                  // Linking-driven taps (where consumeLaunchMessageUri
@@ -31775,37 +31812,40 @@ class Sylk extends Component {
 				//console.log('Sync message', message.timestamp, 'for', uri, message);
 	
 				if (message.contentType === 'application/sylk-message-remove') {
-					this.deleteMessageSync(message.id, uri);
-	
-					if (uri in renderMessages) {
-						existingMessages = renderMessages[uri];
-						newMessages = [];
-	
-						existingMessages.forEach((msg) => {
-							if (msg._id === message.id) {
-								return;
-							}
-							newMessages.push(msg);
-						});
-						renderMessages[uri] = newMessages;
-					}
-	
-					for (const contact of contacts) {
-						contact.unread = contact.unread.filter(
-							id => id !== message.id
-						);
-	
-						if (contact.lastMessageId === message.id) {
-							contact.lastMessage = null;
-							contact.lastMessageId = null;
+					const _removeTargetId = message.content && message.content.message_id;
+					if (_removeTargetId) {
+						this.deleteMessageSync(_removeTargetId, uri);
+		
+						if (uri in renderMessages) {
+							existingMessages = renderMessages[uri];
+							newMessages = [];
+		
+							existingMessages.forEach((msg) => {
+								if (msg._id === _removeTargetId) {
+									return;
+								}
+								newMessages.push(msg);
+							});
+							renderMessages[uri] = newMessages;
 						}
+		
+						for (const contact of contacts) {
+							contact.unread = contact.unread.filter(
+								id => id !== _removeTargetId
+							);
+		
+							if (contact.lastMessageId === _removeTargetId) {
+								contact.lastMessage = null;
+								contact.lastMessageId = null;
+							}
+						}
+		
+						if (uri in lastMessages && lastMessages[uri] === _removeTargetId) {
+							delete lastMessages[uri];
+						}
+		
+						stats.delete = stats.delete + 1;
 					}
-	
-					if (uri in lastMessages && lastMessages[uri] === message.id) {
-						delete lastMessages[uri];
-					}
-	
-					stats.delete = stats.delete + 1;
 	
 				} else if (message.contentType === 'application/sylk-conversation-remove') {
 
