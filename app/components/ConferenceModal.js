@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import { Modal, View, Pressable, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Button, Text, TextInput, Chip, Surface } from 'react-native-paper';
 import { Platform } from 'react-native';
@@ -392,7 +393,7 @@ const ConferenceModal = ({
           keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
         >
 
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <ThemedModalSurface style={containerStyles.modalSurface}>
             {/* Modal content start */}
 
                 <Text style={containerStyles.title}>Join conference</Text>
@@ -613,7 +614,7 @@ const ConferenceModal = ({
                     Video
                   </Button>
                 </View>
-              </Surface>
+              </ThemedModalSurface>
         </KeyboardAvoidingView>
       </View>
     </Modal>

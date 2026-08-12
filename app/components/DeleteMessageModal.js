@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, Platform } from 'react-native';
@@ -85,7 +86,7 @@ class DeleteMessageModal extends Component {
         return (
         <Portal>
             <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                <Surface style={styles.container}>
+                <ThemedModalSurface style={styles.container}>
                     <View style={styles.titleContainer}>
                         <View style={styles.titleContainer}>
                         <UserIcon style={styles.avatar} identity={identity}/>
@@ -126,7 +127,7 @@ class DeleteMessageModal extends Component {
                         > {deleteLabel}
                     </Button>
                     </View>
-                </Surface>
+                </ThemedModalSurface>
             </DialogType>
         </Portal>
     );

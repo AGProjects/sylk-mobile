@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import { Platform } from 'react-native';
 import { Text, Button, Surface, Checkbox } from 'react-native-paper';
@@ -64,7 +65,7 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
           >
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={containerStyles.modalSurface}>
+              <ThemedModalSurface style={containerStyles.modalSurface}>
                 <Text style={containerStyles.title}>{title}</Text>
 
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -110,7 +111,7 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
                   )}
                 </ScrollView>
                 </KeyboardAvoidingView>
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

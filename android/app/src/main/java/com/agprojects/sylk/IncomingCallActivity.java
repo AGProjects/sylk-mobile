@@ -54,7 +54,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 			Bundle extras = intent.getExtras();
 			if (extras != null) {
 				for (String key : extras.keySet()) {
-					SylkLogger.d("[call] [ui] EXTRA: " + key + " = " + extras.get(key));
+					//SylkLogger.d("[call] [ui] EXTRA: " + key + " = " + extras.get(key));
 				}
 			}
 
@@ -117,8 +117,11 @@ public class IncomingCallActivity extends AppCompatActivity {
 			}
 		}
 
+		boolean isAnonymousFrom = from_uri != null
+				&& (from_uri.toLowerCase().contains("anonymous")
+					|| from_uri.toLowerCase().contains("@guest."));
 		if (displayName == null || displayName.trim().isEmpty()) {
-			displayName = from_uri;
+			displayName = isAnonymousFrom ? "Unknown contact" : from_uri;
 		}
 
         // Caller name / info
@@ -161,11 +164,13 @@ public class IncomingCallActivity extends AppCompatActivity {
 			callerText.setText(displayName);
 			callingLabel.setText("is calling");
 
-			// Show the full SIP URI under the "is calling" line. Hide it if the
-			// displayed name is already the URI (no contact match) so we don't
-			// duplicate the same string.
-			if (from_uri != null && !from_uri.equals(displayName)) {
-				callerUri.setText(from_uri);
+			// Show the full SIP URI under the "is calling" line. For
+			// anonymous / guest callers never surface the scary random
+			// "<uuid>@guest.<host>" URI — substitute "Unknown contact".
+			// Hide the line if it would just duplicate the name above.
+			String uriLine = isAnonymousFrom ? "Unknown contact" : from_uri;
+			if (uriLine != null && !uriLine.equals(displayName)) {
+				callerUri.setText(uriLine);
 				callerUri.setVisibility(android.view.View.VISIBLE);
 			} else {
 				callerUri.setVisibility(android.view.View.GONE);

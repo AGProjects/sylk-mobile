@@ -291,6 +291,13 @@ public final class SylkTelecom {
                 return displayName;
             }
         }
+        if (fromUri != null
+                && (fromUri.toLowerCase().contains("anonymous")
+                    || fromUri.toLowerCase().contains("@guest."))) {
+            // Anonymous / guest caller with no real presented name — never
+            // surface the random "<uuid>" user-part; show a friendly label.
+            return "Unknown contact";
+        }
         if (userPart != null && !userPart.isEmpty() && !"unknown".equals(userPart)) {
             return userPart;
         }
@@ -304,7 +311,10 @@ public final class SylkTelecom {
      * Falls back to sip:user@host only when we have nothing usable.
      */
     private static Uri addressFor(String userPart, String fromUri) {
-        if (userPart == null || userPart.isEmpty() || "unknown".equals(userPart)) {
+        boolean isAnonymous = fromUri != null
+                && (fromUri.toLowerCase().contains("anonymous")
+                    || fromUri.toLowerCase().contains("@guest."));
+        if (isAnonymous || userPart == null || userPart.isEmpty() || "unknown".equals(userPart)) {
             // No usable identity at all — keep a sip: scheme so Telecom
             // doesn't think it's a real PSTN call from "unknown".
             return Uri.fromParts("sip", "unknown", null);

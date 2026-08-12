@@ -1,8 +1,19 @@
 diff --git a/node_modules/react-native-sylkrtc/lib/account.js b/node_modules/react-native-sylkrtc/lib/account.js
-index 83f09ac..b918ff8 100644
+index 83f09ac..6fcbabd 100644
 --- a/node_modules/react-native-sylkrtc/lib/account.js
 +++ b/node_modules/react-native-sylkrtc/lib/account.js
-@@ -258,12 +258,20 @@ class Account extends EventEmitter {
+@@ -157,7 +157,9 @@ class Account extends EventEmitter {
+             message_id: outgoingMessage.id,
+             content: outgoingMessage.content,
+             content_type: outgoingMessage.contentType,
+-            timestamp: outgoingMessage.timestamp
++            timestamp: outgoingMessage.timestamp,
++            ...(options.skipJournal ? { skipJournal: true } : {}),
++            ...(options.skipDisposition ? { skipDisposition: true } : {})
+         };
+         if (contentType !== 'text/pgp-private-key' && contentType !== 'text/pgp-public-key') {
+             this._messages.set(outgoingMessage.id, outgoingMessage);
+@@ -258,12 +260,20 @@ class Account extends EventEmitter {
          });
      }
  
@@ -25,7 +36,7 @@ index 83f09ac..b918ff8 100644
          };
          DEBUG('Sending remove conversation: %o', req);
          this._sendRequest(req, (error) => {
-@@ -420,7 +428,9 @@ class Account extends EventEmitter {
+@@ -420,7 +430,9 @@ class Account extends EventEmitter {
                      switch(message.action) {
                          case 'remove':
                              this._removeConversation(message.content.contact);
@@ -36,3 +47,265 @@ index 83f09ac..b918ff8 100644
                              break;
                          case 'read':
                              this._readConversation(message.content.contact);
+diff --git a/node_modules/react-native-sylkrtc/lib/sylkrtc.js b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
+index 8c37edb..3252864 100644
+--- a/node_modules/react-native-sylkrtc/lib/sylkrtc.js
++++ b/node_modules/react-native-sylkrtc/lib/sylkrtc.js
+@@ -33,6 +33,14 @@ const utils = {
+     'mungeSdp'               : _utils.mungeSdp,
+     'pickAnswerVideoCodec'   : _utils.pickAnswerVideoCodec,
+     'pickAnswerAudioCodec'   : _utils.pickAnswerAudioCodec,
++    // Toggles: honour the local preferred codec on INCOMING calls too
++    // (default off — answers mirror the offerer's first codec).
++    // Independent per media so the Preferences "Also incoming" checkbox
++    // for Video and for Audio each drives its own flag.
++    'setPreferLocalVideoCodecOnAnswer' : _utils.setPreferLocalVideoCodecOnAnswer,
++    'getPreferLocalVideoCodecOnAnswer' : _utils.getPreferLocalVideoCodecOnAnswer,
++    'setPreferLocalAudioCodecOnAnswer' : _utils.setPreferLocalAudioCodecOnAnswer,
++    'getPreferLocalAudioCodecOnAnswer' : _utils.getPreferLocalAudioCodecOnAnswer,
+ };
+ 
+ 
+diff --git a/node_modules/react-native-sylkrtc/lib/utils.js b/node_modules/react-native-sylkrtc/lib/utils.js
+index 2b5b46c..2dd6ed7 100644
+--- a/node_modules/react-native-sylkrtc/lib/utils.js
++++ b/node_modules/react-native-sylkrtc/lib/utils.js
+@@ -324,7 +324,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null, preferredAudio
+                 // and the wire answer disagree on the codec, so INCOMING calls
+                 // have NO audio. We don't pin the audio transceiver, so only
+                 // reorder audio on the OFFER.
+-                const out = mungeSdp(pc.localDescription.sdp, effectivePref, false, (type === 'answer') ? null : preferredAudioCodec);
++                const out = mungeSdp(pc.localDescription.sdp, effectivePref, false, (type === 'answer') ? null : preferredAudioCodec, type === 'answer');
+                 // Log the full codec story for this offer/answer round
+                 // trip. Cheap (one SDP parse) and only fires once per
+                 // negotiation, so we leave it on always — saves a lot
+@@ -342,7 +342,7 @@ function createLocalSdp(pc, type, options, preferredCodec = null, preferredAudio
+ }
+ 
+ 
+-function mungeSdp(sdp, preferredCodec = null, fixmsid=false, preferredAudioCodec = null) {
++function mungeSdp(sdp, preferredCodec = null, fixmsid=false, preferredAudioCodec = null, singleVideoCodec = false) {
+     let parsedSdp = transform.parse(sdp);
+     let h264payload = null;
+     let hasProfileLevelId = false;
+@@ -523,13 +523,48 @@ function mungeSdp(sdp, preferredCodec = null, fixmsid=false, preferredAudioCodec
+                         break;
+                     }
+             }
+-            if (payloadType) {
+-                const payloadTypes = videoMLine.payloads.split(' ').map(p => parseInt(p, 10));
+-                const payloadIndex = payloadTypes.indexOf(payloadType);
+-
+-                payloadTypes.splice(payloadIndex, 1);
+-                payloadTypes.unshift(payloadType);
+-                videoMLine.payloads = payloadTypes.join(' ');
++            if (payloadType !== null) {
++                if (singleVideoCodec) {
++                    // ANSWER path: emit EXACTLY ONE video codec — the one
++                    // we negotiated — rather than the full offered list
++                    // with the preferred codec merely promoted to the
++                    // front. An SDP answer is a commitment: whatever stays
++                    // on the m=video line is what the peer may send us, so
++                    // listing every codec (VP8/VP9/H264/…) lets the peer
++                    // pick a different one than the codec we pinned on the
++                    // transceiver. Keep the chosen codec's PT plus its
++                    // paired RTX (fmtp apt=<pt>) so NACK/RTX retransmission
++                    // still works; drop every other primary codec, its RTX,
++                    // and any red/ulpfec/flexfec.
++                    const keep = new Set([payloadType]);
++                    if (videoMLine.fmtp) {
++                        for (const f of videoMLine.fmtp) {
++                            const m = /(?:^|;)\s*apt=(\d+)/.exec(String(f.config));
++                            if (m && parseInt(m[1], 10) === payloadType) {
++                                keep.add(f.payload);
++                            }
++                        }
++                    }
++                    // primary codec first, its rtx (if any) after it
++                    const rtxPts = [...keep].filter(pt => pt !== payloadType);
++                    videoMLine.payloads = [payloadType, ...rtxPts].join(' ');
++                    videoMLine.rtp = videoMLine.rtp.filter(r => keep.has(r.payload));
++                    if (videoMLine.fmtp) {
++                        videoMLine.fmtp = videoMLine.fmtp.filter(f => keep.has(f.payload));
++                    }
++                    if (videoMLine.rtcpFb) {
++                        videoMLine.rtcpFb = videoMLine.rtcpFb.filter(
++                            f => f.payload === '*' || keep.has(f.payload));
++                    }
++                } else {
++                    // OFFER path: keep the full codec list, preferred first.
++                    const payloadTypes = videoMLine.payloads.split(' ').map(p => parseInt(p, 10));
++                    const payloadIndex = payloadTypes.indexOf(payloadType);
++
++                    payloadTypes.splice(payloadIndex, 1);
++                    payloadTypes.unshift(payloadType);
++                    videoMLine.payloads = payloadTypes.join(' ');
++                }
+             }
+         }
+     }
+@@ -978,68 +1013,83 @@ function getPreferredVideoCodec() {
+     return _preferredVideoCodec;
+ }
+ 
+-// Answer-side codec selection driven by the user's Preferences.
++// Config toggles: whether the user's local preferred codec is honoured
++// on INCOMING calls (the answer) as well as outgoing ones. Independent
++// for video and audio so each Preferences "Also incoming" checkbox maps
++// to its own flag.
++//
++//   false (default) — answer with the offerer's FIRST real codec, i.e.
++//                     the codec the caller most wants. The local
++//                     preferred-codec Preference then only affects the
++//                     OFFERs we send on outgoing calls.
++//   true            — if the offer advertises our locally preferred
++//                     codec at any position, answer with THAT instead
++//                     of the offerer's first codec (legacy behaviour).
+ //
+-// Pick order:
+-//   1. The codec the user explicitly chose in Preferences
+-//      (setPreferredVideoCodec, surfaced from rtp.preferredVideoCodec
+-//      in app.js). If the offerer advertised that codec at any
+-//      position in its m=video, return it. createLocalSdp's
+-//      setCodecPreferences call then promotes the matching codec to
+-//      first in pc.localDescription, and mungeSdp does the same to the
+-//      wire SDP — so both views agree.
+-//   2. Otherwise, the offerer's first real codec (skipping rtx / red
+-//      / ulpfec / flexfec / cn). This is the safety net for offers
+-//      that don't include our preferred codec at all — rare in
+-//      practice, since VP8/VP9/H264 are nearly universal.
+-//   3. Otherwise, the local preference verbatim. Only reached when
+-//      the offer can't be parsed.
++// Flip these via setPreferLocalVideoCodecOnAnswer() /
++// setPreferLocalAudioCodecOnAnswer() (e.g. from app init / Preferences).
++// pickAnswerVideoCodec reads the video flag; pickAnswerAudioCodec the
++// audio one.
++let _preferLocalVideoCodecOnAnswer = false;
++let _preferLocalAudioCodecOnAnswer = false;
++
++function setPreferLocalVideoCodecOnAnswer(enabled) {
++    _preferLocalVideoCodecOnAnswer = !!enabled;
++}
++
++function getPreferLocalVideoCodecOnAnswer() {
++    return _preferLocalVideoCodecOnAnswer;
++}
++
++function setPreferLocalAudioCodecOnAnswer(enabled) {
++    _preferLocalAudioCodecOnAnswer = !!enabled;
++}
++
++function getPreferLocalAudioCodecOnAnswer() {
++    return _preferLocalAudioCodecOnAnswer;
++}
++
++// Answer-side video codec selection.
+ //
+-// Why honour Preferences instead of just mirroring the offerer's
+-// first codec: Safari's macOS HW encoder lists H.264 High profile
+-// (profile-level-id=640c1f, PT 96) as its first video PT, but Android
+-// libwebrtc only handles Constrained Baseline 42e01f. With strict
+-// mirroring the answer promotes H.264 → Janus keeps forwarding the
+-// High-profile stream → our receiver has no decoder for it → inbound
+-// video freezes to a black window. Letting Preferences win pushes
+-// the negotiation onto VP9 (or whatever the user picked), which both
+-// ends decode natively.
++// On INCOMING calls we deliberately IGNORE the user's local
++// preferred-codec Preference (getPreferredVideoCodec). That setting
++// governs OUTGOING calls only — the offer we generate. When we are
++// the answerer we must commit to a codec the caller actually asked
++// for, so we mirror the offerer's FIRST real video codec (skipping
++// rtx / red / ulpfec / flexfec / cn). createLocalSdp then pins that
++// codec on the video transceiver and mungeSdp reduces the answer's
++// m=video to it alone — so we answer with exactly the one codec the
++// caller most wants to use.
+ //
+-// E2EE note: when two sylk peers are both using their own
+-// preferredVideoCodec, the answer ends up first-listing the
+-// answerer's preference rather than the offerer's. CallZrtp reads
+-// pc.remoteDescription on each side to compute the FrameEncryptor's
+-// per-codec prefix, so the caller sees the answerer's pref (from the
+-// answer) and the callee sees the offerer's pref (from the offer).
+-// As long as both ends have the same preferredVideoCodec — and the
+-// app-wide default 'VP9' guarantees they do unless explicitly
+-// changed — the two views agree and E2EE keeps working.
++// This mirrors pickAnswerAudioCodec, which already selects the
++// offerer's first real audio codec. The local preference is used
++// only as a last-resort fallback when the offer can't be parsed or
++// carries no real codec.
+ function pickAnswerVideoCodec(offerSdp) {
+-    const wanted = getPreferredVideoCodec();
+-    if (!offerSdp) return wanted;
++    const fallback = getPreferredVideoCodec();
++    if (!offerSdp) return fallback;
+     try {
+         const parsed = transform.parse(offerSdp);
+         const videoMLine = parsed.media && parsed.media.find(m => m.type === 'video');
+-        if (!videoMLine || !videoMLine.payloads) return wanted;
++        if (!videoMLine || !videoMLine.payloads) return fallback;
+         const payloadOrder = String(videoMLine.payloads).split(' ').map(p => parseInt(p, 10));
+         const ignored = new Set(['rtx', 'red', 'ulpfec', 'flexfec-03', 'cn']);
+ 
+-        // Pass 1: the user's Preference, if the offer advertises it.
+-        if (wanted) {
+-            const want = String(wanted).toLowerCase();
++        // Optional Pass 1 (only when the video "Also incoming" flag is
++        // on): if the offer advertises our locally preferred codec at any
++        // position, answer with that instead of the offerer's first.
++        if (_preferLocalVideoCodecOnAnswer && fallback) {
++            const want = String(fallback).toLowerCase();
+             for (const pt of payloadOrder) {
+                 const rtp = videoMLine.rtp && videoMLine.rtp.find(r => r.payload === pt);
+                 if (!rtp || !rtp.codec) continue;
+                 if (ignored.has(rtp.codec.toLowerCase())) continue;
+-                if (rtp.codec.toLowerCase() === want) {
+-                    return rtp.codec;
+-                }
++                if (rtp.codec.toLowerCase() === want) return rtp.codec;
+             }
+         }
+ 
+-        // Pass 2: the offerer's first real codec (legacy mirror
+-        // behaviour). Only reached when the user's preferred codec
+-        // isn't in the offer at all.
++        // The offerer's first real codec — the codec the caller most
++        // wants to use. We answer with exactly this one.
+         for (const pt of payloadOrder) {
+             const rtp = videoMLine.rtp && videoMLine.rtp.find(r => r.payload === pt);
+             if (!rtp || !rtp.codec) continue;
+@@ -1049,7 +1099,7 @@ function pickAnswerVideoCodec(offerSdp) {
+     } catch (e) {
+         // fall through to local default
+     }
+-    return wanted;
++    return fallback;
+ }
+ 
+ // ----- preferred audio codec ------------------------------------------------
+@@ -1087,6 +1137,20 @@ function pickAnswerAudioCodec(offerSdp) {
+         if (!audioMLine || !audioMLine.payloads) return fallback;
+         const payloadOrder = String(audioMLine.payloads).split(' ').map(p => parseInt(p, 10));
+         const ignored = new Set(['telephone-event', 'cn', 'red']);
++
++        // Optional Pass 1 (only when the audio "Also incoming" flag is
++        // on): if the offer advertises our locally preferred audio codec,
++        // answer with that instead of the offerer's first.
++        if (_preferLocalAudioCodecOnAnswer && fallback) {
++            const want = String(fallback).toLowerCase();
++            for (const pt of payloadOrder) {
++                const rtp = audioMLine.rtp && audioMLine.rtp.find(r => r.payload === pt);
++                if (!rtp || !rtp.codec) continue;
++                if (ignored.has(rtp.codec.toLowerCase())) continue;
++                if (rtp.codec.toLowerCase() === want) return rtp.codec;
++            }
++        }
++
+         for (const pt of payloadOrder) {
+             const rtp = audioMLine.rtp && audioMLine.rtp.find(r => r.payload === pt);
+             if (!rtp || !rtp.codec) continue;
+@@ -1099,4 +1163,4 @@ function pickAnswerAudioCodec(offerSdp) {
+     return fallback;
+ }
+ 
+-export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats, setPreferredVideoCodec, getPreferredVideoCodec, pickAnswerVideoCodec, setPreferredAudioCodec, getPreferredAudioCodec, pickAnswerAudioCodec};
++export default { Identity, SharedFile, createLocalSdp, mungeSdp, getMediaDirections, attachMediaStream, closeMediaStream,  sanatizeHtml, map2obj, parseStats, setPreferredVideoCodec, getPreferredVideoCodec, pickAnswerVideoCodec, setPreferredAudioCodec, getPreferredAudioCodec, pickAnswerAudioCodec, setPreferLocalVideoCodecOnAnswer, getPreferLocalVideoCodecOnAnswer, setPreferLocalAudioCodecOnAnswer, getPreferLocalAudioCodecOnAnswer};

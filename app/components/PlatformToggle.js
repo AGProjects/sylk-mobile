@@ -42,7 +42,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { View, TouchableOpacity } from 'react-native';
-import { Text } from 'react-native-paper';
+import { Text, useTheme } from 'react-native-paper';
 import MaterialCommunityIcon from '@react-native-vector-icons/material-design-icons';
 
 // ── Visual tokens ─────────────────────────────────────────────
@@ -82,6 +82,11 @@ const PlatformToggle = ({
     style,
     labelStyle,
 }) => {
+    // Pull label/description colours from the Paper theme in context so
+    // the toggle follows whatever theme it's rendered under — the dark
+    // scoped theme inside a ThemedModalSurface, or the light global
+    // theme elsewhere. (Was hardcoded #222/#888 -> invisible on dark.)
+    const theme = useTheme();
     const flip = () => {
         if (disabled) return;
         if (typeof onValueChange === 'function') onValueChange(!value);
@@ -155,7 +160,7 @@ const PlatformToggle = ({
                 <Text style={[
                     {
                         fontSize: 14,
-                        color: COLOR_LABEL,
+                        color: theme.colors.onSurface,
                     },
                     labelStyle,
                 ]}>
@@ -164,7 +169,7 @@ const PlatformToggle = ({
                 {description ? (
                     <Text style={{
                         fontSize: 11,
-                        color: COLOR_DESC,
+                        color: theme.colors.onSurfaceVariant,
                         marginTop: 1,
                     }}>
                         {description}

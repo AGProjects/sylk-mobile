@@ -1,9 +1,12 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions } from 'react-native';
-import { Text, Button, Surface, RadioButton, Checkbox } from 'react-native-paper';
+import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions, Linking, AppState } from 'react-native';
+import { Text, Button, Surface, RadioButton, Checkbox, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
+import { openSettings } from 'react-native-permissions';
 import PrivacyRadiusSlider from './PrivacyRadiusSlider';
 // StaticMap is the slippy-map tile renderer used by LocationBubble.
 // Reused here in meet-mode to draw the destination preview once the
@@ -72,52 +75,74 @@ const PREVIEW_DEFAULT_ZOOM = 15;
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/blink/_DeleteMessageModal.scss';
 
-// Duration options presented to the user.
-//   value         — duration in milliseconds (acts as the maximum cap;
-//                   the share can stop earlier on its own — see
-//                   'untilIReturn' below).
-//   label         — what the user sees in the radio list
-//   periodLabel   — what appears in the outgoing "I am sharing the
-//                   location with you …" text
-//   kind          — 'meetingRequest' stamps meeting_request:true on the
-//                   origin tick and means "until we meet";
-//                   'untilIReturn' is an auto-stop share that lapses
-//                   when the user returns to their starting point
-//                   (NavigationBar watches for departure-then-return);
-//                   'once' is a single GPS fix; 'fixed' is a plain timed
-//                   share with no handshake semantics.
+const HOUR_MS = 60 * 60 * 1000;
+
+// The duration picker is three independent controls, not one radio list:
 //
-// "Until we meet" caps at 4h so the share can't run forever if the two
-// parties never actually meet — per product decision, sharing must
-// eventually expire on its own, and 4h is the window we expect for a
-// realistic "meet up" intent.
+//   1. "Until I return"  — a standalone auto-stop share (kind
+//      'untilIReturn'). Mutually EXCLUSIVE with everything else: it runs
+//      until the user returns to their starting point (NavigationBar
+//      watches for departure-then-return) or the 8h ceiling, whichever
+//      first. Selecting it clears the meet checkbox; the interval radio
+//      is ignored while it's on.
 //
-// "Until I return" caps at 8h. The intent is "I'm popping out, share
-// my location with you until I'm home again" — the auto-stop kicks in
-// as soon as we detect the user has come back to within
-// UNTIL_RETURN_RETURN_THRESHOLD_M of where they started, but only
-// after they've actually left (otherwise the share would self-stop
-// the moment it began, since the first GPS fix is "at" the origin).
-// 8h is a generous-but-finite ceiling for a typical "out for the day"
-// excursion; if the user never returns, the share lapses on its own.
-// Originally caregiver-only, now exposed to all contacts because the
-// "I'll let you know I'm home" intent isn't specific to a caregiver
-// relationship — anyone running an errand might want it.
-const DURATION_OPTIONS = [
-    // Starts immediately, runs up to 8h, auto-stops when the user
-    // returns to where they started (after first moving >100m away).
-    // NavigationBar implements the state machine; this entry just
-    // selects that code path.
-    {value: 8 * 60 * 60 * 1000,    label: 'Until I return', periodLabel: 'until I return', kind: 'untilIReturn'},
-    {value: 4 * 60 * 60 * 1000,    label: 'Until we meet', periodLabel: 'until we meet', kind: 'meetingRequest'},
-    // One-shot: a single GPS fix is acquired and a single location
-    // message ships. No timer, no follow-up ticks, no live-update
-    // semantics. Receiver renders a static "Shared location" bubble.
-    {value: 0,                     label: 'Once',     periodLabel: 'now',      kind: 'once'},
-    {value: 4 * 60 * 60 * 1000,    label: '4 hours',  periodLabel: '4 hours',  kind: 'fixed'},
-    {value: 8 * 60 * 60 * 1000,    label: '8 hours',  periodLabel: '8 hours',  kind: 'fixed'},
-    {value: 24 * 60 * 60 * 1000,   label: '24 hours', periodLabel: '24 hours', kind: 'fixed'},
+//   2. "Until we meet"   — a CHECKBOX (kind 'meetingRequest') that layers
+//      on top of the interval radio. It stamps meeting_request:true on the
+//      origin tick, and the selected interval becomes its expiry cap
+//      (default 8h — MEET_DEFAULT_DURATION_MS — when the user hasn't picked
+//      an explicit interval). "Once" can't cap a live meet share, so the
+//      two are mutually exclusive: checking meet bumps a "Once" selection
+//      up to the 8h default, and selecting "Once" clears the meet checkbox.
+//
+//   3. The interval radio — 'once' | '4 hours' | '8 hours' | '24 hours'.
+//      On its own ('once'/'fixed') it's a plain timed share with no
+//      handshake. Combined with the meet checkbox it just supplies the cap.
+//
+//   value       — duration in milliseconds (the maximum cap; the share can
+//                 stop earlier on its own — meet handshake / return detect).
+//   label       — what the user sees in the picker.
+//   periodLabel — what appears in the outgoing "I am sharing the location
+//                 with you …" text.
+//   kind        — 'meetingRequest' | 'untilIReturn' | 'once' | 'fixed'.
+
+// Interval radio (right column). Always has exactly one selection; it is
+// simply ignored when "Until I return" is active.
+const INTERVAL_OPTIONS = [
+    // One-shot: a single GPS fix is acquired and a single location message
+    // ships. No timer, no follow-up ticks. Receiver renders a static
+    // "Shared location" bubble. Mutually exclusive with the meet checkbox.
+    {value: 0,           label: 'Once',     periodLabel: 'now',      kind: 'once'},
+    {value: 2 * HOUR_MS, label: '2 hours',  periodLabel: '2 hours',  kind: 'fixed'},
+    {value: 4 * HOUR_MS, label: '4 hours',  periodLabel: '4 hours',  kind: 'fixed'},
+    {value: 8 * HOUR_MS, label: '8 hours',  periodLabel: '8 hours',  kind: 'fixed'},
+    {value: 24 * HOUR_MS, label: '24 hours', periodLabel: '24 hours', kind: 'fixed'},
 ];
+const INTERVAL_ONCE_INDEX = 0;
+// The interval used as the default cap for an "Until we meet" share when the
+// user hasn't picked an explicit interval (or has "Once" selected, which
+// can't cap a live share). Product default is 8h.
+const INTERVAL_DEFAULT_MEET_INDEX = 3; // '8 hours'
+const MEET_DEFAULT_DURATION_MS = INTERVAL_OPTIONS[INTERVAL_DEFAULT_MEET_INDEX].value;
+// Default duration for an "Until stopped" share when the user switches into
+// that mode from "Once" (which carries no duration). The interval column is
+// that share's expiry cap — a plain live share that runs until the user stops
+// it or this ceiling is reached. 8h matches the meet default and the typical
+// "out for a while" framing.
+const INTERVAL_DEFAULT_FIXED_INDEX = 3; // '8 hours'
+
+// "Until I return" — standalone, exclusive. Caps at 8h: the auto-stop kicks
+// in once the user comes back to within UNTIL_RETURN_RETURN_THRESHOLD_M of
+// where they started (but only after they've actually left, else it would
+// self-stop the moment it began). 8h is a generous-but-finite ceiling for a
+// typical "out for the day" excursion; if the user never returns, the share
+// lapses on its own. Exposed to all contacts (not just caregivers) — the
+// "I'll let you know I'm home" intent isn't specific to that relationship.
+const UNTIL_RETURN_OPTION = {
+    value: 8 * HOUR_MS,
+    label: 'Until I return',
+    periodLabel: 'until I return',
+    kind: 'untilIReturn',
+};
 
 
 class ShareLocationModal extends Component {
@@ -126,15 +151,22 @@ class ShareLocationModal extends Component {
         autoBind(this);
         this.state = {
             show: props.show,
-            // Index into DURATION_OPTIONS chosen on open. Defaults to
-            // ShareLocationModal.defaultIndexFor(props) so caregiver
-            // contacts open with "Until I return" pre-selected and
-            // everybody else opens with "Once" — the same low-commitment
-            // default we had before the caregiver feature landed. We
-            // can't key off `value` to find the default because
-            // multiple options share the same durationMs (4h / 8h)
-            // but differ in `kind`.
-            selectedIndex: ShareLocationModal.defaultIndexFor(props),
+            // The picker is three independent controls (see the constants
+            // block up top). All three are seeded from
+            // ShareLocationModal.defaultSelectionFor(props): caregiver
+            // contacts open with "Until I return" checked, the meet-me-there
+            // flow opens with "Until we meet" checked at the 8h default cap,
+            // and everybody else opens with just "Once" selected — the same
+            // low-commitment default we had before this feature.
+            //
+            //   selectedInterval   — index into INTERVAL_OPTIONS (the radio).
+            //                        Always valid; ignored while untilReturn
+            //                        is checked.
+            //   meetChecked        — "Until we meet" checkbox. Layers the
+            //                        meeting-handshake on top of the interval
+            //                        (which becomes its expiry cap).
+            //   untilReturnChecked — "Until I return" exclusive toggle.
+            ...ShareLocationModal.defaultSelectionFor(props),
             // Privacy radius (metres). Only meaningful for the
             // "Until we meet" path. 0 disables the gate; non-zero values
             // tell NavigationBar to swallow every outgoing location tick
@@ -171,6 +203,15 @@ class ShareLocationModal extends Component {
             // out of the privacy policy, which clears the flag in
             // app_state.
             dontShowDisclaimerAgain: true,
+            // True from the moment the user taps "Share" until the parent's
+            // onConfirm settles — i.e. the first GPS fix has been acquired
+            // and the initial location message sent (or the attempt failed).
+            // While true the Share button shows a spinner ringing its
+            // map-marker icon and both buttons are disabled, so the user gets
+            // immediate feedback and can't fire the share twice during the
+            // acquire latency. We stay in the modal for that whole window and
+            // only close once it clears.
+            sharing: false,
         };
     }
 
@@ -178,31 +219,160 @@ class ShareLocationModal extends Component {
     // default. Caregivers default to "Until I return"; non-caregivers
     // keep the historical "Once" default (lowest-commitment for a
     // day-to-day "send my current location" share).
-    static defaultIndexFor(props) {
-        // "Meet me there..." flow: the caller staged a destination and
-        // wants the meet-up duration pre-selected so the user just has
-        // to tap Start. Takes priority over caregiver and once defaults
-        // because the destination ONLY carries semantic weight in the
-        // meet-up flow — overriding here keeps the user from having to
-        // un-pick a default before picking the right thing.
-        if (props && props.presetKind) {
-            const idx = DURATION_OPTIONS.findIndex(o => o.kind === props.presetKind);
-            if (idx >= 0) return idx;
+    // True when the OS-level location grant is foreground-only — iOS
+    // "While Using" or Android fine-location-without-background. In that
+    // state the only share that actually works is a single "Once" fix:
+    // every timed/live kind (Until I return, Until we meet, the hourly
+    // options) drives a background watchPosition/interval that iOS/Android
+    // suspend the moment the app leaves the foreground, so they need
+    // "Always" to be meaningful. 'always' / 'undetermined' / null all read
+    // as NOT foreground-only here — we only gate when we positively know
+    // the grant is foreground-only, so we never falsely lock the picker.
+    static _isForegroundOnly(level) {
+        return level === 'whenInUse' || level === 'foregroundOnly';
+    }
+
+    // Seed the three picker controls on open. Returns
+    // {selectedInterval, meetChecked, untilReturnChecked}. Spread into
+    // state by the constructor and CWRP so both pick the same default.
+    // Map a left-column mode to the underlying {selectedInterval, meetChecked,
+    // untilReturnChecked} triple, and back. Used by defaultSelectionFor to seed
+    // the picker away from an already-live session type.
+    static _selectionForMode(mode) {
+        if (mode === 'once') {
+            return { selectedInterval: INTERVAL_ONCE_INDEX, meetChecked: false, untilReturnChecked: false };
+        }
+        if (mode === 'untilReturn') {
+            return { selectedInterval: INTERVAL_ONCE_INDEX, meetChecked: false, untilReturnChecked: true };
+        }
+        if (mode === 'meet') {
+            return { selectedInterval: INTERVAL_DEFAULT_MEET_INDEX, meetChecked: true, untilReturnChecked: false };
+        }
+        return { selectedInterval: INTERVAL_DEFAULT_FIXED_INDEX, meetChecked: false, untilReturnChecked: false };
+    }
+
+    static _modeOfSelection(sel) {
+        if (sel.untilReturnChecked) return 'untilReturn';
+        if (sel.meetChecked) return 'meet';
+        const opt = INTERVAL_OPTIONS[sel.selectedInterval];
+        if (opt && opt.kind === 'once') return 'once';
+        return 'untilStopped';
+    }
+
+    // Public seeder: compute the natural default, then steer it away from any
+    // session type that's already live for the contact so the picker never
+    // opens on a disabled option.
+    static defaultSelectionFor(props) {
+        const raw = ShareLocationModal._rawDefaultSelectionFor(props);
+        const lt = (props && props.liveTypes) || {};
+        if (!lt.meet && !lt.share) return raw;
+        const mode = ShareLocationModal._modeOfSelection(raw);
+        const disabled = (m) => (m === 'meet' && lt.meet)
+            || ((m === 'untilStopped' || m === 'untilReturn') && lt.share);
+        if (!disabled(mode)) return raw;
+        if (!lt.share) return ShareLocationModal._selectionForMode('untilStopped');
+        if (!lt.meet) return ShareLocationModal._selectionForMode('meet');
+        return ShareLocationModal._selectionForMode('once');
+    }
+
+    static _rawDefaultSelectionFor(props) {
+        const base = {
+            selectedInterval: INTERVAL_ONCE_INDEX,
+            meetChecked: false,
+            untilReturnChecked: false,
+        };
+        // Foreground-only grant ("While Using") — force the low-commitment
+        // "Once" default and, in render, disable every other option. There's
+        // no point pre-selecting a timed share the user can't actually run
+        // in the background. Checked FIRST so it overrides the caregiver /
+        // preset defaults below; the meet-me flow opens with an unknown
+        // (null) permission level, so it is never caught here.
+        if (props && ShareLocationModal._isForegroundOnly(props.permissionLevel)) {
+            return base;
+        }
+        // "Meet me there..." flow: the caller staged a destination and wants
+        // the meet-up handshake pre-selected so the user just has to tap
+        // Start. Takes priority over caregiver / once because the destination
+        // ONLY carries semantic weight in the meet-up flow. Open with the
+        // meet checkbox on and the interval seeded to the 8h default cap.
+        if (props && (props.presetKind === 'meetingRequest' || props.meetMode)) {
+            return {
+                selectedInterval: INTERVAL_DEFAULT_MEET_INDEX,
+                meetChecked: true,
+                untilReturnChecked: false,
+            };
+        }
+        // Restore the user's last-used share option for THIS contact — a
+        // local, non-synced per-contact preference persisted on Confirm
+        // (see onConfirm → onPersistShareOption, stored by app.js
+        // saveShareLocationPrefs under contact.localProperties). We only
+        // ever persist / restore once | untilStopped | untilReturn (never
+        // "meet" — that's a per-invocation context set by the meet-me flow
+        // above, not a remembered preference). Takes precedence over the
+        // caregiver default: an explicit prior choice for this contact is
+        // more specific than the tag-derived default. Reached only when the
+        // grant isn't foreground-only and this isn't the meet-me flow (both
+        // handled above).
+        const saved = props && props.lastShareOption;
+        if (saved && saved.mode && saved.mode !== 'meet') {
+            if (saved.mode === 'once') {
+                return {
+                    selectedInterval: INTERVAL_ONCE_INDEX,
+                    meetChecked: false,
+                    untilReturnChecked: false,
+                };
+            }
+            if (saved.mode === 'untilReturn') {
+                return {
+                    selectedInterval: INTERVAL_ONCE_INDEX,
+                    meetChecked: false,
+                    untilReturnChecked: true,
+                };
+            }
+            if (saved.mode === 'untilStopped') {
+                // Restore the saved interval if it's still a valid fixed
+                // entry; otherwise fall back to the 8h default cap.
+                const _si = saved.selectedInterval;
+                const _validFixed = typeof _si === 'number'
+                    && INTERVAL_OPTIONS[_si]
+                    && INTERVAL_OPTIONS[_si].kind === 'fixed';
+                return {
+                    selectedInterval: _validFixed ? _si : INTERVAL_DEFAULT_FIXED_INDEX,
+                    meetChecked: false,
+                    untilReturnChecked: false,
+                };
+            }
         }
         if (props && props.isCaregiver) {
-            const idx = DURATION_OPTIONS.findIndex(o => o.kind === 'untilIReturn');
-            if (idx >= 0) return idx;
+            return {
+                selectedInterval: INTERVAL_ONCE_INDEX,
+                meetChecked: false,
+                untilReturnChecked: true,
+            };
         }
-        return DURATION_OPTIONS.findIndex(o => o.kind === 'once');
+        return base;
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
         // When the modal is re-opened, reset to the default selection
         // for the (possibly updated) caregiver state of the contact.
         if (nextProps.show && !this.state.show) {
+            // DIAG: what does the modal actually receive as the last-used
+            // option on open, and what default did it resolve to? Lets
+            // metro.log show whether a mismatch is a stale/missing
+            // lastShareOption vs. a wrong defaultSelectionFor mapping.
+            try {
+                const _sel = ShareLocationModal.defaultSelectionFor(nextProps);
+                console.log('[share-prefs] modal open: lastShareOption=',
+                    JSON.stringify(nextProps.lastShareOption),
+                    'isCaregiver=', !!nextProps.isCaregiver,
+                    'presetKind=', nextProps.presetKind,
+                    'meetMode=', !!nextProps.meetMode,
+                    '→ selection=', JSON.stringify(_sel));
+            } catch (e) { /* diag only */ }
             this.setState({
                 show: true,
-                selectedIndex: ShareLocationModal.defaultIndexFor(nextProps),
+                ...ShareLocationModal.defaultSelectionFor(nextProps),
                 // Seed from the device-pref default. If the user
                 // hasn't picked one yet, this is 0 (the historical
                 // "Off" default).
@@ -220,6 +390,9 @@ class ShareLocationModal extends Component {
                 // time, and never see this paragraph again. Untick it
                 // to keep the disclaimer visible on future shares.
                 dontShowDisclaimerAgain: true,
+                // Fresh open → button idle again. Guards against a stale
+                // spinner if a previous attempt left it set.
+                sharing: false,
             });
         } else {
             this.setState({show: nextProps.show});
@@ -247,8 +420,187 @@ class ShareLocationModal extends Component {
         this.setState({meetPreviewZoom: next});
     }
 
-    onConfirm() {
-        const option = DURATION_OPTIONS[this.state.selectedIndex] || DURATION_OPTIONS[0];
+    // The left column is a single mutually-exclusive group: the user picks
+    // exactly ONE "stop condition" — 'untilStopped' | 'once' | 'untilReturn'
+    // | 'meet'. It's still backed by the three underlying state fields
+    // (selectedInterval / meetChecked / untilReturnChecked) so _effectiveShare
+    // and the parent's onConfirm contract don't change; _leftMode() derives the
+    // current selection from them and _selectLeftMode() sets them.
+    //
+    //   • 'untilStopped' — a plain live share that runs until the user stops it
+    //     (or the interval cap is hit). This is the historical "fixed" share,
+    //     now surfaced explicitly so "what happens when I don't pick an
+    //     auto-stop" is a visible choice rather than an implicit default. Uses
+    //     the right-column interval as its duration/cap.
+    //   • 'once'         — a single GPS fix. No duration; interval N/A.
+    //   • 'untilReturn'  — auto-stops when the user returns to their start
+    //     (8h ceiling). Interval N/A.
+    //   • 'meet'         — the meet-up handshake. Interval = expiry cap.
+    _leftMode() {
+        if (this.state.untilReturnChecked) return 'untilReturn';
+        if (this.state.meetChecked) return 'meet';
+        const opt = INTERVAL_OPTIONS[this.state.selectedInterval];
+        if (opt && opt.kind === 'once') return 'once';
+        return 'untilStopped';
+    }
+
+    // A contact can already have a live meet AND/OR a live plain share. Those
+    // options must be disabled in the picker so the user can't start a second
+    // of the same type. `liveTypes` = {meet, share}. Rules (per Adi's spec):
+    //   • meet live  → disable "Until we meet".
+    //   • share live → disable "Until stopped" + "Until I return" (only
+    //                  "Until we meet" and "Once" remain startable).
+    //   • "Once" is a one-shot, never a persistent session → always allowed.
+    _liveTypeDisabled(mode) {
+        const lt = this.props.liveTypes || {};
+        if (mode === 'meet') return !!lt.meet;
+        if (mode === 'untilStopped' || mode === 'untilReturn') return !!lt.share;
+        return false;
+    }
+
+    // Select one of the four exclusive left-column modes. Foreground-only
+    // grants can only ever run a single "Once" fix, so every other mode is
+    // refused here (belt to the render-time disable). Switching modes maps
+    // down onto the underlying fields:
+    //   once         → interval = Once, clear meet + untilReturn
+    //   untilStopped → clear meet + untilReturn; ensure a real (fixed) interval
+    //                  is selected (bump Once → the 8h default)
+    //   untilReturn  → untilReturn on, meet off
+    //   meet         → meet on, untilReturn off; ensure the interval is a valid
+    //                  cap (bump Once → the 8h default)
+    _selectLeftMode(mode) {
+        if (ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+                && mode !== 'once') {
+            return;
+        }
+        // Refuse a mode whose session type is already live for this contact.
+        if (this._liveTypeDisabled(mode)) {
+            return;
+        }
+        if (mode === 'once') {
+            this.setState({
+                selectedInterval: INTERVAL_ONCE_INDEX,
+                meetChecked: false,
+                untilReturnChecked: false,
+            });
+            return;
+        }
+        if (mode === 'untilReturn') {
+            this.setState({untilReturnChecked: true, meetChecked: false});
+            return;
+        }
+        // 'untilStopped' and 'meet' both need a real duration in the interval
+        // column; if the user is coming from "Once" (value 0) bump to the 8h
+        // default so the share has a sane cap.
+        const cur = INTERVAL_OPTIONS[this.state.selectedInterval];
+        const hasFixed = cur && cur.kind === 'fixed' && cur.value > 0;
+        if (mode === 'untilStopped') {
+            this.setState({
+                selectedInterval: hasFixed ? this.state.selectedInterval : INTERVAL_DEFAULT_FIXED_INDEX,
+                meetChecked: false,
+                untilReturnChecked: false,
+            });
+            return;
+        }
+        if (mode === 'meet') {
+            this.setState({
+                selectedInterval: hasFixed ? this.state.selectedInterval : INTERVAL_DEFAULT_MEET_INDEX,
+                meetChecked: true,
+                untilReturnChecked: false,
+            });
+        }
+    }
+
+    // Interval radio selection (right column — the duration/cap). Picking a
+    // duration clears the exclusive untilReturn toggle; a fixed interval keeps
+    // the meet checkbox (it becomes the cap). Since "Once" now lives in the
+    // left column, the right column only renders fixed intervals, so tapping
+    // one from 'once'/'untilReturn' naturally lands the user in 'untilStopped'.
+    _selectInterval(idx) {
+        const opt = INTERVAL_OPTIONS[idx];
+        if (ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+                && !(opt && opt.kind === 'once')) {
+            return;
+        }
+        const isOnce = opt && opt.kind === 'once';
+        // When a plain share is already live, the duration presets belong to the
+        // now-disabled "Until stopped" mode — only allow picking one while the
+        // user is in 'meet' mode (where the interval is the meet cap). Block the
+        // selection otherwise so we don't silently drop them into 'untilStopped'.
+        if (!isOnce && !this.state.meetChecked && this._liveTypeDisabled('untilStopped')) {
+            return;
+        }
+        this.setState({
+            selectedInterval: idx,
+            untilReturnChecked: false,
+            meetChecked: isOnce ? false : this.state.meetChecked,
+        });
+    }
+
+    // Collapse the three controls into the single {durationMs, periodLabel,
+    // kind} config the parent's onConfirm expects. Priority: untilReturn
+    // (exclusive) → meet (interval = cap, 8h fallback) → plain interval.
+    // Does NOT apply foreground-only coercion — onConfirm layers that on.
+    _effectiveShare() {
+        if (this.state.untilReturnChecked) {
+            return {
+                durationMs: UNTIL_RETURN_OPTION.value,
+                periodLabel: UNTIL_RETURN_OPTION.periodLabel,
+                kind: UNTIL_RETURN_OPTION.kind,
+            };
+        }
+        const interval = INTERVAL_OPTIONS[this.state.selectedInterval]
+            || INTERVAL_OPTIONS[INTERVAL_ONCE_INDEX];
+        if (this.state.meetChecked) {
+            // The selected interval is the meet share's expiry cap. "Once"
+            // (value 0) can't cap a live share, so fall back to the 8h default.
+            const cap = (interval.kind === 'fixed' && interval.value > 0)
+                ? interval.value
+                : MEET_DEFAULT_DURATION_MS;
+            return {durationMs: cap, periodLabel: 'until we meet', kind: 'meetingRequest'};
+        }
+        return {
+            durationMs: interval.value,
+            periodLabel: interval.periodLabel,
+            kind: interval.kind,
+        };
+    }
+
+    async onConfirm() {
+        // Re-entry guard. The button is disabled while sharing, but guard
+        // here too so a stray double-invoke (a fast tap that lands before
+        // the disabled state paints) can't kick off a second acquire-and-send.
+        if (this.state.sharing) {
+            return;
+        }
+        let option = this._effectiveShare();
+        // Safety net: with a foreground-only grant the picker disables every
+        // non-"Once" control, but coerce here too so a stale selection (e.g.
+        // permission downgraded to "While Using" while the modal was open)
+        // can never start a background share the OS won't sustain.
+        if (ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+                && option.kind !== 'once') {
+            option = {
+                durationMs: INTERVAL_OPTIONS[INTERVAL_ONCE_INDEX].value,
+                periodLabel: INTERVAL_OPTIONS[INTERVAL_ONCE_INDEX].periodLabel,
+                kind: 'once',
+            };
+        }
+        // Safety net for the already-live disable rules: if the computed kind's
+        // session type is already live for this contact (e.g. the live state
+        // changed while the modal sat open), coerce to a one-shot rather than
+        // starting a duplicate meet / plain share.
+        const _kindMode = (option.kind === 'meetingRequest') ? 'meet'
+            : (option.kind === 'untilIReturn') ? 'untilReturn'
+            : (option.kind === 'fixed') ? 'untilStopped'
+            : 'once';
+        if (this._liveTypeDisabled(_kindMode)) {
+            option = {
+                durationMs: INTERVAL_OPTIONS[INTERVAL_ONCE_INDEX].value,
+                periodLabel: INTERVAL_OPTIONS[INTERVAL_ONCE_INDEX].periodLabel,
+                kind: 'once',
+            };
+        }
         // Privacy radius only applies to the meeting-handshake path; for
         // any plain timed share we ship 0 regardless of the slider
         // state so the option can't accidentally bleed across semantic
@@ -286,17 +638,57 @@ class ShareLocationModal extends Component {
             try { this.props.onPersistPrivacyRadius(excludeOriginRadiusMeters); }
             catch (e) { /* persistence is best-effort */ }
         }
+        // Remember the chosen option for THIS contact so the modal reopens
+        // pre-selected next time (see defaultSelectionFor → lastShareOption).
+        // Derived from the FINAL option.kind so a foreground-only coercion to
+        // "Once" is what actually gets remembered. "Until we meet"
+        // (meetingRequest) is deliberately NOT persisted — it's a per-invocation
+        // context from the meet-me flow, not a standing preference — so a plain
+        // share after a meet share still restores the plain choice. Best-effort:
+        // a persistence failure never blocks the share.
+        let _persistMode = null;
+        if (option.kind === 'once') _persistMode = 'once';
+        else if (option.kind === 'fixed') _persistMode = 'untilStopped';
+        else if (option.kind === 'untilIReturn') _persistMode = 'untilReturn';
+        if (_persistMode && typeof this.props.onPersistShareOption === 'function') {
+            try {
+                this.props.onPersistShareOption({
+                    mode: _persistMode,
+                    selectedInterval: this.state.selectedInterval,
+                });
+            } catch (e) { /* persistence is best-effort */ }
+        }
         // Let the parent drive the side-effects (sending messages, starting
         // the periodic timer, etc.). We just report the chosen option —
         // including `kind` so the caller knows whether to stamp
         // meeting_request:true on the origin tick.
-        this.props.onConfirm({
-            durationMs: option.value,
-            periodLabel: option.periodLabel,
-            kind: option.kind,
-            excludeOriginRadiusMeters,
-        });
-        this.props.close();
+        //
+        // Stay in the modal — spinner up, both buttons disabled — until the
+        // parent finishes: onShareLocationConfirmed resolves once the first
+        // GPS fix is acquired and the initial location message is sent (or
+        // the attempt fails / is declined). This gives the user immediate
+        // feedback for the acquire latency and stops them re-tapping the
+        // share icon while the first bubble is still on its way. The parent
+        // bounds its own wait (see _awaitInitialShare) so this can't hang;
+        // try/finally guarantees we always clear the spinner and close.
+        this.setState({sharing: true});
+        try {
+            const result = this.props.onConfirm({
+                durationMs: option.durationMs,
+                periodLabel: option.periodLabel,
+                kind: option.kind,
+                excludeOriginRadiusMeters,
+            });
+            if (result && typeof result.then === 'function') {
+                await result;
+            }
+        } catch (e) {
+            console.log('[location] modal-confirm: onConfirm threw',
+                e && e.message ? e.message : e);
+        } finally {
+            this.setState({sharing: false});
+            this.props.close();
+        }
     }
 
     setRadiusStop(meters) {
@@ -305,6 +697,121 @@ class ShareLocationModal extends Component {
 
     onCancel() {
         this.props.close();
+    }
+
+    // Deep-link to this app's OS settings so the user can upgrade to the
+    // background-capable grant without hunting through Settings. Same
+    // mechanism the rest of the app uses (LocationSharingManager's
+    // openSettingsFn):
+    //   • iOS: the `app-settings:` URL opens Blink's own pane in
+    //     Settings.app, where Location is listed directly.
+    //   • Android: react-native-permissions' openSettings() opens the App
+    //     info page — the OS doesn't expose a deep link past that, so
+    //     Permissions → Location is one/two taps from there. Falls back to
+    //     RN's Linking.openSettings() if the native call throws.
+    // When they return, _onAppStateChange re-probes the permission and the
+    // background-only options unlock in place.
+    onOpenLocationSettings() {
+        try {
+            if (Platform.OS === 'ios') {
+                Linking.openURL('app-settings:');
+            } else {
+                try { openSettings(); }
+                catch (e) { Linking.openSettings && Linking.openSettings(); }
+            }
+        } catch (e) {
+            console.log('[location] modal: openSettings failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    componentDidMount() {
+        // Re-probe the location permission whenever the app returns to the
+        // foreground while this modal is open — the user may have just gone
+        // to Settings to grant "Always". onRefreshPermissionLevel asks
+        // NavigationBar to refresh the permissionLevel prop, which flips the
+        // gated options back on in place.
+        this._appStateSub = AppState.addEventListener('change', this._onAppStateChange);
+    }
+
+    componentWillUnmount() {
+        if (this._appStateSub && typeof this._appStateSub.remove === 'function') {
+            this._appStateSub.remove();
+        }
+        this._appStateSub = null;
+    }
+
+    _onAppStateChange(nextState) {
+        if (nextState === 'active'
+                && this.state.show
+                && typeof this.props.onRefreshPermissionLevel === 'function') {
+            this.props.onRefreshPermissionLevel();
+        }
+    }
+
+    // Render one row of the left-column mutually-exclusive mode group
+    // ('untilStopped' | 'once' | 'untilReturn' | 'meet'). RadioButton.Android
+    // (not a checkbox) so the group reads as a single either/or choice, and so
+    // the unchecked glyph stays visible on iOS. Every non-"Once" mode is
+    // disabled under a foreground-only grant (they drive a background share the
+    // OS won't sustain); "Once" is always available.
+    _renderLeftModeRow(mode, label) {
+        const _disabled = (ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+            && mode !== 'once')
+            // …or this session type is already live for the contact.
+            || this._liveTypeDisabled(mode);
+        const _selected = this._leftMode() === mode;
+        return (
+            <TouchableWithoutFeedback
+                onPress={_disabled ? undefined : () => this._selectLeftMode(mode)}
+            >
+                <View style={[styles.checkBoxRow, { marginBottom: 0 }]}>
+                    <RadioButton.Android
+                        value={mode}
+                        status={_selected ? 'checked' : 'unchecked'}
+                        uncheckedColor="#666"
+                        disabled={_disabled}
+                        onPress={_disabled ? undefined : () => this._selectLeftMode(mode)}
+                    />
+                    <Text style={_disabled ? { opacity: 0.4 } : null}>{label}</Text>
+                </View>
+            </TouchableWithoutFeedback>
+        );
+    }
+
+    // Render one interval-radio row in the right column (4h / 8h / 24h — the
+    // duration/cap). The interval only applies to the 'untilStopped' and 'meet'
+    // modes; for 'once' and 'untilReturn' it isn't in play, so the whole column
+    // is dimmed and nothing shows selected. Foreground-only disables every row
+    // (all are background-dependent). Rows stay tappable when not disabled —
+    // tapping one moves an 'once'/'untilReturn' selection into 'untilStopped'.
+    _renderIntervalRow(opt, idx) {
+        const _mode = this._leftMode();
+        const _intervalInPlay = _mode === 'untilStopped' || _mode === 'meet';
+        const _disabled = ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+            // A live plain share disables the duration presets EXCEPT while the
+            // user is composing a meet (there the interval is the meet cap).
+            || (this._liveTypeDisabled('untilStopped') && _mode !== 'meet');
+        const _dim = _disabled || !_intervalInPlay;
+        const _selected = _intervalInPlay
+            && this.state.selectedInterval === idx;
+        return (
+            <TouchableWithoutFeedback
+                key={idx}
+                onPress={_disabled ? undefined : () => this._selectInterval(idx)}
+            >
+                <View style={[styles.checkBoxRow, { marginBottom: 0 }]}>
+                    <RadioButton.Android
+                        value={String(idx)}
+                        status={_selected ? 'checked' : 'unchecked'}
+                        uncheckedColor="#666"
+                        disabled={_disabled}
+                        onPress={_disabled ? undefined : () => this._selectInterval(idx)}
+                    />
+                    <Text style={_dim ? { opacity: 0.4 } : null}>{opt.label}</Text>
+                </View>
+            </TouchableWithoutFeedback>
+        );
     }
 
     render() {
@@ -337,9 +844,9 @@ class ShareLocationModal extends Component {
         // Outside meet-mode (regular timed share, no destination) all
         // three gates are skipped: there's no destination to compare
         // against and no user pin to wait for.
-        const _selectedOption = DURATION_OPTIONS[this.state.selectedIndex];
-        const _isMeetingKind = _selectedOption
-            && _selectedOption.kind === 'meetingRequest';
+        const _effectiveShare = this._effectiveShare();
+        const _isMeetingKind = _effectiveShare.kind === 'meetingRequest';
+        const _foregroundOnly = ShareLocationModal._isForegroundOnly(this.props.permissionLevel);
         const _radius = Number(this.state.excludeOriginRadiusMeters) || 0;
         const _userLoc = this.props.userLocation;
         const _userLocResolved = !!(_userLoc
@@ -359,16 +866,57 @@ class ShareLocationModal extends Component {
                 _privacyOverlapsDestination = true;
             }
         }
-        // The user's own location is required for EVERY share — without
-        // a GPS fix there's nothing to send. Gate Confirm on it in all
-        // modes (not just meet-mode) so the button can't be pressed
-        // before the location has been acquired. In meet-mode we
-        // additionally require the destination to have resolved.
-        const _meetModeMissingDestination = this.props.meetMode
-            && !_destResolved;
-        const _confirmDisabled = !_userLocResolved
-            || _meetModeMissingDestination
+        // A current GPS fix is required ONLY for a "Once" share: it captures a
+        // single fix and sends it immediately, so with nothing acquired yet
+        // there is nothing to send — keep Share disabled until it resolves.
+        // Every OTHER mode (untilStopped / untilReturn / fixed / meet) starts a
+        // LIVE share whose first fix is acquired by the share machinery AFTER
+        // Confirm, so the user can press Share right away and the fix (and, for
+        // "meet at my place", the destination) arrives later. The privacy-
+        // overlap check stays: it only trips once both fix and destination are
+        // resolved, never during load.
+        const _isOnceShare = _effectiveShare.kind === 'once';
+        const _onceMissingUserLocation = _isOnceShare && !_userLocResolved;
+        const _confirmDisabled = _onceMissingUserLocation
             || _privacyOverlapsDestination;
+        // While a share is starting, keep the map-marker glyph visible but
+        // ring it with a circular spinner — the same "activity ring around an
+        // icon" treatment the navbar's DND bell uses during its first sync.
+        // Paper's Button accepts a function as its `icon` source; ours draws
+        // the marker with a PaperActivityIndicator centred over it
+        // (pointerEvents:none, purely decorative). Fixed accent colour so the
+        // ring stays legible while the button is disabled (dimmed). Idle → the
+        // plain "map-marker" string, identical to before.
+        const _shareIcon = this.state.sharing
+            ? ({ size, color }) => (
+                <View style={{
+                    width: size,
+                    height: size,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                }}>
+                    <Icon name="map-marker" size={size} color={color} />
+                    <View
+                        pointerEvents="none"
+                        style={{
+                            position: 'absolute',
+                            left: 0,
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                        }}
+                    >
+                        <PaperActivityIndicator
+                            size={size + 12}
+                            color="#2196F3"
+                            animating={true}
+                        />
+                    </View>
+                </View>
+            )
+            : 'map-marker';
         return (
             <Modal
                 style={containerStyles.container}
@@ -425,10 +973,20 @@ class ShareLocationModal extends Component {
                                 picker doesn't look stretched-out and
                                 airy. */}
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={[
+                                <ThemedModalSurface style={[
                                     containerStyles.modalSurface,
-                                    this.props.meetMode ? {alignSelf: 'stretch'} : null,
+                                    // Outside meet-mode the card is content-sized. Without a
+                                    // width cap, the two-column interval section can grow wider
+                                    // than the screen (selecting "4 hours" pushed the card and the
+                                    // "or select an interval" label off the right edge). Cap the
+                                    // card to the screen width (minus the overlay's 16px padding
+                                    // each side) and centre it, so wide content wraps inside the
+                                    // card instead of overflowing.
+                                    this.props.meetMode
+                                        ? {alignSelf: 'stretch'}
+                                        : {maxWidth: Dimensions.get('window').width - 32, alignSelf: 'center'},
                                 ]}>
+
                                     <Text style={containerStyles.title}>Share location</Text>
 
                                     {/* "with <peer>" subtitle is only shown
@@ -439,13 +997,19 @@ class ShareLocationModal extends Component {
                                         arrive at the destination above."), so
                                         rendering it here too would just
                                         duplicate the same string two lines
-                                        apart. Tighter padding than the shared
-                                        styles.body (10 px all around) so the
-                                        dialog feels compact — the prompt, the
-                                        radio list and the note below sit
-                                        closer together. */}
+                                        apart. Padding is tuned to CENTRE the
+                                        subtitle between the title and the map:
+                                        the title (containerStyles.title) carries
+                                        a fixed 14 px padding, so the gap above
+                                        the subtitle is already 14 px + our
+                                        paddingTop, while the gap below is our
+                                        paddingBottom + the preview's 4 px
+                                        marginTop. paddingTop:0 / paddingBottom:10
+                                        makes both gaps ~14 px so the subtitle
+                                        sits evenly between the two instead of
+                                        hugging the map. */}
                                     {!this.props.meetMode ? (
-                                        <Text style={[styles.body, { paddingTop: 4, paddingBottom: 2 }]}>
+                                        <Text style={[styles.body, { paddingTop: 0, paddingBottom: 10 }]}>
                                             with {this.props.uri || this.props.displayName || 'this contact'}
                                         </Text>
                                     ) : null}
@@ -479,20 +1043,43 @@ class ShareLocationModal extends Component {
                                         );
                                         const PREVIEW_H = 180;
                                         if (!hasUserLoc) {
+                                            // Render the map-area placeholder at the
+                                            // SAME width AND height as the resolved
+                                            // map (PREVIEW_W × PREVIEW_H) — not a
+                                            // compact text banner — so the modal
+                                            // keeps a constant height and doesn't
+                                            // expand when the GPS fix lands and the
+                                            // real map swaps in. Matching
+                                            // backgroundColor / borderRadius /
+                                            // margins to the resolved-state <View>
+                                            // below makes the swap seamless: the box
+                                            // is already the right size, only its
+                                            // contents change. A centred spinner over
+                                            // the neutral map-tile grey reads as "the
+                                            // map is loading here" while we wait for
+                                            // the first fix.
                                             return (
                                                 <View style={{
                                                     marginTop: 4,
                                                     marginBottom: 8,
-                                                    paddingVertical: 8,
-                                                    paddingHorizontal: 12,
-                                                    backgroundColor: 'rgba(25,118,210,0.08)',
-                                                    borderRadius: 8,
-                                                    alignSelf: 'center',
                                                     width: PREVIEW_W,
+                                                    height: PREVIEW_H,
+                                                    borderRadius: 8,
+                                                    overflow: 'hidden',
+                                                    backgroundColor: '#e5e5e5',
+                                                    alignSelf: 'center',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
                                                 }}>
+                                                    <PaperActivityIndicator
+                                                        size={36}
+                                                        color="#2196F3"
+                                                        animating={true}
+                                                    />
                                                     <Text style={{
+                                                        marginTop: 10,
                                                         fontSize: 12,
-                                                        color: '#333',
+                                                        color: getModalColors().textPrimary,
                                                         textAlign: 'center',
                                                     }} numberOfLines={1}>
                                                         Acquiring your location…
@@ -512,6 +1099,10 @@ class ShareLocationModal extends Component {
                                         const canZoomIn = zoom < PREVIEW_MAX_ZOOM;
                                         const canZoomOut = zoom > PREVIEW_MIN_ZOOM;
                                         const _ownerInitials = initialsFromName(this.props.myDisplayName);
+                                        // Theme-aware map-tile placeholder fill (matches the
+                                        // meet-destination preview below): neutral dark grey in
+                                        // dark mode, light grey otherwise.
+                                        const _placeholderBg = getModalColors().isDark ? '#2A2D31' : '#e5e5e5';
                                         return (
                                             <View style={{
                                                 marginTop: 4,
@@ -520,7 +1111,7 @@ class ShareLocationModal extends Component {
                                                 height: PREVIEW_H,
                                                 borderRadius: 8,
                                                 overflow: 'hidden',
-                                                backgroundColor: '#e5e5e5',
+                                                backgroundColor: _placeholderBg,
                                                 alignSelf: 'center',
                                             }}>
                                                 <StaticMap
@@ -560,7 +1151,7 @@ class ShareLocationModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="plus" size={20} color="#222" />
+                                                    <Icon name="plus" size={20} color={getModalColors().textPrimary} />
                                                 </TouchableOpacity>
 
                                                 <TouchableOpacity
@@ -586,7 +1177,7 @@ class ShareLocationModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="minus" size={20} color="#222" />
+                                                    <Icon name="minus" size={20} color={getModalColors().textPrimary} />
                                                 </TouchableOpacity>
 
                                                 {/* Coords overlay strip — same
@@ -857,7 +1448,7 @@ class ShareLocationModal extends Component {
                                                             elevation: 3,
                                                         }}
                                                     >
-                                                        <Icon name="plus" size={20} color="#222" />
+                                                        <Icon name="plus" size={20} color={getModalColors().textPrimary} />
                                                     </TouchableOpacity>
 
                                                     {/* Zoom - button (just below the +).
@@ -889,7 +1480,7 @@ class ShareLocationModal extends Component {
                                                             elevation: 3,
                                                         }}
                                                     >
-                                                        <Icon name="minus" size={20} color="#222" />
+                                                        <Icon name="minus" size={20} color={getModalColors().textPrimary} />
                                                     </TouchableOpacity>
 
                                                     {/* Coordinates overlay strip along the
@@ -932,25 +1523,71 @@ class ShareLocationModal extends Component {
                                                 </View>
                                             );
                                         }
-                                        // No coords yet — fall back to the
-                                        // compact text banner. Kept short so
-                                        // the user notices the resolving /
-                                        // failed state without losing room
-                                        // for the duration picker below.
+                                        // No coords yet — render the map-area
+                                        // placeholder at the SAME width AND
+                                        // height as the resolved map above so
+                                        // the modal keeps a constant height and
+                                        // doesn't expand when the destination
+                                        // resolves and the real map tile swaps
+                                        // in. PREVIEW_W / PREVIEW_H are scoped to
+                                        // the hasCoords branch above, so we
+                                        // recompute the identical values here
+                                        // (window.width − 22, floored at 240;
+                                        // height 240) to keep the two boxes the
+                                        // same size. While resolving we centre a
+                                        // spinner over the neutral map-tile grey
+                                        // ("the map is loading here"); on the
+                                        // 'failed' state we drop the spinner and
+                                        // show only the error copy, but keep the
+                                        // box the same size so the layout still
+                                        // doesn't shift.
+                                        const _PREVIEW_W = Math.max(
+                                            240,
+                                            Dimensions.get('window').width - 22
+                                        );
+                                        const _PREVIEW_H = 240;
+                                        const _failed = this.props.meetDestinationStatus === 'failed';
+                                        // Theme-aware placeholder fill. The box
+                                        // used a hardcoded light grey (#e5e5e5),
+                                        // so in dark mode the (near-white)
+                                        // textPrimary error copy sat on a light
+                                        // background and was barely legible. Use
+                                        // a neutral dark grey in dark mode so both
+                                        // the "Resolving…" and failure copy keep
+                                        // strong contrast in either theme.
+                                        const _mc = getModalColors();
+                                        const _placeholderBg = _mc.isDark ? '#2A2D31' : '#e5e5e5';
                                         return (
                                             <View style={{
                                                 marginTop: 4,
-                                                marginBottom: 6,
-                                                paddingVertical: 8,
-                                                paddingHorizontal: 12,
-                                                backgroundColor: 'rgba(25,118,210,0.08)',
+                                                marginBottom: 8,
+                                                width: _PREVIEW_W,
+                                                height: _PREVIEW_H,
                                                 borderRadius: 8,
+                                                overflow: 'hidden',
+                                                backgroundColor: '#e5e5e5',
+                                                alignSelf: 'center',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                paddingHorizontal: 24,
                                             }}>
+                                                {!_failed ? (
+                                                    <PaperActivityIndicator
+                                                        size={36}
+                                                        color="#2196F3"
+                                                        animating={true}
+                                                    />
+                                                ) : null}
                                                 <Text style={{
+                                                    marginTop: _failed ? 0 : 10,
                                                     fontSize: 12,
-                                                    color: '#333',
+                                                    color: _failed
+                                                        ? (_mc.isDark ? '#FF8A80' : '#C62828')
+                                                        : _mc.textPrimary,
+                                                    fontWeight: _failed ? '600' : 'normal',
+                                                    textAlign: 'center',
                                                 }} numberOfLines={2}>
-                                                    {this.props.meetDestinationStatus === 'failed'
+                                                    {_failed
                                                         ? "Couldn't read the map link — cancel and try another"
                                                         : 'Resolving destination…'}
                                                 </Text>
@@ -958,43 +1595,40 @@ class ShareLocationModal extends Component {
                                         );
                                     })() : null}
 
-                                    {/* Two-column layout. Left column: the
-                                        meeting-handshake option ("Until we
-                                        meet") followed by an "or" divider
-                                        line so the two intents (meetup vs
-                                        timed) read as alternatives rather
-                                        than a flat list. Right column: the
-                                        plain timed shares stacked vertically.
-                                        A single RadioButton.Group wraps both
-                                        columns so selection is mutually
-                                        exclusive across them.
+                                    {/* Two-column layout.
+                                        Left column: a single mutually-exclusive
+                                        group of stop conditions — Until stopped /
+                                        Once / Until I return / Until we meet
+                                        (see _leftMode / _selectLeftMode) — then a
+                                        label describing the interval's role.
+                                        Right column: the duration / expiry cap
+                                        radio (4h / 8h / 24h).
 
-                                        RadioButton.Android is forced on both
-                                        platforms so unchecked buttons render
-                                        as a clearly visible empty circle
-                                        outline — the default <RadioButton>
-                                        picks the iOS checkmark style on iOS,
-                                        which is invisible when unselected.
-                                        uncheckedColor bumps contrast so the
-                                        ring stands out against the Surface
-                                        background. */}
-                                    {/* Meet-me-there mode collapses the
-                                        whole duration picker — there's only
-                                        one valid choice (the meet-up
-                                        handshake) and showing the alternate
-                                        options would invite the user to pick
-                                        something incompatible with the
-                                        destination they just chose. We rely
-                                        on `presetKind` to keep selectedIndex
-                                        pointed at the meetingRequest entry,
-                                        and the description below is the only
-                                        copy that needs to render — the
-                                        previous "Until we meet" header was
-                                        redundant with the description
-                                        underneath. The peer URI is folded
-                                        into the description so there's only
-                                        one line of text under the map and
-                                        every other pixel is the map itself. */}
+                                        The left group is exactly one choice; the
+                                        right column supplies the duration for the
+                                        two modes that use one:
+                                          • "Until stopped" runs live until the
+                                            user stops it, capped by the interval.
+                                          • "Once" is a single fix — no duration.
+                                          • "Until I return" auto-stops on return
+                                            (8h ceiling) — interval not used.
+                                          • "Until we meet" is the handshake; the
+                                            interval is its expiry cap.
+
+                                        RadioButton.Android with uncheckedColor
+                                        keeps the unchecked glyph visible on both
+                                        platforms (the default iOS glyph vanishes
+                                        when unselected). */}
+                                    {/* Meet-me-there mode collapses the whole
+                                        duration picker — there's only one valid
+                                        choice (the meet-up handshake) and
+                                        showing the alternate controls would
+                                        invite the user to pick something
+                                        incompatible with the destination they
+                                        just chose. defaultSelectionFor() opens
+                                        this flow with meetChecked=true at the
+                                        8h default cap, and the description below
+                                        is the only copy that needs to render. */}
                                     {this.props.meetMode ? (
                                         <View style={{
                                             paddingVertical: 6,
@@ -1013,93 +1647,102 @@ class ShareLocationModal extends Component {
                                             </Text>
                                         </View>
                                     ) : (
-                                    <RadioButton.Group
-                                        onValueChange={(value) => this.setState({selectedIndex: parseInt(value, 10)})}
-                                        value={String(this.state.selectedIndex)}
-                                    >
                                         <View style={{ flexDirection: 'row' }}>
                                             <View style={{ flex: 1 }}>
-                                                {/* "Until I return" sits at the top of the
-                                                    left column. Originally caregiver-only —
-                                                    now shown for every contact because the
-                                                    "I'll be back home in a bit" intent
-                                                    isn't specific to a caregiver
-                                                    relationship. For caregiver contacts the
-                                                    static defaultIndexFor() helper still
-                                                    pre-selects this row, so the open-modal
-                                                    behaviour is unchanged for them. */}
-                                                {DURATION_OPTIONS.map((opt, idx) => (
-                                                    opt.kind === 'untilIReturn' ? (
-                                                        <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
-                                                            <RadioButton.Android
-                                                                value={String(idx)}
-                                                                uncheckedColor="#666"
-                                                            />
-                                                            <Text>{opt.label}</Text>
-                                                        </View>
-                                                    ) : null
-                                                ))}
-                                                {/* "Until we meet" is the meet-up handshake — a
-                                                    peer-to-peer "let's converge on the same point"
-                                                    intent. For a caregiver contact that's the wrong
-                                                    semantic: the caregiver isn't trying to meet up,
-                                                    they're keeping watch over a trip. Hide it
-                                                    entirely so the modal stays focused on the
-                                                    "Until I return" / fixed-interval shapes that
-                                                    actually fit the relationship. */}
+                                                {/* Left column — a single
+                                                    mutually-exclusive group of
+                                                    stop conditions, top to
+                                                    bottom:
+                                                      • "Once" — single fix. Sits
+                                                        at the top as the
+                                                        lowest-commitment choice.
+                                                      • "Until stopped" — the
+                                                        plain live share that
+                                                        runs until the user stops
+                                                        it (capped by the
+                                                        interval); the explicit
+                                                        name for "no auto-stop
+                                                        picked".
+                                                      • "Until I return" —
+                                                        auto-stop on return.
+                                                        Caregivers open with it
+                                                        pre-checked via
+                                                        defaultSelectionFor().
+                                                      • "Until we meet" — the
+                                                        meet-up handshake. Hidden
+                                                        for caregiver contacts:
+                                                        they're keeping watch over
+                                                        a trip, not converging on
+                                                        a point. */}
+                                                {this._renderLeftModeRow('once', 'Once')}
+                                                {this._renderLeftModeRow('untilStopped', 'Until stopped')}
+                                                {this._renderLeftModeRow('untilReturn', UNTIL_RETURN_OPTION.label)}
                                                 {!this.props.isCaregiver
-                                                    ? DURATION_OPTIONS.map((opt, idx) => (
-                                                        opt.kind === 'meetingRequest' ? (
-                                                            /* Override the shared
-                                                               checkBoxRow's 10px
-                                                               bottom margin so the
-                                                               option sits snug at
-                                                               the top of its column. */
-                                                            <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
-                                                                <RadioButton.Android
-                                                                    value={String(idx)}
-                                                                    uncheckedColor="#666"
-                                                                />
-                                                                <Text>{opt.label}</Text>
-                                                            </View>
-                                                        ) : null
-                                                    ))
+                                                    ? this._renderLeftModeRow('meet', 'Until we meet')
                                                     : null}
-                                                {/* "or select an interval"
-                                                    separator: just the text,
-                                                    no horizontal rules — the
-                                                    descriptive label stands on
-                                                    its own and keeps the
-                                                    divider visually quiet
-                                                    inside the narrow column. */}
-                                                <View style={{
-                                                    alignItems: 'center',
-                                                    marginTop: 6,
-                                                    marginBottom: 2,
-                                                    paddingHorizontal: 8,
-                                                }}>
-                                                    <Text style={{
-                                                        fontSize: 12,
-                                                        opacity: 0.7,
-                                                    }}>or select an interval</Text>
-                                                </View>
                                             </View>
                                             <View style={{ flex: 1 }}>
-                                                {DURATION_OPTIONS.map((opt, idx) => (
-                                                    (opt.kind === 'once' || opt.kind === 'fixed') ? (
-                                                        <View key={idx} style={[styles.checkBoxRow, { marginBottom: 0 }]}>
-                                                            <RadioButton.Android
-                                                                value={String(idx)}
-                                                                uncheckedColor="#666"
-                                                            />
-                                                            <Text>{opt.label}</Text>
-                                                        </View>
-                                                    ) : null
-                                                ))}
+                                                {/* Right column — the duration /
+                                                    expiry cap. "Once" now lives
+                                                    in the left column, so only
+                                                    the fixed intervals render
+                                                    here. The interval only
+                                                    applies to 'untilStopped' and
+                                                    'meet'; for 'once' /
+                                                    'untilReturn' it's not
+                                                    applicable, so we render the
+                                                    rows only in the applicable
+                                                    modes and otherwise leave this
+                                                    column EMPTY. The wrapping
+                                                    flex:1 <View> stays mounted
+                                                    either way, so the left column
+                                                    keeps its width and the layout
+                                                    doesn't reflow. */}
+                                                {(this._leftMode() === 'untilStopped'
+                                                    || this._leftMode() === 'meet')
+                                                    ? INTERVAL_OPTIONS.map((opt, idx) =>
+                                                        opt.kind === 'once'
+                                                            ? null
+                                                            : this._renderIntervalRow(opt, idx)
+                                                    )
+                                                    : null}
                                             </View>
                                         </View>
-                                    </RadioButton.Group>
                                     )}
+
+                                    {/* Foreground-only ("While Using") notice.
+                                        Only rendered outside meet-mode (the
+                                        RadioButton.Group branch) and only when
+                                        the grant is positively foreground-only,
+                                        so it never shows for an Always /
+                                        unknown grant. Explains why every option
+                                        but "Once" is disabled and offers a
+                                        one-tap deep-link to upgrade to Always;
+                                        returning to the app re-probes the
+                                        permission and unlocks the options in
+                                        place. */}
+                                    {!this.props.meetMode
+                                        && ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
+                                        ? (
+                                        <View style={{
+                                            paddingHorizontal: 12,
+                                            paddingTop: 6,
+                                            paddingBottom: 2,
+                                        }}>
+                                            <Text style={{ fontSize: 12, opacity: 0.85 }}>
+                                                Disabled options become available when Location permission is set to <Text style={{ fontWeight: 'bold' }}>{Platform.OS === 'ios' ? 'Always' : 'Allow all the time'}</Text>.
+                                            </Text>
+                                            <Button
+                                                mode="text"
+                                                compact
+                                                onPress={this.onOpenLocationSettings}
+                                                accessibilityLabel="Open location settings"
+                                                style={{ alignSelf: 'flex-start', marginTop: 2 }}
+                                            >
+                                                Open Settings
+                                            </Button>
+                                        </View>
+                                    ) : null}
 
                                     {/* Privacy-radius slider — only shown
                                         when the "Until we meet" handshake is
@@ -1112,13 +1755,14 @@ class ShareLocationModal extends Component {
                                         one where the starting point is
                                         commonly home and the user wants to
                                         surface the journey, not the origin. */}
-                                    {DURATION_OPTIONS[this.state.selectedIndex]
-                                        && DURATION_OPTIONS[this.state.selectedIndex].kind === 'meetingRequest'
+                                    {_isMeetingKind
                                         ? (
                                         <PrivacyRadiusSlider
+                                        textColor={getModalColors().textPrimary}
+                                        markerFillColor={getModalColors().surface}
                                             value={this.state.excludeOriginRadiusMeters}
                                             onChange={this.setRadiusStop}
-                                            title="Don’t share my location until I move away from my starting point:"
+                                            title="Hide my location near my starting point:"
                                         />
                                     ) : null}
 
@@ -1163,11 +1807,15 @@ class ShareLocationModal extends Component {
                                         }}>
                                             <Text style={[styles.body, { paddingTop: 2, paddingBottom: 0, paddingHorizontal: 4, fontSize: 10, opacity: 0.75 }]}>
                                                 {(() => {
-                                                    const sel = DURATION_OPTIONS[this.state.selectedIndex];
+                                                    const sel = _effectiveShare;
                                                     const head = 'Location data is encrypted end-to-end between devices, no intermediary server can decrypt it. ';
                                                     if (sel && sel.kind === 'meetingRequest') {
+                                                        const _capHours = Math.round(sel.durationMs / HOUR_MS);
                                                         return head
                                                             + 'Sharing can be stopped at any time by clicking on the location icon. '
+                                                            + 'It also stops automatically once you meet, or after '
+                                                            + _capHours + (_capHours === 1 ? ' hour' : ' hours')
+                                                            + ' — whichever comes first. '
                                                             + 'Location data will be destroyed on both devices after meetup.';
                                                     }
                                                     if (sel && sel.kind === 'untilIReturn') {
@@ -1212,8 +1860,11 @@ class ShareLocationModal extends Component {
                                                     alignSelf: 'center',
                                                     marginTop: -8,
                                                 }}>
-                                                    <Checkbox
+                                                    {/* Checkbox.Android so the unchecked
+                                                        box is visible on iOS too. */}
+                                                    <Checkbox.Android
                                                         status={this.state.dontShowDisclaimerAgain ? 'checked' : 'unchecked'}
+                                                        uncheckedColor="#666"
                                                         onPress={() => this.setState({
                                                             dontShowDisclaimerAgain: !this.state.dontShowDisclaimerAgain,
                                                         })}
@@ -1233,18 +1884,19 @@ class ShareLocationModal extends Component {
 
                                     {/* Inline warning — explains WHY the
                                         Confirm button is disabled.
-                                        Three reasons in priority order:
+                                        Two reasons in priority order:
                                         privacy-zone overlap (most
                                         actionable — pick a smaller
-                                        radius), user location not
-                                        resolved yet, destination not
-                                        resolved yet. The destination
-                                        case is unusual because the
-                                        Resolving banner above the map
-                                        already covers it; we still
-                                        emit a hint here for symmetry
-                                        and so the user knows what
-                                        Confirm is waiting on. */}
+                                        radius) and destination not
+                                        resolved yet. The "waiting for
+                                        your current location" case is
+                                        intentionally NOT surfaced here:
+                                        the spinner inside the preview
+                                        map box already tells the user
+                                        the GPS fix is in flight, so a
+                                        second "Waiting for your current
+                                        location…" pill would just be
+                                        redundant. */}
                                     {_privacyOverlapsDestination ? (
                                         <Text style={{
                                             fontSize: 11,
@@ -1255,16 +1907,6 @@ class ShareLocationModal extends Component {
                                         }}>
                                             Your privacy zone covers the destination — pick a smaller radius or a different destination.
                                         </Text>
-                                    ) : (!_userLocResolved) ? (
-                                        <Text style={{
-                                            fontSize: 11,
-                                            textAlign: 'center',
-                                            opacity: 0.7,
-                                            paddingHorizontal: 12,
-                                            marginTop: 4,
-                                        }}>
-                                            Waiting for your current location…
-                                        </Text>
                                     ) : (this.props.meetMode && !_destResolved) ? (
                                         <Text style={{
                                             fontSize: 11,
@@ -1274,6 +1916,19 @@ class ShareLocationModal extends Component {
                                             marginTop: 4,
                                         }}>
                                             Waiting for the destination to resolve…
+                                        </Text>
+                                    ) : _onceMissingUserLocation ? (
+                                        // Only "Once" is gated on the current fix
+                                        // (see _confirmDisabled). Explain the dimmed
+                                        // Share button while the map acquires it.
+                                        <Text style={{
+                                            fontSize: 11,
+                                            textAlign: 'center',
+                                            opacity: 0.7,
+                                            paddingHorizontal: 12,
+                                            marginTop: 4,
+                                        }}>
+                                            Waiting for your location…
                                         </Text>
                                     ) : null}
 
@@ -1289,6 +1944,10 @@ class ShareLocationModal extends Component {
                                             mode="outlined"
                                             style={styles.button}
                                             onPress={this.onCancel}
+                                            /* Locked while a share is starting
+                                               so the modal stays put until the
+                                               acquire-and-send finishes. */
+                                            disabled={this.state.sharing}
                                             accessibilityLabel="Cancel"
                                         >
                                             Cancel
@@ -1297,14 +1956,19 @@ class ShareLocationModal extends Component {
                                             mode="contained"
                                             style={styles.button}
                                             onPress={this.onConfirm}
-                                            icon="map-marker"
-                                            disabled={_confirmDisabled}
+                                            icon={_shareIcon}
+                                            /* Disabled both while the normal
+                                               gates fail AND while a share is
+                                               in flight, so the user can't
+                                               double-fire during the acquire
+                                               latency. */
+                                            disabled={_confirmDisabled || this.state.sharing}
                                             accessibilityLabel="Share location"
                                         >
-                                            Share
+                                            {this.state.sharing ? 'Sharing…' : 'Share'}
                                         </Button>
                                     </View>
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>
@@ -1320,11 +1984,33 @@ ShareLocationModal.propTypes = {
     onConfirm   : PropTypes.func.isRequired,
     uri         : PropTypes.string,
     displayName : PropTypes.string,
+    // Which startable session types are ALREADY live for this contact, so the
+    // picker can disable the matching options: { meet: bool, share: bool }.
+    // meet live  → "Until we meet" disabled; share live → "Until stopped" and
+    // "Until I return" disabled (only meet + Once remain). Defaults to all-free.
+    liveTypes   : PropTypes.shape({
+        meet  : PropTypes.bool,
+        share : PropTypes.bool,
+    }),
+    // OS location grant level as reported by
+    // LocationSharingManager.getLocationPermissionStatus():
+    // 'always' | 'whenInUse' | 'foregroundOnly' | 'blocked' |
+    // 'unavailable' | 'undetermined'. When it's a foreground-only value
+    // ('whenInUse' / 'foregroundOnly') the picker restricts to "Once" and
+    // shows the upgrade notice. null / undefined (e.g. the meet-me flow,
+    // which opens before permission is probed) leaves every option enabled.
+    permissionLevel : PropTypes.string,
+    // Asks the parent (NavigationBar) to re-probe the OS permission and
+    // refresh `permissionLevel`. Called when the app returns to the
+    // foreground while the modal is open, so granting "Always" in Settings
+    // unlocks the timed options without reopening the modal.
+    onRefreshPermissionLevel : PropTypes.func,
     // True when the selected contact carries the 'caregiver' tag /
     // localProperties.caregiver flag. Surfaces the auto-stopping
     // "Until I return" option in the modal and pre-selects it.
     isCaregiver : PropTypes.bool,
-    // Pre-select the share kind (matches DURATION_OPTIONS[].kind).
+    // Pre-select the share kind. Only 'meetingRequest' is honoured now —
+    // it opens the modal with the "Until we meet" checkbox pre-checked.
     // Used by the Meet me there flow to land on 'meetingRequest'.
     presetKind  : PropTypes.string,
     // Meet me there mode: when true, hides all alternate duration
@@ -1366,6 +2052,19 @@ ShareLocationModal.propTypes = {
     // choice so the same value comes back next time.
     defaultPrivacyRadiusMeters: PropTypes.number,
     onPersistPrivacyRadius    : PropTypes.func,
+    // Last-used share option for this contact — a local, non-synced
+    // per-contact preference ({mode, selectedInterval}) read from
+    // contact.localProperties.shareLocationPrefs. Seeds the picker on open
+    // (see defaultSelectionFor). mode is one of 'once' | 'untilStopped' |
+    // 'untilReturn'; "meet" is never stored here.
+    lastShareOption           : PropTypes.shape({
+        mode:             PropTypes.string,
+        selectedInterval: PropTypes.number,
+    }),
+    // Called from onConfirm with the chosen {mode, selectedInterval} so the
+    // parent can persist it under the contact's localProperties (never for a
+    // meetingRequest share). Non-synced — stays on the device.
+    onPersistShareOption      : PropTypes.func,
 };
 
 export default ShareLocationModal;

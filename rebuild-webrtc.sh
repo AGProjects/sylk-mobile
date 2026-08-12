@@ -134,6 +134,17 @@ rm -rf "$APP_ANDROID/app/build"
 rm -rf "$APP_ANDROID/app/.cxx"
 ok "App's Android build cache cleared"
 
+# --- 3b. clean OTHER CMake-built native modules so the 16 KB page-size ----
+# linker flag injected from android/build.gradle (max-page-size=16384) gets a
+# FRESH CMake configure. AGP caches CMake output under each module's .cxx;
+# without wiping it the new -DCMAKE_SHARED_LINKER_FLAGS may not re-apply.
+step "Cleaning CMake caches for vision-camera / fast-openpgp (16 KB align)"
+for m in react-native-vision-camera react-native-fast-openpgp; do
+    rm -rf "$SCRIPT_DIR/node_modules/$m/android/.cxx"
+    rm -rf "$SCRIPT_DIR/node_modules/$m/android/build"
+done
+ok "vision-camera / fast-openpgp native caches cleared"
+
 # --- 4. clean Metro bundler cache --------------------------------------
 step "Clearing Metro bundler cache"
 rm -rf "$TMPDIR/metro-"* 2>/dev/null || true

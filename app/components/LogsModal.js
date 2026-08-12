@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import getAppPaperTheme, { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import {
@@ -12,9 +13,10 @@ import {
     StyleSheet,
     SafeAreaView,
 } from 'react-native';
-import { Text, Button, Surface, Checkbox, Chip } from 'react-native-paper';
+import { ThemeProvider, Text, Button, Surface, Checkbox, Chip } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import { anonymizeEmails } from '../utils';
+import { throwTestCrash } from '../crashCapture';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
 // ShareLocationModal / ActiveLocationSharesModal / DeleteHistoryModal /
@@ -252,9 +254,34 @@ function _scanTagsAndBuildFilter(text) {
         }
         return out.join('\n');
     };
+    // Like `filter` above but returns the ORIGINAL line indices that pass
+    // the top OR + sub AND selection, so the caller can prefix each rendered
+    // line with its real (pre-filter) line number in the source log.
+    const filterIndices = (topSelectedSet, subSelectedSet) => {
+        const hasTop = topSelectedSet && topSelectedSet.size > 0;
+        const hasSub = subSelectedSet && subSelectedSet.size > 0;
+        if (!hasTop && !hasSub) {
+            const all = new Array(lines.length);
+            for (let i = 0; i < lines.length; i++) all[i] = i;
+            return all;
+        }
+        const matched = _topMatchingIndices(topSelectedSet);
+        if (!hasSub) return matched;
+        const out = [];
+        for (const i of matched) {
+            const lineTags = perLineTags[i];
+            if (!lineTags) continue;
+            for (const t of lineTags) {
+                if (subSelectedSet.has(t)) { out.push(i); break; }
+            }
+        }
+        return out;
+    };
     return {
         tags: sortedTags,           // [{name, count}, ...] desc by count
+        lines,                      // raw split lines, for line-number prefixing
         filter,
+        filterIndices,
         getSubTags,
         hasUntagged,
         untaggedCount,
@@ -304,6 +331,11 @@ class ShowLogsModal extends Component {
             // − / + controls in the header. Clamped to FONT_MIN /
             // FONT_MAX in _decreaseFont / _increaseFont.
             fontScale: 1,
+            // Show original-file line numbers as a left gutter on each
+            // rendered line. On by default; toggled from the header. Numbers
+            // reference the pre-filter position so they stay stable references
+            // even when a tag filter hides lines in between.
+            showLineNumbers: true,
             // Tail-tracking flags driven by _onScroll / _onContentSizeChange.
             //   userScrolledUp — true when the view is more than ~50 px
             //     from the bottom; gates the auto-scroll-to-end glue
@@ -401,6 +433,10 @@ class ShowLogsModal extends Component {
         const next = Math.min(FONT_MAX_SCALE, +(this.state.fontScale + FONT_STEP).toFixed(2));
         if (next === this.state.fontScale) return;
         this.setState({ fontScale: next });
+    }
+
+    _toggleLineNumbers = () => {
+        this.setState({ showLineNumbers: !this.state.showLineNumbers });
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
@@ -547,6 +583,18 @@ class ShowLogsModal extends Component {
         }
     }
 
+    // Dev-only (Developer mode): deliberately crash to verify the whole
+    // capture -> persist -> next-launch-attach path end to end. force:true so
+    // it also fires in a release/internal build (where the process actually
+    // dies and Android records the exit) — normal users never see this button.
+    _throwTestCrash = () => {
+        try {
+            throwTestCrash('fatal', { force: true });
+        } catch (e) {
+            console.log('[crash-capture] test crash trigger failed:', e && e.message);
+        }
+    }
+
     componentDidMount() {
         setTimeout(() => {
             if (this.scroll) {
@@ -578,7 +626,8 @@ class ShowLogsModal extends Component {
         const displayLogs = sourceLogs.replace(/\[APPLOG\] /g, '');
         const {
             tags,
-            filter,
+            lines: _scanLines,
+            filterIndices,
             getSubTags,
             hasUntagged,
             untaggedCount,
@@ -601,7 +650,27 @@ class ShowLogsModal extends Component {
         // accountId, so this flag captures exactly the cross-account
         // viewing case.
         const _isViewingOthersLogs = !!this.props.subtitle;
-        const filteredLogs = filter(this.state.selectedTags, this.state.selectedSubTags);
+        // Build the visible text from the filtered original-line indices so we
+        // can optionally prefix each line with its real source line number. The
+        // gutter is right-aligned to the width of the largest line number so the
+        // columns stay aligned (the body is rendered monospace while numbers are
+        // on). Under an active tag filter the numbers read as a sparse set — the
+        // same behaviour as the standalone HTML log viewer.
+        const _idxs = filterIndices(this.state.selectedTags, this.state.selectedSubTags);
+        let filteredLogs;
+        if (this.state.showLineNumbers) {
+            const _w = String(_scanLines.length).length;
+            const _parts = new Array(_idxs.length);
+            for (let k = 0; k < _idxs.length; k++) {
+                const i = _idxs[k];
+                _parts[k] = String(i + 1).padStart(_w) + '  ' + _scanLines[i];
+            }
+            filteredLogs = _parts.join('\n');
+        } else {
+            const _parts = new Array(_idxs.length);
+            for (let k = 0; k < _idxs.length; k++) _parts[k] = _scanLines[_idxs[k]];
+            filteredLogs = _parts.join('\n');
+        }
         const hasFilter = this.state.selectedTags.size > 0;
         const hasSubFilter = this.state.selectedSubTags.size > 0;
         // Only derive sub-tag candidates when there's a top filter to
@@ -618,7 +687,8 @@ class ShowLogsModal extends Component {
         const isLandscape = this.props.orientation === 'landscape';
 
         return (
-            <Modal
+            <ThemeProvider theme={getAppPaperTheme()}>
+<Modal
                 visible={!!this.state.show}
                 animationType="slide"
                 onRequestClose={this.props.close}
@@ -630,7 +700,7 @@ class ShowLogsModal extends Component {
                    whichever orientation the user is in. */
                 supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
-                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                <SafeAreaView style={{ flex: 1, backgroundColor: getModalColors().background }}>
                     <KeyboardAvoidingView
                         style={{ flex: 1 }}
                         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -682,11 +752,23 @@ class ShowLogsModal extends Component {
                                 ) : null}
                             </Text>
                             <TouchableOpacity
+                                onPress={this._toggleLineNumbers}
+                                accessibilityLabel="Toggle line numbers"
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                style={{ marginRight: 16 }}
+                            >
+                                <Icon
+                                    name="format-list-numbered"
+                                    size={22}
+                                    color={this.state.showLineNumbers ? '#2e7d32' : '#9e9e9e'}
+                                />
+                            </TouchableOpacity>
+                            <TouchableOpacity
                                 onPress={this.props.close}
                                 accessibilityLabel="Close"
                                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             >
-                                <Icon name="close" size={24} color="#444" />
+                                <Icon name="close" size={24} color={getModalColors().textPrimary} />
                             </TouchableOpacity>
                         </View>
                         ) : null}
@@ -716,6 +798,9 @@ class ShowLogsModal extends Component {
                                             fontSize: FONT_BASE * this.state.fontScale,
                                             lineHeight: Math.round(FONT_BASE * this.state.fontScale * 1.35),
                                         },
+                                        this.state.showLineNumbers
+                                            ? { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) }
+                                            : null,
                                     ]}
                                 >
                                     {filteredLogs}
@@ -871,8 +956,8 @@ class ShowLogsModal extends Component {
                         <View style={{
                             paddingVertical: 4,
                             borderTopWidth: StyleSheet.hairlineWidth,
-                            borderTopColor: '#e0e0e0',
-                            backgroundColor: '#fafafa',
+                            borderTopColor: getModalColors().divider,
+                            backgroundColor: getModalColors().surface,
                         }}>
                             {/* Header: size + line count (left) and
                                 Clear (right, only when filter active). */}
@@ -1096,8 +1181,8 @@ class ShowLogsModal extends Component {
                             paddingHorizontal: 12,
                             paddingVertical: 10,
                             borderTopWidth: StyleSheet.hairlineWidth,
-                            borderTopColor: '#e0e0e0',
-                            backgroundColor: '#fff',
+                            borderTopColor: getModalColors().divider,
+                            backgroundColor: getModalColors().surface,
                         }}>
                             <View style={contentStyles.buttonRow}>
                                 {/* No in-app Copy button — selecting text in
@@ -1162,11 +1247,36 @@ class ShowLogsModal extends Component {
                                     </View>
                                 </React.Fragment>
                             ) : null}
+
+                            {this.props.devMode && !_isViewingOthersLogs ? (
+                                <View style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    justifyContent: 'flex-end',
+                                    marginTop: 8,
+                                }}>
+                                    <Text style={{ flex: 1, fontSize: 11, color: '#9e9e9e' }}>
+                                        Developer: verify crash reporting
+                                    </Text>
+                                    <Button
+                                        mode="outlined"
+                                        compact
+                                        textColor="#c62828"
+                                        onPress={this._throwTestCrash}
+                                        accessibilityLabel="Throw test crash"
+                                        icon="bug"
+                                        labelStyle={{ fontSize: 12 }}
+                                    >
+                                        Throw test crash
+                                    </Button>
+                                </View>
+                            ) : null}
                         </View>
                         ) : null}
                     </KeyboardAvoidingView>
                 </SafeAreaView>
             </Modal>
+</ThemeProvider>
         );
     }
 }
@@ -1179,6 +1289,7 @@ ShowLogsModal.propTypes = {
     orientation        : PropTypes.string,
     logs               : PropTypes.string,
     account            : PropTypes.string,   // current user@domain — sender of the support file transfer
+    devMode            : PropTypes.bool,     // Developer mode on -> show the dev-only "Throw test crash" trigger
     requestSupportFromLogs : PropTypes.func, // app.js orchestrator: write temp file, key exchange, encrypted upload
     attachedLogContent : PropTypes.string,   // snapshot file contents when viewing a tapped log attachment; null in live-tail mode
     subtitle           : PropTypes.string,   // SIP URI of the log owner — only set when it differs from current account

@@ -1,4 +1,6 @@
 import React from 'react';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
 import {  Platform, Linking } from 'react-native';
 import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Text, IconButton, Surface, Portal } from 'react-native-paper';
@@ -69,15 +71,18 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
 	  close();           // call parent close
   };
 
-  if (!show) return null;
-
+  // NOTE: do NOT early-return null when !show. Conditionally unmounting
+  // a React Native <Modal> leaves the view BEHIND it (the conference
+  // screen) un-repainted until the next state tick — the "conference
+  // goes blank after dismiss, then updates later" bug. Keep the Modal
+  // mounted and let its `visible` prop show/hide it instead.
   const title= "Share conference link?";
   const sylkUrl = "sylk://" + sylkDomain + "/conference/" + conferenceRoom
 
   return (
     <Modal
 	  style={containerStyles.container}
-      visible={show}
+      visible={!!show}
       transparent
       animationType="fade"
       onRequestClose={handleClose} // Android back button
@@ -89,7 +94,11 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
       supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
     >
 
-      {/* Dismiss modal when tapping outside */}
+      {/* Only render the body when shown. The Modal element itself
+          stays mounted (visible toggles) so dismissing it never
+          unmounts the Modal and leaves the conference behind it
+          un-repainted. */}
+      {show ? (
       <TouchableWithoutFeedback onPress={handleClose}>
         <View style={containerStyles.overlay}>
           <KeyboardAvoidingView
@@ -99,11 +108,11 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
             {/* Prevent taps inside modal from dismissing */}
             <TouchableWithoutFeedback onPress={() => {}}>
 
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <ThemedModalSurface style={containerStyles.modalSurface}>
 			  <Text style={containerStyles.title}>{title}</Text>
 
 				<View style={styles.buttonRow}>
-				<Text style={styles.link}>
+				<Text style={[styles.link, { color: getModalColors().link }]}>
 					{conferenceUrl}
 				</Text>
               </View>
@@ -158,11 +167,12 @@ const ShareConferenceLinkModal = ({ show, close, conferenceUrl, notificationCent
 
 
                {/* Modal content end */}
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>
       </TouchableWithoutFeedback>
+      ) : null}
     </Modal>
   );
 };

@@ -1,74 +1,43 @@
 import React, { Component, Fragment } from 'react';
-import { Alert, Animated, AppState, Easing, Linking, Image, NativeModules, Platform, PermissionsAndroid, View , TouchableHighlight, Dimensions, ActivityIndicator} from 'react-native';
+import { Alert, Animated, AppState, Easing, Linking, Image, Platform, PermissionsAndroid, View , TouchableHighlight, Dimensions, ActivityIndicator} from 'react-native';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider, Text, IconButton, Button, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import Icon from  '@react-native-vector-icons/material-design-icons';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { Keyboard } from 'react-native';
-import BackgroundTimer from 'react-native-background-timer';
 import uuid from 'react-native-uuid';
 import utils from '../utils';
 
-// Geolocation is an optional native dependency. Guard the require so that
-// the app still boots if the pod/AAR hasn't been installed yet — callers
-// will get a graceful failure instead of a red-box on launch.
-let Geolocation = null;
-try {
-    // eslint-disable-next-line global-require
-    Geolocation = require('@react-native-community/geolocation').default
-               || require('@react-native-community/geolocation');
-} catch (e) {
-    console.log('@react-native-community/geolocation not installed:', e && e.message);
-}
+// BackgroundTimer + Geolocation are no longer imported here (Stage 4b-6): the
+// only remaining use — releasing OS timer/GPS handles on unmount — moved to the
+// app-hosted engine (this._locationEngine.releaseTimerHandles()).
 
-// Native bridge to Blink's Android foreground service that keeps the
-// process promoted while a location share is active. Declared at module
-// scope so we don't hit NativeModules in a hot path. Guarded so iOS and
-// dev-time stripped builds don't explode if the module isn't registered.
-const LocationForegroundServiceModule =
-    Platform.OS === 'android'
-        ? (NativeModules && NativeModules.LocationForegroundServiceModule) || null
-        : null;
+// The Android location foreground-service bridge is owned by the location
+// engine (LocationSharingManager) now (Stage 4b); NavigationBar had a dead
+// copy of the module handle that was never called, so it was removed.
 
 // =====================================================================
-// DEBUG: meet-up convergence simulator.
+// DEBUG: location simulator (single menu entry).
 //
-// When ENABLE_MEET_SIMULATION is true, an extra "Simulate convergence" /
-// "Stop simulation" entry appears in the chat-header kebab menu while a
-// meet share is active for the selected contact. Tapping it replaces the
-// real GPS source with a synthetic walker that steps toward a
-// convergence target every SIM_STEP_INTERVAL_MS, advancing
-// SIM_STEP_METERS each tick. The target is the peer's last known
-// coordinate (resolved through props.getPeerCoordsForActiveShare); if
-// the peer hasn't shipped any coords yet, we fall back to ~500 m due
-// north of our own start so the user still sees motion. Both devices
-// running the simulator concurrently converge as their respective
-// targets keep updating to the latest peer fix.
-//
-// Production builds: flip ENABLE_MEET_SIMULATION to false. The const is
-// a single off-switch — the menu item disappears, simulateConvergence
-// no-ops, and no synthetic ticks are emitted. The methods stay defined
-// so accidental call sites still compile.
-//
-// SIM_TICKS_TO_CONVERGE controls how fast the simulated walker reaches
-// the destination: at sim activation, step size is computed as
-// (initial distance to destination) / SIM_TICKS_TO_CONVERGE so each
-// side arrives in exactly that many ticks regardless of how far away
-// it started. SIM_STEP_METERS is the fallback step used only when no
-// destination is known yet (the per-side per-tick "I'm not sure where
-// I'm going" walk that synthesises a target on the fly).
-//
-// SIM_STEP_INTERVAL_MS sets the wall-clock gap between successive
-// synthetic ticks. 10 s gives the chat enough breathing room for
-// each new bubble update to land as a distinct visual event
-// (instead of a burst of rapid-fire updates that read as network
-// retries). With the default 5 ticks-to-converge, the full meet-up
-// cycle lands in ~50 s — long enough to watch the pins march, short
-// enough that no one loses patience in a test session.
+// A single "Start simulator" / "Stop simulator" item appears in the
+// chat-header kebab, inside the Location section (above its divider),
+// while a share is active for the selected contact AND the "Location
+// simulator" preference (Preferences → Location) is on. Tapping it
+// replaces the real GPS source with a synthetic walker chosen by the
+// ACTIVE share's mode:
+//   • "Until I return"        → 10-tick out-and-back that trips the
+//                               return auto-stop gate
+//   • meet-up (request/accept) → convergence walker toward the meet
+//                               destination
+//   • share-by-interval/fixed → outward random walk that meanders
+//                               until stopped
+// One-shot shares (no trail) are excluded. The walkers themselves and
+// their SIM_* / RANDOM_WALK_* tuning constants live in
+// LocationSimulator.js; the preference is threaded through as a live
+// getter so toggling it takes effect without a rebuild.
 // =====================================================================
-// ENABLE_MEET_SIMULATION and the SIM_* walker constants now live in
-// LocationSimulator.js (imported above), the single source of truth.
 
 const blinkLogo = require('../assets/images/blink-white-big.png');
 
@@ -101,8 +70,9 @@ import {
 // in-flight shares alive across app restarts (graceful or hard kill).
 
 import styles from '../assets/styles/NavigationBar';
-import LocationSimulator, { ENABLE_MEET_SIMULATION } from './LocationSimulator';
-import LocationSharingManager from './LocationSharingManager';
+// LocationSimulator + LocationSharingManager are app-owned now (Stage 4b-5);
+// NavigationBar borrows the engine via this.props.app._locationEngine and no
+// longer constructs either, so their imports were removed.
 import { LocationSharingContext } from './LocationSharingContext';
 
 class NavigationBar extends Component {
@@ -112,40 +82,23 @@ class NavigationBar extends Component {
 
         this.refetchMessagesForDays = 0;
 
-        // Re-send the live location every N seconds until the expiration
-        // time chosen by the user is reached. Default 60 s, overridable
-        // per-account via the Preferences modal. Stored in
-        // accounts.settings as seconds; multiplied ×1000 here for
-        // setInterval. Initialised from the constructor-time props if
-        // present so resumed shares inherit the user's chosen cadence
-        // on app boot; subsequent changes flow through componentDidUpdate.
-        this.LOCATION_REPEAT_MS = (props && typeof props.locationTickIntervalSec === 'number'
-                && props.locationTickIntervalSec > 0)
-            ? props.locationTickIntervalSec * 1000
-            : 60 * 1000;
-
-        // "Until I return" auto-stop thresholds. A caregiver share starts
-        // by recording the user's position and arming a state machine:
-        //   • departure — wait until the user has moved more than
-        //     UNTIL_RETURN_DEPARTURE_M from the recorded origin. The
-        //     first tick is by definition AT the origin, so without the
-        //     departure gate the share would self-stop immediately
-        //     ("you're already home").
-        //   • return — once departed, the moment a tick lands within
-        //     UNTIL_RETURN_RETURN_M of the origin we treat it as
-        //     "the user is back" and stop the share. Same threshold for
-        //     symmetry; a slightly looser return ring would just mean
-        //     the share lingers slightly longer than necessary, while a
-        //     tighter ring risks missing the return when GPS noise
-        //     pushes the fix a few metres outside the boundary.
-        // Both values are in metres.
-        this.UNTIL_RETURN_DEPARTURE_M = 100;
-        this.UNTIL_RETURN_RETURN_M   = 100;
+        // Location tick cadence and "Until I return" thresholds now live on
+        // the app (this.app.LOCATION_REPEAT_MS / UNTIL_RETURN_*), which the
+        // engine reads directly (Stage 4b). NavigationBar no longer holds them.
 
         // Map<uri, { intervalId, expiresAt }>  — tracks an active
         // "share location" timer per contact so the user can run
         // several shares in parallel and we can cancel them cleanly.
-        this.locationTimers = {};
+        //
+        // OWNERSHIP: this registry is owned by the LocationSharingManager engine
+        // (this._locationEngine.outgoingLocationSessions), which the app exposes
+        // here by reference via the outgoingLocationSessionsRef prop. NavigationBar
+        // only BORROWS it for read-only pulse/menu checks — it does not own or
+        // mutate the list; all mutations happen in the engine. The engine creates
+        // the object once and never reassigns it, so this borrowed reference stays
+        // valid for the component's whole life. Fallback to a fresh object only if
+        // the prop is somehow absent (defensive; the app always passes it).
+        this.outgoingLocationSessions = (props && props.outgoingLocationSessionsRef) || {};
 
         // Map<uri, {durationMs, periodLabel, opts, registeredAt}>
         //   — share-start intents that were deferred because the
@@ -169,7 +122,10 @@ class NavigationBar extends Component {
         //     explicitly cancelled the pending share),
         //   • when a meeting-accept's underlying request expires,
         //   • on componentWillUnmount.
-        this._pendingPermissionShares = {};
+        //
+        // OWNERSHIP: this map now lives on the app (this.app._pendingPermission
+        // Shares); the engine reads/writes it there (Stage 3a). NavigationBar
+        // no longer holds it.
 
         this.state = {
             showPublicKey: false,
@@ -205,6 +161,21 @@ class NavigationBar extends Component {
 			backupKey: false,
 			deleteContact: false,
 			showShareLocationModal: false,
+			// Target contact + its live session types for the OPEN share picker,
+			// captured at modal-open time (showShareLocationModal) and refreshed
+			// by _onLocationSessionsChanged while open. The modal reads liveTypes
+			// from here so a selectedContact that flickers null mid-render can't
+			// drop the disabled-options state.
+			shareModalUri: null,
+			shareLiveTypes: null,
+			// OS location grant level for the open share picker, probed in
+			// showShareLocationModal and refreshed on app-foreground via
+			// refreshShareLocationPermissionLevel. Passed to
+			// ShareLocationModal as `permissionLevel` so it can restrict the
+			// picker to "Once" under a foreground-only ("While Using") grant.
+			// null = unknown → don't gate (also the meet-me entry paths,
+			// which open the modal without probing permission).
+			shareLocationPermissionLevel: null,
 			// Optional user-location preview shown on the destination
 			// preview map inside ShareLocationModal — kicked off as a
 			// fire-and-forget getCurrentCoordinates() call when the
@@ -259,9 +230,8 @@ class NavigationBar extends Component {
 			// consented — they should always be able to revisit /
 			// withdraw.
 			locationDisclosureAcknowledged: false,
-			// Map<uri, expiresAtMs> — mirrors `this.locationTimers` in
+			// Map<uri, expiresAtMs> — mirrors `this.outgoingLocationSessions` in
 			// state so the menu can re-render when a share starts or stops.
-			activeLocationShares: {},
 			// Controls the new ActiveLocationSharesModal that lists every
 			// active share and lets the user stop one or all of them from
 			// a single place. Opened by tapping the pulsing map-marker
@@ -314,30 +284,27 @@ class NavigationBar extends Component {
         // here too — when disabled, start() is a no-op and the simulator
         // never installs a simulatedPosition, so the tick path falls
         // straight through effectiveCoordinatesForSession().
-        // Location-sharing engine. All the start/stop/pause/resume/tick/
-        // permission logic lives in LocationSharingManager; the methods on
-        // this component are thin stubs that delegate to it (see the
-        // "Location engine delegating stubs" section below). The engine
-        // reaches component-owned state (locationTimers, the activeShares
-        // mirror, props, setState, the pulse animation) through its `host`
-        // reference — this is the seam a hook/context can later replace.
-        this._locationEngine = new LocationSharingManager(this);
-
-        this._simulator = new LocationSimulator({
-            enabled: ENABLE_MEET_SIMULATION,
-            geolocation: Geolocation,
-            getEntry: (uri) => this.locationTimers && this.locationTimers[uri],
-            shouldSendUpdateTick: (uri, coords) => this._shouldSendUpdateTick(uri, coords),
-            sendLocationMetadata: (uri, coords, expiresAtISO, originMetadataId, extras) =>
-                this.sendLocationMetadata(uri, coords, expiresAtISO, originMetadataId, extras),
-        });
-        // The engine's tick path consults the simulator for synthetic
-        // coordinates (no-op when ENABLE_MEET_SIMULATION is false).
-        this._locationEngine.sim = this._simulator;
+        // Location-sharing engine. As of Stage 4b-5 the engine is HOSTED BY THE
+        // APP; NavigationBar BORROWS that single instance so its ~50 delegating
+        // stubs (see the "Location engine delegating stubs" section below) keep
+        // working, and registers itself as the engine's VIEW (engine.ui = this)
+        // so the engine can reflect UI — the share/preview modal, the pulse —
+        // via its guarded _ui* helpers. The view registration is cleared in
+        // componentWillUnmount. (The simulator + engine.sim wiring are set on
+        // the app side.)
+        this._locationEngine = this.props.app && this.props.app._locationEngine;
+        if (this._locationEngine) {
+            this._locationEngine.navbar = this;
+        }
     }
 
     _startActiveSharePulse() {
         if (this._activeSharePulseLoop) return;
+        try {
+            const _s = Object.keys(this._activeShares() || {});
+            const _t = Object.keys(this.outgoingLocationSessions || {});
+            //utils.timestampedLog('[location] pulse START | activeLocationShares=', JSON.stringify(_s), '| timers=', JSON.stringify(_t), '| callActive=', !!this.props.callActive);
+        } catch (e) { /* diagnostic only */ }
         // Two-phase opacity ramp: full -> dim -> full, each phase
         // 700ms so the marker visibly breathes without being
         // distracting. Easing.inOut(sine) keeps the transition soft.
@@ -361,6 +328,11 @@ class NavigationBar extends Component {
     }
 
     _stopActiveSharePulse() {
+        try {
+            const _s = Object.keys(this._activeShares() || {});
+            const _t = Object.keys(this.outgoingLocationSessions || {});
+            //utils.timestampedLog('[location] pulse STOP | activeLocationShares=', JSON.stringify(_s), '| timers=', JSON.stringify(_t), '| wasRunning=', !!this._activeSharePulseLoop);
+        } catch (e) { /* diagnostic only */ }
         if (this._activeSharePulseLoop) {
             this._activeSharePulseLoop.stop();
             this._activeSharePulseLoop = null;
@@ -574,7 +546,8 @@ class NavigationBar extends Component {
         // time. Kick the pulse loop here so the indicator actually
         // breathes from the first frame, not just from the next state
         // change.
-        const sharesAtMount = Object.keys(this.state.activeLocationShares || {}).length;
+        const sharesAtMount = Object.keys(this.getActiveSharesForModal()).length;
+        this._lastPulseShareCount = sharesAtMount;
         if (this.props.callActive || sharesAtMount > 0) {
             this._startActiveSharePulse();
         }
@@ -624,7 +597,8 @@ class NavigationBar extends Component {
         if (this.props.registrationState === 'registered'
                 && !this._didResumeShares) {
             this._didResumeShares = true;
-            this._loadAndResumeActiveShares();
+            // Resume/persist logic is app-owned now (Stage 4b-2).
+            if (this.props.app) this.props.app._loadAndResumeActiveShares();
         }
 
         // If we mount with a call already in flight (NavBar gets re-
@@ -650,39 +624,42 @@ class NavigationBar extends Component {
         // a process death as the user's choice.
         //
         // Just release the live timers / watchers so they don't
-        // leak after the component is gone, and leave locationTimers
-        // / activeLocationShares / AsyncStorage state intact for the
+        // leak after the component is gone, and leave
+        // activeLocationShares / AsyncStorage state intact for the
         // next mount to inherit.
+        //
+        // NOTE: outgoingLocationSessions is now the app-owned registry (borrowed by
+        // reference), so it survives this unmount. We therefore DELETE each
+        // entry after releasing its OS handles — otherwise the app registry
+        // would retain entries with dead handles, and the resume path
+        // (startLocationSharing's `outgoingLocationSessions[uri]` guard) would skip
+        // re-arming on the next mount. The AsyncStorage resume snapshot,
+        // written on start/mutation, is the source that re-arms — it is NOT
+        // touched here.
         this._unmounted = true;
+        // Deregister as the engine's VIEW so the app-hosted engine stops
+        // reflecting UI into this dying component (its guarded _ui* helpers
+        // no-op once ui is null). Only clear if we're still the current view —
+        // a fast remount may have already pointed the engine at a new NavBar.
+        if (this._locationEngine && this._locationEngine.navbar === this) {
+            this._locationEngine.navbar = null;
+        }
         // Tear down the call-warmup listener + poll interval so they
         // don't keep firing into a setState on an unmounted component.
         this._detachCallWarmup();
-        const uris = Object.keys(this.locationTimers || {});
-        for (const uri of uris) {
-            const entry = this.locationTimers[uri];
-            if (!entry) continue;
-            try {
-                if (entry.intervalId != null) {
-                    BackgroundTimer.clearInterval(entry.intervalId);
-                }
-            } catch (e) { /* noop */ }
-            try {
-                if (entry.watchId != null
-                        && Geolocation
-                        && typeof Geolocation.clearWatch === 'function') {
-                    Geolocation.clearWatch(entry.watchId);
-                }
-            } catch (e) { /* noop */ }
-            try {
-                if (entry.expiryTimeoutId != null) {
-                    BackgroundTimer.clearTimeout(entry.expiryTimeoutId);
-                }
-            } catch (e) { /* noop */ }
+        // Release the live OS handles for every armed share and drop the
+        // entries. This is engine lifecycle, owned by the app-hosted engine now
+        // (Stage 4b-6) — so NavigationBar no longer imports BackgroundTimer /
+        // Geolocation. Behaviour is unchanged: release on unmount, re-arm from
+        // the AsyncStorage snapshot on the next mount.
+        if (this._locationEngine && typeof this._locationEngine.releaseTimerHandles === 'function') {
+            this._locationEngine.releaseTimerHandles();
         }
-        // Stop any simulator timers too (they'd otherwise fire on a
-        // dead component on the next interval and try to setState).
-        if (this._simulator) {
-            this._simulator.stopAll();
+        // Stop any simulator timers too (they'd otherwise keep firing synthetic
+        // ticks into the engine while this view is gone). The simulator is
+        // app-owned now (Stage 4b-3).
+        if (this.props.app && this.props.app._simulator) {
+            this.props.app._simulator.stopAll();
         }
         // Kill the pulse animation so it doesn't tick against a stale
         // Animated.Value after unmount.
@@ -691,15 +668,14 @@ class NavigationBar extends Component {
             this._appStateSub.remove();
             this._appStateSub = null;
         }
-        // Drop any parked permission-retry intents — without
-        // _onAppStateChange they can never drain anyway, and a
-        // remount (hot reload) would inherit them as zombies.
-        this._pendingPermissionShares = {};
+        // Parked permission-retry intents now live on the app
+        // (this.app._pendingPermissionShares), so they survive this unmount and
+        // the next foreground drain re-arms them — no NavBar-side clear needed.
     }
 
     _onAppStateChange(state) {
         if (state !== 'active') return;
-        const sharesCount = Object.keys(this.state.activeLocationShares || {}).length;
+        const sharesCount = Object.keys(this.getActiveSharesForModal()).length;
         if (sharesCount > 0 || this.props.callActive) {
             this._stopActiveSharePulse();
             this._startActiveSharePulse();
@@ -712,230 +688,14 @@ class NavigationBar extends Component {
         // Accept once, grant permission whenever, and the share
         // starts on its own.
         try {
-            this._drainPendingPermissionShares();
+            this._locationEngine._drainPendingPermissionShares();
         } catch (e) { /* drain is best-effort */ }
     }
 
-    // Persist a compact snapshot of in-flight location shares to
-    // AsyncStorage. Called on every locationTimers mutation (entry
-    // create + entry delete) so the saved blob is always at most
-    // one tick behind reality. The snapshot only includes the
-    // fields _loadAndResumeActiveShares needs to re-arm the share
-    // (uri, kind, expiresAt, periodLabel, originMetadataId,
-    // meetingSessionId, inReplyTo, excludeOriginRadiusMeters,
-    // destination). Live runtime state (intervalId, watchId,
-    // BackgroundTimer ids, lastReportedCoords, simulator state, …)
-    // is intentionally excluded — it'd be meaningless after a
-    // process restart.
-    //
-    // Fire-and-forget: AsyncStorage writes are async but we don't
-    // gate any UI behaviour on completion, and the next start/stop
-    // will rewrite the blob anyway.
-    async _persistActiveShares() {
-        // Per-account persistence to accounts.app_state.location.shares.
-        // Replaces the previous single global AsyncStorage key
-        // (activeLocationShares.v1) which leaked share state across
-        // identities on multi-account devices — a second account
-        // signing in on the same device would inherit and try to
-        // resume the first account's shares. The accounts table is
-        // PK'd on the account URI so this is naturally per-account.
-        try {
-            const accountId = this.props.accountId;
-            if (!accountId) return;
-            const read = this.props.readAppStateNamespace;
-            const write = this.props.writeAppStateNamespace;
-            if (typeof read !== 'function' || typeof write !== 'function') return;
-            const map = {};
-            const now = Date.now();
-            const uris = Object.keys(this.locationTimers || {});
-            for (const uri of uris) {
-                const entry = this.locationTimers[uri];
-                if (!entry) continue;
-                if (typeof entry.expiresAt === 'number'
-                        && entry.expiresAt <= now) {
-                    continue; // expired — skip
-                }
-                map[uri] = {
-                    uri,
-                    kind: entry.kind || 'fixed',
-                    expiresAt: entry.expiresAt,
-                    periodLabel: entry.periodLabel || null,
-                    meetingSessionId: entry.meetingSessionId || null,
-                    inReplyTo: entry.inReplyTo || null,
-                    excludeOriginRadiusMeters:
-                        Number(entry.excludeOriginRadiusMeters) || 0,
-                    destination: (entry.tickExtras
-                        && entry.tickExtras.destination) || null,
-                    originMetadataId: entry.originMetadataId || null,
-                    // "Until I return" state machine snapshot.
-                    // Persisted so a kill-restart while the user is
-                    // out doesn't reset the departed flag back to
-                    // false — that would suppress the auto-stop on
-                    // their next return. Both fields are null/false
-                    // for non-untilIReturn shares and harmless to
-                    // serialize.
-                    untilReturnOrigin: entry.untilReturnOrigin || null,
-                    untilReturnDeparted: !!entry.untilReturnDeparted,
-                    // Paused flag persistence — without this, a paused
-                    // share would silently un-pause across an app
-                    // backgrounding / process kill (the resume path
-                    // re-arms via startLocationSharing with paused=false
-                    // and the user would see ticks resume on their own,
-                    // contradicting what they explicitly asked for in
-                    // the bubble's contextual menu). Field-reported
-                    // bug: user paused a share, app went to background,
-                    // ticks resumed automatically on the next foreground.
-                    paused: !!entry.paused,
-                };
-            }
-            // Read-modify-write: preserve any other location.* keys
-            // (e.g. meetingRequests) the caller doesn't own, then
-            // replace shares.
-            const location = await read(accountId, 'location');
-            location.shares = map;
-            await write(accountId, 'location', location);
-        } catch (e) {
-            console.log('[location] _persistActiveShares failed',
-                e && e.message ? e.message : e);
-        }
-    }
-
-    // Boot-time hydrate: read the persisted snapshot, drop entries
-    // whose expiresAt has lapsed during the offline window, and
-    // re-arm whatever's left via startLocationSharing with two
-    // resume-only opts:
-    //   • resumeOriginMetadataId — reuses the saved bubble id so
-    //     the receiver keeps seeing the SAME bubble updated in
-    //     place rather than a fresh one spawning beside it.
-    //   • suppressAnnouncement — skips the "I want to meet up" /
-    //     "I am sharing for X hours" / "Started sharing at HH:MM"
-    //     chat-visible messages so a restart doesn't litter the
-    //     conversation with duplicates of the original
-    //     announcement.
-    //
-    // Best-effort: messages that fail to ship while the SIP
-    // connection is still establishing land on the floor; the next
-    // tick (≤ LOCATION_REPEAT_MS later) will retry.
-    async _loadAndResumeActiveShares() {
-        // Boot-time concurrency guard. The resume scan is triggered by the
-        // registrationState=registered transition, which is also the
-        // moment the SIP server starts firing the journal sync at us.
-        // A typical boot processes ~500 messages through the SQLite
-        // bridge in a tight burst; if we ALSO fire location ticks,
-        // outgoing-state UPDATEs, and getCurrentCoordinates timers in
-        // the same JS event-loop window, the React Native batched
-        // bridge can drop a params slot ("Malformed calls from JS:
-        // field sizes are different") and the app crashes.
-        //
-        // Two mitigations stacked here:
-        //   1. Wait for the sync wave to drain before starting any
-        //      shares. The sync usually finishes in 3-6s on a bulky
-        //      account; 8s gives comfortable headroom.
-        //   2. Stagger per-share starts so a user with multiple
-        //      simultaneous shares doesn't fire every tick + every
-        //      getCurrentCoordinates in the same tick of the loop.
-        const BOOT_RESUME_DELAY_MS = 8000;
-        const PER_SHARE_STAGGER_MS = 1500;
-        await new Promise((resolve) => setTimeout(resolve, BOOT_RESUME_DELAY_MS));
-        // Bail if the component was unmounted while we were waiting.
-        if (this._unmounted) return;
-
-        let map = null;
-        try {
-            // Per-account read from accounts.app_state.location.shares.
-            // The accounts table's PK on the account URI guarantees
-            // we only ever resume shares belonging to the currently
-            // signed-in identity — a second account on the same
-            // device won't pick up the first account's shares.
-            const accountId = this.props.accountId;
-            const read = this.props.readAppStateNamespace;
-            if (!accountId || typeof read !== 'function') {
-                console.log('[location] resume scan: skipped (accountId or readAppStateNamespace missing)');
-                return;
-            }
-            const location = await read(accountId, 'location');
-            map = (location && location.shares && typeof location.shares === 'object')
-                ? location.shares : null;
-        } catch (e) {
-            console.log('[location] _loadAndResumeActiveShares read failed',
-                e && e.message ? e.message : e);
-            return;
-        }
-        const candidateUris = (map && typeof map === 'object')
-            ? Object.keys(map) : [];
-        console.log('[location] resume scan: persisted entries =',
-            candidateUris.length,
-            candidateUris.length > 0 ? '(' + candidateUris.join(', ') + ')' : '');
-        if (!map || typeof map !== 'object') return;
-        const uris = candidateUris;
-        if (uris.length === 0) return;
-        const now = Date.now();
-        const utils = require('../utils');
-        let _staggerIndex = 0;
-        for (const uri of uris) {
-            const e = map[uri];
-            if (!e || !e.uri) continue;
-            const expiresAt = typeof e.expiresAt === 'number'
-                ? e.expiresAt : null;
-            if (expiresAt == null || expiresAt <= now) continue;
-            // Inter-share stagger: spread the resume work across
-            // PER_SHARE_STAGGER_MS-spaced ticks so 3 shares don't hit
-            // the bridge at the same instant.
-            if (_staggerIndex > 0) {
-                await new Promise((resolve) =>
-                    setTimeout(resolve, PER_SHARE_STAGGER_MS));
-                if (this._unmounted) return;
-            }
-            _staggerIndex += 1;
-            const remainingMs = expiresAt - now;
-            try {
-                utils.timestampedLog(
-                    `[location] resuming share with ${uri}`
-                    + ` — kind=${e.kind || 'fixed'}`
-                    + ` (${Math.round(remainingMs / 60000)} min remaining)`
-                );
-            } catch (err) { /* noop */ }
-            try {
-                this.startLocationSharing(uri, remainingMs,
-                    e.periodLabel || '',
-                    {
-                        kind: e.kind || 'fixed',
-                        inReplyTo: e.inReplyTo || null,
-                        expiresAt: expiresAt,
-                        excludeOriginRadiusMeters:
-                            Number(e.excludeOriginRadiusMeters) || 0,
-                        destination: e.destination || undefined,
-                        resumeOriginMetadataId: e.originMetadataId || null,
-                        suppressAnnouncement: true,
-                        // Carry the "Until I return" state machine
-                        // snapshot through the resume so we don't
-                        // re-arm the gate from scratch when the user
-                        // is mid-trip. startLocationSharing reads
-                        // these on the entry it builds via
-                        // resumeUntilReturnOrigin / resumeUntilReturnDeparted.
-                        resumeUntilReturnOrigin: e.untilReturnOrigin || null,
-                        resumeUntilReturnDeparted: !!e.untilReturnDeparted,
-                        // Re-apply the paused flag if the share was
-                        // paused at persist time. Without this, the
-                        // resumed share would start ticking again on
-                        // its own — the very behaviour the user
-                        // explicitly asked to suppress when they
-                        // tapped Pause. The pause-gate at the top of
-                        // sendLocationUpdate (around line ~1505) is
-                        // what actually swallows the would-be ticks;
-                        // we just need the flag to be set on the new
-                        // entry before the FIRST tick fires, which is
-                        // why startLocationSharing reads
-                        // `resumePaused` immediately after building
-                        // the entry rather than later.
-                        resumePaused: !!e.paused,
-                    });
-            } catch (err) {
-                utils.timestampedLog('[location] resume failed for', uri,
-                    err && err.message ? err.message : err);
-            }
-        }
-    }
+    // Persistence + boot-resume of location shares are app-owned now
+    // (this.app._persistActiveShares / this.app._loadAndResumeActiveShares,
+    // Stage 4b-2). The engine persists on timer mutations; NavigationBar just
+    // triggers the app resume on the registrationState->registered edge above.
     
     get hasFiles() {
 		const contact = this.props.selectedContact?.uri;
@@ -999,24 +759,9 @@ class NavigationBar extends Component {
 				});
 		}
 
-		// Live-pick up the user-chosen heartbeat cadence from
-		// PreferencesModal. Re-running through `setLocationRepeatMs`
-		// keeps the gating throttle (`if (nowMs - lastSentMs <
-		// this.LOCATION_REPEAT_MS)`) accurate the very next tick.
-		// Already-running setInterval timers keep their original
-		// schedule until they next fire — at which point the throttle
-		// gate enforces the new cadence — so the worst-case delay
-		// before the change takes effect is one OLD tick interval.
-		// Acceptable for a setting the user changes infrequently.
-		if (typeof this.props.locationTickIntervalSec === 'number'
-				&& this.props.locationTickIntervalSec !== prevProps.locationTickIntervalSec
-				&& this.props.locationTickIntervalSec > 0) {
-			const newMs = this.props.locationTickIntervalSec * 1000;
-			utils.timestampedLog('[location] preferences: tick interval changed',
-				prevProps.locationTickIntervalSec, '→',
-				this.props.locationTickIntervalSec, 'sec (', newMs, 'ms)');
-			this.LOCATION_REPEAT_MS = newMs;
-		}
+		// Tick cadence is now read live from the app (this.app.LOCATION_REPEAT_MS,
+		// a getter over accountSetting.location.tickIntervalSec), so there's no
+		// NavBar-side value to keep in sync on a preference change (Stage 4b).
 
 		// Account just finished registering with the SIP server.
 		// This is our cue to resume any in-flight share sessions
@@ -1028,7 +773,8 @@ class NavigationBar extends Component {
 				&& this.props.registrationState === 'registered'
 				&& prevProps.registrationState !== 'registered') {
 			this._didResumeShares = true;
-			this._loadAndResumeActiveShares();
+			// Resume/persist logic is app-owned now (Stage 4b-2).
+			if (this.props.app) this.props.app._loadAndResumeActiveShares();
 			// Hydrate the per-account share-location disclaimer
 			// suppression flag in the same window — by definition
 			// accountId is bound now, and reading the flag here
@@ -1036,7 +782,7 @@ class NavigationBar extends Component {
 			// otherwise a tiny piece of state. Idempotent so a
 			// future re-fire would be safe even though the gate
 			// above prevents it.
-			this._hydrateDisclaimerSuppression();
+			this._locationEngine._hydrateDisclaimerSuppression();
 		}
 
 		// Re-hydrate when accountId itself changes (account-switch on
@@ -1045,52 +791,18 @@ class NavigationBar extends Component {
 		// back in as B on the same process would keep B looking at
 		// A's suppression state.
 		if (prevProps.accountId !== this.props.accountId) {
-			this._hydrateDisclaimerSuppression();
+			this._locationEngine._hydrateDisclaimerSuppression();
 		}
 
-		// Self-heal drift between activeLocationShares (React state that
-		// drives the chat-header + NavBar pulse) and locationTimers (the
-		// instance ref that holds the real intervalId / watchId / expiry
-		// timer). locationTimers is the source of truth: if there's no
-		// entry there, no tick is firing and no share is actually active.
-		// Previously these two could drift whenever a cleanup setState
-		// was pre-empted by a concurrent setState that spread a stale
-		// snapshot of activeLocationShares (e.g. a meeting_end arriving
-		// while an optimistic start-share write was still in flight, or
-		// a deleteMessage teardown racing with stopLocationSharing's
-		// re-entry guard). The result was a pin that kept pulsing after
-		// the share had truly ended — even after the user deleted the
-		// origin bubble. We reconcile here on every commit: any uri in
-		// activeLocationShares that isn't backed by a timer AND isn't
-		// currently mid-startup (guarded by _startingShares, which spans
-		// the full startLocationSharing async chain) is dropped. This
-		// makes the pulse state eventually-consistent with the actual
-		// share state regardless of which cleanup path missed.
-		const sharesMap = this.state.activeLocationShares || {};
-		const sharesUris = Object.keys(sharesMap);
-		if (sharesUris.length > 0) {
-			let reconciled = null;
-			const staleUris = [];
-			sharesUris.forEach((uri) => {
-				const hasTimer = !!this.locationTimers[uri];
-				const starting = !!(this._startingShares && this._startingShares.has(uri));
-				if (!hasTimer && !starting) {
-					if (!reconciled) reconciled = {...sharesMap};
-					delete reconciled[uri];
-					staleUris.push(uri);
-				}
-			});
-			if (reconciled) {
-				console.log('[location] NB cDU reconcile: dropping stale activeLocationShares',
-					staleUris);
-				this.setState({activeLocationShares: reconciled});
-				// Bail out — the subsequent setState triggers another cDU
-				// where the count-based pulse toggle below will run with
-				// the corrected map. Doing the toggle here with the stale
-				// currCount would falsely keep the pulse running for one
-				// extra frame.
-				return;
-			}
+		// Self-heal drift between activeLocationShares (React state that drives
+		// the chat-header + NavBar pulse) and the real timer registry: any share
+		// not backed by a live timer AND not mid-startup is pruned. The logic
+		// lives on the engine. When it prunes it calls app.setState, which
+		// triggers another cDU — so bail out this frame to let the count-based
+		// pulse toggle below run against the corrected map (running it now with
+		// the stale count would keep the pulse alive for one extra frame).
+		if (this._locationEngine && this._locationEngine.reconcileActiveShares()) {
+			return;
 		}
 
 		// Drive the pulsing marker indicator: start the loop on the
@@ -1101,8 +813,16 @@ class NavigationBar extends Component {
 		// Counted off both the share map (size > 0) and inCall so a
 		// transition in EITHER direction triggers the right side
 		// effect.
-		const prevCount = Object.keys(prevState.activeLocationShares || {}).length;
-		const currCount = Object.keys(this.state.activeLocationShares || {}).length;
+		// Count MERGED shares (local broadcaster + mirrored sibling shares) so
+		// the pulse starts/stops for ANY active location sharing, including on a
+		// secondary device that only mirrors a share. getActiveSharesForModal()
+		// reflects the current merged truth; we track the previous count on the
+		// instance since it depends on props (the mirror) as well as state.
+		const currCount = Object.keys(this.getActiveSharesForModal()).length;
+		const prevCount = (typeof this._lastPulseShareCount === 'number')
+			? this._lastPulseShareCount
+			: 0;
+		this._lastPulseShareCount = currCount;
 		// Gate on callActive (established) rather than inCall, matching
 		// the icon's visibility — otherwise the pulse loop runs while
 		// the call is still ringing even though the icon is hidden.
@@ -1132,20 +852,9 @@ class NavigationBar extends Component {
 			this._startActiveSharePulse();
 		}
 
-		// Bubble the active-shares map up so app.js (and from there,
-		// ReadyBox) can render its own in-chat pulse. We only fire on
-		// actual changes to the map identity — setState above already
-		// spreads a fresh object each time it mutates — so this is a
-		// cheap referential equality check, not a deep diff.
-		if (prevState.activeLocationShares !== this.state.activeLocationShares
-			&& typeof this.props.onActiveSharesChanged === 'function') {
-			try {
-				this.props.onActiveSharesChanged(this.state.activeLocationShares);
-			} catch (e) {
-				console.log('[location] onActiveSharesChanged failed',
-					e && e.message ? e.message : e);
-			}
-		}
+		// (Stage 3b) The active-shares map is app-owned now — the engine writes
+		// it via this.app.setState, so app.js already has the current map and
+		// propagates it to ReadyBox directly. No NavBar->app bubble needed.
 
 		// let state = JSON.stringify(this.state, null, 2);
 		//console.log('NB state', state);
@@ -1215,11 +924,14 @@ class NavigationBar extends Component {
             case 'shareLocation':
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                    if (_uri && this.state.activeLocationShares[_uri]) {
-                        // Already sharing to this contact — toggle off.
-                        this.stopLocationSharing(_uri);
+                    if (_uri && (this._activeShares()[_uri] || this._isShareActiveRemote(_uri))) {
+                        // Already sharing to this contact (here OR on another of
+                        // our devices) — toggle off. The engine relays the stop
+                        // to the broadcasting sibling + the peer when this device
+                        // is only mirroring.
+                        this._locationEngine.stopLocationSharing(_uri);
                     } else {
-                        this.showShareLocationModal();
+                        this._locationEngine.showShareLocationModal();
                     }
                 }
                 break;
@@ -1232,9 +944,9 @@ class NavigationBar extends Component {
                 // that by returning false.
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                    const _entry = _uri && this.locationTimers && this.locationTimers[_uri];
+                    const _entry = _uri && this.outgoingLocationSessions && this.outgoingLocationSessions[_uri];
                     if (_entry) {
-                        this.pauseLocationSharing(_uri, _entry.originMetadataId);
+                        this._locationEngine.pauseLocationSharing(_uri, _entry.originLocationId);
                     }
                 }
                 break;
@@ -1247,9 +959,9 @@ class NavigationBar extends Component {
                 // exists, so this should be a no-op race in practice.
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                    const _entry = _uri && this.locationTimers && this.locationTimers[_uri];
+                    const _entry = _uri && this.outgoingLocationSessions && this.outgoingLocationSessions[_uri];
                     if (_entry) {
-                        this.resumeLocationSharing(_uri, _entry.originMetadataId);
+                        this._locationEngine.resumeLocationSharing(_uri, _entry.originLocationId);
                     }
                 }
                 break;
@@ -1257,7 +969,7 @@ class NavigationBar extends Component {
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
                     if (_uri) {
-                        this.requestPeerLocation(_uri);
+                        this._locationEngine.requestPeerLocation(_uri);
                     }
                 }
                 break;
@@ -1292,7 +1004,7 @@ class NavigationBar extends Component {
                     // the AsyncStorage agreement state so we can read
                     // both at a glance when the user reports something
                     // unexpected.
-                    this.getLocationPermissionStatus()
+                    this._locationEngine.getLocationPermissionStatus()
                         .then((permState) => {
                             console.log('[location] disclosure viewer opened — OS permission state =', permState);
                         })
@@ -1346,7 +1058,7 @@ class NavigationBar extends Component {
                                     // the agreed-to policy; without that
                                     // policy in place, the legal copy
                                     // belongs back on screen.)
-                                    try { await this._clearShareLocationDisclaimerSuppression(); }
+                                    try { await this._locationEngine._clearShareLocationDisclaimerSuppression(); }
                                     catch (e) { /* persistence failure is non-fatal */ }
                                     utils.timestampedLog(
                                         '[location] user opted out of privacy policy via viewer — disclosure flag cleared for',
@@ -1361,15 +1073,24 @@ class NavigationBar extends Component {
                     });
                 }
                 break;
-            case 'simulateMeet':
-                // DEBUG: see ENABLE_MEET_SIMULATION at top of file.
+            case 'simulateToggle':
+                // DEBUG: single location-simulator toggle. Driven by the
+                // "Location simulator" preference. Starts the walker that
+                // matches the ACTIVE share's mode, or stops whichever is
+                // running:
+                //   • untilIReturn                → round-trip (auto-stops
+                //     on return via the gate)
+                //   • meetingRequest / meetingAccept → meet-up convergence
+                //   • fixed (share-by-interval)   → outward random walk
+                //     (runs until stopped)
                 {
-                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                    if (!_uri) break;
-                    if (this.isSimulating(_uri)) {
-                        this.stopSimulation(_uri);
+                    // Start/Stop applies to EVERY active location session, not
+                    // just the selected contact: if more than one share is
+                    // live, the simulator starts (or stops) for all of them.
+                    if (this.isAnySimulating()) {
+                        this.stopAllSimulations();
                     } else {
-                        this.simulateConvergence(_uri);
+                        this.startSimulatorForAllSessions();
                     }
                     // Re-render so the menu item swaps title.
                     this.setState({menuVisible: false});
@@ -1377,22 +1098,53 @@ class NavigationBar extends Component {
                 break;
             case 'pinLocation':
                 // Entry point used by the ReadyBox chat-header map-marker
-                // "pin" button. Behaves like 'shareLocation' when we're
-                // NOT yet sharing (opens the duration picker), but when a
-                // share is already active with the current contact we
-                // open the ActiveLocationSharesModal scoped to that URI
-                // instead of silently stopping — gives the user a
-                // visible confirmation step before the share ends.
+                // "pin" button. A contact can now have up to two STARTABLE
+                // session types live at once — a meet ("Until we meet") and a
+                // plain timed share. Three-way decision:
+                //   • BOTH types already live → nothing more to start, so open
+                //     the ActiveLocationSharesModal scoped to this chat (today's
+                //     behaviour) to review / stop the live sessions.
+                //   • Otherwise → open the start-share picker. The picker reads
+                //     the live types (via getStartableLiveTypes, wired through
+                //     NavigationBarModals) and disables the options that are
+                //     already live, so the user can only start what's startable.
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                    if (_uri && this.state.activeLocationShares[_uri]) {
+                    const _types = (_uri && this._locationEngine
+                        && typeof this._locationEngine.getStartableLiveTypes === 'function')
+                        ? this._locationEngine.getStartableLiveTypes(_uri)
+                        : { meet: false, share: false };
+                    if (_uri && _types.meet && _types.share) {
+                        // Both startable types live — open the scoped active list.
                         this.setState({
                             showActiveSharesModal: true,
                             activeSharesFilterUri: _uri,
                         });
                     } else {
-                        this.showShareLocationModal();
+                        // At least one type still startable — open the picker with
+                        // the live options disabled. Pass the uri + freshly-computed
+                        // types captured HERE (tap time, selection valid) so the
+                        // modal doesn't depend on a selectedContact that can flicker
+                        // null during later re-renders.
+                        this._locationEngine.showShareLocationModal(_uri, _types);
                     }
+                }
+                break;
+            case 'locationSessions':
+                // Contact-menu entry point: open the ActiveLocationSharesModal
+                // scoped to the selected contact so the user can review every
+                // live location session (meet + share) and stop the ones they
+                // own. Mirrors the scoped-open the pin uses when all slots full.
+                {
+                    const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                    // Dump the live session list to the log for diagnostics when
+                    // the user opens the sessions modal from the contact menu.
+                    try { this._dumpActiveShareSessions(); } catch (e) { /* noop */ }
+                    this.setState({
+                        menuVisible: false,
+                        showActiveSharesModal: true,
+                        activeSharesFilterUri: _uri || null,
+                    });
                 }
                 break;
             case 'displayName':
@@ -1570,47 +1322,47 @@ class NavigationBar extends Component {
         this.setState({showConferenceLinkModal: false});
     }
 
-    // ===== Location engine: delegating stubs =====
-    // The implementations live in LocationSharingManager (this._locationEngine).
-    // These stubs preserve the public method names used by render(),
-    // handleMenu, the lifecycle hooks, and app.js (via the navBar ref).
-    showShareLocationModal(...args) { return this._locationEngine.showShareLocationModal(...args); }
-    _fetchPreviewLocation(...args) { return this._locationEngine._fetchPreviewLocation(...args); }
-    hideShareLocationModal(...args) { return this._locationEngine.hideShareLocationModal(...args); }
-    meetMeAt(...args) { return this._locationEngine.meetMeAt(...args); }
-    _meetMeAtRunGates(...args) { return this._locationEngine._meetMeAtRunGates(...args); }
-    getLocationPermissionStatus(...args) { return this._locationEngine.getLocationPermissionStatus(...args); }
-    _ensureLocationDisclosureAcknowledged(...args) { return this._locationEngine._ensureLocationDisclosureAcknowledged(...args); }
-    ensureLocationPermission(...args) { return this._locationEngine.ensureLocationPermission(...args); }
-    _hydrateDisclaimerSuppression(...args) { return this._locationEngine._hydrateDisclaimerSuppression(...args); }
-    _suppressShareLocationDisclaimer(...args) { return this._locationEngine._suppressShareLocationDisclaimer(...args); }
-    _clearShareLocationDisclaimerSuppression(...args) { return this._locationEngine._clearShareLocationDisclaimerSuppression(...args); }
-    _armPermissionRetry(...args) { return this._locationEngine._armPermissionRetry(...args); }
-    _cancelPendingPermissionShare(...args) { return this._locationEngine._cancelPendingPermissionShare(...args); }
-    _drainPendingPermissionShares(...args) { return this._locationEngine._drainPendingPermissionShares(...args); }
-    getCurrentCoordinates(...args) { return this._locationEngine.getCurrentCoordinates(...args); }
-    _logFixProvenance(...args) { return this._locationEngine._logFixProvenance(...args); }
-    sendLocationMetadata(...args) { return this._locationEngine.sendLocationMetadata(...args); }
-    _evaluateUntilReturnGate(...args) { return this._locationEngine._evaluateUntilReturnGate(...args); }
-    _maybeFireDestinationArrival(...args) { return this._locationEngine._maybeFireDestinationArrival(...args); }
-    sendLocationUpdate(...args) { return this._locationEngine.sendLocationUpdate(...args); }
-    _shouldSendUpdateTick(...args) { return this._locationEngine._shouldSendUpdateTick(...args); }
-    setMeetingDestination(...args) { return this._locationEngine.setMeetingDestination(...args); }
-    pauseLocationSharing(...args) { return this._locationEngine.pauseLocationSharing(...args); }
-    resumeLocationSharing(...args) { return this._locationEngine.resumeLocationSharing(...args); }
-    getLocationShareState(...args) { return this._locationEngine.getLocationShareState(...args); }
-    _shouldLogShareStateProbe(...args) { return this._locationEngine._shouldLogShareStateProbe(...args); }
-    stopAllSharesForLogout(...args) { return this._locationEngine.stopAllSharesForLogout(...args); }
-    stopLocationSharing(...args) { return this._locationEngine.stopLocationSharing(...args); }
-    stopSharesRepliesTo(...args) { return this._locationEngine.stopSharesRepliesTo(...args); }
-    sendMeetingEndSignal(...args) { return this._locationEngine.sendMeetingEndSignal(...args); }
-    stopSharesForMeetingSession(...args) { return this._locationEngine.stopSharesForMeetingSession(...args); }
-    startLocationSharing(...args) { return this._locationEngine.startLocationSharing(...args); }
-    onShareLocationConfirmed(...args) { return this._locationEngine.onShareLocationConfirmed(...args); }
-    shareLocationOnce(...args) { return this._locationEngine.shareLocationOnce(...args); }
-    requestPeerLocation(...args) { return this._locationEngine.requestPeerLocation(...args); }
-    startMeetingAcceptance(...args) { return this._locationEngine.startMeetingAcceptance(...args); }
-    // ===== end location engine stubs =====
+    // Re-probe the OS location grant and update the level the open share
+    // picker reads. Passed to ShareLocationModal as onRefreshPermissionLevel
+    // and fired when the app returns to the foreground while the modal is
+    // open, so granting "Always" in Settings unlocks the timed options
+    // in place. No-op'd against a closed picker to avoid stray setState.
+    async refreshShareLocationPermissionLevel() {
+        if (!this.state.showShareLocationModal) { return; }
+        try {
+            const level = await this._locationEngine.getLocationPermissionStatus();
+            this.setState({ shareLocationPermissionLevel: level });
+        } catch (e) {
+            /* best-effort — leave the prior level in place */
+        }
+    }
+
+    // Share-state derivation lives on the engine; these are thin view accessors.
+    _shareSessions() {
+        return this._locationEngine ? this._locationEngine._shareSessions() : {};
+    }
+
+    _activeShares() {
+        return this._locationEngine ? this._locationEngine._activeShares() : {};
+    }
+
+    _isShareActiveRemote(uri) {
+        return this._locationEngine ? this._locationEngine._isShareActiveRemote(uri) : false;
+    }
+
+    // Consumed by render/pulse counts and (getActiveSharesRowsForModal) by
+    // NavigationBarModals via nav={this}. Both delegate to the engine.
+    getActiveSharesForModal() {
+        return this._locationEngine ? this._locationEngine.getActiveSharesForModal() : {};
+    }
+
+    getActiveSharesRowsForModal() {
+        return this._locationEngine ? this._locationEngine.getActiveSharesRowsForModal() : [];
+    }
+
+    _dumpActiveShareSessions() {
+        if (this._locationEngine) this._locationEngine._dumpActiveShareSessions();
+    }
 
 
 
@@ -1643,69 +1395,10 @@ class NavigationBar extends Component {
     //     overwritten if a second share fires while the first is
     //     still showing — last-write-wins is fine, the modal is the
     //     same one either way).
-    // Returns true when the loaded message slice for `uri` contains at
-    // least one substantive interaction in BOTH directions. Used to
-    // gate the kebab's location-share / location-request items so we
-    // only surface them on chats that have actually been used.
-    //
-    // What counts:
-    //   • text/plain, text/html (user-typed messages)
-    //   • image/* attachments
-    //   • application/sylk-file-transfer
-    //   • application/sylk-live-location — historical location
-    //     bubbles count too. If the two parties have exchanged a
-    //     location share at any point in the past, that's by
-    //     itself evidence of an active relationship; the share-
-    //     location entry should remain surfaced even when the
-    //     chat's text history is otherwise empty (e.g. cleared,
-    //     or the SQL slice is dominated by location-trail rows
-    //     pushing text out of the loaded window).
-    // Excluded as noise:
-    //   • system === true (system notes)
-    //   • application/sylk-message-metadata (location ticks,
-    //     meeting handshakes, label/rotation/reply markers — these
-    //     ride along with bubbles, the bubble itself counts above)
-    //   • application/sylk-contact-update
-    //   • message/imdn (delivery receipts)
-    //   • text/pgp-* (key exchange)
+    // Share-menu gate (genuine two-way conversation with `uri`); the scan lives
+    // on the engine.
     _hasBidirectionalChat(uri) {
-        if (!uri) return false;
-        const msgs = (this.props.messages && this.props.messages[uri]) || [];
-        if (!Array.isArray(msgs) || msgs.length === 0) return false;
-        let hasOut = false;
-        let hasIn = false;
-        for (const m of msgs) {
-            if (!m) continue;
-            if (m.system === true) continue;
-            const ct = m.contentType;
-            if (typeof ct !== 'string') continue;
-            if (ct === 'application/sylk-message-metadata') continue;
-            if (ct === 'application/sylk-contact-update') continue;
-            if (ct === 'message/imdn') continue;
-            if (ct.indexOf('pgp') !== -1) continue;
-            // Live-location bubbles are accepted as proof of a real
-            // relationship in BOTH directions, regardless of which side
-            // sent them. Field complaint: a contact who shared their
-            // location with the user (60 ticks of "until I return")
-            // but had never exchanged a text message would otherwise
-            // have the location share button vanish once the share
-            // ended — a chat that's clearly real reads as "no
-            // qualifying messages" because the bidi gate refuses to
-            // flip on a single direction. Treating any live-location
-            // bubble as bidi makes the gate match user expectation.
-            if (ct === 'application/sylk-live-location') {
-                hasOut = true;
-                hasIn = true;
-                return true;
-            }
-            // text/* (text + html), image/*, sylk-file-transfer all
-            // count as their actual direction.
-            const dir = m.direction;
-            if (dir === 'outgoing') hasOut = true;
-            else if (dir === 'incoming') hasIn = true;
-            if (hasOut && hasIn) return true;
-        }
-        return false;
+        return this._locationEngine ? this._locationEngine._hasBidirectionalChat(uri) : false;
     }
 
 
@@ -1726,21 +1419,84 @@ class NavigationBar extends Component {
 
     // ===== DEBUG: meet-up convergence simulator =====
     //
-    // The walker logic now lives in LocationSimulator.js; these thin
-    // wrappers preserve the public method names used by handleMenu and
-    // render(). this._simulator is built in the constructor with the
-    // accessors it needs (getEntry / shouldSendUpdateTick /
-    // sendLocationMetadata) and is gated on ENABLE_MEET_SIMULATION.
+    // The walker logic lives in LocationSimulator.js; these thin wrappers
+    // preserve the public method names used by handleMenu and render(). The
+    // simulator is app-owned now (Stage 4b-3), so they delegate to
+    // this.props.app._simulator (guarded — it's always wired via the app prop).
+    _sim() {
+        return (this.props.app && this.props.app._simulator) || null;
+    }
+
     simulateConvergence(uri, opts = {}) {
-        this._simulator.start(uri, opts);
+        const s = this._sim(); if (s) s.start(uri, opts);
+    }
+
+    // DEBUG: "Share Until I Return" round-trip walker (gated on
+    // ENABLE_UNTIL_RETURN_SIMULATION). Shares the same _simStates map /
+    // stop / isSimulating plumbing as the meet-up sim above.
+    simulateRoundTrip(uri, opts = {}) {
+        const s = this._sim(); if (s) s.startUntilReturn(uri, opts);
+    }
+
+    // DEBUG: "normal track" random-walk walker — meanders until stopped.
+    // Used for plain live / fixed-duration shares, which have no
+    // auto-stop gate to exercise. Same gating / plumbing as above.
+    simulateRandomWalk(uri, opts = {}) {
+        const s = this._sim(); if (s) s.startRandomWalk(uri, opts);
     }
 
     stopSimulation(uri) {
-        this._simulator.stop(uri);
+        const s = this._sim(); if (s) s.stop(uri);
     }
 
     isSimulating(uri) {
-        return this._simulator.isSimulating(uri);
+        const s = this._sim(); return s ? s.isSimulating(uri) : false;
+    }
+
+    // Every active outgoing location session, across all contacts. The
+    // registry is app-owned and keyed by uri (borrowed by reference), so a
+    // second live share for another contact appears here too.
+    _activeSimSessionUris() {
+        return Object.keys(this.outgoingLocationSessions || {});
+    }
+
+    // True when at least one active session is currently being simulated —
+    // used to drive the single Start/Stop toggle for the whole set.
+    isAnySimulating() {
+        const s = this._sim();
+        if (!s) return false;
+        return this._activeSimSessionUris().some((uri) => s.isSimulating(uri));
+    }
+
+    // Start the walker that matches one session's kind: round-trip for
+    // "Until I return", convergence for a meet-up, outward random walk for a
+    // plain / fixed share.
+    _startSimulatorForUri(uri) {
+        const entry = this.outgoingLocationSessions && this.outgoingLocationSessions[uri];
+        const kind = entry && entry.kind;
+        if (kind === 'untilIReturn') {
+            this.simulateRoundTrip(uri);
+        } else if (kind === 'meetingRequest' || kind === 'meetingAccept') {
+            this.simulateConvergence(uri);
+        } else {
+            this.simulateRandomWalk(uri);
+        }
+    }
+
+    // Start the simulator for EVERY active session (not just the selected
+    // contact). Sessions already running are skipped so a partial state
+    // converges to "all running".
+    startSimulatorForAllSessions() {
+        this._activeSimSessionUris().forEach((uri) => {
+            if (!this.isSimulating(uri)) this._startSimulatorForUri(uri);
+        });
+    }
+
+    // Stop the simulator for every active session.
+    stopAllSimulations() {
+        const s = this._sim();
+        if (s && typeof s.stopAll === 'function') { s.stopAll(); return; }
+        this._activeSimSessionUris().forEach((uri) => this.stopSimulation(uri));
     }
 
 
@@ -2198,7 +1954,7 @@ class NavigationBar extends Component {
 			}
 
 			if (utils.isAnonymous(this.props.selectedContact.uri)) {
-				title = 'Unknown caller';
+				title = 'Anonymous caller';
 			}
 
 		}
@@ -2718,7 +2474,7 @@ class NavigationBar extends Component {
                    // hide it again.
                    const _SHOW_BELL = true;
                    if (!_SHOW_BELL) return null;
-                   const _activeShares = Object.keys(this.state.activeLocationShares || {}).length;
+                   const _activeShares = Object.keys(this._activeShares() || {}).length;
                    const _bellVisible = !this.props.selectedContact
                        && !this.props.searchContacts
                        && !this.props.callActive
@@ -2976,7 +2732,12 @@ class NavigationBar extends Component {
                     //     a DIFFERENT
                     //     contact        → show (user can't see ReadyBox)
                     //   • >1 shares      → always show (manage-many UI)
-                    const shareMap = this.state.activeLocationShares || {};
+                    // Merged, mirror-inclusive share list: local broadcaster
+                    // shares PLUS shares mirrored from another of our devices.
+                    // Using this (not activeLocationShares) means a secondary
+                    // device that only mirrors a sibling's share still shows
+                    // the pulse and can open the stop panel.
+                    const shareMap = this.getActiveSharesForModal();
                     const keys = Object.keys(shareMap);
                     const count = keys.length;
                     if (count === 0) return null;
@@ -2998,7 +2759,7 @@ class NavigationBar extends Component {
                                         ? 'Location sharing active — tap to stop'
                                         : `Location sharing active to ${count} contacts — tap to manage`
                                 }
-                                onPress={() => this.setState({showActiveSharesModal: true, activeSharesFilterUri: null})}
+                                onPress={() => { this._dumpActiveShareSessions(); this.setState({showActiveSharesModal: true, activeSharesFilterUri: null}); }}
                             />
                         </Animated.View>
                     );
@@ -3012,9 +2773,17 @@ class NavigationBar extends Component {
                      the navbar without its primary actions. */ }
                 { !this.props.searchMessages ?
                   (this.props.selectedContact ?
-                    <Menu
+                    <Menu theme={getMenuTheme().menuTheme}
                         visible={this.state.menuVisible}
-                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible, keyMenuVisible: false, storageMenuVisible: false, settingsMenuVisible: false})}
+                        onDismiss={() => this.setState({menuVisible: false, keyMenuVisible: false, storageMenuVisible: false, settingsMenuVisible: false})}
+                        // Round the dropdown surface. Paper defaults the menu
+                        // to theme.roundness (which reads rectangular here);
+                        // contentStyle is applied last on the menu Surface, so
+                        // borderRadius here wins. overflow:hidden clips the
+                        // first/last Menu.Item press ripple to the rounded
+                        // corners (safe on Android — the elevation shadow is
+                        // drawn outside the bounds regardless).
+                        contentStyle={styles.roundedMenu}
                         // Push the dropdown down by the device's top
                         // safe-area inset so the topmost items don't
                         // get eclipsed by the camera cutout / notch /
@@ -3029,15 +2798,15 @@ class NavigationBar extends Component {
                                 icon="menu"
                                 size={navMenuIconSize}
                                 style={this.props.isFolded ? {marginLeft: 12} : null}
-                                onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                                onPress={() => { this.setState({menuVisible: !this.state.menuVisible}); }}
                             />
                         }
                     >
 
-                        { false ? <Menu.Item onPress={() => this.handleMenu('searchMessages')} icon="search" title={searchTitle}/> : null}
+                        { false ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('searchMessages')} icon="search" title={searchTitle}/> : null}
 
 						{ !this.props.searchMessages && !isAnonymous && !(this.props.isFolded && this.props.selectedContact) ?
-						<Menu.Item
+						<Menu.Item theme={getMenuTheme().menuTheme}
 							onPress={() => this.handleMenu('editContact')}
 							icon="account"
 							title={editTitle}
@@ -3048,11 +2817,11 @@ class NavigationBar extends Component {
                         <Divider />
 						: null}
 
-                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
-                        {isCallableUri ? <Menu.Item onPress={() => this.handleMenu('conferenceCallNow')} icon="account-group" title="Conference call"/> :null}
-                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
-                        {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
+                        {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('conferenceCallNow')} icon="account-group" title="Conference call"/> :null}
+                        {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
 
                         {/* Location group — Share / Request items only.
                             Bracketed by Dividers ABOVE and BELOW when
@@ -3065,7 +2834,10 @@ class NavigationBar extends Component {
                             inside every per-contact menu. */}
                         {(() => {
                             const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                            const sharing = !!(_uri && this.state.activeLocationShares[_uri]);
+                            // "sharing" drives the Share↔Stop menu label. Treat a
+                            // share active on another of our devices (mirrored
+                            // here) as sharing too, so a secondary device can end it.
+                            const sharing = !!(_uri && (this._activeShares()[_uri] || this._isShareActiveRemote(_uri)));
                             const hasContactKey = !!(
                                 this.props.selectedContact &&
                                 this.props.selectedContact.publicKey
@@ -3089,20 +2861,20 @@ class NavigationBar extends Component {
                             // pause — easy to miss, and inconsistent
                             // with how Stop is one-tap from here. State
                             // comes straight off the in-memory entry
-                            // (this.locationTimers[uri].paused) so the
+                            // (this.outgoingLocationSessions[uri].paused) so the
                             // menu reflects what the share is ACTUALLY
                             // doing, not what activeLocationShares
                             // (which only tracks expiresAt) would
                             // imply.
                             const _liveEntry = sharing
-                                && this.locationTimers
-                                && this.locationTimers[_uri];
+                                && this.outgoingLocationSessions
+                                && this.outgoingLocationSessions[_uri];
                             const _isPaused = !!(_liveEntry && _liveEntry.paused);
                             return (
                                 <React.Fragment>
                                     <Divider />
                                     {!sharing ? (
-                                        <Menu.Item
+                                        <Menu.Item theme={getMenuTheme().menuTheme}
                                             onPress={() => this.handleMenu('shareLocation')}
                                             icon="map-marker"
                                             title="Share location..."
@@ -3117,19 +2889,19 @@ class NavigationBar extends Component {
                                                 "Edit / … / Delete" on
                                                 other contextual menus. */}
                                             {_isPaused ? (
-                                                <Menu.Item
+                                                <Menu.Item theme={getMenuTheme().menuTheme}
                                                     onPress={() => this.handleMenu('resumeLocation')}
                                                     icon="play"
                                                     title="Resume sharing"
                                                 />
                                             ) : (
-                                                <Menu.Item
+                                                <Menu.Item theme={getMenuTheme().menuTheme}
                                                     onPress={() => this.handleMenu('pauseLocation')}
                                                     icon="pause"
                                                     title="Pause sharing"
                                                 />
                                             )}
-                                            <Menu.Item
+                                            <Menu.Item theme={getMenuTheme().menuTheme}
                                                 onPress={() => this.handleMenu('shareLocation')}
                                                 icon="map-marker-off"
                                                 title="Stop sharing location"
@@ -3143,47 +2915,70 @@ class NavigationBar extends Component {
                                         position; asking for theirs
                                         instead is a separate flow. */}
                                     {!sharing && bidir ? (
-                                        <Menu.Item
+                                        <Menu.Item theme={getMenuTheme().menuTheme}
                                             onPress={() => this.handleMenu('requestLocation')}
                                             icon="map-marker-question"
-                                            title="Request location..."
+                                            title="Request location"
                                         />
                                     ) : null}
-                                    {!(this.props.isFolded && this.props.selectedContact) ? <Divider /> : null}
+                                    {/* DEBUG: one location-simulator entry.
+                                        Starts the walker that matches the
+                                        ACTIVE share's mode — round-trip for
+                                        "Until I return", convergence for a
+                                        meet-up, or an outward track walk for
+                                        a share-by-interval / fixed share —
+                                        and toggles to stop. Driven by the
+                                        "Location simulator" preference
+                                        (Preferences → Location); one-shot
+                                        shares (no trail) are excluded. The
+                                        contact-eligibility gating is already
+                                        applied by shareItemsVisible above. */}
+                                    {sharing
+                                            && this.props.locationSimulatorEnabled
+                                            && _liveEntry
+                                            && (_liveEntry.kind === 'untilIReturn'
+                                                || _liveEntry.kind === 'fixed'
+                                                || _liveEntry.kind === 'meetingRequest'
+                                                || _liveEntry.kind === 'meetingAccept')
+                                        ? (
+                                            <Menu.Item theme={getMenuTheme().menuTheme}
+                                                onPress={() => this.handleMenu('simulateToggle')}
+                                                icon={this.isAnySimulating() ? 'stop' : 'play'}
+                                                title={this.isAnySimulating() ? 'Stop simulator' : 'Start simulator'}
+                                            />
+                                        ) : null}
                                 </React.Fragment>
                             );
                         })()}
 
-                        {/* DEBUG: meet-up convergence simulator. Single
-                            off-switch via ENABLE_MEET_SIMULATION at the
-                            top of this file — flip to false to remove
-                            this entry from production builds entirely.
-                            Only visible while a share for the selected
-                            contact is active. */}
-                        {ENABLE_MEET_SIMULATION
-                                && tags.indexOf('blocked') === -1
-                                && !isConference
-                                && !isAnonymous
-                                && !this.myself
-                                && this.props.canSend
-                                && this.props.canSend()
-                            ? (() => {
-                                const _uri = this.props.selectedContact && this.props.selectedContact.uri;
-                                const sharing = !!(_uri && this.state.activeLocationShares[_uri]);
-                                if (!sharing) return null;
-                                const simming = this.isSimulating(_uri);
-                                return (
-                                    <Menu.Item
-                                        onPress={() => this.handleMenu('simulateMeet')}
-                                        icon={simming ? "stop" : "play"}
-                                        title={simming ? "Stop simulation" : "Simulate convergence"}
-                                    />
-                                );
-                            })()
-                            : null}
+                        {/* Location sessions — opens the ActiveLocationSharesModal
+                            scoped to this contact so the user can review every
+                            live location session (meet + share) and stop the ones
+                            they own. Shown whenever at least one location session
+                            is live for this contact (locally or mirrored from
+                            another device), independent of the Share/Stop items
+                            above (which only cover the plain outgoing share). */}
+                        {(() => {
+                            const _uri = this.props.selectedContact && this.props.selectedContact.uri;
+                            if (!_uri) return null;
+                            const _types = (this._locationEngine
+                                && typeof this._locationEngine.getStartableLiveTypes === 'function')
+                                ? this._locationEngine.getStartableLiveTypes(_uri)
+                                : { meet: false, share: false };
+                            const _hasLive = _types.meet || _types.share || this._isShareActiveRemote(_uri);
+                            if (!_hasLive) return null;
+                            return (
+                                <Menu.Item theme={getMenuTheme().menuTheme}
+                                    onPress={() => this.handleMenu('locationSessions')}
+                                    icon="map-marker-multiple"
+                                    title="Location sessions..."
+                                />
+                            );
+                        })()}
+                        {!(this.props.isFolded && this.props.selectedContact) ? <Divider /> : null}
 
                         { !this.props.searchMessages && this.hasMessages && !this.props.inCall && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item
+                        <Menu.Item theme={getMenuTheme().menuTheme}
                             onPress={() => this.handleMenu('deleteMessages')}
                             icon="delete"
                             title="Delete messages..."
@@ -3192,12 +2987,12 @@ class NavigationBar extends Component {
                         }
 
                         {!this.props.searchMessages && this.hasFiles && !this.props.inCall && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('deleteFileTransfers')} icon="delete" title="Delete files..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('deleteFileTransfers')} icon="delete" title="Delete files..."/>
                         : null
                         }
 
                         { !this.props.searchMessages && this.hasFiles && !this.props.inCall && 'paused' in this.props.contentTypes ?
-                        <Menu.Item onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('resumeTransfers')} icon="delete" title="Resume transfers"/>
                         : null
                         }
 
@@ -3205,22 +3000,22 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        { (this.refetchMessagesForDays != 0) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.refetchMessagesForDays != 0) ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!isConference && !this.props.searchMessages && this.props.publicKey && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
 
                         {!isConference && !this.props.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
                         : null}
 
                         {!this.myself && !this.props.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleFavorite')} icon={favoriteIcon} title={favoriteTitle}/>
                         : null}
 
                         {!isAnonymous && !isConference && !this.myself && !this.props.searchMessages && tags.indexOf('test') === -1 && tags.indexOf('favorite') === -1 && !this.props.inCall && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
                         {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
@@ -3228,7 +3023,7 @@ class NavigationBar extends Component {
                         : null}
 
                         {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
                         : null}
 
                         {/* Caregiver — no longer offered here. It is a
@@ -3242,15 +3037,30 @@ class NavigationBar extends Component {
                         <Divider />
                         : null}
 
-                        {!this.props.inCall && !isFavorite && !this.myself && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
+                        {!this.props.inCall && !isFavorite && !this.myself && !isAnonymous && !(this.props.isFolded && this.props.selectedContact) ?
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('deleteContact')} icon="delete" title={deleteTitle}/>
+                        : null}
+
+                        {/* Anonymous / guest pseudo-contact: deleting it is
+                            pointless (the next anonymous call recreates the
+                            collapsed anonymous@anonymous.invalid row), so the
+                            Delete item is hidden above and we offer blocking
+                            instead. This toggles privacy.rejectAnonymous, which
+                            BOTH the JS incoming-call path (autoRejectIncomingCall)
+                            and the native FCM push service honour — so anonymous
+                            callers are rejected even when the app is backgrounded.
+                            (blockedUris can't cover this: it matches the raw
+                            per-call <uuid>@guest URI, not the collapsed contact.) */}
+                        {isAnonymous && !this.props.inCall && !this.props.searchMessages && !(this.props.isFolded && this.props.selectedContact) ?
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('anonymous')} icon="block-helper" title={this.props.rejectAnonymous ? 'Allow anonymous callers' : 'Block anonymous callers'}/>
                         : null}
 
                     </Menu>
                 :
-                    <Menu
+                    <Menu theme={getMenuTheme().menuTheme}
                         visible={this.state.menuVisible}
-                        onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                        onDismiss={() => this.setState({menuVisible: false})}
+                        contentStyle={styles.roundedMenu}
                         // See the marginTop comment on the contact-
                         // mode menu above — same camera-cutout fix.
                         style={topInset ? {marginTop: topInset} : null}
@@ -3266,7 +3076,7 @@ class NavigationBar extends Component {
                                 icon="menu"
                                 size={navMenuIconSize}
                                 style={this.props.isFolded ? {marginLeft: 12} : null}
-                                onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                                onPress={() => { this.setState({menuVisible: !this.state.menuVisible}); }}
                             />
                         }
                     >
@@ -3276,13 +3086,13 @@ class NavigationBar extends Component {
                             call is active (purely local address-book UI);
                             both keep the folded-layout guard. */}
                         {!(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('addContact')} icon="account-plus" title="Add contact..."/>
                          : null }
 
-                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
+                        {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
 
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('callMeMaybe')} icon="share" title="Call me, maybe?" />
                          : null }
 
                         {/* DND toggle removed from the kebab menu — the
@@ -3295,16 +3105,16 @@ class NavigationBar extends Component {
                          : null }
 
                         {(false && !this.props.inCall) ?
-                        <Menu.Item onPress={() => this.handleMenu('scanQr')} icon="qr-code" title="Scan QR code..." />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('scanQr')} icon="qr-code" title="Scan QR code..." />
                          : null }
 
 
-                        {!this.props.inCall && false ? <Menu.Item onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
+                        {!this.props.inCall && false ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('preview')} icon="video" title="Video preview" />:null}
                         {!this.props.inCall ?
                         <Divider />
                         : null}
 
-                        { (this.refetchMessagesForDays != 0 && !this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
+                        { (this.refetchMessagesForDays != 0 && !this.props.inCall) ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!this.props.inCall ?
 						<Divider />
@@ -3313,7 +3123,7 @@ class NavigationBar extends Component {
                         {extraMenu ?
                         <View>
 
-                        <Menu.Item onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('settings')} icon="wrench" title="Server settings..." />
                         </View>
                         : null}
                         {/* (Proximity sensor moved into Preferences →
@@ -3328,20 +3138,21 @@ class NavigationBar extends Component {
                          : null }
 
                       {(!this.props.syncConversations && !this.props.inCall && Platform.OS === "ios" && this.props.hasAutoAnswerContacts) ?
-                        <Menu.Item onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleAutoAnswerMode')} icon="wrench" title={autoAnswerModeTitle} />
                         : null}
 
 
                      {!(this.props.isFolded && !this.props.selectedContact) ?
-                     <Menu
+                     <Menu theme={getMenuTheme().menuTheme}
                         visible={this.state.keyMenuVisible}
-                        onDismiss={() => this.setState({keyMenuVisible: !this.state.keyMenuVisible})}
+                        onDismiss={() => this.setState({keyMenuVisible: false})}
+                        contentStyle={styles.roundedMenu}
                         // Same camera-cutout offset as the parent
                         // menu — keeps the nested key submenu from
                         // peeking out under the notch.
                         style={topInset ? {marginTop: topInset} : null}
 						anchor={
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								title="Private key..."
 								icon="key"
 								onPress={() => this.setState({keyMenuVisible: true})}
@@ -3349,14 +3160,14 @@ class NavigationBar extends Component {
 						}
                     >
 
-                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
-                        {this.props.canSend() && !this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
-                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
-                        {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
-                        {(!this.props.inCall) ? <Menu.Item onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('exportPrivateKey')} icon="send" title={importKeyLabel} />:null}
+                        {this.props.canSend() && !this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('backupPrivateKey')} icon="send" title={'Backup private key...'} />:null}
+                        {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('restorePrivateKey')} icon="key" title="Restore private key..."/> :null}
+                        {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('generatePrivateKey')} icon="key" title="Generate private key..."/> :null}
+                        {(!this.props.inCall) ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
 
                         {this.props.publicKey ?
-                        <Menu.Item onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
                         : null}
 
 					</Menu>
@@ -3368,15 +3179,15 @@ class NavigationBar extends Component {
                            "My private key..." submenu above; placed right
                            after it. Uses storageMenuVisible state. */}
                      {!(this.props.isFolded && !this.props.selectedContact) ?
-                     <Menu
+                     <Menu theme={getMenuTheme().menuTheme}
                         visible={this.state.storageMenuVisible}
-                        onDismiss={() => this.setState({storageMenuVisible: !this.state.storageMenuVisible})}
+                        onDismiss={() => this.setState({storageMenuVisible: false})}
                         // Same camera-cutout offset as the parent
                         // menu — keeps the nested storage submenu from
                         // peeking out under the notch.
                         style={topInset ? {marginTop: topInset} : null}
 						anchor={
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								title="Storage..."
 								icon="folder"
 								onPress={() => this.setState({storageMenuVisible: true})}
@@ -3388,19 +3199,19 @@ class NavigationBar extends Component {
                            server so a browser on the same Wi-Fi can pull
                            this phone's messages / contacts / files (for
                            phone-to-phone migration or computer backup). */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('exportData')} icon="export" title="Export data..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('exportData')} icon="export" title="Export data..."/> : null}
 
                        {/* Backup contacts — one-tap local snapshot of this
                            account's contacts, written to the same per-account
                            folder as the weekly auto-backup. On-device only.
                            Grouped with Restore contacts below. */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupContacts')} icon="content-save" title="Backup contacts..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('backupContacts')} icon="content-save" title="Backup contacts..."/> : null}
 
                        {/* Restore contacts — add-only restore from a local
                            backup snapshot. Lists backups with their count of
                            contacts missing locally; importing creates those
                            locally and on the server (no updates / deletes). */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('importContacts')} icon="account-multiple-plus" title="Restore contacts..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('importContacts')} icon="account-multiple-plus" title="Restore contacts..."/> : null}
 
                        {/* Delimiter after the grouped contacts backup /
                            restore actions. */}
@@ -3409,20 +3220,20 @@ class NavigationBar extends Component {
                        {/* Backup messages — full local message-store dump for
                            this account, written as plaintext JSON to the
                            per-account messages/history folder. On-device only. */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('backupMessages')} icon="message-lock" title="Backup messages..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('backupMessages')} icon="message-lock" title="Backup messages..."/> : null}
 
                        {/* Restore messages — opens a modal listing message
                            backups; each is loaded on demand to show how many
                            messages are new vs current storage, then add-only
                            restored (missing rows only). */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('restoreMessages')} icon="message-arrow-left" title="Restore messages..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('restoreMessages')} icon="message-arrow-left" title="Restore messages..."/> : null}
 
                        {/* Refetch messages — opens a modal to pick how many
                            days to go back, then re-downloads the journal for
                            that window from the server and overwrites the local
                            message store (app.js refetchMessages → resetStorage
                            + requestSyncConversations). On-device + server. */}
-                       {!this.props.inCall ? <Menu.Item onPress={() => this.handleMenu('openRefetchMessages')} icon="cloud-download" title="Refetch messages..."/> : null}
+                       {!this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('openRefetchMessages')} icon="cloud-download" title="Refetch messages..."/> : null}
 
 						</Menu>
                      : null}
@@ -3434,15 +3245,15 @@ class NavigationBar extends Component {
                            settingsMenuVisible state. The individual
                            items keep their original render guards. */}
                      {!(this.props.isFolded && !this.props.selectedContact) ?
-                     <Menu
+                     <Menu theme={getMenuTheme().menuTheme}
                         visible={this.state.settingsMenuVisible}
-                        onDismiss={() => this.setState({settingsMenuVisible: !this.state.settingsMenuVisible})}
+                        onDismiss={() => this.setState({settingsMenuVisible: false})}
                         // Same camera-cutout offset as the parent
                         // menu — keeps the nested settings submenu from
                         // peeking out under the notch.
                         style={topInset ? {marginTop: topInset} : null}
 						anchor={
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								title="Settings..."
 								icon="cog-outline"
 								onPress={() => this.setState({settingsMenuVisible: true})}
@@ -3453,20 +3264,20 @@ class NavigationBar extends Component {
                        {/* My account — was a top-level item; moved into
                            Settings. Keeps its original guards. */}
                        {!this.props.syncConversations && !this.props.inCall ?
-                        <Menu.Item onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('displayName')} icon="rename-box" title="My account..." />
                         : null}
 
                        {/* Preferences modal — opens a sheet of
                            per-account toggles (encryption mode, video
                            codec, etc.). Pure UI; no overlap with an
                            active call. */}
-                       <Menu.Item onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
+                       <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('preferences')} icon="cog-outline" title="Preferences..." />
 
                         {/* Permissions — deep-links to the OS settings
                             screen for Blink. Useful mid-call when the
                             user realises camera/mic/location wasn't
                             granted. */}
-                        <Menu.Item onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('appSettings')} icon="policy-alert" title="Permissions"/>
 
 						</Menu>
                      : null}
@@ -3487,7 +3298,7 @@ class NavigationBar extends Component {
                             file — there's nothing to review or
                             withdraw before that. */}
                         {Platform.OS === 'android' && this.state.locationDisclosureAcknowledged && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('viewLocationDisclosure')} icon="shield-account" title="Location privacy policy..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('viewLocationDisclosure')} icon="shield-account" title="Location privacy policy..."/>
                          : null }
 
                         {/* Help… — opens the in-app log viewer / support
@@ -3495,7 +3306,7 @@ class NavigationBar extends Component {
                             (with or without a selected contact, folded
                             or not), since the user can need help at any
                             point — including from inside an open chat. */}
-                        <Menu.Item onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Logs…" />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('logs')} icon="lifebuoy" title="Logs…" />
 
                         {/* Donate moved out of this menu — it now lives
                             as a button inside the About Blink modal,
@@ -3505,14 +3316,14 @@ class NavigationBar extends Component {
                         {/* About Blink — purely informational (version,
                             build id, dev-mode toggle). No call overlap
                             so we keep it visible. */}
-                        <Menu.Item onPress={() => this.handleMenu('about')} icon="information" title="About Blink"/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('about')} icon="information" title="About Blink"/>
                         {/* Divider above Sign out — sets the destructive
                             session-end action visually apart from the
                             settings/info entries above. */}
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Divider /> : null}
                         {!this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
-                        <Menu.Item onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('logOut')} icon="logout" title="Sign out" /> : null}
                     </Menu>
                     )
                   : null }

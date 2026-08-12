@@ -1,18 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import {
-  Text,
-  Platform,
-  Modal,
-  View,
-  Clipboard,
-  TouchableWithoutFeedback,
-  KeyboardAvoidingView,
-  ScrollView,
-  StyleSheet,
-  Dimensions,
-} from 'react-native';
+import ThemedModalSurface from './ThemedModalSurface';
+import { Platform, Modal, View, Clipboard, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, StyleSheet, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
-import { Surface, Button, ActivityIndicator } from 'react-native-paper';
+import { Text, Surface, Button, ActivityIndicator } from 'react-native-paper';
 import QRCode from 'react-native-qrcode-svg';
 
 // Shares the rounded-card-on-dimmed-backdrop shell with the other modals.
@@ -117,7 +107,7 @@ const ExportDataModal = (props) => {
         <View style={containerStyles.overlay}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+              <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
                 <ScrollView style={{ maxHeight: _scrollMaxHeight }} keyboardShouldPersistTaps="handled">
                   <Text style={containerStyles.title}>Data export</Text>
                   <View style={styles.inner}>
@@ -172,7 +162,7 @@ const ExportDataModal = (props) => {
                     </View>
                   </View>
                 </ScrollView>
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

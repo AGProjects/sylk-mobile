@@ -521,9 +521,9 @@ adb_loop() {
         # event (e.g. AudioManager's OnCommunicationDeviceChangedListener
         # emits the same line N times per device-change). Collapsing
         # consecutive duplicates here keeps the unified log readable.
-        adb -s "$serial" logcat -v threadtime -T 1 -s SYLK_APP:V '*:S' 2>&1 \
+        adb -s "$serial" logcat -v threadtime -T 1 -s SYLK_APP:V ReactNativeJS:V '*:S' 2>&1 \
             | grep --line-buffered -vE '^--------- beginning of' \
-            | sed -l -E 's/^.*SYLK_APP: //' \
+            | sed -l -E 's/^.*(SYLK_APP|ReactNativeJS): //' \
             | awk '$0 != prev { print; prev = $0; fflush(); }' \
             | prefix_and_tee "ADB:${display}"
         log_meta "adb($serial) pipeline exited; respawning in 2s..."

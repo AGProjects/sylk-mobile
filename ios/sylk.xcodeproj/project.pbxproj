@@ -1102,7 +1102,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 430;
+				CURRENT_PROJECT_VERSION = 453;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1111,14 +1111,14 @@
 					"$(PROJECT_DIR)/Pods/Frameworks",
 				);
 				INFOPLIST_FILE = sylk/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Blink for Mobile";
+				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.2.3;
+				MARKETING_VERSION = 8.2.5;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1142,7 +1142,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 430;
+				CURRENT_PROJECT_VERSION = 453;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1150,14 +1150,14 @@
 					"$(PROJECT_DIR)/Pods/Frameworks",
 				);
 				INFOPLIST_FILE = sylk/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Blink for Mobile";
+				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.2.3;
+				MARKETING_VERSION = 8.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

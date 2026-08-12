@@ -35,12 +35,13 @@
 // (verbose stats overlay, force codec for testing).
 
 import React, { useState, useEffect } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
 import { Text, Button, Surface, Divider } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import PropTypes from 'prop-types';
 
-import { NIGHT_BUBBLE_COLORS } from '../DarkModeManager';
+import DarkModeManager, { NIGHT_BUBBLE_COLORS } from '../DarkModeManager';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import ThreeStopSlider from './ThreeStopSlider';
@@ -358,6 +359,14 @@ const PreferencesModal = ({
     // in Preferences. 0 = "Off" (no privacy radius).
     locationPrivacyRadiusMeters,
     setLocationPrivacyRadiusMeters,
+    // DEBUG: enable the location-track simulators (round-trip for
+    // "Until I return" shares, outward random walk for plain live
+    // shares). When on, NavigationBar exposes a "Simulate …" item in the
+    // per-contact menu while a share is active. Persisted in
+    // accountSetting.location.simulatorEnabled; default off so normal
+    // users never see the debug walkers.
+    locationSimulatorEnabled,
+    setLocationSimulatorEnabled,
     // Visual theme. Persisted in accountSetting.device.themeMode
     // alongside every other Preferences knob. One of 'system' / 'day'
     // / 'night' — 'system' tracks the OS Appearance (default; matches
@@ -716,6 +725,32 @@ const PreferencesModal = ({
         setLocDisclosureMode('hidden');
     };
 
+    // ─── Theme-aware colours ─────────────────────────────────────────
+    // Pull the active palette so the whole panel re-themes with the
+    // Day / Night / System pill the user picks. Established codebase
+    // convention is to read DarkModeManager.getTheme() inline at render
+    // (see ChatBubble / CustomMessageText / NavigationBar); tapping a
+    // theme pill flows the new themeMode back down as a prop, which
+    // re-renders this modal so getTheme() returns the fresh palette
+    // without a restart.
+    //
+    // The shared containerStyles.modalSurface hardcodes a white card and
+    // Paper's Provider theme is a single static (light) theme, so both
+    // the surface background and every Paper <Text>/<Divider> that
+    // relied on Paper's default (dark) on-surface colour have to be
+    // overridden here or the Night modal renders light-on-light.
+    const theme = DarkModeManager.getTheme();
+    // Day keeps the historical pure-white card; Night uses the palette's
+    // elevated surface (#1F1F1F) rather than #EDEDED-ish body colour so
+    // the card still reads as a raised sheet on the dimmed backdrop.
+    const surfaceBg        = theme.isDark ? theme.surface : '#FFFFFF';
+    const labelColor       = theme.textPrimary;    // section headers, body labels, input text (was #333)
+    const captionColor     = theme.textSecondary;  // hints / captions (was #888 / #666)
+    const linkColor        = theme.isDark ? '#6FB2E8' : '#1565c0'; // readable hyperlink blue per theme (was #1976d2)
+    const inputBorderColor = theme.divider;        // TextInput outline (was #ccc)
+    const placeholderColor = theme.textSecondary;  // TextInput placeholder (was #bbb)
+    const dividerColor     = theme.divider;        // Paper <Divider> (was Paper default, ~invisible on dark)
+
     return (
         <>
         <Modal
@@ -752,8 +787,8 @@ const PreferencesModal = ({
                     onPress={close}
                     accessibilityLabel="Close preferences"
                 />
-                <Surface style={containerStyles.modalSurface}>
-                            <Text style={containerStyles.title}>Preferences</Text>
+                <ThemedModalSurface style={[containerStyles.modalSurface, { backgroundColor: surfaceBg }]}>
+                            <Text style={[containerStyles.title, { color: labelColor }]}>Preferences</Text>
 
                             <ScrollView
                                 style={{ maxHeight: scrollMaxHeight, paddingHorizontal: 16 }}
@@ -808,7 +843,7 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Theme
@@ -859,12 +894,12 @@ const PreferencesModal = ({
                                             fontWeight: '600',
                                             marginTop: 10,
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Night bubble color
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Background of received messages in the Night theme.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -904,7 +939,7 @@ const PreferencesModal = ({
                                     </View>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Proximity ───────────────────────────────
                                     Promoted to a top-level pref (was a row
@@ -921,12 +956,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Proximity
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Automatic toggle speakerphone.
                                     </Text>
                                     <Button
@@ -946,7 +981,7 @@ const PreferencesModal = ({
                                     </Button>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Chat ────────────────────────────────────
                                     Chat-sounds toggle. Other chat-only knobs
@@ -959,12 +994,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Chat
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Notification sound when my message was read.
                                     </Text>
                                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -986,7 +1021,7 @@ const PreferencesModal = ({
                                     </View>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Data Usage ───────────────────────────────
                                     Two independent pill toggles — Wi-Fi and
@@ -1001,12 +1036,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Data Usage
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Auto-download photos, voice messages and files.
                                     </Text>
                                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -1042,7 +1077,7 @@ const PreferencesModal = ({
                                     </View>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Advanced (collapsible) ───────────────────
                                     Everything below the four everyday prefs
@@ -1068,12 +1103,12 @@ const PreferencesModal = ({
                                         style={{
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Advanced
                                     </Text>
-                                    <Text style={{ fontSize: FS_LABEL, color: '#888' }}>
+                                    <Text style={{ fontSize: FS_LABEL, color: captionColor }}>
                                         {showAdvanced ? '▾' : '▸'}
                                     </Text>
                                 </Pressable>
@@ -1104,12 +1139,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Video Calls
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Preferred video codec for outgoing calls.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1135,7 +1170,7 @@ const PreferencesModal = ({
                                         })}
                                     </View>
                                     {zrtpOn && (
-                                        <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 4 }}>
+                                        <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 4 }}>
                                             H.264 isn't available while zRTP is enabled (no end-to-end
                                             encryption). Choose VP9 or VP8.
                                         </Text>
@@ -1150,7 +1185,7 @@ const PreferencesModal = ({
                                         bitrate so the user can see what
                                         each tier actually means without
                                         diving into docs. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 12, marginBottom: 8 }}>
                                         Video profile.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1178,14 +1213,14 @@ const PreferencesModal = ({
                                     {(() => {
                                         const active = VIDEO_PROFILE_OPTIONS.find(o => o.id === currentVideoProfile);
                                         return active ? (
-                                            <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 4 }}>
+                                            <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 4 }}>
                                                 {active.hint}
                                             </Text>
                                         ) : null;
                                     })()}
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Audio Calls ─────────────────────────────
                                     Three sub-rows packed into a single
@@ -1209,12 +1244,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Audio Calls
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Preferred audio codec for outgoing calls.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1260,7 +1295,7 @@ const PreferencesModal = ({
                                         build that doesn't support a given
                                         path) is visible without being
                                         actionable. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 12, marginBottom: 8 }}>
                                         How dialpad digits are transmitted during a call.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1301,25 +1336,25 @@ const PreferencesModal = ({
                                         (Call.js start / conference
                                         invites). Digits only; empty
                                         disables the rule. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 12, marginBottom: 8 }}>
                                         Phone numbers: replace a leading 0 when dialing (e.g. 0031 dials 06… as 00316…).
                                     </Text>
                                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                        <Text style={{ fontSize: FS_BODY, color: '#333', marginRight: 8 }}>
+                                        <Text style={{ fontSize: FS_BODY, color: labelColor, marginRight: 8 }}>
                                             Replace 0 with
                                         </Text>
                                         <TextInput
                                             value={replaceZeroDraft}
                                             onChangeText={handleReplaceZeroChange}
                                             placeholder="0031"
-                                            placeholderTextColor="#bbb"
+                                            placeholderTextColor={placeholderColor}
                                             keyboardType="number-pad"
                                             maxLength={8}
                                             style={{
                                                 fontSize: FS_BODY,
-                                                color: '#333',
+                                                color: labelColor,
                                                 borderWidth: 1,
-                                                borderColor: '#ccc',
+                                                borderColor: inputBorderColor,
                                                 borderRadius: 6,
                                                 paddingVertical: Platform.OS === 'ios' ? 6 : 2,
                                                 paddingHorizontal: 10,
@@ -1344,7 +1379,7 @@ const PreferencesModal = ({
                                         the user must opt in once per
                                         SIP identity before the feature
                                         becomes active. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 12, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 12, marginBottom: 8 }}>
                                         Automatic call recording.
                                     </Text>
                                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1375,7 +1410,7 @@ const PreferencesModal = ({
                                             style={{
                                                 marginLeft: 12,
                                                 fontSize: FS_BODY,
-                                                color: '#1976d2',
+                                                color: linkColor,
                                                 textDecorationLine: 'underline',
                                             }}
                                             onPress={() => setDisclosureMode('viewer')}
@@ -1402,12 +1437,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         File Encryption
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Encrypt attachments up to this size before sending.
                                     </Text>
                                     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1434,7 +1469,7 @@ const PreferencesModal = ({
                                     </View>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Encryption ──────────────────────────────
                                     Compact button-row picker, same shape
@@ -1455,12 +1490,12 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         zRTP Encryption
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
                                         Used for both audio and video calls.
                                     </Text>
                                     {/* Primary toggle: Enabled / Disabled.
@@ -1503,7 +1538,7 @@ const PreferencesModal = ({
                                         negotiated with the peer. */}
                                     {zrtpEnabled && (
                                         <View style={{ marginTop: 6 }}>
-                                            <Text style={{ fontSize: FS_CAPTION, color: '#666', marginBottom: 4 }}>
+                                            <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 4 }}>
                                                 Mandatory: warn and prompt if zRTP cannot be negotiated.
                                             </Text>
                                             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -1544,12 +1579,12 @@ const PreferencesModal = ({
                                         out avoids the reading "Disabled
                                         = plaintext on the wire", which
                                         isn't the case. */}
-                                    <Text style={{ fontSize: FS_CAPTION, color: '#888', marginTop: 2 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 2 }}>
                                         Calls are always encrypted between the device and the relay (DTLS-SRTP).
                                     </Text>
                                 </View>
 
-                                <Divider style={{ marginTop: -8, marginBottom: 8 }} />
+                                <Divider style={{ marginTop: -8, marginBottom: 8, backgroundColor: dividerColor }} />
 
                                 {/* ───── Location ───────────────── */}
                                 <View style={{ marginBottom: 16 }}>
@@ -1558,7 +1593,7 @@ const PreferencesModal = ({
                                             fontSize: FS_LABEL,
                                             fontWeight: '600',
                                             marginBottom: 4,
-                                            color: '#333',
+                                            color: labelColor,
                                         }}
                                     >
                                         Location
@@ -1571,6 +1606,8 @@ const PreferencesModal = ({
                                         battery + more wire traffic. */}
                                     <ThreeStopSlider
                                         title="Update interval (slower ↔ faster)"
+                                        textColor={labelColor}
+                                        markerFillColor={surfaceBg}
                                         stops={LOCATION_TICK_INTERVAL_STOPS}
                                         value={currentTickInterval}
                                         onChange={(v) => {
@@ -1590,6 +1627,8 @@ const PreferencesModal = ({
                                         of firing further apart. */}
                                     <ThreeStopSlider
                                         title="Meet-up proximity (tight ↔ relaxed)"
+                                        textColor={labelColor}
+                                        markerFillColor={surfaceBg}
                                         stops={LOCATION_PROXIMITY_STOPS}
                                         value={currentProximity}
                                         onChange={(v) => {
@@ -1613,6 +1652,8 @@ const PreferencesModal = ({
                                         start a share first. */}
                                     <PrivacyRadiusSlider
                                         title="Default privacy radius for meet-ups"
+                                        textColor={labelColor}
+                                        markerFillColor={surfaceBg}
                                         value={Number(locationPrivacyRadiusMeters) || 0}
                                         onChange={(v) => {
                                             if (typeof setLocationPrivacyRadiusMeters === 'function') {
@@ -1620,6 +1661,35 @@ const PreferencesModal = ({
                                             }
                                         }}
                                     />
+                                    {/* DEBUG: location-track simulator toggle.
+                                        When ON, NavigationBar's per-contact menu
+                                        shows a "Simulate …" item while a share is
+                                        active — round-trip for "Until I return"
+                                        shares, outward random walk for plain live
+                                        shares. Drives the feature at runtime so it
+                                        no longer needs a hard-wired build flag.
+                                        Default off; nothing changes for users who
+                                        leave it off. */}
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginTop: 12, marginBottom: 8 }}>
+                                        Location simulator (debug).
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <Button
+                                            mode={locationSimulatorEnabled ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={locationSimulatorEnabled ? 'map-marker-path' : 'map-marker-off'}
+                                            onPress={() => {
+                                                if (typeof setLocationSimulatorEnabled === 'function') {
+                                                    setLocationSimulatorEnabled(!locationSimulatorEnabled);
+                                                }
+                                            }}
+                                            style={{ alignSelf: 'flex-start' }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                        >
+                                            {locationSimulatorEnabled ? 'Simulator On' : 'Simulator Off'}
+                                        </Button>
+                                    </View>
                                     {/* Privacy-policy viewer link.
                                         Mirrors the "View disclaimer"
                                         link on the Automatic call
@@ -1638,7 +1708,7 @@ const PreferencesModal = ({
                                         style={{
                                             marginTop: 10,
                                             fontSize: FS_BODY,
-                                            color: '#1976d2',
+                                            color: linkColor,
                                             textDecorationLine: 'underline',
                                             alignSelf: 'flex-start',
                                         }}
@@ -1668,10 +1738,10 @@ const PreferencesModal = ({
                                     is Unix ms (matches the
                                     [disclaimer] log's ISO timestamp). */}
                                 <View style={{ marginTop: 18 }}>
-                                    <Text style={{ fontSize: FS_LABEL, fontWeight: '600', marginBottom: 6 }}>
+                                    <Text style={{ fontSize: FS_LABEL, fontWeight: '600', marginBottom: 6, color: labelColor }}>
                                         Disclaimers
                                     </Text>
-                                    <Text style={{ fontSize: FS_CAPTION, opacity: 0.7, marginBottom: 8 }}>
+                                    <Text style={{ fontSize: FS_CAPTION, opacity: 0.7, marginBottom: 8, color: captionColor }}>
                                         When you agreed to each consent prompt.
                                     </Text>
                                     {[
@@ -1695,12 +1765,13 @@ const PreferencesModal = ({
                                                            justifyContent: 'space-between',
                                                            alignItems: 'center',
                                                            paddingVertical: 4 }}>
-                                                <Text style={{ fontSize: FS_BODY, flex: 1, paddingRight: 8 }}>
+                                                <Text style={{ fontSize: FS_BODY, flex: 1, paddingRight: 8, color: labelColor }}>
                                                     {row.label}
                                                 </Text>
                                                 <Text style={{ fontSize: FS_CAPTION,
                                                                opacity: entry.agreed ? 1 : 0.6,
-                                                               textAlign: 'right' }}>
+                                                               textAlign: 'right',
+                                                               color: captionColor }}>
                                                     {when}
                                                 </Text>
                                             </View>
@@ -1724,7 +1795,7 @@ const PreferencesModal = ({
                                     Done
                                 </Button>
                             </View>
-                        </Surface>
+                        </ThemedModalSurface>
                 {/* Call-recording disclosure overlay — rendered
                     INSIDE the Preferences Modal (as a sibling of the
                     Surface) using inline mode so it draws as an
@@ -1816,6 +1887,8 @@ PreferencesModal.propTypes = {
     setLocationTickIntervalSec: PropTypes.func,
     locationProximityMeters: PropTypes.number,
     setLocationProximityMeters: PropTypes.func,
+    locationSimulatorEnabled: PropTypes.bool,
+    setLocationSimulatorEnabled: PropTypes.func,
     // Visual theme. Optional so older callers / tests that haven't
     // wired the setter yet still render the modal cleanly — the
     // Theme section's onPress already guards against a missing setter

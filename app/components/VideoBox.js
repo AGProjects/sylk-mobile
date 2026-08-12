@@ -5,10 +5,12 @@ import dtmf from 'react-native-dtmf';
 import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
 import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder, DeviceEventEmitter  } from 'react-native';
 import uuid from 'react-native-uuid';
 import DeferredRTCView from './DeferredRTCView';
+import UserIcon from './UserIcon';
 // RNCamera is used ONLY for the camera-enable modal preview tile —
 // a native AVCaptureSession / CameraX-backed view that is completely
 // independent of the webrtc pipeline. This lets us show a live local
@@ -149,6 +151,16 @@ class VideoBox extends Component {
             speedoPosition: null,
             showMyself: true,
             remoteVideoShow: true,
+            // Whether the remote party is currently sending live video.
+            // false → we cover the black RTCView with their avatar (see
+            // _attachRemoteVideoTrackListeners + render). Seeded from the
+            // current remote track so a mid-call remount doesn't flash the
+            // avatar over already-playing video.
+            remoteVideoActive: (() => {
+                const rs = (this.props.call.getRemoteStreams && this.props.call.getRemoteStreams()[0]) || null;
+                const t = (rs && rs.getVideoTracks) ? rs.getVideoTracks()[0] : null;
+                return !!(t && t.muted !== true);
+            })(),
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
             // Conference-request confirmation dialog (Material paper
@@ -552,6 +564,7 @@ class VideoBox extends Component {
             // localStream — without this re-attach we'd silently
             // monitor the old (discarded) track.
             this._attachLocalVideoTrackListeners(newLocalStream);
+            this._attachRemoteVideoTrackListeners(nextProps.call.getRemoteStreams && nextProps.call.getRemoteStreams()[0]);
         }
 
         if ('aspectRatio' in nextProps) {
@@ -734,6 +747,7 @@ class VideoBox extends Component {
                 localStream: ls || this.state.localStream,
                 remoteStream: rs || this.state.remoteStream,
             });
+            this._attachRemoteVideoTrackListeners(rs || this.state.remoteStream);
             this._startVideoStatsProbe();
             // Start [qos] CONNECT/STATS capture against the call's PeerConnection
             // so video calls produce client-side stats for reconciliation (the
@@ -1468,6 +1482,7 @@ class VideoBox extends Component {
         // class of bug — without them, applog gives no signal that the
         // camera stopped producing.
         this._attachLocalVideoTrackListeners(this.state.localStream);
+        this._attachRemoteVideoTrackListeners(this.state.remoteStream);
 
         // Restore this contact's saved video-call layout (last used
         // camera, swapped views, self-view mirror visibility). If the
@@ -1544,6 +1559,7 @@ class VideoBox extends Component {
         }
 
         this._detachLocalVideoTrackListeners();
+        this._detachRemoteVideoTrackListeners();
 
         // Conference-request expiry timer + DeviceEventEmitter
         // listener cleanup. Same pattern as AudioCallBox: clear the
@@ -1785,6 +1801,84 @@ class VideoBox extends Component {
         this._videoTrackOnEnded = null;
     }
 
+    // ---------------------------------------------------------------
+    // Remote video track presence / activity
+    //
+    // Drives the avatar placeholder: when the remote party's video
+    // track is absent, ended, or muted (RTP stalled), we cover the
+    // black RTCView with the remote's round avatar — the same circle
+    // AudioCallBox shows. state.remoteVideoActive is the single source
+    // of truth the render reads. We set it synchronously from the
+    // current track (events alone are unreliable: a track that arrives
+    // already-unmuted may never fire 'unmute'), then keep it in sync
+    // via mute/unmute/ended.
+    // ---------------------------------------------------------------
+    _attachRemoteVideoTrackListeners(remoteStream) {
+        try {
+            this._detachRemoteVideoTrackListeners();
+
+            const tracks = (remoteStream && remoteStream.getVideoTracks)
+                ? remoteStream.getVideoTracks() : [];
+            const track = (tracks && tracks.length > 0) ? tracks[0] : null;
+
+            // No live/unmuted remote video track → show the avatar.
+            const activeNow = !!(track && track.muted !== true);
+            if (this.state.remoteVideoActive !== activeNow) {
+                this.setState({ remoteVideoActive: activeNow });
+            }
+            if (!track) return;
+
+            this._remoteVideoOnMute = () => {
+                utils.timestampedLog('[video-track] [remote] mute', 'id=', track.id,
+                    'callUUID=', (this.props.call && this.props.call.id));
+                if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
+            };
+            this._remoteVideoOnUnmute = () => {
+                utils.timestampedLog('[video-track] [remote] unmute', 'id=', track.id,
+                    'callUUID=', (this.props.call && this.props.call.id));
+                if (!this.state.remoteVideoActive) this.setState({ remoteVideoActive: true });
+            };
+            this._remoteVideoOnEnded = () => {
+                utils.timestampedLog('[video-track] [remote] ended', 'id=', track.id,
+                    'callUUID=', (this.props.call && this.props.call.id));
+                if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
+            };
+
+            if (typeof track.addEventListener === 'function') {
+                track.addEventListener('mute',   this._remoteVideoOnMute);
+                track.addEventListener('unmute', this._remoteVideoOnUnmute);
+                track.addEventListener('ended',  this._remoteVideoOnEnded);
+            } else {
+                track.onmute   = this._remoteVideoOnMute;
+                track.onunmute = this._remoteVideoOnUnmute;
+                track.onended  = this._remoteVideoOnEnded;
+            }
+            this._monitoredRemoteVideoTrack = track;
+        } catch (e) {
+            console.log('[video-track] remote attach failed:', e && e.message);
+        }
+    }
+
+    _detachRemoteVideoTrackListeners() {
+        const track = this._monitoredRemoteVideoTrack;
+        if (!track) return;
+        try {
+            if (typeof track.removeEventListener === 'function') {
+                if (this._remoteVideoOnMute)   track.removeEventListener('mute',   this._remoteVideoOnMute);
+                if (this._remoteVideoOnUnmute) track.removeEventListener('unmute', this._remoteVideoOnUnmute);
+                if (this._remoteVideoOnEnded)  track.removeEventListener('ended',  this._remoteVideoOnEnded);
+            } else {
+                if (track.onmute   === this._remoteVideoOnMute)   track.onmute   = null;
+                if (track.onunmute === this._remoteVideoOnUnmute) track.onunmute = null;
+                if (track.onended  === this._remoteVideoOnEnded)  track.onended  = null;
+            }
+        } catch (e) { /* track may already be torn down */ }
+        this._monitoredRemoteVideoTrack = null;
+        this._remoteVideoOnMute = null;
+        this._remoteVideoOnUnmute = null;
+        this._remoteVideoOnEnded = null;
+    }
+
     get showMyself() {
 		// During the camera-enable modal we render a NATIVE
 		// (RNCamera) preview tile instead of the webrtc PIP — see
@@ -1940,7 +2034,7 @@ class VideoBox extends Component {
 		// Variant 2: react-native-paper Menu (icon + device name per row)
 		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
 			return (
-				<Menu
+				<Menu theme={getMenuTheme().menuTheme}
 					visible={this.state.audioDevicePickerVisible}
 					onDismiss={() => this.setState({audioDevicePickerVisible: false})}
 					anchor={
@@ -1959,7 +2053,7 @@ class VideoBox extends Component {
 						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone-in-talk';
 						const deviceName = utils.availableAudioDeviceNames[device] || device;
 						return (
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								key={device}
 								icon={deviceIcon}
 								title={isSelected ? `✓ ${deviceName}` : deviceName}
@@ -2801,7 +2895,7 @@ class VideoBox extends Component {
             // panels) must sit above it for the panels to render on top
             // of the thumbnail when they overlap.
             buttons = (
-                <View style={[buttonsContainer, {zIndex: 2000, elevation: 30}]}>
+                <View style={[buttonsContainer, {zIndex: 2000, elevation: 0, backgroundColor: 'transparent'}]}>
                     {content}
                 </View>
             );
@@ -3625,6 +3719,8 @@ class VideoBox extends Component {
                 />
                 <CallOverlay
                     show = {show}
+                    leftInsetOrigin = {true}
+                    parentBledLeft = {true}
                     systemMessage = {this.props.systemMessage}
                     remoteUri = {this.state.remoteUri}
                     remoteDisplayName = {this.state.remoteDisplayName}
@@ -3695,6 +3791,30 @@ class VideoBox extends Component {
 					  <TouchableWithoutFeedback onPress={this.toggleFullScreen}>
 						<View style={StyleSheet.absoluteFillObject} />
 					  </TouchableWithoutFeedback>
+					  {!this.state.remoteVideoActive ? (
+					    <View
+					      pointerEvents="none"
+					      style={[StyleSheet.absoluteFillObject, {
+					        backgroundColor: '#000',
+					        alignItems: 'center',
+					        justifyContent: 'center',
+					      }]}
+					    >
+					      <UserIcon
+					        identity={{
+					          uri: this.state.remoteUri || '',
+					          name: this.state.remoteDisplayName || '',
+					          photo: this.state.photo,
+					        }}
+					        size={Math.max(96, Math.round(Math.min(width, height) * 0.35))}
+					      />
+					      {(this.state.remoteDisplayName || this.state.remoteUri) ? (
+					        <Text numberOfLines={1} style={{ color: '#fff', fontSize: 18, marginTop: 16, maxWidth: '80%', textAlign: 'center' }}>
+					          {this.state.remoteDisplayName || this.state.remoteUri}
+					        </Text>
+					      ) : null}
+					    </View>
+					  ) : null}
 					</View>
 				: null }
 

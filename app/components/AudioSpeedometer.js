@@ -111,7 +111,7 @@ const LOSS_TIP_OFFSET = 2;
 // directly underneath stay anchored at their final position from
 // the moment the screen mounts — when the dial finally renders it
 // fades + slides in from above into the slot we already reserved.
-const CONTENT_HEIGHT = 122; // 110 SVG + 12 metrics row
+const CONTENT_HEIGHT = 111; // 99 SVG + 12 metrics row (was 122 for the old 110px SVG)
 
 // Polar -> cartesian. 0° = left (9 o'clock), 90° = up, 180° = right (3 o'clock).
 function polar(angleDeg, radius = R) {
@@ -381,6 +381,9 @@ export default class AudioSpeedometer extends React.Component {
         // the needle's -4s lead-in so it reaches 12 o'clock as the call dials.
         awaitingStart:  PropTypes.bool,
         connecting:     PropTypes.bool,
+        // When true, keep the connecting circle drawn but FREEZE the needle
+        // where it is (call failed / ended) instead of hiding the dial.
+        spinFrozen:     PropTypes.bool,
         reconnectingCall: PropTypes.bool,
         hasCall:        PropTypes.bool,
     };
@@ -425,7 +428,8 @@ export default class AudioSpeedometer extends React.Component {
     // shows the plain ActivityIndicator (see the reconnect branch in render),
     // not the countdown circle.
     _shouldAnimate() {
-        return !!(this.props.connecting || this.props.awaitingStart)
+        return !this.props.spinFrozen
+            && !!(this.props.connecting || this.props.awaitingStart)
             && (!!this.props.hasCall || !!this.props.awaitingStart);
     }
 
@@ -501,7 +505,16 @@ export default class AudioSpeedometer extends React.Component {
         // does NOT stop during the countdown→dial handoff, where hasCall
         // briefly reads false — that brief stop/restart was what snapped the
         // needle back to the -4s mark right at 12 o'clock.
-        const _wantSpin = !!(this.props.connecting || this.props.awaitingStart);
+        // Call just failed/ended: snapshot the needle's current step so the
+        // frozen render keeps it exactly where it was, then let the stop
+        // path below halt the ticking (needle stops, dial stays visible).
+        if (!prevProps.spinFrozen && this.props.spinFrozen) {
+            this._frozenStepSec = this._spinStartedAt
+                ? Math.floor((Date.now() - this._spinStartedAt) / 1000)
+                : 0;
+        }
+        const _wantSpin = !!(this.props.connecting || this.props.awaitingStart)
+            && !this.props.spinFrozen;
         if (this._shouldAnimate() && !this._spinTick) {
             this._startSpin();
         } else if (!_wantSpin && this._spinTick) {
@@ -1035,6 +1048,10 @@ export default class AudioSpeedometer extends React.Component {
             // metrics area.
             const _R2 = R;
             const _D = 2 * _R2;
+            // Vertical centre of the FULL circle so it sits centered in its
+            // box instead of anchored at the half-dial pivot (CY=H-18), which
+            // let the lower half overflow downward and read as off-centre.
+            const _cyC = _D / 2;
             const _needleLen = _R2 - 4;          // hub → tip (full needle length)
             const _NEEDLE_RED = '#D32F2F';       // needle is red while connecting
             // Degrees the needle sweeps per second at the current period.
@@ -1046,9 +1063,11 @@ export default class AudioSpeedometer extends React.Component {
             // -4 mark (-24°); each elapsed whole second advances it _degPerSec
             // (6°), so -4 → -3 → -2 → -1 → 12 o'clock (0°, reached 4 s in as
             // the call starts), then it keeps ticking until the call connects.
-            const _stepSec = this._spinStartedAt
-                ? Math.floor((Date.now() - this._spinStartedAt) / 1000)
-                : 0;
+            const _stepSec = this.props.spinFrozen
+                ? (this._frozenStepSec || 0)
+                : (this._spinStartedAt
+                    ? Math.floor((Date.now() - this._spinStartedAt) / 1000)
+                    : 0);
             const _angle = -_leadDeg + _stepSec * _degPerSec;
             // Countdown tick marks at -1, -2, -3, -4 seconds before 12
             // o'clock — the marks the needle steps across during the pre-call
@@ -1092,19 +1111,19 @@ export default class AudioSpeedometer extends React.Component {
                 + ':' + String(_secs % 60).padStart(2, '0');
             return (
                 <View style={[styles.container, { minHeight: CONTENT_HEIGHT }, _foldedZeroMargin]}>
-                    <View style={{ width: W, height: H, overflow: 'visible' }}>
-                        {/* Full-circle dial ring, centred on (CX, CY) */}
+                    <View style={{ width: W, height: _D, overflow: 'visible' }}>
+                        {/* Full-circle dial ring, centred on (CX, _cyC) */}
                         <View style={{
                             position: 'absolute',
-                            left: CX - _R2, top: CY - _R2,
+                            left: CX - _R2, top: _cyC - _R2,
                             width: _D, height: _D, borderRadius: _R2,
                             borderWidth: 3, borderColor: '#ffffff',
                         }} />
                         {/* Countdown tick marks (-1..-4 s) on the ring, in the
-                            same _D box anchored at (CX-_R2, CY-_R2). */}
+                            same _D box anchored at (CX-_R2, _cyC-_R2). */}
                         <View pointerEvents="none" style={{
                             position: 'absolute',
-                            left: CX - _R2, top: CY - _R2,
+                            left: CX - _R2, top: _cyC - _R2,
                             width: _D, height: _D,
                         }}>
                             {_marks.map((m) => (
@@ -1124,12 +1143,12 @@ export default class AudioSpeedometer extends React.Component {
                                 />
                             ))}
                         </View>
-                        {/* Needle wrapper centred on (CX, CY); rotated to the
+                        {/* Needle wrapper centred on (CX, _cyC); rotated to the
                             current 1-second step angle (no smooth animation —
                             it jumps one mark per second). */}
                         <View style={{
                             position: 'absolute',
-                            left: CX - _R2, top: CY - _R2,
+                            left: CX - _R2, top: _cyC - _R2,
                             width: _D, height: _D,
                             alignItems: 'center',
                             transform: [{ rotate: _angle + 'deg' }],
@@ -1146,7 +1165,7 @@ export default class AudioSpeedometer extends React.Component {
                         {/* Centre hub */}
                         <View style={{
                             position: 'absolute',
-                            left: CX - 4.5, top: CY - 4.5,
+                            left: CX - 4.5, top: _cyC - 4.5,
                             width: 9, height: 9, borderRadius: 4.5,
                             backgroundColor: '#fff',
                         }} />
@@ -1160,7 +1179,7 @@ export default class AudioSpeedometer extends React.Component {
                             <View pointerEvents="none" style={{
                                 position: 'absolute',
                                 left: 0, right: 0,
-                                top: CY - _R2 * 0.5 - 6,
+                                top: _cyC - _R2 * 0.5 - 6,
                                 alignItems: 'center',
                             }}>
                                 <Text style={{ color: '#ffffff', fontSize: 14, fontWeight: '400' }}>
@@ -1172,7 +1191,7 @@ export default class AudioSpeedometer extends React.Component {
                             <View pointerEvents="none" style={{
                                 position: 'absolute',
                                 left: 0, right: 0,
-                                top: CY + _R2 * 0.22,
+                                top: _cyC + _R2 * 0.22,
                                 alignItems: 'center',
                             }}>
                                 {/* Same colour as the RTT readout. */}
@@ -1352,7 +1371,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: 4,
         paddingTop: 2,
         paddingBottom: 4,
-        marginTop: 16,    // 6 base + 10 to lower the dial
+        marginTop: 6,    // base breathing room (dropped the +10 'lower the dial' nudge)
         marginBottom: 6,
     },
     metricsRow: {

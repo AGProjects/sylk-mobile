@@ -307,6 +307,8 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     setLocationProximityMeters={nav.props.setLocationProximityMeters}
                     locationPrivacyRadiusMeters={nav.props.locationPrivacyRadiusMeters}
                     setLocationPrivacyRadiusMeters={nav.props.setLocationPrivacyRadiusMeters}
+                    locationSimulatorEnabled={nav.props.locationSimulatorEnabled}
+                    setLocationSimulatorEnabled={nav.props.setLocationSimulatorEnabled}
                     themeMode={nav.props.themeMode}
                     setThemeMode={nav.props.setThemeMode}
                     bubbleColor={nav.props.bubbleColor}
@@ -362,8 +364,18 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
 
                 <ShareLocationModal
                     show={nav.state.showShareLocationModal}
-                    close={nav.hideShareLocationModal}
-                    onConfirm={nav.onShareLocationConfirmed}
+                    close={nav._locationEngine.hideShareLocationModal}
+                    onConfirm={nav._locationEngine.onShareLocationConfirmed}
+                    /* OS location grant level (probed in
+                       showShareLocationModal). When it's foreground-only
+                       ("While Using") the modal restricts the picker to
+                       "Once" and shows the upgrade-to-Always notice. */
+                    permissionLevel={nav.state.shareLocationPermissionLevel}
+                    /* Lets the modal ask for a fresh permission probe when
+                       the app returns to the foreground — so granting
+                       "Always" in Settings unlocks the timed options
+                       without reopening the modal. */
+                    onRefreshPermissionLevel={nav.refreshShareLocationPermissionLevel}
                     uri={nav.props.selectedContact ? nav.props.selectedContact.uri : null}
                     displayName={nav.props.selectedContact ? nav.props.selectedContact.name : null}
                     /* Disclaimer suppression. The flag is hydrated on
@@ -374,7 +386,7 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                        so the legal text re-appears the moment the user
                        revokes their disclosure consent. */
                     disclaimerSuppressed={nav.state.shareDisclaimerSuppressed}
-                    onSuppressDisclaimer={nav._suppressShareLocationDisclaimer}
+                    onSuppressDisclaimer={nav._locationEngine._suppressShareLocationDisclaimer}
                     /* When the share-flow was opened from a chat-bubble's
                        "Meet me there..." kebab on a Google-Maps-link
                        text, pre-select the meet-up option so the user
@@ -418,6 +430,27 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                         Number(nav.props.locationPrivacyRadiusMeters) || 0
                     }
                     onPersistPrivacyRadius={nav.props.setLocationPrivacyRadiusMeters}
+                    /* Last-used share option for THIS contact — a local,
+                       non-synced per-contact preference stored under
+                       contact.localProperties.shareLocationPrefs. Seeds the
+                       picker on open (defaultSelectionFor) so the modal
+                       reopens on whatever the user picked last time (once /
+                       until stopped / until I return — never "meet"). */
+                    lastShareOption={
+                        (nav.props.selectedContact
+                            && nav.props.selectedContact.localProperties
+                            && nav.props.selectedContact.localProperties.shareLocationPrefs)
+                        || null
+                    }
+                    /* Persist the chosen option on Confirm. Saved via app.js
+                       saveShareLocationPrefs under the contact's
+                       localProperties — stays on the device, never synced. */
+                    onPersistShareOption={(opt) => {
+                        const c = nav.props.selectedContact;
+                        if (c && c.uri && typeof nav.props.saveShareLocationPrefs === 'function') {
+                            nav.props.saveShareLocationPrefs(c.uri, opt);
+                        }
+                    }}
                     /* Caregiver flag drives modal defaults: caregivers
                        open with "Until I return" pre-selected and have
                        "Until we meet" hidden (caregivers don't meet
@@ -435,6 +468,27 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                                 && nav.props.selectedContact.localProperties.caregiver)
                             || (Array.isArray(nav.props.selectedContact.tags)
                                 && nav.props.selectedContact.tags.indexOf('caregiver') > -1)))}
+                    /* Which startable session types are ALREADY live for this
+                       contact, so the picker disables the matching options
+                       (meet live → hide/disable "Until we meet"; plain share
+                       live → only "Until we meet" + "Once" remain). Computed at
+                       render from the live stores via the engine. */
+                    liveTypes={(() => {
+                        // Prefer the types captured into state at modal-open time
+                        // (showShareLocationModal) — stable and immune to a
+                        // selectedContact that flickers null mid-session, which
+                        // made the render-time recompute below return {share:false}
+                        // and show every option enabled while a share was live.
+                        // _onLocationSessionsChanged refreshes state.shareLiveTypes
+                        // while the modal is open, so it also stays reactive.
+                        if (nav.state && nav.state.shareLiveTypes) return nav.state.shareLiveTypes;
+                        const _u = (nav.state && nav.state.shareModalUri)
+                            || (nav.props.selectedContact && nav.props.selectedContact.uri);
+                        return (_u && nav._locationEngine
+                            && typeof nav._locationEngine.getStartableLiveTypes === 'function')
+                            ? nav._locationEngine.getStartableLiveTypes(_u)
+                            : { meet: false, share: false };
+                    })()}
                 />
 
                 {/* Google Play Prominent Disclosure. Shown the first time
@@ -479,49 +533,91 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                 <ActiveLocationSharesModal
                     show={nav.state.showActiveSharesModal}
                     close={() => nav.setState({showActiveSharesModal: false, activeSharesFilterUri: null})}
-                    activeShares={nav.state.activeLocationShares}
+                    // Local broadcaster shares PLUS shares mirrored from other
+                    // devices of mine, so a secondary device sees the session
+                    // and can Stop it here.
+                    //
+                    // Passed as a LIVE getter, not a pre-computed snapshot: this
+                    // component doesn't re-render on every NavBar state change,
+                    // so a snapshot froze empty and the modal showed no shares
+                    // even while getActiveSharesForModal() returned the session.
+                    // The modal calls this at its own render time (it ticks once
+                    // a second), so it always reflects current truth. The
+                    // snapshot below is kept only as the first-paint fallback.
+                    /* Per-SESSION rows: one entry per live session so a
+                       contact's meet AND plain share each get their own row,
+                       type label and Stop. Passed as a LIVE getter (the modal
+                       re-reads it each 1 s tick) with a first-paint snapshot
+                       fallback. Shape: [{uri, sessionId, type, expiresAt,
+                       owned, paused}]. */
+                    getRows={() => (typeof nav.getActiveSharesRowsForModal === 'function'
+                        ? nav.getActiveSharesRowsForModal()
+                        : [])}
+                    rows={typeof nav.getActiveSharesRowsForModal === 'function'
+                        ? nav.getActiveSharesRowsForModal()
+                        : []}
                     allContacts={nav.props.allContacts}
                     // When set, the modal renders only the current
-                    // chat's share (ReadyBox pin entry point). null from
-                    // the NavBar indicator so it lists every share.
+                    // chat's sessions (ReadyBox pin / contact-menu entry). null
+                    // from the NavBar indicator so it lists every session.
                     filterUri={nav.state.activeSharesFilterUri}
-                    stopShare={(uri) => {
-                        nav.stopLocationSharing(uri);
-                        // If that was the only share, the effect from
-                        // componentDidUpdate (currCount → 0) will close
-                        // the modal automatically. Otherwise we leave it
-                        // open so the user can stop the next one.
+                    /* Stop ONE session (row carries sessionId + type so we stop
+                       the exact meet or plain share, not just "the" share for the
+                       uri). Routes through stopLocationSharing so timers, the
+                       foreground service, state mirror and system notes all stay
+                       in sync with every other stop path. */
+                    stopShare={(row) => {
+                        if (!row || !row.uri) return;
+                        nav._locationEngine.stopLocationSharing(row.uri, {
+                            sessionId: row.sessionId,
+                            meet: row.type === 'meet',
+                        });
+                        // The pin/contact-menu panel is SCOPED to one chat. Once
+                        // NO sessions remain for that contact, close it so the
+                        // user isn't left staring at an empty list. When another
+                        // session (e.g. the meet) is still live, keep it open.
+                        const _f = nav.state.activeSharesFilterUri;
+                        if (_f) {
+                            const _left = (typeof nav.getActiveSharesRowsForModal === 'function'
+                                ? nav.getActiveSharesRowsForModal()
+                                : []).filter((r) => r && r.uri === _f);
+                            if (_left.length === 0) {
+                                nav.setState({showActiveSharesModal: false, activeSharesFilterUri: null});
+                            }
+                        }
                     }}
                     stopAll={() => {
-                        Object.keys(nav.state.activeLocationShares || {})
-                            .forEach((uri) => nav.stopLocationSharing(uri));
+                        const _rows = (typeof nav.getActiveSharesRowsForModal === 'function'
+                            ? nav.getActiveSharesRowsForModal()
+                            : []);
+                        // Incoming sessions aren't listed and can't be stopped;
+                        // only stop sessions we own (a mirror can also relay).
+                        _rows.forEach((r) => {
+                            if (!r || !r.uri) return;
+                            nav._locationEngine.stopLocationSharing(r.uri, {
+                                sessionId: r.sessionId,
+                                meet: r.type === 'meet',
+                            });
+                        });
                     }}
-                    /* Pause / Resume bridges. The modal calls these
-                       per-row (multi-share) or as the second primary
-                       button (single-share). Each routes through the
-                       same pauseLocationSharing / resumeLocationSharing
-                       methods the bubble kebab and chat-header menu
-                       use, so all three entry points stay in sync.
-                       getShareState returns 'active' | 'paused' |
-                       'stopped' off nav.locationTimers[uri].paused so
-                       the modal can label the toggle without mirroring
-                       state. We pass originMetadataId from the entry
-                       so the multi-share guard inside pause/resume
-                       (which protects against pausing the wrong
-                       session if a stale row id is used) doesn't trip
-                       — the entry knows its own origin. */
-                    pauseShare={(uri) => {
-                        const _entry = nav.locationTimers && nav.locationTimers[uri];
-                        if (_entry) nav.pauseLocationSharing(uri, _entry.originMetadataId);
+                    /* Pause / Resume bridges, keyed by the row's sessionId so the
+                       exact session is targeted. Route through the same
+                       pauseLocationSharing / resumeLocationSharing the bubble
+                       kebab and chat-header menu use. getShareState returns
+                       'active' | 'paused' | 'stopped'. */
+                    pauseShare={(row) => {
+                        if (row && row.uri) nav._locationEngine.pauseLocationSharing(row.uri, row.sessionId);
                     }}
-                    resumeShare={(uri) => {
-                        const _entry = nav.locationTimers && nav.locationTimers[uri];
-                        if (_entry) nav.resumeLocationSharing(uri, _entry.originMetadataId);
+                    resumeShare={(row) => {
+                        if (row && row.uri) nav._locationEngine.resumeLocationSharing(row.uri, row.sessionId);
                     }}
-                    getShareState={(uri) => {
-                        const _entry = nav.locationTimers && nav.locationTimers[uri];
-                        return nav.getLocationShareState(uri, _entry && _entry.originMetadataId);
+                    getShareState={(row) => {
+                        if (!row || !row.uri) return 'stopped';
+                        return nav._locationEngine.getLocationShareState(row.uri, row.sessionId);
                     }}
+                    // Only sessions THIS device owns can be paused (mirrors and
+                    // incoming can't). The row already carries `owned`.
+                    isShareOwned={(row) => !!(row && row.owned)}
                 />
                 
 				<ExportPrivateKeyModal

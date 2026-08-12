@@ -1,0 +1,10 @@
+ * Fix message timeline poluted by location updates
+ * Fix a crash when call ends
+ * Fix resolving google maps short urls
+ * Make modals and menus theme aware
+ * Added export tracks for location bubbles
+ * Fix sync anonymous contact with server and ip only contacts
+ * Fix RN bridge in iOS after RN update
+ * Update push notifications for location sharing
+ * Modernize category bar
+ * Refactored location sharing

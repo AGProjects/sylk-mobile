@@ -24,11 +24,20 @@ import { Text } from 'react-native-paper';
 //              "no selection" visual if it doesn't match any stop.
 //   onChange — (value) => void called when a marker is tapped.
 //   title    — caption rendered above the track. Optional.
-const ThreeStopSlider = ({stops, value, onChange, title}) => {
+//   textColor — colour for the title + stop labels. Optional; when
+//              omitted the Paper <Text> default (dark on-surface) is
+//              used, preserving the historical look on white modals.
+//              Themed callers (PreferencesModal on a dark surface)
+//              pass the active theme's textPrimary so the caption
+//              doesn't paint dark-on-dark and vanish.
+//   markerFillColor — fill for UNSELECTED markers. Defaults to white
+//              (the original hollow-on-white look); dark surfaces pass
+//              their surface colour so the dot reads hollow on dark too.
+const ThreeStopSlider = ({stops, value, onChange, title, textColor, markerFillColor = '#fff'}) => {
     return (
         <View style={{marginTop: 8, marginBottom: 2}}>
             {title ? (
-                <Text style={{fontSize: 12, opacity: 0.75, marginBottom: 4, paddingHorizontal: 4}}>
+                <Text style={{fontSize: 12, opacity: 0.75, marginBottom: 4, paddingHorizontal: 4, color: textColor}}>
                     {title}
                 </Text>
             ) : null}
@@ -75,7 +84,7 @@ const ThreeStopSlider = ({stops, value, onChange, title}) => {
                                 borderRadius: 9,
                                 borderWidth: 2,
                                 borderColor: selected ? '#1976D2' : '#888',
-                                backgroundColor: selected ? '#1976D2' : '#fff',
+                                backgroundColor: selected ? '#1976D2' : markerFillColor,
                             }}/>
                         </TouchableOpacity>
                     );
@@ -105,6 +114,7 @@ const ThreeStopSlider = ({stops, value, onChange, title}) => {
                                 fontSize: 11,
                                 opacity: selected ? 1 : 0.65,
                                 fontWeight: selected ? '600' : 'normal',
+                                color: textColor,
                             }}
                             numberOfLines={1}
                         >
@@ -125,6 +135,8 @@ ThreeStopSlider.propTypes = {
     value:    PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     onChange: PropTypes.func,
     title:    PropTypes.string,
+    textColor: PropTypes.string,
+    markerFillColor: PropTypes.string,
 };
 
 export default ThreeStopSlider;

@@ -80,4 +80,32 @@ RCT_EXPORT_METHOD(acknowledgePersistedLogs:(RCTPromiseResolveBlock)resolve
     }
 }
 
+#pragma mark - JS console echo (metro.log visibility)
+
+// Echo a single JS console line straight to the device syslog so it
+// reappears in metro.log via the idevicesyslog capture ladder in
+// metro-adb-logs.sh (which greps the syslog for the [SYLK_APP] tag).
+//
+// Why this exists: React Native 0.77 removed console-log forwarding
+// over Metro (deprecated in 0.76, now CDP-only), so on iOS console.*
+// output no longer reaches the Metro terminal / metro.log — only native
+// SylkLogger lines do. The JS side (app.js console wrapper) calls this
+// for every console.* line on iOS to restore that visibility. Android
+// needs nothing here: console.* already lands in logcat under the
+// ReactNativeJS tag, which the adb pipeline captures.
+//
+// Deliberately a bare NSLog and NOT [SylkLogger log:] — it must not feed
+// SylkLogger's on-disk buffer or its live listener, otherwise a forwarded
+// console line could be streamed back to JS (nativeLogReplay) and, if any
+// downstream handler logged, loop. %s + [line UTF8String] keeps unified
+// logging from redacting the message to <private> in the captured stream,
+// matching the convention in AppDelegate.m / SylkLogger.
+RCT_EXPORT_METHOD(echoToSyslog:(NSString *)line)
+{
+    if (![line isKindOfClass:[NSString class]] || line.length == 0) {
+        return;
+    }
+    NSLog(@"[SYLK_APP] %s", [line UTF8String]);
+}
+
 @end

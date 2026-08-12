@@ -671,10 +671,21 @@ public class IncomingCallService extends Service {
 			String countdownTitle
 	) {
 
-		String callerName = from_uri;
-        String title = mediaType + " call from " + from_uri;
+		// Anonymous / guest callers must never surface their scary random
+		// "<uuid>@guest.<host>" URI in the call notification. Substitute a
+		// friendly placeholder anywhere the raw URI would otherwise show;
+		// a real caller-presented display name (if any) still wins below.
+		boolean isAnonymousFrom = from_uri != null
+				&& (from_uri.toLowerCase().contains("anonymous")
+					|| from_uri.toLowerCase().contains("@guest."));
+		String displayFrom = isAnonymousFrom ? "Unknown contact" : from_uri;
 
-		if (displayName != null && !displayName.trim().isEmpty()) {
+		String callerName = displayFrom;
+        String title = mediaType + " call from " + displayFrom;
+
+		if (displayName != null && !displayName.trim().isEmpty()
+				&& !displayName.toLowerCase().contains("anonymous")
+				&& !displayName.toLowerCase().contains("@guest.")) {
 			callerName = displayName;
 		}
 		
@@ -804,8 +815,8 @@ public class IncomingCallService extends Service {
 			// using a generic placeholder to avoid an IllegalArgumentException
 			// crash that would tear down the foreground service.
 			if (callerName == null || callerName.trim().isEmpty()) {
-				if (from_uri != null && !from_uri.trim().isEmpty()) {
-					callerName = from_uri;
+				if (displayFrom != null && !displayFrom.trim().isEmpty()) {
+					callerName = displayFrom;
 				} else if (title != null && !title.trim().isEmpty()) {
 					callerName = title;
 				} else {

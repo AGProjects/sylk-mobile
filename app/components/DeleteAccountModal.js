@@ -1,19 +1,10 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    TouchableWithoutFeedback,
-    KeyboardAvoidingView,
-    Linking,
-    StyleSheet,
-    Pressable,
-    Clipboard,
-} from 'react-native';
-import { Button, Surface, ActivityIndicator, IconButton } from 'react-native-paper';
+import { View, Platform, Modal, TouchableWithoutFeedback, KeyboardAvoidingView, Linking, StyleSheet, Pressable, Clipboard, Dimensions } from 'react-native';
+import { Text, Button, Surface, ActivityIndicator, IconButton } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 
 // Share the same Modal + Surface shell the other dialogs use, so the
@@ -63,7 +54,7 @@ const styles = StyleSheet.create({
         paddingBottom: 14,
         fontSize: 15,
         textAlign: 'center',
-        color: '#444',
+        
     },
     choiceCard: {
         marginHorizontal: 16,
@@ -84,11 +75,12 @@ const styles = StyleSheet.create({
     },
     choiceTextWrap: {
         flex: 1,
+        minWidth: 0,
     },
     choiceTitle: {
         fontSize: 15,
         fontWeight: '600',
-        color: '#222',
+        
         marginBottom: 2,
     },
     choiceDescription: {
@@ -105,7 +97,7 @@ const styles = StyleSheet.create({
     },
     backText: {
         marginLeft: 4,
-        color: '#1976d2',
+        color: getModalColors().link,
         fontSize: 14,
     },
 });
@@ -564,7 +556,8 @@ class DeleteAccountModal extends Component {
                     onPress={this.pickDevice}
                     style={({ pressed }) => [
                         styles.choiceCard,
-                        pressed && styles.choiceCardPressed,
+                        { backgroundColor: getModalColors().surface, borderColor: getModalColors().divider },
+                        pressed && { backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#eeeeee' },
                     ]}
                     accessibilityRole="button"
                     accessibilityLabel="Delete account on device"
@@ -592,7 +585,8 @@ class DeleteAccountModal extends Component {
                         disabled={hasPending}
                         style={({ pressed }) => [
                             styles.choiceCard,
-                            pressed && !hasPending && styles.choiceCardPressed,
+                        { backgroundColor: getModalColors().surface, borderColor: getModalColors().divider },
+                            pressed && !hasPending && { backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#eeeeee' },
                             hasPending && { flexDirection: 'column', alignItems: 'stretch' },
                         ]}
                         accessibilityRole="button"
@@ -625,7 +619,8 @@ class DeleteAccountModal extends Component {
                         }}
                         style={({ pressed }) => [
                             styles.choiceCard,
-                            pressed && styles.choiceCardPressed,
+                        { backgroundColor: getModalColors().surface, borderColor: getModalColors().divider },
+                            pressed && { backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#eeeeee' },
                         ]}
                         accessibilityRole="link"
                         accessibilityLabel="Delete account on server (opens browser)"
@@ -750,7 +745,7 @@ class DeleteAccountModal extends Component {
                                     style={{
                                         fontSize: 12,
                                         fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-                                        color: '#333',
+                                        color: getModalColors().textPrimary,
                                     }}
                                     selectable
                                     numberOfLines={1}
@@ -903,6 +898,8 @@ class DeleteAccountModal extends Component {
     }
 
     render() {
+        const _win = Dimensions.get('window');
+        const _cardWidth = Math.min(560, Math.floor((_win.width < _win.height ? _win.width : _win.height) * 0.92));
         if (!this.props.show) return null;
 
         let content;
@@ -935,9 +932,9 @@ class DeleteAccountModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={[containerStyles.modalSurface, { width: _cardWidth, alignSelf: 'center' }]}>
                                     {content}
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>

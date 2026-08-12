@@ -1,15 +1,8 @@
 import React from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    TouchableWithoutFeedback,
-    StyleSheet,
-    useWindowDimensions,
-} from 'react-native';
-import { Button, Surface } from 'react-native-paper';
+import { View, Platform, Modal, TouchableWithoutFeedback, StyleSheet, useWindowDimensions } from 'react-native';
+import { Text, Button, Surface } from 'react-native-paper';
 
 // Shared Modal + dimmed overlay + rounded Surface shell — matches
 // DeleteHistoryModal / EditContactModal / ShareLocationModal so every
@@ -61,7 +54,7 @@ const ConfirmActionModal = ({ visible, title, message, actions, onDismiss }) => 
                 <View style={containerStyles.overlay}>
                     {/* Block dismiss when taps land inside the card. */}
                     <TouchableWithoutFeedback onPress={() => {}}>
-                        <Surface style={[containerStyles.modalSurface, styles.card, { width: _cardWidth }]}>
+                        <ThemedModalSurface style={[containerStyles.modalSurface, styles.card, { width: _cardWidth }]}>
                             {title ? <Text style={styles.title}>{title}</Text> : null}
                             {message ? <Text style={styles.body}>{message}</Text> : null}
 
@@ -85,7 +78,7 @@ const ConfirmActionModal = ({ visible, title, message, actions, onDismiss }) => 
                                     </Button>
                                 ))}
                             </View>
-                        </Surface>
+                        </ThemedModalSurface>
                     </TouchableWithoutFeedback>
                 </View>
             </TouchableWithoutFeedback>
@@ -111,7 +104,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         textAlign: 'center',
         marginBottom: 16,
-        color: '#333',
+        
     },
     // Vertical button stack — full width, one per row. This is what
     // guarantees the dialog never overflows horizontally regardless of

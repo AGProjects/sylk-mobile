@@ -249,7 +249,10 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
 				.setSmallIcon(R.drawable.ic_notification)
 				.setContentTitle("Sylk call rejected")
-				.setContentText(fromUri + " rejected: " + reason)
+				.setContentText(((fromUri != null
+						&& (fromUri.toLowerCase().contains("anonymous")
+							|| fromUri.toLowerCase().contains("@guest.")))
+						? "Unknown contact" : fromUri) + " rejected: " + reason)
 				.setPriority(NotificationCompat.PRIORITY_HIGH)
 				.setAutoCancel(true);
 	
@@ -301,7 +304,12 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		} else {
 			title = isConfInvite ? "Missed conference (Already in)" : "Missed call (In conference)";
 		}
-		String body = who;
+		// Never show the scary "<uuid>@guest.<host>" URI in the shade —
+		// anonymous / guest callers surface as "Unknown contact".
+		String body = (who != null
+				&& (who.toLowerCase().contains("anonymous")
+					|| who.toLowerCase().contains("@guest.")))
+				? "Unknown contact" : who;
 
 		// Tap target: launching MainActivity so the user lands in the app
 		// (the missed-call chat row + contact-on-top badge are JS-owned and
@@ -1963,12 +1971,109 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// persists muted/DND-suppressed messages too.
 			String content = data.get("content");
 			String contentType = data.get("content_type");
+
+			// application/sylk-request while the app is foreground: the live
+			// websocket already delivered the request and JS showed the modal,
+			// so a push banner would just duplicate it. Skip entirely.
+			if ("application/sylk-request".equals(contentType) && isAppInForeground()) {
+				SylkLogger.d("[message] [fcm] sylk-request while foreground — skipping banner (modal shown via WS) " + messageId);
+				return;
+			}
+
+			// Tailor the notification for application/sylk-request: a location /
+			// meet-up invitation whose cleartext JSON body names the request_type.
+			// Show "Location request from X" / "Meeting request from X" instead of
+			// the generic "New message".
+			String notifTitle = "New message";
+			String notifBody = "Message from " + displayName;
+			// Set true below when the location-sharing push is actually a
+			// meet-up INVITE (action == "meeting_request"): drives both the
+			// "Meeting request" banner text and the request-scheme tap intent
+			// so the tap opens the accept/decline modal instead of the chat.
+			boolean isMeetingInvitePush = false;
+			if ("application/sylk-request".equals(contentType) && content != null) {
+				String reqType = "";
+				try {
+					JSONObject _rq = new JSONObject(content);
+					reqType = _rq.optString("request_type", "");
+				} catch (JSONException _e) {
+					if (content.contains("meeting")) reqType = "meeting";
+					else if (content.contains("location")) reqType = "location";
+				}
+				if ("meeting".equals(reqType)) {
+					notifTitle = "Meet-up request";
+					notifBody = "Meet-up request from " + displayName;
+				} else {
+					notifTitle = "Location request";
+					notifBody = "Location request from " + displayName;
+				}
+			} else if ("application/sylk-location-sharing".equals(contentType)) {
+				// Location SHARE. The server pushes two once-per-share lifecycle
+				// events: an ORIGIN tick (a share just began) and a STOP signal
+				// (the live trail ended). Distinguish them from the cleartext
+				// envelope and, for a stop, phrase the banner by the reason the
+				// share ended (returned home / expired / user ended). The map /
+				// end-note render in-app once the tap opens the chat.
+				// Lead with the sender name so a location share reads like a
+				// normal message; describe the event in the body. Previously the
+				// title was the literal "Location", shown as the caller name.
+				notifTitle = displayName;
+				String locAction = "";
+				String locReason = "";
+				if (content != null) {
+					try {
+						JSONObject _lo = new JSONObject(content);
+						locAction = _lo.optString("action", "");
+						locReason = _lo.optString("reason", "");
+					} catch (JSONException _e) {
+						if (content.contains("location_stop")) locAction = "location_stop";
+					}
+				}
+				if ("meeting_request".equals(locAction)) {
+					// Meet-up invitation (now carried on application/sylk-location-
+					// sharing with action=="meeting_request"). Label it as a meeting
+					// request and flag it so the tap routes to the accept modal.
+					isMeetingInvitePush = true;
+					notifBody = "\uD83D\uDCCD Meet-up request";
+				} else if ("meeting_accept".equals(locAction)) {
+					notifBody = "\uD83D\uDCCD Accepted your meet-up request";
+				} else if ("meeting_end".equals(locAction)) {
+					if ("proximity".equals(locReason)) {
+						notifBody = "\uD83C\uDF89 Nice to meet you!";
+					} else {
+						notifBody = "\uD83D\uDCCD Meet-up ended";
+					}
+				} else if ("location_once".equals(locAction)) {
+					notifBody = "\uD83D\uDCCD Shared current location";
+				} else if ("location_start".equals(locAction)) {
+					notifBody = "\uD83D\uDCCD Started sharing location";
+				} else if ("location_stop".equals(locAction)) {
+					if ("returned".equals(locReason)) {
+						notifBody = "\uD83D\uDCCD Returned home";
+					} else if ("meet_end".equals(locReason)) {
+						notifBody = "\uD83D\uDCCD Meet-up ended";
+					} else {
+						notifBody = "\uD83D\uDCCD Stopped sharing location";
+					}
+				} else {
+					notifBody = "\uD83D\uDCCD Location update";
+				}
+			}
 			boolean _insertAppForeground = isAppInForeground();
 			if (_insertAppForeground) {
 				//SylkLogger.d("[message] [fcm] App is foreground — skipping native SQL insert; WS will deliver " + messageId);
 			} else {
 				List<String> _insertTags = (contact != null) ? tags : null;
-				if (isInsertAllowedForAccount(toUri, fromUri, _insertTags)) {
+				// application/sylk-location-sharing is excluded from the native
+				// raw insert: its wire body is a cleartext envelope with the
+				// coords PGP-encrypted, and storing it verbatim would create a
+				// row with no related_action / no split, which then WINS the
+				// msg_id UNIQUE race against the proper split-store from the
+				// WS/journal path — leaving a location row that never renders a
+				// map. Let JS store it; native only shows the notification.
+				if (!"application/sylk-request".equals(contentType)
+						&& !"application/sylk-location-sharing".equals(contentType)
+						&& isInsertAllowedForAccount(toUri, fromUri, _insertTags)) {
 					insertIncomingMessageToSql(toUri, fromUri, messageId, content, contentType, pushDisplayName);
 				} else {
 					SylkLogger.w("[message] [fcm] Insert skipped for "
@@ -2086,7 +2191,21 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// ----- INTENT -----
 			Intent intent = new Intent(this, MainActivity.class);
 			intent.setAction(Intent.ACTION_VIEW);
-			intent.setData(Uri.parse("sylk://message/incoming/" + fromUri));
+			// application/sylk-request taps must NOT open the chat — they show
+			// the request modal. Use a dedicated deep-link scheme JS routes to
+			// the modal (see eventFromUrl's 'request' branch); everything else
+			// keeps the chat-navigation scheme.
+			if (isMeetingInvitePush) {
+				// Meet-up INVITE: a distinct direction segment so JS opens the
+				// sender's chat AND shows the accept modal (see eventFromUrl's
+				// request branch), matching iOS. A location-permission request
+				// below keeps the modal-only "incoming" segment.
+				intent.setData(Uri.parse("sylk://request/meeting/" + fromUri));
+			} else if ("application/sylk-request".equals(contentType)) {
+				intent.setData(Uri.parse("sylk://request/incoming/" + fromUri));
+			} else {
+				intent.setData(Uri.parse("sylk://message/incoming/" + fromUri));
+			}
 			intent.putExtra("fromUri", fromUri);
 			intent.putExtra("id", messageId);
 			intent.putExtra("content", content);
@@ -2156,7 +2275,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				new NotificationCompat.MessagingStyle(person)
                 .setConversationTitle("") // keeps first line clean
                 .setGroupConversation(false)
-                .addMessage("Message from " + fromUri, System.currentTimeMillis(), displayName);
+                .addMessage(notifBody, System.currentTimeMillis(), displayName);
 
 			
 			// ----- BUBBLE METADATA -----
@@ -2183,8 +2302,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			NotificationCompat.Builder builder =
 					new NotificationCompat.Builder(this, channelId)
 							.setSmallIcon(R.drawable.ic_notification)
-							.setContentTitle("New message") // header
-							.setContentText("Message from " + displayName) // second line
+							.setContentTitle(notifTitle) // header
+							.setContentText(notifBody) // second line
 							.setAutoCancel(true)
 							.setPriority(throttled
 									? NotificationCompat.PRIORITY_LOW

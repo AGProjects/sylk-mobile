@@ -2,6 +2,7 @@ import React, { Component, Fragment } from 'react';
 import { View, Platform, TouchableHighlight, TouchableOpacity, DeviceEventEmitter, NativeModules, Keyboard, Modal, BackHandler } from 'react-native';
 const { AudioRouteModule: SylkAudioRouteModule } = NativeModules;
 import { IconButton, Title, Button, Text, ActivityIndicator, Menu } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import MaterialCommunityIcon from '@react-native-vector-icons/material-design-icons';
 import { check as checkPermission, PERMISSIONS as RNP_PERMISSIONS, RESULTS as RNP_RESULTS } from 'react-native-permissions';
 import autoBind from 'auto-bind';
@@ -617,7 +618,7 @@ class AudioRecorder extends Component {
         }
 
         return (
-            <Menu
+            <Menu theme={getMenuTheme().menuTheme}
                 visible={this.state.recordInputMenuVisible}
                 onDismiss={() => this.setState({ recordInputMenuVisible: false })}
                 anchor={
@@ -642,7 +643,7 @@ class AudioRecorder extends Component {
                 {devices.map((d) => {
                     const isSel = sel && d.type === sel.type;
                     return (
-                        <Menu.Item
+                        <Menu.Item theme={getMenuTheme().menuTheme}
                             key={d.id || d.type}
                             icon={d.icon}
                             title={isSel ? `✓ ${d.name}` : d.name}

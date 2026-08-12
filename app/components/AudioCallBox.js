@@ -1,6 +1,7 @@
 import React, { Component } from 'react';
 import { View, Platform, TouchableWithoutFeedback, TouchableHighlight, TouchableOpacity, Dimensions, DeviceEventEmitter, Animated, Easing } from 'react-native';
 import { IconButton, Dialog, Button, Portal, Text, ActivityIndicator, Menu, Surface } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import uuid from 'react-native-uuid';
@@ -71,7 +72,7 @@ import {
     setAcknowledged as setCallRecordingDisclosure,
 } from './callRecordingDisclosure';
 
-import styles from '../assets/styles/AudioCall';
+import styles, { dbg } from '../assets/styles/AudioCall';
 
 // Module-level recorder instance — separate from the playback
 // instance in ReadyBox so a call recording started while a chat
@@ -170,6 +171,9 @@ class AudioCallBox extends Component {
             // refresh lifecycle.
             mediaStuck                  : false,
             mediaInfoPanelVisible       : false,
+            // Bumped on media-info-panel close to force the call view to
+            // remount + re-measure (see _closeMediaInfoPanel).
+            _callViewEpoch              : 0,
             // Toggle between the AudioSpeedometer (default) and the
             // legacy TrafficStats bar-chart. Tap the stats area to flip.
             showOldStats                : false,
@@ -753,7 +757,16 @@ class AudioCallBox extends Component {
     }
 
     _closeMediaInfoPanel() {
-        this.setState({ mediaInfoPanelVisible: false });
+        // Bump a remount epoch on close: on some devices a full-screen
+        // Modal leaves the underlying call view with stale/zero native
+        // frames, so nothing but the button bar repaints until the next
+        // layout pass (rotating the phone was the only way to recover).
+        // Folding the epoch into _callRemountKey forces the call UI to
+        // remount + re-measure the moment the panel closes.
+        this.setState(st => ({
+            mediaInfoPanelVisible: false,
+            _callViewEpoch: (st._callViewEpoch || 0) + 1,
+        }));
     }
 
     /**
@@ -1541,14 +1554,16 @@ class AudioCallBox extends Component {
             // Loss / RTT (plus jitter/bitrate) trend — the SAME widget
             // and data the stats block uses, surfaced here in the cycle.
             body = (
-                <TrafficStats
-                    isTablet={this.props.isTablet}
-                    isLandscape={this.state.isLandscape}
-                    isFolded={this.props.isFolded}
-                    data={this.state.audioGraphData}
-                    media="audio"
-                    footer={null}
-                />
+                <View style={dbg('coral')}>
+                    <TrafficStats
+                        isTablet={this.props.isTablet}
+                        isLandscape={this.state.isLandscape}
+                        isFolded={this.props.isFolded}
+                        data={this.state.audioGraphData}
+                        media="audio"
+                        footer={null}
+                    />
+                </View>
             );
         } else if (mode === 2) {
             // Remote spectrum — 16 log-spaced bands. The display range
@@ -1561,33 +1576,55 @@ class AudioCallBox extends Component {
                 : null;
             const _codec = _lastG ? (_lastG.audioCodec || '') : '';
             body = (
-                <SpectrumBars call={callObj} active codec={_codec} width={220} height={64} />
+                <View style={dbg('khaki')}>
+                    <SpectrumBars call={callObj} active codec={_codec} width={220} height={64} />
+                </View>
             );
         } else {
             // Labels removed per user request — the bar geometry
             // (remote on top, local on bottom) is consistent enough
             // that the captions weren't carrying weight.
             body = (
-                <React.Fragment>
+                <View style={[{ alignSelf: 'stretch', alignItems: 'center' }, dbg('aqua')]}>
                     <VuMeter level={this.state.remoteAudioLevel} width="60%" />
                     <VuMeter level={this.state.localAudioLevel}  width="60%" />
                     {this._renderCurrentInputDevice()}
-                </React.Fragment>
+                </View>
             );
         }
 
         const _vizLabel = ['Levels', 'Loss / RTT', 'Spectrum'][mode];
+        // Fixed height for the cycling-viz slot so every mode shares the
+        // same vertical center. The loss-RTT train (two 60 dp bar charts
+        // + labels) is the tallest at ~176 dp; the VU meters (~50) and
+        // spectrum (~64) are much shorter, so without a common box they
+        // top-aligned and the content jumped up/down when cycling.
+        const _vizSlotHeight = this.props.isFolded ? 130 : 176;
         return (
             <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={this._cycleViz}
-                /* marginTop: 20 per "add 20px margin on top of vu meters bar" */
-                style={[{ alignSelf: 'stretch', alignItems: 'center', marginTop: 20 }, _vuLift]}
+                /* No marginTop: the graphs row (portrait Row 3 / landscape
+                   right column) centers this widget itself, so an extra top
+                   margin only pushed it below center (more gap above the
+                   yellow slot than below). */
+                style={[{ alignSelf: 'stretch', alignItems: 'center' }, _vuLift]}
             >
-                {body}
-                <Text style={{ fontSize: 9, opacity: 0.5, marginTop: 2 }}>
-                    {_vizLabel}  ›
-                </Text>
+                <View style={[{
+                    alignSelf: 'stretch',
+                    height: _vizSlotHeight,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                }, dbg('yellow')]}>
+                    {body}
+                    {/* Cycle label pinned to the bottom of the slot
+                        (absolute) so it does NOT push {body} above the
+                        slot's vertical center — the body now centers
+                        cleanly in the slot, and the slot in the row. */}
+                    <Text style={{ position: 'absolute', bottom: 0, left: 0, right: 0, textAlign: 'center', fontSize: 9, opacity: 0.5 }}>
+                        {_vizLabel}  ›
+                    </Text>
+                </View>
             </TouchableOpacity>
         );
     }
@@ -2325,7 +2362,7 @@ class AudioCallBox extends Component {
 		// Variant 2: react-native-paper Menu (icon + device name per row)
 		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
 			return (
-				<Menu
+				<Menu theme={getMenuTheme().menuTheme}
 					visible={this.state.audioDevicePickerVisible}
 					onDismiss={() => this.setState({audioDevicePickerVisible: false})}
 					anchor={
@@ -2347,7 +2384,7 @@ class AudioCallBox extends Component {
 						const deviceIcon = utils.availableAudioDevicesIconsMap[device] || 'phone-in-talk';
 						const deviceName = utils.availableAudioDeviceNames[device] || device;
 						return (
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								key={device}
 								icon={deviceIcon}
 								title={isSelected ? `✓ ${deviceName}` : deviceName}
@@ -2622,12 +2659,20 @@ class AudioCallBox extends Component {
         // push the pill into the AudioSpeedometer above it.
         // All branches dropped 20 px per "shift record pill 20px down"
         // (rides along with the button bar's matching +20 top shift).
-        let bottomOffset = 110;
-        if (this.props.isTablet) {
-            bottomOffset = this.state.isLandscape ? 130 : 180;
-        } else if (this.state.isLandscape) {
-            bottomOffset = 70;
+        // PORTRAIT PHONE (landscape/folded already returned null above):
+        // the record control is now an IN-FLOW row that sits directly on
+        // top of the call-buttons bar — together they are the fixed bottom
+        // band (V2). It no longer floats (position:absolute) over the
+        // graphs row above, so nothing overlaps.
+        if (!this.props.isTablet) {
+            return (
+                <View style={[{ alignSelf: 'stretch', alignItems: 'center', marginBottom: 12 }, dbg('purple')]}>
+                    {this._renderRecordControl()}
+                </View>
+            );
         }
+        // TABLET keeps the floating overlay above its larger button bar.
+        const bottomOffset = this.state.isLandscape ? 130 : 180;
         return (
             <View
                 pointerEvents="box-none"
@@ -2658,6 +2703,78 @@ class AudioCallBox extends Component {
      *  verification state in the same place. The record-call button
      *  is rendered between the speedometer and the ZRTP footer.
      */
+    // Standalone speedometer dial for the LANDSCAPE 3-column layout
+    // (middle column). Mirrors the dial that the single-column
+    // renderStatsBlock() shows, but on its own so it can sit beside the
+    // VU/loss widget. Same connecting / awaitingStart gating as the
+    // combined block.
+    _renderSpeedometer(remountKey) {
+        const callObj = this.state.call || this.props.call;
+        const cs = callObj && callObj.state;
+        const established = cs === 'established';
+        const mediaFlowing = established
+            && !!this.state.vuMetersHaveData
+            && !this.state.reconnectingCall;
+        const spinning = !mediaFlowing;
+        const isIncoming = !!(callObj && callObj.direction === 'incoming');
+        // Keep the calling clock VISIBLE even when the call fails — the
+        // dial stays on screen and we just FREEZE the needle (spinFrozen)
+        // instead of hiding the whole thing.
+        const _callFailed = cs === 'terminated' || cs === 'terminating' || cs === 'cancelled';
+        const connecting = spinning && !isIncoming && !this.state.reconnectingCall;
+        return (
+            <View style={[{
+                alignItems: 'center',
+                justifyContent: 'center',
+                // No vertical nudge here: the middle column centers this
+                // dial itself (justifyContent: 'center'), so the old
+                // landscape -18 lift is dropped — it only made the dial
+                // ride too high inside the column.
+            }, dbg('gold')]}>
+                <AudioSpeedometer
+                    key={'cb-spd-' + remountKey}
+                    call={this.state.call}
+                    audioCodec={this.props.audioCodec}
+                    isFolded={this.props.isFolded}
+                    reconnectingCall={this.state.reconnectingCall}
+                    connecting={connecting}
+                    spinFrozen={_callFailed}
+                    awaitingStart={this.props.awaitingUserCallStart}
+                    hasCall={!!callObj}
+                />
+                {this._renderRemoteUserAgent()}
+                {/* Pre-call "Start now" — sits directly UNDER the clock so
+                    the speedometer group reads as one two-row view (clock on
+                    top, Start now below). ALWAYS rendered so its footprint
+                    stays reserved; outside the pre-call state it's just hidden
+                    (opacity 0 + no touches) so the clock above does NOT shift
+                    down when the button vanishes. (Phone only; tablet keeps the
+                    bottom-anchored button.) */}
+                <View
+                    style={{
+                        marginTop: 12,
+                        alignItems: 'center',
+                        opacity: (this.props.awaitingUserCallStart && this.props.confirmStartCall) ? 1 : 0,
+                    }}
+                    pointerEvents={(this.props.awaitingUserCallStart && this.props.confirmStartCall) ? 'auto' : 'none'}
+                >
+                    <Button
+                        mode="contained"
+                        onPress={() => {
+                            utils.timestampedLog('[audiocallbox] [countdown] user tapped Start now (under clock)');
+                            this._cancelAutoStartTimer();
+                            if (this.props.confirmStartCall) {
+                                this.props.confirmStartCall();
+                            }
+                        }}
+                    >
+                        Start now
+                    </Button>
+                </View>
+            </View>
+        );
+    }
+
     renderStatsBlock(remountKey, footer) {
         // No useful stats before the media starts flowing — hide the
         // whole block until the call reaches 'established'. The ZRTP
@@ -2685,6 +2802,10 @@ class AudioCallBox extends Component {
         // The connecting circle is for the initial OUTGOING connect only. A
         // media-loss reconnect shows the plain ActivityIndicator instead (see
         // AudioSpeedometer's reconnect branch), so exclude it here too.
+        // Keep the calling clock VISIBLE even when the call fails — the
+        // dial stays on screen and we just FREEZE the needle (spinFrozen)
+        // instead of hiding the whole thing.
+        const _callFailed = cs === 'terminated' || cs === 'terminating' || cs === 'cancelled';
         const connecting = spinning && !isIncoming && !this.state.reconnectingCall;
 
         // While connecting/reconnecting always show the speedometer dial
@@ -2706,7 +2827,7 @@ class AudioCallBox extends Component {
             <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={this.toggleStatsView}
-                style={{ alignSelf: 'center', width: _statsSlotWidth }}
+                style={[{ alignSelf: 'center', width: _statsSlotWidth }, dbg('blue')]}
             >
                 <View style={{
                     display: showOld ? 'flex' : 'none',
@@ -2736,7 +2857,12 @@ class AudioCallBox extends Component {
                 <View style={{
                     display: showOld ? 'none' : 'flex',
                     width: _statsSlotWidth,
-                    height: _statsSlotHeight,
+                    // No fixed height here anymore: the VU / graphs widget
+                    // now stacks as a SIBLING below this box (see below), so
+                    // letting the dial box shrink-wrap keeps the two stacked
+                    // tight — the old fixed 200 dp box left the widget with
+                    // too little room and it overflowed / overlapped the dial
+                    // once the viz slot got its own fixed height.
                     alignItems: 'center',
                     // Folded cover-display layout history:
                     //   +10 (initial nudge down)
@@ -2763,6 +2889,7 @@ class AudioCallBox extends Component {
                         isFolded={this.props.isFolded}
                         reconnectingCall={this.state.reconnectingCall}
                         connecting={connecting}
+                        spinFrozen={_callFailed}
                         /* Outgoing-audio pre-call countdown: start the
                            circle's needle on its -4s lead-in so it reaches
                            12 o'clock as the auto-start timer dials the call.
@@ -2775,11 +2902,13 @@ class AudioCallBox extends Component {
                         the VU meters, per "move Remote UA label under
                         the speedometer"). */}
                     {this._renderRemoteUserAgent()}
-                    {/* VU meters ONLY when media is actually flowing
-                        (mediaFlowing) — i.e. below the half-dial, never while
-                        the calling/reconnecting circle is shown. */}
-                    {(!showOld && mediaFlowing) ? this._renderRemoteVuMeter() : null}
                 </View>
+                {/* VU meters / graphs widget — stacked as a SIBLING below
+                    the speedometer box (previously a child inside it, which
+                    overflowed and overlapped the dial). Only while media is
+                    actually flowing; never during the calling/reconnecting
+                    circle. */}
+                {(!showOld && mediaFlowing) ? this._renderRemoteVuMeter() : null}
                 {/* Footer (zRTP pill) rendered ONCE as a sibling of
                     both stats views, so its container width is the
                     same 260 dp slot in both graph and speedo modes —
@@ -3060,7 +3189,8 @@ class AudioCallBox extends Component {
         const { width: _cbW, height: _cbH } = Dimensions.get('window');
         const _callRemountKey = (this.props.isFolded ? 'f' : 'u')
             + '-' + (this.state.isLandscape ? 'l' : 'p')
-            + '-' + Math.round(_cbW) + 'x' + Math.round(_cbH);
+            + '-' + Math.round(_cbW) + 'x' + Math.round(_cbH)
+            + '-e' + (this.state._callViewEpoch || 0);
 
         let extraStyles = {};
         // top: +20 per "shift extraButtonContainer 20px down". Uses `top`
@@ -3143,7 +3273,7 @@ class AudioCallBox extends Component {
                 // renderStatsBlock), so we only surface the amber
                 // Media-stuck pill here when relevant.
                 return (
-                    <View style={{ alignItems: 'center', marginTop: 26, overflow: 'visible' }}>
+                    <View style={{ alignItems: 'center', marginTop: 0, overflow: 'visible' }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                             {renderMediaPill()}
                         </View>
@@ -3230,7 +3360,7 @@ class AudioCallBox extends Component {
             // (see renderStatsBlock) — no longer rendered next to the
             // ZRTP pill in the same row.
             return (
-                <View style={{ alignItems: 'center', marginTop: 26, overflow: 'visible' }}>
+                <View style={{ alignItems: 'center', marginTop: 0, overflow: 'visible' }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         {isTappable ? (
                             <TouchableOpacity onPress={this._onZrtpBadgePress}>{inner}</TouchableOpacity>
@@ -3265,7 +3395,7 @@ class AudioCallBox extends Component {
             && this.props.callContact.localProperties.zrtp;
 
         return (
-            <View style={[styles.container, {borderColor: 'blue', borderWidth: 0}, extraStyles]}>
+            <View style={[styles.container, dbg('magenta'), extraStyles]}>
                 <Portal>
                     <Dialog
                         visible={this.state.zrtpDialogVisible}
@@ -3569,16 +3699,19 @@ class AudioCallBox extends Component {
 								// slot per user requests — 10 px, then
 								// another 5 px (net -15 from the
 								// baseline 8). Final marginTop = -7.
-								<View style={{ alignItems: 'center', marginTop: -7 }}>
+								<View style={{ alignItems: 'center', marginTop: 19 }}>
 									{renderZrtpBadge()}
 								</View>
 							)}
 						</View>
 					</>
 				) : this.state.isLandscape && !this.props.isTablet ? (
-					/* Landscape on a regular phone: two-column layout — caller
-					   info on the left, stats (with ZRTP badge) on the right. */
-					<View key={'cb-landscape-row-' + _callRemountKey} style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+					/* Landscape on a regular phone: three-column layout —
+					   caller info (avatar + name + URI) on the left, the
+					   speedometer dial (+ remote UA + ZRTP badge) in the
+					   middle, and the VU meters / loss-RTT train / spectrum
+					   widget on the right. */
+					<View key={'cb-landscape-row-' + _callRemountKey} style={[{ flex: 1, flexDirection: 'row', alignItems: 'center' }, dbg('cyan')]}>
 						{/* Landscape left column. translateY: 0 — the
 						    previous -50 lift was reverted per user
 						    request ("lower avatar 50 px" after the
@@ -3586,7 +3719,7 @@ class AudioCallBox extends Component {
 						    centerline). Restoring the natural position
 						    lets the row anchor to the vertical centre
 						    again. */}
-						<View style={{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'flex-start' }}>
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'flex-start' }, dbg('lime')]}>
 							{/* marginTop matches the visible gap above the
 							    speedometer dial in the right column.
 							    AudioSpeedometer's styles.container has
@@ -3602,13 +3735,15 @@ class AudioCallBox extends Component {
 							    +20 → 36 per "Add 20px more top avatar
 							    margin" so the avatar sits visibly below
 							    the navbar. */}
-							<View style={{ marginTop: 36 }}>
+							<View style={[{ marginTop: 36 }, dbg('red')]}>
 								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
 							</View>
-							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
-							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
-								<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
-							</TouchableWithoutFeedback>
+							<View style={[{ alignSelf: 'stretch', alignItems: 'center', paddingBottom: 8 }, dbg('white')]}>
+								<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
+								<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+									<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
+								</TouchableWithoutFeedback>
+							</View>
 							{/* Record-call pill + info "i" button no
 							    longer rendered inline here. In landscape
 							    they now ride on the floating overlay
@@ -3616,75 +3751,76 @@ class AudioCallBox extends Component {
 							    directly above the Call buttons — same
 							    placement as Portrait. */}
 						</View>
-						<View style={{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'flex-start' }}>
-							{/* zRTP pill lifted 30 px in landscape per user
-							    request — wrap the badge that renderStatsBlock
-							    places below the speedometer in a negative-
-							    marginTop container so it sits closer to the
-							    dial without disturbing the stats block's own
-							    internal layout. */}
-							{this.renderStatsBlock(_callRemountKey, (
-								<View style={{ marginTop: -30 }}>
+						{/* MIDDLE column: speedometer dial (+ remote UA) and zRTP badge. */}
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('blue')]}>
+							{/* Speedometer (row 1) + ZRTP pill (row 2) form ONE
+							    view (violet), which is centered as a single group
+							    in the parent row. */}
+							<View style={[{ alignItems: 'center' }, dbg('violet')]}>
+								{this._renderSpeedometer(_callRemountKey)}
+								<View style={[{ marginTop: 6, alignItems: 'center' }, dbg('pink')]}>
 									{renderZrtpBadge()}
 								</View>
-							))}
+							</View>
+						</View>
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('orange')]}>
+							{/* RIGHT column: VU meters / loss-RTT train / spectrum —
+							    tap to cycle. */}
+							{this._renderRemoteVuMeter()}
 						</View>
 					</View>
-				) : (
+				) : this.props.isTablet ? (
 					<>
 						<View key={'cb-usericon-wrap-' + _callRemountKey} style={userIconContainerClass}>
-							{/* Avatar + bottom-right "+" chip live in a
-							    relatively positioned wrapper so the chip
-							    can be absolutely positioned against the
-							    avatar's bounds without perturbing the
-							    surrounding column layout (the column
-							    still measures the avatar at userIconSize
-							    × userIconSize). The chip + its drop-up
-							    panel only render while the call is
-							    actually in progress — see
-							    _renderConferenceRequestPlus for the
-							    state gate. */}
 							<View style={{ width: userIconSize, height: userIconSize }}>
 								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
 								{this._renderConferenceRequestPlus(userIconSize)}
 							</View>
 						</View>
-
-						<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
-						<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
-							<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
-						</TouchableWithoutFeedback>
-
-						{false && (
-						  <View style={styles.confirmContainer}>
-								<Text style={styles.confirm}>Please confirm...</Text>
-								<View style={[buttonContainerClass, extraButtonContainerClass]}>
-								<View style={styles.buttonContainer}>
-								  <TouchableHighlight style={styles.roundshape}>
-									<IconButton
-										size={buttonSize}
-										style={greenButtonClass}
-										icon="phone"
-										onPress={this.props.confirmStartCall}
-									/>
-								</TouchableHighlight>
-							  </View>
-								<View style={styles.buttonContainer}>
-								  <TouchableHighlight style={styles.roundshape}>
-									<IconButton
-										size={buttonSize}
-										style={hangupButtonClass}
-										icon="phone-hangup"
-										onPress={this.cancelCall}
-									/>
-								</TouchableHighlight>
-							  </View>
-							  </View>
-							  </View>
-							  )}
-
-						{this.renderStatsBlock(_callRemountKey, renderZrtpBadge())}
+						<View style={[{ alignSelf: 'stretch', alignItems: 'center', paddingBottom: 8 }, dbg('white')]}>
+							<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
+							<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+								<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
+							</TouchableWithoutFeedback>
+						</View>
+						{this.renderStatsBlock(_callRemountKey, (<View style={{ marginTop: 26, alignItems: 'center' }}>{renderZrtpBadge()}</View>))}
 					</>
+				) : (
+					/* Phone portrait: everything above the record button +
+					   call-buttons bar, split into three equal rows — avatar
+					   (row 1), speedometer (row 2), graphs (row 3) — each
+					   centering its own content. */
+					<View style={{ flex: 1, alignSelf: 'stretch' }}>
+						{/* Row 1: avatar + display name + URI */}
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('red')]}>
+							<View style={{ width: userIconSize, height: userIconSize }}>
+								<UserIcon key={'cb-usericon-' + _callRemountKey} identity={remoteIdentity} size={userIconSize} active={this.state.active} />
+								{this._renderConferenceRequestPlus(userIconSize)}
+							</View>
+							<View style={[{ alignSelf: 'stretch', alignItems: 'center', paddingBottom: 8 }, dbg('white')]}>
+								<Dialog.Title key={'cb-title-' + _callRemountKey} style={styles.displayName}>{displayName}</Dialog.Title>
+								<TouchableWithoutFeedback onPress={this.handleDoubleTap}>
+									<Text key={'cb-uri-' + _callRemountKey} style={styles.uri}>{displayUri}</Text>
+								</TouchableWithoutFeedback>
+							</View>
+						</View>
+						{/* Row 2: speedometer (+ remote UA + ZRTP badge) */}
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('blue')]}>
+							{/* Speedometer (row 1) + ZRTP pill (row 2) form ONE
+							    view (violet), which is centered as a single group
+							    in the parent row. */}
+							<View style={[{ alignItems: 'center' }, dbg('violet')]}>
+								{this._renderSpeedometer(_callRemountKey)}
+								<View style={[{ marginTop: 6, alignItems: 'center' }, dbg('pink')]}>
+									{renderZrtpBadge()}
+								</View>
+							</View>
+						</View>
+						{/* Row 3: graphs (VU meters / loss train / spectrum) */}
+						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('orange')]}>
+							{this._renderRemoteVuMeter()}
+						</View>
+					</View>
 				)}
 
                 {/* Reconnect is shown by the plain (red, large)
@@ -4055,7 +4191,7 @@ class AudioCallBox extends Component {
                                 foldedTopRow) so the action sits next
                                 to the avatar instead of floating
                                 over it. */}
-                            {this.props.isFolded ? null : (
+                            {(this.props.isFolded || !this.props.isTablet) ? null : (  /* phone renders Start now under the clock (see _renderSpeedometer); only tablet uses this bottom-anchored button */
                             <View style={{
                                 position: 'absolute',
                                 // bottom:190 leaves a comfortable gap

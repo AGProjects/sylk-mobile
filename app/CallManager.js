@@ -52,7 +52,7 @@ const options = {
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, showInternetAlertPanelFunc, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc) {
+    constructor(RNCallKeep, showInternetAlertPanelFunc, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc, getDtmfModeFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -90,6 +90,11 @@ export default class CallManager extends events.EventEmitter {
         this.timeoutCall = timeoutFunc;
         this.logMissedCall = missedCallFunc;
         this.getConnection = getConnectionFunct;
+        // Returns the current DTMF transmission mode ('info' | 'rfc4733'
+        // | 'inband') from account preferences, so the OS lock-screen
+        // keypad (_rnDTMF) sends tones the same way the in-app keypad does.
+        // Defaults to 'info' when not supplied.
+        this.getDtmfMode = getDtmfModeFunc;
         this.showInternetAlertPanel = showInternetAlertPanelFunc;
         this.changeRoute = changeRouteFunc;
         this.respawnConnection = respawnConnection;
@@ -265,9 +270,25 @@ export default class CallManager extends events.EventEmitter {
         this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
     }
 
-    updateDisplay(callUUID, displayName, uri) {
+    updateDisplay(callUUID, displayName, uri, options = null) {
         //utils.timestampedLog('Callkeep: update display', displayName, uri);
-        this.callKeep.updateDisplay(callUUID, displayName, uri);
+        this.callKeep.updateDisplay(callUUID, displayName, uri, options);
+    }
+
+    // Enable/disable CallKit's native "Video" button on the iOS lock-screen /
+    // Dynamic Island panel for an existing call. startCall/displayIncomingCall
+    // set hasVideo once at creation — which is often false (the local video
+    // track isn't attached yet, or the call later upgraded audio->video),
+    // leaving the button grayed for the whole call. Re-reporting the real
+    // media state via CXCallUpdate.hasVideo lights it up. iOS-only; on Android
+    // Telecom owns the in-call UI and ignores this flag.
+    reportHasVideo(callUUID, hasVideo, displayName, uri) {
+        if (Platform.OS !== 'ios') {
+            return;
+        }
+        const name = displayName || uri;
+        utils.timestampedLog('Callkeep: report hasVideo', hasVideo, 'for', callUUID);
+        this.callKeep.updateDisplay(callUUID, name, uri, { ios: { hasVideo: !!hasVideo } });
     }
 
     setCurrentCallActive(callUUID) {
@@ -728,13 +749,20 @@ export default class CallManager extends events.EventEmitter {
         }
 
         let callUUID = data.callUUID.toLowerCase();
+        const mode = (this.getDtmfMode && this.getDtmfMode()) || 'info';
         utils.timestampedLog('[DTMF/CallManager] _rnDTMF callUUID=' + callUUID
             + ' digits=' + data.digits
+            + ' mode=' + mode
             + ' has=' + this._calls.has(callUUID));
         if (this._calls.has(callUUID)) {
-            let call = this._calls.get(callUUID);
-            utils.timestampedLog('[DTMF/CallManager] forwarding OS-keypad digits to sylkrtc.sendDtmf');
-            call.sendDtmf(data.digits);
+            // The OS lock-screen keypad used to go straight to raw RFC 4733 RTP
+            // DTMF (call.sendDtmf), ignoring the user's configured transmission
+            // mode. With the default mode 'info' (SIP INFO — the reliable path
+            // for Asterisk/PSTN/IVR), those taps silently did nothing at the far
+            // end. Route through the same mode-aware sender as the in-app keypad
+            // so the native keypad honours info / rfc4733 / inband identically.
+            utils.timestampedLog('[DTMF/CallManager] forwarding OS-keypad digits via mode', mode);
+            this.sendDTMF(callUUID, data.digits, mode);
         }
     }
 
@@ -1062,15 +1090,30 @@ export default class CallManager extends events.EventEmitter {
 
         let panelFrom = from;
         let callerType = 'number';
-        let supportsDTMF = false;
+        // DTMF is supported on every call. react-native-callkeep 4.3.16
+        // already defaults CallKit's supportsDTMF to true (the flat
+        // options below aren't read for displayIncomingCall — it wants
+        // options.ios.*), so the native keypad button is enabled
+        // regardless. Setting it true here makes the intent explicit and
+        // keeps the button enabled if that plumbing is ever fixed/upgraded.
+        let supportsDTMF = true;
         const username = from.split('@')[0];
         const isPhoneNumber = username.match(/^(\+|0)(\d+)$/);
         if (isPhoneNumber) {
             panelFrom = username;
-            supportsDTMF = true;
         } else {
             callerType = 'email';
-            panelFrom = utils.isAnonymous(from) ? displayName : from;
+            if (utils.isAnonymous(from)) {
+                // Never surface the scary "<uuid>@guest.<host>" URI in the
+                // native call panel. Prefer the caller-presented display
+                // name; otherwise substitute "Unknown contact".
+                const _presented = (displayName && !utils.isAnonymous(displayName)
+                    && displayName !== from) ? displayName : null;
+                panelFrom = _presented || 'Unknown contact';
+                displayName = panelFrom;
+            } else {
+                panelFrom = from;
+            }
         }
 
         this._alertedCalls.set(callUUID, Date.now());

@@ -50,6 +50,15 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
 
+  // Rounded surface for the navbar dropdown menus (kebab / key submenu).
+  // Applied via <Menu contentStyle={styles.roundedMenu}>. The 14dp radius
+  // softens the previously rectangular menus; overflow:hidden keeps the
+  // top/bottom Menu.Item press ripple inside the rounded corners.
+  roundedMenu: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+
   roundshape: {
     height: 24,
     width: 24,

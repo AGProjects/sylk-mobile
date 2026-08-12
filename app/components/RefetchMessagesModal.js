@@ -1,16 +1,9 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    TouchableWithoutFeedback,
-    KeyboardAvoidingView,
-    StyleSheet,
-} from 'react-native';
-import { Button, Surface, TextInput } from 'react-native-paper';
+import { View, Platform, Modal, TouchableWithoutFeedback, KeyboardAvoidingView, StyleSheet } from 'react-native';
+import { Text, Button, Surface, TextInput } from 'react-native-paper';
 
 // Share the Modal + dimmed-overlay + rounded Surface shell with
 // DeleteHistoryModal / EditContactModal / ShareLocationModal so every
@@ -166,9 +159,9 @@ class RefetchMessagesModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
                                     {inner}
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>

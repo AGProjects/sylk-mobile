@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View } from 'react-native';
@@ -90,7 +91,7 @@ class MessageInfoModal extends Component {
         return (
             <Portal>
                 <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
+                    <ThemedModalSurface style={styles.container}>
                     {title ?
                     <Dialog.Title style={styles.title}>{title}</Dialog.Title>
                     : null}
@@ -117,7 +118,7 @@ class MessageInfoModal extends Component {
                         </DataTable.Row>
                         : null}
                       </DataTable>
-                    </Surface>
+                    </ThemedModalSurface>
                 </DialogType>
             </Portal>
         );

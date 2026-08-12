@@ -8,6 +8,7 @@
 // docs/ChatBox-extraction-plan.md.
 
 import React, { Component} from 'react';
+import { showThemedAlert } from './ThemedAlert';
 import autoBind from 'auto-bind';
 import PropTypes from 'prop-types';
 import { Modal, Image, Clipboard, Dimensions, SafeAreaView, View, FlatList, Text, Linking, Platform, PermissionsAndroid, Switch, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback, Pressable, BackHandler, TouchableHighlight, KeyboardAvoidingView, DeviceEventEmitter, Vibration } from 'react-native';
@@ -1836,6 +1837,16 @@ class ChatBox extends Component {
 			  {/* Username + Text (only if not an image reply) */}
 			  {!replyingTo.image && (
 				<View style={{ flex: 1 }}>
+				  {(replyingTo.contentType === 'application/sylk-location-sharing'
+					  || (replyingTo.metadata && replyingTo.metadata.value
+						  && typeof replyingTo.metadata.value.latitude === 'number')) ? (
+					// Location share: preview a pin + "Map" keyword instead of the raw
+					// metadata text (which rendered as a bare integer). No image fetched.
+					<View style={{ flexDirection: 'row', alignItems: 'center' }}>
+					  <Icon name="map-marker" size={16} color="rgb(220, 53, 69)" style={{ marginRight: 4 }} />
+					  <Text style={styles.replyText} numberOfLines={1}>Map</Text>
+					</View>
+				  ) : (
 				  <Text
 					style={styles.replyText}
 					numberOfLines={2}
@@ -1843,6 +1854,7 @@ class ChatBox extends Component {
 				  >
 					{replyingTo.contentType === 'text/html' ? utils.html2text(replyingTo.html || replyingTo.text) : replyingTo.text}
 				  </Text>
+				  )}
 				</View>
 			  )}
 	
@@ -2585,7 +2597,7 @@ class ChatBox extends Component {
 				this.currentAudioDurationMs = 0;
 				const watchdogTitle = "Could not play audio";
 				const watchdogBody = "The player started without errors but produced no sound — the file format may not be supported. Open the message menu and share it to another app.";
-				Alert.alert(watchdogTitle, watchdogBody, [{ text: 'OK', style: 'default' }]);
+				showThemedAlert(watchdogTitle, watchdogBody, [{ text: 'OK', style: 'default' }]);
 				this.postChatSystemMessage(watchdogTitle + ' — ' + watchdogBody);
 			}, noTickGraceMs);
 
@@ -2837,7 +2849,7 @@ class ChatBox extends Component {
 			// visible) plus a chat system note for the record.
 			const errTitle = "Could not play audio";
 			const errBody = (e && e.message) || 'Unknown error from audio player';
-			Alert.alert(errTitle, errBody, [{ text: 'OK', style: 'default' }]);
+			showThemedAlert(errTitle, errBody, [{ text: 'OK', style: 'default' }]);
 			this.postChatSystemMessage(errTitle + ' — ' + errBody);
 		}
 	}
@@ -3156,7 +3168,7 @@ class ChatBox extends Component {
 		// but was being stomped by the next componentWillReceiveProps
 		// sync that rebuilt renderMessages from props, so the user
 		// saw nothing.
-		Alert.alert(title, body, [{ text: 'OK', style: 'default' }]);
+		showThemedAlert(title, body, [{ text: 'OK', style: 'default' }]);
 		this.postChatSystemMessage(title + ' — ' + body);
 		this.stopAudioPlayer();
 	};
@@ -4182,6 +4194,9 @@ class ChatBox extends Component {
             if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) return true;
             if (this.props.searchMessages) return true;
             if (this._selectedContactIsTel()) return true;
+            // Anonymous / guest callers can't be messaged back (no inbox),
+            // so the chat is a read-only call-history view — same as tel.
+            if (utils.isAnonymous(this.state.selectedContact.uri)) return true;
             return false;
         }
         if (!this.props.chat) return true;
@@ -4557,12 +4572,29 @@ class ChatBox extends Component {
             const _isConferenceThread = !!((this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri)
                 && (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri).indexOf('@videoconference') > -1);
 
-            // Surface this at the top of the sheet: if the user dismissed
-            // the modal, tapping the bubble's kebab is now their only way
-            // back into the acceptance flow.
+            // Reply — surfaced FIRST so it is the left-most / primary action in
+            // the fast reaction bar (every message type, including location
+            // bubbles). Hidden for failed messages (nothing to reply to yet —
+            // Resend is offered instead) and conference threads (no 1:1 reply
+            // target).
+            const _replyFailed = !!currentMessage.failed
+                || !!(currentMessage.metadata && currentMessage.metadata.error);
+            if (!this.hideItem && !_replyFailed && !_isConferenceThread) {
+                options.push('Reply');
+                icons.push(<Icon name="arrow-left" size={20} />);
+            }
+
+            // Surface this at the top of the sheet: once the modal has
+            // expired or been dismissed, long-pressing the map bubble is the
+            // user's only way back into the accept/reject flow. Offer both
+            // explicit choices — Accept opens the full modal (destination
+            // preview + privacy slider), Reject declines and deletes the
+            // invite bubble.
             if (canAcceptMeeting) {
-                options.push('Show meeting request...');
+                options.push('Accept meeting');
                 icons.push(<Icon name="handshake" size={20} />);
+                options.push('Reject meeting');
+                icons.push(<Icon name="close-circle" size={20} />);
             }
 
             // "Meet me there..." — surfaces only on text-message bubbles
@@ -4601,22 +4633,11 @@ class ChatBox extends Component {
                 icons.push(<Icon name="map-marker-account" size={20} />);
             }
 
-            // Reply is hidden for failed messages — there's nothing to
-            // reply to yet (the message never made it out); the useful
-            // action there is Resend, which is surfaced instead.
-            const _replyFailed = !!currentMessage.failed
-                || !!(currentMessage.metadata && currentMessage.metadata.error);
-            //if (currentMessage.direction == 'incoming' && !this.hideItem) {
-            if (!this.hideItem && !isLiveLocation && !_replyFailed && !_isConferenceThread) {
-				options.push('Reply');
-				icons.push(<Icon name="arrow-left" size={20} />);
-			}
-
 			// Pause / Resume — only meaningful for OUR OWN live share
 			// (we can't pause / resume a peer's stream) and only when
 			// the share hasn't expired and isn't a one-shot. The
 			// active/paused/stopped distinction comes from
-			// getLocationShareState (consults navBar.locationTimers
+			// getLocationShareState (consults navBar.outgoingLocationSessions
 			// in app.js's bridge):
 			//   • active  → show "Pause"
 			//   • paused  → show "Resume"
@@ -4644,10 +4665,20 @@ class ChatBox extends Component {
 					_shareState = this.props.getLocationShareState(_shareUri, _shareOriginId);
 				} catch (e) { /* default to 'stopped' */ }
 			}
+			// A session that has ENDED (meet completed / cancelled / expired, or
+			// the live track was stopped) is terminal — its bubble is a frozen
+			// summary, so neither Pause nor Resume should appear. The end paths
+			// stamp meta.ended / meta.meetOutcome / meta.endedReason (via
+			// _endLocationTrack + _wipeMeetingSession); a mere Pause does not, so
+			// a genuinely paused share still offers Resume.
+			const _hasEnded = _liveMd.ended === true
+					|| !!_liveMd.meetOutcome
+					|| _liveMd.endedReason != null;
 			if (isLiveLocation
 					&& _isOurShare
 					&& !_isOneShot
-					&& !_isExpired) {
+					&& !_isExpired
+					&& !_hasEnded) {
 				console.log('[location] kebab: pause/resume eligible',
 					'uri=', _shareUri,
 					'bubble=', currentMessage._id,
@@ -4669,6 +4700,7 @@ class ChatBox extends Component {
 					'bubble=', currentMessage._id,
 					'isOneShot=', _isOneShot,
 					'isExpired=', _isExpired,
+					'hasEnded=', _hasEnded,
 					'expiresMs=', _expiresMs);
 			}
 
@@ -4747,22 +4779,38 @@ class ChatBox extends Component {
                 if (_v
                         && typeof _v.latitude === 'number'
                         && typeof _v.longitude === 'number') {
-                    options.push('Share location');
+                    options.push('Share location point');
                     icons.push(<Icon name="share-variant" size={20} />);
                 }
 
-                // Full screen viewer. Mirrors the image bubble's
-                // "open expanded" affordance: hides the rest of the
-                // chat list and renders the same map at window size
-                // so the user can read street-level detail. Available
-                // on every live-location bubble — same gate as
-                // Share location (must have valid coords; the modal
-                // would otherwise show "Locating…").
-                if (_v
-                        && typeof _v.latitude === 'number'
-                        && typeof _v.longitude === 'number') {
-                    options.push('Full screen');
-                    icons.push(<Icon name="fullscreen" size={20} />);
+                // NOTE: the "Full screen" action was removed from this
+                // fast action bar — the inline map already carries its own
+                // fullscreen toggle icon (see LocationBubble's onOpenFullScreen
+                // control), so a duplicate menu entry was redundant.
+
+                // Export track — write the whole breadcrumb trail as a GPX
+                // file and hand it to the OS share sheet so it can be opened
+                // in Google Earth / Maps / any GPS tool. Only meaningful for a
+                // PLAIN live share with an actual movement trail (≥2 fixes); a
+                // meet bubble is two static pins, not a track, so it's excluded.
+                const _isMeetBubble = mdForMeeting.meeting_request === true || !!mdForMeeting.role;
+                if (!_isMeetBubble) {
+                    const _trailForExport = this._buildLocationTrailFromMetadata(currentMessage._id) || [];
+                    const _validPts = _trailForExport.filter(p =>
+                        p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
+                    if (_validPts.length >= 2) {
+                        // map-marker-multiple = the multi-point track glyph. NB:
+                        // map-marker-path renders as a fallback dot on this build
+                        // (its glyph postdates the font compiled into the app);
+                        // map-marker-multiple has an older codepoint that IS in the
+                        // bundled font (same family as the map-marker-radius pin).
+                        options.push('Share location track');
+                        icons.push(<Icon name="map-marker-multiple" size={20} />);
+                        // Open the (approximate, road-snapped, downsampled) track
+                        // straight in the Google Maps app as a walking route.
+                        options.push('Open track in Maps');
+                        icons.push(<Icon name="map-marker-multiple" size={20} />);
+                    }
                 }
             }
 
@@ -4866,7 +4914,28 @@ class ChatBox extends Component {
                 let action = options[buttonIndex];
                 if (action === 'Cancel') {
                     this.setState({actionSheetDisplayed: false});
-                } else if (action === 'Show meeting request...') {
+                } else if (action === 'Reject meeting') {
+                    // Explicit "no": decline the invite and delete its map
+                    // bubble. Routes through app.js's _rejectMeetingRequest,
+                    // which marks the request handled (never re-pops), closes
+                    // the modal if open, and deletes the bubble locally.
+                    console.log('[meeting] kebab: Reject meeting tapped',
+                        'fromUri=', meetingFromUri,
+                        'requestId=', meetingReqId,
+                        'hasRejectHandler=', typeof this.props.rejectMeetingRequest === 'function');
+                    this.setState({actionSheetDisplayed: false});
+                    if (typeof this.props.rejectMeetingRequest === 'function') {
+                        this.props.rejectMeetingRequest({
+                            fromUri: meetingFromUri,
+                            requestId: meetingReqId,
+                            expiresAt: meetingExpiresAt,
+                        });
+                    } else {
+                        // Fallback: no reject handler wired — at least remove
+                        // the bubble so the user's reject isn't a no-op.
+                        try { this.props.deleteMessage(currentMessage._id, this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri); } catch (e) { /* noop */ }
+                    }
+                } else if (action === 'Accept meeting' || action === 'Show meeting request...') {
                     // Open the FULL Accept modal (destination preview,
                     // privacy slider, disclosure, "Do not show this
                     // again" checkbox) rather than accepting the
@@ -4877,7 +4946,7 @@ class ChatBox extends Component {
                     // slider entirely and the user would have no way
                     // to pick a privacy radius after dismissing the
                     // initial auto-popped modal.
-                    console.log('[meeting] kebab: Show meeting request tapped — opening modal',
+                    console.log('[meeting] kebab: Accept meeting tapped — opening modal',
                         'fromUri=', meetingFromUri,
                         'requestId=', meetingReqId,
                         'expiresAt=', meetingExpiresAt,
@@ -4995,7 +5064,26 @@ class ChatBox extends Component {
                     this.setState({message: currentMessage, showEditMessageModal: true});
                 } else if (action === 'Preview') {
                     this.onImagePress(currentMessage);
-                } else if (action === 'Share location') {
+                } else if (action === 'Share location track') {
+                    // Whole-trail export → GPX file → OS share sheet. Listed
+                    // before the action.startsWith('Share') prefix match below so
+                    // the media/file share path doesn't swallow it. Fire-and-
+                    // forget: _exportTrack builds the KML file and opens the OS
+                    // "Open with" dialog; it rebuilds the trail from the isolated
+                    // location store at tap time so it reflects every loaded fix.
+                    this.setState({actionSheetDisplayed: false});
+                    this._exportTrack(currentMessage);
+                } else if (action === 'Open track in Maps') {
+                    // Open the track in the platform's native Maps app as a
+                    // walking route (Google Maps on Android, Apple Maps on iOS).
+                    // Neither can render an arbitrary GPS polyline, so
+                    // _openTrackInMaps builds a directions URL — approximate and
+                    // road-snapped (Android downsamples to ~10 waypoints; iOS
+                    // Apple Maps supports only the two endpoints). The exact
+                    // trail is Share location track / KML.
+                    this.setState({actionSheetDisplayed: false});
+                    this._openTrackInMaps(currentMessage);
+                } else if (action === 'Share location point') {
                     // Mirror of the inline share-variant icon under
                     // the trail slider: open the system Share sheet
                     // with a 📍 + Google Maps URL pointing at the
@@ -5548,7 +5636,9 @@ class ChatBox extends Component {
 	// returns the full metadataContent object because the LocationBubble
 	// needs `value`, `expires`, `timestamp` and `author` together.
 	get locationData() {
-		const mm = this.props.messagesMetadata;
+		// Location bubbles read exclusively from the isolated location store now
+		// (msgId→[location events]); messagesMetadata no longer backs them.
+		const mm = this.props.locationData;
 		if (!mm) return {};
 		const result = {};
 		Object.entries(mm).forEach(([msgId, arr]) => {
@@ -5594,9 +5684,375 @@ class ChatBox extends Component {
 	// (the bug where the inline bubble showed all 41 points but the
 	// fullscreen view dropped to 1).
 	_buildLocationTrailFromMetadata(msgId) {
-		const raw = (this.props.messagesMetadata
-			&& this.props.messagesMetadata[msgId]) || [];
+		const raw = (this.props.locationData && this.props.locationData[msgId]) || [];
+		// MEET = NO MOVEMENT POLYLINE, but DO surface every party's loaded
+		// points so the diagnostic / data path reflect all SQL rows under the
+		// session id (two per party: meeting_start + meeting_update). We split
+		// the entries by author (own = our account, peer = the other side) and
+		// return each leg's FIRST (start) and LAST point — up to four points.
+		// LocationBubble never draws a polyline for a meet (isMeetSession
+		// guard), so returning these as a "trail" only feeds the point count
+		// and the frame; it never connects the two people with a line.
+		if (raw.some(e => e && (e.meeting_request === true || e.role))) {
+			const myUri = this.props.account && this.props.account.id;
+			const own = [], peer = [];
+			for (const e of raw) {
+				if (!e || e.action !== 'location') continue;
+				const v = e.value;
+				if (!v
+						|| typeof v.latitude !== 'number'
+						|| typeof v.longitude !== 'number') continue;
+				const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+				const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+				const pt = {
+					latitude: v.latitude,
+					longitude: v.longitude,
+					timestamp: ts,
+					author: e.author || null,
+					role: e.role || (e.meeting_request === true ? 'inviter' : null),
+				};
+				((myUri && e.author === myUri) ? own : peer).push(pt);
+			}
+			// Tag each leg's points by row purpose: the earliest tick is the
+			// party's meeting_start (first GPS), any later tick a meeting_update.
+			// (These are derived, not read from related_action, so they hold for
+			// live entries too, which arrive off the wire without the SQL column.)
+			const _pickEnds = (arr) => {
+				if (!arr.length) return [];
+				arr.sort((a, b) => a.timestamp - b.timestamp);
+				const _tag = (p, action) => Object.assign({}, p, { action });
+				return arr.length === 1
+					? [_tag(arr[0], 'meeting_start')]
+					: [_tag(arr[0], 'meeting_start'), _tag(arr[arr.length - 1], 'meeting_update')];
+			};
+			const _pts = [..._pickEnds(own), ..._pickEnds(peer)];
+			// Prepend the shared meeting destination (green pin) as a leading
+			// load-point when one is set, so it shows in the count / list too.
+			// timestamp 0 → the printer renders "@ -" (no real fix time).
+			const _dest = (raw.find(e => e && e.destination
+				&& typeof e.destination.latitude === 'number'
+				&& typeof e.destination.longitude === 'number') || {}).destination || null;
+			if (_dest) {
+				_pts.unshift({
+					latitude: _dest.latitude,
+					longitude: _dest.longitude,
+					timestamp: 0,
+					author: 'destination',
+					action: 'destination',
+				});
+			}
+			return _pts;
+		}
 		const out = [];
+		// De-dup by the TICK timestamp (see the inline-bubble build for the full
+		// rationale): duplicate entries of one tick (out-echo + server carbon)
+		// share it, while distinct ticks — even a stationary sender reusing the
+		// same GPS fix — always differ. Keying on coords.timestamp instead would
+		// wrongly collapse stationary ticks and desync the two ends' point count.
+		const seenTick = new Set();
+		for (const e of raw) {
+			if (!e || e.action !== 'location') continue;
+			const v = e.value;
+			if (!v
+					|| typeof v.latitude !== 'number'
+					|| typeof v.longitude !== 'number') continue;
+			const tickKey = (e.timestamp != null) ? new Date(e.timestamp).getTime() : null;
+			if (tickKey != null && Number.isFinite(tickKey)) {
+				if (seenTick.has(tickKey)) continue;
+				seenTick.add(tickKey);
+			}
+			const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+			const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+			out.push({ latitude: v.latitude, longitude: v.longitude, timestamp: ts });
+		}
+		out.sort((a, b) => a.timestamp - b.timestamp);
+		return out;
+	}
+
+	// Minimal XML text escaper for the GPX builder — track names carry the
+	// contact's display name, which can contain &, <, >, or quotes.
+	_xmlEscape(s) {
+		return String(s == null ? '' : s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&apos;');
+	}
+
+	// Build a GPX 1.1 document from an ordered [{latitude, longitude, timestamp}]
+	// trail (as produced by _buildLocationTrailFromMetadata). GPX is the
+	// universal GPS-track interchange format: Google Earth, Google Maps "My
+	// Maps", Garmin, Strava, etc. all import it. One <trk>/<trkseg> with a
+	// <trkpt> per fix; <time> is emitted only for points with a real timestamp
+	// (ms epoch > 0) as ISO-8601 UTC, which is what gives Google Earth its
+	// time-animation. Coordinates are fixed to 7 decimals (~11 mm) — plenty for
+	// any consumer and keeps the file compact.
+	//
+	// To switch to KML (Google Earth's native styled format) later, emit a
+	// <Placemark><LineString><coordinates>lon,lat[,ele] …</coordinates> here
+	// instead; the trail input is identical.
+	_buildGpxFromTrail(trail, trackName) {
+		const _name = this._xmlEscape(trackName || 'Sylk location track');
+		const _pts = Array.isArray(trail) ? trail.filter(p =>
+			p && typeof p.latitude === 'number' && typeof p.longitude === 'number') : [];
+		const _isoOrNull = (ms) => {
+			if (!Number.isFinite(ms) || ms <= 0) return null;
+			try { return new Date(ms).toISOString(); } catch (e) { return null; }
+		};
+		// Metadata <time> = first fix time when known.
+		const _firstTime = _pts.length ? _isoOrNull(_pts[0].timestamp) : null;
+		const lines = [];
+		lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+		lines.push('<gpx version="1.1" creator="Sylk"'
+			+ ' xmlns="http://www.topografix.com/GPX/1/1"'
+			+ ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+			+ ' xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">');
+		lines.push('  <metadata>');
+		lines.push('    <name>' + _name + '</name>');
+		if (_firstTime) lines.push('    <time>' + _firstTime + '</time>');
+		lines.push('  </metadata>');
+		lines.push('  <trk>');
+		lines.push('    <name>' + _name + '</name>');
+		lines.push('    <trkseg>');
+		for (const p of _pts) {
+			const _lat = p.latitude.toFixed(7);
+			const _lon = p.longitude.toFixed(7);
+			const _t = _isoOrNull(p.timestamp);
+			if (_t) {
+				lines.push('      <trkpt lat="' + _lat + '" lon="' + _lon + '"><time>' + _t + '</time></trkpt>');
+			} else {
+				lines.push('      <trkpt lat="' + _lat + '" lon="' + _lon + '"/>');
+			}
+		}
+		lines.push('    </trkseg>');
+		lines.push('  </trk>');
+		lines.push('</gpx>');
+		return lines.join('\n');
+	}
+
+	// Build a KML 2.2 document from an ordered trail. KML is Google Earth's
+	// NATIVE format, so Earth (and My Maps) can open it directly — unlike GPX,
+	// which the mobile Earth app doesn't import. When ≥2 points carry a real
+	// timestamp we emit a <gx:Track> (Google's time-aware track: draws the path
+	// AND gives Earth the time-animation slider — all <when>s first, then all
+	// <gx:coord>s, paired by index, per Google's KML reference); otherwise a
+	// plain <LineString> path. Start/End pins are added for orientation. Coords
+	// are lon,lat,ele (KML order) at 7 decimals, ele 0.
+	_buildKmlFromTrail(trail, trackName) {
+		const _name = this._xmlEscape(trackName || 'Sylk location track');
+		const _pts = Array.isArray(trail) ? trail.filter(p =>
+			p && typeof p.latitude === 'number' && typeof p.longitude === 'number') : [];
+		const _isoOrNull = (ms) => {
+			if (!Number.isFinite(ms) || ms <= 0) return null;
+			try { return new Date(ms).toISOString(); } catch (e) { return null; }
+		};
+		const _timed = _pts.filter(p => _isoOrNull(p.timestamp));
+		const _lonlat = (p) => p.longitude.toFixed(7) + ',' + p.latitude.toFixed(7) + ',0';
+		const lines = [];
+		lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+		lines.push('<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">');
+		lines.push('  <Document>');
+		lines.push('    <name>' + _name + '</name>');
+		// Red path, 4px wide.
+		lines.push('    <Style id="sylkTrack"><LineStyle><color>ff0000ff</color><width>4</width></LineStyle></Style>');
+		const _first = _pts[0];
+		const _last = _pts[_pts.length - 1];
+		if (_first) {
+			lines.push('    <Placemark><name>Start</name><Point><coordinates>' + _lonlat(_first) + '</coordinates></Point></Placemark>');
+		}
+		if (_last && _last !== _first) {
+			lines.push('    <Placemark><name>End</name><Point><coordinates>' + _lonlat(_last) + '</coordinates></Point></Placemark>');
+		}
+		if (_timed.length >= 2) {
+			lines.push('    <Placemark>');
+			lines.push('      <name>' + _name + '</name>');
+			lines.push('      <styleUrl>#sylkTrack</styleUrl>');
+			lines.push('      <gx:Track>');
+			for (const p of _timed) lines.push('        <when>' + _isoOrNull(p.timestamp) + '</when>');
+			for (const p of _timed) lines.push('        <gx:coord>' + p.longitude.toFixed(7) + ' ' + p.latitude.toFixed(7) + ' 0</gx:coord>');
+			lines.push('      </gx:Track>');
+			lines.push('    </Placemark>');
+		} else {
+			lines.push('    <Placemark>');
+			lines.push('      <name>' + _name + '</name>');
+			lines.push('      <styleUrl>#sylkTrack</styleUrl>');
+			lines.push('      <LineString><tessellate>1</tessellate><coordinates>');
+			lines.push('        ' + _pts.map(_lonlat).join(' '));
+			lines.push('      </coordinates></LineString>');
+			lines.push('    </Placemark>');
+		}
+		lines.push('  </Document>');
+		lines.push('</kml>');
+		return lines.join('\n');
+	}
+
+	// Write the trail as a .kml file and hand it to the OS "Open with" dialog
+	// (react-native-file-viewer → ACTION_VIEW). This is what surfaces Google
+	// Earth on the device: Earth registers as a VIEWER for .kml, but does NOT
+	// appear in the Share/ACTION_SEND sheet, and the Google Maps app can't
+	// import tracks at all. If no viewer is installed we fall back to the share
+	// sheet so the file can still be routed to Drive / email / Google My Maps.
+	// Called from the message action sheet's "Export track" item.
+	async _exportTrack(currentMessage, trailOverride) {
+		try {
+			const _trail = Array.isArray(trailOverride)
+				? trailOverride
+				: this._buildLocationTrailFromMetadata(currentMessage && currentMessage._id);
+			const _valid = (_trail || []).filter(p =>
+				p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
+			if (_valid.length < 2) {
+				console.log('[location] export track: not enough points', _valid.length);
+				try { this.props.postSystemNotification && this.props.postSystemNotification('No track to export yet'); } catch (e) {}
+				return;
+			}
+			const _peerUri = (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri) || '';
+			const _peerName = (this.props.selectedContact && this.props.selectedContact.name)
+				|| (_peerUri ? _peerUri.split('@')[0] : 'contact');
+			// Human title + a filesystem-safe filename stem.
+			const _firstTs = _valid[0].timestamp;
+			let _stamp = '';
+			try {
+				const d = (Number.isFinite(_firstTs) && _firstTs > 0) ? new Date(_firstTs) : null;
+				if (d) {
+					const p2 = (n) => String(n).padStart(2, '0');
+					_stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+				}
+			} catch (e) {}
+			const _title = `Track with ${_peerName}`;
+			const _safePeer = String(_peerName).replace(/[^\w.-]+/g, '_').slice(0, 40) || 'contact';
+			const _filename = `sylk-track-${_safePeer}${_stamp ? '-' + _stamp : ''}.kml`;
+			const _kml = this._buildKmlFromTrail(_valid, _title);
+			const _path = `${RNFS.CachesDirectoryPath}/${_filename}`;
+			await RNFS.writeFile(_path, _kml, 'utf8');
+			// "Open with" (ACTION_VIEW). FileViewer wants a bare filesystem path
+			// (same call the app already uses to open attachments).
+			try {
+				await FileViewer.open(_path, { showOpenWithDialog: true });
+				utils.timestampedLog('[location] exported track (open-with)', _filename, 'points=', _valid.length);
+			} catch (openErr) {
+				const om = openErr && openErr.message ? openErr.message : String(openErr || '');
+				// Only fall back when there is genuinely NO app to view a .kml —
+				// not when the user simply dismissed the chooser (avoids a
+				// second dialog popping after a deliberate cancel).
+				if (/no app|not found|associated|no activity|unable to/i.test(om)) {
+					console.log('[location] no KML viewer installed, falling back to share sheet', om);
+					const _url = _path.startsWith('file://') ? _path : 'file://' + _path;
+					await Share.open({
+						title: 'Export track',
+						subject: _filename,
+						filename: _filename,
+						type: 'application/vnd.google-earth.kml+xml',
+						url: _url,
+					}).catch((err) => {
+						const m = err && err.message ? err.message : '';
+						if (m.indexOf('did not share') === -1) {
+							console.log('[location] export track share failed', m || err);
+						}
+					});
+				} else {
+					// Cancelled or benign — log and move on.
+					console.log('[location] export track open-with closed', om);
+				}
+			}
+		} catch (e) {
+			console.log('[location] export track failed', e && e.message ? e.message : e);
+			try { this.props.postSystemNotification && this.props.postSystemNotification('Could not export track'); } catch (_e) {}
+		}
+	}
+
+	// Open the track in the platform's native Maps app as a walking directions
+	// route. Neither Google Maps nor Apple Maps can render an arbitrary GPS
+	// polyline — the only consumer surface for "show this path" is a directions
+	// URL, so the result is an APPROXIMATE, road-snapped route (Share location
+	// track / KML stays the exact one). Platform split:
+	//   • Android → Google Maps universal URL. Supports intermediate waypoints,
+	//     so we DOWNSAMPLE to origin + up to 8 evenly-spaced mid points +
+	//     destination (10 total — the reliable consumer-URL cap).
+	//   • iOS → Apple Maps (maps.apple.com). Its URL scheme supports ONLY
+	//     saddr→daddr (no intermediate waypoints / no polyline), so iOS gets a
+	//     walking route between the track's FIRST and LAST fix — the endpoints
+	//     only. There is no URL way to feed Apple Maps the mid-trail; KML export
+	//     remains the way to see the exact shape on iOS.
+	async _openTrackInMaps(currentMessage, trailOverride) {
+		try {
+			const _trail = Array.isArray(trailOverride)
+				? trailOverride
+				: this._buildLocationTrailFromMetadata(currentMessage && currentMessage._id);
+			const _valid = (_trail || []).filter(p =>
+				p && typeof p.latitude === 'number' && typeof p.longitude === 'number');
+			if (_valid.length < 2) {
+				console.log('[location] open-in-maps: not enough points', _valid.length);
+				try { this.props.postSystemNotification && this.props.postSystemNotification('No track to open yet'); } catch (e) {}
+				return;
+			}
+			const _fmt = (p) => `${p.latitude.toFixed(6)},${p.longitude.toFixed(6)}`;
+			const _origin = _valid[0];
+			const _dest = _valid[_valid.length - 1];
+			let _url;
+			let _mapsName;
+			if (Platform.OS === 'ios') {
+				// Apple Maps: endpoints only, walking (dirflg=w). The
+				// maps.apple.com universal link opens the Maps app directly on
+				// iOS without needing a URL-scheme whitelist entry.
+				_mapsName = 'Apple Maps';
+				_url = 'https://maps.apple.com/?'
+					+ 'saddr=' + encodeURIComponent(_fmt(_origin))
+					+ '&daddr=' + encodeURIComponent(_fmt(_dest))
+					+ '&dirflg=w';
+				utils.timestampedLog('[location] open-in-maps (ios/apple)', 'pts=', _valid.length,
+					'endpoints-only', 'url-len=', _url.length);
+			} else {
+				// Google Maps: downsample to <=8 evenly-spaced intermediate
+				// waypoints between the (exclusive) endpoints.
+				_mapsName = 'Google Maps';
+				const MAX_WAYPTS = 8;
+				const _mid = _valid.slice(1, -1);
+				let _waypts = [];
+				if (_mid.length <= MAX_WAYPTS) {
+					_waypts = _mid;
+				} else {
+					const _step = _mid.length / MAX_WAYPTS;
+					for (let i = 0; i < MAX_WAYPTS; i++) {
+						_waypts.push(_mid[Math.floor(i * _step)]);
+					}
+				}
+				const _params = [
+					'api=1',
+					'travelmode=walking',
+					'origin=' + encodeURIComponent(_fmt(_origin)),
+					'destination=' + encodeURIComponent(_fmt(_dest)),
+				];
+				if (_waypts.length) {
+					_params.push('waypoints=' + encodeURIComponent(_waypts.map(_fmt).join('|')));
+				}
+				_url = 'https://www.google.com/maps/dir/?' + _params.join('&');
+				utils.timestampedLog('[location] open-in-maps (android/google)', 'pts=', _valid.length,
+					'waypts=', _waypts.length, 'url-len=', _url.length);
+			}
+			await Linking.openURL(_url).catch((err) => {
+				console.log('[location] open-in-maps Linking failed', err && err.message ? err.message : err);
+				try { this.props.postSystemNotification && this.props.postSystemNotification('Could not open ' + _mapsName); } catch (e) {}
+			});
+		} catch (e) {
+			console.log('[location] open-in-maps failed', e && e.message ? e.message : e);
+			try { this.props.postSystemNotification && this.props.postSystemNotification('Could not open Maps'); } catch (_e) {}
+		}
+	}
+
+	// For a MEET session, return each render-slot's START point (first GPS
+	// fix). `ownerAuthorUri` is the URI whose leg maps to the bubble's OWNER
+	// slot (meta.value / red pin) — that's OUR account on an outgoing bubble
+	// and the PEER on an incoming one (LocationBubble swaps colours so the
+	// local user still reads red). The other leg becomes the peer slot
+	// (meta.peerCoords / blue pin). Returns { ownerStart, peerStart }, either
+	// possibly null. Used to surface the two start pins on a live meet so the
+	// map shows all four positions (each party's start + current).
+	_meetStartCoords(msgId, ownerAuthorUri) {
+		const raw = (this.props.locationData
+			&& this.props.locationData[msgId]) || [];
+		let ownerStart = null, ownerTs = Infinity;
+		let peerStart = null, peerTs = Infinity;
 		for (const e of raw) {
 			if (!e || e.action !== 'location') continue;
 			const v = e.value;
@@ -5605,10 +6061,50 @@ class ChatBox extends Component {
 					|| typeof v.longitude !== 'number') continue;
 			const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
 			const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
-			out.push({ latitude: v.latitude, longitude: v.longitude, timestamp: ts });
+			const isOwner = !!(ownerAuthorUri && e.author === ownerAuthorUri);
+			if (isOwner) {
+				if (ts < ownerTs) { ownerTs = ts; ownerStart = { latitude: v.latitude, longitude: v.longitude }; }
+			} else {
+				if (ts < peerTs) { peerTs = ts; peerStart = { latitude: v.latitude, longitude: v.longitude }; }
+			}
 		}
-		out.sort((a, b) => a.timestamp - b.timestamp);
-		return out;
+		return { ownerStart, peerStart };
+	}
+
+	// FROZEN meet summary coords, computed straight from the session rows so
+	// the end-of-meet map does not depend on this.locationData (whose getter
+	// always returns the NEWEST tick — final coords, one leg, no peerCoords —
+	// and would collapse a succeeded meet onto the destination). For a SUCCESS
+	// we take each leg's EARLIEST coords (the start), for a FAILURE the LATEST
+	// (last-known). `ownerAuthorUri` maps a leg to the owner slot exactly like
+	// _meetStartCoords. Returns { owner, peer, destination }.
+	_meetSummaryCoords(msgId, ownerAuthorUri, success) {
+		const raw = (this.props.locationData
+			&& this.props.locationData[msgId]) || [];
+		let owner = null, ownerTs = success ? Infinity : -Infinity;
+		let peer = null, peerTs = success ? Infinity : -Infinity;
+		let destination = null;
+		for (const e of raw) {
+			if (!e || e.action !== 'location') continue;
+			if (!destination && e.destination
+					&& typeof e.destination.latitude === 'number'
+					&& typeof e.destination.longitude === 'number') {
+				destination = { latitude: e.destination.latitude, longitude: e.destination.longitude };
+			}
+			const v = e.value;
+			if (!v
+					|| typeof v.latitude !== 'number'
+					|| typeof v.longitude !== 'number') continue;
+			const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+			const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+			const isOwner = !!(ownerAuthorUri && e.author === ownerAuthorUri);
+			if (isOwner) {
+				if (success ? (ts < ownerTs) : (ts > ownerTs)) { ownerTs = ts; owner = { latitude: v.latitude, longitude: v.longitude }; }
+			} else {
+				if (success ? (ts < peerTs) : (ts > peerTs)) { peerTs = ts; peer = { latitude: v.latitude, longitude: v.longitude }; }
+			}
+		}
+		return { owner, peer, destination };
 	}
 
 	componentDidUpdate(prevProps, prevState) {
@@ -6020,7 +6516,8 @@ class ChatBox extends Component {
 			}
 		}
 		
-		if (prevProps.messagesMetadata !== this.props.messagesMetadata) {
+		if (prevProps.messagesMetadata !== this.props.messagesMetadata
+				|| prevProps.locationData !== this.props.locationData) {
 			/*
 			console.log("==== CL messagesMetadata changed ==== ");
 			console.log("old", JSON.stringify(prevProps.messagesMetadata, null, 2));
@@ -6071,7 +6568,10 @@ class ChatBox extends Component {
 							&& typeof pc.longitude === 'number'
 						? '|' + pc.latitude.toFixed(4) + ',' + pc.longitude.toFixed(4)
 						: '';
-					const tickMarker = basePart + peerPart;
+					const lifePart = (newLocation.ended ? "|E" : "")
+						+ (newLocation.endedReason ? ":" + newLocation.endedReason : "")
+						+ (newLocation.meetOutcome ? "|O:" + newLocation.meetOutcome : "");
+					const tickMarker = basePart + peerPart + lifePart;
 					// Preserve origin-only fields when overlaying an
 					// update tick's content. `meeting_request: true`
 					// (and the destination chosen for the meet-up)
@@ -6879,7 +7379,7 @@ class ChatBox extends Component {
             const _viewerIsMirrorRequester = !!(_remoteShare
                 && _remoteShare.role === 'requester'
                 && currentMessage.direction === 'incoming'
-                && latest && latest.in_reply_to);
+                && latest && latest.role === 'invited');
             // `currentMessage` is const-bound from destructured props,
             // so we use a separate `_msgForBubble` reference for the
             // (potentially flipped) message handed to LocationBubble.
@@ -6923,15 +7423,108 @@ class ChatBox extends Component {
             // the polyline can be drawn oldest → newest (A → … → end).
             // Hand it down to LocationBubble; an empty / single-entry
             // trail is harmless — StaticMap falls back to a single pin.
-            const _rawTrail = (this.props.messagesMetadata
-                && this.props.messagesMetadata[currentMessage._id]) || [];
+            const _rawTrail = (this.props.locationData
+                && this.props.locationData[currentMessage._id]) || [];
             const trail = [];
-            for (const e of _rawTrail) {
+            // MEET = LAST-KNOWN ONLY, NO TRAIL. Both legs share the session id,
+            // so a trail built from these entries would draw a line between the
+            // two people AND keep the scrub slider visible (the slider shows
+            // when trail.length >= 2). Leave the trail empty for a meet so the
+            // bubble is pins-only and the slider stays hidden — matching
+            // _buildLocationTrailFromMetadata and the receiver's behaviour.
+            const _isMeetTrail = _rawTrail.some(e => e && (e.meeting_request === true || e.role));
+            // FROZEN MEET SUMMARY: once the meet has ended, build the summary
+            // metadata straight from the session rows rather than trusting
+            // `latest` (which comes from this.locationData — always the newest
+            // single tick, no peerCoords — and would show one party's final on
+            // top of the destination). SUCCESS shows each party's START,
+            // FAILURE each party's LAST, plus the destination. This is what the
+            // MAP-POINTS log then reflects, matching the [bubble-stack] track.
+            const _meetOutcome = (() => {
+                for (const e of _rawTrail) { if (e && e.meetOutcome) return e.meetOutcome; }
+                return (latest && latest.meetOutcome) || null;
+            })();
+            if (_isMeetTrail && _meetOutcome) {
+                const _myUri = this.props.account && this.props.account.id;
+                const _peerUri = this.props.selectedContact && this.props.selectedContact.uri;
+                const _ownerAuthor = (_msgForBubble.direction === 'outgoing') ? _myUri : _peerUri;
+                const _success = _meetOutcome === 'succeeded';
+                const _sum = this._meetSummaryCoords(currentMessage._id, _ownerAuthor, _success);
+                latest = Object.assign({}, latest, {
+                    meetOutcome: _meetOutcome,
+                    ended: true,
+                    value: _sum.owner || (latest && latest.value) || null,
+                    peerCoords: _sum.peer || null,
+                    destination: _sum.destination || (latest && latest.destination) || null,
+                    // Frozen summary shows exactly the two party points +
+                    // destination — clear the live start dots.
+                    startCoords: null,
+                    peerStartCoords: null,
+                });
+            }
+            // LIVE MEET: surface each party's START pin alongside their current
+            // pin so the map shows all four positions (own start+current, peer
+            // start+current) plus the destination. Skipped once the meet has
+            // ended — the frozen summary already carries the agreed 3-point view
+            // (success = start pins, failure = last pins), and re-adding start
+            // pins there would duplicate. The owner slot (meta.value / red) maps
+            // to OUR leg on an outgoing bubble and the PEER's leg on an incoming
+            // one, so we resolve the owner author from the (possibly mirror-
+            // flipped) bubble direction to keep the start pin's colour matched
+            // to its avatar.
+            if (_isMeetTrail && latest && !latest.meetOutcome) {
+                const _myUri = this.props.account && this.props.account.id;
+                const _peerUri = this.props.selectedContact && this.props.selectedContact.uri;
+                const _ownerAuthor = (_msgForBubble.direction === 'outgoing') ? _myUri : _peerUri;
+                const _ms = this._meetStartCoords(currentMessage._id, _ownerAuthor);
+                const _inj = {};
+                if (_ms.ownerStart) _inj.startCoords = _ms.ownerStart;
+                if (_ms.peerStart) _inj.peerStartCoords = _ms.peerStart;
+                if (Object.keys(_inj).length) latest = Object.assign({}, latest, _inj);
+            }
+            // Debug: log the EXACT points the meet map will render, so they can
+            // be correlated with the [bubble-stack] track dump above. Shows the
+            // owner pin (value), peer pin (peerCoords), the two start dots
+            // (startCoords / peerStartCoords, live meets only), the destination,
+            // and the outcome label. If owner == peer here, the two avatars will
+            // stack and read as a single icon on the map.
+            if (_isMeetTrail) {
+                try {
+                    const _fmt = (p) => (p && typeof p.latitude === 'number' && typeof p.longitude === 'number')
+                        ? (p.latitude.toFixed(6) + ',' + p.longitude.toFixed(6)) : 'none';
+                    console.log('[bubble-stack] MAP-POINTS ' + currentMessage._id
+                        + ' outcome=' + ((latest && latest.meetOutcome) || 'live')
+                        + ' dir=' + (_msgForBubble && _msgForBubble.direction)
+                        + ' owner(value)=' + _fmt(latest && latest.value)
+                        + ' peer(peerCoords)=' + _fmt(latest && latest.peerCoords)
+                        + ' ownerStart=' + _fmt(latest && latest.startCoords)
+                        + ' peerStart=' + _fmt(latest && latest.peerStartCoords)
+                        + ' dest=' + _fmt(latest && latest.destination));
+                } catch (e) { /* noop */ }
+            }
+            // De-dup by the TICK timestamp (`e.timestamp` — the per-tick
+            // messageId-envelope time), NOT the coords' own GPS-fix time.
+            // messagesMetadata can carry two entries for the SAME tick (the
+            // local out-echo of an outgoing tick plus the server carbon of the
+            // same fix); both share the tick timestamp, so keying on it collapses
+            // them to one point. Genuinely distinct ticks always have distinct
+            // tick timestamps — including a STATIONARY sender that reuses the same
+            // GPS fix (identical coords AND identical coords.timestamp), which is
+            // exactly the case that keying on coords.timestamp wrongly collapsed
+            // (sender showed 5, receiver showed 1). This keeps both ends equal.
+            const _seenTick = new Set();
+            for (const e of (_isMeetTrail ? [] : _rawTrail)) {
                 if (!e || e.action !== 'location') continue;
                 const v = e.value;
                 if (!v
                         || typeof v.latitude !== 'number'
                         || typeof v.longitude !== 'number') continue;
+                const _tickKey = (e.timestamp != null)
+                    ? new Date(e.timestamp).getTime() : null;
+                if (_tickKey != null && Number.isFinite(_tickKey)) {
+                    if (_seenTick.has(_tickKey)) continue;
+                    _seenTick.add(_tickKey);
+                }
                 const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
                 const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
                 trail.push({
@@ -7794,8 +8387,16 @@ class ChatBox extends Component {
             // tappable — matches the "primary action" weight of the
             // text body itself rather than competing with the
             // timestamp footer.
+            // The in-bubble "Meet me there..." button was removed by
+            // request: a received Google-Maps location no longer shows a
+            // competing purple action inside the bubble. The action still
+            // lives in the message action sheet / kebab ("Meet me there...",
+            // gated + handled above). Flip SHOW_INLINE_MEET_BUTTON back to
+            // true to restore the in-bubble affordance.
+            const SHOW_INLINE_MEET_BUTTON = false;
             let _meetButton = null;
-            if (!_isFileBubble
+            if (SHOW_INLINE_MEET_BUTTON
+                    && !_isFileBubble
                     && currentMessage.text
                     && this.props.canSend
                     && this.props.canSend()) {
@@ -8188,8 +8789,8 @@ class ChatBox extends Component {
 	  if (currentMessage.contentType === 'application/sylk-live-location'
 	      && !currentMessage.metadata?.one_shot) {
 	    let validTicks = 1;
-	    const trail = this.props.messagesMetadata
-	      && this.props.messagesMetadata[currentMessage._id];
+	    const trail = this.props.locationData
+	      && this.props.locationData[currentMessage._id];
 	    if (Array.isArray(trail) && trail.length > 0) {
 	      let count = 0;
 	      for (const e of trail) {
@@ -8977,9 +9578,15 @@ scrollToMessage(id) {
                return false;
            }
 
-           if (utils.isAnonymous(this.state.selectedContact.uri)) {
-               return false;
-           }
+           // Anonymous / guest callers previously returned false here,
+           // which hid the ENTIRE chat — including the per-call
+           // "Call from <name> …" system messages we write to the
+           // collapsed anonymous contact on every call. You can't send a
+           // message to an anonymous caller, but the message LIST must
+           // still render; the composer is suppressed separately (see the
+           // chatInputClass picker and _chatIsReadOnly, which swap in
+           // noChatInputToolbar for anonymous contacts) — mirroring the
+           // tel-contact treatment directly below.
        }
 
        // Phone-number (tel) contacts previously returned false here,
@@ -9425,6 +10032,12 @@ scrollToMessage(id) {
                chatInputClass = this.noChatInputToolbar;
            }
 
+           // Anonymous / guest caller — same as tel: no inbox to reach,
+           // so hide the composer but keep the call-history list visible.
+           if (utils.isAnonymous(this.state.selectedContact.uri)) {
+               chatInputClass = this.noChatInputToolbar;
+           }
+
         } else if (!this.props.chat) {
              chatInputClass = this.noChatInputToolbar;
         }
@@ -9612,8 +10225,20 @@ scrollToMessage(id) {
 
         //console.log('this.state.selectedContact', this.state.selectedContact);
         let chatMessages = this.state.focusedMessages || messages;
-        // remove duplicate messages no mater what
-        chatMessages = chatMessages.filter((v,i,a)=>a.findIndex(v2=>['_id'].every(k=>v2[k] ===v[k]))===i);
+        // remove duplicate messages no matter what — O(n) dedup by _id.
+        // (Was filter((v,i,a) => a.findIndex(...) === i), which is O(n²) and
+        // ran on EVERY render — on contacts with large histories it froze the
+        // JS thread for several seconds, which is why selecting such a contact
+        // then made the top-bar menu take ~5-10s to open. Same result: keep
+        // the first occurrence of each _id, order preserved.)
+        {
+            const _seenIds = new Set();
+            chatMessages = chatMessages.filter((v) => {
+                if (_seenIds.has(v._id)) return false;
+                _seenIds.add(v._id);
+                return true;
+            });
+        }
         let loadEarlier = !this.isAnonymous && !this.props.totalMessageExceeded && !this.state.gettingSharedAsset && this.state.sharingAssets.length == 0 && messages.length > 0;
         //console.log('chatMessages', chatMessages);
         //console.log(JSON.stringify(chatMessages, null, 2));
@@ -10020,6 +10645,44 @@ scrollToMessage(id) {
 						+ ' ' + body + '  id=' + m._id;
 					console.log('[bubble-stack] ' + (out ? '                         ' : '') + line);
 
+					// Track dump: for a live-location bubble, list EVERY loaded
+					// trail point one per line (same derivation the bubble/map
+					// render from — _buildLocationTrailFromMetadata over
+					// messagesMetadata[_id]). Lets metro.log show exactly how
+					// many points loaded for a track and where they sit, so a
+					// "track short / missing points" report can be eyeballed.
+					if (m.contentType === 'application/sylk-live-location') {
+						const _pad = (out ? '                         ' : '');
+						let _trail = [];
+						try { _trail = this._buildLocationTrailFromMetadata(m._id) || []; }
+						catch (e) { _trail = []; }
+						console.log('[bubble-stack] ' + _pad
+							+ '  └ track ' + m._id + ': ' + _trail.length + ' point(s) loaded'
+							+ (_trail.length ? ':' : ''));
+						const _myUri = this.props.account && this.props.account.id;
+						_trail.forEach((pt, pi) => {
+							const _pts = pt && pt.timestamp
+								? new Date(pt.timestamp).toISOString() : '-';
+							// owner/action are present on meet points (author of the
+							// row + derived meeting_start/meeting_update, plus the
+							// leading destination). Absent for plain-share trail
+							// points — suppress the suffix there to keep old output.
+							const _owner = pt && pt.author
+								? (pt.author === _myUri ? 'me' : pt.author)
+								: null;
+							const _suffix = (pt && (pt.author || pt.action || pt.role))
+								? ('  owner=' + (_owner || '?')
+									+ ' role=' + (pt.role || '-')
+									+ ' action=' + (pt.action || '-'))
+								: '';
+							console.log('[bubble-stack] ' + _pad
+								+ '      ' + (pi + 1) + '/' + _trail.length + '  '
+								+ (typeof pt.latitude === 'number' ? pt.latitude.toFixed(6) : '?')
+								+ ',' + (typeof pt.longitude === 'number' ? pt.longitude.toFixed(6) : '?')
+								+ ' @ ' + _pts + _suffix);
+						});
+					}
+
 					// Expand image groups: the visible row is only the group
 					// leader (the others are collapsed into its ThumbnailGrid),
 					// so list every member by looking it up in renderMessages.
@@ -10062,7 +10725,6 @@ scrollToMessage(id) {
 				if (_sc) {
 					console.log('[bubble-stack] contact-row preview:'
 						+ ' lastTs=' + (_sc.timestamp instanceof Date ? _sc.timestamp.toISOString() : _sc.timestamp)
-						+ ' lastMessage=' + JSON.stringify(_sc.lastMessage)
 						+ ' lastMessageId=' + _sc.lastMessageId);
 				}
 			}
@@ -10458,6 +11120,16 @@ scrollToMessage(id) {
                 >
                 <GiftedChat
 				  listViewProps={{
+					// Perf: window the message FlatList so a contact switch mounts
+					// only the visible slice, not the whole conversation (140+ heavy
+					// bubbles: file-transfers, images, audio, video). Without this RN
+					// logged 'VirtualizedList: slow to update {dt:~3000ms}' on every
+					// open, freezing the JS thread long enough to stall the navbar
+					// overflow menu (~5s to appear). The rest stream in on scroll.
+					initialNumToRender: 10,
+					maxToRenderPerBatch: 8,
+					windowSize: 11,
+					updateCellsBatchingPeriod: 50,
 					ref: (ref) => { this.flatListRef = ref; },
 					onViewableItemsChanged: this.onViewableItemsChanged,
 				    onScroll: this.onScroll,
@@ -10632,22 +11304,17 @@ scrollToMessage(id) {
                             && currentMessage.direction === 'incoming') {
                         return null;
                     }
-                    // Live-location bubbles: the IMDN ✓✓ only ever
-                    // reflects the ORIGIN tick's delivery state, not
-                    // any of the heartbeats that follow. Once the
-                    // first tick is delivered the indicator freezes
-                    // there forever — it stops conveying anything
-                    // useful and reads (incorrectly) like every
-                    // update has been confirmed. Hide ticks on
-                    // these bubbles entirely; the user gets the
-                    // "is it working?" signal from the live map
-                    // updates themselves. Same logic also covers
-                    // meet-mode bubbles since they share the same
-                    // contentType.
-                    if (currentMessage
-                            && currentMessage.contentType === 'application/sylk-live-location') {
-                        return null;
-                    }
+                    // Live-location bubbles now flow through the normal-message
+                    // pipeline: the ORIGIN (one-shot / live-share start / meet
+                    // start) carries pending/sent/received on its row and SHOULD
+                    // show the standard delivered/read ticks, so the sender can
+                    // see their share landed and was seen. We deliberately do NOT
+                    // blanket-hide them anymore. Trail-refresh bubbles (pure
+                    // heartbeats) carry no delivery flags, so they fall through
+                    // to the tick computation below and render nothing — the
+                    // indicator can't freeze on a stale ✓✓ because there are no
+                    // flags to freeze. The frozen-heartbeat problem the old
+                    // blanket-null guarded against no longer exists in this model.
                     // Existing 'size' sort behaviour: hide ticks
                     // across the board so the size column has more
                     // room.
@@ -10792,6 +11459,16 @@ scrollToMessage(id) {
                 {this.renderDatePeriodBar()}
                 <GiftedChat innerRef={this.chatListRef}
 				  listViewProps={{
+					// Perf: window the message FlatList so a contact switch mounts
+					// only the visible slice, not the whole conversation (140+ heavy
+					// bubbles: file-transfers, images, audio, video). Without this RN
+					// logged 'VirtualizedList: slow to update {dt:~3000ms}' on every
+					// open, freezing the JS thread long enough to stall the navbar
+					// overflow menu (~5s to appear). The rest stream in on scroll.
+					initialNumToRender: 10,
+					maxToRenderPerBatch: 8,
+					windowSize: 11,
+					updateCellsBatchingPeriod: 50,
 					ref: (ref) => { this.flatListRef = ref; },
 					onViewableItemsChanged: this.onViewableItemsChanged,
 					viewabilityConfig: this.viewabilityConfig,
@@ -11279,15 +11956,25 @@ scrollToMessage(id) {
 				// the same scrubber slider state) as the inline
 				// bubble. For meet sessions LocationBubble suppresses
 				// trail/slider via the isMeetSession flag inside it.
-				const _rawTrail = (this.props.messagesMetadata
-					&& this.props.messagesMetadata[_msg._id]) || [];
+				const _rawTrail = (this.props.locationData
+					&& this.props.locationData[_msg._id]) || [];
 				const _trail = [];
+				// De-dup by TICK timestamp (see the inline build / helper for the
+				// rationale) so the fullscreen point count matches the inline
+				// bubble AND the other endpoint.
+				const _fsSeenTick = new Set();
 				for (const e of _rawTrail) {
 					if (!e || e.action !== 'location') continue;
 					const v = e.value;
 					if (!v
 							|| typeof v.latitude !== 'number'
 							|| typeof v.longitude !== 'number') continue;
+					const _fsTickKey = (e.timestamp != null)
+						? new Date(e.timestamp).getTime() : null;
+					if (_fsTickKey != null && Number.isFinite(_fsTickKey)) {
+						if (_fsSeenTick.has(_fsTickKey)) continue;
+						_fsSeenTick.add(_fsTickKey);
+					}
 					const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
 					const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
 					_trail.push({
@@ -11382,6 +12069,29 @@ scrollToMessage(id) {
 					}
 					this.setState({fullScreenLocation: null, fullScreenLocationTrail: null});
 				};
+
+				// Safe-area insets for the fullscreen map. The <Modal> below
+				// draws edge-to-edge on Android (its own window ignores the
+				// host SafeAreaView), and LocationBubble sizes the map from
+				// Dimensions.get('window'), so without handing the insets down
+				// the map + its controls run under the status bar (top) and the
+				// gesture / navigation bar (bottom). Mirror the Android
+				// StatusBar.currentHeight fallback used in the main render so a
+				// 0 top inset (some Android devices report 0 before first
+				// layout) still clears the status bar.
+				let _fsTopInset = this.props.insets?.top || 0;
+				if (Platform.OS === 'android' && (!_fsTopInset || _fsTopInset === 0)) {
+					const _sbh = StatusBar.currentHeight;
+					if (typeof _sbh === 'number' && _sbh > 0) {
+						_fsTopInset = _sbh;
+					}
+				}
+				const _fsInsets = {
+					top: _fsTopInset,
+					bottom: this.props.insets?.bottom || 0,
+					left: this.props.insets?.left || 0,
+					right: this.props.insets?.right || 0,
+				};
 				return (
 					<Modal
 						visible={true}
@@ -11398,7 +12108,11 @@ scrollToMessage(id) {
 						<View
 							style={{
 								flex: 1,
-								backgroundColor: '#000',
+								// Themed screen background so the fullscreen map viewer
+								// follows day/night like the rest of the app (was a
+								// hard-coded black). LocationBubble's fullscreen text
+								// colour follows the same theme (textPrimary).
+								backgroundColor: DarkModeManager.getTheme().background,
 								alignItems: 'center',
 								justifyContent: 'center',
 							}}
@@ -11413,6 +12127,7 @@ scrollToMessage(id) {
 									&& (this.props.selectedContact.name
 										|| this.props.selectedContact.uri)}
 								fullScreen={true}
+								insets={_fsInsets}
 							/>
 							{/* Close button — same visual language as
 							    the image-viewer modal so the affordance

@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import getAppPaperTheme, { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import {
@@ -11,7 +12,7 @@ import {
     SafeAreaView,
     Linking,
 } from 'react-native';
-import { Text, Button } from 'react-native-paper';
+import { ThemeProvider, Text, Button } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import { WebView } from 'react-native-webview';
 
@@ -62,14 +63,15 @@ class QosSummaryModal extends Component {
 
     render() {
         return (
-            <Modal
+            <ThemeProvider theme={getAppPaperTheme()}>
+<Modal
                 visible={!!this.props.show}
                 animationType="slide"
                 onRequestClose={this.props.close}
                 presentationStyle="fullScreen"
                 supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
             >
-                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                <SafeAreaView style={{ flex: 1, backgroundColor: getModalColors().background }}>
                     {/* Header */}
                     <View style={{
                         flexDirection: 'row',
@@ -109,7 +111,7 @@ class QosSummaryModal extends Component {
                             hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
                             style={{ padding: 8 }}
                         >
-                            <Icon name="close" size={26} color="#444" />
+                            <Icon name="close" size={26} color={getModalColors().textPrimary} />
                         </TouchableOpacity>
                     </View>
 
@@ -138,7 +140,7 @@ class QosSummaryModal extends Component {
                                     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
                                     fontSize: 12,
                                     lineHeight: 17,
-                                    color: '#1b1b1b',
+                                    color: getModalColors().textPrimary,
                                 }}
                             >
                                 {this.props.report || ''}
@@ -160,7 +162,7 @@ class QosSummaryModal extends Component {
                             <Text
                                 onPress={this.openTrace}
                                 suppressHighlighting={true}
-                                style={{ marginLeft: 6, color: '#2f80c8', textDecorationLine: 'underline', fontSize: 13 }}
+                                style={{ marginLeft: 6, color: getModalColors().link, textDecorationLine: 'underline', fontSize: 13 }}
                             >
                                 Open full SIP trace in browser
                             </Text>
@@ -172,8 +174,8 @@ class QosSummaryModal extends Component {
                         paddingHorizontal: 12,
                         paddingVertical: 10,
                         borderTopWidth: StyleSheet.hairlineWidth,
-                        borderTopColor: '#e0e0e0',
-                        backgroundColor: '#fff',
+                        borderTopColor: getModalColors().divider,
+                        backgroundColor: getModalColors().surface,
                         flexDirection: 'row',
                         justifyContent: 'space-between',
                         alignItems: 'center',
@@ -204,6 +206,7 @@ class QosSummaryModal extends Component {
                     </View>
                 </SafeAreaView>
             </Modal>
+</ThemeProvider>
         );
     }
 }

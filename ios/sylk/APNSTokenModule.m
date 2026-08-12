@@ -13,6 +13,37 @@
 static NSString *const kSylkAppGroup = @"group.com.agprojects.sylk-ios";
 static NSString *const kSylkDisplayNamesKey = @"contactDisplayNames";
 
+// File-based shared {uri: display_name} map, read by the
+// SylkNotificationService extension to retitle message-push banners. A
+// plain file (not App Group NSUserDefaults) is used because defaults do
+// not reliably reach an extension process and can be lock-screen
+// protected. Written with NSFileProtectionNone so the NSE can read it on
+// the lock screen. Must NOT be deleted by purgeAppGroupContainer — see
+// the preserve-list in SharedDataModule.purgeAppGroupContainer.
+static NSString *SylkDisplayNamesFilePath(void) {
+    NSURL *c = [[NSFileManager defaultManager]
+        containerURLForSecurityApplicationGroupIdentifier:kSylkAppGroup];
+    return c ? [[c URLByAppendingPathComponent:@"contactDisplayNames.plist"] path] : nil;
+}
+
+static void SylkWriteDisplayNamesFile(NSDictionary *names) {
+    NSString *path = SylkDisplayNamesFilePath();
+    if (path == nil) { return; }
+    NSData *data = [NSPropertyListSerialization
+        dataWithPropertyList:(names ?: @{})
+                      format:NSPropertyListBinaryFormat_v1_0
+                     options:0
+                       error:NULL];
+    if (data == nil) { return; }
+    NSError *werr = nil;
+    if (![data writeToFile:path
+                   options:(NSDataWritingAtomic | NSDataWritingFileProtectionNone)
+                     error:&werr]) {
+        [SylkLogger log:@"[push] display-name map file write failed: %@",
+            werr.localizedDescription];
+    }
+}
+
 @implementation APNSTokenModule
 
 RCT_EXPORT_MODULE();
@@ -116,12 +147,14 @@ RCT_EXPORT_METHOD(setContactDisplayName:(NSString *)uri
     if (names[key] != nil) {
       [names removeObjectForKey:key];
       [shared setObject:names forKey:kSylkDisplayNamesKey];
+      SylkWriteDisplayNamesFile(names);
       [SylkLogger log:@"[push] display-name map remove: %@ (%lu total)",
           key, (unsigned long)names.count];
     }
   } else if (![names[key] isEqual:displayName]) {
     names[key] = displayName;
     [shared setObject:names forKey:kSylkDisplayNamesKey];
+    SylkWriteDisplayNamesFile(names);
     [SylkLogger log:@"[push] display-name map set: %@ -> %@ (%lu total)",
         key, displayName, (unsigned long)names.count];
   }
@@ -140,6 +173,11 @@ RCT_EXPORT_METHOD(syncContactDisplayNames:(NSDictionary *)names)
   NSUserDefaults *shared =
       [[NSUserDefaults alloc] initWithSuiteName:kSylkAppGroup];
   [shared setObject:names forKey:kSylkDisplayNamesKey];
+  [shared synchronize];
+
+  // Authoritative write for the extension (the NSE reads this file).
+  SylkWriteDisplayNamesFile(names);
+
   [SylkLogger log:@"[push] display-name map synced: %lu contacts",
       (unsigned long)names.count];
 }

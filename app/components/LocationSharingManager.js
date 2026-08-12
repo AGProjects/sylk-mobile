@@ -1,28 +1,23 @@
 // LocationSharingManager.js
 //
-// The live-location-sharing engine, extracted wholesale from
-// NavigationBar.js. Owns the imperative machinery for caregiver / meet-up
-// location shares: starting and stopping sessions, the per-tick GPS →
-// metadata pipeline, the OS-permission and Google-Play "prominent
-// disclosure" gates, "until I return" / destination-arrival auto-stop,
-// pause/resume, peer-location requests, and meeting-session teardown.
+// The live-location-sharing engine. Owns the imperative machinery for
+// caregiver / meet-up location shares: starting and stopping sessions, the
+// per-tick GPS → location-payload pipeline, the OS-permission and Google-Play
+// "prominent disclosure" gates, "until I return" / destination-arrival
+// auto-stop, pause/resume, peer-location requests, and meeting-session
+// teardown.
 //
-// State lives on the host (NavigationBar) — locationTimers, the
-// activeLocationShares mirror, the pending-permission-share map, the
-// repeat-interval / until-return thresholds — and is reached through the
-// injected `host` reference (this.host.locationTimers, this.host.props,
-// this.host.setState, this.host.forceUpdate, the pulse-animation helpers,
-// and the SQL persistence pair _persistActiveShares /
-// _loadAndResumeActiveShares which remain on the component). The debug
-// convergence simulator is reached through `this.sim`. This `host` seam is
-// the single coupling point; a future React hook/context can supply the
-// same surface in place of the class instance.
-//
-// NavigationBar keeps one-line delegating stubs for every public method
-// here so render(), handleMenu, the lifecycle hooks, and app.js (via the
-// navBar ref) call sites are unchanged.
+// The engine is hosted by the top-level app instance and reaches the app's
+// state, services and SQL persistence (_persistActiveShares /
+// _loadAndResumeActiveShares) through the injected `this.app` reference. The
+// on-screen reflection goes through the NavigationBar view (this.navbar),
+// which is null while no NavBar is mounted; every view call goes through the
+// guarded _ui* helpers so a null view is safe. NavigationBar keeps one-line
+// delegating stubs for every public method here. The debug convergence
+// simulator is reached through `this.sim`.
 
 import autoBind from 'auto-bind';
+import { showThemedAlert } from './ThemedAlert';
 import { Alert, AppState, Linking, Platform, PermissionsAndroid, NativeModules } from 'react-native';
 import BackgroundTimer from 'react-native-background-timer';
 import uuid from 'react-native-uuid';
@@ -34,7 +29,10 @@ import {
     clearAcknowledged as clearLocationDisclosure,
 } from './locationDisclosure';
 import { haversineMeters, dummyOriginPoint, pickMeetingDestinationKmOnLand } from './geoUtils';
-import { ENABLE_MEET_SIMULATION } from './LocationSimulator';
+// The meet-up convergence simulator is driven at runtime by the
+// "Location simulator" preference (accountSetting.location.simulatorEnabled),
+// read here via this.app._locationSimulatorEnabled — same pref that
+// drives the location-track walkers. No build constant is imported.
 
 // Geolocation is an optional native dependency. Guard the require so that
 // the app still boots if the pod/AAR hasn't been installed yet — callers
@@ -58,58 +56,659 @@ const LocationForegroundServiceModule =
 
 export default class LocationSharingManager {
     constructor(host) {
-        // The NavigationBar instance. The engine reads/writes its
-        // location state and props through this reference.
-        this.host = host;
-        // The LocationSimulator instance; assigned by NavigationBar right
-        // after construction (the engine and simulator reference each
-        // other, so the wiring is completed post-construction).
+        // The top-level app instance. Location's authoritative state — timers,
+        // the remote-share mirror, services, config, persistence — all live on
+        // the app, so the engine IS hosted by it.
+        this.app = host;
+        // The LocationSimulator instance; assigned right after construction by
+        // whoever creates the engine (the app), since engine and simulator
+        // reference each other.
         this.sim = null;
+        // The NavigationBar VIEW, assigned when NavBar mounts (engine.ui = nav)
+        // and cleared on its unmount. null while no NavBar is mounted — every
+        // view call goes through the guarded _ui* helpers, so a null ui is safe.
+        this.navbar = null;
+        // Meeting-session registry: engine-owned authoritative
+        // map of active meet sessions. app-side callers use this._locationEngine.meetingSessions.
+        this.meetingSessions = {};
+        // Live outgoing/incoming location-session registries. Engine-owned: the
+        // engine owns the whole share lifecycle that mutates them, so the data
+        // lives next to that logic.
+        //   • outgoingLocationSessions — plain timed shares (fixed/untilIReturn),
+        //     keyed by peer uri.
+        //   • outgoingMeetSessions — meet ("Until we meet") legs, keyed by peer
+        //     uri, so a meet and a plain share to the same contact coexist.
+        //   • incomingLocationSessions — shares a peer is broadcasting to us,
+        //     keyed by the sender's session/origin id.
+        // app.js reaches these via this._locationEngine.<name>; NavigationBar
+        // borrows outgoingLocationSessions by reference for read-only pulse/menu
+        // checks. The React-state mirrors (activeLocationShares,
+        // incomingLocationShareUris) stay on the app because they need setState.
+        this.outgoingLocationSessions = {};
+        this.outgoingMeetSessions = {};
+        this.incomingLocationSessions = {};
+        // Share-lifecycle internals: engine-owned.
+        //   • _pendingPermissionShares — share intents deferred until the OS
+        //     location permission is sufficient (drained on app-foreground).
+        //   • _startingShares — in-flight start guard (dedupes rapid taps).
+        //   • _pendingStops — reentrancy guard for stopLocationSharing.
+        //   • _shareStateLogStamps — throttle stamps for share-state probe logs.
+        this._pendingPermissionShares = {};
+        this._startingShares = new Set();
+        this._pendingStops = new Set();
+        this._shareStateLogStamps = {};
+        // Meeting handshake + share-mirror registries: engine-owned bare
+        // state. The app's message pipeline / SQL persistence read & write these
+        // across the seam via this._locationEngine.*. Kept off React state so
+        // additions don't trigger renders on every location tick.
+        //   • handledMeetingRequestIds — request _ids we've already presented (or
+        //     auto-handled) so the modal never pops twice for the same request.
+        //     Hydrated from AsyncStorage on mount; persisted on every change.
+        //   • pendingMeetingRequests — {uri: {requestId, expiresAt, fromUri}} for a
+        //     request that arrived while that uri's chat wasn't open; drained into
+        //     the modal when the user opens that chat.
+        //   • handledAcceptanceIds — request _ids for which we've already rendered
+        //     the "peer accepted" system note on the requester side (dedupes retries).
+        //   • myOutgoingMeetingRequestIds — origin ticks we sent with
+        //     meeting_request:true; used to recognise incoming acceptance ticks
+        //     (metadata.in_reply_to === one of these) and render "peer accepted".
+        //   • acceptedMeetingRequestIds — incoming request _ids we've ACCEPTED on
+        //     this device (accepter-side mirror of myOutgoing...); used by
+        //     _injectLocationBubble to suppress the duplicate outgoing reply bubble.
+        //   • endedMeetingSessionIds — persistent tombstone of sessions that ENDED
+        //     (met / expired / cancelled); survives the prune of handled/accepted so
+        //     a journal-replayed meeting_request can't re-present the accept modal.
+        //   • _deletedLocationBubbleIds — bubble ids the user explicitly deleted;
+        //     belt-and-braces guard against getMessages re-synthesising a deleted
+        //     bubble from straggler trail rows. In-memory only (session-scoped).
+        //   • _activeRemoteShares — Map<peerUri, {originMid, lastTickAt, lastCoords,
+        //     role}> multi-device mirror: another device of this account broadcasting
+        //     a share renders here from its self-echoed ticks (no local timer).
+        //     Seeded from the SQL journal on boot; inactivity sweep evicts >90s.
+        this.handledMeetingRequestIds = new Set();
+        this.pendingMeetingRequests = {};
+        this.handledAcceptanceIds = new Set();
+        this.myOutgoingMeetingRequestIds = new Set();
+        this.acceptedMeetingRequestIds = new Set();
+        this.endedMeetingSessionIds = new Set();
+        this._deletedLocationBubbleIds = new Set();
+        this._activeRemoteShares = new Map();
+        // Proximity/meet + location-request registries: engine-owned.
+        // metPeerUris — peer URIs this device has met with in a past "Until we meet"
+        // session (proximity-met fired before). Picks the greeting variant in
+        // _maybeFireProximityMeet ("Nice to meet you!" vs "…again!"). Persisted.
+        this.metPeerUris = new Set();
+        // _proximityNotedSessionIds — sessions we've already emitted the "Location
+        // sharing stopped at HH:MM" note for (local proximity OR a peer's meeting_end
+        // with reason='proximity'). Dedup so it doesn't log twice per device. In-memory.
+        this._proximityNotedSessionIds = new Set();
+        // _meetLastDistanceBand — Map<sessionId, bandName> for the [meet] narrative
+        // logger; prints a distance line only on band crossings (km → hundreds → tens
+        // → ≤ threshold), never every tick.
+        this._meetLastDistanceBand = {};
+        // meetingSessionWipeTimers — pending wipe timers keyed by sessionId. At
+        // expires_at we wipe the session's messages from SQL + live state; a map so
+        // repeated observations de-duplicate scheduling.
+        this.meetingSessionWipeTimers = {};
+        // handledLocationRequestIds — incoming location-request _ids we've already
+        // presented (modal shown or expired). Memory-only.
+        this.handledLocationRequestIds = new Set();
+        // siblingAnsweredLocationRequestIds — location requests a sibling device on
+        // this account answered; the pre-modal 2 s delay consults it to skip
+        // presenting (can't reuse handledLocationRequestIds — stamped before the
+        // setTimeout, so it'd always read handled).
+        this.siblingAnsweredLocationRequestIds = new Set();
+        // pendingLocationRequests — per-peer pending request, keyed by sender uri.
+        this.pendingLocationRequests = {};
+        // _meetReportedEnded — dedup for the "SESSION ENDED" note (fired from
+        // both local teardown and the incoming meeting_end handler). In-memory.
+        this._meetReportedEnded = new Set();
+        // "Until I return" auto-stop thresholds (metres) — engine-owned config.
+        // Symmetric departure/return rings.
+        this.UNTIL_RETURN_DEPARTURE_M = 100;
+        this.UNTIL_RETURN_RETURN_M = 100;
         // Bind prototype methods so bare references passed to timers /
         // native callbacks keep the right `this` (mirrors the component's
         // autoBind). Arrow class-property methods are already bound.
         autoBind(this);
     }
 
-    async showShareLocationModal() {
-        // Step 1: Google Play "Prominent Disclosure" gate. Fires the
-        // FIRST time the user taps Share location at any entry point
-        // (chat-header pin, kebab, etc.) BEFORE any other UI. The
-        // AsyncStorage flag set on Continue collapses subsequent
-        // taps straight through.
-        const acknowledged = await this._ensureLocationDisclosureAcknowledged();
+    // ── Concurrent-session store helpers ──────────────────────────────
+    // Outgoing location sessions are split across TWO uri-keyed maps so a
+    // contact can have a meet ("Until we meet") AND a plain timed share live
+    // at the same time without colliding on a single [uri] slot:
+    //   • _plainStore() — app.outgoingLocationSessions — fixed/untilIReturn/once
+    //   • _meetStore()  — app.outgoingMeetSessions      — meetingRequest/meetingAccept
+    // Every write routes through _storeForKind(kind); reads that already know
+    // the session's originLocationId use _entryByOrigin so they find the entry
+    // in whichever store holds it. Reads that mean "the session for this peer"
+    // (legacy one-per-uri assumption) fall back to the plain entry, then meet.
+    _plainStore() {
+        if (!this.outgoingLocationSessions) this.outgoingLocationSessions = {};
+        return this.outgoingLocationSessions;
+    }
+    _meetStore() {
+        if (!this.outgoingMeetSessions) this.outgoingMeetSessions = {};
+        return this.outgoingMeetSessions;
+    }
+    _isMeetKind(kind) {
+        return kind === 'meetingRequest' || kind === 'meetingAccept';
+    }
+    _storeForKind(kind) {
+        return this._isMeetKind(kind) ? this._meetStore() : this._plainStore();
+    }
+    _storeOfEntry(entry) {
+        return (entry && this._isMeetKind(entry.kind)) ? this._meetStore() : this._plainStore();
+    }
+    // The entry (in either store) for `uri` matching `originId`. With no originId,
+    // prefer the plain entry, else the meet entry — backward-compat for the many
+    // callers that historically assumed a single entry per uri. null if none.
+    _entryByOrigin(uri, originId) {
+        if (!uri) return null;
+        const plain = this._plainStore()[uri];
+        const meet = this._meetStore()[uri];
+        if (originId != null) {
+            if (plain && plain.originLocationId === originId) return plain;
+            if (meet && meet.originLocationId === originId) return meet;
+            // meet legs are also addressed by their meetingSessionId
+            if (meet && meet.meetingSessionId === originId) return meet;
+            return null;
+        }
+        return plain || meet || null;
+    }
+    _meetEntryForUri(uri) {
+        return (uri && this._meetStore()[uri]) || null;
+    }
+    _plainEntryForUri(uri) {
+        return (uri && this._plainStore()[uri]) || null;
+    }
+    // Every live outgoing entry for a uri across both stores (0, 1, or 2).
+    _allEntriesForUri(uri) {
+        const out = [];
+        const plain = uri && this._plainStore()[uri];
+        const meet = uri && this._meetStore()[uri];
+        if (plain) out.push(plain);
+        if (meet) out.push(meet);
+        return out;
+    }
+    // True if ANY outgoing entry (plain or meet) is armed for uri. Replaces the
+    // old `!!outgoingLocationSessions[uri]` "is anything live for this peer" test.
+    _hasAnyEntryForUri(uri) {
+        return !!(uri && (this._plainStore()[uri] || this._meetStore()[uri]));
+    }
+
+    // ── UI predicates: which startable session types are live for a contact ──
+    // A "meet" and a plain "share" are the two things the local user can start
+    // from the picker; the pin/modal use these to disable already-live options
+    // and to decide when to open the active-sessions list instead of the picker.
+    // Consults the app's unified session list (covers sibling-device mirrors)
+    // and the local stores as authoritative fallback. Per Adi's decision a
+    // sent-but-unaccepted meet invite does NOT count — only an armed meet leg
+    // (local meet entry, or an accepted remote meet mirror) does.
+    getStartableLiveTypes(uri) {
+        let meet = false;
+        let share = false;
+        if (uri) {
+            // LOCAL meet leg. A requester's invite that is still HELD awaiting
+            // the peer's acceptance does NOT count as live (Adi's decision:
+            // only an accepted/broadcasting meet gates "Until we meet"). The
+            // accepter's own leg is never held, so it counts immediately.
+            const m = this._meetStore()[uri];
+            if (m) {
+                const _sid = m.meetingSessionId;
+                const _awaiting = !!(this._awaitingAcceptSessions && _sid
+                    && this._awaitingAcceptSessions.has(_sid));
+                if (!_awaiting) meet = true;
+            }
+            // LOCAL plain timed share.
+            const pe = this._plainStore()[uri];
+            if (pe && (pe.kind === 'fixed' || pe.kind === 'untilIReturn')) share = true;
+            // REMOTE (sibling-device) sessions via the app's unified list. Its
+            // remote branch already filters out un-accepted meet invites, so a
+            // 'meeting' session here is a real, accepted meet. We only read the
+            // NOT-owned rows to avoid re-counting the local legs handled above
+            // (which would bypass the awaiting-accept filter).
+            try {
+                const sessions = (this.app.getActiveShareSessions && this.app.getActiveShareSessions()) || {};
+                for (const sid of Object.keys(sessions)) {
+                    const s = sessions[sid];
+                    if (!s || s.peerUri !== uri) continue;
+                    if (s.kind === 'meeting') {
+                        // Only accepted meets count. Owned local meet legs may be
+                        // a still-HELD invite (not live) — those are gated by the
+                        // meetStore/_awaitingAcceptSessions check above, so here we
+                        // only trust NOT-owned (sibling, already-accepted) meets.
+                        if (!s.owned) meet = true;
+                    } else {
+                        // Any plain 'location' session — owned (this device) OR a
+                        // sibling mirror — means a timed share is live for this uri.
+                        share = true;
+                    }
+                }
+            } catch (e) { /* best-effort */ }
+        }
+        return { meet, share };
+    }
+    isMeetLiveForUri(uri) {
+        return this.getStartableLiveTypes(uri).meet;
+    }
+    isPlainShareLiveForUri(uri) {
+        return this.getStartableLiveTypes(uri).share;
+    }
+
+    // ===== Active-share list derivation (the NavigationBar view consumes these
+    // via this._locationEngine.*). Pure share-state logic over the app-owned
+    // session map + this engine's timer registry. =====
+
+    // The app-authoritative sessions map (keyed by sessionId) — the single
+    // source of truth for the pulse, the panel and Stop routing. Read via the
+    // app's getActiveShareSessions(); {} if the app isn't wired yet (defensive).
+    _shareSessions() {
+        try {
+            if (this.app && typeof this.app.getActiveShareSessions === 'function') {
+                return this.app.getActiveShareSessions() || {};
+            }
+        } catch (e) { /* noop */ }
+        return {};
+    }
+
+    // The broadcaster share map ({uri: expiresAtMs}), owned by the app (the
+    // engine writes it via this.app.setState). {} if the app isn't wired yet.
+    _activeShares() {
+        const app = this.app;
+        return (app && app.state && app.state.activeLocationShares) || {};
+    }
+
+    // True when a share for `uri` is active on ANOTHER of our devices and this
+    // device is only mirroring it (no local timer). Lets the share menu offer
+    // "Stop" so a session started elsewhere can be finished here — the stop is
+    // relayed by stopLocationSharing's mirror path.
+    _isShareActiveRemote(uri) {
+        if (!uri) return false;
+        const sessions = this._shareSessions();
+        for (const sid of Object.keys(sessions)) {
+            const s = sessions[sid];
+            if (s && s.peerUri === uri) return !s.owned; // remote = owned by a sibling
+        }
+        return false;
+    }
+
+    // Active shares for the stop panel, as {uri: expiresAtMs|null}, derived from
+    // the authoritative session list (local + sibling-owned). One source of
+    // truth — no per-URI mirror-map desync.
+    getActiveSharesForModal() {
+        const merged = {};
+        const sessions = this._shareSessions();
+        for (const sid of Object.keys(sessions)) {
+            const s = sessions[sid];
+            if (s && s.peerUri && merged[s.peerUri] === undefined) {
+                merged[s.peerUri] = s.expiresAt || null;
+            }
+        }
+        // Broadcaster ground truth. Any locally-armed GPS timer IS an active
+        // share by definition — the device is emitting ticks right now. Read the
+        // timer registry directly so the device doing the sharing always lists
+        // its own session and can stop it, independent of whether the
+        // authoritative session map has surfaced it yet.
+        const outgoingSessions = this.outgoingLocationSessions || {};
+        for (const uri of Object.keys(outgoingSessions)) {
+            if (merged[uri] === undefined) {
+                const t = outgoingSessions[uri];
+                merged[uri] = (t && typeof t.expiresAt === 'number') ? t.expiresAt : null;
+            }
+        }
+        // Fallback: our own local broadcaster state, in case a session hasn't
+        // surfaced in the authoritative list yet (first tick race).
+        const local = this._activeShares() || {};
+        for (const uri of Object.keys(local)) {
+            if (merged[uri] === undefined) merged[uri] = local[uri];
+        }
+        return merged;
+    }
+
+    // Rich per-SESSION list for the ActiveLocationSharesModal: one row per live
+    // session so a contact's meet AND plain share both appear, each with its own
+    // type label and Stop. Shape: [{uri, sessionId, type:'meet'|'share',
+    // expiresAt, owned, paused}]. Incoming shares are intentionally NOT included.
+    getActiveSharesRowsForModal() {
+        const rows = [];
+        const sessions = this._shareSessions();
+        for (const sid of Object.keys(sessions)) {
+            const s = sessions[sid];
+            if (!s || !s.peerUri) continue;
+            const type = (s.kind === 'meeting') ? 'meet' : 'share';
+            let paused = false;
+            try {
+                const entry = (typeof this._entryByOrigin === 'function')
+                    ? this._entryByOrigin(s.peerUri, s.sessionId)
+                    : null;
+                paused = !!(entry && entry.paused);
+            } catch (e) { /* best-effort */ }
+            rows.push({
+                uri: s.peerUri,
+                sessionId: s.sessionId,
+                type,
+                expiresAt: (s.expiresAt != null) ? s.expiresAt : null,
+                owned: !!s.owned,
+                paused,
+            });
+        }
+        return rows;
+    }
+
+    // Dump the authoritative live share-session list + each session's expiry to
+    // the log. Called when the user taps the navbar active-shares button.
+    _dumpActiveShareSessions() {
+        try {
+            const sessions = this._shareSessions();
+            const ids = Object.keys(sessions);
+            const now = Date.now();
+            utils.timestampedLog('[location] [sessions] tap: ' + ids.length + ' active');
+            for (const sid of ids) {
+                const s = sessions[sid] || {};
+                const exp = (typeof s.expiresAt === 'number') ? s.expiresAt : null;
+                const inSec = (exp != null) ? Math.round((exp - now) / 1000) : null;
+                utils.timestampedLog('[location] [sessions]   ' + String(sid).slice(0, 8)
+                    + ' peer=' + s.peerUri
+                    + ' kind=' + s.kind
+                    + ' owned=' + s.owned
+                    + ' ownerDeviceId=' + (s.ownerDeviceId || '-')
+                    + ' role=' + (s.role || '-')
+                    + ' expiresAt=' + (exp != null ? new Date(exp).toISOString() : '-')
+                    + ' expiresIn=' + (inSec != null ? inSec + 's' : '-'));
+            }
+        } catch (e) { /* logging must never break the tap */ }
+    }
+
+    // Share-menu gate: is there a genuine two-way conversation with `uri`?
+    // Scans the app's message map, ignoring system / metadata / imdn / pgp
+    // markers. Any live-location bubble counts as bidi in BOTH directions (a
+    // contact who only ever shared their location with us still has a real
+    // relationship, so the share button must not vanish once the share ends).
+    _hasBidirectionalChat(uri) {
+        if (!uri) return false;
+        const _map = (this.app && typeof this.app._messagesMap === 'function')
+            ? this.app._messagesMap() : null;
+        const msgs = (_map && _map[uri]) || [];
+        if (!Array.isArray(msgs) || msgs.length === 0) return false;
+        let hasOut = false;
+        let hasIn = false;
+        for (const m of msgs) {
+            if (!m) continue;
+            if (m.system === true) continue;
+            const ct = m.contentType;
+            if (typeof ct !== 'string') continue;
+            if (ct === 'application/sylk-message-metadata') continue;
+            if (ct === 'application/sylk-contact-update') continue;
+            if (ct === 'message/imdn') continue;
+            if (ct.indexOf('pgp') !== -1) continue;
+            if (ct === 'application/sylk-live-location') {
+                return true;
+            }
+            const dir = m.direction;
+            if (dir === 'outgoing') hasOut = true;
+            else if (dir === 'incoming') hasIn = true;
+            if (hasOut && hasIn) return true;
+        }
+        return false;
+    }
+
+    // Reconcile stale broadcaster shares: any uri in activeLocationShares that
+    // isn't backed by a live timer AND isn't mid-startup (per-store in-flight
+    // guard on the engine-owned _startingShares) is dropped, keeping the pulse
+    // state eventually-consistent with the actual share state regardless of
+    // which cleanup path missed. Writes app.setState when it prunes. Returns
+    // true if it reconciled (caller should then skip that frame's pulse toggle).
+    reconcileActiveShares() {
+        const sharesMap = this._activeShares() || {};
+        const sharesUris = Object.keys(sharesMap);
+        if (sharesUris.length === 0) return false;
+        let reconciled = null;
+        const staleUris = [];
+        const _startingShares = this._startingShares;
+        sharesUris.forEach((uri) => {
+            // A session for this uri may live in EITHER store (plain share or
+            // meet leg) — a meet-only session must not be reconciled away.
+            const hasTimer = (typeof this._hasAnyEntryForUri === 'function')
+                ? this._hasAnyEntryForUri(uri)
+                : !!(this.outgoingLocationSessions && this.outgoingLocationSessions[uri]);
+            // In-flight guard keys are per-store (`uri#plain` / `uri#meet`).
+            const starting = !!(_startingShares
+                && (_startingShares.has(uri + '#plain')
+                    || _startingShares.has(uri + '#meet')
+                    || _startingShares.has(uri)));
+            if (!hasTimer && !starting) {
+                if (!reconciled) reconciled = {...sharesMap};
+                delete reconciled[uri];
+                staleUris.push(uri);
+            }
+        });
+        if (reconciled) {
+            console.log('[location] reconcile: dropping stale activeLocationShares', staleUris);
+            if (this.app && typeof this.app.setState === 'function') {
+                this.app.setState({activeLocationShares: reconciled});
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Can THIS device end the SPECIFIC session a given map bubble represents?
+    // Drives the map bubble's "Stop sharing" button. Matched by the bubble's
+    // own origin/session id — NOT merely by (uri, type) — so that a chat with
+    // many historical location bubbles for the same contact only lights Stop on
+    // the one bubble whose session is actually live right now (a type-only match
+    // lit Stop on every past bubble too — reported symptom).
+    //   • Local owned entry: _entryByOrigin matches a plain share by its
+    //     originLocationId and a meet by its originLocationId OR meetingSessionId
+    //     (so it survives the meet accept handshake).
+    //   • Sibling-device MIRROR: an _activeRemoteShares entry for this peer whose
+    //     originMid equals the bubble's id — endable via the stop relay.
+    // A session that has already ended (durable ended marker) never qualifies,
+    // so a reload / journal replay that transiently re-seeds a stopped session's
+    // mirror can't resurrect its Stop button.
+    hasStoppableSessionForBubble(uri, sessionId, isMeet) {
+        if (!uri || !sessionId) return false;
+        // Never offer Stop for a session known to have ended.
+        try {
+            if (this.app._endedLocationSessions
+                    && this.app._endedLocationSessions.has(sessionId)) return false;
+        } catch (e) { /* best-effort */ }
+        // Locally-owned entry for THIS bubble's session.
+        try {
+            if (this._entryByOrigin(uri, sessionId)) return true;
+        } catch (e) { /* best-effort */ }
+        // Sibling-device MIRROR of the matching TYPE (endable via the relay
+        // inside stopLocationSharing). Matched by uri + type rather than the
+        // mirror's originMid, because a mirror entry's origin id does not
+        // reliably equal the bubble's message id on the receiving device — an
+        // id-exact match hid Stop on the 2nd device even while the share was
+        // live. There is at most one active mirror per type per contact, and
+        // an ENDED bubble is already excluded above (ended-set) and by the
+        // caller's trackEnded gate, so a type match here can't light Stop on a
+        // stale/past bubble.
+        // Read the app's unified session list (getActiveShareSessions) rather
+        // than the _activeRemoteShares Map alone: that list UNIONS the live Map
+        // with its React-state twin, so a mirror entry the ~90s inactivity sweep
+        // evicted from the Map between the broadcaster's ticks is still seen
+        // (that gap was hiding Stop on the 2nd device mid-share). NOT-owned rows
+        // only — owned local sessions are handled by _entryByOrigin above.
+        try {
+            const sessions = (this.app.getActiveShareSessions && this.app.getActiveShareSessions()) || {};
+            for (const sid of Object.keys(sessions)) {
+                const s = sessions[sid];
+                if (!s || s.peerUri !== uri || s.owned) continue;
+                if (isMeet ? (s.kind === 'meeting') : (s.kind === 'location')) return true;
+            }
+        } catch (e) { /* best-effort */ }
+        return false;
+    }
+
+    // this.navbar (the NavigationBar VIEW) is a plain field set on NavBar mount /
+    // cleared on unmount — see the constructor. The engine touches it only for
+    // genuine UI (share/preview modal state, pulse, forceUpdate) and always via
+    // the guarded _ui* helpers below, so it tolerates a null/unmounted view.
+
+    // Guarded view accessors. The engine is hosted by the app and outlives
+    // NavigationBar, so every view call must tolerate a
+    // null/unmounted ui. A missing view means "no UI to update" — writes no-op,
+    // reads return {} — which is correct: the engine's data work still happens
+    // via this.app; only the on-screen reflection is skipped until NavBar is
+    // back (its next mount re-reads app-owned state).
+    _uiSetState(patch) {
+        const u = this.navbar;
+        if (u && !u._unmounted) u.setState(patch);
+    }
+    _uiState() {
+        const u = this.navbar;
+        return (u && u.state) || {};
+    }
+    _uiForceUpdate() {
+        const u = this.navbar;
+        if (u && !u._unmounted) u.forceUpdate();
+    }
+    _uiStartPulse() {
+        const u = this.navbar;
+        if (u) u._startActiveSharePulse();
+    }
+    _uiStopPulse() {
+        const u = this.navbar;
+        if (u) u._stopActiveSharePulse();
+    }
+
+    // Release the live OS handles (BackgroundTimer interval + expiry, GPS watch)
+    // for every armed share and drop the entries from the app-owned registry.
+    // Called from NavigationBar.componentWillUnmount so the view no
+    // longer needs to import BackgroundTimer/Geolocation itself. This is a
+    // handle-release only — it deliberately does NOT go through stopLocationSharing
+    // (no stop signals, no system notes, no persistence wipe): a NavBar unmount
+    // is a view teardown, not a user stop. The AsyncStorage resume snapshot is
+    // left intact so the shares re-arm on the next mount.
+    releaseTimerHandles() {
+        // Release handles from BOTH stores — a contact may have a plain share
+        // and a meet leg armed at once and both must be torn down on unmount.
+        const _stores = [this.outgoingLocationSessions, this.outgoingMeetSessions];
+        for (const timers of _stores) {
+            if (!timers) continue;
+            for (const uri of Object.keys(timers)) {
+                const entry = timers[uri];
+                if (!entry) continue;
+                try {
+                    if (entry.intervalId != null) BackgroundTimer.clearInterval(entry.intervalId);
+                } catch (e) { /* noop */ }
+                try {
+                    if (entry.watchId != null && Geolocation
+                            && typeof Geolocation.clearWatch === 'function') {
+                        Geolocation.clearWatch(entry.watchId);
+                    }
+                } catch (e) { /* noop */ }
+                try {
+                    if (entry.expiryTimeoutId != null) BackgroundTimer.clearTimeout(entry.expiryTimeoutId);
+                } catch (e) { /* noop */ }
+                // Registry is app-owned and outlives the view — drop the entry so the
+                // app doesn't carry a dead-handle timer and the resume path can
+                // re-arm this share cleanly on the next mount.
+                try { delete timers[uri]; } catch (e) { /* noop */ }
+            }
+        }
+    }
+
+    showShareLocationModal(uri, liveTypes) {
+        // Open the picker IMMEDIATELY for instant tap feedback. Everything
+        // that can add perceptible latency — the Prominent Disclosure gate,
+        // the OS permission prompt, the grant-level probe, and the GPS
+        // preview fetch — used to run BEFORE this setState, so the modal only
+        // appeared after that whole async chain settled (the reported delay).
+        // Now it renders on the same frame as the tap and the gates run in
+        // the background (see _runShareModalGates), each writing back to
+        // state as it resolves. Mirrors the meetMeAt() optimistic-open
+        // pattern already used for the "Meet me there…" entry point.
+        //
+        // shareLocationPermissionLevel starts null ("unknown → don't gate")
+        // so no features are prematurely disabled; _runShareModalGates fills
+        // it in once the OS grant is known. The Share button is independently
+        // gated on having a location fix (previewUserLocation), which only
+        // lands after permission is granted, so the user can't confirm a
+        // share before the gates have run regardless.
+        // Capture the target contact + its live session types NOW, at tap time,
+        // when the selection is definitely valid. The modal reads liveTypes from
+        // THIS captured state instead of recomputing from selectedContact at
+        // render — that live prop (app.state.selectedContact, passed to
+        // NavigationBar) can momentarily flicker to null during unrelated
+        // re-renders, and when it did the render-time compute silently returned
+        // {share:false} and the picker showed every option enabled while a share
+        // was already live (reported symptom). Captured once here it's stable
+        // for the life of the modal; _onLocationSessionsChanged refreshes it
+        // while open so a session starting/ending on another device still
+        // updates the disabled options live.
+        let _shareUri = (uri != null) ? uri : null;
+        if (!_shareUri) {
+            const _sc = this.app.state && this.app.state.selectedContact;
+            _shareUri = (_sc && _sc.uri) || null;
+        }
+        let _shareTypes = liveTypes || null;
+        if (!_shareTypes && _shareUri && typeof this.getStartableLiveTypes === 'function') {
+            try { _shareTypes = this.getStartableLiveTypes(_shareUri); } catch (e) { _shareTypes = null; }
+        }
+
+        this._uiSetState({
+            showShareLocationModal: true,
+            shareLocationPermissionLevel: null,
+            previewUserLocation: null,
+            shareModalUri: _shareUri,
+            shareLiveTypes: _shareTypes || { meet: false, share: false },
+        });
+
+        // Re-hydrate the disclaimer-suppressed flag from app_state so the
+        // disclaimer block hides on this open if the user previously
+        // confirmed with the box ticked. Fire-and-forget — a re-render
+        // picks up the resolved value within a frame or two.
+        this._hydrateDisclaimerSuppression();
+
+        // Run disclosure + permission gates and the preview fetch off the
+        // main path so none of them block the modal from rendering.
+        this._runShareModalGates();
+    }
+
+    // Background gate runner for the button-tap share-modal open. Sequenced
+    // exactly like the old synchronous showShareLocationModal, but the modal
+    // is already on screen so each step just updates it (or closes it) as it
+    // resolves:
+    //   1. Prominent Disclosure — declined ⇒ close the picker we opened.
+    //   2. OS permission (may prompt) — denied ⇒ close + Settings alert.
+    //   3. Grant-level probe — sets shareLocationPermissionLevel so the
+    //      picker can disable the background-only options under a
+    //      foreground-only ("While Using") grant.
+    //   4. GPS preview fetch — renders the current-location pin + map.
+    // Each step bails if the user has meanwhile closed the picker, so we
+    // never write state onto a dismissed modal.
+    async _runShareModalGates() {
+        // 1. Prominent Disclosure gate.
+        let acknowledged = false;
+        try {
+            acknowledged = await this._ensureLocationDisclosureAcknowledged();
+        } catch (e) {
+            acknowledged = false;
+        }
+        if (!this._uiState().showShareLocationModal) { return; }
         if (!acknowledged) {
-            utils.timestampedLog('[location] showShareLocationModal: disclosure declined — not opening picker');
+            utils.timestampedLog('[location] shareModal: disclosure declined — closing picker');
+            this.hideShareLocationModal();
             return;
         }
 
-        // Step 2: OS permission. Run this BEFORE the duration picker
-        // so the user knows whether location is even available before
-        // bothering to pick how long to share for. The probe + request
-        // chain is the same one startLocationSharing uses; calling it
-        // up-front means:
-        //   • A user who's never granted permission sees the Android
-        //     dialog right after I agree, where they expect it.
-        //   • A user who has previously denied (blocked) sees the
-        //     "Open Settings" alert immediately rather than
-        //     pick-a-duration → confirm → wait → finally see the
-        //     blocked notice.
-        //   • A user who already granted just falls through to the
-        //     picker without any visible delay.
-        // The duration picker only opens if permission is actually
-        // granted; otherwise we abort silently and let the alert
-        // (or the user's next attempt after fixing Settings) drive.
+        // 2. OS permission (this is the step that can pop the system prompt).
         let hasPermission = false;
         try {
             hasPermission = await this.ensureLocationPermission();
         } catch (e) {
             hasPermission = false;
         }
+        // User may have cancelled the picker while the prompt was up.
+        if (!this._uiState().showShareLocationModal) { return; }
         if (!hasPermission) {
-            utils.timestampedLog('[location] showShareLocationModal: OS permission not granted — picker stays closed');
-            // Show a one-tap-to-Settings alert so the user has a
-            // recovery path. Mirrors the alert wording from
-            // shareLocationOnce / startLocationSharing.
+            utils.timestampedLog('[location] shareModal: OS permission not granted — closing picker');
+            this.hideShareLocationModal();
             const openSettingsFn = () => {
                 try {
                     if (Platform.OS === 'ios') {
@@ -134,26 +733,19 @@ export default class LocationSharingManager {
             return;
         }
 
-        // Re-hydrate the disclaimer-suppressed flag from app_state
-        // right before opening. The flag is also hydrated on
-        // registrationState transitions and accountId changes, but
-        // there's a window (e.g. first share after a cold launch
-        // before registration completes, OR a Maps-link tap that
-        // opens the modal optimistically) where the React state
-        // mirror lags the persisted value. Reading from SQL each
-        // open guarantees the disclaimer block is hidden whenever
-        // the user has previously confirmed with the box ticked.
-        // Cost: one SQL SELECT, ~2 ms — well below the picker's
-        // open-perception threshold.
-        try { await this._hydrateDisclaimerSuppression(); }
-        catch (e) { /* best-effort — fall through with stale value */ }
+        // 3. Probe the grant level so the picker can gate the background-only
+        //    options. Best-effort: 'undetermined' on failure leaves every
+        //    option enabled rather than falsely locking the picker.
+        let permLevel = 'undetermined';
+        try {
+            permLevel = await this.getLocationPermissionStatus();
+        } catch (e) {
+            permLevel = 'undetermined';
+        }
+        if (!this._uiState().showShareLocationModal) { return; }
+        this._uiSetState({ shareLocationPermissionLevel: permLevel });
 
-        // Step 3: open the duration picker.
-        this.host.setState({showShareLocationModal: true});
-
-        // Fire a getCurrentCoordinates fetch in the background so the
-        // preview map inside ShareLocationModal can show the user's
-        // current position alongside the destination.
+        // 4. Fetch the current location so the preview map + user pin render.
         this._fetchPreviewLocation();
     }
 
@@ -168,53 +760,71 @@ export default class LocationSharingManager {
         // Reset the previous fix immediately so a stale one from an
         // earlier modal-open doesn't render briefly while the new
         // one is in flight.
-        this.host.setState({previewUserLocation: null});
+        this._uiSetState({previewUserLocation: null});
         try {
-            utils.timestampedLog('[location] preview: requesting current location for share modal');
+            //utils.timestampedLog('[location] preview: requesting current location for share modal');
             this.getCurrentCoordinates().then((coords) => {
-                if (this.host._unmounted) {
+                if (!this.navbar || this.navbar._unmounted) {
                     utils.timestampedLog('[location] preview: GPS fix landed but component unmounted — discarding');
                     return;
                 }
                 if (!coords
                         || typeof coords.latitude !== 'number'
                         || typeof coords.longitude !== 'number') {
-                    utils.timestampedLog('[location] preview: GPS fix returned invalid coords',
-                        JSON.stringify(coords));
+                    utils.timestampedLog('[location] preview: GPS fix returned invalid coords', JSON.stringify(coords));
                     return;
                 }
                 // Defensive: if the modal was already closed before the
                 // fix landed, don't write stale state.
-                if (!this.host.state.showShareLocationModal) {
-                    utils.timestampedLog(
-                        '[location] preview: GPS fix landed but modal already closed — discarding'
-                    );
+                if (!this._uiState().showShareLocationModal) {
+                    utils.timestampedLog('[location] preview: GPS fix landed but modal already closed — discarding');
                     return;
                 }
-                utils.timestampedLog(
-                    '[location] preview: current location acquired —',
-                    coords.latitude.toFixed(5) + ',' + coords.longitude.toFixed(5),
-                    typeof coords.accuracy === 'number'
-                        ? `±${Math.round(coords.accuracy)}m`
-                        : ''
-                );
-                this.host.setState({previewUserLocation: {
+                utils.timestampedLog('[location] preview: current location acquired —', coords.latitude.toFixed(5) + ',' + coords.longitude.toFixed(5), typeof coords.accuracy === 'number' ? `±${Math.round(coords.accuracy)}m` : '');
+                this._uiSetState({previewUserLocation: {
                     latitude: coords.latitude,
                     longitude: coords.longitude,
+                    // Kept so startLocationSharing can reuse this fix for the
+                    // origin tick when the user Confirms quickly (see
+                    // _freshPreviewFix). accuracy rides along so the reused
+                    // origin tick carries the same quality as a live fix;
+                    // acquiredAt is the fix time we measure freshness against.
+                    accuracy: typeof coords.accuracy === 'number' ? coords.accuracy : undefined,
+                    acquiredAt: typeof coords.timestamp === 'number' ? coords.timestamp : Date.now(),
                 }});
             }).catch((err) => {
-                utils.timestampedLog(
-                    '[location] preview: getCurrentCoordinates failed —',
-                    err && err.message ? err.message : err,
-                    'code=', err && err.code
-                );
+                utils.timestampedLog('[location] preview: getCurrentCoordinates failed —', err && err.message ? err.message : err, 'code=', err && err.code);
             });
         } catch (e) {
-            utils.timestampedLog(
-                '[location] preview: getCurrentCoordinates threw synchronously —',
-                e && e.message ? e.message : e
-            );
+            utils.timestampedLog('[location] preview: getCurrentCoordinates threw synchronously —', e && e.message ? e.message : e);
         }
+    }
+
+    // Return the modal's preview location fix IF it's still fresh enough to
+    // seed a share's origin tick (default: acquired within the last 60 s),
+    // else null. Lets startLocationSharing skip a redundant GPS acquire when
+    // the user Confirms shortly after the picker fetched their position —
+    // the first bubble then renders immediately from the fix we already have.
+    // Shape matches getCurrentCoordinates(): {latitude, longitude, accuracy,
+    // timestamp}. Returns null if there's no preview, it lacks a timestamp,
+    // or it has aged out — callers then fall back to a live fetch.
+    _freshPreviewFix(maxAgeMs = 60000) {
+        const p = this._uiState() && this._uiState().previewUserLocation;
+        if (!p
+                || typeof p.latitude !== 'number'
+                || typeof p.longitude !== 'number'
+                || typeof p.acquiredAt !== 'number') {
+            return null;
+        }
+        if (Date.now() - p.acquiredAt > maxAgeMs) {
+            return null;
+        }
+        return {
+            latitude: p.latitude,
+            longitude: p.longitude,
+            accuracy: typeof p.accuracy === 'number' ? p.accuracy : undefined,
+            timestamp: p.acquiredAt,
+        };
     }
 
     hideShareLocationModal() {
@@ -224,7 +834,7 @@ export default class LocationSharingManager {
         // (and re-tries pendingShareDestinationUrl as a last-ditch
         // synchronous resolve) BEFORE this fires, so confirmed
         // shares still get the destination.
-        this.host.setState({
+        this._uiSetState({
             showShareLocationModal: false,
             pendingShareDestination: null,
             pendingShareDestinationUrl: null,
@@ -234,6 +844,12 @@ export default class LocationSharingManager {
             // destination — showShareLocationModal will rearm a fresh
             // getCurrentCoordinates fetch.
             previewUserLocation: null,
+            // Clear the probed grant level so the next open starts fresh.
+            // The meet-me entry points open the modal without probing
+            // permission (gates run in the background), so leaving a stale
+            // foreground-only value here could wrongly gate that flow;
+            // resetting to null means "unknown → don't gate".
+            shareLocationPermissionLevel: null,
         });
     }
 
@@ -266,15 +882,13 @@ export default class LocationSharingManager {
             link = {type: 'direct', coords: link};
         }
         if (link.type === 'direct') {
-            utils.timestampedLog('[location] meetMeAt: direct destination',
-                link.coords.latitude.toFixed(5), ',', link.coords.longitude.toFixed(5),
-                'for', uri);
+            utils.timestampedLog('[location] meetMeAt: direct destination', link.coords.latitude.toFixed(5), ',', link.coords.longitude.toFixed(5), 'for', uri);
             // Open panel synchronously via state — see the short-URL
             // branch below for why we don't go through
             // showShareLocationModal here either. The permission /
             // disclosure gates run as a background task and only kick
             // in when the user actually confirms the share.
-            this.host.setState({
+            this._uiSetState({
                 pendingShareDestination: {
                     latitude: link.coords.latitude,
                     longitude: link.coords.longitude,
@@ -300,8 +914,7 @@ export default class LocationSharingManager {
             return;
         }
         if (link.type === 'short') {
-            utils.timestampedLog('[location] meetMeAt: short URL — opening panel + resolving in parallel',
-                link.url, 'for', uri);
+            utils.timestampedLog('[location] meetMeAt: short URL — opening panel + resolving in parallel', link.url, 'for', uri);
             // Open the panel SYNCHRONOUSLY by flipping
             // showShareLocationModal in the same setState. Going
             // through this.showShareLocationModal() awaits async
@@ -312,7 +925,7 @@ export default class LocationSharingManager {
             // can show the panel optimistically and let the gates
             // run in the background. If a gate fails it closes the
             // panel and surfaces an alert (see _meetMeAtRunGates).
-            this.host.setState({
+            this._uiSetState({
                 pendingShareDestination: null,
                 pendingShareDestinationUrl: link.url,
                 pendingShareDestinationStatus: 'resolving',
@@ -334,7 +947,7 @@ export default class LocationSharingManager {
             // run. Each writes back via setState as it completes.
             this._meetMeAtRunGates(uri);
             const _kickedOffFor = link.url;
-            const _isStale = () => this.host.state.pendingShareDestinationUrl !== _kickedOffFor;
+            const _isStale = () => this._uiState().pendingShareDestinationUrl !== _kickedOffFor;
             // Resolve via HTTP only. utils.resolveShortLocationUrl already
             // (a) follows HTTP redirects (response.url) for
             // `maps.app.goo.gl/<id>` and `maps.google.com/?q=lat,lng` style
@@ -352,9 +965,8 @@ export default class LocationSharingManager {
                 .then((coords) => {
                     if (_isStale()) return;
                     if (coords) {
-                        utils.timestampedLog('[location] meetMeAt: short URL resolved (HTTP) →',
-                            coords.latitude.toFixed(5), ',', coords.longitude.toFixed(5));
-                        this.host.setState({
+                        utils.timestampedLog('[location] meetMeAt: short URL resolved (HTTP) →', coords.latitude.toFixed(5), ',', coords.longitude.toFixed(5));
+                        this._uiSetState({
                             pendingShareDestination: coords,
                             pendingShareDestinationStatus: 'resolved',
                         });
@@ -367,33 +979,28 @@ export default class LocationSharingManager {
                     // via Nominatim. Run it against the original link URL.
                     const _addr = utils.extractQueryAddress(link.url);
                     if (_addr) {
-                        utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords — geocoding ?q= address',
-                            JSON.stringify(_addr));
+                        utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords — geocoding ?q= address', JSON.stringify(_addr));
                         return utils.geocodeAddress(_addr).then((coords2) => {
                             if (_isStale()) return;
                             if (coords2) {
-                                utils.timestampedLog('[location] meetMeAt: geocode resolved →',
-                                    coords2.latitude.toFixed(5), ',', coords2.longitude.toFixed(5));
-                                this.host.setState({
+                                utils.timestampedLog('[location] meetMeAt: geocode resolved →', coords2.latitude.toFixed(5), ',', coords2.longitude.toFixed(5));
+                                this._uiSetState({
                                     pendingShareDestination: coords2,
                                     pendingShareDestinationStatus: 'resolved',
                                 });
                             } else {
-                                utils.timestampedLog('[location] meetMeAt: geocode had no match for',
-                                    JSON.stringify(_addr));
-                                this.host.setState({pendingShareDestinationStatus: 'failed'});
+                                utils.timestampedLog('[location] meetMeAt: geocode had no match for', JSON.stringify(_addr));
+                                this._uiSetState({pendingShareDestinationStatus: 'failed'});
                             }
                         });
                     }
-                    utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords + no q= address —',
-                        link.url);
-                    this.host.setState({pendingShareDestinationStatus: 'failed'});
+                    utils.timestampedLog('[location] meetMeAt: HTTP resolve had no coords + no q= address —', link.url);
+                    this._uiSetState({pendingShareDestinationStatus: 'failed'});
                 })
                 .catch((err) => {
                     if (_isStale()) return;
-                    utils.timestampedLog('[location] meetMeAt: resolve chain failed',
-                        err && err.message ? err.message : err);
-                    this.host.setState({pendingShareDestinationStatus: 'failed'});
+                    utils.timestampedLog('[location] meetMeAt: resolve chain failed', err && err.message ? err.message : err);
+                    this._uiSetState({pendingShareDestinationStatus: 'failed'});
                 });
             return;
         }
@@ -445,8 +1052,7 @@ export default class LocationSharingManager {
                 );
             }
         } catch (e) {
-            utils.timestampedLog('[location] meetMeAt: gate evaluation failed',
-                e && e.message ? e.message : e);
+            utils.timestampedLog('[location] meetMeAt: gate evaluation failed', e && e.message ? e.message : e);
         }
     }
 
@@ -494,8 +1100,7 @@ export default class LocationSharingManager {
                 // block a working feature on a Podfile oversight.
                 if (alwaysStatus === RESULTS.UNAVAILABLE
                     && whenStatus === RESULTS.UNAVAILABLE) {
-                    console.log('[location] react-native-permissions Location '
-                        + 'subspecs not installed — skipping upfront probe');
+                    console.log('[location] react-native-permissions Location ' + 'subspecs not installed — skipping upfront probe');
                     return 'undetermined';
                 }
                 if (whenStatus === RESULTS.UNAVAILABLE) {
@@ -503,8 +1108,7 @@ export default class LocationSharingManager {
                 }
                 return 'undetermined';
             } catch (e) {
-                console.log('[location] getLocationPermissionStatus iOS failed',
-                    e && e.message ? e.message : e);
+                console.log('[location] getLocationPermissionStatus iOS failed', e && e.message ? e.message : e);
                 return 'undetermined';
             }
         }
@@ -566,7 +1170,7 @@ export default class LocationSharingManager {
         // The v2 key is now further scoped per SIP account in
         // locationDisclosure.js so a second identity on the same
         // device starts fresh.
-        const _accountId = this.host.props.accountId;
+        const _accountId = this.app.state.accountId;
         const acknowledged = await readLocationDisclosure(_accountId);
         if (acknowledged === true) {
             return true;
@@ -580,28 +1184,23 @@ export default class LocationSharingManager {
             const permState = await this.getLocationPermissionStatus();
             console.log('[location] disclosure shown — OS permission state =', permState);
         } catch (e) {
-            console.log('[location] disclosure shown — getLocationPermissionStatus failed',
-                e && e.message ? e.message : e);
+            console.log('[location] disclosure shown — getLocationPermissionStatus failed', e && e.message ? e.message : e);
         }
         return new Promise((resolve) => {
-            this.host.setState({
+            this._uiSetState({
                 locationDisclosurePending: {
                     onContinue: async () => {
                         await setLocationDisclosure(_accountId);
-                        utils.timestampedLog(
-                            '[location] user accepted privacy policy via share-flow gate — disclosure flag set for',
-                            _accountId);
-                        this.host.setState({
+                        utils.timestampedLog('[location] user accepted privacy policy via share-flow gate — disclosure flag set for', _accountId);
+                        this._uiSetState({
                             locationDisclosurePending: null,
                             locationDisclosureAcknowledged: true,
                         });
                         resolve(true);
                     },
                     onCancel: () => {
-                        utils.timestampedLog(
-                            '[location] user cancelled privacy policy at share-flow gate — share aborted for',
-                            _accountId);
-                        this.host.setState({locationDisclosurePending: null});
+                        utils.timestampedLog('[location] user cancelled privacy policy at share-flow gate — share aborted for', _accountId);
+                        this._uiSetState({locationDisclosurePending: null});
                         resolve(false);
                     },
                 },
@@ -738,8 +1337,8 @@ export default class LocationSharingManager {
     // accessor isn't available yet.
     _hydrateDisclaimerSuppression = async () => {
         try {
-            const accountId = this.host.props.accountId;
-            const read = this.host.props.readAppStateNamespace;
+            const accountId = this.app.state.accountId;
+            const read = this.app._readAppStateNamespace;
             if (!accountId || typeof read !== 'function') {
                 //utils.timestampedLog(
                 //    '[location] hydrate-disclaimer: skipped — accountId=', accountId,
@@ -754,12 +1353,11 @@ export default class LocationSharingManager {
             //    'location=', JSON.stringify(location),
             //    '→ suppressed=', suppressed
             //);
-            if (this.host.state.shareDisclaimerSuppressed !== suppressed) {
-                this.host.setState({shareDisclaimerSuppressed: suppressed});
+            if (this._uiState().shareDisclaimerSuppressed !== suppressed) {
+                this._uiSetState({shareDisclaimerSuppressed: suppressed});
             }
         } catch (e) {
-            utils.timestampedLog('[location] _hydrateDisclaimerSuppression failed',
-                e && e.message ? e.message : e);
+            utils.timestampedLog('[location] _hydrateDisclaimerSuppression failed', e && e.message ? e.message : e);
         }
     }
 
@@ -770,36 +1368,25 @@ export default class LocationSharingManager {
     // next modal open already sees the suppressed state, even if the
     // SQL UPDATE is still in the debounce window.
     _suppressShareLocationDisclaimer = async () => {
-        utils.timestampedLog(
-            '[location] suppress-disclaimer: invoked'
-        );
+        //utils.timestampedLog('[location] suppress-disclaimer: invoked');
         try {
-            const accountId = this.host.props.accountId;
-            const read = this.host.props.readAppStateNamespace;
-            const write = this.host.props.writeAppStateNamespace;
+            const accountId = this.app.state.accountId;
+            const read = this.app._readAppStateNamespace;
+            const write = this.app._writeAppStateNamespace;
             if (!accountId
                     || typeof read !== 'function'
                     || typeof write !== 'function') {
-                utils.timestampedLog(
-                    '[location] suppress-disclaimer: skipped — accountId=', accountId,
-                    'read=', typeof read, 'write=', typeof write
-                );
+                //utils.timestampedLog('[location] suppress-disclaimer: skipped — accountId=', accountId, 'read=', typeof read, 'write=', typeof write);
                 return;
             }
             const location = await read(accountId, 'location');
-            utils.timestampedLog(
-                '[location] suppress-disclaimer: read existing location=', JSON.stringify(location)
-            );
+            //utils.timestampedLog('[location] suppress-disclaimer: read existing location=', JSON.stringify(location));
             location.disclaimerSuppressed = true;
             await write(accountId, 'location', location);
-            utils.timestampedLog(
-                '[location] suppress-disclaimer: write completed for', accountId,
-                'new location=', JSON.stringify(location)
-            );
-            this.host.setState({shareDisclaimerSuppressed: true});
+            //utils.timestampedLog('[location] suppress-disclaimer: write completed for', accountId, 'new location=', JSON.stringify(location));
+            this._uiSetState({shareDisclaimerSuppressed: true});
         } catch (e) {
-            utils.timestampedLog('[location] _suppressShareLocationDisclaimer failed',
-                e && e.message ? e.message : e);
+            utils.timestampedLog('[location] _suppressShareLocationDisclaimer failed', e && e.message ? e.message : e);
         }
     }
 
@@ -810,9 +1397,9 @@ export default class LocationSharingManager {
     // policy in the first place.
     _clearShareLocationDisclaimerSuppression = async () => {
         try {
-            const accountId = this.host.props.accountId;
-            const read = this.host.props.readAppStateNamespace;
-            const write = this.host.props.writeAppStateNamespace;
+            const accountId = this.app.state.accountId;
+            const read = this.app._readAppStateNamespace;
+            const write = this.app._writeAppStateNamespace;
             if (!accountId
                     || typeof read !== 'function'
                     || typeof write !== 'function') return;
@@ -821,10 +1408,9 @@ export default class LocationSharingManager {
                 delete location.disclaimerSuppressed;
                 await write(accountId, 'location', location);
             }
-            this.host.setState({shareDisclaimerSuppressed: false});
+            this._uiSetState({shareDisclaimerSuppressed: false});
         } catch (e) {
-            console.log('[location] _clearShareLocationDisclaimerSuppression failed',
-                e && e.message ? e.message : e);
+            console.log('[location] _clearShareLocationDisclaimerSuppression failed', e && e.message ? e.message : e);
         }
     }
 
@@ -844,8 +1430,8 @@ export default class LocationSharingManager {
     // is in Settings — the auto-resume flips it to a real share once
     // permission lands.
     _armPermissionRetry(uri, durationMs, periodLabel, opts) {
-        if (!this.host._pendingPermissionShares) {
-            this.host._pendingPermissionShares = {};
+        if (!this._pendingPermissionShares) {
+            this._pendingPermissionShares = {};
         }
         // Deep-clone opts so a later mutation by the caller (e.g.
         // tickExtras buildup) can't change the parked intent.
@@ -857,7 +1443,7 @@ export default class LocationSharingManager {
         // entry as an already-resumed one and skip arming on its
         // own permission fail.
         delete safeOpts._resumedAfterPermission;
-        this.host._pendingPermissionShares[uri] = {
+        this._pendingPermissionShares[uri] = {
             uri,
             durationMs,
             periodLabel,
@@ -871,10 +1457,7 @@ export default class LocationSharingManager {
             expiresAt: typeof (opts && opts.expiresAt) === 'number'
                 ? opts.expiresAt : null,
         };
-        utils.timestampedLog(
-            '[location] permission-retry armed for', uri,
-            '— share will resume automatically when permission is granted'
-        );
+        utils.timestampedLog('[location] permission-retry armed for', uri, '— share will resume automatically when permission is granted');
     }
 
     // Explicit user-cancellation of a parked share intent. Called
@@ -885,12 +1468,9 @@ export default class LocationSharingManager {
     // there pretending a share is starting that the user already
     // told us to forget.
     _cancelPendingPermissionShare(uri, rollbackFn) {
-        if (this.host._pendingPermissionShares
-                && this.host._pendingPermissionShares[uri]) {
-            delete this.host._pendingPermissionShares[uri];
-            utils.timestampedLog(
-                '[location] permission-retry cancelled by user for', uri
-            );
+        if (this._pendingPermissionShares[uri]) {
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog('[location] permission-retry cancelled by user for', uri);
         }
         if (typeof rollbackFn === 'function') {
             try { rollbackFn(); }
@@ -905,8 +1485,8 @@ export default class LocationSharingManager {
     // paths know not to re-arm a fresh entry on the (rare) case the
     // probe was a false positive.
     async _drainPendingPermissionShares() {
-        if (!this.host._pendingPermissionShares) return;
-        const uris = Object.keys(this.host._pendingPermissionShares);
+        if (!this._pendingPermissionShares) return;
+        const uris = Object.keys(this._pendingPermissionShares);
         if (uris.length === 0) return;
         let probe = 'denied';
         try {
@@ -916,34 +1496,28 @@ export default class LocationSharingManager {
             probe === 'always'
             || probe === 'whenInUse'
             || probe === 'foregroundOnly';
-        utils.timestampedLog(
-            '[location] permission-retry drain — probe=', probe,
-            'sufficient=', sufficient,
-            'pending=', uris.length
-        );
+        utils.timestampedLog('[location] permission-retry drain — probe=', probe, 'sufficient=', sufficient, 'pending=', uris.length);
         if (!sufficient) {
             // Leave entries in place — the user may still be on the
             // way to Settings. Next foreground will probe again.
             return;
         }
         for (const uri of uris) {
-            const pending = this.host._pendingPermissionShares[uri];
+            const pending = this._pendingPermissionShares[uri];
             if (!pending) continue;
             // Drop expired meet-accept retries — pointless to start
             // a share whose request has aged out.
             if (typeof pending.expiresAt === 'number'
                     && pending.expiresAt <= Date.now()) {
-                utils.timestampedLog(
-                    '[location] permission-retry: dropping expired pending for', uri
-                );
-                delete this.host._pendingPermissionShares[uri];
+                utils.timestampedLog('[location] permission-retry: dropping expired pending for', uri);
+                delete this._pendingPermissionShares[uri];
                 continue;
             }
             // Defensive: someone may have started a share for this
             // uri via a different path while we were waiting. Don't
             // double-start.
-            if (this.host.locationTimers[uri]) {
-                delete this.host._pendingPermissionShares[uri];
+            if (this._hasAnyEntryForUri(uri)) {
+                delete this._pendingPermissionShares[uri];
                 continue;
             }
             // Remove BEFORE starting — startLocationSharing's own
@@ -954,11 +1528,8 @@ export default class LocationSharingManager {
             // function to NOT call _armPermissionRetry again, which
             // would otherwise loop.
             const params = pending;
-            delete this.host._pendingPermissionShares[uri];
-            utils.timestampedLog(
-                '[location] permission-retry: permission now', probe,
-                '— resuming share for', uri
-            );
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog('[location] permission-retry: permission now', probe, '— resuming share for', uri);
             try {
                 await this.startLocationSharing(
                     uri,
@@ -977,10 +1548,7 @@ export default class LocationSharingManager {
                     }
                 );
             } catch (e) {
-                utils.timestampedLog(
-                    '[location] permission-retry: resume threw',
-                    e && e.message ? e.message : e
-                );
+                utils.timestampedLog('[location] permission-retry: resume threw', e && e.message ? e.message : e);
             }
         }
     }
@@ -1056,31 +1624,36 @@ export default class LocationSharingManager {
             }
             const age = (position && typeof position.timestamp === 'number')
                 ? (Date.now() - position.timestamp) : null;
-            utils.timestampedLog(
-                `[location] [fix-source] ${tag} <- ${uri || '?'}`,
-                'source=' + source,
-                'mocked=' + (mocked ? 'YES' : 'no'),
-                'accuracy=' + (acc != null ? acc.toFixed(1) + 'm' : '?'),
-                'altitude=' + (alt != null ? alt.toFixed(1) + 'm' : 'null'),
-                'altAccuracy=' + (altAcc != null ? altAcc.toFixed(1) + 'm' : 'null'),
-                'speed=' + (speed != null ? speed.toFixed(2) + 'm/s' : 'null'),
-                'heading=' + (heading != null ? heading.toFixed(0) : 'null'),
-                'fixAgeMs=' + (age != null ? age : '?'),
-                'lat=' + (typeof c.latitude === 'number' ? c.latitude.toFixed(6) : '?'),
-                'lng=' + (typeof c.longitude === 'number' ? c.longitude.toFixed(6) : '?')
-            );
+            //utils.timestampedLog(`[location] [fix-source] ${tag} <- ${uri || '?'}`, 'source=' + source, 'mocked=' + (mocked ? 'YES' : 'no'), 'accuracy=' + (acc != null ? acc.toFixed(1) + 'm' : '?'), 'altitude=' + (alt != null ? alt.toFixed(1) + 'm' : 'null'), 'altAccuracy=' + (altAcc != null ? altAcc.toFixed(1) + 'm' : 'null'), 'speed=' + (speed != null ? speed.toFixed(2) + 'm/s' : 'null'), 'heading=' + (heading != null ? heading.toFixed(0) : 'null'), 'fixAgeMs=' + (age != null ? age : '?'), 'lat=' + (typeof c.latitude === 'number' ? c.latitude.toFixed(6) : '?'), 'lng=' + (typeof c.longitude === 'number' ? c.longitude.toFixed(6) : '?'));
         } catch (e) { /* logging must never throw */ }
     }
 
-    // Build and send a single "location" metadata message for the given
+    // Build and send a single location-data message for the given
     // contact URI with the supplied coordinate + expiration timestamp.
-    // `originMetadataId` is null for the very first tick of a session
+    // `originLocationId` is null for the very first tick of a session
     // (that first tick becomes the "origin" message the receiver renders).
-    // Every subsequent tick carries metadataId = origin's _id so the
-    // receiver can find the bubble to update in place.
-    sendLocationMetadata(uri, coords, expiresAt, originMetadataId = null, extras = {}) {
-        if (!this.host.props.sendMessage) {
-            console.log('sendLocationMetadata: sendMessage prop is not wired');
+    // Every subsequent tick is flagged `isUpdate` and groups under the
+    // origin's id (messageId) so the receiver updates the bubble in place.
+    // Resolve which store entry a send/tick refers to. Follow-up ticks carry a
+    // non-null originLocationId → unambiguous across both stores. The very first
+    // (origin-promotion) tick has originLocationId null; `isMeet` (threaded from
+    // the session's own kind by every tick path) disambiguates, and as a final
+    // fallback we prefer the entry that hasn't been stamped with an origin yet.
+    _resolveSendEntry(uri, originLocationId, isMeet) {
+        if (!uri) return null;
+        if (isMeet === true) return this._meetStore()[uri] || null;
+        if (isMeet === false) return this._plainStore()[uri] || null;
+        if (originLocationId != null) return this._entryByOrigin(uri, originLocationId);
+        const plain = this._plainStore()[uri];
+        const meet = this._meetStore()[uri];
+        if (plain && !plain.originLocationId) return plain;
+        if (meet && !meet.originLocationId) return meet;
+        return plain || meet || null;
+    }
+
+    sendLocationPayload(uri, coords, expiresAt, originLocationId = null, extras = {}, isMeet = null) {
+        if (!this.app.sendMessage) {
+            console.log('sendLocationPayload: sendMessage prop is not wired');
             return null;
         }
 
@@ -1095,15 +1668,15 @@ export default class LocationSharingManager {
         if (!coords
                 || typeof coords.latitude !== 'number'
                 || typeof coords.longitude !== 'number') {
-            console.log('[location] sendLocationMetadata: dropping tick — coords missing for', uri);
+            console.log('[location] sendLocationPayload: dropping tick — coords missing for', uri);
             return null;
         }
 
         // Pause gate: when the entry is flagged paused, swallow the
         // tick. We keep the watchPosition / setInterval armed (so
         // Resume can fire an immediate tick without a re-arm dance),
-        // but no metadata leaves the device until the user resumes.
-        const _pausedEntry = this.host.locationTimers && this.host.locationTimers[uri];
+        // but no location data leaves the device until the user resumes.
+        const _pausedEntry = this._resolveSendEntry(uri, originLocationId, isMeet);
         if (_pausedEntry && _pausedEntry.paused) {
             return null;
         }
@@ -1112,45 +1685,93 @@ export default class LocationSharingManager {
         // tick" of a session: the initial getCurrentCoordinates().then()
         // callback in startLocationSharing AND the first
         // watchPosition / setInterval fire (which may complete before
-        // the awaited GPS read). Both pass originMetadataId=null
+        // the awaited GPS read). Both pass originLocationId=null
         // because the entry's origin id isn't set yet. Without
         // coordination they'd each send an origin tick and the receiver
         // would render two bubbles. Resolve here:
-        //   • If the entry already has an originMetadataId, this tick
+        //   • If the entry already has an originLocationId, this tick
         //     is implicitly a follow-up — point it at that origin.
         //   • Otherwise the tick we're about to send IS the origin;
         //     stamp the entry below (after we've generated mId).
-        const entryAtSend = this.host.locationTimers && this.host.locationTimers[uri];
+        const entryAtSend = this._resolveSendEntry(uri, originLocationId, isMeet);
         let promoteToOrigin = false;
-        if (originMetadataId == null) {
-            if (entryAtSend && entryAtSend.originMetadataId) {
-                originMetadataId = entryAtSend.originMetadataId;
+        if (originLocationId == null) {
+            if (entryAtSend && entryAtSend.originLocationId) {
+                originLocationId = entryAtSend.originLocationId;
             } else {
                 promoteToOrigin = true;
             }
         }
 
-        const mId = uuid.v4();
+        // Meet-invite gate: a requester's meet share sends ONE invite ORIGIN
+        // tick, then HOLDS — recurring update ticks are suppressed until the
+        // invitee accepts (meeting_accept -> resumeMeetShareOnAccept clears the
+        // session). The origin always passes (promoteToOrigin) — it IS the
+        // invite; only follow-up updates wait.
+        if (!promoteToOrigin && entryAtSend && entryAtSend.meetingSessionId
+                && this._awaitingAcceptSessions
+                && this._awaitingAcceptSessions.has(entryAtSend.meetingSessionId)) {
+            return null;
+        }
+
+        // Row id (this message's own msg_id / primary key). Normally a fresh,
+        // unique uuid — deliberately DECOUPLED from the session grouping id
+        // (sessionId) below, so both legs of a meet can share one sessionId
+        // without their origin rows colliding on msg_id.
+        //
+        // EXCEPTION — the REQUESTER's meet ORIGIN: its msg_id MUST equal the
+        // session (request) id, so there is exactly ONE origin row keyed by the
+        // request id and every subsequent tick is an update pointing back at it.
+        // With a fresh uuid the origin row's msg_id diverged from the session id,
+        // and the "two ticks race to become origin" (start callback + first
+        // watch/interval fire) produced a SECOND, disconnected origin — leaving
+        // the sender with two half-origins that the reload synthesis couldn't
+        // rebuild, so the sender's map vanished after leaving + reopening the
+        // chat. Pinning the origin msg_id to the session id also makes the race
+        // self-healing: a second promote-to-origin tick reuses the same msg_id
+        // and dedups on the UNIQUE (account, msg_id) key instead of forking.
+        //
+        // Scoped to the requester leg ONLY (entry.kind === 'meetingRequest').
+        // The accepter's origin keeps a fresh uuid: both legs share the SAME
+        // session id, so forcing the accepter's origin msg_id to it too would
+        // collide with the requester's origin row on the shared id.
+        const _meetSessionForId = entryAtSend && entryAtSend.meetingSessionId;
+        const _isRequesterMeetOrigin = promoteToOrigin
+            && !!_meetSessionForId
+            && entryAtSend
+            && entryAtSend.kind === 'meetingRequest';
+        const mId = _isRequesterMeetOrigin ? _meetSessionForId : uuid.v4();
         const timestamp = new Date();
 
         // `messageId` is the _id of the **rendered location bubble** this
-        // metadata refers to — same semantics as reply/label/rotation. For the
+        // location data refers to. For the
         // very first tick of a session the bubble is *this* message itself
         // (origin and target), so messageId = own envelope _id. For every
         // subsequent tick, messageId points back at the origin tick so the
-        // receiver's messagesMetadata store keeps updating the same key and
+        // receiver's locationData store keeps updating the same key and
         // the already-rendered bubble refreshes in place.
-        const targetId = originMetadataId || mId;
+        // Session grouping id = the rendered bubble key, shared by every tick
+        // of the session (and by BOTH legs of a meet). For a meet it's the
+        // meeting request id X (from meetingSessionId); the two legs group under
+        // one bubble and are told apart by `role`. For a plain-live / one-shot
+        // share it's this session's own origin id.
+        const _meetSession = _meetSessionForId;
+        const sessionId = _meetSession || originLocationId || mId;
+        const targetId = sessionId;
 
-        const metadataContent = {
+        const locationContent = {
             action: 'location',
-            // Which bubble to update (origin's _id). Same on every tick of
-            // the session — that's how the rendering layer finds the bubble.
+            // The bubble/session this tick belongs to (== sessionId). Same on
+            // every tick of the session — that's how the rendering layer + the
+            // peer's related_msg_id group the trail.
             messageId: targetId,
-            // null on the first tick; pointer to the origin tick afterwards.
-            // Used by the receiver to tell "new sharing session just started"
-            // apart from "another update of an existing session."
-            metadataId: originMetadataId,
+            // sessionId groups the trail on the wire (peer reads it into
+            // related_msg_id).
+            sessionId: sessionId,
+            // false on this leg's first (origin) tick; true on every follow-up.
+            // Tells "new session" apart from "another update"; the wire carries
+            // this as the explicit location_update / meeting_update action.
+            isUpdate: !!originLocationId,
             value: coords,          // {latitude, longitude, accuracy, timestamp}
             expires: expiresAt,     // ISO string of expiration
             timestamp: timestamp,
@@ -1163,21 +1784,19 @@ export default class LocationSharingManager {
         // _id). See ShareLocationModal.DURATION_OPTIONS and the
         // acceptance flow in app.js for how these propagate.
         //
-        // NOTE: `meeting_request:true` used to be stamped only on the
-        // origin tick (`!originMetadataId`). That broke restore-from-
-        // SQL on the receiver: every follow-up tick UPDATEs the origin
-        // row's `content` column in place (saveOutgoingMessageSql
-        // location-update branch in app.js), so the persisted content
-        // was the LATEST tick — which didn't carry the flag. On chat
-        // reopen the bubble's metadata had `meeting_request === undefined`
-        // and the kebab's "Show meeting request..." option vanished.
-        // Stamping on every tick keeps the persisted content
-        // self-describing without further machinery. Receiver-side
-        // handlers (`_noteIncomingMeetingRequest`, etc.) are already
-        // idempotent on the requestId, so re-firing them on each
-        // update tick is a no-op.
+        // `meeting_request:true` is stamped on EVERY tick, not just the origin.
+        // Follow-up ticks UPDATE the origin row's `content` column in place
+        // (saveOutgoingMessageSql location-update branch in app.js), so if only
+        // the origin carried the flag the persisted content (the latest tick)
+        // would lose it and the bubble's "Show meeting request..." option would
+        // vanish on reload. Receiver-side handlers (`_noteIncomingMeetingRequest`,
+        // etc.) are idempotent on the requestId, so re-firing per tick is a no-op.
         if (extras.meetingRequest) {
-            metadataContent.meeting_request = true;
+            locationContent.meeting_request = true;
+            // Descriptive role on the wire (the inviter's coordinate stream).
+            // The engine still pairs via meeting_request / in_reply_to; role is
+            // carried alongside for self-describing payloads.
+            locationContent.role = 'inviter';
         }
         // Privacy-deferred origin tick: the inviter chose a privacy
         // radius and is still inside it, so the value coords above are
@@ -1190,11 +1809,11 @@ export default class LocationSharingManager {
         // overlay along the bottom of the map without LocationBubble
         // having to look up the timer entry.
         if (extras.privacyDeferred) {
-            metadataContent.privacyDeferred = true;
-            const _entry = this.host.locationTimers && this.host.locationTimers[uri];
+            locationContent.privacyDeferred = true;
+            const _entry = this._resolveSendEntry(uri, originLocationId, isMeet);
             const r = _entry && Number(_entry.excludeOriginRadiusMeters);
             if (r && r > 0) {
-                metadataContent.privacyDeferredRadiusMeters = r;
+                locationContent.privacyDeferredRadiusMeters = r;
             }
         }
         // Dummy-origin tick: a privacy-radius meet invite with NO shared
@@ -1210,10 +1829,12 @@ export default class LocationSharingManager {
         // they cross the perimeter (the first real tick overwrites the
         // dummy in place). Cleared on that first real-coord tick.
         if (extras.dummy) {
-            metadataContent.dummy = true;
+            locationContent.dummy = true;
         }
         if (extras.inReplyTo) {
-            metadataContent.in_reply_to = extras.inReplyTo;
+            // The invited party's coordinate stream — identified by role + the
+            // shared sessionId now (in_reply_to removed from the wire).
+            locationContent.role = 'invited';
         }
         // Optional shared meeting destination, encoded as
         // {latitude, longitude}. Today only set by the convergence
@@ -1227,7 +1848,7 @@ export default class LocationSharingManager {
         if (extras.destination
                 && typeof extras.destination.latitude === 'number'
                 && typeof extras.destination.longitude === 'number') {
-            metadataContent.destination = {
+            locationContent.destination = {
                 latitude: extras.destination.latitude,
                 longitude: extras.destination.longitude,
             };
@@ -1238,21 +1859,55 @@ export default class LocationSharingManager {
         // live-share UI affordances (no "expires in", no peer-distance
         // label, etc.).
         if (extras.oneShot) {
-            metadataContent.one_shot = true;
+            locationContent.one_shot = true;
         }
 
-        const metadataMessage = {
+        const locationMessage = {
             _id: mId,
             key: mId,
             createdAt: timestamp,
-            metadata: metadataContent,
-            text: JSON.stringify(metadataContent),
+            metadata: locationContent,
+            text: JSON.stringify(locationContent),
             // Outgoing messages carry an empty `user` object — GiftedChat
             // warns "user is missing" otherwise (see app/utils.js:192).
             user: {},
         };
 
-        this.host.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
+        // Plain live shares (no meet-me handshake, privacy-radius, dummy origin
+        // ALL location shares — plain live, one-shot AND the "Until we meet"
+        // handshake — ship in the application/sylk-location-sharing format: only
+        // the coordinate payload is PGP-encrypted, while the lifecycle fields
+        // (action, sessionId, meeting_request, in_reply_to, expires…)
+        // stay cleartext so the receiver/journal can identify and group a session
+        // — and filter it on contact-select — without decrypting. `_isMeetShare`
+        // is used only to suppress the plain-live "Sharing…" system note for meet
+        // shares (which have their own "I want to meet up" announcement).
+        const _isMeetShare = locationContent.meeting_request === true
+            || !!locationContent.role
+            || locationContent.privacyDeferred === true
+            || locationContent.dummy === true
+            || !!locationContent.destination;
+        // "Until I return" auto-stop. Evaluate the gate BEFORE the send so
+        // its departure/return state machine advances on this tick's coords,
+        // and remember whether THIS is the terminal (arrival) tick. We do
+        // NOT skip the send: the arrival fix is a legitimate final position
+        // and must land on the receiver's track as the last point.
+        //
+        // Ordering matters. location_stop is coordinate-free so it skips the
+        // PGP-encrypt step a coordinate-bearing location_update must do; if we
+        // fired both without sequencing, the lighter stop would reach
+        // account.sendMessage first and overtake the update on the wire (the
+        // receiver would see stop-then-stray-update and the last point would
+        // be lost). So we send the update and CHAIN the stop onto the update's
+        // send promise — all updates go out, THEN the stop, in succession.
+        // Returns false for any share whose kind !== 'untilIReturn'.
+        const _untilReturnTerminal = this._evaluateUntilReturnGate(uri, coords);
+        const _sendPromise = this.app.sendMessage(uri, locationMessage, 'application/sylk-location-sharing');
+        if (_untilReturnTerminal) {
+            Promise.resolve(_sendPromise)
+                .catch(() => { /* stop even if the final update failed to send */ })
+                .then(() => this.stopLocationSharing(uri, {reason: 'returned'}));
+        }
 
         // First valid-coords send wins the origin slot for this session.
         // Stamp the entry so concurrent first-fixes (initial GPS-fix
@@ -1261,20 +1916,45 @@ export default class LocationSharingManager {
         // bubble. Mirrors meetingSessionId for meet-request sessions —
         // the requester's origin _id is the canonical session key.
         if (promoteToOrigin && entryAtSend) {
-            entryAtSend.originMetadataId = mId;
+            entryAtSend.originLocationId = mId;
             if (entryAtSend.kind === 'meetingRequest' && !entryAtSend.meetingSessionId) {
                 entryAtSend.meetingSessionId = mId;
             }
             // Mirror to the persisted snapshot so a kill-and-resume
             // doesn't pick up an older / null id.
-            try { this.host._persistActiveShares(); } catch (e) { /* noop */ }
+            try { this.app._persistActiveShares(); } catch (e) { /* noop */ }
+
+            // Plain live share: emit the sender's "You started sharing…" SYSTEM
+            // note now — on the actual origin tick — so it's symmetric with the
+            // receiver's note and the "You stopped sharing…" note, and never
+            // fires for a share that was optimistically shown but then denied.
+            // Meet-me keeps its chat-message announcement.
+            if (!_isMeetShare
+                    && !locationContent.one_shot) {
+                const _startAt = timestamp.toLocaleTimeString([],
+                    { hour: '2-digit', minute: '2-digit' });
+                // Fold in the duration ("for 8 hours" / "until I return") when the
+                // share carries one, so this single note conveys everything the
+                // old separate "Started sharing … for X" note did — that one was
+                // emitted AFTER the origin tick and rendered BELOW the map (a
+                // reversed duplicate) and has been removed.
+                const _plLabel = (entryAtSend && entryAtSend.periodLabel)
+                    ? ` for ${entryAtSend.periodLabel}` : '';
+                // Stamp the note ~1s BEFORE the origin tick so it sorts ABOVE the
+                // map bubble (whose createdAt is the tick timestamp): the intent
+                // note reads first, then the first map.
+                const _startNoteTs = new Date(timestamp.getTime() - 1000);
+                /* this.app.saveSystemMessage(uri,
+                    `📍 Sharing live location at ${_startAt}${_plLabel}`,
+                    'outgoing', false, 1, null, null, _startNoteTs); */
+            }
         }
 
         // Per-tick breadcrumb. Emitted *after* the send so it's proof the
         // send path ran (not just that we got a fix). Kept terse — one
         // line per tick every LOCATION_REPEAT_MS so background sessions
         // leave a clear trail in Metro / Xcode / adb logcat.
-        const role = originMetadataId ? 'update' : 'origin';
+        const role = originLocationId ? 'update' : 'origin';
         const lat = coords && typeof coords.latitude === 'number'
             ? coords.latitude.toFixed(5) : '?';
         const lng = coords && typeof coords.longitude === 'number'
@@ -1288,7 +1968,7 @@ export default class LocationSharingManager {
         // the sender was actually progressing or jittering near home. Falls
         // back to '?' if we don't have an origin yet (very first origin tick,
         // or this isn't an "until I return" share).
-        const liveEntry = this.host.locationTimers && this.host.locationTimers[uri];
+        const liveEntry = this._resolveSendEntry(uri, originLocationId, isMeet);
         let distFromOriginStr = '';
         if (liveEntry
                 && liveEntry.untilReturnOrigin
@@ -1308,9 +1988,7 @@ export default class LocationSharingManager {
         // build only had this on the dev console, so a "17 ticks but stuck"
         // report from a phone in the field had no per-tick evidence to
         // correlate with — just an aggregate counter.
-        utils.timestampedLog(
-            `[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})${distFromOriginStr}`
-        );
+        utils.timestampedLog(`[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})${distFromOriginStr}`);
         // Record the just-reported coords on the timer entry so
         // _shouldSendUpdateTick's stationary gate can compare future
         // ticks against this baseline. Only meaningful when this is
@@ -1336,12 +2014,7 @@ export default class LocationSharingManager {
         // Fire the destination-arrival heads-up if this tick's coords
         // landed within DEST_ARRIVAL_THRESHOLD_M of the shared meeting
         // destination. Once-per-session, gated on the entry flag.
-        this._maybeFireDestinationArrival(uri, coords);
-        // "Until I return" auto-stop. Runs after every successful
-        // tick so the cadence matches the heartbeat (~1/min). Owns
-        // its own state machine on the timer entry — see
-        // _evaluateUntilReturnGate for the departure→return logic.
-        this._evaluateUntilReturnGate(uri, coords);
+        this._maybeFireDestinationArrival(uri, coords, liveEntry);
         return mId;
     }
 
@@ -1362,7 +2035,9 @@ export default class LocationSharingManager {
     // Idempotent: if the tick is missing valid coords, or the entry
     // disappeared between scheduling and now, we just bail.
     _evaluateUntilReturnGate(uri, coords) {
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+        // 'untilIReturn' is always a PLAIN share, so it only ever lives in the
+        // plain store.
+        const entry = this._plainStore()[uri];
         if (!entry || entry.kind !== 'untilIReturn') return;
         if (!coords
                 || typeof coords.latitude !== 'number'
@@ -1382,11 +2057,7 @@ export default class LocationSharingManager {
             };
             entry.untilReturnDeparted = false;
             try {
-                utils.timestampedLog(
-                    `[location] [untilIReturn] origin captured for ${uri} → `
-                    + `${coords.latitude.toFixed(5)},${coords.longitude.toFixed(5)} `
-                    + `— share will auto-stop when you return after moving ≥${this.host.UNTIL_RETURN_DEPARTURE_M} m away`
-                );
+                utils.timestampedLog(`[location] [untilIReturn] origin captured for ${uri} → ` + `${coords.latitude.toFixed(5)},${coords.longitude.toFixed(5)} ` + `— share will auto-stop when you return after moving ≥${this.UNTIL_RETURN_DEPARTURE_M} m away`);
             } catch (e) { /* noop */ }
             return;
         }
@@ -1399,13 +2070,10 @@ export default class LocationSharingManager {
             // Phase 1: waiting for the user to physically leave the
             // origin neighbourhood. Until they do, every tick stays
             // "near home" and we don't terminate the share.
-            if (distance > this.host.UNTIL_RETURN_DEPARTURE_M) {
+            if (distance > this.UNTIL_RETURN_DEPARTURE_M) {
                 entry.untilReturnDeparted = true;
                 try {
-                    utils.timestampedLog(
-                        `[location] [untilIReturn] departure detected for ${uri} `
-                        + `(${Math.round(distance)} m from origin) — now watching for return`
-                    );
+                    utils.timestampedLog(`[location] [untilIReturn] departure detected for ${uri} ` + `(${Math.round(distance)} m from origin) — now watching for return`);
                 } catch (e) { /* noop */ }
             }
             return;
@@ -1416,15 +2084,16 @@ export default class LocationSharingManager {
         // state, foreground service teardown, etc.; we just signal
         // the reason so future log-grep / analytics can tell why
         // this share ended.
-        if (distance <= this.host.UNTIL_RETURN_RETURN_M) {
+        if (distance <= this.UNTIL_RETURN_RETURN_M) {
             try {
-                utils.timestampedLog(
-                    `[location] [untilIReturn] return detected for ${uri} `
-                    + `(${Math.round(distance)} m from origin) — stopping share`
-                );
+                utils.timestampedLog(`[location] [untilIReturn] return detected for ${uri} ` + `(${Math.round(distance)} m from origin) — sending final tick, then stopping share`);
             } catch (e) { /* noop */ }
-            this.stopLocationSharing(uri, {reason: 'returned'});
+            // Do NOT stop here. sendLocationPayload sends this tick's final
+            // update first, then chains stopLocationSharing onto the send
+            // promise so the stop goes out AFTER the last update.
+            return true;
         }
+        return false;
     }
 
     // ===== Destination arrival heads-up =====
@@ -1449,8 +2118,12 @@ export default class LocationSharingManager {
     // side gets a banner.
     //
     // Once-per-session via entry.destinationArrivalFired.
-    _maybeFireDestinationArrival(uri, coords) {
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+    _maybeFireDestinationArrival(uri, coords, entryArg = null) {
+        // Destination arrival is a meet concept; prefer the entry the caller
+        // resolved for this tick, else the meet leg, else any entry for the uri.
+        const entry = entryArg
+            || this._meetEntryForUri(uri)
+            || this._entryByOrigin(uri, null);
         if (!entry) return;
         if (entry.destinationArrivalFired) return;
         // Privacy-deferred origin tick: the value coords passed in are
@@ -1477,41 +2150,36 @@ export default class LocationSharingManager {
 
         entry.destinationArrivalFired = true;
 
-        const myDisplayName = this.host.props.myDisplayName || 'I';
+        const myDisplayName = this.app.state.displayName || ((this.app.state.accountId || '').split('@')[0]) || 'I';
 
         // 1. Visible log line on this device.
         try {
             const utils = require('../utils');
-            utils.timestampedLog(
-                `[location] [meet] ARRIVED at meeting point (${Math.round(dist)} m from destination) — ${uri}`
-            );
+            utils.timestampedLog(`[location] [meet] ARRIVED at meeting point (${Math.round(dist)} m from destination) — ${uri}`);
         } catch (e) { /* noop */ }
 
         // 2. Chat message to the peer. The peer's handleIncomingMessage
         //    sees metadata.meetingArrival on this and fires the
         //    arrival push on THEIR side (and suppresses the default
         //    "New message" banner so we don't double-buzz).
-        if (typeof this.host.props.sendMessage === 'function') {
-            try {
-                const msgId = uuid.v4();
-                const announceText = `${myDisplayName} arrived at the meeting point`;
-                const textMessage = {
-                    _id: msgId,
-                    key: msgId,
-                    createdAt: new Date(),
-                    text: announceText,
-                    metadata: {meetingArrival: true},
-                    user: {},
-                };
-                this.host.props.sendMessage(uri, textMessage);
-            } catch (e) {
-                console.log('[location] arrival announcement send failed',
-                    e && e.message ? e.message : e);
-            }
+        try {
+            const msgId = uuid.v4();
+            const announceText = `${myDisplayName} arrived at the meeting point`;
+            const textMessage = {
+                _id: msgId,
+                key: msgId,
+                createdAt: new Date(),
+                text: announceText,
+                metadata: {meetingArrival: true},
+                user: {},
+            };
+            this.app.sendMessage(uri, textMessage);
+        } catch (e) {
+            console.log('[location] arrival announcement send failed', e && e.message ? e.message : e);
         }
     }
 
-    // Send one location metadata update. Fetches a fresh fix every time
+    // Send one location-data update. Fetches a fresh fix every time
     // so each tick carries the user's current position. Returns the _id
     // of the tick that was sent (so the first call can record the origin).
     //
@@ -1521,7 +2189,7 @@ export default class LocationSharingManager {
     // swallowed (returns null), and any subsequent fix that's still
     // within 1 km of that origin is also swallowed. Ticks resume the
     // moment the user has moved past the radius.
-    async sendLocationUpdate(uri, expiresAt, originMetadataId = null, extras = {}) {
+    async sendLocationUpdate(uri, expiresAt, originLocationId = null, extras = {}, isMeet = null) {
         try {
             // Race fence: see the long comment on
             // entry.awaitingSimulatedPosition in startLocationSharing.
@@ -1529,7 +2197,7 @@ export default class LocationSharingManager {
             // in flight (Nominatim land-check), skip the tick rather
             // than ship a real-GPS one that would mistakenly pair
             // both phones at ~1 m and trip proximity-met.
-            const entryNow = this.host.locationTimers && this.host.locationTimers[uri];
+            const entryNow = this._resolveSendEntry(uri, originLocationId, isMeet);
             if (entryNow
                     && entryNow.awaitingSimulatedPosition
                     && !entryNow.simulatedPosition) {
@@ -1541,15 +2209,14 @@ export default class LocationSharingManager {
             // is armed, that's what we report; real GPS is ignored
             // for this session.
             const coords = this.sim.effectiveCoordinatesForSession(uri, realCoords);
-            if (!this._shouldSendUpdateTick(uri, coords)) {
+            if (!this._shouldSendUpdateTick(uri, coords, entryNow)) {
                 // Privacy radius is hiding the tick from the wire —
                 // refresh the LOCAL bubble's owner pin so the user
                 // sees themselves move on their own map.
-                const _curEntry = this.host.locationTimers && this.host.locationTimers[uri];
+                const _curEntry = this._resolveSendEntry(uri, originLocationId, isMeet);
                 if (_curEntry && _curEntry.privacyDeferred
-                        && _curEntry.privacyDeferredBubbleMid
-                        && typeof this.host.props.setLocalOwnerCoordsForBubble === 'function') {
-                    this.host.props.setLocalOwnerCoordsForBubble(
+                        && _curEntry.privacyDeferredBubbleMid) {
+                    this.app._setLocalOwnerCoordsForBubble(
                         uri,
                         _curEntry.privacyDeferredBubbleMid,
                         coords,
@@ -1558,7 +2225,7 @@ export default class LocationSharingManager {
                 }
                 return null;
             }
-            return this.sendLocationMetadata(uri, coords, expiresAt, originMetadataId, extras);
+            return this.sendLocationPayload(uri, coords, expiresAt, originLocationId, extras, isMeet);
         } catch (err) {
             console.log('sendLocationUpdate: failed to read location', err && err.message ? err.message : err);
             return null;
@@ -1585,13 +2252,51 @@ export default class LocationSharingManager {
     // Coordinates that aren't usable numbers (e.g. the placeholder tick's
     // null lat/lng) are treated as "not yet" — the gate doesn't capture
     // them as the origin point and continues to suppress ticks.
-    _shouldSendUpdateTick(uri, coords) {
-        const entry = this.host.locationTimers[uri];
+    _shouldSendUpdateTick(uri, coords, entryArg = null) {
+        const entry = entryArg || this._entryByOrigin(uri, null);
         // Caller already verified the timer entry exists, but defend
         // against late-arriving callbacks racing tear-down.
         if (!entry) {
             return true;
         }
+        // Meet arrival gate. Once THIS device is within _arriveM of the agreed
+        // meeting point (session destination), stop emitting meeting_update
+        // ticks — the user asked not to keep broadcasting after reaching the
+        // meeting point. Exactly ONE tick is allowed through at/after arrival
+        // (so the peer receives our final at-destination position), then the
+        // rest are suppressed. The session, the receiver, proximity-met
+        // detection and the expiry wipe all stay live, so the meet still
+        // completes/ends normally — we only pause the outgoing coordinate
+        // stream. Every tick path (Android interval, iOS watch, initial fix)
+        // funnels through this gate, so one check covers both platforms.
+        try {
+            const _msid = entry.meetingSessionId;
+            const _sess = _msid && this.meetingSessions ? this.meetingSessions[_msid] : null;
+            const _dest = _sess && _sess.destination;
+            const _clat = coords && typeof coords.latitude === 'number' ? coords.latitude : null;
+            const _clng = coords && typeof coords.longitude === 'number' ? coords.longitude : null;
+            if (_dest && _clat != null && _clng != null) {
+                if (entry.arrivedAtDest) {
+                    return false; // already reached the meeting point — stay quiet
+                }
+                const _pref = this.app && this.app.state && this.app.state.accountSetting
+                    && this.app.state.accountSetting.location
+                    && this.app.state.accountSetting.location.proximityMeters;
+                // Arrival radius: at least 30 m (GPS noise floor at a fixed
+                // point), widened to the user's meet-proximity preference when
+                // they've relaxed it (e.g. 50 m indoor).
+                const _arriveM = Math.max(30, (typeof _pref === 'number' && _pref > 0) ? _pref : 0);
+                const _toDest = haversineMeters({latitude: _clat, longitude: _clng}, _dest);
+                if (Number.isFinite(_toDest) && _toDest <= _arriveM) {
+                    entry.arrivedAtDest = true;
+                    try {
+                        const _u = require('../utils');
+                        _u.timestampedLog('[location] [meet] reached meeting point (~' + Math.round(_toDest) + ' m to dest) — sending final tick, then pausing meeting_update for', uri);
+                    } catch (e) { /* logging must never throw */ }
+                    // Fall through: let THIS (final) arrival tick go out normally.
+                }
+            }
+        } catch (e) { /* best-effort arrival gate — never block a tick on error */ }
         // Stationary gate has been REMOVED in favour of a per-minute
         // heartbeat tick. The previous "if you haven't moved 10 m,
         // skip the tick" filter saved bandwidth but had two costs the
@@ -1603,14 +2308,14 @@ export default class LocationSharingManager {
         //      X-hour window.
         // Both are now addressed by always emitting a tick at the
         // throttle cadence (LOCATION_REPEAT_MS = 60 s), regardless of
-        // movement. A 4 h share at 60 s cadence is ~240 metadata
+        // movement. A 4 h share at 60 s cadence is ~240 location-data
         // messages — at ~500 bytes encrypted, that's ~120 KB total,
         // which is well within budget for an active chat. The
         // privacy-radius branch below still applies normally so the
         // "Until we meet" 1 km exclusion still hides the user's
         // starting point.
         // The lastReportedCoords / lastReportedAt fields are still
-        // stamped by sendLocationMetadata so future tuning (e.g. a
+        // stamped by sendLocationPayload so future tuning (e.g. a
         // user-toggleable "low bandwidth" mode that re-enables the
         // gate) has the data to work with.
         const radiusMeters = Number(entry.excludeOriginRadiusMeters) || 0;
@@ -1631,13 +2336,9 @@ export default class LocationSharingManager {
                 : `${Math.round(radiusMeters)} m`;
             const utils = require('../utils');
             try {
-                utils.timestampedLog(
-                    `[location] [meet] privacy radius active for ${uri} — your starting point will be hidden until you move ${radiusLabel} away`
-                );
+                utils.timestampedLog(`[location] [meet] privacy radius active for ${uri} — your starting point will be hidden until you move ${radiusLabel} away`);
             } catch (e) {
-                console.log('[location] origin point captured for', uri,
-                    'lat=', lat.toFixed(5), 'lng=', lng.toFixed(5),
-                    `(privacy radius ${radiusLabel} active)`);
+                console.log('[location] origin point captured for', uri, 'lat=', lat.toFixed(5), 'lng=', lng.toFixed(5), `(privacy radius ${radiusLabel} active)`);
             }
             return false;
         }
@@ -1650,12 +2351,9 @@ export default class LocationSharingManager {
             entry.originRadiusCleared = true;
             const utils = require('../utils');
             try {
-                utils.timestampedLog(
-                    `[location] [meet] privacy radius cleared for ${uri} (${Math.round(meters)} m from origin) — your live location is now being shared`
-                );
+                utils.timestampedLog(`[location] [meet] privacy radius cleared for ${uri} (${Math.round(meters)} m from origin) — your live location is now being shared`);
             } catch (e) {
-                console.log('[location] privacy radius cleared for', uri,
-                    'distance=', Math.round(meters), 'm');
+                console.log('[location] privacy radius cleared for', uri, 'distance=', Math.round(meters), 'm');
             }
         }
         return true;
@@ -1675,7 +2373,8 @@ export default class LocationSharingManager {
                 || typeof destination.longitude !== 'number') {
             return;
         }
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+        // Destination is a meet concept — prefer the meet leg, fall back to any.
+        const entry = this._meetEntryForUri(uri) || this._entryByOrigin(uri, null);
         if (!entry || !entry.tickExtras) return;
         if (entry.tickExtras.destination) return;
         entry.tickExtras.destination = {
@@ -1684,9 +2383,7 @@ export default class LocationSharingManager {
         };
         try {
             const utils = require('../utils');
-            utils.timestampedLog(
-                `[sim] received shared meeting destination at ${destination.latitude.toFixed(5)},${destination.longitude.toFixed(5)} for ${uri}`
-            );
+            utils.timestampedLog(`[sim] received shared meeting destination at ${destination.latitude.toFixed(5)},${destination.longitude.toFixed(5)} for ${uri}`);
         } catch (e) { /* noop */ }
     }
 
@@ -1706,19 +2403,19 @@ export default class LocationSharingManager {
     // No-op when:
     //   • there's no entry for this uri (already stopped); the
     //     contextual menu's Resume option will instead route to a
-    //     fresh startLocationSharing on the bubble's metadata.
-    //   • originMetadataId was supplied AND doesn't match the entry's
+    //     fresh startLocationSharing on the bubble's location data.
+    //   • originLocationId was supplied AND doesn't match the entry's
     //     origin: the user long-pressed an OLD bubble whose share has
     //     already been replaced by a newer one.
-    pauseLocationSharing(uri, originMetadataId) {
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+    pauseLocationSharing(uri, originLocationId) {
+        const entry = this._entryByOrigin(uri, originLocationId);
         if (!entry) return false;
-        if (originMetadataId && entry.originMetadataId !== originMetadataId) return false;
+        if (originLocationId && entry.originLocationId !== originLocationId) return false;
         if (entry.paused) return true;
         entry.paused = true;
-        try { this.host._persistActiveShares(); } catch (e) { /* noop */ }
+        try { this.app._persistActiveShares(); } catch (e) { /* noop */ }
         // Stop the NavBar icon's breathing animation when no shares
-        // are actively ticking. Pause means no metadata is leaving the
+        // are actively ticking. Pause means no location data is leaving the
         // device, and the pulse is meant to communicate "the device is
         // sending updates" — keeping it on while nothing's flowing
         // would be misleading. Only stop if every share is paused
@@ -1726,37 +2423,43 @@ export default class LocationSharingManager {
         // still ticking) AND there's no active call (the pulse also
         // signals the in-call icon).
         try {
-            const _anyUnpaused = Object.values(this.host.locationTimers || {})
-                .some(e => e && !e.paused);
-            if (!_anyUnpaused && !this.host.props.callActive) {
-                this.host._stopActiveSharePulse();
+            const _anyUnpaused = [
+                ...Object.values(this.outgoingLocationSessions || {}),
+                ...Object.values(this.outgoingMeetSessions || {}),
+            ].some(e => e && !e.paused);
+            if (!_anyUnpaused && !this.app._callActive) {
+                this._uiStopPulse();
             }
         } catch (e) { /* noop */ }
         // Force a re-render so any UI gated on pause state (the
         // chat-header Pause/Resume Menu.Item we added earlier) flips
         // to its new label/icon.
-        this.host.forceUpdate();
-        utils.timestampedLog('[location] paused share for', uri,
-            'origin=', entry.originMetadataId);
+        this._uiForceUpdate();
+        utils.timestampedLog('[location] paused share for', uri, 'origin=', entry.originLocationId);
         return true;
     }
 
     // Unpause a previously paused share. If no entry exists (the share
     // was fully stopped — e.g. user deleted a bubble by mistake and
     // wants to keep going), the caller should fall back to a fresh
-    // startLocationSharing with resumeOriginMetadataId set so the
+    // startLocationSharing with resumeOriginLocationId set so the
     // existing bubble keeps updating instead of a new one being
     // spawned. Returns false in that case so app.js's bridge knows to
     // take the start path.
-    resumeLocationSharing(uri, originMetadataId) {
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+    resumeLocationSharing(uri, originLocationId) {
+        const entry = this._entryByOrigin(uri, originLocationId);
         if (!entry) return false;
-        if (originMetadataId && entry.originMetadataId !== originMetadataId) return false;
+        if (originLocationId && entry.originLocationId !== originLocationId) return false;
         if (!entry.paused) return true;
         if (Date.now() >= entry.expiresAt) {
             // Expired while paused — clean up and tell the caller
-            // there's nothing to resume.
-            this.stopLocationSharing(uri, {reason: 'expired'});
+            // there's nothing to resume. Target THIS session explicitly so a
+            // concurrent session of the other kind for the same uri is untouched.
+            this.stopLocationSharing(uri, {
+                reason: 'expired',
+                sessionId: entry.originLocationId,
+                meet: this._isMeetKind(entry.kind),
+            });
             return false;
         }
         entry.paused = false;
@@ -1767,20 +2470,20 @@ export default class LocationSharingManager {
             this.sendLocationUpdate(
                 uri,
                 new Date(entry.expiresAt).toISOString(),
-                entry.originMetadataId,
-                entry.tickExtras || {}
+                entry.originLocationId,
+                entry.tickExtras || {},
+                this._isMeetKind(entry.kind)
             );
         } catch (e) { /* noop — next periodic tick will catch up */ }
-        try { this.host._persistActiveShares(); } catch (e) { /* noop */ }
+        try { this.app._persistActiveShares(); } catch (e) { /* noop */ }
         // Re-arm the NavBar pulse — ticks are flowing again so the
         // breathing animation should communicate that. Symmetric to
         // the stop in pauseLocationSharing.
-        try { this.host._startActiveSharePulse(); } catch (e) { /* noop */ }
+        try { this._uiStartPulse(); } catch (e) { /* noop */ }
         // Force a re-render so the chat-header Menu.Item flips back
         // from "Resume sharing" to "Pause sharing".
-        this.host.forceUpdate();
-        utils.timestampedLog('[location] resumed share for', uri,
-            'origin=', entry.originMetadataId);
+        this._uiForceUpdate();
+        utils.timestampedLog('[location] resumed share for', uri, 'origin=', entry.originLocationId);
         return true;
     }
 
@@ -1788,29 +2491,21 @@ export default class LocationSharingManager {
     //   'active'   — entry exists, not paused
     //   'paused'   — entry exists, paused
     //   'stopped'  — no entry (share was torn down)
-    getLocationShareState(uri, originMetadataId) {
-        const entry = this.host.locationTimers && this.host.locationTimers[uri];
+    getLocationShareState(uri, originLocationId) {
+        const entry = this._entryByOrigin(uri, originLocationId);
         if (!entry) {
             // Diagnostic: a kebab/render path expected an active
             // share but didn't find one. Throttle so a tight render
             // loop doesn't flood the log — once per uri+origin per
             // 5 seconds is plenty for repro.
-            if (this._shouldLogShareStateProbe(uri, originMetadataId, 'stopped-no-entry')) {
-                console.log('[location] getLocationShareState',
-                    'uri=', uri,
-                    'asked-origin=', originMetadataId,
-                    '→ stopped (no entry)',
-                    'allTimerKeys=', this.host.locationTimers ? Object.keys(this.host.locationTimers) : '(none)');
+            if (this._shouldLogShareStateProbe(uri, originLocationId, 'stopped-no-entry')) {
+                console.log('[location] getLocationShareState', 'uri=', uri, 'asked-origin=', originLocationId, '→ stopped (no entry)', 'allTimerKeys=', this.outgoingLocationSessions ? Object.keys(this.outgoingLocationSessions) : '(none)');
             }
             return 'stopped';
         }
-        if (originMetadataId && entry.originMetadataId !== originMetadataId) {
-            if (this._shouldLogShareStateProbe(uri, originMetadataId, 'origin-mismatch')) {
-                console.log('[location] getLocationShareState',
-                    'uri=', uri,
-                    'asked-origin=', originMetadataId,
-                    'entry-origin=', entry.originMetadataId,
-                    '→ stopped (origin mismatch)');
+        if (originLocationId && entry.originLocationId !== originLocationId) {
+            if (this._shouldLogShareStateProbe(uri, originLocationId, 'origin-mismatch')) {
+                console.log('[location] getLocationShareState', 'uri=', uri, 'asked-origin=', originLocationId, 'entry-origin=', entry.originLocationId, '→ stopped (origin mismatch)');
             }
             return 'stopped';
         }
@@ -1824,18 +2519,18 @@ export default class LocationSharingManager {
     }
 
     // Throttle for the diagnostic getLocationShareState log. Same
-    // (uri, originMetadataId, reason) won't log more than once per
+    // (uri, originLocationId, reason) won't log more than once per
     // 5 s. Cheap in-memory map keyed by composite — bounded by the
     // number of unique meet bubbles in the chat × the number of
     // distinct failure reasons (currently 2). No cleanup needed for
     // the lifetime of the component.
-    _shouldLogShareStateProbe(uri, originMetadataId, reason) {
-        if (!this.host._shareStateLogStamps) this.host._shareStateLogStamps = {};
-        const key = `${uri}|${originMetadataId || ''}|${reason}`;
+    _shouldLogShareStateProbe(uri, originLocationId, reason) {
+        if (!this._shareStateLogStamps) this._shareStateLogStamps = {};
+        const key = `${uri}|${originLocationId || ''}|${reason}`;
         const now = Date.now();
-        const last = this.host._shareStateLogStamps[key] || 0;
+        const last = this._shareStateLogStamps[key] || 0;
         if (now - last < 5000) return false;
-        this.host._shareStateLogStamps[key] = now;
+        this._shareStateLogStamps[key] = now;
         return true;
     }
 
@@ -1850,11 +2545,46 @@ export default class LocationSharingManager {
     // anyway (they're on the login screen). Reason 'logout' is NOT in
     // peerRelayReasons inside stopLocationSharing, so the peer signal
     // DOES go out — peer notification is the whole point.
+    // Clear the engine's runtime handshake/pending state on logout or account-
+    // switch: pending-request queues, dedup caches, and per-session wipe timers.
+    // Runtime-only — the persisted marker Sets + app_state mirror are handled by
+    // the app's _wipeLocationStateForLogout (which calls this); share teardown is
+    // stopAllSharesForLogout()'s job.
+    resetRuntimeStateForLogout() {
+        // Pending request queues — runtime-only "modal not shown yet" state; on
+        // account-switch a new identity must not inherit a pending invitation.
+        this.pendingMeetingRequests = {};
+        this.pendingLocationRequests = {};
+        // Runtime dedup caches.
+        this._meetLastDistanceBand = {};
+        this._meetReportedEnded = new Set();
+        // Cancel pending session-wipe timers — scoped to this account's session
+        // ids, they'd otherwise fire after the account is gone.
+        if (this.meetingSessionWipeTimers) {
+            for (const id of Object.keys(this.meetingSessionWipeTimers)) {
+                try { BackgroundTimer.clearTimeout(this.meetingSessionWipeTimers[id]); }
+                catch (e) { /* noop */ }
+            }
+            this.meetingSessionWipeTimers = {};
+        }
+    }
+
     stopAllSharesForLogout() {
-        const uris = Object.keys(this.host.locationTimers || {});
-        for (const uri of uris) {
+        // Stop every armed session across BOTH stores. A contact may have a
+        // plain share AND a meet leg live at once, so target each by its own
+        // session id rather than by uri alone.
+        const targets = [];
+        const _plain = this.outgoingLocationSessions || {};
+        const _meet = this.outgoingMeetSessions || {};
+        for (const uri of Object.keys(_plain)) {
+            targets.push({uri, sessionId: _plain[uri] && _plain[uri].originLocationId, meet: false});
+        }
+        for (const uri of Object.keys(_meet)) {
+            targets.push({uri, sessionId: _meet[uri] && _meet[uri].originLocationId, meet: true});
+        }
+        for (const t of targets) {
             try {
-                this.stopLocationSharing(uri, {silent: true, reason: 'logout'});
+                this.stopLocationSharing(t.uri, {silent: true, reason: 'logout', sessionId: t.sessionId, meet: t.meet});
             } catch (e) { /* best effort */ }
         }
         // Drop any parked permission-retry intents. _onAppStateChange's
@@ -1862,15 +2592,19 @@ export default class LocationSharingManager {
         // the app foregrounds — under whatever account is signed in
         // at that point, which is exactly the cross-account leak we're
         // trying to prevent here.
-        this.host._pendingPermissionShares = {};
+        this._pendingPermissionShares = {};
         // Defensive: ensure the pulse animation isn't left running
         // against an empty share map. _stopActiveSharePulse is a no-op
         // when no animation is armed.
-        try { this.host._stopActiveSharePulse(); } catch (e) { /* noop */ }
+        try { this._uiStopPulse(); } catch (e) { /* noop */ }
     }
 
     stopLocationSharing(uri, opts = {}) {
-        const {silent = false, reason = 'user'} = opts;
+        // sessionId / meet pick WHICH of a contact's (possibly two) live sessions
+        // to stop — a plain share and a meet leg can be armed at once. With no
+        // discriminator we fall back to "the plain share, else the meet leg" for
+        // backward-compat with the many legacy callers that pass only a uri.
+        const {silent = false, reason = 'user', sessionId = null, meet = null} = opts;
 
         // Reentry guard. Our own deleteMessage call near the end of
         // this function re-enters stopLocationSharing (via app.js's
@@ -1881,27 +2615,116 @@ export default class LocationSharingManager {
         // has already scheduled the state cleanup and the "stopped
         // sharing" note, and re-entering here would see activeShares
         // still populated (setState is async) and fire another one.
-        if (!this.host._pendingStops) this.host._pendingStops = new Set();
-        if (this.host._pendingStops.has(uri)) return;
-        this.host._pendingStops.add(uri);
+        if (!this._pendingStops) this._pendingStops = new Set();
+        if (this._pendingStops.has(uri)) return;
+        this._pendingStops.add(uri);
 
         // If a permission-deferred share intent is parked for this
         // peer, drop it. stopLocationSharing means the user wants
         // sharing to stop — we shouldn't auto-resume a parked intent
         // on next foreground after that.
-        if (this.host._pendingPermissionShares
-                && this.host._pendingPermissionShares[uri]) {
-            delete this.host._pendingPermissionShares[uri];
-            utils.timestampedLog(
-                '[location] permission-retry dropped — stopLocationSharing called for', uri,
-                'reason=', reason
-            );
+        if (this._pendingPermissionShares[uri]) {
+            delete this._pendingPermissionShares[uri];
+            utils.timestampedLog('[location] permission-retry dropped — stopLocationSharing called for', uri, 'reason=', reason);
         }
 
-        const wasActive = !!this.host.locationTimers[uri]
-            || this.host.state.activeLocationShares[uri] !== undefined;
+        let entry = null;
+        if (sessionId != null) entry = this._entryByOrigin(uri, sessionId);
+        // A sessionId that doesn't resolve (e.g. a meet bubble whose origin id
+        // shifted across the accept handshake) must still stop the right local
+        // session when the caller told us the TYPE — otherwise we fall through
+        // to the mirror-relay branch on the very device that owns the timer and
+        // nothing stops (reported "Stop didn't stop"). Fall back by type.
+        if (!entry) {
+            if (meet === true) entry = this._meetStore()[uri];
+            else if (meet === false) entry = this._plainStore()[uri];
+            else if (sessionId == null) entry = this._plainStore()[uri] || this._meetStore()[uri];
+        }
 
-        const entry = this.host.locationTimers[uri];
+        const wasActive = !!entry
+            || this.app.state.activeLocationShares[uri] !== undefined;
+
+        // MULTI-DEVICE STOP. This device is NOT the broadcaster (no local
+        // timer), but the user pressed Stop while it was mirroring an active
+        // share started on another of their devices. Relay a stop for the
+        // mirrored session so BOTH the peer AND the broadcasting sibling tear
+        // down — "start on one device, finish on another". Skip reasons that
+        // are themselves teardown responses (so we never loop). One session at
+        // a time per contact, so the mirror entry uniquely identifies it.
+        if (!entry) {
+            const _mirrorStopSkip = new Set(['peer-stopped', 'requester-deleted', 'unmount', 'replaced', 'expired']);
+            // Source the mirror entry from the live Map OR the React-state twin.
+            // These can desync (e.g. the inactivity sweep evicts the Map entry
+            // while the state still carries it, which is exactly what opened the
+            // panel). Take whichever has it so the relay always finds originMid.
+            // The mirror lives on the APP (this.app), not NavigationBar. Read
+            // the live Map first, then the React-state twin, then — as a last
+            // resort — the snapshot NavigationBar received as a prop. These can
+            // desync (e.g. the inactivity sweep evicts the Map entry while the
+            // state still carries it, which is exactly what opened the panel),
+            // so take whichever still has originMid. Without this.app the older
+            // this.app reads returned undefined on a mirror-only device, so
+            // the relay silently no-op'd and the broadcaster kept sharing.
+            const _app = this.app;
+            // The mirror Map is keyed per session-type (uri for a plain share,
+            // uri#meet for a meet), so check BOTH slots — otherwise a meet stop
+            // never finds its mirror entry. Fall back to the React-state twin
+            // and the prop snapshot, which can carry it when the inactivity
+            // sweep has evicted the Map entry mid-session.
+            const _mirror = (_app && _app._activeRemoteShares
+                    && (_app._activeRemoteShares.get(uri) || _app._activeRemoteShares.get(uri + '#meet')))
+                || (_app && _app.state && _app.state.activeRemoteSharesByUri
+                    && _app.state.activeRemoteSharesByUri[uri])
+                || (this.app.props && this.app.props.activeRemoteSharesByUri
+                    && this.app.props.activeRemoteSharesByUri[uri])
+                || null;
+            // GUARD: only relay when a mirrored session ACTUALLY exists. There's
+            // no local entry here (we're in the !entry branch); if there's also
+            // no mirror, then nothing is live for this peer on any device, so a
+            // Stop tap must send NOTHING. Without this, a tap on a bubble whose
+            // session already ended still fires a dead location_stop on the wire
+            // (the bubble always carries a sessionId), which the peer/sibling
+            // re-echo and the pin/button never settle. No mirror ⇒ no signal.
+            // When a mirror does exist, prefer the caller's explicit sessionId
+            // (the modal row / map bubble names WHICH of two sessions to stop),
+            // else the mirror's own origin id.
+            const _relayOrigin = _mirror
+                ? ((opts.sessionId != null) ? opts.sessionId : _mirror.originMid)
+                : null;
+            if (_relayOrigin && !_mirrorStopSkip.has(reason)) {
+                const _isMeetMirror = (opts.meet != null)
+                    ? !!opts.meet
+                    : !!(_mirror && (_mirror.role === 'requester' || _mirror.role === 'accepter'));
+                try {
+                    if (_isMeetMirror) {
+                        this.sendMeetingEndSignal(uri, _relayOrigin, { reason });
+                    } else {
+                        this.sendLocationStopSignal(uri, _relayOrigin, reason);
+                    }
+                    utils.timestampedLog('[location] relayed stop for mirrored share', uri, 'origin=', _relayOrigin, 'role=', (opts.meet != null ? (opts.meet ? 'meet' : 'plain') : ((_mirror && _mirror.role) || 'plain')));
+                } catch (e) {
+                    utils.timestampedLog('[location] mirrored-share stop relay failed', e && e.message ? e.message : e);
+                }
+                try {
+                    if (_app && typeof _app._clearRemoteShareForUri === 'function') {
+                        _app._clearRemoteShareForUri(uri);
+                    } else if (typeof this.app._clearRemoteShareForUri === 'function') {
+                        this.app._clearRemoteShareForUri(uri);
+                    }
+                } catch (e) { /* best-effort */ }
+                // Suppress the pulse from re-lighting: the broadcasting sibling
+                // keeps shipping ticks until it receives our relayed stop, and
+                // each self-echo carbon would otherwise re-stamp the mirror
+                // (_mirrorStampFromSelfEcho) and bring the pulse straight back —
+                // making the Stop tap look like it did nothing. The 10 s window
+                // matches that guard; by then the sibling has stopped.
+                try {
+                    const _guardHost = _app || this.app;
+                    if (!_guardHost._recentlyStoppedUris) _guardHost._recentlyStoppedUris = new Map();
+                    _guardHost._recentlyStoppedUris.set(uri, Date.now());
+                } catch (e) { /* best-effort */ }
+            }
+        }
 
         // If this share is one half of an "Until we meet" handshake AND the
         // stop was initiated locally (user tap, local delete, permission
@@ -1921,7 +2744,39 @@ export default class LocationSharingManager {
         if (entry
             && entry.meetingSessionId
             && !peerRelayReasons.has(reason)) {
-            this.sendMeetingEndSignal(uri, entry.meetingSessionId);
+            // meeting_end wipes the session, posts the reason-aware "meet-up
+            // ended" note, rides the location push, AND is journaled + replayed
+            // (like location_stop) — so an offline peer woken by a push still
+            // learns the meet ended on reconnect. No separate location_stop
+            // companion is needed any more.
+            this.sendMeetingEndSignal(uri, entry.meetingSessionId, {reason});
+            // Ending our own meet leg ends the meet for BOTH sides — so drop
+            // our LOCAL mirror of the peer's inbound share too. The peer stops
+            // on our meeting_end, but as a peer-stopped teardown it never signals
+            // us back, so without this our activeRemoteSharesByUri[uri] lingers
+            // and its inbound-share indicator keeps pulsing on the very device
+            // that pressed Stop (the reported symptom). The proximity / incoming
+            // meeting_end paths already clear it via _wipeMeetingSession; this
+            // covers the user-initiated stop.
+            try {
+                if (typeof this.app._clearRemoteShareForUri === 'function') {
+                    this.app._clearRemoteShareForUri(uri);
+                }
+            } catch (e) { /* best-effort */ }
+        }
+
+        // Plain live share (no meet-me session): tell the peer we stopped so
+        // their side can post an explicit "stopped sharing" note. Meet-me is
+        // handled by sendMeetingEndSignal above. Skip peer-originated stops
+        // (they already know) and app-shutdown reasons (websocket on its way
+        // down). The signal references our origin tick id — the same messageId
+        // the receiver's bubble is keyed by.
+        const _plainStopSkip = new Set(['peer-stopped', 'unmount', 'replaced']);
+        if (entry
+            && !entry.meetingSessionId
+            && entry.originLocationId
+            && !_plainStopSkip.has(reason)) {
+            this.sendLocationStopSignal(uri, entry.originLocationId, reason);
         }
 
         if (entry) {
@@ -1944,7 +2799,54 @@ export default class LocationSharingManager {
                 catch (e) { /* noop */ }
             }
         }
-        delete this.host.locationTimers[uri];
+        if (entry) { try { delete this._storeOfEntry(entry)[uri]; } catch (e) { /* noop */ } }
+        if (entry) { try { this.app._onLocationSessionsChanged('REMOVE', 'outgoing', uri, `reason=${reason} type=${this._isMeetKind(entry.kind) ? 'meet' : 'share'} kind=${entry.kind || 'fixed'} sid=${entry.originLocationId || entry.meetingSessionId || '?'} dev=${this.app.deviceId || '?'}`); } catch (e) {} }
+        // DURABLE ENDED MARKER. Record this session as ended so a later reload /
+        // journal replay cannot revive it. The boot-replay mirror seed and the
+        // journal zombie-guard both consult _endedLocationSessions + the stored
+        // location_stop row; without a durable marker here a sibling-relayed
+        // peer-stop (which tears the local entry down WITHOUT running
+        // _endLocationTrack) leaves no trace, so a reload re-seeds the mirror and
+        // the pin/Stop button come back for a session the user already ended
+        // (reported symptom). _endLocationTrack is idempotent (its _already
+        // guard) and, for direction 'outgoing', persists the stop row + adds the
+        // id to _endedLocationSessions + flips the bubble to "ended". Skip the
+        // reasons that are NOT real teardowns — 'replaced' (silent restart to
+        // re-arm the same session) and 'unmount' (process death; the resume path
+        // must still find the session on next launch).
+        if (entry && reason !== 'replaced' && reason !== 'unmount') {
+            const _endId = entry.originLocationId || entry.meetingSessionId;
+            if (_endId && typeof this.app._endLocationTrack === 'function') {
+                try {
+                    this.app._endLocationTrack(uri, _endId, reason, _endId, Date.now(), 'outgoing');
+                } catch (e) { /* best-effort — durable marker is defence in depth */ }
+            }
+        }
+        // Locally-initiated end of a MEET leg (user tapped Stop, or deleted the
+        // bubble) never runs _wipeMeetingSession on THIS device — only the peer
+        // does, via the meeting_end we relay. So our own origin bubble was left
+        // showing the generic "Track ended" footer instead of the meet outcome
+        // the peer sees. Stamp the outcome locally for the user-driven reasons;
+        // the peer-driven / scheduled teardowns already stamp it through
+        // _wipeMeetingSession (proximity / expired / replaced / incoming end).
+        try {
+            const _localMeetFinalizeSkip = new Set(['peer-stopped', 'expired', 'replaced', 'unmount', 'proximity', 'denied', 'requester-deleted', 'returned']);
+            if (entry && entry.meetingSessionId && !_localMeetFinalizeSkip.has(reason)
+                    && typeof this.app._finalizeLocalMeetOutcome === 'function') {
+                this.app._finalizeLocalMeetOutcome(entry.meetingSessionId, uri, reason);
+            }
+        } catch (e) { /* best-effort meet-outcome stamp */ }
+        // The share is stopping — stop any SIMULATOR walker for this uri too.
+        // The meet-up / round-trip / random-walk walkers run on their own
+        // interval inside this.sim (this.sim._simStates), separate from the
+        // real GPS interval/watch cleared above. Nothing else tears them down
+        // on a share stop: previously the walker was started AND stopped by the
+        // menu toggle, but now the meet-up sim auto-starts on accept, so when
+        // the meet ends (proximity wipe / stop / expiry) the walker would keep
+        // ticking — re-arming activeLocationShares and the pulse, and shipping
+        // stray meeting_update ticks. Stop it here so a finished meet truly goes
+        // quiet. Idempotent + best-effort.
+        try { if (this.sim && typeof this.sim.stop === 'function') this.sim.stop(uri); } catch (e) { /* best-effort */ }
         // Only rewrite the persisted snapshot when the share is
         // ending for a USER / SESSION reason — not when the React
         // component is being torn down by process death. On
@@ -1953,12 +2855,12 @@ export default class LocationSharingManager {
         // stopLocationSharing({reason:'unmount'}) ); persisting
         // here would wipe the snapshot to an empty map and the
         // resume-on-restart path would find nothing to bring back.
-        // The "unmount" branch keeps locationTimers clean for the
+        // The "unmount" branch keeps outgoingLocationSessions clean for the
         // brief window before the JS engine itself shuts down, but
         // leaves AsyncStorage intact so _loadAndResumeActiveShares
         // sees the still-live entries when the user reopens the app.
         if (reason !== 'unmount') {
-            this.host._persistActiveShares();
+            this.app._persistActiveShares();
             // Force the underlying app_state SQL UPDATE through
             // immediately, bypassing the 250 ms debounce. Without
             // this, a user who stops a share and immediately kills
@@ -1969,10 +2871,9 @@ export default class LocationSharingManager {
             // on the next microtask. Best-effort, no await needed
             // by the caller.
             try {
-                if (typeof this.host.props.forceFlushAppState === 'function'
-                        && this.host.props.accountId) {
+                if (this.app.state.accountId) {
                     Promise.resolve()
-                        .then(() => this.host.props.forceFlushAppState(this.host.props.accountId))
+                        .then(() => this.app._forceFlushAppState(this.app.state.accountId))
                         .catch(() => { /* persistence is best-effort */ });
                 }
             } catch (e) { /* noop */ }
@@ -1981,28 +2882,37 @@ export default class LocationSharingManager {
         // Android: release the foreground-service promotion, but ONLY when
         // there are no other active shares (a user may be sharing with
         // several contacts at once; stopping one shouldn't kill all of
-        // them). We key off `locationTimers` after the delete above —
+        // them). We key off `outgoingLocationSessions` after the delete above —
         // if it's empty, no other share is running.
         if (Platform.OS === 'android'
             && LocationForegroundServiceModule
             && typeof LocationForegroundServiceModule.stopService === 'function'
-            && Object.keys(this.host.locationTimers).length === 0) {
+            && Object.keys(this.outgoingLocationSessions).length === 0
+            && Object.keys(this.outgoingMeetSessions || {}).length === 0) {
             try {
                 LocationForegroundServiceModule.stopService();
             } catch (e) {
-                console.log('[location] LocationForegroundService.stopService failed',
-                    e && e.message ? e.message : e);
+                console.log('[location] LocationForegroundService.stopService failed', e && e.message ? e.message : e);
             }
         }
 
         // Mirror the change in React state so the menu item re-renders as
         // "Share location..." again. Guard the setState so we don't
         // schedule work after unmount (componentWillUnmount also calls us).
-        if (this.host._unmounted) return;
-        if (this.host.state.activeLocationShares[uri] !== undefined) {
-            const next = {...this.host.state.activeLocationShares};
-            delete next[uri];
-            this.host.setState({activeLocationShares: next});
+        if (!this.navbar || this.navbar._unmounted) return;
+        if (this.app.state.activeLocationShares[uri] !== undefined) {
+            // Only drop the pulse entry when NO session remains for this uri in
+            // either store — a contact can have a plain share and a meet leg at
+            // once, and stopping one must not clear the other's indicator. When a
+            // session survives, retarget the countdown to its expiry.
+            const _remaining = this._plainStore()[uri] || this._meetStore()[uri];
+            const next = {...this.app.state.activeLocationShares};
+            if (_remaining) {
+                next[uri] = (_remaining.expiresAt != null) ? _remaining.expiresAt : next[uri];
+            } else {
+                delete next[uri];
+            }
+            this.app.setState({activeLocationShares: next});
         }
 
         // Drop a system note into the chat timeline so the user has a
@@ -2010,7 +2920,7 @@ export default class LocationSharingManager {
         // (SQL INSERT with system=1) so it survives a reload. Skipped when
         // we weren't actually sharing (idempotent callers) or when the
         // caller explicitly asked for silence.
-        if (!silent && wasActive && typeof this.host.props.saveSystemMessage === 'function') {
+        if (!silent && wasActive) {
             // Wall-clock time the stop happened, e.g. "14:23" or "2:23 PM".
             // Chosen over toLocaleTimeString()'s default so we don't surface
             // seconds for a timeline marker — HH:MM is enough to anchor the
@@ -2035,8 +2945,7 @@ export default class LocationSharingManager {
             // post-acceptance unconditionally.
             const sessionId = entry && entry.meetingSessionId;
             const meetingAccepted = !!(
-                typeof this.host.props.isMeetingSessionAccepted === 'function'
-                && this.host.props.isMeetingSessionAccepted(sessionId)
+                this.isMeetingSessionAccepted(sessionId)
             );
             const postAcceptance = meetingAccepted
                 || reason === 'requester-deleted'
@@ -2090,13 +2999,11 @@ export default class LocationSharingManager {
                         note = `\uD83D\uDCCD Live location sharing expired at ${stoppedAt}`;
                         break;
                     case 'returned':
-                        // "Until I return" auto-stop \u2014 the user came
-                        // back inside the return ring. Distinct copy
-                        // so the caregiver who's looking at the chat
-                        // can tell the share ended because the user
-                        // got home, not because they hit Stop or it
-                        // timed out.
-                        note = `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (returned to starting point)`;
+                        // Redundant now: the sharer's own origin bubble footer
+                        // shows "Returned at HH:MM" (LocationBubble reads
+                        // endedReason='returned'), so skip this system note —
+                        // matches the receiver side (app.js location_stop handler).
+                        note = null;
                         break;
                     case 'deleted':
                         note = `\uD83D\uDCCD Stopped sharing live location at ${stoppedAt} (message deleted)`;
@@ -2108,10 +3015,15 @@ export default class LocationSharingManager {
                         note = `\uD83D\uDCCD The other party stopped location sharing at ${stoppedAt}`;
                         break;
                     default:
-                        note = `\uD83D\uDCCD You stopped sharing live location at ${stoppedAt}`;
+                        note = `\uD83D\uDCCD Stopped sharing live location at ${stoppedAt}`;
                 }
             }
-            this.host.props.saveSystemMessage(uri, note, 'outgoing');
+            // Tie the note to the track's session/origin id so the delete
+            // cascade (msg_id = ? OR related_msg_id = ?) purges it with the trail.
+            if (note) {
+                this.app.saveSystemMessage(uri, note, 'outgoing', false, 1, null, null, null,
+                    entry && (entry.meetingSessionId || entry.originLocationId));
+            }
         }
 
         // Wipe the meeting-session messages from both sides so the only
@@ -2120,7 +3032,7 @@ export default class LocationSharingManager {
         //   • meetingSessionId — the requester's origin tick (the
         //     "meeting_request" bubble). The requester owns it; the
         //     accepter has a received copy of the same _id.
-        //   • originMetadataId — the local device's OWN origin tick. On
+        //   • originLocationId — the local device's OWN origin tick. On
         //     the requester side this equals meetingSessionId. On the
         //     accepter side it's a separate message (their reply bubble
         //     with in_reply_to pointing at the request).
@@ -2138,16 +3050,20 @@ export default class LocationSharingManager {
         // triggers via its live-location detection (it calls
         // stopLocationSharing on any sylk-live-location bubble delete),
         // so calling deleteMessage from inside this block is safe.
+        // FROZEN SUMMARY: a normal meet-end must KEEP the 3-point summary, so
+        // 'user' (tapped Stop) and 'peer-stopped' (meeting_end / proximity from
+        // the peer) NO LONGER trigger the delete + removeMessage cascade — that
+        // cascade was what wiped the frozen map on both devices at meet-end.
+        // Only an EXPLICIT delete removes the map (and propagates the removal to
+        // the peer): the user long-pressing the bubble ('deleted'), or the peer
+        // remote-deleting a leg ('requester-deleted').
         const cleanupReasons = new Set([
-            'user',             // default when the user taps Stop
             'deleted',          // user long-pressed the bubble to delete
-            'peer-stopped',     // meeting_end signal from peer
             'requester-deleted', // peer remote-deleted a leg
         ]);
         if (entry
             && entry.meetingSessionId
-            && cleanupReasons.has(reason)
-            && typeof this.host.props.deleteMessage === 'function') {
+            && cleanupReasons.has(reason)) {
             const deletedId = opts.deletedId || null;
 
             const propagateDelete = (legId) => {
@@ -2159,24 +3075,23 @@ export default class LocationSharingManager {
                 // journal a duplicate removeMessage event to the peer.
                 if (legId === deletedId) return;
                 try {
-                    this.host.props.deleteMessage(legId, uri, true);
+                    this.app.deleteMessage(legId, uri, true);
                 } catch (e) {
-                    console.log('[location] propagateDelete failed', legId,
-                        e && e.message ? e.message : e);
+                    console.log('[location] propagateDelete failed', legId, e && e.message ? e.message : e);
                 }
             };
 
             propagateDelete(entry.meetingSessionId);
-            // Only fire for originMetadataId when it's a DISTINCT id
+            // Only fire for originLocationId when it's a DISTINCT id
             // from meetingSessionId — on the requester side they're the
             // same bubble and we already handled it above.
-            if (entry.originMetadataId
-                && entry.originMetadataId !== entry.meetingSessionId) {
-                propagateDelete(entry.originMetadataId);
+            if (entry.originLocationId
+                && entry.originLocationId !== entry.meetingSessionId) {
+                propagateDelete(entry.originLocationId);
             }
         }
 
-        this.host._pendingStops.delete(uri);
+        this._pendingStops.delete(uri);
     }
 
     // Find every active share whose tick stream was started as a reply
@@ -2190,47 +3105,124 @@ export default class LocationSharingManager {
     stopSharesRepliesTo(deletedRequestId) {
         if (!deletedRequestId) return [];
         const stopped = [];
-        // Copy the keys up front — stopLocationSharing mutates
-        // this.host.locationTimers and we don't want to skip entries mid-iter.
-        Object.keys(this.host.locationTimers).forEach((uri) => {
-            const entry = this.host.locationTimers[uri];
-            if (entry && entry.inReplyTo === deletedRequestId) {
-                utils.timestampedLog('[location] stopSharesRepliesTo: stopping share with', uri,
-                    'because its original request', deletedRequestId, 'was deleted by the peer');
-                stopped.push(uri);
-                // Pass deletedId so the cleanup block skips propagating
-                // a redundant delete for the request that was already
-                // removed by the peer's remote_delete. The OTHER leg
-                // (originMetadataId — our own reply) still gets wiped
-                // with remote=true so the peer's copy is gone too.
-                this.stopLocationSharing(uri, {
-                    reason: 'requester-deleted',
-                    deletedId: deletedRequestId,
-                });
-            }
+        // inReplyTo tags an ACCEPT leg, which lives in the meet store now — but
+        // scan both stores defensively. Snapshot the matches up front since
+        // stopLocationSharing mutates the stores mid-iteration.
+        const _matches = [];
+        const _scan = (store, isMeet) => {
+            Object.keys(store || {}).forEach((uri) => {
+                const entry = store[uri];
+                if (entry && entry.inReplyTo === deletedRequestId) {
+                    _matches.push({uri, sessionId: entry.originLocationId, meet: isMeet});
+                }
+            });
+        };
+        _scan(this._meetStore(), true);
+        _scan(this._plainStore(), false);
+        _matches.forEach(({uri, sessionId, meet}) => {
+            utils.timestampedLog('[location] stopSharesRepliesTo: stopping share with', uri, 'because its original request', deletedRequestId, 'was deleted by the peer');
+            stopped.push(uri);
+            // Pass deletedId so the cleanup block skips propagating
+            // a redundant delete for the request that was already
+            // removed by the peer's remote_delete. The OTHER leg
+            // (originLocationId — our own reply) still gets wiped
+            // with remote=true so the peer's copy is gone too.
+            this.stopLocationSharing(uri, {
+                reason: 'requester-deleted',
+                deletedId: deletedRequestId,
+                sessionId,
+                meet,
+            });
         });
         return stopped;
     }
 
-    // Emit a small metadata message telling the peer to end their side of
+    // Emit a small location-data message telling the peer to end their side of
     // a "Until we meet" session. Triggered from stopLocationSharing when
     // the user cancels a meeting share (either side). Carries the shared
     // meeting_session_id — the requester's origin tick _id — which both
-    // clients stamped on their locationTimers entry when the share began.
+    // clients stamped on their outgoingLocationSessions entry when the share began.
     //
     // Fire-and-forget: if the send fails (no connection, etc.) the peer
     // share will simply run to its natural expiry. We don't block the
     // local teardown waiting for confirmation.
+    // Tell the peer we stopped a PLAIN live share so their side can post an
+    // explicit "stopped sharing" note (and freeze the bubble at its last
+    // position). Shipped on the same application/sylk-location-sharing type as
+    // the ticks, but it carries NO coordinates — only the cleartext lifecycle
+    // fields — so there is nothing to encrypt. `originId` is our origin tick's
+    // _id, which is the messageId the receiver's bubble is keyed by.
+    // Fire-and-forget: if it fails the share just runs to its natural expiry.
+    sendLocationStopSignal(uri, originId, reason = 'user') {
+        if (!uri || !originId) return;
+        if (!this.app.sendMessage) {
+            utils.timestampedLog('[location] sendLocationStopSignal: sendMessage prop not wired');
+            return;
+        }
+        const mId = uuid.v4();
+        const timestamp = new Date();
+        // Normalise the internal stop reason to a small public vocabulary the
+        // peer + push notification understand: 'returned' (came back to the
+        // start point on an "until I return" share), 'expired' (the timed cap
+        // lapsed) or 'ended' (everything else — a manual stop, delete, logout).
+        const _publicReason = (reason === 'returned' || reason === 'expired' || reason === 'meet_end')
+            ? reason : 'ended';
+        const body = {
+            action: 'location_stop',
+            reason: _publicReason,
+            // sessionId is the session/bubble grouping key every tick carries —
+            // ship it EXPLICITLY (per the wire spec) so the peer + our sibling
+            // devices can match this stop to the rendered bubble and flip it to
+            // "Track ended". Leaving it to be back-derived from messageId on the
+            // send path is fragile (it breaks whenever messageId and the bubble's
+            // session id diverge, e.g. meets / resumed sessions) and was leaving
+            // the desktop viewer stuck on a live map.
+            sessionId: originId,
+            messageId: originId,
+            timestamp,
+            uri,
+            // Cleartext id of the device sending this stop (may be a mirroring
+            // sibling relaying a stop for a session started elsewhere).
+            deviceId: this.app.deviceId,
+        };
+        const msg = {
+            _id: mId,
+            key: mId,
+            createdAt: timestamp,
+            metadata: body,
+            text: JSON.stringify(body),
+            user: {},
+        };
+        try {
+            this.app.sendMessage(uri, msg, 'application/sylk-location-sharing');
+            utils.timestampedLog('[location] sent location_stop to', uri, 'origin=', originId);
+        } catch (e) {
+            utils.timestampedLog('[location] sendLocationStopSignal failed', e && e.message ? e.message : e);
+        }
+    }
+
     sendMeetingEndSignal(uri, sessionId, opts = {}) {
         if (!uri || !sessionId) return;
-        if (!this.host.props.sendMessage) {
+        if (!this.app.sendMessage) {
             utils.timestampedLog('[location] sendMeetingEndSignal: sendMessage prop not wired');
             return;
         }
         const mId = uuid.v4();
         const timestamp = new Date();
+        // meeting_end ALWAYS carries a reason, mirroring location_stop:
+        // 'proximity' (the parties met), 'expired' (the cap lapsed) or 'ended'
+        // (a manual / other teardown). The receiver keys its dedup + note off it.
+        const _publicReason = (opts.reason === 'proximity' || opts.reason === 'expired')
+            ? opts.reason : 'ended';
         const body = {
             action: 'meeting_end',
+            reason: _publicReason,
+            // sessionId is the session/bubble grouping key — ship it EXPLICITLY
+            // (per the wire spec, same as the coord ticks) so a meet teardown
+            // matches the rendered bubble on the peer + sibling devices and flips
+            // it to ended, instead of relying on the send-path back-deriving it
+            // from messageId.
+            sessionId: sessionId,
             // messageId is the bubble the signal refers to. Existing
             // receivers (updateMetadataFromRemote) key off this — pointing
             // it at the session id keeps lookups consistent with how
@@ -2239,13 +3231,9 @@ export default class LocationSharingManager {
             meeting_session_id: sessionId,
             timestamp,
             uri,
+            // Cleartext id of the device sending this meeting_end.
+            deviceId: this.app.deviceId,
         };
-        // Optional reason (e.g. 'proximity') so the peer can emit a matching
-        // system note on their side. Left off entirely for legacy /
-        // user-initiated stops — absence is equivalent to 'peer-stopped'.
-        if (opts.reason) {
-            body.reason = opts.reason;
-        }
         const msg = {
             _id: mId,
             key: mId,
@@ -2256,12 +3244,10 @@ export default class LocationSharingManager {
             user: {},
         };
         try {
-            this.host.props.sendMessage(uri, msg, 'application/sylk-message-metadata');
-            utils.timestampedLog('[location] sent meeting_end signal to', uri,
-                'session=', sessionId);
+            this.app.sendMessage(uri, msg, 'application/sylk-location-sharing');
+            utils.timestampedLog('[location] sent meeting_end signal to', uri, 'session=', sessionId);
         } catch (e) {
-            utils.timestampedLog('[location] sendMeetingEndSignal failed',
-                e && e.message ? e.message : e);
+            utils.timestampedLog('[location] sendMeetingEndSignal failed', e && e.message ? e.message : e);
         }
     }
 
@@ -2269,12 +3255,35 @@ export default class LocationSharingManager {
     // any share whose meetingSessionId matches — reason='peer-stopped' so
     // the chat system-note copy makes it clear who ended it. Returns the
     // list of URIs that were stopped (mainly for logging / tests).
+    // Meet-invite ticking gate. A requester's meet share sends ONE invite
+    // origin tick, then holds; recurring updates are suppressed until the
+    // invitee accepts. Tracked as a Set of session ids checked in
+    // sendLocationPayload.
+    holdMeetShareUntilAccept(sessionId) {
+        if (!sessionId) return;
+        this._awaitingAcceptSessions = this._awaitingAcceptSessions || new Set();
+        this._awaitingAcceptSessions.add(sessionId);
+        utils.timestampedLog('[location] meet share holding ticks until accept, session', String(sessionId).slice(0, 8));
+    }
+
+    resumeMeetShareOnAccept(sessionId) {
+        if (!sessionId || !this._awaitingAcceptSessions) return;
+        if (this._awaitingAcceptSessions.delete(sessionId)) {
+            utils.timestampedLog('[location] meet accepted — resuming share ticks, session', String(sessionId).slice(0, 8));
+            // NOTE: the convergence walker is NOT auto-started here anymore.
+            // The invitee accepting only arms the meet (the simulated 5 km
+            // start position is still installed on the share entry); the
+            // walker begins only when the user presses "Start simulator" from
+            // the location menu, which starts every active session at once.
+        }
+    }
+
     stopSharesForMeetingSession(sessionId, opts = {}) {
         if (!sessionId) return [];
         const stopped = [];
         // Remote reason propagated from the peer's meeting_end signal
         // (currently: 'proximity'). For 'proximity' we tear down SILENTLY
-        // — the caller in app.js (handleMessageMetadata meeting_end path)
+        // — the caller in app.js (the meeting_end handler)
         // is responsible for emitting the "Location sharing stopped at
         // HH:MM" note, dedeuped against the local-proximity emission via
         // _proximityNotedSessionIds. Emitting here too would double the
@@ -2282,26 +3291,47 @@ export default class LocationSharingManager {
         // around the same time.
         const remoteReason = opts.reason;
         const isProximity = remoteReason === 'proximity';
-        Object.keys(this.host.locationTimers).forEach((uri) => {
-            const entry = this.host.locationTimers[uri];
+        // DIAGNOSTIC: dump every live timer's meetingSessionId against the
+        // target so a "pin still pulsing after meet ended" case shows, in ONE
+        // line, whether the peer's meeting_end matched any local share. A
+        // mismatch (entry.meetingSessionId !== sessionId, e.g. undefined on a
+        // share that should have been tagged, or a different id) means the
+        // walk below stops nothing and the entry — and its pulse — survive.
+        // Meet legs live in the meet store now.
+        const _meetTimers = this._meetStore();
+        try {
+            const _keys = Object.keys(_meetTimers || {});
+            const _dump = _keys.map((u) => {
+                const e = _meetTimers[u];
+                const _msid = e && e.meetingSessionId;
+                return u + '{msid=' + (_msid ? String(_msid).slice(0, 8) : 'none')
+                    + (_msid === sessionId ? ' MATCH' : '')
+                    + ' kind=' + ((e && e.kind) || '-') + '}';
+            });
+            utils.timestampedLog('[location] stopSharesForMeetingSession: target session', String(sessionId).slice(0, 8), 'remoteReason=', remoteReason || '(none)', '| timers=', _keys.length, '[', _dump.join(', '), ']');
+        } catch (e) { /* diagnostic only */ }
+        Object.keys(_meetTimers).forEach((uri) => {
+            const entry = _meetTimers[uri];
             if (entry && entry.meetingSessionId === sessionId) {
-                utils.timestampedLog('[location] stopSharesForMeetingSession: stopping share with', uri,
-                    'because peer ended meeting session', sessionId,
-                    'remoteReason=', remoteReason || '(none)');
+                utils.timestampedLog('[location] stopSharesForMeetingSession: stopping share with', uri, 'because peer ended meeting session', sessionId, 'remoteReason=', remoteReason || '(none)');
                 stopped.push(uri);
+                const _stopOpts = {reason: 'peer-stopped', sessionId: entry.originLocationId, meet: true};
                 if (isProximity) {
                     // Silent — system note is the app.js side's concern.
-                    this.stopLocationSharing(uri, {silent: true, reason: 'peer-stopped'});
+                    this.stopLocationSharing(uri, {..._stopOpts, silent: true});
                 } else {
-                    this.stopLocationSharing(uri, {reason: 'peer-stopped'});
+                    this.stopLocationSharing(uri, _stopOpts);
                 }
             }
         });
+        // Summary so the "nothing matched" case is visible (previously it was
+        // silent — no log at all when stopped.length === 0).
+        utils.timestampedLog('[location] stopSharesForMeetingSession: session', String(sessionId).slice(0, 8), '— stopped', stopped.length, 'share(s)', stopped.length ? JSON.stringify(stopped) : '(none matched — pin may linger)');
         return stopped;
     }
 
     // Kick off a location-sharing session for `uri` lasting `durationMs`
-    // milliseconds. Sends the first metadata message immediately, then one
+    // milliseconds. Sends the first location-data message immediately, then one
     // more every 60 seconds until the expiration timestamp is reached.
     //
     // opts.kind       — 'fixed' (plain timed share) or 'meetingRequest' ("Until
@@ -2329,7 +3359,7 @@ export default class LocationSharingManager {
         //       permission-prompt / alert chain. The permission checks
         //       below are all async; a rapid double-tap on the "Meet up"
         //       button previously let both calls clear the await barrier
-        //       before either wrote to locationTimers, producing two
+        //       before either wrote to outgoingLocationSessions, producing two
         //       origin ticks to the same peer (and two modals on the
         //       accepter side). The in-flight Set catches that race
         //       window synchronously at the top of the function.
@@ -2337,14 +3367,50 @@ export default class LocationSharingManager {
         // Both tests run before the first await so JS's single-threaded
         // event loop guarantees the second caller sees the first caller's
         // guard.
-        if (!this.host._startingShares) {
-            this.host._startingShares = new Set();
+        if (!this._startingShares) {
+            this._startingShares = new Set();
         }
-        if (this.host._startingShares.has(uri) || this.host.locationTimers[uri]) {
-            utils.timestampedLog('[location] startLocationSharing: ignoring duplicate — share already active or in-flight for', uri);
+        // Guard per-STORE, not per-uri: a meet and a plain share can be armed to
+        // the same contact at once, so a meet start must not be blocked by a
+        // live/in-flight plain share (and vice-versa). The in-flight key and the
+        // "already active" check both use the store the requested kind maps to.
+        const _guardKind = opts.kind || 'fixed';
+        const _startKey = uri + (this._isMeetKind(_guardKind) ? '#meet' : '#plain');
+        if (this._startingShares.has(_startKey)) {
+            utils.timestampedLog('[location] startLocationSharing: ignoring duplicate — start already in-flight for', uri, _guardKind);
             return;
         }
-        this.host._startingShares.add(uri);
+        const _existingForKind = this._storeForKind(_guardKind)[uri];
+        if (_existingForKind) {
+            // A session of this KIND already exists for the peer. Normally a
+            // no-op — but a meet INVITE that is still HELD awaiting the peer's
+            // acceptance is not yet "live" (per product decision), so allow
+            // re-sending "Until we meet" to REPLACE the stale pending invite
+            // rather than silently doing nothing. Any other case (an accepted
+            // meet, or a live plain share of this kind) still blocks.
+            const _sid = _existingForKind.meetingSessionId;
+            const _isHeldInvite = this._isMeetKind(_guardKind)
+                && _sid
+                && this._awaitingAcceptSessions
+                && this._awaitingAcceptSessions.has(_sid);
+            if (!_isHeldInvite) {
+                utils.timestampedLog('[location] startLocationSharing: ignoring duplicate — share already active for', uri, _guardKind);
+                return;
+            }
+            // End the stale pending invite locally (reason 'replaced' is in the
+            // peer-relay skip set, so no meeting_end is sent — we're about to
+            // send a fresh invite) before arming the new one.
+            try {
+                this._awaitingAcceptSessions.delete(_sid);
+                this.stopLocationSharing(uri, {
+                    silent: true,
+                    reason: 'replaced',
+                    sessionId: _existingForKind.originLocationId,
+                    meet: true,
+                });
+            } catch (e) { /* best-effort — fall through and arm the new invite */ }
+        }
+        this._startingShares.add(_startKey);
       try {
         // Prominent Disclosure (Google Play). Must come BEFORE any
         // permission probe / OS dialog. The user can decline here
@@ -2356,15 +3422,21 @@ export default class LocationSharingManager {
         // session, and the OS-level permission is presumed to still
         // be granted. Re-prompting on every restart would just be
         // noise.
-        if (!opts.resumeOriginMetadataId) {
+        if (!opts.resumeOriginLocationId) {
             const acknowledged = await this._ensureLocationDisclosureAcknowledged();
             if (!acknowledged) {
                 utils.timestampedLog('[location] startLocationSharing: disclosure declined for', uri);
-                this.host._startingShares.delete(uri);
+                this._startingShares.delete(_startKey);
                 return;
             }
         }
         const kind = opts.kind || 'fixed';
+        // The store this session's entry belongs to (meet legs vs plain shares).
+        // Captured once so every read/write/closure below — and the tick
+        // callbacks that outlive this function — address the right map, letting
+        // a meet and a plain share to the same uri coexist without colliding.
+        const store = this._storeForKind(kind);
+        const _isMeetSession = this._isMeetKind(kind);
         const inReplyTo = opts.inReplyTo || null;
         // Privacy radius — distance in metres. When > 0, every
         // outgoing tick is gated by `_shouldSendUpdateTick` against
@@ -2388,7 +3460,7 @@ export default class LocationSharingManager {
         // this lazily (after the first real GPS fix) — initial value
         // is whatever the caller supplied (e.g. an accepter receiving
         // a destination embedded in the meeting_request the requester
-        // already broadcast). The value lives on the locationTimers
+        // already broadcast). The value lives on the outgoingLocationSessions
         // entry so any path that emits a tick can stamp it; tickExtras
         // is rebuilt at each send site (see _buildTickExtras below).
         const initialDestination = (opts.destination
@@ -2407,14 +3479,18 @@ export default class LocationSharingManager {
         // inReplyTo they were started with — which equals the requester's
         // origin _id. That symmetry means either side can emit / receive
         // a `meeting_end` signal carrying this id and the peer can find
-        // the matching locationTimers entry to tear down. For plain timed
+        // the matching outgoingLocationSessions entry to tear down. For plain timed
         // shares we leave it null — they don't have a reciprocal share
         // to stop on the peer side.
-        // (Computed post-hoc for meetingRequest below, once originMetadataId
+        // (Computed post-hoc for meetingRequest below, once originLocationId
         // is known.)
         let meetingSessionId = null;
         if (kind === 'meetingAccept' && inReplyTo) {
             meetingSessionId = inReplyTo;
+        } else if (kind === 'meetingRequest' && opts.forcedOriginId) {
+            // The shared session id IS the meeting request id (forced origin).
+            // BOTH legs carry it as sessionId now; `role` tells them apart.
+            meetingSessionId = opts.forcedOriginId;
         }
 
         // === IMMEDIATE USER FEEDBACK (pre-permission) ===
@@ -2450,11 +3526,11 @@ export default class LocationSharingManager {
                                      && opts.expiresAt > optimisticNow)
             ? opts.expiresAt
             : optimisticNow + durationMs;
-        const hadActiveShareForUri = this.host.state.activeLocationShares[uri] !== undefined;
+        const hadActiveShareForUri = this.app.state.activeLocationShares[uri] !== undefined;
         if (!hadActiveShareForUri) {
-            this.host.setState({
+            this.app.setState({
                 activeLocationShares: {
-                    ...this.host.state.activeLocationShares,
+                    ...this.app.state.activeLocationShares,
                     [uri]: optimisticExpiresAt,
                 },
             });
@@ -2469,24 +3545,28 @@ export default class LocationSharingManager {
         // started, so re-emitting it on resume would just spam the
         // conversation with duplicate "I want to meet up" / "I am
         // sharing for X hours" messages.
+        // Start announcement.
+        //   • Meet-me handshake (meetingRequest / meetingAccept): a chat
+        //     message.
+        //   • Plain live share: NO chat-bubble announcement. Instead the start
+        //     shows as SYSTEM notes symmetric to the "stopped sharing" notes —
+        //     "You started sharing…" on the sender (emitted from
+        //     sendLocationPayload on the actual origin tick, so it never fires
+        //     for a share that permission ultimately denies) and "<name> started
+        //     sharing…" on the receiver (posted when it gets the origin tick).
         let announcementMessageId = null;
-        if (this.host.props.sendMessage && !opts.suppressAnnouncement) {
-            let announcementText;
-            if (kind === 'meetingRequest') {
-                announcementText = 'I want to meet up with you';
-            } else if (kind === 'meetingAccept') {
-                announcementText = 'I want to meet with you, too!';
-            } else if (kind === 'untilIReturn') {
-                // Distinct copy from the "for X hours" form so the
-                // caregiver immediately understands the share will
-                // self-stop on return rather than running for the
-                // full ceiling. The 8h ceiling is mentioned in the
-                // modal's disclosure text and on the bubble; we keep
-                // the announcement short.
-                announcementText = 'I am sharing the location with you until I return';
-            } else {
-                announcementText = `I am sharing the location with you for ${periodLabel}`;
-            }
+        // Meet-me no longer ships a text/plain announcement. The dedicated
+        // location push (the origin tick, pushed by the server) now notifies
+        // the peer that a meet share started, so the old "I want to meet up
+        // with you" / "…too!" text — which double-pushed AND double-counted
+        // unread against the location origin — has been removed. Plain fixed
+        // live shares keep their text marker; skipped on resume
+        // (suppressAnnouncement) so a kill-restart doesn't re-spam the chat.
+        if (this.app.sendMessage && !opts.suppressAnnouncement
+                && kind === 'fixed') {
+            const announcementText = periodLabel
+                ? `📍 Sharing my live location for ${periodLabel}`
+                : '📍 Sharing my live location';
             announcementMessageId = uuid.v4();
             const textTs = new Date();
             const textMessage = {
@@ -2498,7 +3578,7 @@ export default class LocationSharingManager {
                 // GiftedChat requires a `user` field on every message.
                 user: {},
             };
-            this.host.props.sendMessage(uri, textMessage);
+            //this.app.sendMessage(uri, textMessage);
         }
 
         // Single place to unwind the optimistic UI state + invitation
@@ -2507,23 +3587,21 @@ export default class LocationSharingManager {
         // all funnel through this.
         const rollbackOptimistic = () => {
             if (!hadActiveShareForUri
-                && this.host.state.activeLocationShares[uri] !== undefined
-                && !this.host.locationTimers[uri]) {
-                const next = {...this.host.state.activeLocationShares};
+                && this.app.state.activeLocationShares[uri] !== undefined
+                && !this._hasAnyEntryForUri(uri)) {
+                const next = {...this.app.state.activeLocationShares};
                 delete next[uri];
-                this.host.setState({activeLocationShares: next});
+                this.app.setState({activeLocationShares: next});
             }
-            if (announcementMessageId
-                && typeof this.host.props.deleteMessage === 'function') {
+            if (announcementMessageId) {
                 try {
                     // Local-only removal (third arg true) — no peer
                     // echo needed because we want to undo a UI message
                     // that never should have shipped, not record a
                     // deletion of a real-message history.
-                    this.host.props.deleteMessage(announcementMessageId, uri, true);
+                    this.app.deleteMessage(announcementMessageId, uri, true);
                 } catch (e) {
-                    console.log('[location] rollback deleteMessage failed',
-                        e && e.message ? e.message : e);
+                    console.log('[location] rollback deleteMessage failed', e && e.message ? e.message : e);
                 }
                 announcementMessageId = null;
             }
@@ -2593,7 +3671,7 @@ export default class LocationSharingManager {
 
         if (permState === 'unavailable') {
             rollbackOptimistic();
-            Alert.alert(
+            showThemedAlert(
                 'Location unavailable',
                 'Location services are not available on this device.',
                 [{text: 'OK', style: 'cancel'}]
@@ -2787,24 +3865,23 @@ export default class LocationSharingManager {
         // _drainPendingPermissionShares, hadActiveShareForUri is true
         // (the optimistic activeLocationShares entry from the original
         // call is still in place — we never rolled it back) but
-        // locationTimers[uri] is empty (no real share was ever started).
+        // outgoingLocationSessions[uri] is empty (no real share was ever started).
         // Calling stopLocationSharing here would tear down the optimistic
         // UI we explicitly preserved across the permission round-trip,
         // including its "I want to meet up" announcement and the pulsing
-        // share icon. Require a REAL active share (locationTimers entry)
+        // share icon. Require a REAL active share (outgoingLocationSessions entry)
         // before triggering replacement.
-        if (hadActiveShareForUri && this.host.locationTimers[uri]) {
-            this.stopLocationSharing(uri, {silent: true, reason: 'replaced'});
+        if (hadActiveShareForUri && store[uri]) {
+            this.stopLocationSharing(uri, {silent: true, reason: 'replaced', sessionId: store[uri].originLocationId, meet: _isMeetSession});
         }
 
-        // NOTE: the plain-text announcement that used to live here was
-        // moved to the top of this function (pre-permission block) so
-        // the invitation shows up in the chat the moment the user taps
-        // Confirm, not after the permission / OS-prompt round-trip. See
-        // rollbackOptimistic() above for how we undo it if permission
-        // is ultimately denied.
+        // The invitation announcement is emitted at the top of this function
+        // (pre-permission block) so it shows in the chat the moment the user
+        // taps Confirm, not after the permission / OS-prompt round-trip. See
+        // rollbackOptimistic() above for how we undo it if permission is
+        // ultimately denied.
 
-        // Origin tick — the first metadata message carrying coordinates
+        // Origin tick — the first location-data message carrying coordinates
         // + expiration. Its _id becomes the anchor every subsequent
         // tick points back to. For "Until we meet" the origin tick
         // carries meeting_request:true; for acceptance every tick
@@ -2821,34 +3898,51 @@ export default class LocationSharingManager {
         // immediate feedback. The first valid-coords send (initial
         // getCurrentCoordinates() resolve OR first watchPosition /
         // setInterval fire — whichever wins) becomes the origin via
-        // the atomic origin-promotion check inside sendLocationMetadata.
+        // the atomic origin-promotion check inside sendLocationPayload.
         //
         // Resume path: we already know the saved origin id from a
         // previous run. Reuse it so subsequent ticks UPDATE the
         // existing bubble instead of spawning a fresh one.
-        let originMetadataId = null;
-        if (opts.resumeOriginMetadataId) {
-            originMetadataId = opts.resumeOriginMetadataId;
+        let originLocationId = null;
+        if (opts.resumeOriginLocationId) {
+            originLocationId = opts.resumeOriginLocationId;
         }
 
-        // Kick off the real GPS fetch in the background. When the fix
-        // lands we emit a tick that the atomic origin-promotion in
-        // sendLocationMetadata routes correctly: as the origin if no
-        // origin has been recorded yet (fresh share), or as an update
-        // if a watchPosition fire already claimed the origin slot, or
-        // an explicit update on the resume path. We don't await this —
-        // startLocationSharing's watch / interval arming below must
-        // run synchronously so the tear-down path (timers, session
-        // state) is consistent regardless of how long the first fix
-        // takes.
+        // Kick off the initial fix in the background. When it lands we emit
+        // a tick that the atomic origin-promotion in sendLocationPayload
+        // routes correctly: as the origin if no origin has been recorded yet
+        // (fresh share), or as an update if a watchPosition fire already
+        // claimed the origin slot, or an explicit update on the resume path.
+        // We don't await this — startLocationSharing's watch / interval arming
+        // below must run synchronously so the tear-down path (timers, session
+        // state) is consistent regardless of how long the first fix takes.
+        //
+        // Reuse the preview fix when possible: the share modal just fetched
+        // the user's location for its map (_fetchPreviewLocation), so on a
+        // quick Confirm we already have a fresh fix in hand. Sending the
+        // origin tick from it makes the first bubble appear immediately
+        // instead of waiting on a second GPS acquire. If that fix is missing
+        // or older than 60 s we fall back to a live getCurrentCoordinates()
+        // (whose latency the modal's Share-button spinner now covers). Skip
+        // the reuse on the resume path — that must re-read real GPS, not a
+        // stale preview from before the restart.
         {
-            this.getCurrentCoordinates().then(async (coords) => {
+            const _freshPreview = opts.resumeOriginLocationId
+                ? null
+                : this._freshPreviewFix();
+            const _initialFix = _freshPreview
+                ? Promise.resolve(_freshPreview)
+                : this.getCurrentCoordinates();
+            if (_freshPreview) {
+                utils.timestampedLog('[location] initial fix: reusing fresh preview location for', uri, '(age', (typeof _freshPreview.timestamp === 'number' ? Math.round((Date.now() - _freshPreview.timestamp) / 1000) + 's' : 'n/a'), ')');
+            }
+            _initialFix.then(async (coords) => {
                 // Session may have been stopped between placeholder send
                 // and GPS resolve (user hit Stop, or meeting handshake
                 // tore it down). Nothing to update in that case — the
                 // placeholder bubble was already removed or is about to
                 // be, and sending an update tick would re-inject it.
-                if (!this.host.locationTimers[uri]) {
+                if (!store[uri]) {
                     return;
                 }
                 // DEBUG: meet-up convergence simulator. The requester
@@ -2863,19 +3957,38 @@ export default class LocationSharingManager {
                 // up to 5 times if we land in water. Both fields
                 // ride on tickExtras / entry from this point onward
                 // and every emission path reads through them.
-                if (ENABLE_MEET_SIMULATION
+                if (this.app._locationSimulatorEnabled
                         && kind === 'meetingRequest'
                         && !tickExtras.destination) {
-                    const dest = await pickMeetingDestinationKmOnLand(coords, 4);
-                    if (dest) {
-                        tickExtras.destination = dest;
-                        try {
-                            const utils = require('../utils');
-                            utils.timestampedLog(
-                                `[sim] picked random meeting destination at ${dest.latitude.toFixed(5)},${dest.longitude.toFixed(5)} (~4 km from start, on land)`
-                            );
-                        } catch (e) { /* noop */ }
+                    // NEW meet-sim model: our real current GPS IS the destination
+                    // (the meet point). Our own simulated START is a random point
+                    // ~5 km from it (on land) — that's what our pin and the invite
+                    // broadcast; the walker arcs it back to the real location when
+                    // the sim runs. (Was: destination invented ~4 km away with the
+                    // start left on real GPS.) Only the start point + destination
+                    // change here; the rest of the convergence logic is unchanged.
+                    tickExtras.destination = {
+                        latitude: coords.latitude,
+                        longitude: coords.longitude,
+                    };
+                    const start = await pickMeetingDestinationKmOnLand(coords, 5);
+                    const entryReq = store[uri];
+                    if (entryReq) {
+                        if (start && !entryReq.simulatedPosition) {
+                            entryReq.simulatedPosition = {
+                                latitude: start.latitude,
+                                longitude: start.longitude,
+                                accuracy: 5,
+                                timestamp: Date.now(),
+                            };
+                        }
+                        // Drop the fence so the (now 5 km) origin/invite tick ships.
+                        entryReq.awaitingSimulatedPosition = false;
                     }
+                    try {
+                        const utils = require('../utils');
+                        utils.timestampedLog(`[sim] inviter: destination = current GPS ${coords.latitude.toFixed(5)},${coords.longitude.toFixed(5)}` + (start ? ` — start ~5 km away at ${start.latitude.toFixed(5)},${start.longitude.toFixed(5)} (on land)` : ' — 5 km start pick failed, using real GPS as start'));
+                    } catch (e) { /* noop */ }
                 }
                 // Accepter side, simulation mode: replace real GPS
                 // with a synthetic position 10 km away from where we
@@ -2884,16 +3997,31 @@ export default class LocationSharingManager {
                 // the same desk. Stored on entry.simulatedPosition;
                 // every other tick path consults it via
                 // _effectiveCoordinatesForSession.
-                const entryNow = this.host.locationTimers[uri];
-                if (ENABLE_MEET_SIMULATION
+                const entryNow = store[uri];
+                if (this.app._locationSimulatorEnabled
                         && kind === 'meetingAccept'
                         && entryNow
                         && !entryNow.simulatedPosition) {
-                    const synthetic = await pickMeetingDestinationKmOnLand(coords, 10);
+                    // NEW meet-sim model: start a random point ~3 km from the
+                    // DESTINATION (the shared meet point carried on the invite),
+                    // not ~10 km from our own GPS — so both sides converge on the
+                    // same point from their respective offsets (sender 5 km,
+                    // receiver 3 km). Anchor on the destination when known; fall
+                    // back to real GPS only if the destination hasn't arrived yet.
+                    const _accAnchor = (entryNow.tickExtras
+                            && entryNow.tickExtras.destination
+                            && typeof entryNow.tickExtras.destination.latitude === 'number'
+                            && typeof entryNow.tickExtras.destination.longitude === 'number')
+                        ? entryNow.tickExtras.destination
+                        : (tickExtras && tickExtras.destination
+                            && typeof tickExtras.destination.latitude === 'number'
+                            && typeof tickExtras.destination.longitude === 'number'
+                            ? tickExtras.destination : coords);
+                    const synthetic = await pickMeetingDestinationKmOnLand(_accAnchor, 3);
                     if (synthetic) {
                         // Re-fetch entry — the await opened a window
                         // for the share to be torn down underneath us.
-                        const entryAfter = this.host.locationTimers[uri];
+                        const entryAfter = store[uri];
                         if (entryAfter && !entryAfter.simulatedPosition) {
                             entryAfter.simulatedPosition = {
                                 latitude: synthetic.latitude,
@@ -2909,10 +4037,14 @@ export default class LocationSharingManager {
                             try {
                                 const utils = require('../utils');
                                 const u = `https://maps.google.com/?q=${synthetic.latitude.toFixed(5)},${synthetic.longitude.toFixed(5)}`;
-                                utils.timestampedLog(
-                                    `[sim] accepter synthetic position armed for ${uri} → ${synthetic.latitude.toFixed(5)},${synthetic.longitude.toFixed(5)} (${u}) — ~10 km from real GPS, on land`
-                                );
+                                utils.timestampedLog(`[sim] accepter synthetic position armed for ${uri} → ${synthetic.latitude.toFixed(5)},${synthetic.longitude.toFixed(5)} (${u}) — ~3 km from destination, on land`);
                             } catch (e) { /* noop */ }
+                            // NOTE: the convergence walker is NOT auto-started
+                            // here anymore. Accepting only arms the simulated
+                            // start position (~3 km from the destination); the
+                            // walker begins only when the user presses "Start
+                            // simulator" from the location menu, which starts
+                            // every active session at once.
                         }
                     } else {
                         // Pick failed entirely (rare — _pickMeeting…
@@ -2921,7 +4053,7 @@ export default class LocationSharingManager {
                         // so the share can keep running on real GPS;
                         // staying gated forever would be worse than
                         // a degraded test setup.
-                        const entryAfter = this.host.locationTimers[uri];
+                        const entryAfter = store[uri];
                         if (entryAfter) {
                             entryAfter.awaitingSimulatedPosition = false;
                         }
@@ -2929,7 +4061,7 @@ export default class LocationSharingManager {
                 }
                 // Re-check the timer entry — both awaits above could
                 // have spanned a tear-down window.
-                if (!this.host.locationTimers[uri]) {
+                if (!store[uri]) {
                     return;
                 }
                 // From here on, the first update tick reports the
@@ -2940,7 +4072,7 @@ export default class LocationSharingManager {
                 // the originPoint baseline as a side-effect on the
                 // first valid coord, then returns false until the user
                 // has moved past the perimeter.
-                if (!this._shouldSendUpdateTick(uri, effective)) {
+                if (!this._shouldSendUpdateTick(uri, effective, store[uri])) {
                     // Meeting-request shares need to bootstrap the
                     // handshake even while the inviter's position is
                     // hidden. Ship a "privacy-deferred" origin tick:
@@ -2953,7 +4085,7 @@ export default class LocationSharingManager {
                     // stays private until they cross the perimeter,
                     // at which point a real coord update flows and
                     // the bubble adds the inviter pin to both ends.
-                    const liveEntryRef0 = this.host.locationTimers && this.host.locationTimers[uri];
+                    const liveEntryRef0 = store[uri];
                     const dest = tickExtras && tickExtras.destination;
                     const _hasDest = !!(dest
                             && typeof dest.latitude === 'number'
@@ -3004,7 +4136,7 @@ export default class LocationSharingManager {
                         // devices — carrying either the original dummy or, if
                         // the inviter had already crossed their perimeter, a
                         // real position — and its id is restored here via
-                        // opts.resumeOriginMetadataId. Minting + sending a
+                        // opts.resumeOriginLocationId. Minting + sending a
                         // FRESH dummy now would be doubly wrong: it would
                         // jitter the empty map to a new random spot on every
                         // restart, and it could overwrite a real position that
@@ -3017,7 +4149,7 @@ export default class LocationSharingManager {
                         // destination case is deterministic, so it keeps its
                         // existing resume behaviour.
                         const _skipDummyOnResume = !_hasDest
-                            && !!opts.resumeOriginMetadataId;
+                            && !!opts.resumeOriginLocationId;
                         // Stand-in coords for the origin bubble. Real
                         // destination if the share has one; otherwise a
                         // dummy point ~4–7 km from the inviter's actual
@@ -3033,12 +4165,9 @@ export default class LocationSharingManager {
                         let _deferredMid = null;
                         try {
                             if (_skipDummyOnResume) {
-                                utils.timestampedLog(
-                                    '[location] privacy invite: skipping dummy origin re-send on resume —',
-                                    uri, 'origin=', originMetadataId
-                                );
+                                utils.timestampedLog('[location] privacy invite: skipping dummy origin re-send on resume —', uri, 'origin=', originLocationId);
                             } else {
-                                // sendLocationMetadata stamps
+                                // sendLocationPayload stamps
                                 // metadata.privacyDeferred + the radius
                                 // (read from the timer entry's
                                 // excludeOriginRadiusMeters) — no
@@ -3048,21 +4177,21 @@ export default class LocationSharingManager {
                                 // the map bubble itself (LocationBubble's
                                 // privacy-deferred branch), keeping the
                                 // chat timeline clean.
-                                _deferredMid = this.sendLocationMetadata(
+                                _deferredMid = this.sendLocationPayload(
                                     uri,
                                     _standIn,
                                     expiresIso,
-                                    originMetadataId,
-                                    {...tickExtras, privacyDeferred: true, dummy: !_hasDest}
+                                    originLocationId,
+                                    {...tickExtras, privacyDeferred: true, dummy: !_hasDest},
+                                    _isMeetSession
                                 );
                             }
                         } catch (e) {
-                            console.log('[location] privacy-deferred origin send failed',
-                                e && e.message ? e.message : e);
+                            console.log('[location] privacy-deferred origin send failed', e && e.message ? e.message : e);
                         }
                         // Stamp the inviter's REAL coords as a
                         // local-only field on the just-injected
-                        // bubble's metadata. The wire payload above
+                        // bubble's location data. The wire payload above
                         // shipped the destination as `value` (so the
                         // peer can't see where the inviter is), but
                         // on the inviter's OWN device we want the
@@ -3078,14 +4207,14 @@ export default class LocationSharingManager {
                         //   • REQUESTER (kind=meetingRequest): the
                         //     ORIGIN tick's mId — that's this
                         //     device's outgoing meeting bubble.
-                        //     Prefer entry.originMetadataId because
-                        //     sendLocationMetadata may have just
+                        //     Prefer entry.originLocationId because
+                        //     sendLocationPayload may have just
                         //     promoted the new mid to origin (fresh
                         //     share) OR may have routed the tick as
                         //     an UPDATE pointing at a previously
                         //     promoted origin (resumed share — auto-
                         //     resume after Metro reload sets
-                        //     originMetadataId on the entry from the
+                        //     originLocationId on the entry from the
                         //     persisted snapshot, so the deferred
                         //     send becomes an "update" tick whose
                         //     own mId is NOT the bubble id). Only
@@ -3102,35 +4231,24 @@ export default class LocationSharingManager {
                         const _isAccepter = (kind === 'meetingAccept');
                         const _midForStamp = _isAccepter
                             ? (tickExtras && tickExtras.inReplyTo)
-                            : ((liveEntryRef0 && liveEntryRef0.originMetadataId)
+                            : ((liveEntryRef0 && liveEntryRef0.originLocationId)
                                 || _deferredMid);
                         const _radiusForStamp = Number(liveEntryRef0.excludeOriginRadiusMeters) || 0;
-                        utils.timestampedLog(
-                            '[location] privacy-deferred origin: stamping localOwnerCoords',
-                            'kind=', kind,
-                            'mid=', _midForStamp,
-                            'radius=', _radiusForStamp,
-                            'effective=', effective
-                                ? `${effective.latitude},${effective.longitude}` : 'null',
-                            'callbackType=', typeof this.host.props.setLocalOwnerCoordsForBubble
-                        );
-                        if (_midForStamp
-                                && typeof this.host.props.setLocalOwnerCoordsForBubble === 'function') {
+                        utils.timestampedLog('[location] privacy-deferred origin: stamping localOwnerCoords', 'kind=', kind, 'mid=', _midForStamp, 'radius=', _radiusForStamp, 'effective=', effective ? `${effective.latitude},${effective.longitude}` : 'null', 'callbackType=', typeof this.app._setLocalOwnerCoordsForBubble);
+                        if (_midForStamp) {
                             // Run twice — once immediately, once after a
-                            // tick — because handleMessageMetadata's
-                            // bubble injection runs in a microtask after
-                            // sendMessage. setState is idempotent so the
+                            // tick — because the bubble injection runs in
+                            // a microtask after sendMessage. setState is
+                            // idempotent so the
                             // second write is cheap when the first
                             // already succeeded.
-                            this.host.props.setLocalOwnerCoordsForBubble(
+                            this.app._setLocalOwnerCoordsForBubble(
                                 uri, _midForStamp, effective, _radiusForStamp
                             );
                             setTimeout(() => {
-                                if (typeof this.host.props.setLocalOwnerCoordsForBubble === 'function') {
-                                    this.host.props.setLocalOwnerCoordsForBubble(
-                                        uri, _midForStamp, effective, _radiusForStamp
-                                    );
-                                }
+                                this.app._setLocalOwnerCoordsForBubble(
+                                    uri, _midForStamp, effective, _radiusForStamp
+                                );
                             }, 250);
                         }
                         liveEntryRef0.privacyDeferredBubbleMid = _midForStamp;
@@ -3140,7 +4258,7 @@ export default class LocationSharingManager {
                 // First non-deferred tick: clear the privacyDeferred
                 // marker on the entry. Subsequent ticks (and the
                 // wire) will now carry the inviter's real coords.
-                const liveEntryRef = this.host.locationTimers && this.host.locationTimers[uri];
+                const liveEntryRef = store[uri];
                 if (liveEntryRef && liveEntryRef.privacyDeferred) {
                     liveEntryRef.privacyDeferred = false;
                 }
@@ -3153,28 +4271,40 @@ export default class LocationSharingManager {
                 // the user sees "attempt=1" in the log line that pairs
                 // with the bubble's "↻ 1" counter the moment the share
                 // starts.
-                const _initEntry = this.host.locationTimers && this.host.locationTimers[uri];
+                const _initEntry = store[uri];
                 if (_initEntry) {
                     _initEntry.tickAttempts = (_initEntry.tickAttempts || 0) + 1;
                     try {
-                        utils.timestampedLog(
-                            `[location] heartbeat → ${uri} attempt=${_initEntry.tickAttempts} kind=${_initEntry.kind || 'fixed'} (initial fix)`
-                        );
+                        // utils.timestampedLog(`[location] heartbeat → ${uri} attempt=${_initEntry.tickAttempts} kind=${_initEntry.kind || 'fixed'} (initial fix)`);
                     } catch (e) { /* noop */ }
                 }
-                this.sendLocationMetadata(
-                    uri, effective, expiresIso, originMetadataId, tickExtras
+                this.sendLocationPayload(
+                    uri, effective, expiresIso, originLocationId, tickExtras, _isMeetSession
                 );
             }).catch((err) => {
-                utils.timestampedLog('[location] initial getCurrentCoordinates failed',
-                    err && err.message ? err.message : err);
+                utils.timestampedLog('[location] initial getCurrentCoordinates failed', err && err.message ? err.message : err);
+            }).then(() => {
+                // Initial-fix completion signal. Runs after the first
+                // getCurrentCoordinates() settles AND the origin tick has
+                // been dispatched (success branch) or the fix has failed
+                // (catch branch) — the `.then` after `.catch` fires either
+                // way, exactly once. onShareLocationConfirmed passes this so
+                // ShareLocationModal can hold its Share-button spinner until
+                // there's real feedback, instead of closing the instant the
+                // user taps and leaving them unsure the share started.
+                // Non-modal callers (resume, meeting-accept, one-shot) don't
+                // pass it, so the guard makes it a safe no-op there.
+                if (typeof opts.onInitialShareResult === 'function') {
+                    try { opts.onInitialShareResult(); }
+                    catch (e) { /* best-effort feedback hook */ }
+                }
             });
         }
 
         // For the requester side the session id is the origin tick's _id
         // (the same id the accepter will echo back in in_reply_to).
-        if (kind === 'meetingRequest' && originMetadataId) {
-            meetingSessionId = originMetadataId;
+        if (kind === 'meetingRequest' && originLocationId) {
+            meetingSessionId = originLocationId;
         }
 
         if (Platform.OS === 'ios') {
@@ -3195,7 +4325,7 @@ export default class LocationSharingManager {
                 watchId: null,
                 expiryTimeoutId: null,
                 expiresAt,
-                originMetadataId,
+                originLocationId,
                 // Remember the request _id we're replying to (if any) so
                 // an incoming "remove message" for that _id can surgically
                 // cancel just this share via stopSharesRepliesTo().
@@ -3246,8 +4376,17 @@ export default class LocationSharingManager {
                 // actually need it; production builds with
                 // ENABLE_MEET_SIMULATION=false leave it false and
                 // skip the gate entirely.
+                // Gate early ticks until the async simulated start is armed.
+                // Accepter: always (it arms a 3 km-from-destination start).
+                // Inviter: only when NO destination was pre-chosen — that's the
+                // case where we now arm a 5 km-from-GPS start asynchronously and
+                // must not ship a real-GPS origin/invite before it lands. With a
+                // pre-chosen destination the inviter keeps its old real-GPS start
+                // and needs no fence (and the seed block wouldn't drop it).
                 awaitingSimulatedPosition:
-                    ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
+                    this.app._locationSimulatorEnabled
+                    && (kind === 'meetingAccept'
+                        || (kind === 'meetingRequest' && !initialDestination)),
                 // Persisted to AsyncStorage on every mutation so a
                 // killed app can re-arm this entry on next boot —
                 // see _persistActiveShares / _loadAndResumeActiveShares.
@@ -3256,6 +4395,11 @@ export default class LocationSharingManager {
                 // we don't ship a fresh announcement message on resume.
                 kind,
                 periodLabel,
+                // Forced origin id for the post-accept requester meet share:
+                // makes this session's ORIGIN tick reuse the meeting request
+                // id so the accepter's in_reply_to = request_id ticks merge
+                // into one session. null = normal freshly-generated origin.
+                forcedOriginId: opts.forcedOriginId || null,
                 // "Until I return" state machine — see
                 // _evaluateUntilReturnGate. On a fresh start both
                 // fields are reset (origin captured by the first
@@ -3274,8 +4418,9 @@ export default class LocationSharingManager {
                 // false for fresh shares.
                 paused: !!opts.resumePaused,
             };
-            this.host.locationTimers[uri] = entry;
-            this.host._persistActiveShares();
+            store[uri] = entry;
+            this.app._persistActiveShares();
+            try { this.app._onLocationSessionsChanged('ADD', 'outgoing', uri, `type=${this._isMeetKind(entry.kind) ? 'meet' : 'share'} kind=${entry.kind || 'fixed'} sid=${entry.originLocationId || entry.meetingSessionId || '?'} exp=${entry.expiresAt || '?'} dev=${this.app.deviceId || '?'}`); } catch (e) {}
 
             if (Geolocation && typeof Geolocation.watchPosition === 'function') {
                 try {
@@ -3288,16 +4433,16 @@ export default class LocationSharingManager {
                             // signal; we don't check watchId here because
                             // the very first fix can arrive before the
                             // `entry.watchId = watchId` assignment below.
-                            const current = this.host.locationTimers[uri];
+                            const current = store[uri];
                             if (!current) {
                                 return;
                             }
                             if (Date.now() >= expiresAt) {
-                                this.stopLocationSharing(uri, {reason: 'expired'});
+                                this.stopLocationSharing(uri, {reason: 'expired', sessionId: current.originLocationId, meet: _isMeetSession});
                                 return;
                             }
                             const nowMs = Date.now();
-                            if (nowMs - current.lastSentMs < this.host.LOCATION_REPEAT_MS) {
+                            if (nowMs - current.lastSentMs < this.app.LOCATION_REPEAT_MS) {
                                 return;
                             }
                             // Race fence: the accepter's synthetic
@@ -3329,9 +4474,7 @@ export default class LocationSharingManager {
                             // to the timestamp.
                             current.tickAttempts = (current.tickAttempts || 0) + 1;
                             try {
-                                utils.timestampedLog(
-                                    `[location] heartbeat → ${uri} attempt=${current.tickAttempts} kind=${current.kind || 'fixed'}`
-                                );
+                                // utils.timestampedLog(`[location] heartbeat → ${uri} attempt=${current.tickAttempts} kind=${current.kind || 'fixed'}`);
                             } catch (e) { /* noop */ }
                             this._logFixProvenance('watchPosition', uri, position);
                             const c = position && position.coords ? position.coords : {};
@@ -3358,23 +4501,21 @@ export default class LocationSharingManager {
                             // loop on every CLLocationManager callback;
                             // we just no-op the actual emission until
                             // the user moves out of the radius.
-                            if (!this._shouldSendUpdateTick(uri, coords)) {
+                            if (!this._shouldSendUpdateTick(uri, coords, current)) {
                                 // Privacy radius is hiding the tick
                                 // from the wire — but on the SENDER's
                                 // own device we still want the
                                 // bubble to track real movement so
                                 // the user sees themselves on the
                                 // map. Stamp the latest coords as
-                                // local-only metadata. No-op when
+                                // local-only location data. No-op when
                                 // not in a privacy-deferred meet
                                 // session (entry.privacyDeferred
                                 // false / mid missing).
-                                const _curEntry = this.host.locationTimers
-                                    && this.host.locationTimers[uri];
+                                const _curEntry = store[uri];
                                 if (_curEntry && _curEntry.privacyDeferred
-                                        && _curEntry.privacyDeferredBubbleMid
-                                        && typeof this.host.props.setLocalOwnerCoordsForBubble === 'function') {
-                                    this.host.props.setLocalOwnerCoordsForBubble(
+                                        && _curEntry.privacyDeferredBubbleMid) {
+                                    this.app._setLocalOwnerCoordsForBubble(
                                         uri,
                                         _curEntry.privacyDeferredBubbleMid,
                                         coords
@@ -3382,7 +4523,7 @@ export default class LocationSharingManager {
                                 }
                                 return;
                             }
-                            this.sendLocationMetadata(uri, coords, expiresIso, originMetadataId, tickExtras);
+                            this.sendLocationPayload(uri, coords, expiresIso, originLocationId, tickExtras, _isMeetSession);
                         },
                         (error) => {
                             const msg = error && error.message ? error.message : String(error);
@@ -3398,14 +4539,13 @@ export default class LocationSharingManager {
                                 });
                                 // Stop silently so the default "You stopped sharing" note
                                 // doesn't fire — we want a more specific permission note.
-                                this.stopLocationSharing(uri, {silent: true, reason: 'denied'});
-                                if (typeof this.host.props.saveSystemMessage === 'function') {
-                                    this.host.props.saveSystemMessage(
-                                        uri,
-                                        `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (location permission denied). Enable 'Always' location access for Blink in Settings to share in the background.`,
-                                        'outgoing'
-                                    );
-                                }
+                                this.stopLocationSharing(uri, {silent: true, reason: 'denied', sessionId: originLocationId, meet: _isMeetSession});
+                                this.app.saveSystemMessage(
+                                    uri,
+                                    `\uD83D\uDCCD Live location sharing stopped at ${stoppedAt} (location permission denied). Enable 'Always' location access for Blink in Settings to share in the background.`,
+                                    'outgoing', false, 1, null, null, null,
+                                    originLocationId
+                                );
                                 // Critical: a system note inside the chat only helps when
                                 // the app is foregrounded. The denial typically fires the
                                 // moment the user swipes Sylk into the background, so we
@@ -3413,10 +4553,9 @@ export default class LocationSharingManager {
                                 // presents this as a banner / lock-screen alert regardless
                                 // of foreground state, which is the only way the user sees
                                 // "your share stopped" while Sylk isn't on screen.
-                                if (Platform.OS === 'ios'
-                                    && typeof this.host.props.sendLocalNotification === 'function') {
+                                if (Platform.OS === 'ios') {
                                     try {
-                                        this.host.props.sendLocalNotification(
+                                        this.app.sendLocalNotification(
                                             'Live location stopped',
                                             // Kept short — banners truncate anything
                                             // longer on a locked screen. The 'open
@@ -3434,8 +4573,7 @@ export default class LocationSharingManager {
                                             }
                                         );
                                     } catch (e) {
-                                        console.log('[location] sendLocalNotification failed',
-                                            e && e.message ? e.message : e);
+                                        console.log('[location] sendLocalNotification failed', e && e.message ? e.message : e);
                                     }
                                 }
                             }
@@ -3453,8 +4591,7 @@ export default class LocationSharingManager {
                     );
                     entry.watchId = watchId;
                 } catch (e) {
-                    utils.timestampedLog('[location] iOS watchPosition failed to start',
-                        e && e.message ? e.message : e);
+                    utils.timestampedLog('[location] iOS watchPosition failed to start', e && e.message ? e.message : e);
                 }
             }
 
@@ -3469,7 +4606,7 @@ export default class LocationSharingManager {
             // react-native-background-timer uses a real iOS timer here.)
             try {
                 entry.expiryTimeoutId = BackgroundTimer.setTimeout(() => {
-                    this.stopLocationSharing(uri, {reason: 'expired'});
+                    this.stopLocationSharing(uri, {reason: 'expired', sessionId: originLocationId, meet: _isMeetSession});
                 }, effectiveDurationMs);
             } catch (e) { /* noop */ }
         } else {
@@ -3495,14 +4632,13 @@ export default class LocationSharingManager {
                 try {
                     LocationForegroundServiceModule.startService();
                 } catch (e) {
-                    console.log('[location] LocationForegroundService.startService failed',
-                        e && e.message ? e.message : e);
+                    console.log('[location] LocationForegroundService.startService failed', e && e.message ? e.message : e);
                 }
             }
 
             const intervalId = BackgroundTimer.setInterval(() => {
                 if (Date.now() >= expiresAt) {
-                    this.stopLocationSharing(uri, {reason: 'expired'});
+                    this.stopLocationSharing(uri, {reason: 'expired', sessionId: originLocationId, meet: _isMeetSession});
                     return;
                 }
                 // Per-minute heartbeat log. Fires at the start of
@@ -3511,25 +4647,23 @@ export default class LocationSharingManager {
                 // gate or GPS read failure). Mirrors the iOS path
                 // above so app logs show a uniform "I'm alive" line
                 // every minute regardless of platform.
-                const _entryNow = this.host.locationTimers && this.host.locationTimers[uri];
+                const _entryNow = store[uri];
                 if (_entryNow) {
                     _entryNow.tickAttempts = (_entryNow.tickAttempts || 0) + 1;
                     try {
-                        utils.timestampedLog(
-                            `[location] heartbeat → ${uri} attempt=${_entryNow.tickAttempts} kind=${_entryNow.kind || 'fixed'}`
-                        );
+                        // utils.timestampedLog(`[location] heartbeat → ${uri} attempt=${_entryNow.tickAttempts} kind=${_entryNow.kind || 'fixed'}`);
                     } catch (e) { /* noop */ }
                 }
-                // Subsequent ticks carry metadataId = origin's _id so the
-                // receiver updates the existing bubble in place rather than
-                // rendering a new one.
-                this.sendLocationUpdate(uri, expiresIso, originMetadataId, tickExtras);
-            }, this.host.LOCATION_REPEAT_MS);
+                // Subsequent ticks are flagged isUpdate and group under the
+                // origin's id so the receiver updates the existing bubble in
+                // place rather than rendering a new one.
+                this.sendLocationUpdate(uri, expiresIso, originLocationId, tickExtras, _isMeetSession);
+            }, this.app.LOCATION_REPEAT_MS);
 
-            this.host.locationTimers[uri] = {
+            store[uri] = {
                 intervalId,
                 expiresAt,
-                originMetadataId,
+                originLocationId,
                 inReplyTo,
                 meetingSessionId,
                 // Privacy-radius state — same shape as the iOS entry so
@@ -3544,11 +4678,25 @@ export default class LocationSharingManager {
                 tickExtras,
                 // Same race fence as the iOS branch above — see the
                 // long comment there for what this gates and why.
+                // Gate early ticks until the async simulated start is armed.
+                // Accepter: always (it arms a 3 km-from-destination start).
+                // Inviter: only when NO destination was pre-chosen — that's the
+                // case where we now arm a 5 km-from-GPS start asynchronously and
+                // must not ship a real-GPS origin/invite before it lands. With a
+                // pre-chosen destination the inviter keeps its old real-GPS start
+                // and needs no fence (and the seed block wouldn't drop it).
                 awaitingSimulatedPosition:
-                    ENABLE_MEET_SIMULATION && kind === 'meetingAccept',
-                // Same persistence-resume metadata as the iOS branch.
+                    this.app._locationSimulatorEnabled
+                    && (kind === 'meetingAccept'
+                        || (kind === 'meetingRequest' && !initialDestination)),
+                // Same persistence-resume location data as the iOS branch.
                 kind,
                 periodLabel,
+                // Forced origin id for the post-accept requester meet share:
+                // makes this session's ORIGIN tick reuse the meeting request
+                // id so the accepter's in_reply_to = request_id ticks merge
+                // into one session. null = normal freshly-generated origin.
+                forcedOriginId: opts.forcedOriginId || null,
                 // "Until I return" state machine — see the iOS
                 // branch above for the rationale on each field.
                 untilReturnOrigin: opts.resumeUntilReturnOrigin || null,
@@ -3562,7 +4710,8 @@ export default class LocationSharingManager {
                 // the pause sticky.
                 paused: !!opts.resumePaused,
             };
-            this.host._persistActiveShares();
+            this.app._persistActiveShares();
+            try { const _oe = store[uri] || {}; this.app._onLocationSessionsChanged('ADD', 'outgoing', uri, `type=${this._isMeetKind(_oe.kind) ? 'meet' : 'share'} kind=${_oe.kind || 'fixed'} sid=${_oe.originLocationId || _oe.meetingSessionId || '?'} exp=${_oe.expiresAt || '?'} dev=${this.app.deviceId || '?'}`); } catch (e) {}
         }
 
         // Reflect the final (authoritative) expiresAt in React state.
@@ -3571,9 +4720,9 @@ export default class LocationSharingManager {
         // pulsing at tap time; that value was computed ~milliseconds
         // earlier and is off by a tiny amount. Overwrite it now with the
         // canonical one so countdown UI and stop-timer math agree.
-        this.host.setState({
+        this.app.setState({
             activeLocationShares: {
-                ...this.host.state.activeLocationShares,
+                ...this.app.state.activeLocationShares,
                 [uri]: expiresAt,
             },
         });
@@ -3597,37 +4746,67 @@ export default class LocationSharingManager {
         // resume — the original note already lives in the chat;
         // re-emitting it on every restart would litter the
         // conversation.
-        const isMeeting = kind === 'meetingRequest' || kind === 'meetingAccept';
-        if (originMetadataId
-            && !isMeeting
-            && !opts.suppressAnnouncement
-            && typeof this.host.props.saveSystemMessage === 'function') {
-            // Wall-clock time the share began — same HH:MM format as the
-            // stop note so the two bracket the sharing window visibly.
-            const startedAt = new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-            });
-            const label = periodLabel ? ` for ${periodLabel}` : '';
-            const note = `\uD83D\uDCCD Started sharing location at ${startedAt}${label}`;
-            this.host.props.saveSystemMessage(uri, note, 'outgoing');
-        }
+        // The sender's "started sharing" system note is emitted ONCE, on the
+        // actual origin tick inside sendLocationPayload — stamped ~1s before the
+        // tick so it renders ABOVE the map, and it carries the duration label.
       } finally {
-        // Paired with the this.host._startingShares.add(uri) at function
+        // Paired with the this.app._startingShares.add(uri) at function
         // entry. Always release the in-flight flag so a later (legitimate)
         // call to start a new share — after this one has either fully
         // set up or been torn down — isn't blocked by a lingering guard.
-        if (this.host._startingShares) {
-          this.host._startingShares.delete(uri);
+        if (this._startingShares) {
+          this._startingShares.delete(_startKey);
         }
       }
     }
 
+    // Wait for a freshly-armed live share's FIRST location fix to land
+    // (origin tick sent) — or fail — before resolving. ShareLocationModal
+    // awaits this via onShareLocationConfirmed so it can hold its Share
+    // button's spinner + disabled state until there's real feedback, rather
+    // than closing the instant the user taps Share.
+    //
+    // Only waits when a share actually armed and is NEW: startLocationSharing
+    // sets outgoingLocationSessions[uri] synchronously on the success path, so a fresh
+    // entry means the initial getCurrentCoordinates() is in flight and
+    // onInitialShareResult WILL fire. A share that was already active (or a
+    // permission denial / early return) resolves immediately — nothing new to
+    // wait for. The 20 s ceiling clears the 15 s getCurrentCoordinates
+    // timeout with headroom so the modal can never hang if the fix stalls.
+    _awaitInitialShare(uri, initialResultPromise, alreadyActive) {
+        if (alreadyActive) {
+            return Promise.resolve();
+        }
+        if (!this._hasAnyEntryForUri(uri)) {
+            return Promise.resolve();
+        }
+        return Promise.race([
+            initialResultPromise,
+            new Promise((resolve) => setTimeout(resolve, 20000)),
+        ]);
+    }
+
     async onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters}) {
-        const uri = this.host.props.selectedContact && this.host.props.selectedContact.uri;
+        const uri = this.app.state.selectedContact && this.app.state.selectedContact.uri;
         if (!uri) {
             return;
         }
+        // Completion plumbing for ShareLocationModal's in-flight spinner. The
+        // modal keeps its Share button spinning + disabled until THIS method's
+        // returned promise settles, so the user gets immediate feedback and
+        // can't double-fire the share while the first GPS fix is acquired and
+        // the origin tick is sent. onInitialShareResult() is invoked from
+        // startLocationSharing once the initial getCurrentCoordinates()
+        // settles; _awaitInitialShare bounds the wait so we never hang.
+        let _settleInitial;
+        const _initialShareResult = new Promise((resolve) => { _settleInitial = resolve; });
+        const onInitialShareResult = () => {
+            try { _settleInitial(); } catch (e) { /* noop */ }
+        };
+        // Snapshot whether a share was already live BEFORE this confirm, so
+        // _awaitInitialShare can tell a genuine fresh start (wait for the
+        // first fix) from a duplicate/re-entry (nothing new to wait for).
+        const _alreadyActive = !!this._storeForKind(kind)[uri];
         // "Meet me there..." path: the user invoked the share flow
         // from a chat-bubble kebab/inline on a Google-Maps-link text
         // message, and a destination is staged on state (or being
@@ -3637,11 +4816,10 @@ export default class LocationSharingManager {
         // the user doesn't lose the destination because they were
         // quick on the trigger. Failure surfaces an Alert rather than
         // silently shipping a meet-up with no destination.
-        let destination = this.host.state.pendingShareDestination;
-        const pendingUrl = this.host.state.pendingShareDestinationUrl;
+        let destination = this._uiState().pendingShareDestination;
+        const pendingUrl = this._uiState().pendingShareDestinationUrl;
         if (!destination && pendingUrl) {
-            utils.timestampedLog('[location] meetMeAt: confirm beat resolve — last-chance sync resolve for',
-                pendingUrl);
+            utils.timestampedLog('[location] meetMeAt: confirm beat resolve — last-chance sync resolve for', pendingUrl);
             try {
                 destination = await utils.resolveShortLocationUrl(pendingUrl);
             } catch (e) {
@@ -3649,7 +4827,7 @@ export default class LocationSharingManager {
             }
             if (!destination) {
                 utils.timestampedLog('[location] meetMeAt: last-chance resolve failed for', pendingUrl);
-                Alert.alert(
+                showThemedAlert(
                     'Couldn\'t read the map link',
                     'The shared link couldn\'t be expanded into coordinates. Open it in Maps and re-share the resulting full link.',
                     [{text: 'OK'}]
@@ -3657,29 +4835,41 @@ export default class LocationSharingManager {
                 return;
             }
         }
-        if (destination
+        // Meet-up ("Until we meet", with or without a shared destination)
+        // is a value-bearing invite: sendMeetingRequest starts the requester's
+        // share immediately (origin forced to the request id). Its ORIGIN tick
+        // is an E2EE application/sylk-location-sharing meeting_start carrying
+        // the inviter's live coords + destination and meeting_request:true, so
+        // the accepter's in_reply_to ticks merge onto that same origin id.
+        const _hasDestination = !!(destination
                 && typeof destination.latitude === 'number'
-                && typeof destination.longitude === 'number') {
-            const _kind = 'meetingRequest';
-            utils.timestampedLog('[location] meetMeAt: confirmed —',
-                'destination=', destination.latitude.toFixed(5), ',', destination.longitude.toFixed(5),
-                'overriding kind from', kind, '→', _kind);
-            this.startLocationSharing(uri, durationMs, periodLabel, {
-                kind: _kind,
+                && typeof destination.longitude === 'number');
+        if (kind === 'meetingRequest' || _hasDestination) {
+            this.app.sendMeetingRequest(uri, {
+                durationMs,
+                periodLabel,
                 excludeOriginRadiusMeters,
-                destination,
+                destination: _hasDestination ? destination : null,
             });
+            // Nothing armed locally — resolve the modal spinner immediately.
             return;
         }
         if (kind === 'once') {
-            this.shareLocationOnce(uri);
+            // shareLocationOnce awaits its own getCurrentCoordinates() + send
+            // internally, so its completion IS the feedback signal.
+            await this.shareLocationOnce(uri);
             return;
         }
-        this.startLocationSharing(uri, durationMs, periodLabel, {kind, excludeOriginRadiusMeters});
+        await this.startLocationSharing(uri, durationMs, periodLabel, {
+            kind,
+            excludeOriginRadiusMeters,
+            onInitialShareResult,
+        });
+        await this._awaitInitialShare(uri, _initialShareResult, _alreadyActive);
     }
 
     // One-shot location share — acquire a single GPS fix and ship a
-    // single sylk-message-metadata tick with action='location' and
+    // single application/sylk-location-sharing tick with action='location' and
     // one_shot:true. No timer, no follow-up ticks, no peerCoords
     // pairing, no destination, no proximity logic. Receiver renders
     // a static "Shared location" bubble (LocationBubble keys off
@@ -3697,7 +4887,7 @@ export default class LocationSharingManager {
     //   (see app.js _noteSiblingAnsweredLocationRequest).
     async shareLocationOnce(uri, opts = {}) {
         if (!uri) return;
-        if (!this.host.props.sendMessage) {
+        if (!this.app.sendMessage) {
             utils.timestampedLog('[location] shareLocationOnce: sendMessage prop not wired');
             return;
         }
@@ -3751,17 +4941,15 @@ export default class LocationSharingManager {
         // wonders whether the tap registered. Use renderSystemMessage
         // (no SQL INSERT, no replication) so the note disappears on
         // the next chat reload and doesn't clutter restored history.
-        if (typeof this.host.props.renderSystemMessage === 'function') {
-            try {
-                this.host.props.renderSystemMessage(
-                    uri,
-                    '📍 Location will be shared as soon as it is acquired…',
-                    'outgoing',
-                    new Date(),
-                    true
-                );
-            } catch (e) { /* noop */ }
-        }
+        try {
+            this.app.renderSystemMessage(
+                uri,
+                '📍 Location will be shared as soon as it is acquired…',
+                'outgoing',
+                new Date(),
+                true
+            );
+        } catch (e) { /* noop */ }
         try {
             const coords = await this.getCurrentCoordinates();
             // 24 h expires_at is generous — a one-shot location is
@@ -3772,30 +4960,48 @@ export default class LocationSharingManager {
             // 7-day cleanup, so we don't end up with stale forever
             // rows.
             const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-            const extras = {oneShot: true};
+            // v1: one-shot goes out as application/sylk-location-sharing. Only
+            // the coordinates are encrypted; the app.js send path handles the
+            // coordinate-only PGP + cleartext-fields split. metadata.value holds
+            // the plaintext coords here.
+            const _mid = uuid.v4();
+            const _msg = {
+                _id: _mid,
+                key: _mid,
+                createdAt: new Date(),
+                metadata: {
+                    action: 'location',
+                    messageId: _mid,
+                    value: coords,
+                    one_shot: true,
+                    expires: expiresAt,
+                    timestamp: new Date(),
+                },
+                text: '',
+                user: {},
+            };
+            // Correlate a one-shot ANSWER to the location_request it replies to,
+            // so the answerer's OTHER devices can close their prompt when a
+            // sibling answers (see the sylk-location-sharing branch in
+            // outgoingMessage). Distinct from sessionId — a one-shot has no session.
             if (opts && opts.inReplyTo) {
-                extras.inReplyTo = opts.inReplyTo;
+                _msg.metadata.requestId = opts.inReplyTo;
             }
-            this.sendLocationMetadata(uri, coords, expiresAt, null, extras);
-            if (typeof this.host.props.saveSystemMessage === 'function') {
-                const at = new Date().toLocaleTimeString([], {
-                    hour: '2-digit', minute: '2-digit',
-                });
-                this.host.props.saveSystemMessage(uri,
-                    `📍 Shared current location at ${at}`,
-                    'outgoing');
-            }
+            this.app.sendMessage(uri, _msg, 'application/sylk-location-sharing');
+            // No system-message text ("📍 Shared current location at …") — the
+            // share renders as the sender's own outgoing MAP bubble (injected by
+            // _sendLocationSharing → _injectLocationBubble with author=self), the
+            // same way an incoming share renders a map bubble for the receiver.
         } catch (err) {
-            utils.timestampedLog('[location] shareLocationOnce failed',
-                err && err.message ? err.message : err);
+            utils.timestampedLog('[location] shareLocationOnce failed', err && err.message ? err.message : err);
         }
     }
 
     // Send a "please share your current location" request to the peer.
-    // Symmetric to the meet-up handshake: we ship a single
-    // sylk-message-metadata with action='location_request' (no coords
-    // — we're asking, not sharing). The receiver's app.js detects the
-    // action and pops a small Yes/No modal; on Yes the peer fires
+    // Symmetric to the meet-up handshake: we ship a single coord-free
+    // application/sylk-location-sharing signal with action='location_request'
+    // (no coords — we're asking, not sharing). The receiver's app.js detects
+    // the action and pops a small Yes/No modal; on Yes the peer fires
     // shareLocationOnce back our way.
     //
     // No timer, no follow-up ticks, no expiry-driven cleanup — the
@@ -3805,66 +5011,12 @@ export default class LocationSharingManager {
     // pendingLocationRequests entry is silently dropped past expiry.
     requestPeerLocation(uri) {
         if (!uri) return;
-        if (!this.host.props.sendMessage) {
-            utils.timestampedLog('[location] requestPeerLocation: sendMessage prop not wired');
-            return;
-        }
-        try {
-            const reqId = uuid.v4();
-            const now = new Date();
-            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-            // Announcement text — a plain `text/plain` chat message
-            // sent alongside the metadata payload. Routes through the
-            // server's standard push pipeline, which is what wakes a
-            // sleeping iPhone / Android. Without it the metadata
-            // message lands silently when the receiver's app is in
-            // background or terminated, and they never see the
-            // request until they happen to open Blink. The companion
-            // metadata still drives the modal — this text is just
-            // the wake-up.
-            try {
-                const announceId = uuid.v4();
-                const announceText = 'Could you share your current location, please?';
-                this.host.props.sendMessage(uri, {
-                    _id: announceId,
-                    key: announceId,
-                    createdAt: now,
-                    text: announceText,
-                    metadata: {locationRequestAnnouncement: true},
-                    user: {},
-                });
-            } catch (e) {
-                console.log('[location] requestPeerLocation announcement send failed',
-                    e && e.message ? e.message : e);
-            }
-
-            const metadataContent = {
-                action: 'location_request',
-                messageId: reqId,
-                timestamp: now,
-                uri: uri,
-                expires: expiresAt,
-            };
-            const metadataMessage = {
-                _id: reqId,
-                key: reqId,
-                createdAt: now,
-                metadata: metadataContent,
-                text: JSON.stringify(metadataContent),
-                user: {},
-            };
-            this.host.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
-            // No "Requested current location at HH:MM" system note —
-            // the polite announcement text we shipped above ("Could
-            // you share your current location, please?") already
-            // serves as the chat-visible breadcrumb. A redundant
-            // system line right next to it just clutters the
-            // conversation.
-        } catch (e) {
-            utils.timestampedLog('[location] requestPeerLocation failed',
-                e && e.message ? e.message : e);
-        }
+        // Location requests ride the application/sylk-location-sharing signal
+        // path: a coord-free action='location_request' tick (see app.js
+        // sendLocationRequest). app.js owns the send so the payload and the
+        // handshake bookkeeping live in one place. Falls back to a log if
+        // the host prop isn't wired.
+        this.app.sendLocationRequest(uri);
     }
 
     // Public entry point used by app.js when the local user taps "Accept"
@@ -3873,7 +5025,7 @@ export default class LocationSharingManager {
     // expiresAt the requester chose so both sides tear down in sync.
     //
     // Returns a Promise that resolves to true if a share actually started
-    // (locationTimers entry now exists for `uri`), false otherwise. The
+    // (outgoingLocationSessions entry now exists for `uri`), false otherwise. The
     // caller in app.js (_acceptMeetingRequest) uses this to roll back the
     // optimistic acceptedMeetingRequestIds marker when the share never
     // started — e.g. user denied / blocked the permission prompt, or
@@ -3882,8 +5034,7 @@ export default class LocationSharingManager {
     // they may have just granted permission and now want to retry.
     async startMeetingAcceptance(uri, {requestId, expiresAt, periodLabel, excludeOriginRadiusMeters, destination}) {
         if (!uri || !requestId || typeof expiresAt !== 'number') {
-            utils.timestampedLog('[location] startMeetingAcceptance: missing required args',
-                uri, requestId, expiresAt);
+            utils.timestampedLog('[location] startMeetingAcceptance: missing required args', uri, requestId, expiresAt);
             return false;
         }
         const now = Date.now();
@@ -3892,6 +5043,15 @@ export default class LocationSharingManager {
             utils.timestampedLog('[location] startMeetingAcceptance: request already expired', requestId);
             return false;
         }
+        // Enforce one meet per contact: end any prior meet with this peer
+        // before accepting a new one. Also clears a stale outgoingLocationSessions[uri]
+        // entry that would otherwise make startLocationSharing's re-entry
+        // guard treat this accept as a duplicate and silently no-op.
+        try {
+            if (typeof this._endPriorMeetsForUri === 'function') {
+                this._endPriorMeetsForUri(uri, requestId);
+            }
+        } catch (e) { /* best effort */ }
         await this.startLocationSharing(
             uri,
             durationMs,
@@ -3914,12 +5074,987 @@ export default class LocationSharingManager {
                 destination,
             }
         );
-        // Canonical "share started" indicator: locationTimers[uri] is
+        // Canonical "share started" indicator: outgoingLocationSessions[uri] is
         // populated only on the success path inside startLocationSharing
         // (after permission probe + disclosure both clear). Any early-
         // return path in there (denied / blocked / disclosure-declined /
         // iOS-whenInUse-cancel / Android-foregroundOnly-cancel) leaves
-        // locationTimers untouched, so this read tells us whether to
+        // outgoingLocationSessions untouched, so this read tells us whether to
         // honour the "we accepted" state in app.js or roll it back.
-        return !!(this.host.locationTimers && this.host.locationTimers[uri]);
-    }}
+        return !!this._meetEntryForUri(uri);
+    }
+
+    // ===== Meeting/location formatters, wire/SQL derivers, meeting-lifecycle
+    // telemetry, and acceptance predicates. Pure logic + app-owned registries
+    // reached via this.app.* (the host). =====
+    // --- Human-readable [location] [meet] narrative logger --------------------------
+    // These emit a compact lifecycle trail, one line per event. Designed to
+    // be readable at a glance without scrolling through per-tick noise.
+    //
+    //   [location] [meet] INVITATION SENT → <peer> — session <id8> expires <hh:mm>
+    //   [location] [meet] INVITATION RECEIVED ← <peer> — session <id8> expires <hh:mm>
+    //   [location] [meet] ACCEPTED ← <peer> — session <id8>
+    //   [location] [meet] PEER ACCEPTED — session <id8> (both sides sharing)
+    //   [location] [meet] Distance: ~<N> <unit> — session <id8>  (band change only)
+    //   [location] [meet] Proximity dwell started — <N> m — session <id8>
+    //   [location] [meet] PROXIMITY MET — session <id8>
+    //   [location] [meet] SESSION ENDED — reason=<why> session <id8>
+    _meetShortId(id) {
+        if (!id) return '????????';
+        const s = String(id);
+        return s.length > 8 ? s.slice(0, 8) : s;
+    }
+
+    _meetFormatExpires(expiresAt) {
+        if (typeof expiresAt !== 'number' || !isFinite(expiresAt)) return '(no-expiry)';
+        try {
+            const d = new Date(expiresAt);
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            return hh + ':' + mm;
+        } catch (e) {
+            return '(invalid)';
+        }
+    }
+
+    _meetDistanceBand(meters) {
+        if (meters == null || !isFinite(meters)) return 'unknown';
+        if (meters <= 10)   return 'proximity';     // meeting threshold
+        if (meters <= 100)  return 'tens';          // 11–100 m
+        if (meters <= 1000) return 'hundreds';      // 101 m – 1 km
+        if (meters <= 10000) return 'km';           // 1–10 km
+        return 'far';                                // > 10 km
+    }
+
+    _meetFormatDistance(meters) {
+        if (meters == null || !isFinite(meters)) return '?';
+        if (meters < 1000) return Math.round(meters) + ' m';
+        return (meters / 1000).toFixed(meters < 10000 ? 1 : 0) + ' km';
+    }
+
+    // Single source of truth for the per-row category column.
+    // One of {'text','image','video','audio','location','other'}
+    // or null. Called at INSERT time so subsequent reads can gate
+    // SQL directly on `category=?` instead of re-parsing metadata
+    // on every scan.
+    //
+    // Mapping (kept aligned with the JS classifier in
+    // sql2GiftedChat — utils.isImage/isAudio/isVideo strip a
+    // trailing .asc themselves, so we don't have to special-case
+    // PGP-armored names here either):
+    //
+    //   text/plain | text/html                              → 'text'
+    //   application/sylk-file-transfer:
+    //     metadata classifies as image / audio / video      → matches
+    //     otherwise (filename present)                      → 'other'
+    //     no filename                                       → null
+    //   application/sylk-location-sharing, related_action NOT *_update
+    //     (origin tick / one-shot)                          → 'location'
+    //   everything else (pgp keys, reactions, replies, ctrl)→ null
+    //
+    // `metadata` may arrive as either a parsed object (most insert
+    // sites already have it parsed) or a JSON string (saveOutgoing-
+    // MessageSql passes JSON.stringify on the way to SQL). Accept
+    // both — the alternative is forcing every caller to remember to
+    // pass the parsed form, which is exactly the kind of leakage
+    // this method exists to avoid.
+    // True when a location CONTENT body is a location-share ORIGIN (the row the
+    // chat renders as a map bubble): action 'location', not an update tick, with
+    // a real lat/lng. Update ticks (isUpdate) are excluded. Same predicate as
+    // updateRenderMessageState's _isLocationOriginRow.
+    _isLocationOriginContent(content) {
+        if (typeof content !== 'string' || content.indexOf('"location"') === -1) return false;
+        try {
+            const md = JSON.parse(content);
+            return !!(md && md.action === 'location' && !md.isUpdate
+                && md.value && typeof md.value.latitude === 'number'
+                && typeof md.value.longitude === 'number');
+        } catch (e) { return false; }
+    }
+
+    // The PURPOSE of a stored location row, written to the indexed
+    // related_action column (decryption-free). Origins get a distinct action so
+    // the handshake phase (request / accept) and one-shot are queryable in SQL;
+    // every trail tick is 'location_update' (its session's purpose lives on the
+    // origin row, joined via related_msg_id).
+    _locationRelatedAction(fields) {
+        // The location_* / meeting_* action families are consistently prefixed
+        // with a start / update / stop|end lifecycle:
+        //   location_once (static) | location_start | location_update | location_stop
+        //   meeting_request/meeting_accept (coord-free handshake) | meeting_start (coord origin) | meeting_update | meeting_end
+        if (!fields) return 'location_start';
+        if (fields.isUpdate) {
+            // A meet session's update ticks re-stamp the meet flag, so they read
+            // as 'meeting_update'; a plain live trail tick is 'location_update'.
+            return (fields.meeting_request || fields.role)
+                ? 'meeting_update' : 'location_update';
+        }
+        if (fields.one_shot) return 'location_once';
+        // The requester's coordinate ORIGIN now ships as a value-bearing
+        // `meeting_request` (it carries the inviter's coords + destination AND
+        // the invite semantics in one message — the server already pushes this
+        // action, and the receiver renders it as the 3-point map + accept/reject
+        // modal). The accepter's origin stays `meeting_start`. (A legacy
+        // coordinate-free meeting_request is a separate explicit signal that
+        // never reaches this deriver.)
+        if (fields.meeting_request) return 'meeting_request';
+        if (fields.role) return 'meeting_start';
+        return 'location_start';
+    }
+
+    // What to persist in the `metadata` column for a location-sharing row:
+    // only the fields with NO column and that aren't derivable. messageId,
+    // isUpdate, timestamp, uri, action, one_shot and meeting_request are all
+    // reconstructed on read (from related_msg_id / related_action / timestamp /
+    // from_uri|to_uri). in_reply_to is a request-id VALUE, so it stays.
+    _locationStoredMetadata(fields) {
+        const m = {};
+        if (!fields) return m;
+        if (fields.expires) m.expires = fields.expires;
+        if (fields.role) m.role = fields.role;
+        if (fields.privacyDeferred) m.privacyDeferred = true;
+        if (fields.privacyDeferredRadiusMeters != null) m.privacyDeferredRadiusMeters = fields.privacyDeferredRadiusMeters;
+        if (fields.dummy) m.dummy = true;
+        // Owner device id (which of the account's devices is broadcasting this
+        // session). Persisted so the SQL-derived active-sessions list can name
+        // the owning device instead of guessing. Present on the cleartext wire
+        // (added to every outgoing envelope) and captured on receive.
+        if (fields.deviceId) m.deviceId = fields.deviceId;
+        return m;
+    }
+
+    // Rebuild the full location locationContent for a stored row from its
+    // columns + the flags in `metadata`. `coords`/`destination` are the
+    // decrypted geo.
+    _locationContentFromRow(row, coords, destination) {
+        let stored = {};
+        try { stored = JSON.parse(row.metadata || '{}'); } catch (e) {}
+        const ra = row.related_action;
+        const isUpdate = ra === 'location_update' || ra === 'meeting_update';
+        let timestamp = stored.timestamp;
+        if (timestamp == null) {
+            try { timestamp = JSON.parse(row.timestamp); }
+            catch (e) { timestamp = row.unix_timestamp ? new Date(row.unix_timestamp * 1000).toISOString() : undefined; }
+        }
+        const content = Object.assign({}, stored, {
+            action: 'location',
+            messageId: row.related_msg_id || stored.messageId,
+            isUpdate: isUpdate,
+            timestamp: timestamp,
+            uri: stored.uri || (row.direction === 'incoming' ? row.from_uri : row.to_uri),
+            value: coords,
+            author: row.from_uri,
+        });
+        // Restore the purpose flags from related_action (or a legacy full row).
+        if (ra === 'location_once' || stored.one_shot) content.one_shot = true;
+        // Meet coord origins store as 'meeting_start' (both legs). The
+        // accepter's leg carries in_reply_to (restored via the `stored` spread);
+        // the requester's leg has none → restore its meeting_request flag.
+        // Legacy rows used ra==='meeting_request' for the requester leg.
+        // Meet coord origins store as 'meeting_start' (both legs); the persisted
+        // `role` tells them apart. The inviter leg re-derives its meeting_request
+        // flag; the invited leg is identified by role alone.
+        // The requester's coordinate origin persists as related_action
+        // 'meeting_request' (the value-bearing invite) OR legacy 'meeting_start';
+        // either way the inviter leg (role !== 'invited') re-derives its
+        // meeting_request flag so the reload rebuilds the 3-point map + the
+        // accept/reject modal. The accepter leg (role 'invited') stays a plain
+        // meet origin.
+        if (ra === 'meeting_start' || ra === 'meeting_request') {
+            if (content.role !== 'invited') content.meeting_request = true;
+        } else if (stored.meeting_request) {
+            content.meeting_request = true;
+        }
+        if (destination) content.destination = destination;
+        return content;
+    }
+
+    // Is the journal payload a location-sharing UPDATE tick (or meeting_end)
+    // that can be safely dropped on journal replay?
+    //
+    // Policy (per product decision after the "target was offline when I
+    // started sharing" bug):
+    //   • ORIGIN ticks (action='location', not an update) — KEEP. Needed so
+    //     receivers who came online after the live event still see the share
+    //     bubble and, for meeting requests, the accept modal. Includes plain
+    //     timed-share origins, meeting-request origins (meeting_request:true)
+    //     and acceptance origins (in_reply_to set).
+    //   • UPDATE ticks (action='location', isUpdate set) — DROP. The origin
+    //     row already carries the last-known position (live handling UPDATEs
+    //     the origin's content in place), so replaying follow-ups would waste
+    //     work and, worse, fail a rowid UPDATE if the origin was also dropped.
+    //   • meeting_end — DROP. The "wipe now" signal is only meaningful live;
+    //     the `expire` column + purgeExpiredMessages() handles the SQL side.
+    //   • Encrypted blobs we can't introspect (contentOverride missing) —
+    //     DROP, same as before: we can't tell origin from update, so the
+    //     conservative move is to skip. Callers that want origin ticks
+    //     through MUST pre-decrypt and pass the plaintext via contentOverride.
+    _isLocationJournalPayload(message, contentOverride) {
+        if (!message || message.contentType !== 'application/sylk-message-metadata') {
+            return false;
+        }
+        const content = contentOverride != null ? contentOverride : message.content;
+        if (typeof content !== 'string') return false;
+        // Caller couldn't provide a decrypted body → we have no way to tell
+        // origin from update. Drop (existing conservative default).
+        if (content.startsWith('-----BEGIN PGP')) return true;
+        try {
+            const parsed = JSON.parse(content);
+            if (!parsed || typeof parsed !== 'object') return false;
+            const action = parsed.action;
+            if (action === 'meeting_end') return true;
+            if (action === 'location') {
+                // Origin tick (meeting request, acceptance, or plain timed
+                // share) → pass through so SQL gets the row and the modal
+                // can be queued.
+                if (!parsed.isUpdate) return false;
+                // Follow-up tick. Two cases:
+                //   • Meet session (meeting_request:true OR in_reply_to):
+                //     UPDATE-in-place semantics; the origin row already
+                //     carries the latest position once live, and journal
+                //     replay would just duplicate. Drop.
+                //   • Plain timed share (4h / 8h / 24h / once): we
+                //     preserve every tick as its own SQL row so the trail
+                //     can be replayed later. Pass through.
+                const isMeetSession = parsed.meeting_request === true
+                    || !!parsed.role;
+                return isMeetSession;
+            }
+        } catch (e) {
+            // Unparseable — not recognisable as structured metadata; let
+            // the existing pipeline handle (it will silently skip via the
+            // downstream guards in saveOutgoingMessageSqlBatch).
+        }
+        return false;
+    }
+
+    // High-level narrative meeting-lifecycle events. These are routed
+    // through utils.timestampedLog so they land in the persisted user-
+    // facing log file (exposed in the app's logs UI), not just the dev
+    // console. Low-level `[location] [meet] propagate …` diagnostics remain on
+    // plain console.log (they're too noisy for the user log).
+    _reportMeetingInvitationSent(requestId, peerUri, expiresAt) {
+        utils.timestampedLog('[location] [meet] INVITATION SENT →', peerUri, '— session', this._meetShortId(requestId), 'expires', this._meetFormatExpires(expiresAt));
+    }
+
+    _reportMeetingInvitationReceived(requestId, fromUri, expiresAt) {
+        utils.timestampedLog('[location] [meet] INVITATION RECEIVED ←', fromUri, '— session', this._meetShortId(requestId), 'expires', this._meetFormatExpires(expiresAt));
+    }
+
+    _reportMeetingAccepted(requestId, fromUri) {
+        utils.timestampedLog('[location] [meet] ACCEPTED ←', fromUri, '— session', this._meetShortId(requestId));
+    }
+
+    _reportPeerAccepted(requestId, fromUri) {
+        utils.timestampedLog('[location] [meet] PEER ACCEPTED — session', this._meetShortId(requestId), 'peer=', fromUri, '(both sides sharing)');
+    }
+
+    _reportMeetingDistance(sessionId, meters, ownCoords, destinationCoords) {
+        if (meters == null || !isFinite(meters)) return;
+        const band = this._meetDistanceBand(meters);
+        const prev = this._meetLastDistanceBand[sessionId];
+        if (prev === band) return;
+        this._meetLastDistanceBand[sessionId] = band;
+        // Optional "and how far am *I* from the destination?" suffix.
+        // Each device computes against its own current coords (the
+        // caller passes ownCoords from this device's session side —
+        // requesterCoords or accepterCoords depending on which side
+        // we are), so the same line on both phones reads as that
+        // device's own progress, not a shared number.
+        let toDestSuffix = '';
+        if (destinationCoords && ownCoords) {
+            const toDest = haversineMeters(ownCoords, destinationCoords);
+            if (Number.isFinite(toDest)) {
+                toDestSuffix = ' • ' + this._meetFormatDistance(toDest) + ' to dest';
+            }
+        }
+        utils.timestampedLog('[location] [meet] Distance: ~' + this._meetFormatDistance(meters) + ' peer' + toDestSuffix, '— session', this._meetShortId(sessionId), '(band', prev ? prev + '→' + band : band, ')');
+    }
+
+    _reportProximityDwellStarted(sessionId, meters) {
+        utils.timestampedLog('[location] [meet] Proximity dwell started —', this._meetFormatDistance(meters), '— session', this._meetShortId(sessionId));
+    }
+
+    _reportProximityMet(sessionId, meters) {
+        utils.timestampedLog('[location] [meet] PROXIMITY MET — session', this._meetShortId(sessionId), 'distance=', this._meetFormatDistance(meters));
+    }
+
+    _reportMeetingEnded(sessionId, reason) {
+        // Dedup: this is called from both the incoming meeting_end
+        // signal handler AND the local teardown helper, so without
+        // a guard the SESSION ENDED log fires twice for the same
+        // session. Track reported sessions in a Set; the
+        // _meetLastDistanceBand cleanup still runs idempotently.
+        if (!this._meetReportedEnded.has(sessionId)) {
+            this._meetReportedEnded.add(sessionId);
+            utils.timestampedLog('[meet] [location] SESSION ENDED — reason=' + (reason || 'unknown'), 'session', this._meetShortId(sessionId));
+        }
+        delete this._meetLastDistanceBand[sessionId];
+    }
+
+    // Predicate exposed as a prop so UI below (kebab menu) can decide whether
+    // to surface the "Show meeting request..." option. Treats expired requests
+    // as "not acceptable" too.
+    isMeetingRequestAcceptable(requestId, expiresAt) {
+        if (!requestId) return false;
+        if (this.acceptedMeetingRequestIds.has(requestId)) {
+            return false;
+        }
+        if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+            return false;
+        }
+        return true;
+    }
+
+    // Has this meeting session progressed past the acceptance handshake?
+    // Exposed as a prop to NavigationBar so stopLocationSharing can
+    // pick the right vocabulary for its system notes: before acceptance
+    // we call the thing a "Meeting request" (it's still a request, the
+    // peer hasn't responded yet); after acceptance it's just a "Meeting"
+    // because the label of "request" stops making sense — both sides
+    // are actively sharing.
+    //
+    // Accepted on either side counts:
+    //   • this device was the accepter → acceptedMeetingRequestIds has it
+    //   • this device was the requester → handledAcceptanceIds has it
+    //     once we've seen the peer's first reply tick
+    isMeetingSessionAccepted(sessionId) {
+        if (!sessionId) return false;
+        if (this.acceptedMeetingRequestIds.has(sessionId)) {
+            return true;
+        }
+        if (this.handledAcceptanceIds.has(sessionId)) {
+            return true;
+        }
+        return false;
+    }
+
+
+    // ===== Session-teardown cluster. Owns meetingSessions (engine state);
+    // reaches app-owned persistence/timers and _wipeMeetingSession via
+    // this.app.* seams. =====
+
+    // Arm a one-shot BackgroundTimer for session expiry. Idempotent —
+    // repeat calls for the same sessionId are no-ops, so it's safe to
+    // invoke from both the outgoing-echo path and the incoming-request
+    // path on the same device (won't happen in practice but cheap to
+    // guard).
+    _scheduleMeetingSessionWipe(sessionId, uri, expiresAt) {
+        if (!sessionId) return;
+        if (this.meetingSessionWipeTimers[sessionId]) return;
+        const delay = Math.max(0, expiresAt - Date.now());
+        // BackgroundTimer.setTimeout fires on a real alarm on Android and
+        // is reliable in foreground on iOS. If the app is killed before
+        // the timer fires, the next boot's hydrate path could replay the
+        // wipe — but we keep the scheme simple: if the user kills the
+        // app, cleanup happens on the NEXT interaction with that chat
+        // after expires_at (see the defensive check at the top of the
+        // wipe method itself). Good enough for a privacy feature where
+        // "eventually" is acceptable.
+        const id = BackgroundTimer.setTimeout(() => {
+            delete this.meetingSessionWipeTimers[sessionId];
+            this.app._wipeMeetingSession(sessionId, uri, 'expired');
+        }, delay);
+        this.meetingSessionWipeTimers[sessionId] = id;
+        console.log('[meeting] scheduled wipe for session', sessionId, 'uri=', uri, 'in', Math.round(delay / 1000), 's');
+    }
+
+    // "Let's meet up." Pure invitation — the requester does NOT start
+    // sharing yet. Register the request id so the acceptance tick
+    // (in_reply_to === request_id) is recognised, and stash the share
+    // params (cap / privacy radius / optional destination) so the requester
+    // can start its OWN share once the peer accepts. destination (if any)
+    // stays local — it is NOT put on the wire; it rides the E2EE location
+    // ticks after acceptance.
+    // Single-meet-per-contact enforcement. Before a NEW meet with `uri`
+    // starts (inviter sending a request, or accepter tapping Accept), end
+    // every OTHER meet session already tied to this contact so two meets
+    // with the same person can never be live at once. Without this, starting
+    // a fresh meet before the previous one wrapped up leaves the old session
+    // alive on both sides: the receiver ends up with stacked map bubbles (one
+    // per live session) and the NavBar pin never clears because the old share
+    // keeps ticking. Idempotent — sessions already ended are skipped.
+    _endPriorMeetsForUri(uri, exceptSessionId) {
+        if (!uri || !this.meetingSessions) return;
+        this.app._endedLocationSessions = this.app._endedLocationSessions || new Set();
+        // Snapshot the ids up front — _wipeMeetingSession mutates
+        // this.meetingSessions as it runs.
+        const _ids = Object.keys(this.meetingSessions);
+        for (const sid of _ids) {
+            if (!sid || sid === exceptSessionId) continue;
+            const s = this.meetingSessions[sid];
+            if (!s) continue;
+            // Only sessions involving THIS contact.
+            if (s.requesterUri !== uri && s.accepterUri !== uri) continue;
+            // Already torn down — don't re-signal the peer or post a second
+            // end note. _meetReportedEnded is set by _reportMeetingEnded, which
+            // fires from BOTH the local wipe and the incoming meeting_end
+            // handler, so it covers sessions ended by either side.
+            if (this.app._endedLocationSessions.has(sid)) continue;
+            if (this._meetReportedEnded.has(sid)) continue;
+            this.app._endedLocationSessions.add(sid);
+            utils.timestampedLog('[location] [meet] auto-ending prior meet', this._meetShortId(sid), 'with', uri, '— a new meet with this contact is starting');
+            try {
+                // Tell the peer so their side tears down too. The old share
+                // may no longer have a local timer (it was replaced), so
+                // stopLocationSharing alone wouldn't emit this signal.
+                this.sendMeetingEndSignal(uri, sid, {reason: 'ended'});
+            } catch (e) { /* best effort */ }
+            // Local teardown: stops any still-live timer for this uri (silent,
+            // no note) and wipes the bubble + SQL rows + session record for
+            // this session id. Runs synchronously up to its first await, so
+            // outgoingLocationSessions[uri] is cleared before a new share starts.
+            try { this.app._wipeMeetingSession(sid, uri, 'replaced'); } catch (e) {
+                console.log('[location] [meet] auto-end wipe failed', e && e.message ? e.message : e);
+            }
+        }
+    }
+
+
+    // ===== Coord-propagation / proximity-meet cluster. Logic owns
+    // meetingSessions (sibling); persistence, notifications, React state and
+    // _wipeMeetingSession reached via this.app.* seams. =====
+
+    // Per-tick pair update for meeting sessions. Determines which session
+    // this tick belongs to (if any) and which side of it it came from,
+    // then stores the latest coords on the matching side. Returns
+    // {sessionId, side, peerUri} if the tick was paired, else null.
+    //
+    // Tick → (sessionId, side) classification:
+    //   • in_reply_to present               → session=in_reply_to, side='accepter'
+    //   • meeting_request:true + messageId  → session=messageId,   side='requester' (origin)
+    //   • messageId in myOutgoingMeetingRequestIds → session=messageId, side='requester'
+    //     (continuation tick of our own request; follow-up ticks don't
+    //     restamp meeting_request:true.)
+    //   • messageId matches a known session's requesterOriginId
+    //     or accepterOriginId                → matching session + side
+    //     (covers continuation ticks once we've already seen the origin.)
+    _updateMeetingSessionCoords(locationContent, conversationUri) {
+        if (!locationContent || locationContent.action !== 'location') return null;
+        const mid = locationContent.messageId;
+        if (!mid) return null;
+
+        let sessionId = null;
+        let side = null;
+
+        // Unified meet model: the sender stamps an explicit sessionId (the
+        // meeting request id, shared by both legs) + role. Prefer those.
+        if (locationContent.sessionId && locationContent.role) {
+            sessionId = locationContent.sessionId;
+            side = locationContent.role === 'invited' ? 'accepter' : 'requester';
+        } else if (locationContent.role === 'invited') {
+            sessionId = locationContent.messageId;
+            side = 'accepter';
+        } else if (locationContent.meeting_request === true) {
+            sessionId = mid;
+            side = 'requester';
+        } else if (this.myOutgoingMeetingRequestIds.has(mid)) {
+            sessionId = mid;
+            side = 'requester';
+        } else {
+            // Fallback: continuation tick for a session we've already
+            // classified. Look it up by known origin ids.
+            for (const [sid, s] of Object.entries(this.meetingSessions)) {
+                if (!s) continue;
+                if (s.requesterOriginId === mid) { sessionId = sid; side = 'requester'; break; }
+                if (s.accepterOriginId  === mid) { sessionId = sid; side = 'accepter';  break; }
+            }
+        }
+
+        if (!sessionId || !side) return null;
+
+        const s = this.meetingSessions[sessionId] || {};
+        // Record origin ids and conversation uri for each side the first
+        // time we see them. conversationUri is the "other party" from this
+        // device's perspective — it's the right key for state.messages.
+        if (side === 'requester') {
+            if (!s.requesterOriginId) s.requesterOriginId = mid;
+            if (!s.requesterUri && conversationUri) s.requesterUri = conversationUri;
+        } else {
+            if (!s.accepterOriginId) s.accepterOriginId = mid;
+            if (!s.accepterUri && conversationUri) s.accepterUri = conversationUri;
+        }
+
+        // Privacy-deferred ticks carry the destination as `value` (a
+        // stand-in while that side is hiding their position). Don't
+        // extract them as that side's coords — would render the side's
+        // pin at the meeting point on the OTHER side's map (cross-leak).
+        const v = locationContent.value;
+        if (!locationContent.privacyDeferred
+                && v && typeof v.latitude === 'number' && typeof v.longitude === 'number') {
+            const coords = {
+                latitude: v.latitude,
+                longitude: v.longitude,
+                accuracy: typeof v.accuracy === 'number' ? v.accuracy : null,
+                timestamp: locationContent.timestamp || Date.now(),
+            };
+            if (side === 'requester') s.requesterCoords = coords;
+            else                      s.accepterCoords  = coords;
+            // START snapshot: keep the FIRST coords we ever see for each
+            // side, never overwritten by later updates. The live/last
+            // position (requesterCoords/accepterCoords) moves every tick;
+            // these two freeze where each party was when the meet began.
+            // Used to draw the "Meet-up succeeded" 3-point summary at end
+            // (each party's start + the meeting point) — the last-known
+            // coords are used instead when the meet FAILED.
+            if (side === 'requester') { if (!s.requesterStartCoords) s.requesterStartCoords = coords; }
+            else                      { if (!s.accepterStartCoords)  s.accepterStartCoords  = coords; }
+        }
+        // Capture shared meeting destination from any tick that
+        // carries it (origin or update; requester broadcasts it once
+        // they pick one — usually after their first GPS fix). Keep
+        // the first non-null value we ever see; subsequent broadcasts
+        // of the same destination are no-ops, and we don't want a
+        // rogue update to flip an established destination mid-session.
+        // If a NavBar share is already active for this conversation
+        // (the accepter side after they tapped Accept), forward the
+        // destination so its simulator/tick stamping picks it up.
+        const dest = locationContent.destination;
+        if (dest
+                && typeof dest.latitude === 'number'
+                && typeof dest.longitude === 'number'
+                && !s.destination) {
+            s.destination = {latitude: dest.latitude, longitude: dest.longitude};
+            try {
+                if (conversationUri) {
+                    this.setMeetingDestination(conversationUri, s.destination);
+                }
+            } catch (e) {
+                console.log('[meeting] propagating destination to NavBar failed', e && e.message ? e.message : e);
+            }
+        }
+        this.meetingSessions[sessionId] = s;
+
+        // One-line APPLOG summary of what this tick is and what the session
+        // looks like AFTER it lands. This is the breadcrumb we want next time
+        // the "two maps instead of one" symptom shows up — it tells us:
+        //   • which side (requester / accepter) the tick was classified as
+        //   • whether both origin ids are now known (without both we cannot
+        //     stamp peerCoords on the partner's bubble — the symptom of two
+        //     separate bubbles drifting independently)
+        //   • whether both coord pairs are now known (precondition for the
+        //     haversine/distance computation and the second pin)
+        //   • the in_reply_to / meeting_request flags that drive the
+        //     _injectLocationBubble dedup
+        // We deliberately keep this on `utils.timestampedLog` so it lands in
+        // the on-device log file (Show logs / Support needed…), not just the
+        // dev console.
+        try {
+            utils.timestampedLog('[location] [meet] tick', 'session=' + this._meetShortId(sessionId), 'side=' + side, 'mid=' + this._meetShortId(mid), 'role=' + (locationContent.role ? locationContent.role : '-'), 'meeting_request=' + (locationContent.meeting_request === true ? 'y' : 'n'), 'has_coords=' + (v && typeof v.latitude === 'number' ? 'y' : 'n'), 'pair=req:' + (s.requesterOriginId ? 'id' : '-') + (s.requesterCoords ? '+gps' : '') + '/acc:' + (s.accepterOriginId ? 'id' : '-') + (s.accepterCoords ? '+gps' : ''));
+        } catch (e) { /* logging must never throw */ }
+
+        return {sessionId, side, peerUri: conversationUri, session: s};
+    }
+
+    // Patch peerCoords (+ distance) into the latest location-data entry of
+    // each bubble that belongs to this session, so LocationBubble can read them
+    // off the entry's peerCoords / distanceMeters on its next render.
+    //
+    // We update both this.app.state.locationData (the flat map ContactsListBox
+    // reads) and the mirrored copy inside allContacts[uri].locationData — the
+    // tick setState above keeps these in sync, so we do too.
+    _propagatePeerCoordsForSession(sessionId, conversationUri) {
+        const s = this.meetingSessions[sessionId];
+        if (!s) return;
+        const {requesterOriginId, requesterCoords, accepterOriginId, accepterCoords} = s;
+        // Need at least one coord pair and both origin ids for the current
+        // conversation to make a difference. If only one origin is known
+        // on this device (e.g. the remote side's accept bubble hasn't
+        // arrived yet) we still stamp peerCoords on whatever we have.
+        if (!requesterCoords && !accepterCoords) return;
+
+        const distance = haversineMeters(requesterCoords, accepterCoords);
+        // Pick "our own" coords for this side. We're the requester
+        // when this session id is in myOutgoingMeetingRequestIds (set
+        // when our outgoing meeting_request tick echoed locally).
+        // Otherwise we're the accepter side. The distance-to-dest
+        // log uses these so each device shows its own remaining
+        // walking distance to the meeting point.
+        const iAmRequester = !!(this.myOutgoingMeetingRequestIds.has(sessionId));
+        const ownCoords = iAmRequester ? requesterCoords : accepterCoords;
+        this._reportMeetingDistance(sessionId, distance, ownCoords, s.destination);
+
+        // Proximity auto-end. If the two participants have been within
+        // MEETING_PROXIMITY_METERS of each other for MEETING_PROXIMITY_DWELL_MS
+        // continuously, treat the meetup as completed: notify the user
+        // locally, relay a meeting_end signal to the peer, stop this side's
+        // share, and wipe the session. Gated by a once-per-session flag so
+        // a stream of "near" ticks doesn't replay the alert. Called here
+        // (and not in _updateMeetingSessionCoords) because we need both
+        // coords populated, which is the same precondition this routine
+        // already enforces above.
+        this._maybeFireProximityMeet(sessionId, conversationUri, distance);
+
+        this.app.setState(prev => {
+            if (!prev || !prev.allContacts) return null;
+            const idx = prev.allContacts.findIndex(c => c.uri === conversationUri);
+            if (idx === -1) {
+                console.log('[location] [meet] propagate: contact NOT FOUND for uri=', conversationUri, '— session', this._meetShortId(sessionId));
+                return null;
+            }
+            const oldContact = prev.allContacts[idx];
+            // Same setState drift trap: basing
+            // newMm solely on oldContact.locationData and then writing
+            // it back to the top level quietly rolls OTHER mIds back to
+            // whatever the contact mirror last had. Merge top-level on top
+            // so the freshest per-mId entries survive — peerCoords that
+            // were stamped by a prior run of this same routine live at the
+            // top level and would be lost otherwise.
+            // Location lives in the isolated locationData store — base + write
+            // there (messagesMetadata no longer carries location).
+            const prevTopMeta = prev.locationData || {};
+            const prevContactMeta = oldContact.locationData || {};
+            const prevMm = {...prevContactMeta, ...prevTopMeta};
+            const newMm = {...prevMm};
+            let changed = false;
+
+            // Per-tick propagate logging is intentionally omitted here (it was
+            // ≈80 lines/minute during a live meet). The logic stays; errors /
+            // contact-not-found still log once so a regression leaves a trail.
+
+            // Shared meeting destination for this session (the "3rd point").
+            // The receiver only ever gets it inside the PEER's ticks, which are
+            // routed to peerCoords and never injected as their own bubble — so
+            // without stamping it here the accepter's bubble location data never
+            // carries `destination`, and LocationBubble draws no green pin and no
+            // "X km to meeting point" line even though the engine store
+            // (meetingSessions[sessionId].destination) has it. Stamp it onto the
+            // same bubble location-data entry as peerCoords so both sides render it.
+            const _meetDest = (s.destination
+                    && typeof s.destination.latitude === 'number'
+                    && typeof s.destination.longitude === 'number')
+                ? {latitude: s.destination.latitude, longitude: s.destination.longitude}
+                : null;
+            const applyPeer = (originId, peerCoords, label) => {
+                if (!originId) return;
+                // No peer yet (one side hasn't been seen on this device) —
+                // don't overwrite an absent peerCoords with explicit null.
+                // Leaves the bubble showing a single pin until pairing
+                // completes, which is the correct visual.
+                if (!peerCoords) return;
+                const arr = prevMm[originId];
+                if (!Array.isArray(arr) || arr.length === 0) return;
+                // Find the most recent 'location' entry (may not be last).
+                let realIdx = -1;
+                for (let i = arr.length - 1; i >= 0; i--) {
+                    if (arr[i] && arr[i].action === 'location') { realIdx = i; break; }
+                }
+                if (realIdx < 0) return;
+                const existing = arr[realIdx];
+                // Cheap equality check — skip setState if nothing changed.
+                // Include the destination so a freshly-arrived meeting point
+                // still triggers an update even when peerCoords/distance are
+                // unchanged from the previous tick.
+                const _destSame = (!_meetDest && !existing.destination)
+                    || (!!_meetDest && !!existing.destination
+                        && existing.destination.latitude === _meetDest.latitude
+                        && existing.destination.longitude === _meetDest.longitude);
+                const same = existing.peerCoords
+                    && existing.peerCoords.latitude === peerCoords.latitude
+                    && existing.peerCoords.longitude === peerCoords.longitude
+                    && existing.distanceMeters === distance
+                    && _destSame;
+                if (same) return;
+                const updated = {
+                    ...existing,
+                    peerCoords,
+                    distanceMeters: distance,
+                };
+                // Only add destination when we actually have one — never write
+                // an explicit null that would clobber a destination stamped by
+                // an earlier tick.
+                if (_meetDest) updated.destination = _meetDest;
+                const newArr = [...arr];
+                newArr[realIdx] = updated;
+                newMm[originId] = newArr;
+                changed = true;
+                // Persist to SQL on the same path — the origin row for this
+                // side exists on this device regardless of direction (both
+                // saveOutgoingMessage and saveIncomingMessage INSERT one on
+                // origin tick). Scheduling the UPDATE outside setState so
+                // the state commit isn't blocked on SQL; the helper is
+                // fire-and-forget and logs its own errors.
+                this.app._persistPeerCoordsToSql(originId, updated);
+            };
+
+            // Unified meet model: both legs share ONE bubble keyed on sessionId.
+            // Stamp THAT bubble with the PEER's coords (the other party from this
+            // device's perspective); our own coords are the bubble's own trail.
+            const _peerCoords = iAmRequester ? accepterCoords : requesterCoords;
+            applyPeer(sessionId, _peerCoords, iAmRequester ? 'req←acc' : 'acc←req');
+
+            // One-line APPLOG summary of THIS propagation pass. We log:
+            //   • whether each origin id was known (without both, the
+            //     partner's bubble can't be stamped — that's the
+            //     "two independent maps" symptom)
+            //   • whether both coord pairs were known
+            //   • the resulting distance
+            //   • whether a state change actually happened (changed=y/n)
+            // Skipped passes (no peer yet, peerCoords already match) are
+            // the common case once the session has been paired and is just
+            // echoing the same merge — they show up as changed=n.
+            try {
+                utils.timestampedLog('[location] [meet] propagate', 'session=' + this._meetShortId(sessionId), 'reqOrigin=' + (requesterOriginId ? this._meetShortId(requesterOriginId) : '-'), 'accOrigin=' + (accepterOriginId ? this._meetShortId(accepterOriginId) : '-'), 'reqCoords=' + (requesterCoords ? 'y' : 'n'), 'accCoords=' + (accepterCoords ? 'y' : 'n'), 'distance=' + (distance != null ? this._meetFormatDistance(distance) : '-'), 'changed=' + (changed ? 'y' : 'n'));
+            } catch (e) { /* never throw from logging */ }
+
+            if (!changed) return null;
+
+            const updatedContact = {...oldContact, locationData: newMm};
+            const newContacts = [...prev.allContacts];
+            newContacts[idx] = updatedContact;
+
+            const next = {
+                allContacts: newContacts,
+                locationData: newMm,
+            };
+            if (prev.selectedContact && prev.selectedContact.uri === conversationUri) {
+                next.selectedContact = updatedContact;
+            }
+            return next;
+        });
+    }
+
+    // Proximity gate for "Until we meet" auto-end. Called on every tick
+    // after peerCoords are paired. Three possible outcomes per call:
+    //
+    //   • distance > threshold → reset dwell ("they drifted apart")
+    //   • distance ≤ threshold but dwell not reached → remember when the
+    //     near phase started and bail (waiting for sustained proximity)
+    //   • distance ≤ threshold for ≥ dwell window → FIRE: notify user,
+    //     relay meeting_end to peer, stop this side's share, wipe session.
+    //
+    // The once-per-session `proximityFired` flag guards against double-
+    // firing before the session is torn down (the wipe is async — a tick
+    // in flight could re-enter this block before meetingSessions[sid]
+    // is deleted).
+    //
+    // Threshold / dwell tuning notes:
+    //   • 10 m is "arm's length / same table" with consumer GPS. Tight
+    //     enough to mean "they're actually at the same spot," at the
+    //     cost of tolerating less GPS jitter — a single bad fix can
+    //     push the reported distance past 10 m even when the phones
+    //     are side by side. The dwell debounce below absorbs that.
+    //   • 60 s dwell prevents a one-tick GPS glitch from killing an active
+    //     session while the users are actually still walking toward each
+    //     other. At the default 60 s tick cadence that's roughly "two
+    //     ticks in a row both near" — reasonable signal / noise ratio.
+    _maybeFireProximityMeet(sessionId, conversationUri, distance) {
+        if (distance == null) return;
+        const s = this.meetingSessions[sessionId];
+        if (!s) return;
+        if (s.proximityFired) return;
+
+        // 10 m is "arm's length / same table / same doorway" — i.e. the
+        // two phones are really at the same spot, not just nearby. This
+        // is tighter than the "same block" 50 m earlier drafts used; the
+        // downside is we're now squarely inside consumer-GPS noise (5–15 m
+        // CEP is typical outdoors, worse indoors), so a single noisy fix
+        // can bounce above the threshold. DWELL_MS + accuracy-aware gating
+        // below absorb that — we require the sustained-near state, not a
+        // single tick, AND we refuse to trust fixes whose reported
+        // accuracy is too coarse to resolve proximity at 10 m.
+        //
+        // 15 s dwell is a deliberately-short debounce: at a 1-tick-every-
+        // few-seconds cadence that's roughly 2–3 sustained near ticks
+        // before we fire. Earlier drafts used 60 s, which felt unresponsive
+        // when two people were clearly together at 2–3 m apart — by the
+        // time they pulled out the phone to check, they'd been staring at
+        // "distance: 3 m" for a minute.
+        //
+        // No accuracy gate on the meetup-confirmed fire (see comment on
+        // the distance check below). Indoors / weak-GPS environments
+        // report coarse accuracy (±50–150 m via cell+wifi positioning)
+        // even when phones are side-by-side; gating on accuracy prevents
+        // the meeting from ever auto-ending in that common case. Trust
+        // the reported distance; DWELL_MS debounces single-tick glitches.
+        // THRESHOLD_M raised from 10 m to 20 m after indoor testing: two
+        // phones in the same room, with the peer physically within arm's
+        // reach, consistently reported ~14 m apart because consumer GPS
+        // accuracy indoors is ~20 m (reported by both iOS and Android as
+        // `accuracy: 20` in the logs). A 10 m cutoff meant the meetup-
+        // confirmed fire never triggered for in-building meetings. 20 m
+        // matches that observed indoor accuracy floor while still being
+        // tight enough that "within the same building" is the scale at
+        // which we consider the meeting complete.
+        //
+        // User-overridable via Preferences → Location → "Meet-up
+        // proximity": 10 m (tight / outdoor with clear sky view), 20 m
+        // (default), or 50 m (relaxed / indoor / dense city). Read fresh
+        // on every call so a change applies on the next tick without
+        // any session teardown.
+        const _prefProximity = this.app.state
+            && this.app.state.accountSetting
+            && this.app.state.accountSetting.location
+            && this.app.state.accountSetting.location.proximityMeters;
+        const THRESHOLD_M = (typeof _prefProximity === 'number' && _prefProximity > 0)
+            ? _prefProximity
+            : 20;
+        const ALERT_THRESHOLD_M = 250;
+        const DWELL_MS = 15 * 1000;
+
+        // First-proximity heads-up — fire BEFORE the strict accuracy
+        // gate and BEFORE effDistance-based dwell logic. Rationale: the
+        // "You are close to each other" push is a low-stakes hint with
+        // no permanent side-effects (no chat message, no session teardown),
+        // so we'd rather err on the side of "tell the user they might be
+        // nearby" than "stay silent because one device briefly reported a
+        // coarse fix". Using the RAW reported distance here — no accuracy
+        // adjustment — so the alert still fires when one device has a
+        // coarse fix.
+        //
+        // ALERT_THRESHOLD_M (20 m) is intentionally roomier than
+        // THRESHOLD_M (10 m): "close to each other" should trigger as the
+        // phones approach, not only once they're already at the meetup
+        // point. 20 m is about "in the same shop / around the corner" —
+        // the right scale for a heads-up. The meetup-confirmed fire below
+        // keeps the tighter 10 m threshold with the accuracy-aware gate.
+        //
+        // Once-per-session via s.proximityAlertSent; a subsequent
+        // near→far→near bounce won't retrigger. Session teardown wipes
+        // the object so a future meeting starts with a fresh flag.
+        if (!s.proximityAlertSent && distance < ALERT_THRESHOLD_M) {
+            s.proximityAlertSent = true;
+            console.log('[meeting] proximity alert fired for session', sessionId, 'distance=', Math.round(distance), 'm', '(threshold', ALERT_THRESHOLD_M, 'm)');
+            this.app._showProximityAlertNotification(conversationUri);
+            // { const _atNear = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+            //   this.app._saveMeetingNote(conversationUri, sessionId, 'close', `You are close to each other at ${_atNear}`); }
+        }
+
+        // MEETUP-CONFIRMED fire. Uses the raw reported distance — no
+        // accuracy gate, no effDistance inflation. If both devices are
+        // reporting they're within THRESHOLD_M of each other, treat that
+        // as "they met" regardless of whether GPS claims ±5 m or ±150 m
+        // precision. The indoor / weak-GPS case is the motivating one:
+        // accuracy there is routinely ±50–150 m even when phones are
+        // physically touching, and an accuracy-gated fire would never
+        // trigger. DWELL_MS below still debounces single-tick glitches.
+        // accA/accB are retained purely for logging — they no longer
+        // affect the decision.
+        const accA = s.requesterCoords && typeof s.requesterCoords.accuracy === 'number'
+            ? s.requesterCoords.accuracy : null;
+        const accB = s.accepterCoords && typeof s.accepterCoords.accuracy === 'number'
+            ? s.accepterCoords.accuracy : null;
+
+        if (distance > THRESHOLD_M) {
+            if (s.nearSince) {
+                console.log('[meeting] proximity dwell reset for session', sessionId, 'distance=', Math.round(distance), 'm', 'accA=', accA == null ? '(none)' : Math.round(accA) + ' m', 'accB=', accB == null ? '(none)' : Math.round(accB) + ' m');
+            }
+            s.nearSince = null;
+            return;
+        }
+
+        const now = Date.now();
+        if (!s.nearSince) {
+            s.nearSince = now;
+            this._reportProximityDwellStarted(sessionId, distance);
+            return;
+        }
+
+        const dwelled = now - s.nearSince;
+        if (dwelled < DWELL_MS) {
+            return;
+        }
+
+        // Fire: flip the flag first so any re-entry bails immediately.
+        s.proximityFired = true;
+        this._reportProximityMet(sessionId, distance);
+
+        // Local notification on this device — "You met!". Shown whether the
+        // app is foreground or background; when foreground the OS still
+        // raises it as a banner (see sendLocalNotification for the
+        // established iOS pattern).
+        this.app._showMeetingProximityNotification(conversationUri, distance);
+
+        // Emit the initiator-only "Meeting succeeded" real chat message for
+        // this session. The helper is idempotent across paths — same call
+        // happens on meeting_end reason='proximity' reception — so whichever
+        // device/path reaches here first wins and the other is deduped. No
+        // system note: the chat message carries its own timestamp, which is
+        // all the "met at HH:MM" marker we need on both sides.
+        this._sendMeetingSucceededIfInitiator(sessionId, conversationUri);
+
+        // Relay meeting_end to the peer BEFORE local wipe, while the
+        // NavigationBar timer entry (which carries meetingSessionId) still
+        // exists. _wipeMeetingSession calls stopLocationSharing with
+        // reason='expired', which is in peerRelayReasons and therefore
+        // suppresses the relay — so we fire it explicitly here. The peer
+        // will independently hit their own proximity threshold too, but the
+        // explicit signal is a belt-and-braces in case one device's GPS is
+        // laggy or dropped a tick.
+        try {
+            if (conversationUri) {
+                // reason:'proximity' tells the peer this end was triggered by
+                // the proximity-met threshold (not user-initiated / expired /
+                // deleted). The peer's meeting_end handler forwards this
+                // reason to stopSharesForMeetingSession → stopLocationSharing
+                // so the note they emit ("Location sharing stopped at HH:MM")
+                // matches the one we just logged locally.
+                this.sendMeetingEndSignal(conversationUri, sessionId, {reason: 'proximity'});
+            }
+        } catch (e) {
+            console.log('[meeting] proximity sendMeetingEndSignal failed', e);
+        }
+
+        // Full session teardown: stops the local timer, wipes SQL rows,
+        // strips in-memory state, deletes meetingSessions[sid].
+        this.app._wipeMeetingSession(sessionId, conversationUri, 'proximity');
+    }
+
+    // Emit the "Meeting succeeded" chat message when a meeting-session
+    // ends via proximity. Called from two independent paths:
+    //   • _maybeFireProximityMeet — our own proximity dwell just fired.
+    //   • the meeting_end handler with reason='proximity' —
+    //     the peer's proximity dwell fired and they signalled us.
+    //
+    // Both devices may reach one or both of these paths for the same
+    // session (each hits its own proximity threshold independently, AND
+    // each receives the peer's meeting_end signal). We want a single
+    // message per session, so the helper is guarded by
+    // _proximityNotedSessionIds — first caller claims the session, later
+    // callers are no-ops. Only the initiator (the party whose session id
+    // is in myOutgoingMeetingRequestIds) actually sends; the accepter
+    // stays silent because they'll receive the initiator's message as a
+    // normal incoming chat.
+    //
+    // Text is intentionally bare ("Meeting succeeded"): the message's
+    // own createdAt timestamp supplies the "at HH:MM" display that the
+    // transcript already renders next to every bubble. No accompanying
+    // system note — the real message is the record of the meetup.
+    _sendMeetingSucceededIfInitiator(sessionId, conversationUri) {
+        if (!sessionId || !conversationUri) return;
+        try {
+            if (!this._proximityNotedSessionIds) this._proximityNotedSessionIds = new Set();
+            if (this._proximityNotedSessionIds.has(sessionId)) {
+                return;
+            }
+            // Determine initiator directly from myOutgoingMeetingRequestIds
+            // (persisted across restarts). Using this rather than the live
+            // meetingSessions[sid] entry means the gate still works after
+            // a local proximity fire has already wiped the session, which
+            // is the usual case on the peer-signal path.
+            const isInitiator = !!(this.myOutgoingMeetingRequestIds.has(sessionId));
+            // Diagnostic trace was here. Silenced now that the flow
+            // is stable; if the user ever reports "no Meeting
+            // succeeded message" again, the SESSION ENDED log on
+            // both sides + the absence of the Meeting-succeeded
+            // chat message together pinpoint the gate.
+            if (!isInitiator) return;
+            // Claim the session so both proximity paths dedup.
+            this._proximityNotedSessionIds.add(sessionId);
+            // No separate "Meet-up succeeded" chat message: the frozen meet map
+            // already carries that label. Kept the dedup + met-peer bookkeeping.
+            // Persist "we've met this peer" — retained so a future feature can
+            // key off met-before state.
+            if (!this.metPeerUris) this.metPeerUris = new Set();
+            if (!this.metPeerUris.has(conversationUri)) {
+                this.metPeerUris.add(conversationUri);
+                if (typeof this.app._persistMeetingHandshakeState === 'function') {
+                    this.app._persistMeetingHandshakeState();
+                }
+            }
+        } catch (e) {
+            console.log('[meeting] Meeting-succeeded emit failed', e && e.message ? e.message : e);
+        }
+    }
+
+}

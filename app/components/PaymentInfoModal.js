@@ -1,18 +1,9 @@
 import React from 'react';
-import {
-  Text,
-  Linking,
-  Platform,
-  Modal,
-  View,
-  TouchableWithoutFeedback,
-  KeyboardAvoidingView,
-  ScrollView,
-  Clipboard,
-  Dimensions,
-} from 'react-native';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
+import { Linking, Platform, Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Clipboard, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
-import { Surface, Button } from 'react-native-paper';
+import { Text, Surface, Button } from 'react-native-paper';
 
 // Shares the same Modal + overlay + Surface shell as AboutModal,
 // EditContactModal, ShareLocationModal and friends so every dialog
@@ -97,7 +88,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flexShrink: 1,
     fontWeight: '600',
-    color: '#111',
+    
   },
   // Monospace bias on IBAN / BIC / account numbers so the digit
   // groups are easy to read at a glance and copy without misreads
@@ -110,7 +101,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 13,
     textAlign: 'center',
-    color: '#333',
+    
     lineHeight: 18,
   },
   link: {
@@ -246,7 +237,7 @@ const PaymentInfoModal = (props) => {
                 user can long-press to copy individual fields without
                 losing the modal. */}
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+              <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
                 <ScrollView
                   style={{ maxHeight: _scrollMaxHeight }}
                   keyboardShouldPersistTaps="handled"
@@ -320,7 +311,7 @@ const PaymentInfoModal = (props) => {
                           account in the subject to:
                         </Text>
 
-                        <Text onPress={() => emailBilling(reason)} style={styles.link}>
+                        <Text onPress={() => emailBilling(reason)} style={[styles.link, { color: getModalColors().link }]}>
                           {BILLING_EMAIL}
                         </Text>
 
@@ -353,7 +344,7 @@ const PaymentInfoModal = (props) => {
                     </View>
                   </View>
                 </ScrollView>
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

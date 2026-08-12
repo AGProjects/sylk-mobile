@@ -61,7 +61,8 @@ public class AppExitInfoModule extends ReactContextBaseJavaModule {
      * @param maxRecords       upper bound on records to ask the OS for.
      * @param promise          resolves to a JS array of exit objects:
      *                         { timestamp, reason, reasonText, description,
-     *                           importance, pss, rss, processName, trace }.
+     *                           importance, pss, rss, processName, trace,
+     *                           traceUnavailableReason }.
      *                         `trace` is present (non-empty) only for ANR /
      *                         native-crash records that carried a dump.
      */
@@ -115,8 +116,10 @@ public class AppExitInfoModule extends ReactContextBaseJavaModule {
             row.putString("processName",
                     info.getProcessName() != null ? info.getProcessName() : "");
 
-            String trace = readTrace(info);
-            row.putString("trace", trace != null ? trace : "");
+            TraceResult tr = readTrace(info);
+            row.putString("trace", tr.trace != null ? tr.trace : "");
+            row.putString("traceUnavailableReason",
+                    tr.trace != null ? "" : (tr.reason != null ? tr.reason : ""));
 
             out.pushMap(row);
         }
@@ -124,17 +127,30 @@ public class AppExitInfoModule extends ReactContextBaseJavaModule {
         return out;
     }
 
+    /** Result of a trace read: {@code trace} is non-null on success, otherwise
+     *  {@code reason} explains why (no stream, empty stream, or read error) so
+     *  the JS report can say more than a bare "no thread dump". */
+    private static final class TraceResult {
+        final String trace;
+        final String reason;
+        TraceResult(String trace, String reason) { this.trace = trace; this.reason = reason; }
+    }
+
     /**
-     * Reads the retained SIGQUIT/crash dump for this exit, if any. Returns null
-     * when the record carries no trace (most non-ANR/non-native-crash exits).
+     * Reads the retained SIGQUIT/crash dump for this exit, if any. Returns a
+     * {@link TraceResult} whose {@code trace} is non-null only for records that
+     * actually retained one (ANR / native crash); otherwise {@code reason}
+     * distinguishes "no trace present" from a genuine read failure.
      */
     @RequiresApi(api = Build.VERSION_CODES.R)
-    private String readTrace(ApplicationExitInfo info) {
+    private TraceResult readTrace(ApplicationExitInfo info) {
         InputStream is = null;
         try {
             is = info.getTraceInputStream();
             if (is == null) {
-                return null;
+                return new TraceResult(null, "no OS trace stream for this exit "
+                        + "(reason=" + reasonToString(info.getReason())
+                        + "; only ANR/native-crash retain one)");
             }
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[8192];
@@ -149,9 +165,13 @@ public class AppExitInfoModule extends ReactContextBaseJavaModule {
             if (total >= MAX_TRACE_BYTES) {
                 s = s + "\n... [trace truncated at " + MAX_TRACE_BYTES + " bytes] ...\n";
             }
-            return s;
+            if (s.isEmpty()) {
+                return new TraceResult(null, "OS trace stream was present but empty");
+            }
+            return new TraceResult(s, null);
         } catch (Exception e) {
-            return null;
+            return new TraceResult(null, "trace read failed: "
+                    + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         } finally {
             if (is != null) {
                 try { is.close(); } catch (Exception ignored) {}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import { Platform, View, Modal, KeyboardAvoidingView, TouchableWithoutFeedback } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
@@ -60,7 +61,7 @@ const GenerateKeysModal = ({ show = false, close, generateKeysFunc, confirm: pro
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
           >
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={containerStyles.modalSurface}>
+              <ThemedModalSurface style={containerStyles.modalSurface}>
                 <Text style={containerStyles.title}>Generate private key</Text>
 
                 <Text style={styles.body}>
@@ -82,7 +83,7 @@ const GenerateKeysModal = ({ show = false, close, generateKeysFunc, confirm: pro
                     {label}
                   </Button>
                 </View>
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

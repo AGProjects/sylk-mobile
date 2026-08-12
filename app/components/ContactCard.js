@@ -98,7 +98,13 @@ const styles = StyleSheet.create({
     borderRadius: 25,
   },
 
-  mainContent: { marginLeft: 10 },
+  // flex:1 bounds the title/subtitle column to the space between the avatar
+  // and the right-hand metadata column. Without it the column sizes to its
+  // intrinsic content, and the subtitle's flex:1 Text inside subtitleRow (a
+  // flex ROW, added with the incoming-location pin) collapsed to min-content —
+  // clipping the 2nd line after ~10 characters. With a bounded width the Text
+  // fills the real available space and ellipsizes at the true edge.
+  mainContent: { marginLeft: 10, flex: 1 },
 
   rightContent: {
     marginTop: 10,
@@ -143,6 +149,24 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     height: 16,
     marginBottom: 4,
+  },
+
+  // Active outgoing location-share indicator, shown at the right of the
+  // contact tile just left of the timestamp. Raised by the same amount as
+  // the timestamp (marginTop: -5) so the glyph lines up with the timestamp.
+  sharePin: {
+    marginRight: 6,
+    alignSelf: 'center',
+    marginTop: -5,
+  },
+
+  subtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  incomingSharePin: {
+    marginRight: 4,
   },
 
   badgeContainer: {
@@ -280,6 +304,16 @@ class ContactCard extends Component {
 	  const contact = this.state.contact;
 	  const uri = contact.uri;
 	  const unread = contact.unread?.length || 0;
+	  // Active outgoing location share to THIS contact. activeLocationShares
+	  // is the app-level map keyed by the contact URI we're sharing to; a
+	  // truthy entry ⇒ a live share is in progress → show the pin.
+	  const isSharingLocation = !!(this.props.activeLocationShares
+		  && uri && this.props.activeLocationShares[uri]);
+	  // Active INCOMING location share FROM this contact (someone is sharing
+	  // their live location with us) — pin shows left of the last-message
+	  // label until the session ends. Driven by app-level incomingLocationShareUris.
+	  const hasIncomingLocationShare = !!(this.props.incomingLocationShareUris
+		  && uri && this.props.incomingLocationShareUris[uri]);
 	
 			function capitalizeFirstLetter(str) {
 			  if (!str) return ""; // Handle empty string
@@ -341,7 +375,7 @@ class ContactCard extends Component {
 	  let subtitle = isTelContact ? contact.uri.split('@')[0] : contact.uri;
 	
 	  if (utils.isAnonymous(uri)) {
-		title = 'Unknown caller';
+		title = 'Anonymous caller';
 	  }
 	
 	  if (uri.indexOf('@videoconference.') > -1) {
@@ -523,13 +557,23 @@ class ContactCard extends Component {
 					>
 					  {title}
 					</Text>
-					<Text
-					  variant="titleMedium"
-					  numberOfLines={1}
-					  style={[styles.subtitle, isDark && darkStyles.textSecondary]}
-					>
-					  {subtitle}
-					</Text>
+					<View style={styles.subtitleRow}>
+					  {hasIncomingLocationShare && (
+					    <Icon
+					      name="map-marker-radius"
+					      size={14}
+					      color="rgb(220, 53, 69)"
+					      style={styles.incomingSharePin}
+					    />
+					  )}
+					  <Text
+					    variant="titleMedium"
+					    numberOfLines={1}
+					    style={[styles.subtitle, isDark && darkStyles.textSecondary]}
+					  >
+					    {subtitle}
+					  </Text>
+					</View>
 				  </View>
 				</Card.Content>
 	
@@ -545,6 +589,18 @@ class ContactCard extends Component {
 	
 				<View style={styles.rightContent}>
 				  <View style={styles.unreadRow}>
+					{/* Active-location-share pin — right of the tile, just left
+					    of the timestamp, whenever we have a live outgoing
+					    location share to this contact. Same red as the pulsing
+					    share indicator (SessionButtonsBar / NavBar). */}
+					{isSharingLocation && (
+					  <Icon
+						name="map-marker-radius"
+						size={16}
+						color="rgb(220, 53, 69)"
+						style={styles.sharePin}
+					  />
+					)}
 					{unread ? (
 					  // Folded from react-native-elements' <Badge/> onto
 					  // react-native-paper's Badge (2026-07-23). Same look:
@@ -618,6 +674,7 @@ ContactCard.propTypes = {
   fontScale: PropTypes.number,
   selectMode: PropTypes.bool,
   darkMode: PropTypes.bool, // added
+  incomingLocationShareUris: PropTypes.object,
 };
 
 export default ContactCard;

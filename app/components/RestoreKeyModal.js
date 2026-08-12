@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import { Platform, View, TextInput, Clipboard, Modal, KeyboardAvoidingView, TouchableWithoutFeedback } from 'react-native';
 import { Text, Button, Surface } from 'react-native-paper';
@@ -146,7 +148,7 @@ const RestoreKeyModal = ({ show, close, saveFunc, success }) => {
             {/* Prevent taps inside modal from dismissing */}
             <TouchableWithoutFeedback onPress={() => {}}>
 
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <ThemedModalSurface style={containerStyles.modalSurface}>
 				<Text style={containerStyles.title}>{title}</Text>
 
                   <View style={{ paddingBottom: 16 }}>
@@ -155,10 +157,10 @@ const RestoreKeyModal = ({ show, close, saveFunc, success }) => {
                       style={{
                         height: 120,
                         borderWidth: 1,
-                        borderColor: '#ccc',
+                        borderColor: getModalColors().divider,
                         padding: 8,
                         borderRadius: 4,
-                        backgroundColor: '#f7f7f7',
+                        backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#f7f7f7',
                         marginBottom: 16,
                       }}
                     >
@@ -195,7 +197,7 @@ const RestoreKeyModal = ({ show, close, saveFunc, success }) => {
 								borderRadius: 4,
 								padding: 8,
 								fontSize: 14,
-								color: '#000',
+								color: getModalColors().textPrimary,
 							  }}
 							  value={password}
 							  onChangeText={setPassword}
@@ -220,7 +222,7 @@ const RestoreKeyModal = ({ show, close, saveFunc, success }) => {
                     ) : null}
                   </View>
                {/* Modal content end */}
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

@@ -1,4 +1,6 @@
 import React from 'react';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
 import {  Platform, Linking } from 'react-native';
 import { Modal, View, TouchableWithoutFeedback, Keyboard, KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import { Text, IconButton, Surface, Portal } from 'react-native-paper';
@@ -76,15 +78,15 @@ const CallMeMaybeModal = ({ show, close, callUrl, notificationCenter }) => {
             {/* Prevent taps inside modal from dismissing */}
             <TouchableWithoutFeedback onPress={() => {}}>
 
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <ThemedModalSurface style={containerStyles.modalSurface}>
             {/* Modal content start */}
 			  <Text style={containerStyles.title}>{title}</Text>
 
               <Text style={styles.body}>Others can call you with a SIP client at:</Text>
-              <Text style={styles.link}>{sipUri}</Text>
+              <Text style={[styles.link, { color: getModalColors().link }]}>{sipUri}</Text>
 
               <Text style={styles.body}>or with a Web browser at:</Text>
-              <Text style={styles.link}>{callUrl}</Text>
+              <Text style={[styles.link, { color: getModalColors().link }]}>{callUrl}</Text>
 
               <View style={[styles.chipsContainer, styles.iconContainer]}>
 				<QRCode
@@ -102,7 +104,7 @@ const CallMeMaybeModal = ({ show, close, callUrl, notificationCenter }) => {
               </View>
 
                {/* Modal content end */}
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

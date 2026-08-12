@@ -1,4 +1,5 @@
 import React from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import { View } from 'react-native';
 import autoBind from 'auto-bind';
@@ -9,7 +10,7 @@ import KeyboardAwareDialog from './KeyBoardAwareDialog';
 // path was `Platform.OS === 'ios' ? KeyboardAwareDialog : Dialog`
 // without importing `Platform`, which on Android silently fell
 // through to the raw paper `Dialog`. Inside that raw Dialog the
-// nested <Surface> container collapsed to a thin bar with no visible
+// nested <ThemedModalSurface> container collapsed to a thin bar with no visible
 // body or "Start now" button on Android 11. Same fix as
 // ImportPrivateKeyModal: always wrap in KeyboardAwareDialog so the
 // dialog body lays out correctly on both platforms and the
@@ -54,7 +55,7 @@ class EscalateConferenceModal extends React.Component {
         return (
             <Portal>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface style={styles.container}>
+                    <ThemedModalSurface style={styles.container}>
                         <Dialog.Title>Move call to conference</Dialog.Title>
                         <Paragraph>Enter the accounts you wish to invite separated by commas</Paragraph>
                         <View>
@@ -76,7 +77,7 @@ class EscalateConferenceModal extends React.Component {
                             >Start now</Button>
                             </View>
                         </View>
-                    </Surface>
+                    </ThemedModalSurface>
                 </DialogType>
             </Portal>
         );

@@ -25,6 +25,7 @@ import {
     Modal,
     Pressable,
     StyleSheet,
+    Dimensions,
 } from 'react-native';
 import { Button, Surface, Text } from 'react-native-paper';
 import PropTypes from 'prop-types';
@@ -194,11 +195,20 @@ async function snapshotMedia(call) {
 class MediaInfoPanel extends Component {
     constructor(props) {
         super(props);
-        this.state = { snapshot: null, qos: null };
+        this.state = { snapshot: null, qos: null, winHeight: Dimensions.get('window').height };
         this._poller = null;
     }
 
     componentDidMount() {
+        // Track viewport height so the modal can re-cap its scroll area
+        // the instant the phone rotates while the panel is open —
+        // otherwise a portrait-sized card would linger after rotating to
+        // landscape (and vice-versa) until the next poll re-render.
+        this._dimSub = Dimensions.addEventListener('change', ({ window }) => {
+            if (window && window.height && window.height !== this.state.winHeight) {
+                this.setState({ winHeight: window.height });
+            }
+        });
         if (this.props.visible) {
             this._start();
         }
@@ -213,6 +223,10 @@ class MediaInfoPanel extends Component {
     }
 
     componentWillUnmount() {
+        if (this._dimSub && typeof this._dimSub.remove === 'function') {
+            this._dimSub.remove();
+            this._dimSub = null;
+        }
         this._stop();
     }
 
@@ -327,6 +341,20 @@ class MediaInfoPanel extends Component {
         const titleStyle = isFolded
             ? [containerStyles.title, { fontSize: 13, paddingTop: 4, paddingBottom: 2, marginBottom: 0 }]
             : containerStyles.title;
+
+        // Cap the scroll area to the current viewport so the whole card
+        // (title + scroll body + Close button) fits on screen. In
+        // landscape the phone is only ~360-400 px tall, so the fixed
+        // 420 px portrait height pushed the title and Close button off
+        // both edges. Subtract the modal chrome (overlay padding + title
+        // + button row + surface padding, ~200 px) from the window
+        // height, clamp to a sane floor, and keep portrait at its
+        // original 420 px ceiling so that layout is unchanged.
+        const winHeight = this.state.winHeight
+            || Dimensions.get('window').height;
+        const scrollMaxHeight = isFolded
+            ? 220
+            : Math.min(420, Math.max(140, Math.round(winHeight - 200)));
         return (
             <Modal
                 visible={true}
@@ -368,7 +396,7 @@ class MediaInfoPanel extends Component {
                     <Surface style={surfaceStyle}>
                         <Text style={titleStyle}>Media info</Text>
                         <ScrollView
-                            style={{ maxHeight: isFolded ? 220 : 420 }}
+                            style={{ maxHeight: scrollMaxHeight }}
                             contentContainerStyle={{ paddingHorizontal: isFolded ? 6 : 16, paddingBottom: isFolded ? 4 : 8 }}
                             keyboardShouldPersistTaps="handled"
                             /* Same Android gesture-path tightening

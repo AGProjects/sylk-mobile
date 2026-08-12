@@ -1,16 +1,11 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    TouchableWithoutFeedback,
-    KeyboardAvoidingView,
-} from 'react-native';
+import { View, Platform, Modal, TouchableWithoutFeedback, KeyboardAvoidingView } from 'react-native';
 import UserIcon from './UserIcon';
-import { Button, Surface, Switch, Checkbox } from 'react-native-paper';
+import { Text, Button, Surface, Switch, Checkbox } from 'react-native-paper';
 import PlatformToggle from './PlatformToggle';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
@@ -89,7 +84,7 @@ const styles = StyleSheet.create({
   /* Label above the dropdown */
   periodDropdownLabel: {
     fontSize: 14,
-    color: '#333',
+    
     marginBottom: 4,
   },
 
@@ -104,7 +99,7 @@ const styles = StyleSheet.create({
 
   /* Optional: individual picker item styling */
   periodPickerItem: {
-    color: '#333',
+    
     fontSize: 14,
   },
 });
@@ -280,7 +275,7 @@ class DeleteHistoryModal extends Component {
 					mode="outlined"
 					onPress={() => this.setState({ menuVisible: !this.state.menuVisible })}
 					contentStyle={{ height: 48 }}
-					labelStyle={{ color: 'black' }}
+					labelStyle={{ color: getModalColors().textPrimary }}
 					style={{ width: '100%', justifyContent: 'space-between' }}
 					icon={this.state.menuVisible ? 'menu-up' : 'menu-down'}
 				>
@@ -291,9 +286,9 @@ class DeleteHistoryModal extends Component {
 						style={{
 							marginTop: 4,
 							borderWidth: 1,
-							borderColor: '#ccc',
+							borderColor: getModalColors().divider,
 							borderRadius: 8,
-							backgroundColor: '#fff',
+							backgroundColor: getModalColors().surface,
 							overflow: 'hidden',
 						}}
 					>
@@ -309,7 +304,7 @@ class DeleteHistoryModal extends Component {
 								}}
 								contentStyle={{ justifyContent: 'flex-start', height: 40 }}
 								labelStyle={{
-									color: option.key === this.state.periodFilterKey ? '#1976d2' : 'black',
+									color: option.key === this.state.periodFilterKey ? getModalColors().accent : getModalColors().textPrimary,
 									textAlign: 'left',
 								}}
 								onPress={() => {
@@ -377,9 +372,9 @@ class DeleteHistoryModal extends Component {
                         >
                             {/* Block dismiss when taps land inside the card. */}
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
                                     {inner}
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>

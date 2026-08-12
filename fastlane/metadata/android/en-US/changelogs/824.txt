@@ -1,0 +1,11 @@
+ * Fixes for Addressbook replication
+ * Improve audio and video call layout
+ * Auto select audio call contact when share files
+ * Fix media info modal in landscape mode
+ * Fix chat activity spinner causing navbar to hide
+ * Improve sharing location flow
+ * Fix chat bubble hide with same call contact
+ * Update to React Native 0.77
+ * Fix 16K page alignment for 64bit libraries
+ * Fix restoring public key after delete contact
+

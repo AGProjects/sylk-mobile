@@ -1,16 +1,9 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    TouchableWithoutFeedback,
-    KeyboardAvoidingView,
-    StyleSheet,
-} from 'react-native';
-import { Button, Surface, TextInput, ActivityIndicator } from 'react-native-paper';
+import { View, Platform, Modal, TouchableWithoutFeedback, KeyboardAvoidingView, StyleSheet } from 'react-native';
+import { Text, Button, Surface, TextInput, ActivityIndicator } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import { validateCallerId, isPlaceholderCallerId } from '../accountInfo';
@@ -27,7 +20,7 @@ const styles = StyleSheet.create({
         paddingBottom: 6,
         fontSize: 14,
         textAlign: 'center',
-        color: '#444',
+        
     },
     hint: {
         paddingHorizontal: 20,
@@ -226,7 +219,7 @@ class SetCallerIdModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
                                     <Text style={[containerStyles.title, styles.title]}>
                                         Set your mobile number
                                     </Text>
@@ -283,7 +276,7 @@ class SetCallerIdModal extends Component {
                                             </Button>
                                         )}
                                     </View>
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>

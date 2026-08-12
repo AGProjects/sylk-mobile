@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, Share } from 'react-native';
@@ -161,7 +162,7 @@ class ShareLocationInfoModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
                                     <Text style={containerStyles.title}>Share location information</Text>
 
                                     <Text style={[styles.body, { paddingTop: 4, paddingBottom: 8 }]}>
@@ -215,7 +216,7 @@ class ShareLocationInfoModal extends Component {
                                             Confirm
                                         </Button>
                                     </View>
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>

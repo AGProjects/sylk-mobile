@@ -1,17 +1,9 @@
 import React, { useRef, useState } from 'react';
-import {
-  Text,
-  Linking,
-  Platform,
-  Modal,
-  View,
-  TouchableWithoutFeedback,
-  KeyboardAvoidingView,
-  ScrollView,
-  Dimensions,
-} from 'react-native';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
+import { Linking, Platform, Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
-import { Surface, Button } from 'react-native-paper';
+import { Text, Surface, Button } from 'react-native-paper';
 
 // Share the Modal + overlay + Surface shell with EditContactModal /
 // ShareLocationModal / ActiveLocationSharesModal / DeleteHistoryModal /
@@ -43,6 +35,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 14,
     textAlign: 'center',
+  },
+  rnVersion: {
+    marginTop: -6,
+    paddingBottom: 8,
+    fontSize: 11,
+    textAlign: 'center',
+    color: '#888',
   },
   devMode: {
     color: '#d32f2f', // red-ish, tweak if you want
@@ -113,6 +112,12 @@ const AboutModal = (props) => {
   // capped in its left half. A single explicit width keeps both in sync.
   const _surfaceExtra = _isLandscape ? { alignSelf: 'center', width: Math.min(560, _winW * 0.85) } : null;
 
+  // React Native version of the running build, read from the RN runtime
+  // (Platform.constants) — no extra dependency, and it always reflects the
+  // actually-compiled RN version rather than a hardcoded string.
+  const _rn = Platform.constants && Platform.constants.reactNativeVersion;
+  const _rnVersion = _rn ? `${_rn.major}.${_rn.minor}.${_rn.patch}` : '';
+
   return (
     <Modal
       style={containerStyles.container}
@@ -135,15 +140,18 @@ const AboutModal = (props) => {
           >
             {/* Block dismiss when taps land inside the card. */}
             <TouchableWithoutFeedback onPress={() => {}}>
-              <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+              <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
                 <ScrollView
                   style={{ maxHeight: _scrollMaxHeight }}
                   keyboardShouldPersistTaps="handled"
                 >
-                  <Text style={containerStyles.title}>About Blink</Text>
+                  <Text style={containerStyles.title}>About Blink WebRTC</Text>
                   <View style={styles.inner}>
                     <Text style={styles.body}>
-                      Blink uses Sylk Suite to deliver real-time communications using the IETF SIP protocol and WebRTC specifications
+                    Blink WebRTC brings rich, real-time voice, video, and messaging to mobile
+                    devices using SIP.  Fully open source and built on open standards, it
+                    provides end-to-end encryption for voice and video with ZRTP and for
+                    messaging with PGP.
                     </Text>
 
                     {/* Dev mode toggle + visual indicator. Five taps in
@@ -159,7 +167,13 @@ const AboutModal = (props) => {
                       {props.devMode ? ' (dev mode)' : ''}
                     </Text>
 
-                    <Text onPress={handleUpdate} style={styles.link}>
+                    {_rnVersion ? (
+                      <Text style={styles.rnVersion}>
+                        React Native {_rnVersion}
+                      </Text>
+                    ) : null}
+
+                    <Text onPress={handleUpdate} style={[styles.link, { color: getModalColors().link }]}>
                       Check App Store for update...
                     </Text>
 
@@ -167,7 +181,7 @@ const AboutModal = (props) => {
                       For family, friends and customers, with love.
                     </Text>
 
-                    <Text onPress={handleLink} style={styles.link}>
+                    <Text onPress={handleLink} style={[styles.link, { color: getModalColors().link }]}>
                       Copyright &copy; AG Projects
                     </Text>
 
@@ -188,7 +202,7 @@ const AboutModal = (props) => {
                     ) : null}
                   </View>
                 </ScrollView>
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

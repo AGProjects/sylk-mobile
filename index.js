@@ -6,8 +6,8 @@ import React from 'react';
 import { AppRegistry, Text as RNText, NativeModules, StyleSheet } from 'react-native';
 import debug from 'debug';
 import App from './app/app';
+import { installCrashCapture } from './app/crashCapture';
 import { name as appName } from './app.json';
-import './firebase-messaging'
 import bgCalling from './bgCalling';
 import { Text} from 'react-native-paper';
 import { firebase } from '@react-native-firebase/messaging';
@@ -33,6 +33,11 @@ debug.disable();
 debug.enable('-rn-webrtc:*');
 
 console.disableYellowBox = true;
+
+// Capture uncaught JS errors / unhandled promise rejections and persist their
+// stacks, so the crash reporter can attach them to Android exit records that
+// carry no OS thread dump. See app/crashCapture.js + app/appExitReporter.js.
+try { installCrashCapture(); } catch (e) { console.warn('[crash-capture] install failed:', e); }
 
 //Disable font scaling
 //Text.defaultProps = Text.defaultProps || {};

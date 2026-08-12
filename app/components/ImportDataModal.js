@@ -1,9 +1,8 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import {
-  Text, Platform, Modal, View, ScrollView, Pressable, TouchableWithoutFeedback, StyleSheet, Dimensions,
-} from 'react-native';
+import ThemedModalSurface from './ThemedModalSurface';
+import { Platform, Modal, View, ScrollView, Pressable, TouchableWithoutFeedback, StyleSheet, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
-import { Surface, Button, ActivityIndicator } from 'react-native-paper';
+import { Text, Surface, Button, ActivityIndicator } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import { createImportClient, contactUris } from '../ImportClient';
@@ -395,7 +394,7 @@ const ImportDataModal = (props) => {
       <TouchableWithoutFeedback onPress={close}>
         <View style={containerStyles.overlay}>
           <TouchableWithoutFeedback onPress={() => {}}>
-            <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+            <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
               <Text style={containerStyles.title}>Data import</Text>
               <ScrollView ref={scrollRef} style={{ maxHeight: _scrollMaxHeight }} keyboardShouldPersistTaps="handled">
                 <View style={styles.inner}>
@@ -560,7 +559,7 @@ const ImportDataModal = (props) => {
                   </View>
                 )}
               </View>
-            </Surface>
+            </ThemedModalSurface>
           </TouchableWithoutFeedback>
         </View>
       </TouchableWithoutFeedback>

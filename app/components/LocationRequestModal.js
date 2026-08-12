@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform } from 'react-native';
@@ -41,7 +42,9 @@ class LocationRequestModal extends Component {
     }
 
     render() {
-        const from = this.props.fromUri || 'your contact';
+        // Prefer the requester's known display name; fall back to the
+        // bare URI, then a generic label.
+        const from = this.props.fromName || this.props.fromUri || 'your contact';
 
         return (
             <Modal
@@ -64,7 +67,7 @@ class LocationRequestModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
                                     <Text style={containerStyles.title}>Location request</Text>
 
                                     <Text style={styles.body}>
@@ -101,9 +104,9 @@ class LocationRequestModal extends Component {
                                             mode="outlined"
                                             style={styles.button}
                                             onPress={this.onCancel}
-                                            accessibilityLabel="Cancel location request"
+                                            accessibilityLabel="Decline location request"
                                         >
-                                            Cancel
+                                            Decline
                                         </Button>
                                         <Button
                                             mode="contained"
@@ -115,7 +118,7 @@ class LocationRequestModal extends Component {
                                             Share once
                                         </Button>
                                     </View>
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>
@@ -131,6 +134,9 @@ LocationRequestModal.propTypes = {
     onAccept:            PropTypes.func,
     onDecline:           PropTypes.func,
     fromUri:             PropTypes.string,
+    // Resolved display name of the requester (contact name). When set,
+    // shown instead of the bare URI. Optional — falls back to fromUri.
+    fromName:            PropTypes.string,
     // True when the user has previously agreed to Sylk's location
     // privacy policy. When false, the modal renders an inline note
     // telling them the policy modal will appear before any data is

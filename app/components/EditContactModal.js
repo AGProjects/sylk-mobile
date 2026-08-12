@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import { Modal, View, Image, ActivityIndicator, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
 import { Text, Button, Surface, TextInput, Switch, Checkbox, Divider } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
@@ -860,7 +862,7 @@ const getTotalPrettyStorage = (entity) => {
             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
             style={{ maxHeight: surfaceMaxHeight, alignSelf: 'center', width: '100%' }}
           >
-   		    <Surface style={[containerStyles.modalSurface, { maxHeight: surfaceMaxHeight }]}>
+   		    <ThemedModalSurface style={[containerStyles.modalSurface, { maxHeight: surfaceMaxHeight }]}>
 				{/* react-native-paper warns when overflow:hidden is
 				    set on Surface itself (it clips the shadow). Per
 				    its docs the fix is to wrap the children in a
@@ -924,14 +926,14 @@ const getTotalPrettyStorage = (entity) => {
 
                 {publicKey ? (
                   <>
-                    <Text style={styles.subtitle}>{uri}</Text>
+                    <Text style={[styles.subtitle, { color: getModalColors().textPrimary }]}>{uri}</Text>
 					<ScrollView
 					  style={{
 						height: 300,
-						backgroundColor: '#f0f0f0',
+						backgroundColor: getModalColors().surface,
 						borderRadius: 4,
 						borderWidth: 1,
-						borderColor: '#ccc',
+						borderColor: getModalColors().divider,
 						padding: 8,
 					  }}
 					  horizontal
@@ -1101,7 +1103,7 @@ const getTotalPrettyStorage = (entity) => {
                               disabled={myself}
                               // flex so it fills the row beside the reorder arrows;
                               // distinct background for a locked (read-only) address.
-                              style={[{ flex: 1 }, readOnly ? { backgroundColor: '#ececec' } : null]}
+                              style={[{ flex: 1 }, readOnly ? { backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#ececec' } : null]}
                               // Label/keyboard adapt to the row's value (phone vs SIP).
                               label={isTel ? 'Telephone number' : 'SIP Address'}
                               onChangeText={(value) => {
@@ -1619,7 +1621,7 @@ const getTotalPrettyStorage = (entity) => {
                               style={{ marginLeft: 8, padding: 2 }}
                               accessibilityLabel="Refresh account info"
                             >
-                              <Icon name="refresh" size={20} color="#555" />
+                              <Icon name="refresh" size={20} color={getModalColors().textPrimary} />
                             </TouchableOpacity>
                           )
                         )}
@@ -1795,7 +1797,7 @@ const getTotalPrettyStorage = (entity) => {
                                   marginBottom: 6,
                                 }}
                               >
-                                <Text style={{ fontSize: 12, color: '#333' }}>{tagLabel(t)}</Text>
+                                <Text style={{ fontSize: 12, color: getModalColors().textPrimary }}>{tagLabel(t)}</Text>
                                 {editingTags && !_autoGroups.has((t || '').toLowerCase()) ? (
                                   <TouchableOpacity
                                     onPress={() => removeTag(t)}
@@ -1883,7 +1885,7 @@ const getTotalPrettyStorage = (entity) => {
                                     }}
                                     hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                                   >
-                                    <Text style={{ fontSize: 12, color: '#333' }}>
+                                    <Text style={{ fontSize: 12, color: getModalColors().textPrimary }}>
                                       {tagLabel(g)}
                                     </Text>
                                   </TouchableOpacity>
@@ -1910,7 +1912,7 @@ const getTotalPrettyStorage = (entity) => {
                                   }}
                                   hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                 >
-                                  <Icon name={showNewGroupInput ? 'close' : 'plus'} size={16} color="#555" />
+                                  <Icon name={showNewGroupInput ? 'close' : 'plus'} size={16} color={getModalColors().textPrimary} />
                                 </TouchableOpacity>
                               </View>
                               {showNewGroupInput ? (
@@ -2081,7 +2083,7 @@ const getTotalPrettyStorage = (entity) => {
                         <>
                           {/* ── Video Calls ───────────────────── */}
                           <View style={{ marginTop: 12, marginBottom: 12 }}>
-                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: getModalColors().textPrimary }}>
                               Video Calls
                             </Text>
                             <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
@@ -2123,7 +2125,7 @@ const getTotalPrettyStorage = (entity) => {
 
                           {/* ── Audio Calls ───────────────────── */}
                           <View style={{ marginBottom: 12 }}>
-                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: getModalColors().textPrimary }}>
                               Audio Calls
                             </Text>
                             <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
@@ -2227,7 +2229,7 @@ const getTotalPrettyStorage = (entity) => {
 
                           {/* ── zRTP Encryption ───────────────── */}
                           <View style={{ marginBottom: 12 }}>
-                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: '#333' }}>
+                            <Text style={{ fontSize: 14, fontWeight: '600', marginBottom: 4, color: getModalColors().textPrimary }}>
                               zRTP Encryption
                             </Text>
                             <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
@@ -2395,7 +2397,7 @@ const getTotalPrettyStorage = (entity) => {
                   </>
                 )}
                 </View>
-              </Surface>
+              </ThemedModalSurface>
           </KeyboardAvoidingView>
         </View>
     </Modal>

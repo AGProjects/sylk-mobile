@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View } from 'react-native';
@@ -123,7 +124,7 @@ class ShareMessageModal extends Component {
         return (
             <Portal style={styles.container}>
                 <DialogType visible={this.props.show} onDismiss={this.props.close}>
-                    <Surface>
+                    <ThemedModalSurface>
                         <Dialog.Title style={styles.title}>Share message</Dialog.Title>
                         <View style={styles.iconContainer}>
                             <IconButton
@@ -137,7 +138,7 @@ class ShareMessageModal extends Component {
                                 icon="share-variant"
                             />
                         </View>
-                    </Surface>
+                    </ThemedModalSurface>
                 </DialogType>
             </Portal>
         );

@@ -43,15 +43,23 @@ function ContactsCategoryBar(props) {
         return null;
     }
 
+    // The bar collapses to just All·Deleted·Graveyard ONLY while the user is
+    // inside the Deleted / Graveyard view; every other filter shows the full
+    // category set. So the ONLY filter transition that changes the bar's
+    // composition (and needs a remount to re-measure) is entering/leaving that
+    // collapsed mode. Keying on this boolean instead of the raw filter means
+    // ordinary category selections (Recent → Messages → Calls → …) DON'T
+    // remount the FlatList, so its horizontal scroll position is preserved —
+    // the bar only moves when the user swipes it. (Keying on contactsFilter
+    // directly made every tap remount the list and snap the scroll back to
+    // the first pill.)
+    const collapsedMode = (contactsFilter === 'deleted' || contactsFilter === 'graveyard')
+        ? 'del' : 'full';
     const remountKey =
         'recents-' + (isFolded ? 'f' : 'u')
         + '-' + (orientation || '?')
         + '-' + Math.round(width) + 'x' + Math.round(height)
-        // Include the active filter so the FlatList REMOUNTS when the category
-        // set changes size (e.g. collapsing to All·Deleted·Graveyard in the
-        // Deleted folder). Without this it keeps its stale scroll/layout from
-        // the long bar and only the first pill ("All") shows.
-        + '-' + (contactsFilter || 'none');
+        + '-' + collapsedMode;
 
     const handleScrollToIndexFailed = (info) => {
         const wait = new Promise((resolve) => setTimeout(resolve, 10));
@@ -69,15 +77,20 @@ function ContactsCategoryBar(props) {
     return (
         <View
             key={remountKey}
-            // Override the shared bar height — the recents bar at the BOTTOM of
-            // the contacts list hosts plain IconButtons (no caption stack
-            // underneath) so it can sit much tighter than the top sort/category
-            // bar. 34dp wraps the IconButton's ~32dp footprint with a hairline
-            // gap top/bottom. We also zero out navigationContainer's inherited
-            // `minHeight: 50` and `paddingBottom` here — those were leaving a
-            // phantom bottom margin that pushed the icons up against the top
-            // edge.
-            style={[navigationContainerStyle, { height: 34, minHeight: 0, paddingBottom: 0 }]}
+            // Bar height — the recents bar at the BOTTOM of the contacts list
+            // now hosts Telegram-style category tabs: a stacked icon (24dp on
+            // a 30dp rounded highlight) with a 11dp label underneath. That
+            // stack needs ~50dp, so the bar is sized to 58dp to wrap it with a
+            // small gap top/bottom. (It used to be 34dp back when the row held
+            // bare IconButtons with no caption stack.) We also zero out
+            // navigationContainer's inherited `minHeight: 50` and
+            // `paddingBottom` so nothing adds phantom margin under the tabs.
+            //
+            // `paddingTop` adds a few px of air ABOVE the icons (gap from the
+            // contacts list). The bar itself stays flush against the bottom
+            // edge (Android navigation bar) — no marginBottom — so it doesn't
+            // float above the system nav bar.
+            style={[navigationContainerStyle, { height: 58, minHeight: 0, paddingTop: 6, paddingBottom: 0 }]}
         >
             <FlatList
                 contentContainerStyle={contentContainerStyle}

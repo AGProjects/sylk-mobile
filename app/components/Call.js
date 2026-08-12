@@ -208,11 +208,27 @@ class Call extends Component {
                 for (const c of candidates) { if (c) return c; }
                 return null;
             };
-            remoteDisplayName = _pickRealName(
-                this.props.callContact?.name,
-                this.props.call?.remoteIdentity?.displayName,
-                this.props.call?.remoteIdentity?.uri
-            );
+            // Anonymous / guest callers collapse to one canonical contact
+            // ("Anonymous caller"), so callContact?.name would mask the name
+            // the caller actually presented from the web. For them, prefer
+            // the per-call SIP display name (remoteIdentity.displayName) so
+            // the call screen shows the same name as the push notification;
+            // fall back to the contact name ("Anonymous caller") when the
+            // caller sent no display name. Everyone else keeps the previous
+            // order (saved contact name wins).
+            if (utils.isAnonymous(remoteUri)) {
+                remoteDisplayName = _pickRealName(
+                    this.props.call?.remoteIdentity?.displayName,
+                    this.props.callContact?.name,
+                    this.props.call?.remoteIdentity?.uri
+                );
+            } else {
+                remoteDisplayName = _pickRealName(
+                    this.props.callContact?.name,
+                    this.props.call?.remoteIdentity?.displayName,
+                    this.props.call?.remoteIdentity?.uri
+                );
+            }
             callUUID = this.props.call.id;
         } else {
             remoteUri = this.props.targetUri;
@@ -878,8 +894,8 @@ class Call extends Component {
             nextProps.call.on('mediaUpdated', this.onMediaUpdated);
             nextProps.call.on('updateRequest', this.onUpdateRequest);
             nextProps.call.on('updateFailed', this.onUpdateFailed);
-            utils.timestampedLog('[message] [call] [zrtp] attached incomingMessage handler to call (cwrp)',
-                'call_id=', nextProps.call._callId || nextProps.call.callId || nextProps.call.id,
+            utils.timestampedLog('[message] [call] [zrtp] attached incomingMessage handler to call_id',
+                nextProps.call._callId || nextProps.call.callId || nextProps.call.id,
                 'peer=', nextProps.call.remoteIdentity && nextProps.call.remoteIdentity.uri,
                 'inlineMessaging=', !!nextProps.call.enableInlineMessaging);
 
@@ -1046,7 +1062,19 @@ class Call extends Component {
             && n.toLowerCase() !== (remoteUri || '').toLowerCase()
             && n.toLowerCase() !== (_localPart || '').toLowerCase());
 
-        if (this.props.callContact && _isRealContactName(this.props.callContact.name)) {
+        const _anonPresentedName = utils.isAnonymous(remoteUri)
+            && this.props.call
+            && this.props.call.remoteIdentity
+            && _isRealContactName(this.props.call.remoteIdentity.displayName)
+            ? this.props.call.remoteIdentity.displayName
+            : null;
+
+        if (_anonPresentedName) {
+            // Anonymous / guest caller: show the name the caller presented
+            // from the web (matches the push notification), not the
+            // collapsed "Anonymous caller" contact name.
+            remoteDisplayName = _anonPresentedName;
+        } else if (this.props.callContact && _isRealContactName(this.props.callContact.name)) {
             // Sylk contacts — only when the stored name is a real display
             // name, not when it's just the URI local part.
             remoteDisplayName = this.props.callContact.name;

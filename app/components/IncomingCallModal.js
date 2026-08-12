@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import { Headline, IconButton, Title, Portal, Modal, Surface } from 'react-native-paper';
 import { View } from 'react-native';
@@ -38,7 +39,7 @@ const IncomingCallModal = ({
   return (
     <Portal>
       <Modal visible={show} onDismiss={() => onHide(CallUUID)}>
-        <Surface style={styles.container}>
+        <ThemedModalSurface style={styles.container}>
           <Logo />
 
           <Title style={styles.remoteDisplayName}>{remoteIdentity.displayName}</Title>
@@ -83,7 +84,7 @@ const IncomingCallModal = ({
               icon="bell-off-outline"
             />
           </View>
-        </Surface>
+        </ThemedModalSurface>
       </Modal>
     </Portal>
   );

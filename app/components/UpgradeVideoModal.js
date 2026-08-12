@@ -13,6 +13,7 @@
 // local stream depending on which button was tapped.
 
 import React from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import { Headline, IconButton, Title, Portal, Modal, Surface } from 'react-native-paper';
 import { View } from 'react-native';
@@ -43,7 +44,7 @@ const UpgradeVideoModal = ({
     return (
         <Portal>
             <Modal visible={visible} onDismiss={onHide}>
-                <Surface style={styles.container}>
+                <ThemedModalSurface style={styles.container}>
                     {/* Show who the request is about. For outgoing
                         we still show the remote identity so the user
                         knows which call they're upgrading (when more
@@ -86,7 +87,7 @@ const UpgradeVideoModal = ({
                             icon="phone-hangup"
                         />
                     </View>
-                </Surface>
+                </ThemedModalSurface>
             </Modal>
         </Portal>
     );

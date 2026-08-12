@@ -2,7 +2,7 @@
 def REACT_NATIVE_VERSION = new File(['node', '--print',"JSON.parse(require('fs').readFileSync(require.resolve('react-native/package.json'), 'utf-8')).version"].execute(null, rootDir).text.trim())
 
 buildscript {
-    ext.kotlin_version = '1.9.24'
+    ext.kotlin_version = '2.0.21'
 
     ext {
         buildToolsVersion = "36.0.0"
@@ -12,8 +12,13 @@ buildscript {
         compileSdkVersion = 36
         targetSdkVersion = 36
         //supportLibVersion = "30.0.0"
-        ndkVersion = "25.1.8937393"
-        kotlinVersion = "1.9.24"
+        // NDK r29 (clang 20). Verified 2026-07-27: compiles the E2EE relative-vtables
+        // code (NDK 27 clang 18.0.2 SIGILL'd on it; NDK 25 clang 14 was the old floor),
+        // ZRTP/E2EE call verified, and 16 KB alignment + fbjni basic_stringstream come
+        // from the toolchain — so the old jniLibs-libc++ vendoring and CMake max-page-size
+        // inject were both removed. Do NOT drop below NDK 27 without restoring those.
+        ndkVersion = "29.0.14206865"
+        kotlinVersion = "2.0.21"
     }
     repositories {
         google()
@@ -25,7 +30,7 @@ buildscript {
         classpath("com.android.tools.build:gradle:8.9.2")
         classpath("com.facebook.react:react-native-gradle-plugin")
         //classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.21")
 
         // NOTE: Do not place your application dependencies here; they belong
         // in the individual module build.gradle files
@@ -35,6 +40,16 @@ buildscript {
 
 
 subprojects { subproject ->
+    // --- 16 KB page-size alignment (Android 15+ / Google Play requirement) ---
+    // Force MMKV 1.3.14 everywhere. @kesha-antonov/react-native-background-downloader
+    // pulls com.tencent:mmkv:1.3.12, whose prebuilt libmmkv.so is only 4 KB-aligned.
+    // 1.3.14 ships a 16 KB-aligned libmmkv.so and still keeps the 32-bit ABIs.
+    configurations.all {
+        resolutionStrategy {
+            force 'com.tencent:mmkv:1.3.14'
+        }
+    }
+
     afterEvaluate { project ->
         if (project.plugins.hasPlugin('com.android.library') || project.plugins.hasPlugin('com.android.application')) {
             // Disable lint abort on error for all modules
@@ -45,6 +60,7 @@ subprojects { subproject ->
             // Override compileSdkVersion and targetSdkVersion for all modules
             project.android.compileSdkVersion = 36
             project.android.defaultConfig.targetSdkVersion = 36
+
         }
     }
 }

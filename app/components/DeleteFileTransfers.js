@@ -1,16 +1,17 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import {
   View,
   Platform,
-  Text,
   Modal,
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
   ScrollView,
 } from 'react-native';
-import { Button, Surface, Switch, Checkbox } from 'react-native-paper';
+import { Text, Button, Surface, Switch, Checkbox } from 'react-native-paper';
 import PlatformToggle from './PlatformToggle';
 import UserIcon from './UserIcon';
 import utils from '../utils';
@@ -234,7 +235,7 @@ class DeleteFileTransfers extends Component {
           onPress={() => this.setState({ menuVisible: !this.state.menuVisible })}
           style={{ width: '100%', justifyContent: 'space-between' }}
           contentStyle={{ height: 50 }}
-          labelStyle={{ color: 'black' }}
+          labelStyle={{ color: getModalColors().textPrimary }}
           icon={this.state.menuVisible ? 'menu-up' : 'menu-down'}
         >
           {selected ? selected.label : 'Select period'}
@@ -244,9 +245,9 @@ class DeleteFileTransfers extends Component {
             style={{
               marginTop: 4,
               borderWidth: 1,
-              borderColor: '#ccc',
+              borderColor: getModalColors().divider,
               borderRadius: 8,
-              backgroundColor: '#fff',
+              backgroundColor: getModalColors().surface,
               overflow: 'hidden',
             }}
           >
@@ -259,7 +260,7 @@ class DeleteFileTransfers extends Component {
                 style={{ justifyContent: 'flex-start', borderRadius: 0 }}
                 contentStyle={{ justifyContent: 'flex-start', height: 40 }}
                 labelStyle={{
-                  color: option.key === this.state.periodFilterKey ? '#1976d2' : 'black',
+                  color: option.key === this.state.periodFilterKey ? getModalColors().accent : getModalColors().textPrimary,
                   textAlign: 'left',
                 }}
                 onPress={() => {
@@ -329,7 +330,7 @@ class DeleteFileTransfers extends Component {
             >
               {/* Block dismiss when taps land inside the card. */}
               <TouchableWithoutFeedback onPress={() => {}}>
-                <Surface style={containerStyles.modalSurface}>
+                <ThemedModalSurface style={containerStyles.modalSurface}>
                   <ScrollView
                     style={{ maxHeight: 520 }}
                     keyboardShouldPersistTaps="handled"
@@ -430,7 +431,7 @@ class DeleteFileTransfers extends Component {
                       />
                     ) : null}
                   </ScrollView>
-                </Surface>
+                </ThemedModalSurface>
               </TouchableWithoutFeedback>
             </KeyboardAvoidingView>
           </View>

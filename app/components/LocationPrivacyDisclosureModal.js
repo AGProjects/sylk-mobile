@@ -1,4 +1,6 @@
 import React, { Component } from 'react';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet, Dimensions } from 'react-native';
@@ -98,7 +100,7 @@ class LocationPrivacyDisclosureModal extends Component {
                         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                     >
-                            <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+                            <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
                                     <Text style={containerStyles.title}>
                                         Location privacy policy
                                     </Text>
@@ -211,7 +213,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                                 {
                                                     marginTop: 6,
                                                     fontSize: 11,
-                                                    color: '#1976d2',
+                                                    color: getModalColors().link,
                                                     textDecorationLine: 'underline',
                                                 },
                                             ]}
@@ -283,7 +285,7 @@ class LocationPrivacyDisclosureModal extends Component {
                                             </>
                                         )}
                                     </View>
-                            </Surface>
+                            </ThemedModalSurface>
                     </KeyboardAvoidingView>
                 </View>
         );

@@ -26,6 +26,7 @@
 #import <React/RCTEventDispatcher.h>
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
+#import <ReactAppDependencyProvider/RCTAppDependencyProvider.h>
 #import <AVFoundation/AVFoundation.h>
 #import "Contact.h"
 #import "SylkLogger.h"
@@ -75,6 +76,13 @@
     AVAudioSession *session = [AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
     
     self.moduleName = @"Sylk";
+
+    // RN 0.77: RCTAppDelegate now needs a dependencyProvider so autolinked
+    // third-party pods (Fabric components / TurboModules) are discoverable.
+    // Harmless on the current old-arch manual-bridge path; required once we
+    // adopt the New-Arch factory. Provided by the ReactAppDependencyProvider
+    // pod (auto-added by react_native_pods.rb — no Podfile edit needed).
+    self.dependencyProvider = [RCTAppDependencyProvider new];
 
     [SylkLogger log:@"[app] Application launch"];
 
@@ -708,8 +716,20 @@
        // raw one while active. Background deliveries never reach
        // willPresentNotification, so lock-screen/background banners are
        // unaffected.
+       // Foreground dedupe applies ONLY to content types where JS posts its
+       // own enriched local banner while active (plain text messages). For
+       // application/sylk-location-sharing and application/sylk-request, JS
+       // suppresses its local post ("WS drives UI" in onRemoteNotification),
+       // so suppressing the raw one here too would leave NO banner at all
+       // when the user is not viewing that contact's chat. Let those present
+       // (the NSE has already retitled them); the active-chat check above
+       // still hides them while that chat is open.
+       NSString *_ctype = [data[@"content_type"] isKindOfClass:[NSString class]] ? (NSString *)data[@"content_type"] : @"";
+       BOOL _jsPostsForegroundBanner = !([_ctype isEqualToString:@"application/sylk-location-sharing"]
+                                          || [_ctype isEqualToString:@"application/sylk-request"]);
        if ([event isEqualToString:@"message"]
            && data[@"display_name"] == nil
+           && _jsPostsForegroundBanner
            && [UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
            [SylkLogger log:@"[app] Skip raw remote message banner while active (JS posts the enriched local)"];
            completionHandler(UNNotificationPresentationOptionNone);
@@ -880,12 +900,24 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
             NSString *msgContent = coerceStr(data[@"content"]);
             NSString *msgContentType = coerceStr(data[@"content_type"]);
             NSString *msgDisplayName = coerceStr(data[@"from_display_name"]);
-            [self insertIncomingMessageToSqlForAccount:toUri
-                                               fromUri:fromUri
-                                             messageId:messageId
-                                               content:msgContent
-                                           contentType:msgContentType
-                                           displayName:msgDisplayName];
+            // application/sylk-location-sharing is excluded from the native
+            // insert: its wire body is a cleartext envelope with the coords
+            // PGP-encrypted, and storing it verbatim would create a row with no
+            // related_action / no split that WINS the msg_id UNIQUE race against
+            // the proper split-store from the WS/journal path — leaving a
+            // location row that never renders a map. Let JS store it; the push
+            // just wakes the app and the tap opens the chat (mirrors the Android
+            // MyFirebaseMessagingService guard).
+            if ([msgContentType isEqualToString:@"application/sylk-location-sharing"]) {
+                [SylkLogger log:@"[message] [apns] skipping native insert for location-sharing %@; WS/journal stores the split row", messageId];
+            } else {
+                [self insertIncomingMessageToSqlForAccount:toUri
+                                                   fromUri:fromUri
+                                                 messageId:messageId
+                                                   content:msgContent
+                                               contentType:msgContentType
+                                               displayName:msgDisplayName];
+            }
         }
     }
 
@@ -925,10 +957,28 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
       NSDictionary *userInfo = response.notification.request.content.userInfo;
       NSDictionary *data = userInfo[@"data"];
 
+      // Resolve the live bridge. self.bridge (our own property, set at
+      // launch) can read back nil on a FOREGROUND banner tap — the app is
+      // running and active, but the emit sites below saw nil and skipped,
+      // so a tap on an already-open app did nothing (cold-start and
+      // background taps still worked via the stash + foreground drain).
+      // The bridge the app is actually running on is the one the visible
+      // RCTRootView was created with, so recover it from the key window's
+      // root view when self.bridge is nil. On a TRUE cold start there is
+      // no root view yet, so this stays nil and the stash-and-drain path
+      // below handles the tap exactly as before.
+      RCTBridge *effectiveBridge = self.bridge;
+      if (effectiveBridge == nil) {
+          UIView *rootView = self.window.rootViewController.view;
+          if ([rootView isKindOfClass:[RCTRootView class]]) {
+              effectiveBridge = [(RCTRootView *)rootView bridge];
+          }
+      }
+
       // Cold-start tap: the bridge isn't created yet, so no emit can
       // reach JS. Stash the payload where the launch-time
       // getInitialNotification path (APNSTokenModule) will find it.
-      if (self.bridge == nil && [userInfo isKindOfClass:[NSDictionary class]]) {
+      if (effectiveBridge == nil && [userInfo isKindOfClass:[NSDictionary class]]) {
           self.initialRemoteNotification = userInfo;
       }
 
@@ -940,7 +990,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
               && [fromUri isKindOfClass:[NSString class]]
               && fromUri.length > 0) {
 
-              RCTBridge *bridge = self.bridge;
+              RCTBridge *bridge = effectiveBridge;
               if (bridge != nil) {
                   NSMutableDictionary *payload = [NSMutableDictionary dictionary];
                   payload[@"fromUri"] = fromUri;
@@ -950,12 +1000,21 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
                   if ([data[@"message_id"] isKindOfClass:[NSString class]]) {
                       payload[@"messageId"] = data[@"message_id"];
                   }
+                  // Forward the message body + content-type so JS can route
+                  // application/sylk-request taps into the request-modal
+                  // handler (mirrors Android's notificationTapped extras).
+                  if ([data[@"content"] isKindOfClass:[NSString class]]) {
+                      payload[@"content"] = data[@"content"];
+                  }
+                  if ([data[@"content_type"] isKindOfClass:[NSString class]]) {
+                      payload[@"contentType"] = data[@"content_type"];
+                  }
                   [bridge.eventDispatcher
                       sendDeviceEventWithName:@"SylkPushTapped"
                                          body:payload];
                   [SylkLogger log:@"[app] SylkPushTapped emitted fromUri=%@", fromUri];
               } else {
-                  [SylkLogger log:@"[app] SylkPushTapped skip: bridge nil (cold-start path will use getInitialNotification)"];
+                  [SylkLogger log:@"[app] SylkPushTapped skip: no live bridge (cold-start path will use getInitialNotification)"];
               }
           } else {
               // Non-message taps (e.g. the "Live location stopped" banner's
@@ -965,7 +1024,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
               // onLocalNotification via the SylkNotificationTapped listener.
               // Message taps stay on the dedicated SylkPushTapped fast path
               // above — emitting both here would double-navigate.
-              RCTBridge *tapBridge = self.bridge;
+              RCTBridge *tapBridge = effectiveBridge;
               if (tapBridge != nil) {
                   [tapBridge.eventDispatcher
                       sendDeviceEventWithName:@"SylkNotificationTapped"
@@ -1091,6 +1150,15 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
                ![remoteDisplayName isEqualToString:fromUri]) {
 
         callerName = remoteDisplayName;
+    }
+
+    // Anonymous / guest callers must never surface their scary random
+    // "<uuid>@guest.<host>" URI in CallKit. If we fell back to the raw
+    // fromUri (no contact match and no caller-presented display name),
+    // show a friendly placeholder instead.
+    if (([fromUri containsString:@"anonymous"] || [fromUri containsString:@"@guest."])
+        && [callerName isEqualToString:fromUri]) {
+        callerName = @"Unknown contact";
     }
 
     [SylkLogger log:@"[app] displayName = %@", displayName];
@@ -1340,7 +1408,52 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         return @"";
     };
 
-    [SylkLogger log:@"[app] -- shouldDisplayMessageFromPayload: %@", data];
+    // ---- One-line push summary (replaces the full dict dump) ----
+    // [app] push <kind> event=<event> DN=<display name>: <bubble text>
+    // <kind> = the sylk-location-sharing action (location_start / location_stop /
+    // meeting_request / meeting_end / ...), the request type, or "message".
+    {
+        NSString *_ct   = coerceString(data[@"content_type"]);
+        NSString *_body = coerceString(data[@"content"]);
+        NSString *_evt  = coerceString(data[@"event"]);
+        NSString *_dn   = coerceString(data[@"from_display_name"]);
+        if (_dn.length == 0) _dn = coerceString(data[@"from_uri"]);
+        NSString *_kind = _evt.length ? _evt : @"?";
+        NSString *_bubble = @"";
+        if ([_ct isEqualToString:@"application/sylk-location-sharing"]) {
+            NSString *_act = @""; NSString *_rsn = @"";
+            NSData *_jd = [_body dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *_o = _jd ? [NSJSONSerialization JSONObjectWithData:_jd options:0 error:nil] : nil;
+            if ([_o isKindOfClass:[NSDictionary class]]) {
+                _act = coerceString(_o[@"action"]);
+                _rsn = coerceString(_o[@"reason"]);
+            }
+            _kind = _act.length ? _act : @"location";
+            if ([_act isEqualToString:@"meeting_request"])     _bubble = @"Meet-up request";
+            else if ([_act isEqualToString:@"meeting_accept"]) _bubble = @"Accepted your meet-up request";
+            else if ([_act isEqualToString:@"meeting_start"])  _bubble = @"Meet-up started";
+            else if ([_act isEqualToString:@"meeting_end"])    _bubble = _rsn.length ? [NSString stringWithFormat:@"Meet-up ended (%@)", _rsn] : @"Meet-up ended";
+            else if ([_act isEqualToString:@"meeting_update"]) _bubble = @"Meet-up updated";
+            else if ([_act isEqualToString:@"location_once"])  _bubble = @"Shared current location";
+            else if ([_act isEqualToString:@"location_start"]) _bubble = @"Started sharing location";
+            else if ([_act isEqualToString:@"location_stop"])  _bubble = _rsn.length ? [NSString stringWithFormat:@"Stopped sharing location (%@)", _rsn] : @"Stopped sharing location";
+            else                                               _bubble = _act.length ? _act : @"Location";
+        } else if ([_ct isEqualToString:@"application/sylk-request"]) {
+            NSString *_rt = @"";
+            NSData *_jd = [_body dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *_o = _jd ? [NSJSONSerialization JSONObjectWithData:_jd options:0 error:nil] : nil;
+            if ([_o isKindOfClass:[NSDictionary class]]) _rt = coerceString(_o[@"request_type"]);
+            _kind = [_rt isEqualToString:@"meeting"] ? @"meeting_request" : @"location_request";
+            _bubble = [_rt isEqualToString:@"meeting"] ? @"Meet-up request" : @"Location request";
+        } else if ([_evt isEqualToString:@"message"]) {
+            _kind = @"message";
+            _bubble = @"New message";
+        } else {
+            _bubble = _evt;
+        }
+        [SylkLogger log:@"[app] push %s event=%s DN=%s: %s",
+            [_kind UTF8String], [_evt UTF8String], [_dn UTF8String], [_bubble UTF8String]];
+    }
 
     // ---- 1. Read and validate event ----
     NSString *event = [[coerceString(data[@"event"]) stringByTrimmingCharactersInSet:
@@ -1732,6 +1845,28 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
             if (names[key] == nil) {
                 names[key] = displayName;
                 [shared setObject:names forKey:@"contactDisplayNames"];
+                // Mirror to the shared file the NSE actually reads —
+                // app-group NSUserDefaults does not reach the extension
+                // process, so the plist (written with NSFileProtectionNone)
+                // is the authoritative channel. Kept in step with
+                // APNSTokenModule.SylkWriteDisplayNamesFile.
+                NSURL *gc = [[NSFileManager defaultManager]
+                    containerURLForSecurityApplicationGroupIdentifier:@"group.com.agprojects.sylk-ios"];
+                NSString *fp = gc
+                    ? [[gc URLByAppendingPathComponent:@"contactDisplayNames.plist"] path]
+                    : nil;
+                if (fp != nil) {
+                    NSData *d = [NSPropertyListSerialization
+                        dataWithPropertyList:names
+                                      format:NSPropertyListBinaryFormat_v1_0
+                                     options:0
+                                       error:NULL];
+                    if (d != nil && [d writeToFile:fp atomically:YES]) {
+                        [[NSFileManager defaultManager]
+                            setAttributes:@{ NSFileProtectionKey: NSFileProtectionNone }
+                             ofItemAtPath:fp error:NULL];
+                    }
+                }
                 [SylkLogger log:@"[push] display-name map add (new sender): %@ -> %@ (%lu total)",
                     key, displayName, (unsigned long)names.count];
             }

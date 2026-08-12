@@ -1,6 +1,8 @@
 'use strict';
 
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import {
@@ -71,8 +73,7 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         textAlign: 'center',
         marginBottom: 12,
-        color: '#222'
-    },
+        },
 
     modeRow: {
         flexDirection: 'row',
@@ -102,8 +103,7 @@ const styles = StyleSheet.create({
     modeLabel: {
         marginTop: 6,
         fontSize: 12,
-        color: '#444'
-    },
+        },
 
     modeLabelActive: {
         color: ACCENT,
@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
     columnHeader: {
         fontSize: 13,
         fontWeight: '600',
-        color: '#555',
+        
         marginBottom: 6,
         paddingHorizontal: 4,
         // Fixed line height so a long " — Selected Name" suffix
@@ -163,8 +163,7 @@ const styles = StyleSheet.create({
     pRowName: {
         flex: 1,
         fontSize: 14,
-        color: '#222'
-    },
+        },
 
     pRowNameSelected: {
         color: ACCENT,
@@ -457,7 +456,7 @@ class SpeakerSelectionModal extends Component {
                         {/* Stop the backdrop tap from bubbling when
                             tapping anywhere inside the card. */}
                         <TouchableWithoutFeedback onPress={() => {}}>
-                            <Surface style={styles.card}>
+                            <ThemedModalSurface style={[styles.card, { backgroundColor: getModalColors().surface }]}>
                                 <Text style={styles.title}>Speaker selection</Text>
 
                                 <View style={styles.modeRow}>
@@ -496,7 +495,7 @@ class SpeakerSelectionModal extends Component {
                                         </View>
                                     );
                                 })()}
-                            </Surface>
+                            </ThemedModalSurface>
                         </TouchableWithoutFeedback>
                     </View>
                 </TouchableWithoutFeedback>

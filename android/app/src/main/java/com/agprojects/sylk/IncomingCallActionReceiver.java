@@ -33,7 +33,7 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 		Bundle extras = intent.getExtras();
 		if (extras != null) {
 			for (String key : extras.keySet()) {
-				SylkLogger.d("[call] [action] EXTRA: " + key + " = " + extras.get(key));
+				//SylkLogger.d("[call] [action] EXTRA: " + key + " = " + extras.get(key));
 			}
 		}
 

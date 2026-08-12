@@ -8,6 +8,7 @@ import moment from 'moment';
 import momentFormat from 'moment-duration-format';
 import autoBind from 'auto-bind';
 import { Appbar, Menu, Divider } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import Icon from  '@react-native-vector-icons/material-design-icons';
 import { Colors } from 'react-native-paper';
 import SylkAppbarContent from './SylkAppbarContent';
@@ -655,8 +656,8 @@ class CallOverlay extends React.Component {
 					// give the inner Appbar the window's full width so
 					// it spans edge-to-edge.
 					const paperPad = Math.max(leftInset, rightInset);
-					appBarContainer.marginLeft = -(leftInset + paperPad);
-					appBarContainer.width = width;
+					appBarContainer.marginLeft = -(paperPad + (this.props.leftInsetOrigin ? leftInset : 0));  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
+					appBarContainer.width = this.props.parentBledLeft ? (width - rightInset) : (width - leftInset - rightInset);  // parentBledLeft: the parent (e.g. LocalMedia) already pulled the view to x=0, so fill to the right nav bar; don't subtract leftInset again (that left a gap on the right)  // keep the right edge (kebab) inside the safe area / clear of the right nav bar
 				}
 			} else {
 				if (Platform.Version < 34) {
@@ -674,8 +675,8 @@ class CallOverlay extends React.Component {
 				// edge-to-edge.
 				if (this.state.isLandscape) {
 					const paperPad = Math.max(leftInset, rightInset);
-					appBarContainer.marginLeft = -(leftInset + paperPad);
-					appBarContainer.width = width - rightInset;
+					appBarContainer.marginLeft = -(paperPad + (this.props.leftInsetOrigin ? leftInset : 0));  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
+					appBarContainer.width = this.props.parentBledLeft ? (width - rightInset) : (width - leftInset - rightInset);  // parentBledLeft: the parent (e.g. LocalMedia) already pulled the view to x=0, so fill to the right nav bar; don't subtract leftInset again (that left a gap on the right)  // keep the right edge (kebab) clear of the right nav bar
 				}
 			}
         
@@ -793,9 +794,10 @@ class CallOverlay extends React.Component {
                     </View>
                 ) : null}
 
-                <Menu
+                <Menu theme={getMenuTheme().menuTheme}
                     visible={this.state.menuVisible}
-                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    onDismiss={() => this.setState({menuVisible: false})}  // was a toggle: a dismiss while already-closed flipped it back open, so the kebab needed several taps to land open
+                    contentStyle={styles.roundedMenu}
                     anchor={
                     /* marginLeft 50 separates the kebab from the title
                        block — but when the quick-access Swap button is
@@ -810,22 +812,22 @@ class CallOverlay extends React.Component {
                             ref={this.menuRef}
                             color="white"
                             icon="menu"
-                            onPress={() => this.setState({menuVisible: !this.state.menuVisible})}
+                            onPress={() => { console.log('[menu] call-screen kebab clicked; menuVisible', this.state.menuVisible, '->', !this.state.menuVisible); this.setState({menuVisible: !this.state.menuVisible}); }}
                         />
                         </View>
                     }
                 >
 					{this.state.media === 'video' && this.state.callState == "established" && (
 					<>
-                    <Menu.Item onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
-                    <Menu.Item onPress={() => this.handleMenu('aspectRatio')} icon="video" title={myAspectRatio} />
-                    <Menu.Item onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
-                    <Menu.Item onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('aspectRatio')} icon="video" title={myAspectRatio} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
                     {/* Switch to the audio call layout without dropping
                         video — the call keeps its video tracks; only the
                         on-screen component changes. */}
                     {typeof this.props.switchCallView === 'function' && (
-                        <Menu.Item onPress={() => this.handleMenu('switchView')} icon="phone" title={'Switch to audio view'} />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="phone" title={'Switch to audio view'} />
                     )}
 					<Divider />
 					</>
@@ -840,14 +842,15 @@ class CallOverlay extends React.Component {
 						&& this.props.callHasVideo
 						&& this.state.callState == "established"
 						&& typeof this.props.switchCallView === 'function' && (
-						<Menu.Item onPress={() => this.handleMenu('switchView')} icon="video" title={'Switch to video view'} />
+						<Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="video" title={'Switch to video view'} />
 					)}
 			
-					<Menu
+					<Menu theme={getMenuTheme().menuTheme}
 						visible={this.state.audioMenuVisible}
 						onDismiss={() => this.setState({audioMenuVisible: false})}
+						contentStyle={styles.roundedMenu}
 						anchor={
-							<Menu.Item
+							<Menu.Item theme={getMenuTheme().menuTheme}
 								title="Audio device"
 								icon="volume-high"
 								onPress={() => {
@@ -862,7 +865,7 @@ class CallOverlay extends React.Component {
 							const deviceTitle = utils.availableAudioDeviceNames[device];
 				
 							return (
-								<Menu.Item
+								<Menu.Item theme={getMenuTheme().menuTheme}
 									key={device}
 									title={
 										isSelected
@@ -894,7 +897,7 @@ class CallOverlay extends React.Component {
 						have their own action set above the divider. */}
 					{this.state.media !== 'video'
 						&& typeof this.props.showDtmfFunc === 'function' && (
-						<Menu.Item
+						<Menu.Item theme={getMenuTheme().menuTheme}
 							onPress={() => this.handleMenu('dtmf')}
 							icon="dialpad"
 							title="Dialpad..."
@@ -911,7 +914,7 @@ class CallOverlay extends React.Component {
 						surface. Shown for both audio and video calls
 						whenever the parent wires up showMediaInfo. */}
 					{typeof this.props.showMediaInfo === 'function' && this.state.callState == "established" && (
-						<Menu.Item
+						<Menu.Item theme={getMenuTheme().menuTheme}
 							onPress={() => this.handleMenu('showMediaInfo')}
 							icon="information-outline"
 							title="Media info..."
@@ -934,7 +937,7 @@ class CallOverlay extends React.Component {
 						<>
 							<Divider />
 							{typeof this.props.goBackFunc === 'function' ? (
-								<Menu.Item
+								<Menu.Item theme={getMenuTheme().menuTheme}
 									onPress={() => this.handleMenu('chat')}
 									icon="chat"
 									title="Chat..."
@@ -952,17 +955,17 @@ class CallOverlay extends React.Component {
 								<Divider />
 							) : null}
 							{typeof this.props.shareLocationFromCall === 'function' ? (
-								<Menu.Item
+								<Menu.Item theme={getMenuTheme().menuTheme}
 									onPress={() => this.handleMenu('shareLocation')}
 									icon="map-marker"
 									title="Share location..."
 								/>
 							) : null}
 							{typeof this.props.requestLocationFromCall === 'function' ? (
-								<Menu.Item
+								<Menu.Item theme={getMenuTheme().menuTheme}
 									onPress={() => this.handleMenu('requestLocation')}
 									icon="map-marker-question"
-									title="Request location..."
+									title="Request location"
 								/>
 							) : null}
 						</>
@@ -978,7 +981,7 @@ class CallOverlay extends React.Component {
 						own visual zone. */}
 					<Divider />
 					<View style={{ height: 24 }} />
-                    <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Hangup"/>
 
                 </Menu>
 

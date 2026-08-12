@@ -14,6 +14,9 @@ const containerStyles = StyleSheet.create({
   },
 
   modalSurface: {
+    // Fallback white; modals wrap their Surface in ThemedModalSurface,
+    // which overrides this with the scoped theme's surface colour so the
+    // card follows Day/Night. Anything NOT wrapped stays white (safe).
     backgroundColor: 'white',
     borderRadius: 10,
     padding: 5,

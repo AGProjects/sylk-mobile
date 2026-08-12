@@ -124,6 +124,14 @@ cleanup() {
     cleanup_done=1
     # Disarm further traps so we don't recurse during the kill cascade.
     trap '' INT TERM EXIT
+    # Drop the background jobs from the shell's job table BEFORE killing
+    # them. Otherwise bash reaps each signalled job and prints a
+    # job-control completion notice — "Done   adb -s ... | grep ... | awk
+    # '{ …the whole awk script… }'" — to the terminal on Ctrl-C, i.e. pages
+    # of noise per device. `disown` does NOT detach the processes from our
+    # tree, so kill_descendants (which walks `pgrep -P`, not the job table)
+    # still tears every one of them down; it only silences the notices.
+    disown -a 2>/dev/null || true
     # Tear down EVERY descendant — the subshells we spawned AND the
     # adb / grep / awk pipeline processes inside them. Without the
     # recursion the pipeline children get orphaned and keep writing
@@ -136,7 +144,9 @@ cleanup() {
     done
     # Anything still alive gets SIGKILL.
     kill_descendants $$ KILL
-    wait 2>/dev/null || true
+    # No `wait` here: the jobs are disowned (not waitable) and already
+    # signalled, and waiting on a signalled job is what re-triggers the
+    # completion notice we just suppressed.
     rm -f "$PID_FILE"
 }
 trap cleanup EXIT INT TERM

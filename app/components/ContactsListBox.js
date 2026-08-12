@@ -513,6 +513,20 @@ class ContactsListBox extends Component {
 			  // locationData getter. Without this preservation the next
 			  // prop update (e.g. a contact-timestamp bump or SQL save)
 			  const merged = newMessages.map((m, i) => {
+				// FROZEN MEET SUMMARY: when a meet ends, the bubble's metadata
+				// flips to the summary (meetOutcome + each party's START coords).
+				// Adopt the NEW bubble on that transition — overriding BOTH the
+				// "unchanged → keep old" shortcut and the live-location metadata
+				// preservation below, which would otherwise keep the stale live
+				// (final-coords) metadata and show the final points on success.
+				if (m && m.contentType === 'application/sylk-live-location'
+						&& m.metadata && m.metadata.meetOutcome) {
+				  const _oldF = idsEqual ? oldMessages[i] : oldMessages.find(o => o && o._id === m._id);
+				  const _oldOutcome = _oldF && _oldF.metadata && _oldF.metadata.meetOutcome;
+				  if (m.metadata.meetOutcome !== _oldOutcome) {
+					return m;
+				  }
+				}
 				if (idsEqual && !changedIds.includes(m._id)) {
 				  return oldMessages[i];
 				}
@@ -953,6 +967,8 @@ class ContactsListBox extends Component {
             selectMode={this.state.selectMode}
             onLongPress={() => { if (this.props.onLongPressContact) this.props.onLongPressContact(item); }}
             accountId = {this.state.accountId}
+            activeLocationShares={this.props.activeLocationShares}
+            incomingLocationShareUris={this.props.incomingLocationShareUris}
             />);
     }
 
@@ -1966,6 +1982,21 @@ class ContactsListBox extends Component {
 
         const chatContainer = this.props.orientation === 'landscape' ? styles.chatLandscapeContainer : styles.chatPortraitContainer;
         const container = this.props.orientation === 'landscape' ? styles.landscapeContainer : styles.portraitContainer;
+
+        // FlatList recycles rows and only re-renders them when extraData
+        // changes. The active-location-share pin in each ContactCard is driven
+        // by props.activeLocationShares (not part of the row item), so fold a
+        // STRING signature of the shared-with URIs into extraData (compared by
+        // value → only changes when the set actually changes) alongside the
+        // selection signature. Preserves the O(visible-rows) recycling.
+        const _shareSig = this.props.activeLocationShares
+            ? Object.keys(this.props.activeLocationShares).sort().join(',')
+            : '';
+        const _inShareSig = this.props.incomingLocationShareUris
+            ? Object.keys(this.props.incomingLocationShareUris).sort().join(',')
+            : '';
+        const _selSig = (this.state.selectedContacts || []).join(',');
+        const _listExtraData = _selSig + '|' + _shareSig + '|' + _inShareSig;
         return (
             <SafeAreaView style={[container, {borderColor: 'white', borderWidth: 0}]}>
               {this.state.selectedContact ?
@@ -1986,7 +2017,7 @@ class ContactsListBox extends Component {
                    the now-immutable updateSelection in app.js, this
                    makes per-tap selection in the conference-invite
                    contact list O(visible rows) instead of O(all rows). */
-                extraData={this.state.selectedContacts}
+                extraData={_listExtraData}
                 renderItem={this.renderContactItem}
                 /* listKey is the prop for NESTED VirtualizedLists. The
                    prop FlatList itself uses is keyExtractor, and without
@@ -2080,6 +2111,8 @@ ContactsListBox.propTypes = {
     inviteContacts  : PropTypes.bool,
     shareToContacts   : PropTypes.bool,
     selectedContacts: PropTypes.array,
+    activeLocationShares: PropTypes.object,
+    incomingLocationShareUris: PropTypes.object,
     toggleBlocked   : PropTypes.func,
     newContactFunc  : PropTypes.func,
     messageZoomFactor: PropTypes.string,

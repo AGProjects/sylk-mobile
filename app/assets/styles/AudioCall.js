@@ -1,11 +1,36 @@
 import { StyleSheet } from 'react-native';
 
+// --- Debug alignment borders -------------------------------------------
+// Flip DEBUG_BORDERS to true to overlay 1px coloured borders on the
+// top-level audio-call layout containers while tuning alignment, then set
+// it back to false to remove every border at once. `dbg(color)` returns a
+// border style when the flag is on and null when off, so it can be spread
+// into a StyleSheet entry (`...dbg('red')`) or dropped into an inline
+// style array (`[someStyle, dbg('cyan')]`) in AudioCallBox. Legend:
+//   magenta = outer call container    red   = avatar / caller block
+//   cyan    = landscape row           lime  = landscape left column
+//   orange  = landscape right column  blue  = stats block
+//   green   = call buttons bar
+export const DEBUG_BORDERS = false;
+export const dbg = (color) => (DEBUG_BORDERS ? { borderWidth: 1, borderColor: color } : null);
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
 
+  // Rounded surface for the call-overlay dropdown menus (kebab menu and the
+  // audio-device submenu). Applied via <Menu contentStyle={styles.roundedMenu}>;
+  // contentStyle lands last on Paper's menu Surface so the 14dp radius
+  // overrides the theme's rectangular default. overflow:hidden clips the
+  // first/last Menu.Item press ripple to the rounded corners.
+  roundedMenu: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+
   userIconContainer: {
+    ...dbg('red'),
     paddingTop: 20,
     alignSelf: 'center', // React Native doesn't support margin: 0 auto
   },
@@ -20,7 +45,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     alignItems: 'center',
     paddingHorizontal: 16,
-    marginTop: 6,
+    marginTop: 2,
   },
 
   remoteUserAgentText: {
@@ -30,6 +55,7 @@ const styles = StyleSheet.create({
   },
 
   tabletUserIconContainer: {
+    ...dbg('red'),
     paddingTop: 60,
     alignSelf: 'center',
   },
@@ -40,8 +66,12 @@ const styles = StyleSheet.create({
   },
 
   portraitButtonContainer: {
+    ...dbg('green'),
     flexDirection: 'row',
-    marginTop: 'auto',
+    // No marginTop:'auto' — the variable top region (V1, flex:1) now
+    // pushes the record row + this button bar (V2) to the bottom as a
+    // group, so an auto top-margin here would just add a gap between the
+    // record row and the buttons.
     marginBottom: 50,
     paddingLeft: 20,
     paddingRight: 20,
@@ -49,6 +79,7 @@ const styles = StyleSheet.create({
   },
 
   tabletPortraitButtonContainer: {
+    ...dbg('green'),
     flexDirection: 'row',
     marginTop: 'auto',
     bottom: 60,
@@ -57,21 +88,23 @@ const styles = StyleSheet.create({
   },
 
   landscapeButtonContainer: {
+    ...dbg('green'),
     flexDirection: 'row',
     marginTop: 'auto',
-    bottom: 30,
-    // Bumped 0 → 20 per "lift up buttons bar 20px" — pushes the
-    // whole strip 20 px up from the bottom of the screen.
-    marginBottom: 20,
+    // Landscape phone call-button strip. Earlier revisions pushed it
+    // downward with transform: translateY:30 on top of the shared
+    // extraButtonContainer `top: 20` offset applied to every button
+    // bar. Those two shifts (~50 px) are visual-only — the parent
+    // flexbox never reserved room for them — so the strip overflowed
+    // off the low edge of the phone in non-folded landscape. Hold the
+    // strip clear of the edge with a single marginBottom instead; the
+    // shared top:20 eats ~20 px of it, leaving a ~30 px visible gap.
+    marginBottom: 50,
     justifyContent: 'center',
-    // Vertical nudge on the landscape call-button strip:
-    //   started at translateY:50 (50 px lower) per "lower call
-    //   buttons 50px" request, then RAISED 20 px per "landscape
-    //   raise button bar 20px" → net +30.
-    transform: [{ translateY: 30 }],
   },
 
   tabletLandscapeButtonContainer: {
+    ...dbg('green'),
     flexDirection: 'row',
     marginTop: 'auto',
     bottom: 60,

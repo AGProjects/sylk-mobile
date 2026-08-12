@@ -1,6 +1,7 @@
 'use strict';
 
 import React, {useState, Component, Fragment} from 'react';
+import { showThemedAlert } from './ThemedAlert';
 import { Alert, Clipboard, Platform, TouchableOpacity, Dimensions, SafeAreaView, ScrollView, FlatList, TouchableHighlight, Switch, PanResponder, NativeModules} from 'react-native';
 import PropTypes from 'prop-types';
 import * as sylkrtc from 'react-native-sylkrtc';
@@ -10,6 +11,7 @@ import superagent from 'superagent';
 import autoBind from 'auto-bind';
 import { RTCView } from 'react-native-webrtc';
 import { IconButton, Appbar, Modal, Surface, Paragraph, Text, Menu, Button } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import { View, Keyboard, TouchableWithoutFeedback, KeyboardAvoidingView, Animated, Easing} from 'react-native';
 import { GiftedChat, Bubble, MessageText, Send, MessageImage } from 'react-native-gifted-chat'
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
@@ -3362,7 +3364,7 @@ class ConferenceBox extends Component {
     kickParticipant(uri, displayName, sessionId) {
         if (!uri && !sessionId) return;
         const _label = (displayName && String(displayName).trim()) || uri;
-        Alert.alert(
+        showThemedAlert(
             'Remove from conference?',
             _label + ' will be disconnected from the conference.',
             [
@@ -6717,7 +6719,7 @@ class ConferenceBox extends Component {
     // (see API.md) — every participant then receives a `muteAudio`
     // event from the server.
     muteAllParticipants() {
-        Alert.alert(
+        showThemedAlert(
             'Mute all participants',
             'Are you sure you want to mute all participants?',
             [
@@ -7373,7 +7375,7 @@ class ConferenceBox extends Component {
 		if (AUDIO_DEVICE_PICKER_MODE === 'menu') {
 			return (
 				<View style={styles.buttonContainer} key="audioDevice">
-					<Menu
+					<Menu theme={getMenuTheme().menuTheme}
 						visible={this.state.audioDevicePickerVisible}
 						onDismiss={() => this.setState({audioDevicePickerVisible: false})}
 						anchor={
@@ -7392,7 +7394,7 @@ class ConferenceBox extends Component {
 							const deviceIcon = availableAudioDevicesIconsMap[device] || 'phone-in-talk';
 							const deviceName = (utils.availableAudioDeviceNames && utils.availableAudioDeviceNames[device]) || device;
 							return (
-								<Menu.Item
+								<Menu.Item theme={getMenuTheme().menuTheme}
 									key={device}
 									icon={deviceIcon}
 									title={isSelected ? `✓ ${deviceName}` : deviceName}

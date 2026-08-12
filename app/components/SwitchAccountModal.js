@@ -1,17 +1,9 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import {
-    View,
-    Platform,
-    Text,
-    Modal,
-    ScrollView,
-    Pressable,
-    StyleSheet,
-    Dimensions,
-} from 'react-native';
-import { Button, Surface, Divider } from 'react-native-paper';
+import { View, Platform, Modal, ScrollView, Pressable, StyleSheet, Dimensions } from 'react-native';
+import { Text, Button, Surface, Divider } from 'react-native-paper';
 
 // Match the rounded-corner card + dimmed backdrop used by the other
 // confirmation dialogs (DeleteAccountModal, DeleteHistoryModal, etc.)
@@ -40,7 +32,7 @@ const styles = StyleSheet.create({
         paddingBottom: 4,
         fontSize: 14,
         textAlign: 'center',
-        color: '#555',
+        
     },
     signOutNote: {
         // Caveat shown right above the Cancel/Sign-out row. Same
@@ -222,7 +214,7 @@ class SwitchAccountModal extends Component {
                         onPress={this.handleCancel}
                         accessibilityLabel="Close"
                     />
-                    <Surface style={[containerStyles.modalSurface, _surfaceExtra]}>
+                    <ThemedModalSurface style={[containerStyles.modalSurface, _surfaceExtra]}>
                         {/* No title here on purpose — the
                             "You are signed in as <id>" body
                             line and the destructive Sign out
@@ -332,7 +324,7 @@ class SwitchAccountModal extends Component {
                                 Sign out
                             </Button>
                         </View>
-                    </Surface>
+                    </ThemedModalSurface>
                 </View>
             </Modal>
         );

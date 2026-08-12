@@ -29,11 +29,42 @@ const PRIVACY_RADIUS_STOPS = [
     {value: 8000, label: '8 km'},
 ];
 
-const PrivacyRadiusSlider = ({value, onChange, title}) => {
+// textColor / markerFillColor (optional): let a themed caller
+// (PreferencesModal on a dark surface) flip the caption + label text
+// colour and the unselected-marker fill so nothing paints dark-on-dark.
+// Omitted by the white ShareLocation / MeetingRequest modals, which keep
+// the original Paper-default dark text and white marker fill.
+const PrivacyRadiusSlider = ({value, onChange, title, textColor, markerFillColor = '#fff'}) => {
     return (
-        <View style={{marginTop: 8, marginBottom: 2}}>
+        <View style={{
+            marginTop: 8,
+            marginBottom: 2,
+            // Cap the width and centre it so the five stops sit close
+            // together instead of spreading edge-to-edge across the full
+            // modal (space-between stretches the gaps to whatever width is
+            // available). The track + label rows inherit this width, so
+            // markers and their labels stay aligned.
+            alignSelf: 'center',
+            width: '100%',
+            maxWidth: 280,
+        }}>
             {title ? (
-                <Text style={{fontSize: 12, opacity: 0.75, marginBottom: 4, paddingHorizontal: 4}}>
+                // Centered, single-line caption. numberOfLines={1} +
+                // adjustsFontSizeToFit keep it on one line — the font
+                // shrinks slightly on narrow viewports rather than
+                // wrapping to a second line and pushing the track down.
+                <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    style={{
+                        fontSize: 12,
+                        opacity: 0.75,
+                        marginBottom: 4,
+                        paddingHorizontal: 4,
+                        textAlign: 'center',
+                        color: textColor,
+                    }}
+                >
                     {title}
                 </Text>
             ) : null}
@@ -82,7 +113,7 @@ const PrivacyRadiusSlider = ({value, onChange, title}) => {
                                 borderRadius: 9,
                                 borderWidth: 2,
                                 borderColor: selected ? '#1976D2' : '#888',
-                                backgroundColor: selected ? '#1976D2' : '#fff',
+                                backgroundColor: selected ? '#1976D2' : markerFillColor,
                             }}/>
                         </TouchableOpacity>
                     );
@@ -106,6 +137,7 @@ const PrivacyRadiusSlider = ({value, onChange, title}) => {
                                 fontSize: 11,
                                 opacity: selected ? 1 : 0.65,
                                 fontWeight: selected ? '600' : 'normal',
+                                color: textColor,
                             }}
                         >
                             {stop.label}
@@ -121,6 +153,8 @@ PrivacyRadiusSlider.propTypes = {
     value:    PropTypes.number,
     onChange: PropTypes.func,
     title:    PropTypes.string,
+    textColor: PropTypes.string,
+    markerFillColor: PropTypes.string,
 };
 
 PrivacyRadiusSlider.STOPS = PRIVACY_RADIUS_STOPS;

@@ -938,9 +938,24 @@ setVideoEncoderTarget(VIDEO_PROFILE.width, VIDEO_PROFILE.height, VIDEO_PROFILE.f
 import InCallManager from 'react-native-incall-manager';
 import RNCallKeep, { CONSTANTS as CK_CONSTANTS } from 'react-native-callkeep';
 import SetCallerIdModal from './components/SetCallerIdModal';
+import InfoModal from './components/InfoModal';
+import { ThemedAlertHost, showThemedAlert } from './components/ThemedAlert';
 import RegisterBox from './components/RegisterBox';
 import ReadyBox from './components/ReadyBox';
 import Call from './components/Call';
+// Location simulator (Stage 4b-3: app-owned; the engine reaches it via
+// this.sim). Geolocation is optional at runtime — guard the require so a build
+// without the native module fails gracefully instead of red-boxing on launch.
+import LocationSimulator from './components/LocationSimulator';
+import LocationSharingManager from './components/LocationSharingManager';
+let _AppGeolocation = null;
+try {
+    // eslint-disable-next-line global-require
+    _AppGeolocation = require('@react-native-community/geolocation').default
+                   || require('@react-native-community/geolocation');
+} catch (e) {
+    console.log('@react-native-community/geolocation not installed:', e && e.message);
+}
 import { haversineMeters } from './components/geoUtils';
 import Conference from './components/Conference';
 import FooterBox from './components/FooterBox';
@@ -959,6 +974,7 @@ import QosSummaryModal from './components/QosSummaryModal';
 import NotificationCenter from './components/NotificationCenter';
 import LoadingScreen from './components/LoadingScreen';
 import NavigationBar from './components/NavigationBar';
+import { LocationSharingContext } from './components/LocationSharingContext';
 import ImportDataModal from './components/ImportDataModal';
 import ImportContactsModal from './components/ImportContactsModal';
 import RestoreMessagesModal from './components/RestoreMessagesModal';
@@ -1081,8 +1097,6 @@ async function logPermissions() {
 }
 
 //debug.enable('sylkrtc*');
-  
-//import { registerForegroundListener } from '../firebase-messaging';
 
 // Ignore all SQLite warnings
 LogBox.ignoreLogs([
@@ -1262,6 +1276,21 @@ const unreadCounterTypes = new Set([
   'application/sylk-file-transfer'
 ]);
 
+// A message body is PGP-encrypted only when it BEGINS with the armor header.
+// Detecting with indexOf() ("contains") is wrong for wire envelopes that embed
+// an encrypted field inside cleartext JSON — e.g. application/sylk-location-
+// sharing ships {"action":…,"value":"-----BEGIN PGP MESSAGE-----…"}. "Contains"
+// flags the whole JSON as encrypted and hands it to OpenPGP.decrypt, which
+// fails with "encrypted with wrong key". A real armored body starts with the
+// header (leading whitespace tolerated; armored output has none) and still
+// carries the END marker.
+const isPgpEncryptedBody = (content) => {
+  if (typeof content !== 'string') return false;
+  const body = content.trimStart();
+  return body.startsWith('-----BEGIN PGP MESSAGE-----')
+    && body.indexOf('-----END PGP MESSAGE-----') > -1;
+};
+
 const chunkArray = (array, size) => {
   const chunks = [];
   for (let i = 0; i < array.length; i += size) {
@@ -1385,18 +1414,72 @@ function unwrapMessage(msg: any) {
 
 // Only override once
 if (!console.log.__isWrapped) {
-  const originalLog = console.log;
+  const LOG_PREFIX = `[${USER_AGENT_LOG}]`;
 
-/// if (Platform.OS === 'ios') {
-//   // mute all logs on iOS
-//   console.log = () => {};
-//  } else {
-    const LOG_PREFIX = `[${USER_AGENT_LOG}]`;
-    console.log = function(...args) {
-      originalLog(LOG_PREFIX, ...args);
-    };
-//  }
+  // iOS JS-log bridge (metro.log visibility). React Native 0.77 removed
+  // console forwarding over Metro (deprecated in 0.76, now CDP-only), so
+  // on iOS console.* no longer reaches the Metro terminal / metro.log —
+  // only native SylkLogger lines (via idevicesyslog) do. We restore JS
+  // visibility by echoing each formatted console line to the device
+  // syslog through NativeLogger.echoToSyslog, which NSLogs it with the
+  // [SYLK_APP] tag that metro-adb-logs.sh greps for. Android is
+  // unaffected (console.* already lands in logcat under ReactNativeJS),
+  // so the bridge is iOS-only. Gated on __DEV__: release has no Metro,
+  // so iOS JS logs were never in release captures anyway, and we do not
+  // want a per-line bridge hop shipping to users. echoToSyslog is a pure
+  // native NSLog and never touches SylkLogger's disk buffer or live
+  // listener, so it cannot loop back into JS.
+  const _jsLogSink =
+    (typeof __DEV__ !== 'undefined' && __DEV__
+      && Platform.OS === 'ios'
+      && NativeModules && NativeModules.NativeLogger
+      && NativeModules.NativeLogger.echoToSyslog)
+      ? NativeModules.NativeLogger
+      : null;
 
+  const _fmtLogArg = (a) => {
+    if (typeof a === 'string') return a;
+    if (a instanceof Error) return a.stack || (a.name + ': ' + a.message);
+    try { return JSON.stringify(a); } catch (e) { return String(a); }
+  };
+
+  // Prepends LOG_PREFIX once; adds a W/E marker for warn/error. Uses a
+  // plain space-join (no printf %s expansion) — good enough for a log
+  // echo and can never throw into the caller.
+  const _echoToSyslog = (level, args) => {
+    if (!_jsLogSink) return;
+    try {
+      const body = args.map(_fmtLogArg).join(' ');
+      const tagged = level
+        ? `${LOG_PREFIX} ${level} ${body}`
+        : `${LOG_PREFIX} ${body}`;
+      _jsLogSink.echoToSyslog(tagged);
+    } catch (e) { /* logging must never throw */ }
+  };
+
+  const _origConsoleLog = console.log;
+  const _origConsoleInfo = console.info;
+  const _origConsoleWarn = console.warn;
+  const _origConsoleError = console.error;
+
+  // Preserve each method's original on-screen behavior exactly (console.log
+  // keeps the LOG_PREFIX it always prepended); only ADD the syslog echo.
+  console.log = function (...args) {
+    _origConsoleLog(LOG_PREFIX, ...args);
+    _echoToSyslog('', args);
+  };
+  console.info = function (...args) {
+    _origConsoleInfo(...args);
+    _echoToSyslog('', args);
+  };
+  console.warn = function (...args) {
+    _origConsoleWarn(...args);
+    _echoToSyslog('W', args);
+  };
+  console.error = function (...args) {
+    _origConsoleError(...args);
+    _echoToSyslog('E', args);
+  };
 
   console.log.__isWrapped = true; // mark as wrapped
 }
@@ -1506,10 +1589,8 @@ class Sylk extends Component {
         this._insets = {"bottom": 0, "left": 0, "right": 0, "top": 0};
 
         this.notificationCenterRef = React.createRef();
-        // Used so deleteMessage can call into NavigationBar to cancel an
-        // active location-sharing timer when the user deletes the live
-        // location bubble (origin tick).
         this.navigationBarRef = React.createRef();
+
         this.cdu_counter = 1;
         this.lastServerJournalId = null;
         this.lastServerJournalTimestamp = null;
@@ -1530,125 +1611,32 @@ class Sylk extends Component {
         // automatically until the new account's row loads.
         this._syncCursorHydratedFor = null;
         this._pendingRegisteredSync = false;
+        this._simulator = new LocationSimulator({
+            enabled: () => !!this._locationSimulatorEnabled,
+            trackEnabled: () => !!this._locationSimulatorEnabled,
+            geolocation: _AppGeolocation,
+            getEntry: (uri) => {
+                // Engine owns the stores now; guard in case a walk tick fires
+                // before the engine is assigned (the sibling closures do the same).
+                const eng = this._locationEngine;
+                if (!eng) return undefined;
+                return (eng.outgoingMeetSessions && eng.outgoingMeetSessions[uri])
+                    || (eng.outgoingLocationSessions && eng.outgoingLocationSessions[uri]);
+            },
+            shouldSendUpdateTick: (uri, coords) => {
+                const nb = this.navigationBarRef && this.navigationBarRef.current;
+                const eng = this._locationEngine || (nb && nb._locationEngine);
+                return eng ? eng._shouldSendUpdateTick(uri, coords) : true;
+            },
+            sendLocationPayload: (uri, coords, expiresAtISO, originLocationId, extras) => {
+                const nb = this.navigationBarRef && this.navigationBarRef.current;
+                const eng = this._locationEngine || (nb && nb._locationEngine);
+                if (eng) eng.sendLocationPayload(uri, coords, expiresAtISO, originLocationId, extras);
+            },
+        });
 
-        // "Until we meet" (meeting_request) handshake state. Kept off React
-        // state so additions don't trigger renders on every metadata tick;
-        // only the presented modal + pending-by-uri queue are in state.
-        //
-        // handledMeetingRequestIds — request _ids we've already presented
-        //   (or auto-handled) so the modal never pops twice for the same
-        //   request. Hydrated from AsyncStorage on mount; persisted there
-        //   on every change so the guarantee survives restart.
-        //
-        // pendingMeetingRequests   — {uri: {requestId, expiresAt, fromUri}}
-        //   request arrived while that uri's chat wasn't open. When the
-        //   user opens that chat, we drain the entry into the modal.
-        //
-        // handledAcceptanceIds     — request _ids for which we've already
-        //   rendered the "peer accepted" system note on the requester side.
-        //   Dedupes across retries / per-tick re-entries of the handler.
-        this.handledMeetingRequestIds = new Set();
-        this.pendingMeetingRequests = {};
-        this.handledAcceptanceIds = new Set();
-        // Set of _ids of location-sharing origin ticks we sent with
-        // meeting_request:true. Used to recognise incoming acceptance
-        // ticks (metadata.in_reply_to === one of these _ids) and render
-        // the one-time "peer accepted" system message. Hydrated from
-        // AsyncStorage on mount.
-        this.myOutgoingMeetingRequestIds = new Set();
-        // Set of incoming meeting request _ids that we have ACCEPTED on
-        // this device. Mirror of myOutgoingMeetingRequestIds for the
-        // accepter side: used by _injectLocationBubble to suppress the
-        // duplicate outgoing bubble we would otherwise draw for our own
-        // reply tick (whose in_reply_to points back at the request we
-        // already rendered as an incoming bubble). Peer coords end up
-        // merged into the incoming bubble via the peerCoords pipeline.
-        this.acceptedMeetingRequestIds = new Set();
-
-        // Bubble ids the user has explicitly deleted via the chat UI.
-        // Belt-and-braces guard against the synthesis pass at
-        // getMessages re-creating a bubble from any straggler trail
-        // rows that survived the SQL delete (e.g. legacy rows whose
-        // related_msg_id doesn't point at the origin, journal-replayed
-        // ticks that re-INSERT after deletion, etc.). In-memory only —
-        // a session-scoped set is enough because a clean SQL deletion
-        // means the next app launch finds nothing to synthesise.
-        this._deletedLocationBubbleIds = new Set();
-
-        // Multi-device mirror: when a different device of the same
-        // account is broadcasting a location share, that device's
-        // outgoing ticks are server-replicated to us via self-echo.
-        // We don't have a local timer for them (we're not
-        // broadcasting), but we do want to render the bubble exactly
-        // as the broadcaster sees it — same two pins, same distance,
-        // same pulse — so the user can switch devices without losing
-        // the picture.
-        //
-        // Map<peerUri, {originMid, lastTickAt, lastCoords, role}>
-        //   • originMid    — session anchor (origin tick's messageId)
-        //   • lastTickAt   — wall-clock ms of last self-echo seen,
-        //                    used by the inactivity sweep below
-        //   • lastCoords   — broadcaster's last position, also fed
-        //                    into the local-owner-coords stamp so
-        //                    LocationBubble's owner pin renders here
-        //   • role         — 'requester' | 'accepter' | 'plain'
-        //
-        // In-memory only. On boot we re-derive from messagesMetadata
-        // in getMessages; on every self-echo tick we refresh
-        // lastTickAt; an inactivity sweep evicts entries silent for
-        // > 90 s (one heartbeat window) since that's the closest we
-        // can get to "the broadcaster stopped" without a control
-        // payload that the legacy A1 / B builds wouldn't honour.
-        this._activeRemoteShares = new Map();
-
-        // Set of peer URIs this device has successfully met with in at
-        // least one past "Until we meet" session (i.e. proximity-met
-        // has fired with them before). Used by _maybeFireProximityMeet
-        // to pick the initiator greeting variant:
-        //   • first time   → "Nice to meet you!"
-        //   • met already  → "Nice to meet you again!"
-        // Persisted alongside the other handshake state so it survives
-        // app restarts and re-installs of the same account.
-        this.metPeerUris = new Set();
-
-        // Sessions for which we've already emitted the
-        // "Location sharing stopped at HH:MM" system note (either from
-        // local proximity detection OR from a peer's meeting_end signal
-        // carrying reason='proximity'). Both sides of a meeting run
-        // proximity detection independently AND emit a meeting_end
-        // signal back to each other — without dedup, every session
-        // would log the stop note twice on each device. In-memory only:
-        // a session id only matters inside the brief window between
-        // first emission and the session being wiped.
-        this._proximityNotedSessionIds = new Set();
-
-        // Per-session distance band for the [location] [meet] narrative logger.
-        // We only print a distance line when it crosses a band boundary
-        // (km → hundreds → tens → <= threshold), never on every tick.
-        // Map<sessionId, bandName>.
-        this._meetLastDistanceBand = {};
-
-        // Pending wipe timers keyed by sessionId (the original request
-        // _id). When the clock reaches expires_at we wipe the session's
-        // messages from both SQL and live state on this device. A map so
-        // we can de-duplicate scheduling if the same session is observed
-        // twice (e.g. once on incoming request, once on outgoing echo).
-        this.meetingSessionWipeTimers = {};
-
-        // Pairing state for "Until we meet" sessions, keyed by sessionId
-        // (= the original request envelope _id). Populated lazily as
-        // location ticks flow through handleMessageMetadata:
-        //   {
-        //     requesterUri, requesterOriginId, requesterCoords,
-        //     accepterUri,  accepterOriginId,  accepterCoords
-        //   }
-        // The "Coords" fields hold the latest {latitude, longitude,
-        // accuracy, timestamp} for that side. When both sides are present
-        // we cross-inject peerCoords into each bubble's location metadata
-        // so LocationBubble can render two markers on the same map. Kept
-        // off React state (GC is handled at session wipe) because it's
-        // written on every tick and we don't want renders for that.
-        this.meetingSessions = {};
+        this._locationEngine = new LocationSharingManager(this);
+        this._locationEngine.sim = this._simulator;
 
 		this.deviceId = getUniqueIdSync();
 		this.contactIndex = {};
@@ -1730,6 +1718,9 @@ class Sylk extends Component {
             // writes it BOTH to server-side rpid and to the local
             // accountSetting.account.myPhoneNumber.
             showSetCallerIdModal: false,
+            infoModalVisible: false,
+            infoModalTitle: '',
+            infoModalMessage: '',
             // 3-digit SIP status code from the most recent failed
             // REGISTER (e.g. "403", "401", "408"). Null while
             // registered / fresh. Rendered as a small badge on the
@@ -1912,6 +1903,15 @@ class Sylk extends Component {
             // already inside that chat. NavigationBar pushes updates via
             // the `onActiveSharesChanged` callback.
             activeLocationShares: {},
+            incomingLocationShareUris: {},
+            // Location-only mirror of messagesMetadata (msgId -> [ {action:
+            // 'location', value, ...} ]). Dual-written alongside messagesMetadata
+            // everywhere location ticks land, so location rendering can migrate
+            // onto a store isolated from generic message metadata (labels,
+            // rotations, replies, reactions). Readers still use messagesMetadata
+            // for now — this is the introduce-and-mirror step; the per-contact
+            // twin lives on contact.locationData.
+            locationData: {},
             callsState: {},
             keys: null,
             showImportPrivateKeyModal: false,
@@ -2208,25 +2208,6 @@ class Sylk extends Component {
             requestId: null,
             expiresAt: null,
         };
-        // Ids of incoming location requests we've already presented
-        // (modal shown or expired). Memory-only — restoring across
-        // restarts isn't worth the AsyncStorage round-trip for a
-        // throwaway prompt.
-        this.handledLocationRequestIds = new Set();
-        // Distinct from `handledLocationRequestIds`: this set is
-        // populated ONLY when a sibling device on the same account
-        // answers a location request. The pre-modal 2 s delay
-        // consults this set to skip presenting the modal if a
-        // sibling already answered while we were waiting. We can't
-        // reuse handledLocationRequestIds for that purpose because
-        // _presentLocationRequestForUri stamps it BEFORE scheduling
-        // the modal-presenting setTimeout — checking handled inside
-        // the setTimeout would always be true and the modal would
-        // never open.
-        this.siblingAnsweredLocationRequestIds = new Set();
-        // Per-peer pending request, keyed by sender uri.
-        this.pendingLocationRequests = {};
-
         // ===== Conference-request handshake (in-call "Escalate to
         // conference" via the avatar "+" panel) =====
         //
@@ -2304,7 +2285,10 @@ class Sylk extends Component {
                                                 this.addHistoryEntry,
                                                 this.changeRoute,
                                                 this.respawnConnection,
-                                                this.isUnmounted
+                                                this.isUnmounted,
+                                                () => (this.state.accountSetting
+                                                        && this.state.accountSetting.rtp
+                                                        && this.state.accountSetting.rtp.dtmfMode) || 'info'
                                                 );
 
         if (InCallManager.recordPermission !== 'granted') {
@@ -2514,12 +2498,10 @@ class Sylk extends Component {
 
  		    console.log('Share', sharedFiles.length, 'items');
 
-			this.setState({shareToContacts: true,
-						   sharedContent: sharedFiles,
-						   selectedContact: null});
+			this._startShareToContacts(sharedFiles);
 
 			let what = 'Share text with contacts';
-			let item = files[0];
+			let item = sharedFiles[0];
 			if (item.weblink) {
 				what = 'Share web link with contacts';
 			}
@@ -2933,7 +2915,7 @@ class Sylk extends Component {
 		return; // user already went to the Modes access screen
 	  }
 
-	  Alert.alert(
+	  showThemedAlert(
 		"Allow Priority Notifications",
 		"To receive messages or calls during Do Not Disturb / Bedtime mode, Sylk needs permission.",
 		[
@@ -4278,6 +4260,7 @@ class Sylk extends Component {
 							// prevent duplicate unread ids
 							if (!contact.unread.includes(msg._id)) {
 								contact.unread.push(msg._id);
+								try { utils.timestampedLog('[unread][add] incomingMessage-seed', key, 'id', msg._id, '→', JSON.stringify(contact.unread)); } catch (e) {}
 							}
 						
 							contact.timestamp = msg.createdAt;
@@ -4704,7 +4687,11 @@ class Sylk extends Component {
 	     if (this.state.keys != prevState.keys) {
 		      //console.log('keys have changed', this.state.keys);
 		      if (this.state.keys && this.state.keys.private && this.state.accountId) {
-		          this.migrateBrokenEncryptedFiles();
+		          // Disabled: old one-time repair for attachments left PGP-armored
+		          // without a .asc suffix. It re-scanned every attachment on each
+		          // launch and, even finding nothing to fix, saturated native
+		          // FS/SQLite and stalled UI for seconds.
+		          // this.migrateBrokenEncryptedFiles();
 		      }
 		 }
 
@@ -4850,7 +4837,6 @@ class Sylk extends Component {
 						 'contact_id=', this.state.selectedContact.id,
 						 'remote_id=', this.state.selectedContact.remote_id,
 						 'lastTs=', this.state.selectedContact.timestamp,
-						 'lastMessage=', JSON.stringify(this.state.selectedContact.lastMessage),
 						 'lastMessageId=', this.state.selectedContact.lastMessageId,
 						 'hasPublicKey=', !!this.state.selectedContact.publicKey);
 					 
@@ -4906,9 +4892,7 @@ class Sylk extends Component {
 		 }
 
 		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
-			utils.timestampedLog('[proximity] in-call route change',
-				prevState.proximityNear, '->', this.state.proximityNear,
-				'useInCallManger=' + !!this.useInCallManger);
+			utils.timestampedLog('[proximity] in-call route change', prevState.proximityNear, '->', this.state.proximityNear, 'useInCallManger=' + !!this.useInCallManger);
 			if (this.state.proximityNear) {
 				utils.timestampedLog('[proximity] in-call -> EARPIECE + screen OFF');
 				if (this.useInCallManger) {
@@ -4941,14 +4925,7 @@ class Sylk extends Component {
 			// proximityNear changed but the in-call route branch did not
 			// fire — log why so we can tell whether the gate (enabled /
 			// headset / folded) or the missing activeCall is the cause.
-			utils.timestampedLog('[proximity] in-call route skipped',
-				prevState.proximityNear, '->', this.state.proximityNear,
-				'enabled=' + !!(this.state.accountSetting
-					&& this.state.accountSetting.device
-					&& this.state.accountSetting.device.proximityEnabled),
-				'hasHeadset=' + !!this.state.hasHeadset,
-				'folded=' + !!this.state.isFolded,
-				'inCall=' + (this.activeCall ? true : false));
+			utils.timestampedLog('[proximity] in-call route skipped', prevState.proximityNear, '->', this.state.proximityNear, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'folded=' + !!this.state.isFolded, 'inCall=' + (this.activeCall ? true : false));
          }
 
 		 if (prevState.selectedDevice !== this.state.selectedDevice ) {
@@ -5904,7 +5881,7 @@ class Sylk extends Component {
     }
 
     // Debounced persist. Coalesces rapid writes — _persistActiveShares
-    // fires on every locationTimers mutation and _persistMeetingHandshakeState
+    // fires on every outgoingLocationSessions mutation and _persistMeetingHandshakeState
     // on every handshake-marker mutation; without coalescing a chat with
     // multiple in-flight shares would hit SQL several times per
     // location tick.
@@ -5956,10 +5933,10 @@ class Sylk extends Component {
                 [json, accountId]
             );
             const rows = result && result.rowsAffected;
-            utils.timestampedLog(
-                '[app_state] flush: SQL UPDATE rowsAffected=', rows,
-                'for', accountId, 'bytes=', json.length
-            );
+            // utils.timestampedLog(
+            //     '[app_state] flush: SQL UPDATE rowsAffected=', rows,
+            //     'for', accountId, 'bytes=', json.length
+            // );
         } catch (e) {
             utils.timestampedLog('[app_state] flush: SQL UPDATE failed',
                 e && e.message ? e.message : e);
@@ -6051,7 +6028,7 @@ class Sylk extends Component {
             // session — single GPS fix, no follow-ups, no timer.
             // The sending device emits the tick and the server self-
             // echoes it back; without this gate the mirror helper
-            // sees an empty locationTimers (no timer for one-shots)
+            // sees an empty outgoingLocationSessions (no timer for one-shots)
             // and concludes "another device is broadcasting", which
             // turns on the chat-header pulse for ~90 s after a one-
             // shot send. Skip entirely so one-shot ticks render as
@@ -6059,27 +6036,34 @@ class Sylk extends Component {
             if (metadataContent.one_shot === true) {
                 return;
             }
-            const navBar = this.navigationBarRef && this.navigationBarRef.current;
-            const _liveEntry = navBar
-                && navBar.locationTimers
-                && navBar.locationTimers[uri];
-            const _liveOriginId = _liveEntry && _liveEntry.originMetadataId;
             // Session anchor on the wire is metadataContent.messageId for
             // origin ticks; for accepter follow-ups in_reply_to points
             // back at the requester's origin (= our session anchor when
             // we ARE the requester). For requester follow-ups, messageId
             // == origin id directly.
-            const _sessionMid = metadataContent.in_reply_to
-                || metadataContent.messageId;
-            const _isOurOwnOutbound = _liveOriginId
-                && (_liveOriginId === metadataContent.messageId
-                    || _liveOriginId === _sessionMid);
+            const _sessionMid = metadataContent.messageId;
+            // Our own broadcast for this uri may be a plain share AND/OR a meet
+            // leg (two stores). A self-echoed tick from EITHER must be recognised
+            // as ours so we don't mirror our own share as a remote sibling's.
+            let _isOurOwnOutbound = false;
+            for (const _le of this._locationEngine._allEntriesForUri(uri)) {
+                const _oid = _le && _le.originLocationId;
+                if (_oid && (_oid === metadataContent.messageId || _oid === _sessionMid)) {
+                    _isOurOwnOutbound = true;
+                    break;
+                }
+                const _msid = _le && _le.meetingSessionId;
+                if (_msid && (_msid === metadataContent.messageId || _msid === _sessionMid)) {
+                    _isOurOwnOutbound = true;
+                    break;
+                }
+            }
             if (_isOurOwnOutbound) return;
             // Recently-stopped guard. stopLocationSharing on this
-            // device clears locationTimers[uri] BEFORE the final
+            // device clears outgoingLocationSessions[uri] BEFORE the final
             // tick's self-echo round-trips back through
             // outgoingMessage. Without this gate the mirror helper
-            // would see an empty locationTimers and incorrectly
+            // would see an empty outgoingLocationSessions and incorrectly
             // conclude "another device is broadcasting" — chat-
             // header indicator stays pulsing for ~90 s post-stop
             // until the mirror inactivity sweep evicts. Match window
@@ -6088,16 +6072,13 @@ class Sylk extends Component {
             if (this._recentlyStoppedUris) {
                 const _stopTs = this._recentlyStoppedUris.get(uri);
                 if (_stopTs && (Date.now() - _stopTs) < 10 * 1000) {
-                    utils.timestampedLog(
-                        '[mirror] skip self-echo — share for ' + uri
-                        + ' was stopped ' + Math.round((Date.now() - _stopTs) / 1000) + ' s ago'
-                    );
+                    utils.timestampedLog('[mirror] skip self-echo — share for ' + uri + ' was stopped ' + Math.round((Date.now() - _stopTs) / 1000) + ' s ago');
                     return;
                 }
             }
-            const _role = metadataContent.meeting_request === true
+            const _role = (metadataContent.role === 'inviter' || metadataContent.meeting_request === true)
                 ? 'requester'
-                : (metadataContent.in_reply_to ? 'accepter' : 'plain');
+                : (metadataContent.role === 'invited' ? 'accepter' : 'plain');
             const _radius = Number(metadataContent.privacyDeferredRadiusMeters) || 0;
             if (typeof this._setLocalOwnerCoordsForBubble === 'function') {
                 this._setLocalOwnerCoordsForBubble(
@@ -6122,29 +6103,40 @@ class Sylk extends Component {
             // requesterCoords stays null and the propagator emits
             // 'reqCoords=n changed=n' forever.
             try {
-                if (typeof this._updateMeetingSessionCoords === 'function') {
-                    const meetingPair = this._updateMeetingSessionCoords(metadataContent, uri);
-                    if (meetingPair && typeof this._propagatePeerCoordsForSession === 'function') {
-                        this._propagatePeerCoordsForSession(meetingPair.sessionId, uri);
-                    }
+                const meetingPair = this._locationEngine._updateMeetingSessionCoords(metadataContent, uri);
+                if (meetingPair) {
+                    this._locationEngine._propagatePeerCoordsForSession(meetingPair.sessionId, uri);
                 }
             } catch (e) {
-                console.log('[mirror] meet-session feed failed',
-                    e && e.message ? e.message : e);
+                console.log('[mirror] meet-session feed failed', e && e.message ? e.message : e);
             }
-            const _wasActive = this._activeRemoteShares.has(uri);
+            // The mirror registry is keyed per SESSION-TYPE now (plain share vs
+            // meet), so a sibling broadcasting BOTH a meet and a plain share to
+            // the same contact keeps two distinct mirror entries instead of the
+            // meet tick overwriting the share tick (which made both vanish). The
+            // entry carries peerUri so consumers keyed off the value don't need
+            // the key. The React twin stays uri-keyed (presence for the pulse).
+            const _mirrorKey = (_role === 'plain') ? uri : (uri + '#meet');
+            const _wasActive = this._locationEngine._activeRemoteShares.has(_mirrorKey);
             const _newEntry = {
                 originMid: _sessionMid,
                 role: _role,
+                peerUri: uri,
                 lastTickAt: Date.now(),
                 lastCoords: {latitude: _v.latitude, longitude: _v.longitude},
+                // Which of our devices owns/broadcasts this session (cleartext
+                // wire deviceId, carried through on the content object). Lets the
+                // active-sessions list name the owning device.
+                deviceId: metadataContent.deviceId || null,
             };
-            this._activeRemoteShares.set(uri, _newEntry);
+            this._locationEngine._activeRemoteShares.set(_mirrorKey, _newEntry);
             // React-state mirror so the prop passed to ContactsListBox /
             // ReadyBox sees a fresh reference and the children re-render.
             // The bare Map is identity-stable across mutations, so a
             // simple `prop = this._activeRemoteShares` would never
-            // signal a change to React's shallow-equal comparison.
+            // signal a change to React's shallow-equal comparison. Keyed by uri
+            // (presence, last-wins) — the pin pulse only needs "any remote share
+            // for this uri"; the full per-session list comes from the Map above.
             this.setState((prev) => ({
                 activeRemoteSharesByUri: {
                     ...(prev.activeRemoteSharesByUri || {}),
@@ -6152,17 +6144,7 @@ class Sylk extends Component {
                 },
             }));
             /*
-            utils.timestampedLog(
-                '[mirror] stamped owner coords from self-echo tick'
-                + ' peer=' + uri
-                + ' mid=' + (typeof this._meetShortId === 'function'
-                    ? this._meetShortId(_sessionMid)
-                    : String(_sessionMid).slice(0, 8))
-                + ' role=' + _role
-                + ' lat=' + _v.latitude.toFixed(5)
-                + ' lng=' + _v.longitude.toFixed(5)
-                + (_wasActive ? '' : ' (NEW remote share)')
-            );
+            utils.timestampedLog('[mirror] stamped owner coords from self-echo tick' + ' peer=' + uri + ' mid=' + this._locationEngine._meetShortId(_sessionMid) + ' role=' + _role + ' lat=' + _v.latitude.toFixed(5) + ' lng=' + _v.longitude.toFixed(5) + (_wasActive ? '' : ' (NEW remote share)'));
             */
             if (!_wasActive) this.forceUpdate();
 
@@ -6207,63 +6189,400 @@ class Sylk extends Component {
                             // still works for the current session;
                             // the next reload will start with no
                             // trail to replay, which is fine.
-                            console.log('[mirror] SQL update: no row for', originMsgId,
-                                '(origin not on this device, in-memory stamp only)');
+                            console.log('[mirror] SQL update: no row for', originMsgId, '(origin not on this device, in-memory stamp only)');
                         }
                     }).catch((error) => {
-                        console.log('[mirror] SQL update error:',
-                            error && error.message ? error.message : error);
+                        console.log('[mirror] SQL update error:', error && error.message ? error.message : error);
                     });
                 }
             } catch (e) {
-                console.log('[mirror] SQL update threw',
-                    e && e.message ? e.message : e);
+                console.log('[mirror] SQL update threw', e && e.message ? e.message : e);
             }
         } catch (e) {
-            console.log('[mirror] self-echo stamp failed',
-                e && e.message ? e.message : e);
+            console.log('[mirror] self-echo stamp failed', e && e.message ? e.message : e);
         }
     }
 
     /**
      * Multi-device aware "is there an active location share for this peer?"
      * adapter. Reads BOTH the local broadcaster state (NavigationBar's
-     * locationTimers map) AND the mirror state (_activeRemoteShares),
+     * outgoingLocationSessions map) AND the mirror state (_activeRemoteShares),
      * returning a small status object the UI can consume:
      *   { active: bool, source: 'local' | 'remote' | null,
      *     lastTickAt?: ms, lastCoords?: {latitude, longitude} }
      *
      * UI consumers (chat-header pin, contacts-list dot, ReadyBox
-     * indicator) should call this instead of poking locationTimers
+     * indicator) should call this instead of poking outgoingLocationSessions
      * directly, so the pulse/badge lights up the same way regardless
      * of which device of the user is broadcasting.
      */
     isShareActiveForUri = (uri) => {
         if (!uri) return {active: false, source: null};
         try {
-            const navBar = this.navigationBarRef && this.navigationBarRef.current;
-            const localEntry = navBar && navBar.locationTimers && navBar.locationTimers[uri];
-            if (localEntry) {
+            const s = this.getActiveShareForUri(uri);
+            if (s) {
                 return {
                     active: true,
-                    source: 'local',
-                    originMid: localEntry.originMetadataId,
-                };
-            }
-            const remoteEntry = this._activeRemoteShares
-                && this._activeRemoteShares.get(uri);
-            if (remoteEntry) {
-                return {
-                    active: true,
-                    source: 'remote',
-                    originMid: remoteEntry.originMid,
-                    lastTickAt: remoteEntry.lastTickAt,
-                    lastCoords: remoteEntry.lastCoords,
-                    role: remoteEntry.role,
+                    source: s.owned ? 'local' : 'remote',
+                    originMid: s.sessionId,
+                    ownerDeviceId: s.ownerDeviceId,
+                    lastTickAt: s.lastTickAt,
+                    lastCoords: s.lastCoords,
+                    role: s.role,
                 };
             }
         } catch (e) { /* defensive — never crash a render path */ }
         return {active: false, source: null};
+    }
+
+    /**
+     * AUTHORITATIVE active location/meeting share sessions, keyed by sessionId.
+     * Single source of truth the pulse, the active-shares panel and the stop
+     * routing all read, so there is no per-URI/heuristic desync. Unifies:
+     *   • LOCAL sessions this device is broadcasting (NavigationBar.outgoingLocationSessions)
+     *     — owner = this.deviceId, owned = true.
+     *   • REMOTE sessions a sibling device of ours is broadcasting
+     *     (this._activeRemoteShares, stamped from carbons + seeded from the SQL
+     *     journal on boot) — owner = the entry's cleartext deviceId, owned = false.
+     * Each entry: { sessionId, peerUri, kind:'location'|'meeting', ownerDeviceId,
+     *   role, owned, lastTickAt, lastCoords, expiresAt }.
+     * Synchronous (render-safe). One session at a time per contact, so peerUri
+     * uniquely maps to at most one entry (getActiveShareForUri).
+     */
+    getActiveShareSessions = () => {
+        const sessions = {};
+        // LOCAL broadcaster sessions. Source from the broadcaster STATE
+        // (activeLocationShares — {uri: expiresAtMs}) UNIONED with the live GPS
+        // timers. The state survives a restart (restored from the snapshot) and
+        // drives the pulse; the timers carry the sessionId (originLocationId) but
+        // are re-armed asynchronously AFTER restart, so on startup the state has
+        // the share while timers is still empty. Reading both means the session
+        // list matches the pulse from the first render.
+        try {
+            // Timers AND the broadcaster share map are app-owned now — read
+            // them directly so the session list is fully available regardless
+            // of NavigationBar's mount state (Stage 3b).
+            // Outgoing sessions live in TWO stores now: plain timed shares in
+            // outgoingLocationSessions, meet ("Until we meet") legs in
+            // outgoingMeetSessions. A contact can have one of EACH live at once,
+            // so we emit a session per store-entry (distinct sids) rather than
+            // collapsing to one per uri.
+            const plainSessions = this._locationEngine.outgoingLocationSessions || {};
+            const meetSessions = this._locationEngine.outgoingMeetSessions || {};
+            const localShares = this.state.activeLocationShares || {};
+            for (const uri of Object.keys(plainSessions)) {
+                const t = plainSessions[uri];
+                const sid = (t && t.originLocationId) || (uri + ':location');
+                sessions[sid] = {
+                    sessionId: sid,
+                    peerUri: uri,
+                    kind: 'location',
+                    ownerDeviceId: this.deviceId || null,
+                    role: null,
+                    owned: true,
+                    lastTickAt: Date.now(),
+                    lastCoords: null,
+                    expiresAt: (t && t.expiresAt != null) ? t.expiresAt
+                        : ((localShares[uri] != null) ? localShares[uri] : null),
+                };
+            }
+            for (const uri of Object.keys(meetSessions)) {
+                const m = meetSessions[uri];
+                const sid = (m && (m.originLocationId || m.meetingSessionId)) || (uri + ':meeting');
+                sessions[sid] = {
+                    sessionId: sid,
+                    peerUri: uri,
+                    kind: 'meeting',
+                    ownerDeviceId: this.deviceId || null,
+                    role: (m && m.kind === 'meetingAccept') ? 'accepter' : 'inviter',
+                    owned: true,
+                    lastTickAt: Date.now(),
+                    lastCoords: null,
+                    expiresAt: (m && m.expiresAt != null) ? m.expiresAt
+                        : ((localShares[uri] != null) ? localShares[uri] : null),
+                };
+            }
+            // Restart fallback: activeLocationShares survives a kill/restart and
+            // drives the pulse, but the timers re-arm asynchronously afterwards.
+            // For any uri that's pulsing but not yet re-armed in EITHER store,
+            // emit a placeholder 'location' session so the list matches the pulse
+            // from the first render.
+            for (const uri of Object.keys(localShares)) {
+                if (plainSessions[uri] || meetSessions[uri]) continue;
+                const sid = uri + ':pending';
+                if (sessions[sid]) continue;
+                sessions[sid] = {
+                    sessionId: sid,
+                    peerUri: uri,
+                    kind: 'location',
+                    ownerDeviceId: this.deviceId || null,
+                    role: null,
+                    owned: true,
+                    lastTickAt: Date.now(),
+                    lastCoords: null,
+                    expiresAt: (localShares[uri] != null) ? localShares[uri] : null,
+                };
+            }
+        } catch (e) { /* best-effort */ }
+        // REMOTE (sibling-owned) sessions mirrored on this device. Union the
+        // live Map (_activeRemoteShares) with its React-state twin
+        // (activeRemoteSharesByUri). The inactivity sweep can evict a Map entry
+        // between the broadcaster's ~60s ticks while the twin still carries the
+        // session, so reading ONLY the Map made the panel/pulse flicker empty
+        // mid-share ("I see no shares to stop"). Reading both keeps the session
+        // visible for its whole life; it's cleared for good only by
+        // _clearRemoteShareForUri (an actual stop), which wipes both sources.
+        try {
+            const rm = this._locationEngine._activeRemoteShares;
+            const twin = (this.state && this.state.activeRemoteSharesByUri) || {};
+            // Collect entries from BOTH the live Map (session-type-keyed: a
+            // contact can have a meet AND a plain share mirrored at once) and its
+            // React twin. Each entry carries peerUri, so we read that rather than
+            // the key. Everything in this mirror is OUR OWN account's sibling
+            // broadcast (meet or share), so all of it is an active session — the
+            // old "pre-accept requester" skip does not apply here and made a
+            // sibling's meet vanish from the list.
+            const _entries = [];
+            if (rm && typeof rm.forEach === 'function') {
+                rm.forEach((e) => { if (e) _entries.push(e); });
+            }
+            for (const k of Object.keys(twin)) { if (twin[k]) _entries.push(twin[k]); }
+            for (const e of _entries) {
+                if (!e || !e.peerUri) continue;
+                const _peer = e.peerUri;
+                const _meet = (e.role === 'requester' || e.role === 'accepter');
+                const sid = e.originMid || (_peer + (_meet ? ':meeting' : ':location'));
+                if (sessions[sid]) continue; // a local session (or earlier entry) already owns it
+                sessions[sid] = {
+                    sessionId: sid,
+                    peerUri: _peer,
+                    kind: _meet ? 'meeting' : 'location',
+                    ownerDeviceId: e.deviceId || null,
+                    role: e.role || null,
+                    owned: false,
+                    lastTickAt: e.lastTickAt || null,
+                    lastCoords: e.lastCoords || null,
+                    expiresAt: null,
+                };
+            }
+        } catch (e) { /* best-effort */ }
+        return sessions;
+    }
+
+    // The single active share session for a contact (or null). One session per
+    // contact at a time, so this is unambiguous.
+    getActiveShareForUri = (uri) => {
+        if (!uri) return null;
+        const sessions = this.getActiveShareSessions();
+        for (const sid of Object.keys(sessions)) {
+            if (sessions[sid].peerUri === uri) return sessions[sid];
+        }
+        return null;
+    }
+
+    // Location tick cadence (ms) — how often a live share re-sends its
+    // position. App-owned config the engine reads via this.app.LOCATION_REPEAT_MS
+    // (Stage 4b). A getter so it always reflects the current per-account
+    // preference (accountSetting.location.tickIntervalSec) with no cDU-update
+    // plumbing; defaults to 60 s when unset.
+    get LOCATION_REPEAT_MS() {
+        const s = this.state && this.state.accountSetting;
+        const sec = s && s.location && s.location.tickIntervalSec;
+        return (typeof sec === 'number' && sec > 0) ? sec * 1000 : 60 * 1000;
+    }
+
+    // The single service surface the location engine depends on. Previously the
+    // engine reached these through NavigationBar's props (this.app.props.*);
+    // this getter is the app-owned bundle it reads instead (this.app._location
+    // Services, via the engine's `svc` seam), so the engine no longer needs
+    // NavigationBar to broker the app's services. Recomputed on each access so
+    // derived values (callActive, myDisplayName, simulator flag) stay fresh.
+    // The field set MUST mirror the same-named props passed to <NavigationBar/>
+    // so behaviour is identical whether read here or (as a fallback) off props.
+    // Derived location values the engine reads directly on this.app.* — computed
+    // getters so a single source stays fresh per access. (accountId /
+    // selectedContact are plain state, read as this.app.state.*.)
+    get _callActive() {
+        const s = this.state || {};
+        return !!(s.currentCall && s.currentCall.state === 'established');
+    }
+    get _locationSimulatorEnabled() {
+        const s = this.state || {};
+        return !!(s.accountSetting && s.accountSetting.location
+            && s.accountSetting.location.simulatorEnabled);
+    }
+
+    // Clear the multi-device mirror entry for `uri` IMMEDIATELY, instead of
+    // waiting for the ~90s inactivity sweep. The in-chat "Share location"
+    // button lights via isShareActiveForUri, which reads BOTH the local timers
+    // AND this mirror (_activeRemoteShares). When a share definitively ends
+    // (meeting_end, location_stop, our own stop), the local timer is gone but
+    // the mirror can linger — the self-echo of our final tick re-stamps it —
+    // so the button keeps pulsing for up to 90s after sharing actually ended.
+    // Dropping the mirror entry here stops that pulse the moment the share ends.
+    _clearRemoteShareForUri = (uri) => {
+        if (!uri || !this._locationEngine._activeRemoteShares) return;
+        const _ars = this._locationEngine._activeRemoteShares;
+        // Mirror is keyed per session-type; clear BOTH the plain-share and the
+        // meet entry for this contact.
+        let _had = false;
+        for (const _k of [uri, uri + '#meet']) {
+            if (_ars.has(_k)) { _ars.delete(_k); _had = true; }
+        }
+        if (!_had) return;
+        try {
+            this.setState((prev) => {
+                const cur = (prev && prev.activeRemoteSharesByUri) || {};
+                if (!(uri in cur)) return null;
+                const next = {...cur};
+                delete next[uri];
+                return {activeRemoteSharesByUri: next};
+            });
+        } catch (e) { /* best effort */ }
+        utils.timestampedLog('[mirror] cleared remote share for', uri, '— share ended');
+    }
+
+    // Persist a compact snapshot of in-flight location shares to the per-account
+    // app_state (location.shares). Moved from NavigationBar in Stage 4b-2 so the
+    // resume/snapshot logic is app-owned; the engine calls it via
+    // this.app._persistActiveShares on every timer mutation. Reads the app-owned
+    // timer registry (this._locationEngine.outgoingLocationSessions) directly. Fire-and-forget.
+    _persistActiveShares = async () => {
+        try {
+            const accountId = this.state.accountId;
+            if (!accountId) return;
+            const read = this._readAppStateNamespace;
+            const write = this._writeAppStateNamespace;
+            if (typeof read !== 'function' || typeof write !== 'function') return;
+            const map = {};
+            const now = Date.now();
+            // Snapshot BOTH stores, keyed by SESSION id (not uri) so a plain
+            // share and a meet leg to the same contact don't overwrite each
+            // other on disk. Each record carries its own `uri`, so resume reads
+            // the peer from the value rather than the key. Falls back to a
+            // uri:kind composite when a session hasn't stamped an origin id yet.
+            const _snap = (store) => {
+                for (const uri of Object.keys(store || {})) {
+                    const entry = store[uri];
+                    if (!entry) continue;
+                    if (typeof entry.expiresAt === 'number' && entry.expiresAt <= now) {
+                        continue; // expired — skip
+                    }
+                    const key = entry.originLocationId || (uri + ':' + (entry.kind || 'fixed'));
+                    map[key] = {
+                        uri,
+                        kind: entry.kind || 'fixed',
+                        expiresAt: entry.expiresAt,
+                        periodLabel: entry.periodLabel || null,
+                        meetingSessionId: entry.meetingSessionId || null,
+                        inReplyTo: entry.inReplyTo || null,
+                        excludeOriginRadiusMeters: Number(entry.excludeOriginRadiusMeters) || 0,
+                        destination: (entry.tickExtras && entry.tickExtras.destination) || null,
+                        originLocationId: entry.originLocationId || null,
+                        untilReturnOrigin: entry.untilReturnOrigin || null,
+                        untilReturnDeparted: !!entry.untilReturnDeparted,
+                        paused: !!entry.paused,
+                    };
+                }
+            };
+            _snap(this._locationEngine.outgoingLocationSessions);
+            _snap(this._locationEngine.outgoingMeetSessions);
+            // Read-modify-write: preserve other location.* keys, replace shares.
+            const location = await read(accountId, 'location');
+            location.shares = map;
+            await write(accountId, 'location', location);
+        } catch (e) {
+            console.log('[location] _persistActiveShares failed', e && e.message ? e.message : e);
+        }
+    }
+
+    // Boot-time hydrate: read the persisted snapshot, drop expired entries, and
+    // re-arm the rest via the engine. Moved from NavigationBar in Stage 4b-2;
+    // triggered from NavigationBar on the registrationState→registered edge via
+    // this.props.app._loadAndResumeActiveShares(). No _unmounted guard is needed
+    // here — the app is the root and does not unmount mid-session.
+    _loadAndResumeActiveShares = async () => {
+        const BOOT_RESUME_DELAY_MS = 8000;
+        const PER_SHARE_STAGGER_MS = 1500;
+        await new Promise((resolve) => setTimeout(resolve, BOOT_RESUME_DELAY_MS));
+
+        let map = null;
+        try {
+            const accountId = this.state.accountId;
+            const read = this._readAppStateNamespace;
+            if (!accountId || typeof read !== 'function') {
+                console.log('[location] resume scan: skipped (accountId or readAppStateNamespace missing)');
+                return;
+            }
+            const location = await read(accountId, 'location');
+            map = (location && location.shares && typeof location.shares === 'object')
+                ? location.shares : null;
+        } catch (e) {
+            console.log('[location] _loadAndResumeActiveShares read failed', e && e.message ? e.message : e);
+            return;
+        }
+        const candidateUris = (map && typeof map === 'object') ? Object.keys(map) : [];
+        if (!map || typeof map !== 'object') return;
+        const uris = candidateUris;
+        if (uris.length === 0) return;
+        console.log('[location] resume scan: persisted entries =', candidateUris.length, candidateUris.length > 0 ? '(' + candidateUris.join(', ') + ')' : '');
+        const now = Date.now();
+        const utils = require('./utils');
+        let _staggerIndex = 0;
+        for (const _key of uris) {
+            const e = map[_key];
+            if (!e || !e.uri) continue;
+            // Snapshot is keyed by SESSION id now — read the peer uri off the
+            // value (works for legacy uri-keyed snapshots too, where key===uri).
+            const uri = e.uri;
+            const expiresAt = typeof e.expiresAt === 'number' ? e.expiresAt : null;
+            if (expiresAt == null || expiresAt <= now) continue;
+            const _sid = e.originLocationId;
+            if (_sid && typeof this.hasStoredLocationStop === 'function') {
+                try {
+                    const _stopped = await this.hasStoredLocationStop(_sid);
+                    if (_stopped) {
+                        try {
+                            utils.timestampedLog('[location] resume scan: skipping ended session' + ' (stored location_stop) uri=' + uri + ' sid=' + _sid);
+                        } catch (e2) { /* noop */ }
+                        continue;
+                    }
+                } catch (e2) { /* best-effort — fall through to resume on error */ }
+            }
+            if (_staggerIndex > 0) {
+                await new Promise((resolve) => setTimeout(resolve, PER_SHARE_STAGGER_MS));
+            }
+            _staggerIndex += 1;
+            const remainingMs = expiresAt - now;
+            try {
+                utils.timestampedLog(`[location] resuming share with ${uri}` + ` — kind=${e.kind || 'fixed'}` + ` (${Math.round(remainingMs / 60000)} min remaining)`);
+            } catch (err) { /* noop */ }
+            // Resolve the engine flip-agnostically: the app's own engine once
+            // 4b-5 lands, otherwise NavigationBar's (where it lives today).
+            const _engine = this._locationEngine;
+            if (!_engine) {
+                utils.timestampedLog('[location] resume skipped — no location engine available for', uri);
+                continue;
+            }
+            try {
+                _engine.startLocationSharing(uri, remainingMs,
+                    e.periodLabel || '',
+                    {
+                        kind: e.kind || 'fixed',
+                        inReplyTo: e.inReplyTo || null,
+                        expiresAt: expiresAt,
+                        excludeOriginRadiusMeters: Number(e.excludeOriginRadiusMeters) || 0,
+                        destination: e.destination || undefined,
+                        resumeOriginLocationId: e.originLocationId || null,
+                        suppressAnnouncement: true,
+                        resumeUntilReturnOrigin: e.untilReturnOrigin || null,
+                        resumeUntilReturnDeparted: !!e.untilReturnDeparted,
+                        resumePaused: !!e.paused,
+                    });
+            } catch (err) {
+                utils.timestampedLog('[location] resume failed for', uri, err && err.message ? err.message : err);
+            }
+        }
     }
 
     // Persist the receiver-modal's "Do not show this again" choice.
@@ -6278,31 +6597,22 @@ class Sylk extends Component {
         try {
             const accountId = this.state && this.state.accountId;
             if (!accountId) {
-                utils.timestampedLog(
-                    '[location] suppress-disclaimer (meeting-modal): skipped — no accountId'
-                );
+                utils.timestampedLog('[location] suppress-disclaimer (meeting-modal): skipped — no accountId');
                 return;
             }
             const location = await this._readAppStateNamespace(accountId, 'location');
             location.disclaimerSuppressed = true;
             await this._writeAppStateNamespace(accountId, 'location', location);
-            utils.timestampedLog(
-                '[location] suppress-disclaimer (meeting-modal): write completed for', accountId,
-                'new location=', JSON.stringify(location)
-            );
+            utils.timestampedLog('[location] suppress-disclaimer (meeting-modal): write completed for', accountId, 'new location=', JSON.stringify(location));
             // Nudge NavigationBar's mirror so the next sender-modal
             // open already sees the suppressed state without waiting
             // for a registration transition. Optional — the next
             // hydrate would catch up — but keeps the two modals
             // perfectly in sync.
-            const navBar = this.navigationBarRef && this.navigationBarRef.current;
-            if (navBar && typeof navBar._hydrateDisclaimerSuppression === 'function') {
-                try { navBar._hydrateDisclaimerSuppression(); }
-                catch (e) { /* noop */ }
-            }
+            try { this._locationEngine._hydrateDisclaimerSuppression(); }
+            catch (e) { /* noop */ }
         } catch (e) {
-            utils.timestampedLog('[location] suppress-disclaimer (meeting-modal) failed',
-                e && e.message ? e.message : e);
+            utils.timestampedLog('[location] suppress-disclaimer (meeting-modal) failed', e && e.message ? e.message : e);
         }
     }
 
@@ -6371,32 +6681,14 @@ class Sylk extends Component {
     //     _hydrateMeetingHandshakeState on the next signin to repopulate
     //     in-memory markers from disk.
     //
-    // NavigationBar's in-flight timers (locationTimers / watchPosition
+    // NavigationBar's in-flight timers (outgoingLocationSessions / watchPosition
     // handles / BackgroundTimer intervals) are torn down via
     // stopAllSharesForLogout() in the caller — that has to run BEFORE
     // this so the peer-end signals get out over the still-live SIP
     // connection.
     _wipeLocationStateForLogout = async (accountId) => {
-        // Pending request queues — runtime-only state for "modal hasn't
-        // been shown yet". On account-switch a different identity must
-        // not inherit "you have a pending invitation" that wasn't
-        // addressed to it.
-        this.pendingMeetingRequests  = {};
-        this.pendingLocationRequests = {};
-        // Runtime dedup caches.
-        this._meetLastDistanceBand   = {};
-        this._meetReportedEnded      = new Set();
-        // Cancel pending session-wipe timers — they're scoped to
-        // this account's session ids and would otherwise fire after
-        // the account is gone, trying to act on state that no longer
-        // exists.
-        if (this.meetingSessionWipeTimers) {
-            for (const id of Object.keys(this.meetingSessionWipeTimers)) {
-                try { BackgroundTimer.clearTimeout(this.meetingSessionWipeTimers[id]); }
-                catch (e) { /* noop */ }
-            }
-            this.meetingSessionWipeTimers = {};
-        }
+        // Reset the engine's runtime handshake/pending/timer state.
+        this._locationEngine.resetRuntimeStateForLogout();
         // Persisted state. Read-modify-write the 'location' namespace,
         // clearing ONLY the `shares` sub-key. The `meetingRequests`
         // sub-key (and any other future sub-keys) is preserved so the
@@ -7303,6 +7595,19 @@ class Sylk extends Component {
 		// behave correctly.
 		this.unmounted = true;
 
+		// Release the heartbeat timer so it stops holding any timer/
+		// background-task resource once the app is torn down.
+		try {
+			if (Platform.OS === 'ios') {
+				if (this._heartbeatIntervalId != null) {
+					BackgroundTimer.clearInterval(this._heartbeatIntervalId);
+					this._heartbeatIntervalId = null;
+				}
+			} else if (typeof BackgroundTimer.stopBackgroundTimer === 'function') {
+				BackgroundTimer.stopBackgroundTimer();
+			}
+		} catch (e) { /* best-effort heartbeat-timer teardown */ }
+
 		// Cancel any pending push-accept route gate so its setTimeout
 		// callback doesn't fire into an unmounted App and call
 		// setState / changeRoute on a dead instance.
@@ -7390,15 +7695,7 @@ class Sylk extends Component {
 		// raw firing rate; if events stop after call start we know the
 		// listener itself died, otherwise the gate values tell us which
 		// branch is dropping the event.
-		utils.timestampedLog('[proximity] event near=' + proximity,
-			'enabled=' + !!(this.state.accountSetting
-				&& this.state.accountSetting.device
-				&& this.state.accountSetting.device.proximityEnabled),
-			'headset=' + !!this.state.headsetIsPlugged,
-			'audioDev=' + this.state.selectedAudioDevice,
-			'folded=' + !!this.state.isFolded,
-			'inCall=' + (this.activeCall ? true : false),
-			'prevNear=' + !!this.state.proximityNear);
+		utils.timestampedLog('[proximity] event near=' + proximity, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'headset=' + !!this.state.headsetIsPlugged, 'audioDev=' + this.state.selectedAudioDevice, 'folded=' + !!this.state.isFolded, 'inCall=' + (this.activeCall ? true : false), 'prevNear=' + !!this.state.proximityNear);
 
         if (!this.state.accountSetting.device.proximityEnabled) {
             utils.timestampedLog('[proximity] gate: setting disabled');
@@ -7701,6 +7998,42 @@ class Sylk extends Component {
      * DigestAuthRequest to serverCallHistoryUrl is decommissioned.
      */
     processServerCallHistory(data) {
+        // Async wrapper + re-entrancy guard. The heavy body
+        // (_processServerCallHistoryImpl) yields the JS thread between
+        // batches so a burst of history processing can't monopolise the
+        // thread for seconds and stall UI work. Callers invoke this
+        // un-awaited (fire-and-forget); overlapping calls are serialised —
+        // the latest snapshot is stashed and reprocessed when the in-flight
+        // run finishes.
+        if (this._processingServerCallHistory) {
+            this._reprocessQueuedHistory = data;
+            return Promise.resolve();
+        }
+        this._processingServerCallHistory = true;
+        return Promise.resolve()
+            .then(() => this._processServerCallHistoryImpl(data))
+            .catch((err) => {
+                utils.timestampedLog('[history] processServerCallHistory failed:',
+                    err && err.message ? err.message : err);
+            })
+            .finally(() => {
+                this._processingServerCallHistory = false;
+                const queued = this._reprocessQueuedHistory;
+                if (queued) {
+                    this._reprocessQueuedHistory = null;
+                    this.processServerCallHistory(queued);
+                }
+            });
+    }
+
+    _yieldToEventLoop() {
+        // Macrotask yield (NOT a microtask): returning to the event loop
+        // lets native-driven callbacks (rAF, measureInWindow, touch
+        // dispatch) run before we take the thread again. Keep as setTimeout(0).
+        return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    async _processServerCallHistoryImpl(data) {
         if (!data || typeof data !== 'object') {
             utils.timestampedLog('[history] processServerCallHistory: empty / not-an-object input');
             return;
@@ -7844,6 +8177,7 @@ class Sylk extends Component {
             collectNewCalls(data.received, 'incoming');
             collectNewCalls(data.placed, 'outgoing');
             if (newCallEntries.length > 0) {
+                await this._yieldToEventLoop();
                 this.saveCallSystemMessages(newCallEntries);
             }
         } catch (e) {
@@ -7874,7 +8208,7 @@ class Sylk extends Component {
         let renamedSelf       = 0;
         const sampleKept = [];
 
-        history = history.filter((elem) => {
+        const _keepEntry = (elem) => {
             elem.conference = false;
             elem.id = uuid.v4();
             if (!elem.tags) elem.tags = [];
@@ -7974,7 +8308,18 @@ class Sylk extends Component {
                 });
             }
             return true;
-        });
+        };
+
+        // Walk the (up to ~100) entries in batches, releasing the JS thread
+        // between batches so UI work can interleave.
+        const _kept = [];
+        for (let _i = 0; _i < history.length; _i++) {
+            if (_keepEntry(history[_i])) _kept.push(history[_i]);
+            if (((_i + 1) % 20) === 0) {
+                await this._yieldToEventLoop();
+            }
+        }
+        history = _kept;
 
         // Per-call-sync summary dump (kept/droppedConference/droppedDuplicate/
         // missedTagged/sample) — commented out to keep the log quiet.
@@ -8003,6 +8348,7 @@ class Sylk extends Component {
 
         if (typeof this.saveHistory === 'function') {
             utils.timestampedLog('[history] processServerCallHistory: calling saveHistory with', history.length, 'entries');
+            await this._yieldToEventLoop();
             this.saveHistory(history);
         } else {
             utils.timestampedLog('[history] processServerCallHistory: saveHistory not available');
@@ -10052,7 +10398,7 @@ class Sylk extends Component {
 		// thread is doing.
 		//
 		// The watchdog runs every 30 s. When it sees that (a) at least
-		// one location share is active in NavigationBar.locationTimers
+		// one location share is active in NavigationBar.outgoingLocationSessions
 		// AND (b) the websocket isn't `ready`, it nudges
 		// `connection.reconnect()`. Cost when idle (no shares) is one
 		// noop comparison every 30 s; cost in a dead zone is one failed
@@ -10075,19 +10421,16 @@ class Sylk extends Component {
 			try {
 				const ACTIVE_WINDOW_MS = 90 * 1000;
 				const now = Date.now();
-				const ars = this._activeRemoteShares;
+				const ars = this._locationEngine._activeRemoteShares;
 				if (!ars || ars.size === 0) return;
 				let evicted = 0;
-				const evictedUris = [];
-				for (const [uri, entry] of ars) {
+				const evictedPeers = [];
+				for (const [key, entry] of ars) {
 					if (!entry || (now - (entry.lastTickAt || 0)) > ACTIVE_WINDOW_MS) {
-						ars.delete(uri);
-						evictedUris.push(uri);
+						ars.delete(key);
+						if (entry && entry.peerUri) evictedPeers.push(entry.peerUri);
 						evicted += 1;
-						utils.timestampedLog(
-							'[mirror] inactivity sweep: evicted ' + uri
-							+ ' (silent for ' + Math.round((now - (entry.lastTickAt || 0)) / 1000) + ' s)'
-						);
+						utils.timestampedLog('[mirror] inactivity sweep: evicted ' + key + ' (silent for ' + Math.round((now - (entry.lastTickAt || 0)) / 1000) + ' s)');
 					}
 				}
 				if (evicted > 0) {
@@ -10096,29 +10439,28 @@ class Sylk extends Component {
 					// enough — the prop reference also has to change.
 					this.setState((prev) => {
 						const next = {...(prev.activeRemoteSharesByUri || {})};
-						for (const u of evictedUris) delete next[u];
+						for (const u of evictedPeers) { let _sl = false; ars.forEach((e2) => { if (e2 && e2.peerUri === u) _sl = true; }); if (!_sl) delete next[u]; }
 						return {activeRemoteSharesByUri: next};
 					});
 				}
 			} catch (e) {
-				console.log('[mirror] inactivity sweep tick failed',
-					e && e.message ? e.message : e);
+				console.log('[mirror] inactivity sweep tick failed', e && e.message ? e.message : e);
 			}
 		}, 30 * 1000);
 
 		this._liveShareWatchdog = BackgroundTimer.setInterval(() => {
 			try {
-				const navBar = this.navigationBarRef && this.navigationBarRef.current;
-				const timers = navBar && navBar.locationTimers;
-				if (!timers || Object.keys(timers).length === 0) return;
+				// Count active sessions across BOTH stores — a meet-only session
+				// must keep the socket alive just like a plain share.
+				const _plainCount = this._locationEngine.outgoingLocationSessions ? Object.keys(this._locationEngine.outgoingLocationSessions).length : 0;
+				const _meetCount = this._locationEngine.outgoingMeetSessions ? Object.keys(this._locationEngine.outgoingMeetSessions).length : 0;
+				const _shareCount = _plainCount + _meetCount;
+				if (_shareCount === 0) return;
 				const conn = this.state.connection;
 				const state = conn && conn.state;
 				if (state === 'ready' || state === 'connecting') return;
 				if (!conn) return;
-				utils.timestampedLog(
-					'[location] watchdog: socket state=' + (state || 'none')
-					+ ' with ' + Object.keys(timers).length + ' active share(s) — nudging reconnect'
-				);
+				utils.timestampedLog('[location] watchdog: socket state=' + (state || 'none') + ' with ' + _shareCount + ' active share(s) — nudging reconnect');
 				// IMPORTANT: do NOT call `conn.reconnect()`. Sylkrtc's
 				// reconnect() merely queues a `setTimeout(_connect, 500)`,
 				// and on Android Doze / iOS suspended-app the JS-thread
@@ -10145,8 +10487,7 @@ class Sylk extends Component {
 						conn._delay = 0.5 * 1000; // INITIAL_DELAY
 						conn._connect();
 					} catch (e) {
-						console.log('[location] watchdog: direct _connect() threw',
-							e && e.message ? e.message : e);
+						console.log('[location] watchdog: direct _connect() threw', e && e.message ? e.message : e);
 						// Fall back to the (less reliable) public path
 						// rather than leaving the user offline.
 						if (typeof conn.reconnect === 'function') {
@@ -10157,8 +10498,7 @@ class Sylk extends Component {
 					conn.reconnect();
 				}
 			} catch (e) {
-				console.log('[location] watchdog tick failed',
-					e && e.message ? e.message : e);
+				console.log('[location] watchdog tick failed', e && e.message ? e.message : e);
 			}
 		}, 30 * 1000);
 
@@ -10221,6 +10561,22 @@ class Sylk extends Component {
 				const _from = payload && payload.fromUri;
 				if (!_from) return;
 				utils.timestampedLog('[app] SylkPushTapped received fromUri=', _from);
+				// application/sylk-request tap: render the request modal
+				// straight from the pushed cleartext body (no chat nav
+				// needed). Mirrors the Android notificationTapped path.
+				if (payload.contentType === 'application/sylk-request' && payload.content) {
+					try { this._handleSylkRequest(_from, payload.content, {viaPush: true, messageId: payload.messageId}); }
+					catch (e) { console.log('[app] SylkPushTapped sylk-request failed', e && e.message); }
+					return;
+				}
+				// Location-sharing meet INVITE (iOS): register + present the
+				// accept modal, then fall through to the chat navigation below so
+				// the user also lands in the sender's chat. Inert for plain
+				// location shares (only action==meeting_request is acted on).
+				if (payload.contentType === 'application/sylk-location-sharing' && payload.content) {
+					try { this._registerMeetingRequestFromPush(_from, payload.content); }
+					catch (e) { console.log('[app] SylkPushTapped meeting invite failed', e && e.message); }
+				}
 				try {
 					this._armChatOpenSpinner(_from);
 					this.selectChatContact(_from);
@@ -10248,8 +10604,22 @@ class Sylk extends Component {
 				// also opens the chat directly.
 				try {
 					const _data = initialNotification && initialNotification.data;
-					if (_data && _data.event === 'message' && _data.from_uri) {
+					if (_data && _data.event === 'message'
+							&& _data.content_type === 'application/sylk-request' && _data.from_uri) {
+						// Cold-start tap on a request push: render the modal
+						// from the pushed body instead of opening the chat.
+						utils.timestampedLog('[app] iOS cold-start sylk-request from=', _data.from_uri);
+						try { this._handleSylkRequest(_data.from_uri, _data.content, {viaPush: true, messageId: _data.message_id}); }
+						catch (e) { console.log('[app] iOS cold-start sylk-request failed', e && e.message); }
+					} else if (_data && _data.event === 'message' && _data.from_uri) {
 						utils.timestampedLog('[app] iOS cold-start initialNotification message from=', _data.from_uri);
+						// Cold-start tap on a location-sharing meet INVITE: register +
+						// present the accept modal, then open the chat below. Inert for
+						// plain location shares (only action==meeting_request is acted on).
+						if (_data.content_type === 'application/sylk-location-sharing' && _data.content) {
+							try { this._registerMeetingRequestFromPush(_data.from_uri, _data.content); }
+							catch (e) { console.log('[app] iOS cold-start meeting invite failed', e && e.message); }
+						}
 						/* spinner disabled on app-start-from-chat-push */ // this.setState({chatOpenLoading: true, chatOpenUri: _data.from_uri});
 						this.selectChatContact(_data.from_uri);
 						this._fastLoadInitialMessages(_data.from_uri).catch(e => {
@@ -10284,6 +10654,15 @@ class Sylk extends Component {
 			  }
 
 			  console.log('User tapped notification bubble for', event.fromUri);
+
+			  // A location / meet request tap should ONLY show the modal —
+			  // do NOT navigate into the contact's chat. Handle it before the
+			  // selectChatContact below and return.
+			  if (event.contentType === 'application/sylk-request' && event.content) {
+				try { this._handleSylkRequest(event.fromUri, event.content, {viaPush: true, messageId: event.id}); }
+				catch (e) { console.log('[request] notificationTapped sylk-request failed', e && e.message); }
+				return;
+			  }
 
 			  // Navigate to the chat AND feed the push payload through
 			  // incomingMessageFromPush. The native FCM service has
@@ -10359,12 +10738,24 @@ class Sylk extends Component {
         this.keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', this._keyboardDidHide);
 
         BackHandler.addEventListener('hardwareBackPress', this.backPressed);
-        // Start a timer that runs once after X milliseconds
-        BackgroundTimer.runBackgroundTimer(() => {
-            // this will be executed once after 10 seconds
-            // even when app is the the background
-            this.heartbeat();
-        }, 5000);
+        // Periodic CallKeep bookkeeping heartbeat (5 s). On iOS we use
+        // BackgroundTimer.setInterval, NOT runBackgroundTimer: the latter
+        // begins a UIBackgroundTask that iOS force-expires after ~30 s,
+        // surfacing the "Background Task (RNBackgroundTimer) created over 30
+        // seconds ago" warning — and it buys no real background time (iOS
+        // reclaims the task regardless). heartbeat() is a lightweight
+        // bookkeeping tick (callKeeper.heartbeat), so a plain interval is
+        // functionally equivalent without holding a background task.
+        // Android keeps runBackgroundTimer (backed by its foreground service).
+        if (Platform.OS === 'ios') {
+            this._heartbeatIntervalId = BackgroundTimer.setInterval(() => {
+                this.heartbeat();
+            }, 5000);
+        } else {
+            BackgroundTimer.runBackgroundTimer(() => {
+                this.heartbeat();
+            }, 5000);
+        }
 
         try {
             await RNCallKeep.supportConnectionService();
@@ -10416,8 +10807,7 @@ class Sylk extends Component {
         this.getAudioState();
         this.startWatchingNetwork();
         this.proximityListener = Proximity.addListener(this.handleProximity);
-        utils.timestampedLog('[proximity] listener attached',
-            'listener=' + !!this.proximityListener);
+        utils.timestampedLog('[proximity] listener attached', 'listener=' + !!this.proximityListener);
         
         //logPermissions();
 	}
@@ -11653,6 +12043,14 @@ class Sylk extends Component {
 			} catch (e) {
 				console.log('Error handling iOS notification', e);
 			}
+		} else if (data.content_type === 'application/sylk-request'
+				|| data.content_type === 'application/sylk-location-sharing') {
+			// Foreground: the websocket already delivered the request / location
+			// share and JS is driving the UI (accept modal for a meeting_request,
+			// live map bubble for a share) — a local "New message" banner would
+			// duplicate it and mislabel a meet invite. Same skip the native
+			// Android FCM service does for these content types.
+			console.log('[message]', data.content_type, 'while active — suppressing banner (WS drives UI)');
 		} else {
 		    if (this.state.selectedContact) {
 		        if (this.state.selectedContact.uri != from) {
@@ -11666,6 +12064,63 @@ class Sylk extends Component {
 		}
     };
 
+	// iOS: consume a push the user TAPPED while the app was already running
+	// (backgrounded/suspended). On this device class the warm-tap fast path
+	// (AppDelegate didReceiveNotificationResponse -> SylkPushTapped) finds
+	// self.bridge == nil and falls back to stashing the raw APNs userInfo in
+	// self.initialRemoteNotification. That stash is only readable via
+	// APNSTokenModule.getInitialNotification(), which JS used to call exactly
+	// once at boot (componentDidMount) -- so a tap on an already-booted app was
+	// silently dropped: the app foregrounded but never navigated to the chat
+	// or opened the meeting-request accept modal. Re-draining on every
+	// foreground transition delivers it. getInitialNotification read-and-clears
+	// and the request handlers are idempotent, so this is safe to run alongside
+	// the boot drain and the warm SylkPushTapped path.
+	async _drainTappedNotificationOnForeground() {
+		if (Platform.OS !== 'ios') return;
+		let pending = null;
+		try {
+			pending = await NativeModules.APNSTokenModule.getInitialNotification();
+		} catch (e) {
+			console.log('[app] iOS foreground notification drain failed', e && e.message);
+			return;
+		}
+		if (!pending) return;
+		utils.timestampedLog('[app] iOS foreground drained tapped push');
+		this._routeTappedNotification(pending, 'foreground');
+	}
+
+	// Route a tapped iOS push (raw APNs userInfo, shape {data:{...}}) into the
+	// chat and, for a meet-up invite, the accept/decline modal. Mirrors the
+	// cold-start boot block so warm-foreground and cold-start taps behave
+	// identically.
+	_routeTappedNotification(notification, source) {
+		try {
+			const _data = notification && notification.data;
+			if (!_data || _data.event !== 'message' || !_data.from_uri) return;
+			if (_data.content_type === 'application/sylk-request') {
+				utils.timestampedLog('[app] iOS tapped-push sylk-request from=', _data.from_uri, 'source=', source);
+				try { this._handleSylkRequest(_data.from_uri, _data.content, {viaPush: true, messageId: _data.message_id}); }
+				catch (e) { console.log('[app] iOS tapped-push sylk-request failed', e && e.message); }
+				return;
+			}
+			utils.timestampedLog('[app] iOS tapped-push message from=', _data.from_uri, 'source=', source);
+			// Meet-up INVITE rides on application/sylk-location-sharing with
+			// action=='meeting_request': register + present the accept modal,
+			// then open the sender's chat underneath it.
+			if (_data.content_type === 'application/sylk-location-sharing' && _data.content) {
+				try { this._registerMeetingRequestFromPush(_data.from_uri, _data.content); }
+				catch (e) { console.log('[app] iOS tapped-push meeting invite failed', e && e.message); }
+			}
+			try { this._armChatOpenSpinner(_data.from_uri); } catch (e) { /* noop */ }
+			this.selectChatContact(_data.from_uri);
+			this._fastLoadInitialMessages(_data.from_uri).catch(e => {
+				console.log('[chat-fast] (iOS tapped-push) threw:', e && e.message);
+			});
+		} catch (e) {
+			console.log('[app] iOS tapped-push routing threw', e && e.message);
+		}
+	}
 	sendLocalNotification(title, body, userInfo) {
 		console.log('sendLocalNotification', userInfo);
 
@@ -11854,7 +12309,7 @@ class Sylk extends Component {
 				this.selectChatContact(from);
 			}
 			try {
-				Alert.alert(
+				showThemedAlert(
 					'Enable background location',
 					"On the next screen, tap \u2018Location\u2019, then choose \u2018Always\u2019.\n\nThis lets Sylk keep sharing your live location with your contact when Sylk is in the background.",
 					[
@@ -12180,11 +12635,13 @@ class Sylk extends Component {
                                 const _fmt = (label, n, map) =>
                                     '[badge]   ' + label.padEnd(18) + ' total=' + String(n).padStart(3)
                                     + ' perContact=' + JSON.stringify(map || {});
-                                utils.timestampedLog('[badge] foreground ' + status);
-                                utils.timestampedLog(_fmt('JS messages',     jsTotal,     jsPerContact));
-                                utils.timestampedLog(_fmt('native messages', nativeTotal, nativeMap));
-                                console.log('[badge]   native missedCalls unavailable',
-                                    e && e.message ? e.message : e);
+                                if (drift) {
+                                    utils.timestampedLog('[badge] foreground ' + status);
+                                    utils.timestampedLog(_fmt('JS messages',     jsTotal,     jsPerContact));
+                                    utils.timestampedLog(_fmt('native messages', nativeTotal, nativeMap));
+                                    console.log('[badge]   native missedCalls unavailable',
+                                        e && e.message ? e.message : e);
+                                }
                             });
                         }).catch(() => { /* noop — fallback log removed (diagnostic noise) */ });
                     } catch (e) {
@@ -12215,6 +12672,7 @@ class Sylk extends Component {
             //this.fetchSharedItemsAndroidAtStart('app_active');
             this.fetchSharedItemsiOS();
             this.checkPendingActions();
+            this._drainTappedNotificationOnForeground();
 
             // Restore the active chat when app returns to foreground while
             // still viewing a contact's chat screen. Without this the native
@@ -12357,19 +12815,41 @@ class Sylk extends Component {
 		}
 
 		// Same deferred "drain pending meeting request" pass as selectContact.
-		if (chatContact && chatContact.uri && this.pendingMeetingRequests[chatContact.uri]) {
+		if (chatContact && chatContact.uri && this._locationEngine.pendingMeetingRequests[chatContact.uri]) {
 			setTimeout(() => this._presentMeetingRequestForUri(chatContact.uri), 0);
 		}
 		// Same drain for one-shot location requests.
 		if (chatContact && chatContact.uri
-				&& this.pendingLocationRequests
-				&& this.pendingLocationRequests[chatContact.uri]) {
+				&& this._locationEngine.pendingLocationRequests[chatContact.uri]) {
 			setTimeout(() => this._presentLocationRequestModalForUri(chatContact.uri), 0);
 		}
 	}
 
     selectContact(contact, origin='') {
         //console.log('selectContact', contact);
+
+        // DEBUG: log the contact's unread message-id queue at select time so
+        // we can see exactly what the badge count is derived from (and
+        // whether it clears on open).
+        try {
+            const _u = (contact && Array.isArray(contact.unread)) ? contact.unread : [];
+            utils.timestampedLog('[unread] selectContact', contact && contact.uri,
+                '— unread ids (' + _u.length + '):', JSON.stringify(_u));
+        } catch (e) { /* noop */ }
+
+        // Clear the unread queue unconditionally on select. confirmRead (the
+        // usual trigger) can bail before reaching resetUnreadCount — e.g. its
+        // decryptingMessages / appState / no-op-rows early-returns — which
+        // left a non-message unread (a timed-out request id) stuck: the
+        // native badge got reset elsewhere but contact.unread + the SQL
+        // unread_messages column were never cleared, so every load/sweep
+        // re-applied it. resetUnreadCount now clears the in-memory arrays,
+        // state.allContacts, and the SQL column, so running it here on every
+        // open makes the badge settle. confirmRead still runs separately for
+        // the wire read-receipts (IMDN).
+        try {
+            if (contact && contact.uri) { this.resetUnreadCount(contact.uri); }
+        } catch (e) { /* noop */ }
 
         // If the tapped contact is the same one we have an active
         // call with, re-enter the live call UI instead of opening the
@@ -12425,13 +12905,12 @@ class Sylk extends Component {
 		// the user has actually opened it. Deferred so setState above has
 		// propagated — _presentMeetingRequestForUri marks the request
 		// handled before showing, so an immediate re-call is safe.
-		if (contact && contact.uri && this.pendingMeetingRequests[contact.uri]) {
+		if (contact && contact.uri && this._locationEngine.pendingMeetingRequests[contact.uri]) {
 			setTimeout(() => this._presentMeetingRequestForUri(contact.uri), 0);
 		}
 		// Same drain for the one-shot location-request prompt.
 		if (contact && contact.uri
-				&& this.pendingLocationRequests
-				&& this.pendingLocationRequests[contact.uri]) {
+				&& this._locationEngine.pendingLocationRequests[contact.uri]) {
 			setTimeout(() => this._presentLocationRequestModalForUri(contact.uri), 0);
 		}
     }
@@ -12715,6 +13194,11 @@ class Sylk extends Component {
             }
 
         } else if (newState === 'registered') {
+
+            // Now authenticated: re-run the addressbook reconcile so any
+            // XCAP writes deferred while unauthenticated (see _abWritesReady)
+            // are re-issued now that the account is registered.
+            if (this._abMaybeRun) this._abMaybeRun('registered');
 
             // Switch completed successfully — drop the guard that was
             // keeping loadAccounts from routing to /login while the
@@ -13602,6 +14086,212 @@ class Sylk extends Component {
     }
 
     /**
+     * Persist the user's last-used location-share option for a contact so
+     * ShareLocationModal reopens pre-selected on the next share for that
+     * contact.
+     *
+     * Stored under contact.localProperties.shareLocationPrefs — the local
+     * SQL contacts table's localProperties column is never synced to the
+     * server (same store as videoCallPrefs and the per-contact ZRTP cache),
+     * so this preference stays on the device.
+     *
+     * prefs: { mode: 'once' | 'untilStopped' | 'untilReturn',
+     *          selectedInterval: number }
+     * "Until we meet" is intentionally never stored — it's a per-invocation
+     * context from the meet-me flow, not a standing preference.
+     */
+    async saveShareLocationPrefs(uri, prefs) {
+        if (!uri || !prefs) return;
+        try {
+            // create=true: mint the contact row if a share is started for a
+            // URI with no row yet, so the preference still sticks.
+            const contact = this.lookupContact(uri, true);
+            if (!contact) {
+                utils.timestampedLog('[share-prefs] no contact for', uri, '— prefs not saved');
+                return;
+            }
+            contact.localProperties = contact.localProperties || {};
+            contact.localProperties.shareLocationPrefs = {
+                ...(contact.localProperties.shareLocationPrefs || {}),
+                ...prefs
+            };
+
+            // Mirror onto a possibly-stale state.selectedContact reference so
+            // the ShareLocationModal reads the fresh option on its NEXT open
+            // this session — WITHOUT waiting for the SQL round-trip / a chat
+            // reload. lookupContact may hand back a different object than the
+            // one held in state.selectedContact (the modal reads
+            // nav.props.selectedContact.localProperties.shareLocationPrefs via
+            // lastShareOption), so update that reference in place too. Same
+            // staleness fix the videoCallPrefs path applies to callContact.
+            const sc = this.state.selectedContact;
+            if (sc && sc.uri === uri && sc !== contact) {
+                sc.localProperties = sc.localProperties || {};
+                sc.localProperties.shareLocationPrefs = contact.localProperties.shareLocationPrefs;
+            }
+
+            await this.saveSylkContact(uri, contact, 'shareLocationPrefs');
+            utils.timestampedLog('[share-prefs] saved for', uri, JSON.stringify(contact.localProperties.shareLocationPrefs));
+        } catch (e) {
+            console.log('[share-prefs] save failed for', uri, e && e.message);
+        }
+    }
+
+    // Mark a location-sharing session's track as ENDED (stopped, not merely
+    // expired) — driven by the location_stop message the protocol already
+    // sends (paired with the location_start origin), which carries the stop
+    // `reason`. Called when a location_stop is seen (incoming live, journal
+    // replay, or our own outgoing stop). Two effects:
+    //   1. Persist the stop as a FIRST-CLASS row linked to the session
+    //      (related_action='location_stop', related_msg_id=<origin/session id>,
+    //      metadata carries the reason). The stop signal is otherwise transient
+    //      (the handlers post a note and return without storing), so this is
+    //      what lets the bubble show "Track ended" after reload/restart: the
+    //      load query derives "ended" from the presence of this row rather than
+    //      a synthetic flag on the origin. content is empty (a stop has no
+    //      coords) so it never renders its own bubble.
+    //   2. Remember the session id in _endedLocationSessions so any late /
+    //      resumed "zombie" ticks for it are dropped LIVE (see the resume-
+    //      after-stop race) rather than un-freezing the pin before a reload.
+    // Idempotent: a repeated stop for the same session is a no-op (and the
+    // UNIQUE msg_id guards a duplicate row from journal re-delivery).
+    // Stamp a MEET outcome onto a session's location rows when the meet was
+    // ended by a LOCAL user action (Stop tap / bubble delete). Those stops go
+    // through stopLocationSharing, which relays meeting_end to the peer (so the
+    // peer runs _wipeMeetingSession and shows the outcome) but never wipes on
+    // THIS device — leaving our own origin bubble on the generic "Track ended"
+    // footer. This mirrors just the outcome-stamp part of _wipeMeetingSession so
+    // the initiator (and, via replication + reload, its sibling devices) shows
+    // "Meet-up ended" / "Meet-up cancelled" like the peer does. Best-effort.
+    async _finalizeLocalMeetOutcome(sessionId, uri, reason) {
+        if (!sessionId) return;
+        const _outcome = (reason === 'deleted') ? 'cancelled' : 'ended';
+        try {
+            const _res = await this.ExecuteQuery(
+                "select msg_id, metadata from messages where account = ? and content_type = 'application/sylk-location-sharing' and (msg_id = ? or related_msg_id = ?)",
+                [this.state.accountId, sessionId, sessionId]);
+            const _n = _res && _res.rows ? _res.rows.length : 0;
+            for (let _i = 0; _i < _n; _i++) {
+                const _r = _res.rows.item(_i);
+                let _m = {};
+                try { _m = JSON.parse(_r.metadata || '{}'); } catch (e) {}
+                if (_m.meetOutcome === _outcome && _m.ended) continue;
+                _m.meetOutcome = _outcome;
+                _m.ended = true;
+                await this.ExecuteQuery('update messages set metadata = ? where account = ? and msg_id = ?',
+                    [JSON.stringify(_m), this.state.accountId, _r.msg_id]);
+            }
+        } catch (e) {
+            console.log('[meeting] local meet-outcome stamp failed', e && e.message ? e.message : e);
+        }
+        // Live flip the open bubble so the footer updates without a reload.
+        try {
+            const _ld = this.state.locationData;
+            const _arr = _ld && _ld[sessionId];
+            if (Array.isArray(_arr) && _arr.length) {
+                for (const e of _arr) { if (e) { e.ended = true; e.meetOutcome = _outcome; } }
+                this.setState({ locationData: Object.assign({}, _ld) });
+            }
+        } catch (e) { /* best-effort live flip */ }
+        // Rebuild the open chat from SQL so the frozen 3-point summary + outcome
+        // label render immediately (identical to a reload).
+        try {
+            const sc = this.state.selectedContact;
+            if (uri && sc && this.getAllContactUris(sc).indexOf(uri) !== -1 && typeof this.getMessages === 'function') {
+                this.getMessages(sc, {origin: 'meet-local-stop'});
+            }
+        } catch (e) { /* best-effort refresh */ }
+    }
+
+    async _endLocationTrack(uri, sessionId, reason, msgId, timestamp, direction) {
+        if (!sessionId) return;
+        // Incoming share ended — drop it from the incoming-session registry.
+        // (Outgoing teardown is logged from stopLocationSharing.) Idempotent.
+        if ((direction || 'incoming') === 'incoming') {
+            try { this._removeIncomingLocationSession(sessionId, reason || 'stopped'); } catch (e) {}
+        }
+        this._endedLocationSessions = this._endedLocationSessions || new Set();
+        const _already = this._endedLocationSessions.has(sessionId);
+        this._endedLocationSessions.add(sessionId);
+        this._endedLocationSessionReasons = this._endedLocationSessionReasons || {};
+        this._endedLocationSessionReasons[sessionId] = reason || 'ended';
+        this._endedLocationSessionEndedAt = this._endedLocationSessionEndedAt || {};
+        this._endedLocationSessionEndedAt[sessionId] = (timestamp != null)
+            ? (typeof timestamp === 'number' ? timestamp : new Date(timestamp).getTime())
+            : Date.now();
+        // Share ended — drop the multi-device mirror for this peer now so the
+        // in-chat "Share location" button stops pulsing immediately (it reads
+        // the mirror via isShareActiveForUri) instead of waiting for the sweep.
+        try { if (uri) this._clearRemoteShareForUri(uri); } catch (e) {}
+        if (_already) return;
+        // Persist the location_stop as a linked row.
+        try {
+            const _ts = timestamp != null ? timestamp : Date.now();
+            const _tsMs = typeof _ts === 'number' ? _ts : new Date(_ts).getTime();
+            const _unix = Math.floor(_tsMs / 1000);
+            const _mid = msgId || (sessionId + ':stop');
+            const _dir = direction || 'incoming';
+            const _from = _dir === 'outgoing' ? this.state.accountId : uri;
+            const _to = _dir === 'outgoing' ? uri : this.state.accountId;
+            const _expire = _unix + 7 * 24 * 60 * 60;
+            const _meta = JSON.stringify({ ended: true, reason: reason || 'ended', sessionId });
+            const params = [this.state.accountId, 0, _mid, JSON.stringify(_ts), _unix, '',
+                'application/sylk-location-sharing', _meta, _from, _to, _dir, 0,
+                'location_stop', sessionId, '', _expire, null, null, null];
+            this._normalizeInsertUris(params, 8, 9);
+            await this.ExecuteQuery('INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params).catch((error) => {
+                if (!error || (error.message || '').indexOf('UNIQUE constraint failed') === -1) {
+                    console.log('[location] stop-row INSERT error:', error && error.message);
+                }
+            });
+        } catch (e) {
+            console.log('[location] _endLocationTrack persist failed', e && e.message ? e.message : e);
+        }
+        // Live flip: stamp the in-memory metadata for this session so the OPEN
+        // bubble's footer updates to "Track ended" / "Returned" immediately,
+        // without depending solely on the reload below (which can miss the flip).
+        try {
+            const _ld = this.state.locationData;
+            const _arr = _ld && _ld[sessionId];
+            if (Array.isArray(_arr) && _arr.length) {
+                const _endedAtMs = this._endedLocationSessionEndedAt && this._endedLocationSessionEndedAt[sessionId];
+                for (const e of _arr) { if (e) { e.ended = true; e.endedReason = reason || 'ended'; if (_endedAtMs) e.endedAt = _endedAtMs; } }
+                this.setState({ locationData: Object.assign({}, _ld) });
+            }
+        } catch (e) { /* best-effort live flip */ }
+        // Refresh the open chat so the bubble flips to "Track ended" live,
+        // without waiting for a chat re-open. Stops are infrequent, so a
+        // reload here is cheap and avoids per-bubble in-memory metadata surgery.
+        try {
+            const sc = this.state.selectedContact;
+            if (sc && sc.uri === uri && typeof this.getMessages === 'function') {
+                this.getMessages(sc, {origin: 'track-ended'});
+            }
+        } catch (e) { /* best-effort refresh */ }
+    }
+
+    // True when a location_stop has been stored for `sessionId` (the origin /
+    // session id). Used by NavigationBar's boot-resume scan to skip reviving a
+    // share whose track already ended — including one another device stopped
+    // while we were offline (its stop replays from the journal and is stored
+    // here). Checks the in-memory ended set first, then the persisted stop row.
+    async hasStoredLocationStop(sessionId) {
+        if (!sessionId) return false;
+        if (this._endedLocationSessions && this._endedLocationSessions.has(sessionId)) {
+            return true;
+        }
+        try {
+            const res = await this.ExecuteQuery(
+                "SELECT 1 FROM messages WHERE account = ? AND related_action = 'location_stop' AND related_msg_id = ? LIMIT 1",
+                [this.state.accountId, sessionId]);
+            return !!(res && res.rows && res.rows.length > 0);
+        } catch (e) {
+            console.log('[location] hasStoredLocationStop failed', e && e.message ? e.message : e);
+            return false;
+        }
+    }
+
+    /**
      * Restore the encryption mode to the user's account-level
      * preference. Call when ending a call where a per-contact
      * encryption override was applied, so subsequent calls use the
@@ -14480,15 +15170,7 @@ class Sylk extends Component {
 		// early-media / established). The original "proximity set
 		// BUILTIN_*" lines are kept verbatim inside the if-branch so
 		// existing grep aliases still match.
-		utils.timestampedLog('[proximity] setProximityChosenDevice enter',
-			'enabled=' + !!(this.state.accountSetting
-				&& this.state.accountSetting.device
-				&& this.state.accountSetting.device.proximityEnabled),
-			'hasHeadset=' + !!this.state.hasHeadset,
-			'headsetPresent=' + this.headsetPresent(),
-			'folded=' + !!this.state.isFolded,
-			'near=' + !!this.state.proximityNear,
-			'useInCallManger=' + !!this.useInCallManger);
+		utils.timestampedLog('[proximity] setProximityChosenDevice enter', 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'headsetPresent=' + this.headsetPresent(), 'folded=' + !!this.state.isFolded, 'near=' + !!this.state.proximityNear, 'useInCallManger=' + !!this.useInCallManger);
 
 		// Headset-first default: if a headset (BT / wired / USB) is
 		// connected, start the call on it rather than letting the
@@ -14504,10 +15186,7 @@ class Sylk extends Component {
 				|| outputs.find(d => d.type === 'BLUETOOTH_SCO')
 				|| outputs.find(d => d.type === 'WIRED_HEADSET');
 			const headsetType = headsetDevice ? headsetDevice.type : null;
-			utils.timestampedLog('[proximity] setProximityChosenDevice -> HEADSET default',
-				'type=' + headsetType,
-				'hasHeadset=' + !!this.state.hasHeadset,
-				'plugged=' + !!this.state.headsetIsPlugged);
+			utils.timestampedLog('[proximity] setProximityChosenDevice -> HEADSET default', 'type=' + headsetType, 'hasHeadset=' + !!this.state.hasHeadset, 'plugged=' + !!this.state.headsetIsPlugged);
 			if (headsetType) {
 				this.selectAudioDevice(headsetType);
 			} else if (this.useInCallManger) {
@@ -14734,7 +15413,7 @@ class Sylk extends Component {
             }
 
         } else if (this.state.currentCall) {
-            utils.timestampedLog('[call] state changed', newState);
+            utils.timestampedLog('[call]', callUUID, 'state changed', newState);
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
             if (newState !== 'terminated') {
@@ -14790,6 +15469,13 @@ class Sylk extends Component {
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
 
+                // Also enable CallKit's native "Video" button while the
+                // outgoing call is ringing, mirroring the actual media so the
+                // button isn't grayed on the lock-screen panel.
+                this.callKeeper.reportHasVideo(callUUID,
+                    (call.mediaTypes && call.mediaTypes.video) || mediaType === 'video',
+                    call.remoteIdentity.displayName, call.remoteIdentity.uri);
+
                 // Media-type speaker default, but ONLY when no headset is
                 // connected and the user hasn't picked a device. This used
                 // to call speakerphoneOn() unconditionally for video —
@@ -14836,7 +15522,7 @@ class Sylk extends Component {
             case 'proceeding':
                 utils.timestampedLog(callUUID, '[call] Proceeding', data.code);
                 if (data.code === 110) {
-                    utils.timestampedLog(callUUID, '[call] Push sent to remote party');
+                    utils.timestampedLog('[call]', callUUID, 'Push sent to remote party');
                 }
 
                 this.setProximityChosenDevice();
@@ -14885,6 +15571,15 @@ class Sylk extends Component {
 
                 tracks = call.getLocalStreams()[0].getVideoTracks();
                 mediaType = (tracks && tracks.length > 0) ? 'video' : 'audio';
+
+                // Sync CallKit's native panel with the real media now that the
+                // call is up, so the iOS lock-screen "Video" button is enabled
+                // for video calls (it stays grayed when the creation-time
+                // hasVideo flag was false — e.g. the camera track attached
+                // after startCall, or the call upgraded audio->video).
+                this.callKeeper.reportHasVideo(callUUID,
+                    (call.mediaTypes && call.mediaTypes.video) || mediaType === 'video',
+                    call.remoteIdentity.displayName, call.remoteIdentity.uri);
 
                 if (direction === 'outgoing') {
                     this.stopRingback();
@@ -15342,6 +16037,29 @@ class Sylk extends Component {
                 let current_datetime = new Date();
                 let formatted_date = utils.appendLeadingZeroes(current_datetime.getHours()) + ":" + utils.appendLeadingZeroes(current_datetime.getMinutes()) + ":" + utils.appendLeadingZeroes(current_datetime.getSeconds());
                 let diff = 0;
+
+                // Anonymous / guest callers collapse to one "Anonymous caller"
+                // contact, so the per-call chat-history breadcrumb records WHO
+                // called using the name the caller presented from the web
+                // (call.remoteIdentity.displayName). Every new anonymous caller
+                // therefore leaves a distinct "Call from <name> …" entry in the
+                // single Anonymous contact's history. Falls back to the generic
+                // "Anonymous caller" label when the caller sent no display name.
+                const _isAnonCall = utils.isAnonymous(uri);
+                let _anonCallerLabel = null;
+                if (_isAnonCall) {
+                    const _riName = call.remoteIdentity && call.remoteIdentity.displayName;
+                    const _uriLocal = uri.indexOf('@') > -1 ? uri.split('@')[0] : uri;
+                    const _isRealName = !!(_riName && typeof _riName === 'string'
+                        && _riName.toLowerCase() !== uri.toLowerCase()
+                        && _riName.toLowerCase() !== _uriLocal.toLowerCase());
+                    _anonCallerLabel = _isRealName ? _riName.trim() : 'Anonymous caller';
+                    utils.timestampedLog('[call] [anon-history]', callUUID,
+                        'terminated — caller presented name=',
+                        (_isRealName ? JSON.stringify(_riName) : '<none>'),
+                        'label=', JSON.stringify(_anonCallerLabel));
+                }
+
                 if (startTime) {
                     let duration = moment.duration(new Date() - startTime);
                     diff = Math.floor((new Date() - startTime) / 1000);
@@ -15352,7 +16070,11 @@ class Sylk extends Component {
                         duration = duration.format('mm:ss', {trim: false});
                     }
 
-                    msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
+                    if (_isAnonCall) {
+                        msg = formatted_date + ' - Call from "' + _anonCallerLabel + '" for ' + duration;
+                    } else {
+                        msg = formatted_date + " - " + direction +" " + mediaType + " call ended after " + duration;
+                    }
                     // saveSystemMessage deferred — see [terminated-defer]
                     // block at the end of this case.
                     // Keep the kick label ("Disconnected") even when
@@ -15365,7 +16087,11 @@ class Sylk extends Component {
                         reason = "Call ended after " + duration;
                     }
                 } else {
-                    msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+                    if (_isAnonCall) {
+                        msg = formatted_date + ' - Call from "' + _anonCallerLabel + '" terminated (' + reason + ")";
+                    } else {
+                        msg = formatted_date + " - " + direction +" " + mediaType + " call ended (" + reason + ")";
+                    }
                     // saveSystemMessage deferred — see [terminated-defer]
                     // block at the end of this case.
 
@@ -15540,6 +16266,7 @@ class Sylk extends Component {
                 const _deferredDirection = direction;
                 const _deferredCallUUID = callUUID;
                 const _deferredMsg = msg;
+                const _deferredIsAnon = _isAnonCall;
                 const _deferredMissed = missed;
                 const _deferredDiff = diff;
                 const _deferredMissedSipCallId = _missedSipCallId;
@@ -15597,8 +16324,18 @@ class Sylk extends Component {
                         // row (7th arg = call_id). The local callUUID
                         // (call.id) is a DIFFERENT id and must NOT be
                         // used here.
+                        if (_deferredIsAnon) {
+                            utils.timestampedLog('[call] [anon-history]', _deferredCallUUID,
+                                'inserting call-ended system message into',
+                                _deferredUri, 'call_id=', _deferredSipCallId,
+                                'text=', JSON.stringify(_deferredMsg));
+                        }
                         this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed, 1, null, _deferredSipCallId);
                         _termMark('deferred:saveSystemMessage');
+                    } else if (_deferredIsAnon) {
+                        utils.timestampedLog('[call] [anon-history]', _deferredCallUUID,
+                            'NO call-ended system message inserted for anonymous caller',
+                            _deferredUri, '(empty msg)');
                     }
                     this.updateHistoryEntry(_deferredUri, _deferredCallUUID, _deferredDiff, _terminatedMediaType, _deferredDirection);
                     _termMark('deferred:updateHistoryEntry');
@@ -15822,6 +16559,26 @@ class Sylk extends Component {
 
         if (chatContact) {
             this.setState({selectedContact: chatContact, callContact: chatContact});
+
+            // Re-assert the native active-chat flag. changeRoute('/ready')
+            // at the top of this handler cleared it to null, and
+            // componentDidUpdate only re-asserts setActiveChat when
+            // selectedContact's URI actually CHANGES. Returning to the chat
+            // of the peer we were just calling leaves selectedContact
+            // unchanged (it was set to this contact at call start), so the
+            // CDU re-assert is skipped and the flag would stay null — making
+            // native FCM show push bubbles for messages in the chat that is
+            // on screen. Mirrors the app-foreground restore path.
+            const _activeChatUri = chatContact.uri;
+            if (_activeChatUri) {
+                if (Platform.OS === 'android') {
+                    SylkBridge.setActiveChat(_activeChatUri);
+                    this._nativeResetUnread(_activeChatUri);
+                    this.confirmRead(_activeChatUri, 'call_return_chat');
+                } else {
+                    NativeModules.SharedDataModule.setActiveChat(_activeChatUri);
+                }
+            }
 
             // Same key-exchange kick that selectContact() performs when a
             // chat is opened from the contacts list: if we don't yet have
@@ -17714,7 +18471,7 @@ class Sylk extends Component {
     }
 
     openAppSettings(subject) {
-        Alert.alert(
+        showThemedAlert(
          'Open Sylk App Permissions?',
          subject || '',
          [
@@ -17726,7 +18483,7 @@ class Sylk extends Component {
     }
 
     openDrawSettings() {
-        Alert.alert(
+        showThemedAlert(
          'Incoming calls alert panel',
          'To show the alert panel for incoming calls, Sylk must be allowed to come in front of other apps.',
          [
@@ -19520,8 +20277,53 @@ class Sylk extends Component {
             } else if (event === 'shared_content') {
                 console.log('Media Link: ', url_parts[2]);
                 //this.fetchSharedItemsAndroidAtStart('Linking');
+            } else if (event === 'request') {
+                 // Dedicated request deep link (sylk://request/incoming/<uri>,
+                 // set by the native FCM service for application/sylk-request
+                 // AND for a location-sharing meeting_request invite).
+                 //
+                 // Location requests: show the modal, NEVER navigate.
+                 // Meeting invites: ALSO switch into the sender's chat — the
+                 // live map / sticky invite bubble lives there — with the
+                 // accept modal on top. We can't always tell which it is at
+                 // tap time (the pending entry may be registered a beat later
+                 // by the background push replay), so navigate now if we
+                 // already know it's a meeting, otherwise latch the uri and
+                 // let _noteIncomingMeetingRequest do it when the invite lands.
+                 from = url_parts[4];
+                 // Native tags a meet-up INVITE as sylk://request/meeting/<uri>
+                 // and a location-permission REQUEST as sylk://request/incoming/<uri>.
+                 // A meeting invite always opens the chat + accept modal (matches iOS).
+                 const _isMeetingInvite = (direction === 'meeting');
+                 if (_isMeetingInvite || (this._locationEngine.pendingMeetingRequests[from])) {
+                     utils.timestampedLog('[request] deep-link (request scheme) for', from, '— meeting payload: navigating to chat + modal');
+                     this._navigateToChatForMeetingTap(from);
+                 } else {
+                     utils.timestampedLog('[request] deep-link (request scheme) for', from, '— showing modal (meeting nav latched if invite arrives)');
+                     this._meetingTapNavigateUri = from;
+                     this._meetingTapNavigateTs = Date.now();
+                 }
+                 try { this._presentLocationRequestModalForUri(from); } catch (e) { /* noop */ }
+                 try { this._presentMeetingRequestForUri(from); } catch (e) { /* noop */ }
             } else if (event === 'message') {
 				 from = url_parts[4];
+				 // A request notification tapped on the CURRENT native build
+				 // still deep-links as sylk://message/incoming/<uri>. If this
+				 // contact has a location / meet request in flight (modal up
+				 // or pending), the user tapped a request banner — show the
+				 // modal and do NOT navigate into the chat. (The dedicated
+				 // 'request' scheme above handles it cleanly after a rebuild.)
+				 const _reqInFlight =
+					 (this.state.locationRequestModal && this.state.locationRequestModal.show && this.state.locationRequestModal.fromUri === from)
+					 || (this.state.meetingRequestModal && this.state.meetingRequestModal.show && this.state.meetingRequestModal.fromUri === from)
+					 || (this._locationEngine.pendingLocationRequests[from])
+					 || (this._locationEngine.pendingMeetingRequests[from]);
+				 if (_reqInFlight) {
+					 utils.timestampedLog('[request] deep-link tap for', from, '— request in flight, showing modal instead of navigating');
+					 try { this._presentLocationRequestModalForUri(from); } catch (e) { /* noop */ }
+					 try { this._presentMeetingRequestForUri(from); } catch (e) { /* noop */ }
+					 return;
+				 }
 				 // Show the loading spinner immediately so the user lands
 				 // on a "Opening chat with <uri>…" view instead of the
 				 // contacts list while the boot path (auto-login,
@@ -19779,10 +20581,66 @@ class Sylk extends Component {
 			return;
 		}
 
-		utils.timestampedLog('Incoming [message]', id, 'from', from, 'from push', contentType,
-			'displayName=', displayName || '(none)');
+		// application/sylk-request: the push payload carries the whole
+		// cleartext request body. Render the modal straight from it (open
+		// the sender's chat so the pending-request check surfaces it) and
+		// stop — never a chat bubble. Covers both the active-app push and
+		// the tap-to-open replay via checkPendingActions.
+		if (contentType === 'application/sylk-request') {
+			try {
+				this._handleSylkRequest(from, content, {viaPush: true, messageId: id});
+			} catch (e) {
+				console.log('[request] incomingMessageFromPush sylk-request failed', e && e.message);
+			}
+			return;
+		}
 
-		const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+		// application/sylk-location-sharing: the push is only a WAKE-UP. The map
+		// bubble itself is populated by the delivered / journalled copy of this
+		// message (whichever lands first wins on the msg_id UNIQUE key) and its
+		// coords are decrypted lazily on chat open. Building a bubble from the
+		// push payload here would render the cleartext envelope JSON as a text
+		// message (the coords inside are encrypted and can't be shown anyway),
+		// so we do NOT seed a transient bubble. Just make sure the contact
+		// exists so the tap's selectChatContact can open the chat, then stop.
+		if (contentType === 'application/sylk-location-sharing') {
+			try {
+				await this.waitForContactsLoaded();
+				let _lc = this.lookupContact(from);
+				if (!_lc) {
+					try {
+						const _lnc = this.newContact(from);
+						if (_lnc) {
+							if (displayName && !_lnc.name) _lnc.name = displayName;
+							this.saveSylkContact(from, _lnc, 'incomingMessageFromPush:location');
+						}
+					} catch (e) {}
+				}
+			} catch (e) {
+				console.log('[location] incomingMessageFromPush ensure-contact failed', e && e.message);
+			}
+			// Meet-up INVITE recognition from the push itself. A meeting
+			// invite now rides on application/sylk-location-sharing with
+			// action=="meeting_request" (it used to be its own
+			// application/sylk-request). The server only pushes the INITIAL
+			// request (meeting_update/start are not in its push list), so
+			// action=="meeting_request" on a push is unambiguously the invite.
+			//
+			// Register the pending request straight from the cleartext
+			// envelope so the accept/decline modal has data to show the
+			// instant the user taps the banner — the delivered/journalled
+			// copy that normally drives _noteIncomingMeetingRequest can land
+			// AFTER the tap (see the 11:37 trace where the bubble rendered
+			// only after navigation). The coords/destination live in the
+			// encrypted `value` and are filled in later by the WS/journal
+			// copy; the modal opens fine without them.
+			this._registerMeetingRequestFromPush(from, content);
+			return;
+		}
+
+		utils.timestampedLog('Incoming [message]', id, 'from', from, 'from push', contentType, 'displayName=', displayName || '(none)');
+
+		const is_encrypted = isPgpEncryptedBody(content);
 
 		const _slice = this._messagesFor(from);
 		const _loaded = !!(this.state.selectedContact
@@ -20925,12 +21783,32 @@ class Sylk extends Component {
             const normalize = (k) => (k ? k.replace(/\r/g, '').trim() : '');
             const incomingKey = normalize(contact.publicKey);
             const existing = this.contactIndex ? this.contactIndex[uri] : null;
-            const existingKey = normalize(existing && existing.publicKey);
+            let existingKey = normalize(existing && existing.publicKey);
+
+            // DB FALLBACK - contactIndex is rebuilt from allContacts, so a
+            // contact just evicted from memory (e.g. tombstoned by the
+            // address-book orphan sweep, then re-imported from the keyless
+            // XCAP snapshot) has NO in-memory key to preserve even though the
+            // real key still sits in its contacts row. Read the authoritative
+            // DB value so a keyless re-import can't blank a key that was never
+            // actually deleted (2026-07-30 incident: support@sylk.link lost
+            // its key during the mass recreate). Only when we have no incoming
+            // key and memory is empty; never overrides an explicit delete.
+            if (!incomingKey && !existingKey && origin !== 'deletePublicKey') {
+                try {
+                    const _row = await this.ExecuteQuery(
+                        'SELECT public_key FROM contacts WHERE account = ? AND lower(uri) = lower(?) LIMIT 1',
+                        [this.state.accountId, uri]);
+                    if (_row && _row.rows && _row.rows.length) {
+                        existingKey = normalize(_row.rows.item(0).public_key);
+                    }
+                } catch (e) { /* non-fatal: fall through with empty existingKey */ }
+            }
 
             if (!incomingKey && existingKey && origin !== 'deletePublicKey') {
                 console.warn('save [contact]: preserving existing public key for',
                     uri, '(origin=', origin, ') — incoming contact had no key');
-                contact.publicKey = existing.publicKey;
+                contact.publicKey = existingKey;
             } else if (incomingKey && existingKey && incomingKey !== existingKey) {
                 utils.timestampedLog('save [contact]: public key CHANGED for',
                     uri, '(origin=', origin, ')');
@@ -21068,8 +21946,7 @@ class Sylk extends Component {
     async updateSylkContact(contact, origin=null) {
 		const uri = contact.uri;
 
-        /*console.log('updateSylkContact', contact?.timestamp, contact.id, 'origin', origin,
-            'lastMessage=' + JSON.stringify(contact.lastMessage));
+        /*console.log('updateSylkContact', contact?.timestamp, contact.id, 'origin', origin);
             */
 
         let unixTime = Math.floor(contact.timestamp / 1000);
@@ -22095,14 +22972,36 @@ class Sylk extends Component {
         this.saveConferenceMessage(this.state.currentCall.remoteIdentity.uri, message);
     }
 
-    _sendMessage(uri, text, id, contentType, timestamp) {
+    _sendMessage(uri, text, id, contentType, timestamp, skipJournal=false, skipDisposition=false) {
         // Send outgoing messages
         if (!this.canSend()) {
             return;
         }
 
-        console.log('Send', contentType, 'message', id, 'to', uri);
-        let message = this.state.account.sendMessage(uri, text, contentType, {id: id, timestamp: timestamp}, (error) => {
+        // Surface the location-sharing action so a meet stream is legible in the
+        // log (meeting_request vs meeting_update vs meeting_end vs meeting_reject).
+        let _act = '';
+        if (contentType === 'application/sylk-location-sharing' && typeof text === 'string') {
+            try {
+                const _o = JSON.parse(text);
+                if (_o && _o.action) _act = 'action=' + _o.action;
+                // Stamp a protocol version on EVERY location payload — all
+                // application/sylk-location-sharing messages funnel through here
+                // (value-bearing ticks AND coordinate-free signals), so this is
+                // the single point that covers them. Idempotent.
+                if (_o && _o.version === undefined) {
+                    _o.version = '1.0';
+                    text = JSON.stringify(_o);
+                }
+            } catch (e) {}
+        }
+        console.log('Send', contentType, _act, 'message', id, 'to', uri,
+            'disposition=' + (skipDisposition ? 'skip' : 'request'),
+            (skipJournal ? 'journal=skip' : ''));
+        const _sendOpts = {id: id, timestamp: timestamp};
+        if (skipJournal) _sendOpts.skipJournal = true;
+        if (skipDisposition) _sendOpts.skipDisposition = true;
+        let message = this.state.account.sendMessage(uri, text, contentType, _sendOpts, (error) => {
             if (error) {
                 console.log('Message', id, 'sending error:', error);
                 this.outgoingMessageStateChanged(id, 'failed');
@@ -22112,7 +23011,7 @@ class Sylk extends Component {
                     this.renderSystemMessage(uri, status, 'incoming');
                 }
             } else {
-				console.log('Sent', contentType, 'message', id, 'to', uri);
+				//console.log('Sent', contentType, _act, 'message', id, 'to', uri);
             }
         });
         
@@ -22122,6 +23021,259 @@ class Sylk extends Component {
         //message.on('stateChanged', (oldState, newState) => {this.outgoingMessageStateChanged(message.id, oldState, newState)})
     }
 
+    // application/sylk-location-sharing: encrypt ONLY the coordinates, keep the
+    // lifecycle fields cleartext. `content` = the encrypted coords blob (a real
+    // PGP message, so the normal decrypt pipeline handles it); the cleartext
+    // fields go into metadata / related_action / related_msg_id via
+    // saveOutgoingMessage, so tagging/filtering never needs decryption.
+    // message.metadata.value holds the plaintext coords.
+    async _sendLocationSharing(uri, message) {
+        const _meta0 = message.metadata || {};
+        // Stop signal: a plain live share ended. It carries NO coordinates
+        // (nothing to encrypt), just the cleartext lifecycle fields, so the peer
+        // can post an explicit "stopped sharing" note. Ship the fields as-is and
+        // return — no encryption, no bubble, no stored row (the sender's own
+        // "You stopped sharing…" note is emitted by stopLocationSharing).
+        if (_meta0.action === 'location_stop'
+                || _meta0.action === 'meeting_end'
+                || _meta0.action === 'meeting_reject'
+                || _meta0.action === 'location_request'
+                || _meta0.action === 'meeting_request'
+                || _meta0.action === 'meeting_accept') {
+            // Coordinate-less signals: location_stop (plain live ended),
+            // meeting_end ("Until we meet" torn down) and location_request
+            // ("please share your location"). Nothing to encrypt — ship the
+            // cleartext lifecycle fields as-is (carrying the whole object minus
+            // any value keeps meeting_session_id / reason / requestId etc.) so the
+            // peer can act and the journal / contact filter can see the signal
+            // without decrypting.
+            const mId = message._id;
+            const fields = Object.assign({}, _meta0);
+            delete fields.value;
+            delete fields.timestamp;    // from the SIP envelope
+            delete fields.uri;          // from the SIP envelope
+            fields.action = _meta0.action;
+            // sessionId ties the signal to its map — the same grouping key the
+            // ticks use. messageId is kept alongside it for the meet handlers
+            // that still read it (updateMetadataFromRemote / meeting_end wipe).
+            const _sigSid = _meta0.sessionId || _meta0.messageId || _meta0.meeting_session_id;
+            if (_sigSid) fields.sessionId = _sigSid;
+            fields.messageId = _meta0.messageId || mId;
+            // Cleartext sending-device id on every coord-free location/meet
+            // signal (meeting_request/accept/end/reject, location_request/stop)
+            // so the acting device is always identifiable on the wire.
+            if (this.deviceId) fields.deviceId = this.deviceId;
+            // Our OWN track ended — mark it so our outgoing bubble shows
+            // "Track ended" and any straggler self-echo ticks are dropped.
+            if (_meta0.action === 'location_stop') {
+                try { this._endLocationTrack(uri, _sigSid || fields.messageId, _meta0.reason, mId, message.createdAt, 'outgoing'); } catch (e) {}
+            }
+            this._sendMessage(uri, JSON.stringify(fields), mId, 'application/sylk-location-sharing', message.createdAt);
+            return;
+        }
+        const contact = this.lookupContact(uri);
+        let public_keys;
+        if (contact && contact.publicKey && this.state.keys) {
+            public_keys = this.state.keys.public + "\n" + contact.publicKey;
+        }
+        const meta = message.metadata || {};
+        const coords = meta.value;
+        if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+            utils.timestampedLog('[location] _sendLocationSharing: no usable coords', message._id);
+            return;
+        }
+        if (!public_keys || !this.state.keys || this.state.keyDifferentOnServer) {
+            // No usable key at wire-send time. The key is verified once before a
+            // session starts, so reaching here means it went away mid-session —
+            // don't ship this tick, and END the session (via the manager) rather
+            // than letting the timer spin failing ticks that can never encrypt.
+            this.renderSystemMessage(uri, 'Cannot share location: no encryption key for this contact', 'outgoing');
+            try {
+                const _m = message.metadata || {};
+                const _sid = _m.sessionId || _m.messageId || message._id;
+                const _isMeet = !!(_m.meeting_request || _m.role || _m.meeting_session_id);
+                if (this._locationEngine && typeof this._locationEngine.stopLocationSharing === 'function') {
+                    this._locationEngine.stopLocationSharing(uri, { sessionId: _sid, meet: _isMeet, reason: 'no-key', silent: true });
+                }
+            } catch (e) { /* best-effort teardown */ }
+            return;
+        }
+        const mId = message._id;
+        // Geo payload to encrypt: the coordinates plus any coordinate-derived
+        // field. Only `destination` rides the wire today (peerCoords / distance
+        // are computed locally on each device). Coords-only keeps the bare-coords
+        // shape (unchanged for one-shot / plain live); when a destination is
+        // present we wrap both in { value, destination } so the receiver can tell
+        // the two shapes apart on decrypt.
+        const _destCoords = (meta.destination
+                && typeof meta.destination.latitude === 'number'
+                && typeof meta.destination.longitude === 'number')
+            ? meta.destination : null;
+        const _payloadStr = _destCoords
+            ? JSON.stringify({ value: coords, destination: _destCoords })
+            : JSON.stringify(coords);
+        // DEBUG: dump the exact plaintext geo payload BEFORE encryption so we
+        // can confirm whether `destination` is actually packed into the blob
+        // the sender ships (the wire only shows the ciphertext).
+        try {
+            //console.log('[location][debug] ENCRYPT payload', mId, 'to', uri, 'hasDestination=', !!_destCoords, 'meta.destination=', JSON.stringify(meta.destination || null), 'plaintext=', _payloadStr);
+        } catch (e) {}
+        let valueBlob;
+        try {
+            valueBlob = await OpenPGP.encrypt(_payloadStr, public_keys);
+        } catch (error) {
+            this.renderSystemMessage(uri, 'Cannot encrypt location', 'outgoing');
+            return;
+        }
+        // Cleartext lifecycle fields = the whole tick MINUS the geo (value +
+        // destination), which live in the encrypted blob. Copying the object
+        // (minus geo) carries the "Until we meet" handshake fields
+        // (meeting_request, in_reply_to, privacyDeferred, dummy,
+        // privacyDeferredRadiusMeters) through automatically — that's what lets
+        // the receiver isolate/filter a meet session without decrypting.
+        const fields = Object.assign({}, meta);
+        delete fields.value;
+        delete fields.destination;
+        delete fields.action;   // signals only; a value-bearing tick is 'location'
+        fields.messageId = meta.messageId || mId;
+        fields.timestamp = meta.timestamp || message.createdAt;
+        fields.uri = uri;
+        // Owner device id on the stored row too (this device is broadcasting),
+        // so the SQL-derived active-sessions list names us as the owner.
+        if (this.deviceId) fields.deviceId = this.deviceId;
+        // Wire envelope = cleartext fields + encrypted geo blob.
+        // Slim wire: ship only what the receiver can't recover from the SIP
+        // envelope. messageId (the session/origin id, shared by every tick),
+        // timestamp and uri are envelope-derivable; and a value-bearing
+        // tick with no `expires` and no meet flag whose action is a one-shot
+        // ships the encrypted coordinates ONLY.
+        // Everything else present is load-bearing: messageId on live/meet so the
+        // trail groups on the peer, expires for the live window, and the meet /
+        // privacy flags.
+        // Every location message carries an explicit `action` naming its
+        // purpose — location_once / location / location_update / meeting_request
+        // / meeting_accept — computed ONCE here by the sender (which knows the
+        // type) so the receiver stores it as related_action with no re-derivation.
+        // The rest of the wire is slim: messageId groups a session on the peer
+        // (load-bearing on updates; omitted on a one-shot whose id == the
+        // envelope id), expires is the live window, in_reply_to is the request-id
+        // value, meeting_request is re-stamped on every meet tick, and the privacy
+        // flags ride when set. timestamp / uri come from the SIP envelope.
+        const _wireAction = this._locationEngine._locationRelatedAction(fields);
+        let wire = { action: _wireAction, value: valueBlob };
+        // Cleartext device id of the SENDING device (stable per-install uuid).
+        // Rides unencrypted on every coord-bearing location/meet tick so peers
+        // and our own sibling devices can tell WHICH device is actively sharing
+        // — no more guessing from timing/carbon heuristics.
+        if (this.deviceId) wire.deviceId = this.deviceId;
+        if (!fields.one_shot) {
+            // sessionId groups every tick of one map (the origin id). `action`
+            // already says origin vs update, so this one field is all the wire
+            // needs. A one-shot has no trail, so it omits it (its session id ==
+            // the envelope id).
+            wire.sessionId = fields.messageId;
+            if (fields.expires) wire.expires = fields.expires;
+            if (fields.meeting_request) wire.meeting_request = true;
+            if (fields.role) wire.role = fields.role;
+            if (fields.privacyDeferred) wire.privacyDeferred = true;
+            if (fields.privacyDeferredRadiusMeters != null) wire.privacyDeferredRadiusMeters = fields.privacyDeferredRadiusMeters;
+            if (fields.dummy) wire.dummy = true;
+        }
+        // requestId correlates a one-shot ANSWER to the location_request it
+        // replies to (rides even on a one-shot, which omits sessionId).
+        if (fields.requestId) wire.requestId = fields.requestId;
+        // DEBUG (location one-shot bring-up): dump the wire ENVELOPE only —
+        // the encrypted `value` blob is replaced with a placeholder so the log
+        // stays readable (the plaintext geo is already dumped by the ENCRYPT
+        // payload line above). Remove once the send/receive round-trip is verified.
+        try {
+            const _wireSafe = Object.assign({}, wire, {
+                value: '<pgp ' + ((valueBlob || '').length) + 'b>',
+            });
+            //console.log('[location][debug] SEND', mId, 'to', uri, 'wire=', JSON.stringify(_wireSafe));
+        } catch (e) {}
+        // Immediate local render. Reconstruct the plaintext content (cleartext
+        // fields + decrypted geo) so it matches the shape the old
+        // sylk-message-metadata path produced — meet-me logic included.
+        const _localContent = Object.assign({}, fields, { value: coords, action: 'location' });
+        if (_destCoords) _localContent.destination = _destCoords;
+        if (fields.one_shot) {
+            // Static one-shot: a single map bubble, no trail / update-in-place.
+            try { this._injectLocationBubble(uri, Object.assign({}, _localContent, { author: this.state.accountId }), fields.messageId); } catch (e) {}
+        } else {
+            // Live / meet share: the origin tick creates the bubble and update
+            // ticks refresh it in place. Route the sender's own render through
+            // handleMessageMetadata (no `author` = our outgoing echo) so it drives
+            // the same _injectLocationBubble + messagesMetadata + meet-session
+            // machinery the old sylk-message-metadata path used.
+            try { this.handleLocationPayload(uri, JSON.stringify(_localContent)); } catch (e) {}
+        }
+        // Persist PLAINTEXT coords locally (stored at encrypted=2), same model as
+        // regular messages — the wire still ships the encrypted `wire.value` blob
+        // (sent below). Reload reads this plaintext content directly, no decrypt.
+        message.text = _payloadStr;
+        message.metadata = fields;
+        message.contentType = 'application/sylk-location-sharing';
+        const _isMeetTick = meta.meeting_request === true
+            || !!meta.role
+            || meta.privacyDeferred === true
+            || meta.dummy === true
+            || !!meta.destination;
+        const _isUpdateTick = meta.isUpdate === true;
+        // MEET = LAST-KNOWN LOCATION ONLY, NO TRAIL. A meet UPDATE tick refreshes
+        // OUR OWN origin row's coords IN PLACE (keyed by the session id via
+        // related_msg_id + our outgoing direction) instead of INSERTing a new
+        // trail row. This keeps exactly one row per leg, so the reload has a
+        // single deterministic entry — no trail, no "pick best of many ticks",
+        // no role-dedup. Plain-live shares still append trail rows (playback).
+        if (_isMeetTick && _isUpdateTick) {
+            const _sid = fields.messageId;   // session id
+            // TWO-ROW MEET MODEL (outgoing) — last-known only, no trail. Our own
+            // meeting_update row is SEPARATE from our meeting_start (origin) row
+            // and is upserted IN PLACE, located by session (related_msg_id) +
+            // related_action='meeting_update' + our outgoing direction — NOT by
+            // msg_id. So the row keeps its own real msg_id (from the first update
+            // that inserted it) and never collides; the meeting_start origin
+            // (different related_action) is never overwritten. Both legs coexist.
+            const _oTsRaw = message.createdAt;
+            const _oUnix = Math.floor((_oTsRaw instanceof Date ? _oTsRaw.getTime() : _oTsRaw) / 1000);
+            try {
+                const _ur = await this.ExecuteQuery(
+                    'UPDATE messages SET content = ?, encrypted = 2, unix_timestamp = ?, timestamp = ? '
+                    + "WHERE account = ? AND related_msg_id = ? AND related_action = 'meeting_update' AND direction = ?",
+                    [_payloadStr, _oUnix, JSON.stringify(_oTsRaw), this.state.accountId, _sid, 'outgoing']);
+                if (!_ur || !_ur.rowsAffected) {
+                    // First own update for this session — insert with its real
+                    // msg_id (message._id) via the normal outgoing store.
+                    this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+                }
+            } catch (e) {
+                console.log('[location] meet update-row (outgoing) failed', e && e.message ? e.message : e);
+            }
+        } else {
+            this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+        }
+        // meeting_update is LIVE-ONLY: the server does not journal it (skipJournal),
+        // so it is delivered only over the live websocket while both sides are
+        // running — an offline peer never gets a trail tick. The CLIENT still
+        // stores it in SQL so the trail renders when the chat is opened, and the
+        // whole session (origins + updates) is wiped at meet-end. Plain-live
+        // location_update is NOT a meet tick, so it stays journaled (persisted
+        // trail for playback). Disposition is suppressed on every update tick —
+        // only the initial map bubble sends `displayed`.
+        const _skipJournal = _isMeetTick && _isUpdateTick;
+        // Disposition (read receipts) is requested only on the ORIGIN tick
+        // (location_start / meeting_start / location_once) so the sender learns
+        // the peer saw the share; suppressed on every UPDATE tick. Keyed off the
+        // explicit wire action (the authoritative lifecycle marker). The
+        // receiver ALSO refuses to send a
+        // 'displayed' receipt for *_update rows (confirmRead) — the effective
+        // enforcement if the server relays the request regardless.
+        const _skipDisposition = (_wireAction === 'location_update' || _wireAction === 'meeting_update');
+        // Ship the envelope on the wire.
+        this._sendMessage(uri, JSON.stringify(wire), mId, 'application/sylk-location-sharing', message.createdAt, _skipJournal, _skipDisposition);
+    }
+
     async sendMessage(uri, message, contentType='text/plain') {
         message.pending = true;
         message.sent = false;
@@ -22129,14 +23281,19 @@ class Sylk extends Component {
         message.direction = 'outgoing';
 
 		await this.waitForContactsLoaded();
-
-        console.log('--- sendMessage', uri, message._id, contentType);
-        //console.log(message);
         
         if (!message._id) {
 		    console.log('--- sendMessage failed for missing id');
  			return;
         }
+
+        if (contentType === 'application/sylk-location-sharing') {
+            await this._sendLocationSharing(uri, message);
+            return;
+        }
+
+        console.log('--- sendMessage', uri, message._id, contentType);
+        //console.log(message);
 
         // Wire-size cap: split oversized USER text into several independent
         // messages. text/html is split at element boundaries (whole "chapters"),
@@ -22223,54 +23380,14 @@ class Sylk extends Component {
 			    this.handleMessageMetadata(uri, message.content);
 			}
 
-			// Bump the contact's "last activity" on the ORIGIN tick of a
-			// location share so the conversation floats to the top of the
-			// contacts list, same as when you send a normal message.
-			// Follow-up ticks (metadataId set) intentionally skip this to
-			// avoid thrashing saveSylkContact every 60s.
-			// buildLastMessage already returns null for action === 'location',
-			// so contact.lastMessage won't get overwritten by the JSON blob.
-			if (message.metadata
-				&& message.metadata.action === 'location'
-				&& !message.metadata.metadataId) {
-				this.saveOutgoingChatUri(uri, message);
-				if (this.state.selectedContact && this.state.selectedContact.uri === uri) {
-					const bumped = {
-						...this.state.selectedContact,
-						timestamp: message.createdAt,
-						direction: 'outgoing',
-						lastCallDuration: null,
-					};
-					this.setState({selectedContact: bumped});
-				}
+			// Non-location metadata (rotation, label, reply, reactions, consumed,
+			// peaks, …) ships as plaintext. Location no longer travels as
+			// application/sylk-message-metadata — it uses the encrypted
+			// application/sylk-location-sharing path (_sendLocationSharing).
+			if (message.metadata.action != 'consumed' && message.metadata.action != 'autoanswer') {
+				this.saveOutgoingMessage(uri, message, 0, contentType);
 			}
-
-			// Encrypt location metadata the same way regular text messages are
-			// encrypted. Other metadata actions (consumed, autoanswer, label,
-			// reply, rotation, etc.) continue shipping as plaintext.
-			const isLocationMetadata = message.metadata && message.metadata.action === 'location';
-			if (isLocationMetadata && public_keys && this.state.keys && !this.state.keyDifferentOnServer) {
-				await OpenPGP.encrypt(message.text, public_keys).then((encryptedMessage) => {
-					utils.timestampedLog('[message] Outgoing location metadata', message._id, 'encrypted', 'to', uri);
-					if (message.metadata.action != 'consumed' && message.metadata.action != 'autoanswer') {
-						this.saveOutgoingMessage(uri, message, 1, contentType);
-					}
-					this._sendMessage(uri, encryptedMessage, message._id, contentType, message.createdAt);
-				}).catch((error) => {
-					console.log('Failed to encrypt location metadata:', error);
-					let error_message = error.message.startsWith('stringResponse') ? error.message.slice(43, error.message.length - 1) : error.message;
-					this.renderSystemMessage(uri, error_message, 'outgoing');
-					if (message.metadata.action != 'consumed' && message.metadata.action != 'autoanswer') {
-						this.saveOutgoingMessage(uri, message, 0, contentType);
-					}
-					this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
-				});
-			} else {
-				if (message.metadata.action != 'consumed' && message.metadata.action != 'autoanswer') {
-					this.saveOutgoingMessage(uri, message, 0, contentType);
-				}
-				this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
-			}
+			this._sendMessage(uri, message.text, message._id, contentType, message.createdAt);
 			return;
 		}
 		
@@ -23560,7 +24677,7 @@ class Sylk extends Component {
     // retention policy ("destroyed after meetup" for meeting shares, 7 days
     // for fixed-duration shares and location announcements).
     async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
-		console.log('saveOutgoingMessage', message._id, content_type);
+		//console.log('saveOutgoingMessage', message._id, content_type);
 
         // sent -> null
         // pending -> 1
@@ -23579,79 +24696,17 @@ class Sylk extends Component {
 				related_msg_id = message.metadata.messageId;
 				related_action = message.metadata.action;
 			}
+			if (content_type === 'application/sylk-location-sharing') {
+				// related_action = the row's purpose (location / location_once /
+				// meeting_request / meeting_accept / location_update); related_msg_id
+				// = the session origin id so the reload query groups the trail.
+				related_action = this._locationEngine._locationRelatedAction(message.metadata);
+				related_msg_id = message.metadata.messageId;
+			}
 
 			let ts =  message.createdAt;
 			let unix_timestamp = Math.floor(ts / 1000);
 
-			// Live-location sharing — TWO behaviours depending on the
-			// session kind:
-			//
-			//   • MEET sessions (meeting_request:true OR in_reply_to
-			//     set): one SQL row per session, follow-up ticks
-			//     UPDATE the origin row's content blob in place. The
-			//     wipe-on-meet semantics require all session traces
-			//     to disappear together; storing intermediate points
-			//     would defeat that promise.
-			//
-			//   • PLAIN time shares (4h / 8h / 24h / 'once'): keep
-			//     EVERY tick as its own SQL row, related_msg_id
-			//     pointing back at the origin via the existing
-			//     `related_msg_id` column. The trail is what enables
-			//     later replay / playback — both parties retain it
-			//     until the user explicitly deletes the bubble (in
-			//     which case deleteMessage scrubs related_msg_id =
-			//     origin too) or the 7-day expire purges it.
-			if (content_type === 'application/sylk-message-metadata'
-				&& message.metadata
-				&& message.metadata.action === 'location') {
-				// Drop ticks without usable coordinates BEFORE touching SQL.
-				// Mirrors the wire-side guard in sendLocationMetadata —
-				// keeps the persisted blob at the LAST KNOWN good
-				// position so chat reload always shows real coords
-				// rather than a "Locating…" placeholder.
-				const v = message.metadata.value;
-				if (!v
-						|| typeof v.latitude !== 'number'
-						|| typeof v.longitude !== 'number') {
-					console.log('[location] saveOutgoingMessage: skipping null-coord tick',
-						message && message._id);
-					return;
-				}
-				const isMeetSession = message.metadata.meeting_request === true
-					|| !!message.metadata.in_reply_to;
-				if (message.metadata.metadataId) {
-					if (isMeetSession) {
-						const originMsgId = message.metadata.messageId;
-						const content = message.text; // JSON blob with latest coords
-						const metadataJson = JSON.stringify(message.metadata);
-						this.ExecuteQuery(
-							"update messages set content = ?, metadata = ?, unix_timestamp = ?, timestamp = ? where msg_id = ? and account = ?",
-							[content, metadataJson, unix_timestamp, JSON.stringify(ts), originMsgId, this.state.accountId]
-						).then((result) => {
-							const rows = result && result.rowsAffected;
-							if (!rows) {
-								console.log('[location] origin row missing for', originMsgId,
-									'— update tick will not persist until origin is saved');
-							}
-						}).catch((error) => {
-							console.log('[location] UPDATE SQL error:', error && error.message ? error.message : error);
-						});
-						return;
-					}
-					// Plain time share — fall through to the normal
-					// INSERT path with related_msg_id pointing at the
-					// origin, so the row joins the trail rather than
-					// landing as an orphan or overwriting the origin.
-					message.related_msg_id = message.metadata.messageId;
-					message.related_action = 'location_update';
-					related_msg_id = message.related_msg_id;
-					related_action = message.related_action;
-				}
-				if (!message.metadata.metadataId) {
-					console.log('[location] INSERT SQL origin row (saveOutgoingMessage)', message._id,
-						'targets messageId=', message.metadata.messageId);
-				}
-			}
 
 			// Time-sensitive rows stamp an `expire` unix-seconds so
 			// purgeExpiredMessages() can clean up after a crash/force-kill.
@@ -23672,40 +24727,37 @@ class Sylk extends Component {
 			let expire = 0;
 			const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
 			const nowSecForExpire = Math.floor(Date.now() / 1000);
-			const isLocationMeta = content_type === 'application/sylk-message-metadata'
-				&& message.metadata
-				&& message.metadata.action === 'location';
 			const isLocationAnnouncement = message.metadata
 				&& message.metadata.locationAnnouncement === true;
-			const isMeetupShare = isLocationMeta
-				&& (message.metadata.meeting_request === true
-					|| !!message.metadata.in_reply_to);
-			if (isLocationMeta) {
-				if (isMeetupShare) {
-					// Keep existing behaviour — session-end wipe.
-					if (message.metadata.expires) {
-						const expMs = new Date(message.metadata.expires).getTime();
-						if (expMs > 0) expire = Math.floor(expMs / 1000);
-					}
-				} else {
-					// Plain timed share: live for at most 7 days from now.
-					expire = nowSecForExpire + SEVEN_DAYS_SEC;
-				}
-			} else if (isLocationAnnouncement) {
+			if (isLocationAnnouncement) {
 				// Announcement only ever goes out for non-meetup shares
 				// (NavigationBar.startLocationSharing gates it on
 				// kind !== 'meetingRequest' / 'meetingAccept'), so it
 				// always uses the 7-day retention window.
 				expire = nowSecForExpire + SEVEN_DAYS_SEC;
+			} else if (content_type === 'application/sylk-location-sharing') {
+				expire = nowSecForExpire + SEVEN_DAYS_SEC;
 			}
 
 			const _cat = this._classifyMessageCategory(content_type, message.metadata, related_action, message.text);
+			// For location shares store only the non-redundant metadata; the rest
+			// is reconstructed from the columns on read.
+			const _metaForStore = content_type === 'application/sylk-location-sharing'
+				? this._locationEngine._locationStoredMetadata(message.metadata || {})
+				: message.metadata;
 			// `message.text` here is the value being persisted in
 			// the content column — for outgoing encrypted rows
 			// that's the CIPHERTEXT, not the plaintext. We can't
 			// reliably probe for URLs, so leave has_link NULL and
 			// let the lazy decrypt-time update path fill it in.
-			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(message.metadata), this.state.accountId, uri, "outgoing", "1", encrypted, related_msg_id, related_action, expire, _cat, null];
+			// Location shares are delivered out-of-band via _sendMessage, never via
+			// the pending-resend queue, and their pending flag is never cleared
+			// (no delivery-state callback). Store them pending=0 so they don't
+			// accumulate as a phantom retry backlog that sendPendingMessages would
+			// re-upload — the root of the multi-device location send storm. Every
+			// other content type keeps the pending=1 send-retry semantics.
+			const _pendingFlag = content_type === 'application/sylk-location-sharing' ? "0" : "1";
+			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(_metaForStore), this.state.accountId, uri, "outgoing", _pendingFlag, encrypted, related_msg_id, related_action, expire, _cat, null];
 			this._normalizeInsertUris(params, 7, 8);
 			await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted, related_msg_id, related_action, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
 
@@ -23856,7 +24908,9 @@ class Sylk extends Component {
 
         try {
             await this.ExecuteQuery(query, params);
-			utils.timestampedLog('[message] Message', id, '[imdn] state changed to', state);
+            if (state !== 'accepted') {
+				utils.timestampedLog('[message] Message', id, '[imdn] state changed to', state);
+			}
 
             if (file_transfer) {
                 this.updateFileTransferBubble(file_transfer);
@@ -23951,35 +25005,33 @@ class Sylk extends Component {
 			const target = msgList.find(m => m._id === id);
 			if (target && target.contentType === 'application/sylk-live-location') {
 				_wasLocationBubble = true;
-				const navBar = this.navigationBarRef && this.navigationBarRef.current;
 				// Only stop the active share when the deleted bubble IS
 				// the active session's origin. Plain-share trail rows
 				// keep older bubbles around long after their session
 				// ended (origins live for the 7-day expire window) —
 				// deleting one of those should NOT tear down whichever
 				// share happens to be currently sharing to the same
-				// uri. Compare against locationTimers[uri].originMetadataId
-				// (set by sendLocationMetadata's atomic origin
+				// uri. Compare against outgoingLocationSessions[uri].originLocationId
+				// (set by sendLocationPayload's atomic origin
 				// promotion). If there's no active timer, or the active
 				// origin id doesn't match, leave the live session alone.
-				const liveEntry = navBar
-					&& navBar.locationTimers
-					&& navBar.locationTimers[uri];
-				const liveOriginId = liveEntry && liveEntry.originMetadataId;
-				const deletedIsActive = liveOriginId && liveOriginId === id;
-				if (deletedIsActive
-						&& navBar
-						&& typeof navBar.stopLocationSharing === 'function') {
-					utils.timestampedLog('[location] deleteMessage: stopping active sharing for', uri,
-						'because origin bubble', id, 'was deleted');
-					navBar.stopLocationSharing(uri, {
+				// Match across BOTH stores: the deleted origin may belong to a
+				// plain share or a meet leg. _entryByOrigin resolves by origin id
+				// (and meet meetingSessionId), so we stop the exact session whose
+				// origin bubble was deleted and leave any other live session be.
+				const liveEntry = this._locationEngine._entryByOrigin(uri, id);
+				const liveOriginId = liveEntry && liveEntry.originLocationId;
+				const deletedIsActive = !!liveEntry;
+				if (deletedIsActive) {
+					utils.timestampedLog('[location] deleteMessage: stopping active sharing for', uri, 'because origin bubble', id, 'was deleted');
+					this._locationEngine.stopLocationSharing(uri, {
 						reason: 'deleted',
 						deletedId: id,
+						sessionId: liveEntry.originLocationId,
+						meet: this._locationEngine._isMeetKind(liveEntry.kind),
 					});
 				} else if (target) {
-					console.log('[location] deleteMessage: deleted bubble', id,
-						'is not the active session for', uri,
-						'(active=', liveOriginId || '(none)', ') — leaving live share alone');
+					console.log('[location] deleteMessage: deleted bubble', id, 'is not the active session for', uri, '(active=', liveOriginId || '(none)', ') — leaving live share alone');
 				}
 			}
 		} catch (e) {
@@ -23998,7 +25050,7 @@ class Sylk extends Component {
 		// requester origin) — the journal `removeMessage` only
 		// references that one id. A1 (broadcaster) honours it for
 		// its local copy, but the active-share gate in deleteMessage
-		// keys on `liveEntry.originMetadataId`, which on A1 is the
+		// keys on `liveEntry.originLocationId`, which on A1 is the
 		// REQUESTER origin id (a different id) — so A1's
 		// stopLocationSharing never fires and the timer keeps
 		// running.
@@ -24015,16 +25067,16 @@ class Sylk extends Component {
 			if (target
 					&& target.contentType === 'application/sylk-live-location'
 					&& target.metadata
-					&& this.meetingSessions) {
+					&& this._locationEngine.meetingSessions) {
 				const _md = target.metadata;
 				let _sessionId = null;
 				if (_md.meeting_request === true) {
 					_sessionId = _md.messageId;
-				} else if (_md.in_reply_to) {
-					_sessionId = _md.in_reply_to;
+				} else if (_md.role === 'invited') {
+					_sessionId = _md.messageId;
 				}
 				const _session = _sessionId
-					? this.meetingSessions[_sessionId]
+					? this._locationEngine.meetingSessions[_sessionId]
 					: null;
 				if (_session) {
 					const _siblingId = (id === _session.requesterOriginId)
@@ -24033,19 +25085,12 @@ class Sylk extends Component {
 					if (_siblingId && _siblingId !== id
 							&& !message_ids.includes(_siblingId)) {
 						message_ids.push(_siblingId);
-						utils.timestampedLog(
-							'[location] deleteMessage: cascading to session sibling',
-							'session=' + _sessionId,
-							'deleted=' + id,
-							'sibling=' + _siblingId,
-							'(reason: meet pair, broadcaster anchor may differ from visible bubble)'
-						);
+						utils.timestampedLog('[location] deleteMessage: cascading to session sibling', 'session=' + _sessionId, 'deleted=' + id, 'sibling=' + _siblingId, '(reason: meet pair, broadcaster anchor may differ from visible bubble)');
 					}
 				}
 			}
 		} catch (e) {
-			console.log('[location] deleteMessage session-pair cascade failed',
-				e && e.message ? e.message : e);
+			console.log('[location] deleteMessage session-pair cascade failed', e && e.message ? e.message : e);
 		}
 
         if (after) {
@@ -24084,7 +25129,7 @@ class Sylk extends Component {
             }
         }
         
-        console.log('messages to remove', message_ids);
+        // console.log('messages to remove', message_ids);
 
         for (let j = 0; j < message_ids.length; j++) {
             var _id = message_ids[j];
@@ -24094,8 +25139,13 @@ class Sylk extends Component {
 
             // TODO delete replyIds as well
             if (remote) {
+               // Journal removeMessage for the ORIGIN only. For a location
+               // track the server now cascades: removing the origin also
+               // purges every sibling tick (same sessionId) from its journal
+               // (SylkServer storage.removeMessage), and the receiver cascades
+               // locally by related_msg_id when it gets this one removeMessage.
+               // So there's no need to enumerate + journal each trail tick.
                this.addJournal(_id, 'removeMessage', {uri: uri});
-               //console.log('add journal 1');
             }
         }
 
@@ -24117,7 +25167,7 @@ class Sylk extends Component {
 			for (let j = 0; j < message_ids.length; j++) {
 				const _did = message_ids[j];
 				if (_wasLocationBubble) {
-					this._deletedLocationBubbleIds.add(_did);
+					this._locationEngine._deletedLocationBubbleIds.add(_did);
 					_addedTombstone = true;
 				}
 				this._pruneMeetingHandshakeStateForId(_did);
@@ -24137,51 +25187,24 @@ class Sylk extends Component {
     }
 
     async deleteMetadataForMessage(id) {
-        //console.log('deleteMetadataForMessage', id);
-		// (1) Trail rows: their related_msg_id points at the origin.
-		let query = "delete FROM messages where account = ? and related_msg_id = ?";
-		let params = [this.state.accountId, id];
-		await this.ExecuteQuery(query, params).then((results) => {
-		    if (results.rowsAffected) {
-				console.log('Deleted', results.rowsAffected, 'trail rows for', id);
-			}
+		// (delete-cascade pre-scan diagnostic removed — the cascade is verified
+		// working; the extra SELECT + log per session-delete were noise.)
+
+		// (1) Origin + trail in ONE statement: the bubble's own row (msg_id)
+		//     AND every tick sharing it (related_msg_id = origin) — i.e. all
+		//     location_update / location_stop siblings of the session. One
+		//     query, one honest rowsAffected (origin + N ticks), and no race
+		//     with deleteFilesForMessage (which now only cleans up files).
+		let query = "delete FROM messages where account = ? and (msg_id = ? or related_msg_id = ?)";
+		let params = [this.state.accountId, id, id];
+		await this.ExecuteQuery(query, params).then(() => {
+			// (delete-cascade rowsAffected log removed — verified working.)
 		}).catch((error) => {
-			console.log('deleteMetadataForMessage trail SQL error:', error);
+			console.log('deleteMetadataForMessage cascade SQL error:', error);
 		});
-		// (2) Origin / standalone rows whose msg_id matches the bubble.
-		// Belt-and-braces — `deleteFilesForMessage` already does this
-		// when its SELECT returns exactly 1 row, but legacy data can
-		// have 0 or >1 rows there (the SELECT was filtered by account
-		// while the DELETE wasn't). Run the unconditional DELETE here
-		// so the origin row is GONE regardless of which branch fires.
-		query = "delete FROM messages where account = ? and msg_id = ?";
-		params = [this.state.accountId, id];
-		await this.ExecuteQuery(query, params).then((results) => {
-		    if (results.rowsAffected) {
-				console.log('Deleted', results.rowsAffected, 'origin row(s) for', id);
-			}
-		}).catch((error) => {
-			console.log('deleteMetadataForMessage origin SQL error:', error);
-		});
-		// (3) Content-match fallback. The user-visible bubble id is
-		// `metadataContent.messageId`, which is embedded in the row's
-		// JSON `content` blob ('{"action":"location","messageId":"<id>",...}').
-		// On the wire the SIP envelope id may differ from the embedded
-		// messageId (depends on which sender SDK was used) — when that
-		// happens, the row's `msg_id` is the envelope id and
-		// `related_msg_id` may be NULL or wrong, so neither (1) nor (2)
-		// hits it. The synthesis pass then re-creates the bubble after
-		// chat re-entry. Match on the JSON pattern to scrub those rows.
-		query = "delete FROM messages where account = ? and content_type = ? and content like ?";
-		const pattern = '%"messageId":"' + id + '"%';
-		params = [this.state.accountId, 'application/sylk-message-metadata', pattern];
-		await this.ExecuteQuery(query, params).then((results) => {
-		    if (results.rowsAffected) {
-				console.log('Deleted', results.rowsAffected, 'content-match row(s) for', id);
-			}
-		}).catch((error) => {
-			console.log('deleteMetadataForMessage content-match SQL error:', error);
-		});
+		// (delete-cascade post-scan verification removed — the cascade is
+		// verified working; the extra SELECT + WARNING/OK log per delete were
+		// noise.)
     }
 
     /**
@@ -24198,16 +25221,16 @@ class Sylk extends Component {
         if (!messageId) return;
         let dirty = false;
         try {
-            if (this.handledMeetingRequestIds && this.handledMeetingRequestIds.delete(messageId)) {
+            if (this._locationEngine.handledMeetingRequestIds.delete(messageId)) {
                 dirty = true;
             }
-            if (this.myOutgoingMeetingRequestIds && this.myOutgoingMeetingRequestIds.delete(messageId)) {
+            if (this._locationEngine.myOutgoingMeetingRequestIds.delete(messageId)) {
                 dirty = true;
             }
-            if (this.handledAcceptanceIds && this.handledAcceptanceIds.delete(messageId)) {
+            if (this._locationEngine.handledAcceptanceIds.delete(messageId)) {
                 dirty = true;
             }
-            if (this.acceptedMeetingRequestIds && this.acceptedMeetingRequestIds.delete(messageId)) {
+            if (this._locationEngine.acceptedMeetingRequestIds.delete(messageId)) {
                 dirty = true;
             }
             if (dirty) {
@@ -24220,22 +25243,22 @@ class Sylk extends Component {
     }
 
     deleteFilesForMessage(id, uri) {
+        // File-only cleanup: unlink any on-disk attachment directory for this
+        // message. The ROW deletion (base/origin row + every trail sibling) is
+        // now done in a SINGLE query by deleteMetadataForMessage
+        // (`where msg_id = ? OR related_msg_id = ?`), so we no longer delete
+        // the row here — that split used to race and made the origin's
+        // affected-rows count read 0.
         let query = "SELECT * from messages where msg_id = ? and account = ?";
         this.ExecuteQuery(query,[id, this.state.accountId]).then((results) => {
             let rows = results.rows;
             if (rows.length === 1) {
                 var item = rows.item(0);
-                query = "DELETE from messages where msg_id = ?";
-                this.ExecuteQuery(query, [id]).then((results) => {
-                    this.deleteRenderMessage(id, uri);
-                    //console.log('SQL deleted', results.rowsAffected, 'messages');
-                }).catch((error) => {
-                    console.log('deleteFilesForMessage SQL error:', error);
-                });
-
                 if (item.metadata) {
-                    let file_transfer = JSON.parse(item.metadata);
-                    if (file_transfer.receiver && file_transfer.sender) {
+                    let file_transfer;
+                    try { file_transfer = JSON.parse(item.metadata); }
+                    catch (e) { file_transfer = null; }
+                    if (file_transfer && file_transfer.receiver && file_transfer.sender) {
                         let remote_party = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
                         let dir_path = RNFS.DocumentDirectoryPath + "/" + this.state.accountId + "/" + remote_party + "/" + id + "/";
                         //console.log('Removing', dir_path);
@@ -24297,12 +25320,56 @@ class Sylk extends Component {
 		if (existingMessages.length === 0) {
 			return;
 		}
+		// A delete targets the origin bubble by its _id, but a location track
+		// also has satellite render bubbles that DON'T share that _id: the
+		// "started/stopped sharing" system notes (own uuid _id, related_msg_id =
+		// session) and any straggler trail rows. Match all three ways so the
+		// whole track leaves the screen at once instead of the notes lingering
+		// until the next chat reload:
+		//   • _id === id            → the origin bubble itself
+		//   • related_msg_id === id → session-linked system notes / ticks
+		//   • metadata.sessionId === id → location bubbles keyed via metadata
+		const _sid = id != null ? String(id) : null;
+		const _matches = (m) => {
+			if (!m) return false;
+			if (m._id === id) return true;
+			if (_sid && m.related_msg_id != null && String(m.related_msg_id) === _sid) return true;
+			if (_sid && m.metadata && m.metadata.sessionId != null
+					&& String(m.metadata.sessionId) === _sid) return true;
+			return false;
+		};
+		const _ids = existingMessages.filter(_matches).map(m => m._id);
 		// If nothing matches, exit early.
-		if (!existingMessages.some(m => m._id === id)) {
+		if (_ids.length === 0) {
 			return;
 		}
-		// Remove from the new model (state.messages retired).
-		this._removeContactMessage(id);
+		// Remove ALL matched bubbles in ONE setState. Looping
+		// _removeContactMessage would batch wrong: each call reads the
+		// not-yet-committed this.state.contactMessages, so only the last id's
+		// filter would win and the earlier notes would survive on screen.
+		this._removeContactMessages(_ids);
+	}
+
+	// Batch sibling of _removeContactMessage: drop every id in one index
+	// mutation + one setState so a multi-bubble delete (a location track's
+	// origin + its system notes + trail) leaves the screen atomically.
+	_removeContactMessages(ids) {
+		if (!Array.isArray(ids) || ids.length === 0 || !this.contactMessageIndex) {
+			return false;
+		}
+		const _kill = new Set();
+		for (let i = 0; i < ids.length; i++) {
+			const _id = ids[i];
+			if (_id == null) continue;
+			if (this.contactMessageIndex.has(_id)) {
+				this.contactMessageIndex.delete(_id);
+			}
+			_kill.add(_id);
+		}
+		if (_kill.size === 0) return false;
+		const arr = this.state.contactMessages || [];
+		this.setState({ contactMessages: arr.filter(m => !(m && _kill.has(m._id))) });
+		return true;
 	}
 
 	async deleteRenderMessageSync(id, uri) {
@@ -24357,8 +25424,44 @@ class Sylk extends Component {
 
         let content;
         let metadata;
+
+        // One-time backlog heal (per app session): older builds stored EVERY
+        // location tick — original sends AND multi-device carbons — as pending=1,
+        // so devices upgrading into this fix carry a pile of stale pending
+        // location rows. The SELECT below already excludes them from the resend,
+        // but clear their pending flag once so they can never be picked up again
+        // (e.g. by any future query change) and the DB is left clean. Cheap,
+        // idempotent, guarded to run a single time after login.
+        if (!this._clearedPendingLocationRows && this.state.accountId) {
+            this._clearedPendingLocationRows = true;
+            this.ExecuteQuery(
+                "UPDATE messages SET pending = 0 WHERE from_uri = ? AND pending = 1 AND content_type = 'application/sylk-location-sharing'",
+                [this.state.accountId]
+            ).then((res) => {
+                if (res && res.rowsAffected) {
+                    console.log('[location] cleared stale pending flag on', res.rowsAffected, 'location row(s)');
+                }
+            }).catch((e) => {
+                console.log('[location] clear stale pending location rows failed', e && e.message);
+            });
+        }
+
         //await this.ExecuteQuery("SELECT * from messages where pending = 1 and content_type like 'text/%' and from_uri = ?", [this.state.accountId]).then((results) => {
-        await this.ExecuteQuery("SELECT rowid, * from messages where pending = 1 and from_uri = ?", [this.state.accountId]).then((results) => {
+        // EXCLUDE application/sylk-location-sharing from the pending-resend sweep.
+        // Location delivery is always out-of-band via _sendMessage at send time;
+        // the SQL row's pending=1 is spurious bookkeeping that is NEVER cleared
+        // for a location tick (no delivery-state callback lands for it, and a
+        // multi-device CARBON — stored by _renderOwnLocationCarbon — was never
+        // ours to deliver in the first place). Left in the sweep, every restart /
+        // reconnect re-uploaded every pending location row to the server, which
+        // replicated a carbon back to every sibling of the account, which re-
+        // persisted it pending=1 and re-uploaded it again: an exponential send
+        // storm (dozens of application/sylk-location-sharing writes/sec on the
+        // server). Re-sending a stale, ephemeral, time-sensitive location tick on
+        // restart is never desirable regardless of the loop, so location shares
+        // simply never belong in this retry queue. (IS NULL kept so legacy rows
+        // with a null content_type are still retried.)
+        await this.ExecuteQuery("SELECT rowid, * from messages where pending = 1 and from_uri = ? and (content_type IS NULL OR content_type != 'application/sylk-location-sharing')", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
                 if (this.signOut) {
@@ -24515,32 +25618,12 @@ class Sylk extends Component {
 	
 		const item = rows.item(0);
 
-		// Sylk-message-metadata rows normally don't have their own
-		// rendered bubble (the metadata flows into a sibling content
-		// row's render state via messageId). Live-location is the
-		// exception: the origin tick IS its own visible bubble in the
-		// chat, just stored under contentType 'application/sylk-live-location'
-		// in state.messages while its SQL row sits as
-		// 'application/sylk-message-metadata'. So when an IMDN
-		// 'displayed' arrives for a location origin's msg_id, we DO
-		// want to flip the in-memory bubble's `received` flag so the
-		// sender's bubble can render the read indicator. Detect that
-		// case before the early-return: peek into the metadata's
-		// content for action === 'location' with no metadataId
-		// (== origin tick).
-		if (item.content_type === 'application/sylk-message-metadata') {
-			let _isLocationOriginRow = false;
-			try {
-				const _md = JSON.parse(item.content);
-				_isLocationOriginRow = _md
-					&& _md.action === 'location'
-					&& !_md.metadataId
-					&& _md.value
-					&& typeof _md.value.latitude === 'number'
-					&& typeof _md.value.longitude === 'number';
-			} catch (e) { /* malformed payload — fall through to early-return */ }
-			if (!_isLocationOriginRow) return;
-		}
+		// Sylk-message-metadata rows don't have their own rendered bubble
+		// (the metadata flows into a sibling content row's render state via
+		// messageId), so an IMDN for one has nothing to flip here. Location
+		// origins are their own bubbles but are stored as
+		// 'application/sylk-location-sharing', so they don't hit this guard.
+		if (item.content_type === 'application/sylk-message-metadata') return;
 
 		uri = item.direction === 'outgoing' ? item.to_uri : item.from_uri;
 
@@ -24734,10 +25817,33 @@ class Sylk extends Component {
             return;
         }
 
+        // Live-share UPDATE ticks are NOT new conversation activity. A live
+        // location share emits a coordinate tick every few seconds — plain
+        // trail ticks as related_action 'location_update', meet legs as
+        // 'meeting_update' (identified here by the isUpdate flag on the
+        // location payload). Letting each tick run this method would re-stamp
+        // contact.timestamp = new Date() (yanking the contact to the top of the
+        // list every tick) AND re-fire lookupPublicKey on every tick. Only the
+        // ORIGINAL share (origin tick, not an update) stamped the timestamp
+        // and warmed the key; the follow-up updates must do neither.
+        if (message
+                && message.contentType === 'application/sylk-location-sharing'
+                && message.metadata
+                && message.metadata.isUpdate === true) {
+            return;
+        }
+
         console.log('saveOutgoingChatUri', uri);
         let contact = this.lookupContact(uri, true);
 
-        if (contact.uri !== this.state.accountId) {
+        // Location sharing never warms the key here. The key is checked ONCE
+        // before the session starts; every tick (origin included) relies on it
+        // already existing, and the wire-send path ends the session if it's gone
+        // (see the encrypt/send guard). Re-firing lookupPublicKey per share was
+        // needless cross-domain-push traffic.
+        const _isLocationShare = !!(message
+            && message.contentType === 'application/sylk-location-sharing');
+        if (contact.uri !== this.state.accountId && !_isLocationShare) {
 			this.lookupPublicKey(contact);
 		}
 
@@ -24899,12 +26005,19 @@ class Sylk extends Component {
         let displayed = [];
         let params = [uri, this.state.accountId, this.state.accountId];
 
-        await this.ExecuteQuery("SELECT * FROM messages where from_uri = ? and received = 1 and encrypted not in (1) and system is NULL and to_uri = ? and account = ? and (deleted IS NULL OR deleted = 0) ", params).then((results) => {
+        await this.ExecuteQuery("SELECT * FROM messages where from_uri = ? and received = 1 and (related_action IS NULL OR related_action NOT IN ('location_update', 'meeting_update')) and (encrypted not in (1) OR (content_type = 'application/sylk-location-sharing' and related_action not in ('location_update', 'meeting_update'))) and system is NULL and to_uri = ? and account = ? and (deleted IS NULL OR deleted = 0) ", params).then((results) => {
             let rows = results.rows;
             if (rows.length > 0) {
                //console.log('Confirm read for', rows.length, 'new messages');
             } else {
-               //console.log('No messages to confirm read');
+               // No unread MESSAGE rows to mark displayed — but the contact
+               // can still carry a NON-message unread (e.g. a timed-out
+               // location / meet request id pushed into contact.unread).
+               // Clear the badge queue before returning, otherwise the
+               // count sticks: the native badge gets reset elsewhere on
+               // open, but contact.unread stays populated and the next
+               // updateTotalUnread sweep re-derives and re-applies it.
+               this.resetUnreadCount(uri);
                return;
             }
 
@@ -25019,6 +26132,7 @@ class Sylk extends Component {
 				// BEFORE emptying the list (missed-call sessionIds live in
 				// contact.unread too — emptying first made this loop a no-op
 				// and the Missed counter never dropped).
+				try { utils.timestampedLog('[unread][clear] resetUnreadCount', uri, 'removing ids', JSON.stringify(contact.unread)); } catch (e) {}
 				contact.unread.forEach((id) => {
 					idx = missedCalls.indexOf(id);
 					if (idx > -1) {
@@ -25058,7 +26172,35 @@ class Sylk extends Component {
 			}
         }
 
-        this.setState({missedCalls: missedCalls});
+        // Belt-and-suspenders clear. The in-place clears above act on the
+        // contactsIndexes objects, which can drift from state.allContacts
+        // after a contacts re-map (or a stray duplicate row) — leaving the
+        // periodic updateTotalUnread sweep to re-derive the count from the
+        // stale array, and a stale unread_messages column to re-populate it
+        // on the next load. This was the "badge sticks at 1" bug for a
+        // request unread with no backing message row. Clear BOTH:
+        //   1. the state.allContacts entries matching this uri, in place
+        //      (same refs, so indexes stay consistent) with a fresh array
+        //      ref so the list + total re-render, then recompute the total;
+        //   2. the SQL unread_messages column directly (mirrors the
+        //      chat-fast-load clear) so a reload can't bring it back.
+        let _uNorm = uri;
+        try { _uNorm = utils.normalizeAnonymousUri(uri); } catch (e) { /* noop */ }
+        const _nextContacts = (this.state.allContacts || []).map((c) => {
+            if (c && Array.isArray(c.unread) && c.unread.length > 0) {
+                const _match = c.uri === uri || c.uri === _uNorm
+                    || (Array.isArray(c.uris) && (c.uris.indexOf(uri) > -1 || c.uris.indexOf(_uNorm) > -1));
+                if (_match) { c.unread = []; }
+            }
+            return c;
+        });
+        this.setState({missedCalls: missedCalls, allContacts: _nextContacts}, () => {
+            try { this.updateTotalUnread(); } catch (e) { /* noop */ }
+        });
+        try {
+            this.ExecuteQuery('UPDATE contacts SET unread_messages = NULL WHERE account = ? AND (uri = ? OR uri = ?)',
+                [this.state.accountId, uri, _uNorm]);
+        } catch (e) { /* best-effort SQL clear */ }
     }
 
 	async sendDispositionNotification(message, state='displayed', save=false) {
@@ -26389,6 +27531,57 @@ class Sylk extends Component {
         const _origEncrypted = message.content;
 
         await OpenPGP.decrypt(message.content, this.state.keys.private).then((content) => {
+            // application/sylk-location-sharing: `content` is ONLY the encrypted
+            // coordinates. The cleartext lifecycle fields (action, messageId, …)
+            // live in the `metadata` column. Rebuild the metadata object with the
+            // just-decrypted coords and render the location bubble. We do NOT
+            // overwrite the encrypted `content` (it stays encrypted at rest).
+            if (message.content_type === 'application/sylk-location-sharing') {
+                // content is EITHER bare coords or { value, destination } (meet).
+                let coords = null, _rdest = null;
+                try {
+                    const _rdec = JSON.parse(content);
+                    if (_rdec && typeof _rdec.latitude === 'number') {
+                        coords = _rdec;
+                    } else if (_rdec && _rdec.value && typeof _rdec.value.latitude === 'number') {
+                        coords = _rdec.value;
+                        _rdest = (_rdec.destination
+                            && typeof _rdec.destination.latitude === 'number')
+                            ? _rdec.destination : null;
+                    }
+                } catch (e) {}
+                if (coords && typeof coords.latitude === 'number') {
+                    // Reconstruct messageId / isUpdate / timestamp / uri from the
+                    // row's columns (+ flags in metadata); overwrite author from
+                    // direction so our own shares render outgoing.
+                    const meta = this._locationEngine._locationContentFromRow(message, coords, _rdest);
+                    meta.author = message.direction === 'outgoing' ? this.state.accountId : uri;
+                    try { this._injectLocationBubble(uri, meta, meta.messageId || message.msg_id); } catch (e) {}
+                    // MEET reload: this leg's coords JUST decrypted (async). Feed
+                    // them into the cross-side pairing state and re-stamp
+                    // peerCoords on the bubbles — exactly what the live tick path
+                    // does (handleMessageMetadata → _updateMeetingSessionCoords →
+                    // _propagatePeerCoordsForSession). The one-shot getMessages
+                    // cross-inject (meetingSessions PASS 1/2) runs BEFORE these
+                    // async decrypts land, so on a from-SQL reload it only had one
+                    // side's coords and left the peer pin off until the next live
+                    // meeting_update. Doing it here, per leg as it decrypts, makes
+                    // the first render show BOTH pins. Gated to meet legs only;
+                    // _updateMeetingSessionCoords self-classifies the side and
+                    // _propagatePeerCoordsForSession only stamps once it has coords
+                    // (and its proximity check has a dwell gate, so a single reload
+                    // call can't auto-end the meet).
+                    try {
+                        if ((meta.meeting_request === true || meta.role)) {
+                            const _pair = this._locationEngine._updateMeetingSessionCoords(meta, uri);
+                            if (_pair && _pair.sessionId) {
+                                this._locationEngine._propagatePeerCoordsForSession(_pair.sessionId, uri);
+                            }
+                        }
+                    } catch (e) { /* best-effort peer-pin stamp on reload */ }
+                }
+                return;
+            }
             // utils.timestampedLog('[message]', id, 'decrypted', 'from', uri);
             if (uri in decryptingMessages) {
                 pending_messages = decryptingMessages[uri];
@@ -26624,9 +27817,9 @@ class Sylk extends Component {
             return;
         }
 
-        if (contact.tags.indexOf('test') > -1) {
-            return;
-        }
+        // NOTE: 'test'-tagged contacts are NOT skipped. A real account a user
+        // filed under a group named "Test" (e.g. support@sylk.link) has a
+        // server key and must be able to fetch/exchange it like any other.
 
         if (!this.state.connection) {
             return;
@@ -26754,45 +27947,41 @@ class Sylk extends Component {
 		return [...all];
 	}
 
-	// Single source of truth for the per-row category column.
-	// One of {'text','image','video','audio','location','other'}
-	// or null. Called at INSERT time so subsequent reads can gate
-	// SQL directly on `category=?` instead of re-parsing metadata
-	// on every scan.
-	//
-	// Mapping (kept aligned with the JS classifier in
-	// sql2GiftedChat — utils.isImage/isAudio/isVideo strip a
-	// trailing .asc themselves, so we don't have to special-case
-	// PGP-armored names here either):
-	//
-	//   text/plain | text/html                              → 'text'
-	//   application/sylk-file-transfer:
-	//     metadata classifies as image / audio / video      → matches
-	//     otherwise (filename present)                      → 'other'
-	//     no filename                                       → null
-	//   application/sylk-message-metadata + related_action='location'
-	//                                                       → 'location'
-	//   everything else (pgp keys, reactions, replies, ctrl)→ null
-	//
-	// `metadata` may arrive as either a parsed object (most insert
-	// sites already have it parsed) or a JSON string (saveOutgoing-
-	// MessageSql passes JSON.stringify on the way to SQL). Accept
-	// both — the alternative is forcing every caller to remember to
-	// pass the parsed form, which is exactly the kind of leakage
-	// this method exists to avoid.
-	// True when a sylk-message-metadata CONTENT body is a location-share
-	// ORIGIN (the row the chat renders as a map bubble): action 'location',
-	// no metadataId, with a real lat/lng. Update ticks (metadataId set) are
-	// excluded. Same predicate as updateRenderMessageState's _isLocationOriginRow.
-	_isLocationOriginContent(content) {
-		if (typeof content !== 'string' || content.indexOf('"location"') === -1) return false;
-		try {
-			const md = JSON.parse(content);
-			return !!(md && md.action === 'location' && !md.metadataId
-				&& md.value && typeof md.value.latitude === 'number'
-				&& typeof md.value.longitude === 'number');
-		} catch (e) { return false; }
+
+
+
+	// Extract {coords, destination} from a stored location row's `content`.
+	// New rows persist PLAINTEXT geo JSON (encrypted=2) — we JSON.parse it
+	// directly, no OpenPGP. Legacy rows still hold PGP ciphertext (encrypted=1)
+	// — we decrypt those on the fly (requires the private key). Returns null if
+	// there are no usable coords (or the key is missing for a legacy row).
+	async _locationGeoFromContent(content, encFlag) {
+		if (!content) return null;
+		const _enc = (typeof encFlag === 'string') ? parseInt(encFlag) : encFlag;
+		let plain = content;
+		const _isCipher = (_enc !== 2 && _enc !== 0)
+			&& (typeof isPgpEncryptedBody !== 'function' || isPgpEncryptedBody(content));
+		if (_isCipher) {
+			if (!this.state.keys || !this.state.keys.private) return null;
+			try { plain = await OpenPGP.decrypt(content, this.state.keys.private); }
+			catch (e) { return null; }
+		}
+		let _dec;
+		try { _dec = JSON.parse(plain); } catch (e) { return null; }
+		let coords = null, destination = null;
+		if (_dec && typeof _dec.latitude === 'number') {
+			coords = _dec;
+		} else if (_dec && _dec.value && typeof _dec.value.latitude === 'number') {
+			coords = _dec.value;
+			destination = (_dec.destination && typeof _dec.destination.latitude === 'number')
+				? _dec.destination : null;
+		}
+		if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+			return null;
+		}
+		return {coords, destination};
 	}
+
 
 	_classifyMessageCategory(contentType, metadata, relatedAction, content) {
 		if (!contentType) return null;
@@ -26802,15 +27991,22 @@ class Sylk extends Component {
 		if (contentType === 'application/sylk-message-metadata') {
 			// A BROWSABLE location bubble is a location-share ORIGIN: the
 			// message CONTENT parses to {action:'location', value:{lat,lng}}
-			// with NO metadataId. This is the exact rule the chat uses to
-			// render the map bubble (see updateRenderMessageState) — the
-			// `action` lives in the CONTENT JSON, not the metadata column,
-			// which is why the old metadata/related_action check stamped every
-			// location row NULL. Update ticks (metadataId set) are not bubbles
+			// that is not an update tick. This is the exact rule the chat uses
+			// to render the map bubble (see updateRenderMessageState) — the
+			// `action` lives in the CONTENT JSON, not the metadata column.
+			// Update ticks (isUpdate set) are not bubbles
 			// and stay NULL. Content may be ciphertext at insert time; the
 			// decrypt path and the backfill (both pass plaintext content) fill
 			// those rows in later.
-			return this._isLocationOriginContent(content) ? 'location' : null;
+			return this._locationEngine._isLocationOriginContent(content) ? 'location' : null;
+		}
+		if (contentType === 'application/sylk-location-sharing') {
+			// New-format location shares. A BROWSABLE bubble is the ORIGIN tick or
+			// a one-shot (related_action 'location'); trail UPDATE ticks
+			// ('location_update') are not standalone bubbles and stay
+			// uncategorised. related_action is derived from the cleartext
+			// wire action at write time, so no decryption is needed to classify.
+			return (relatedAction === 'location_update' || relatedAction === 'meeting_update') ? null : 'location';
 		}
 		if (contentType !== 'application/sylk-file-transfer') {
 			return null;
@@ -27381,6 +28577,42 @@ class Sylk extends Component {
     // incremental state changes (read/displayed/file-transfer/new message)
     // can patch a single entry by id instead of scanning. Pure w.r.t. React
     // state — the caller decides whether to setState({contactMessages}).
+    // Location-only projection of a messagesMetadata map: keeps only the msgIds
+    // whose event array carries at least one `action:'location'` entry (plain
+    // shares AND meet legs both use action:'location' on the wire, with
+    // meeting_request/role flags distinguishing them). The kept arrays are the
+    // SAME references as in messagesMetadata — this is a filter, not a deep
+    // copy, so it's cheap and stays value-identical for the dual-write window.
+    // Used to keep state.locationData / contact.locationData in lock-step with
+    // messagesMetadata wherever location ticks land.
+    _locationSubset(mm) {
+        const out = {};
+        if (!mm) return out;
+        for (const id of Object.keys(mm)) {
+            const arr = mm[id];
+            if (Array.isArray(arr) && arr.some(e => e && e.action === 'location')) {
+                out[id] = arr;
+            }
+        }
+        return out;
+    }
+
+    // Inverse of _locationSubset: everything EXCEPT location bubbles. Used to
+    // strip location out of messagesMetadata at the state-write points so
+    // messagesMetadata becomes pure message metadata (labels, rotations,
+    // replies, reactions) and location lives only in locationData.
+    _nonLocationSubset(mm) {
+        const out = {};
+        if (!mm) return out;
+        for (const id of Object.keys(mm)) {
+            const arr = mm[id];
+            if (!(Array.isArray(arr) && arr.some(e => e && e.action === 'location'))) {
+                out[id] = arr;
+            }
+        }
+        return out;
+    }
+
     // Bake the metadata overlay (media label / rotation / reply) onto a single
     // message, mirroring ChatBox's getMetadataByAction('label'|'rotation'|
     // 'reply') — last entry per action wins. Ref-preserving: returns the same
@@ -27550,6 +28782,23 @@ class Sylk extends Component {
 		// (after the main loop) consults this so it doesn't re-push
 		// entries that the slice already covered.
 		const _locationMsgIdsSeen = new Set();
+		// Session ids whose track has ENDED, derived from stored location_stop
+		// rows (related_action='location_stop', related_msg_id=<session id>)
+		// found in this load. Used to stamp `ended` on the session's bubble so
+		// its footer shows "Track ended" instead of a stale "Expires in …".
+		const _endedSessionsThisLoad = new Set();
+		// session id -> stop reason ('returned' for until-I-return), captured from
+		// the location_stop row's metadata so the bubble can label the ended state.
+		const _endedReasonThisLoad = {};
+		// session id -> stop time (ms) so the ended label can read "Returned at HH:MM".
+		const _endedAtThisLoad = {};
+		// IMDN tick flags of each location share's ORIGIN row (the single
+		// timeline message that renders the map). Chat-wise a map is ONE
+		// message; the trail points are orthogonal (secondary query). The
+		// tick therefore reflects only the origin's delivered/displayed
+		// state — updates carry no disposition and never change it, so once
+		// the initial map was seen it stays displayed.
+		const _originTickFlags = {};
 		let fixed_local_url;
 
         if (!uri) {
@@ -27599,7 +28848,8 @@ class Sylk extends Component {
         query = `
 		SELECT count(*) as rows FROM messages WHERE account = ? AND
 		((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
-		AND (deleted IS NULL OR deleted = 0)`;
+		AND (deleted IS NULL OR deleted = 0)
+		AND (related_action IS NULL OR related_action NOT IN ('location_update', 'meeting_update'))`;
 
         if (pinned) {
             query = query + ' and pinned = 1';
@@ -27765,7 +29015,8 @@ class Sylk extends Component {
 
         query = `SELECT rowid, * FROM messages WHERE account = ? AND
         ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
-        AND (deleted IS NULL OR deleted = 0)`;
+        AND (deleted IS NULL OR deleted = 0)
+        AND (related_action IS NULL OR related_action NOT IN ('location_update', 'meeting_update'))`;
 
         if (pinned) {
             query = query + ' and pinned = 1';
@@ -27864,8 +29115,8 @@ class Sylk extends Component {
 					}
 	
 					content = item.content;
-					if (!content) {
-						console.log('Empty message content for msg_id:', item.msg_id);
+					if (!content && item.content_type != 'application/sylk-location-sharing') {
+						console.log('Empty message content for msg_id:', item.msg_id, item.content_type);
 						content = 'Broken message, cannot be decrypted...';
 					}
 
@@ -27884,7 +29135,7 @@ class Sylk extends Component {
 						timestamp = new Date(item.unix_timestamp * 1000);
 					}
 	
-					const broken_envelope = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') === -1;
+					const broken_envelope = content.trimStart().startsWith('-----BEGIN PGP MESSAGE-----') && content.indexOf('-----END PGP MESSAGE-----') === -1;
 					
 					if (broken_envelope) {
 					    console.log('Message PGP envelope is broken', item.msg_id);
@@ -27894,7 +29145,80 @@ class Sylk extends Component {
 						enc = parseInt(item.encrypted);
 					}
 
-					const is_encrypted = content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && content.indexOf('-----END PGP MESSAGE-----') > -1;
+					// application/sylk-location-sharing LIVE rows are rendered by
+					// the location secondary query + synthesis below: it decrypts
+					// each tick's coords and builds/refreshes the map bubble. Skip
+					// them here so they neither render as a normal bubble nor enter
+					// the generic decrypt queue (which would double-handle). One-shot
+					// rows (one_shot:true) fall through to the existing encrypted →
+					// decryptMessage path unchanged.
+					if (item.content_type === 'application/sylk-location-sharing') {
+						let _isOneShotRow = item.related_action === 'location_once';
+						if (!_isOneShotRow) {   // legacy rows carried one_shot in metadata
+							try { _isOneShotRow = !!JSON.parse(item.metadata || '{}').one_shot; } catch (e) {}
+						}
+						if (!_isOneShotRow) {
+							contact.totalMessages = contact.totalMessages - 1;
+							continue;
+						}
+						// One-shot ORIGIN. Build the map bubble DIRECTLY from this
+						// SQL row on every load (lazy-decrypt the coords right here),
+						// instead of routing it through the generic decrypt pool.
+						// The pool path is gated once-per-session (_decryptInFlight)
+						// AND never flips the row to encrypted=2 (coords stay
+						// encrypted at rest), so after the first render a chat-reopen
+						// re-selected the row but skipped the decrypt — leaving the
+						// bubble orphaned and the map "vanishing" on the sender. A
+						// one-shot is a single tick (no 1000-update trail), so
+						// decrypting it inline on load is cheap and, crucially,
+						// deterministic: the bubble is rebuilt from SQL every open.
+						// pending/sent/received carry the IMDN tick state forward so
+						// the sender's delivered/read ticks survive reload.
+						try {
+							if (item.content) {
+								// New one-shot rows are plaintext (encrypted=2); legacy
+								// rows decrypt inside the helper (needs the key).
+								const _osGeo = await this._locationGeoFromContent(item.content, item.encrypted);
+								let _osCoords = _osGeo ? _osGeo.coords : null;
+								let _osDest = _osGeo ? _osGeo.destination : null;
+								if (_osCoords && typeof _osCoords.latitude === 'number'
+										&& !(this._locationEngine._deletedLocationBubbleIds.has(item.msg_id))) {
+									const _osMeta = this._locationEngine._locationContentFromRow(item, _osCoords, _osDest);
+									_osMeta.author = item.direction === 'outgoing' ? this.state.accountId : item.from_uri;
+									const _osCreatedAt = _osMeta.timestamp
+										? new Date(_osMeta.timestamp)
+										: new Date(item.unix_timestamp * 1000);
+									const _osBubble = {
+										_id: item.msg_id,
+										key: item.msg_id,
+										createdAt: _osCreatedAt,
+										contentType: 'application/sylk-live-location',
+										metadata: _osMeta,
+										text: String(_osCreatedAt.getTime()),
+										direction: item.direction,
+										user: item.direction === 'incoming'
+											? { _id: item.from_uri, name: item.from_uri }
+											: {},
+										pending: !!item.pending,
+										sent: !!item.sent,
+										received: !!item.received,
+									};
+									if (orig_uri in messages
+											&& !messages[orig_uri].some(m => m && m._id === item.msg_id)) {
+										messages[orig_uri].push(_osBubble);
+										_locationMsgIdsSeen.add(item.msg_id);
+									}
+								}
+							}
+						} catch (e) {
+							utils.timestampedLog('[location] one-shot load decrypt failed', item.msg_id, e && e.message ? e.message : e);
+						}
+						// Rendered (or intentionally skipped) inline — do NOT fall
+						// through to the generic decrypt-pool enqueue.
+						continue;
+					}
+
+					const is_encrypted = isPgpEncryptedBody(content);
 
 					//console.log(" - SQL message:", timestamp, item.content_type, item.direction, item.from_uri, item.to_uri, content.substring(0, 200));
 					
@@ -27972,6 +29296,8 @@ class Sylk extends Component {
 								content = 'Broken message';
 							}
 							console.log(content, item.msg_id);
+							contact.totalMessages = contact.totalMessages - 1;
+							continue;
 						} else if (item.content_type === 'text/html') {
 							content = utils.cleanHtml(content);
 							//console.log('message HTML', item.msg_id, item.content_type);
@@ -28014,7 +29340,7 @@ class Sylk extends Component {
 						} else if (item.content_type === 'text/pgp-public-key-imported') {
 							continue;
 						} else if (item.content_type === 'application/sylk-message-metadata') {
-						
+
 							const uri = orig_uri;
 							let metadataContent;
 							try {
@@ -28026,213 +29352,16 @@ class Sylk extends Component {
 
 							//console.log("Loaded metadata from SQL:", item.msg_id, metadataContent.action, metadataContent.value, 'for msg', item.related_msg_id, item.related_action);
 
-							const value = metadataContent.value;
 							metadataContent.author = item.from_uri;
-
-							// Live-location origin row: this row is the "last
-							// known position" blob for a sharing session (see
-							// saveOutgoingMessageSqlBatch / saveIncomingMessage,
-							// where follow-up ticks UPDATE the origin's content
-							// in place). Synthesize a bubble so reopening the
-							// conversation restores the map.
-							// Detection: the row's msg_id matches metadataContent.messageId
-							// (both equal the origin tick's envelope id).
-							//
-							// Peer-coords recovery: `content` column holds the
-							// last tick's raw payload (own coords only). The
-							// `metadata` column is independently stamped by
-							// _persistPeerCoordsToSql with the paired {peerCoords,
-							// distanceMeters} fields — those don't ride on the
-							// tick stream so they'd otherwise be lost on chat
-							// re-entry. Merge them onto metadataContent here so
-							// the restored bubble shows BOTH pins and the
-							// distance strip, matching what the user saw before
-							// switching chats.
-							if (metadataContent.action === 'location'
-								&& item.msg_id === metadataContent.messageId
-								&& typeof item.metadata === 'string'
-								&& item.metadata.length > 0) {
-								try {
-									const storedMeta = JSON.parse(item.metadata);
-									if (storedMeta && typeof storedMeta === 'object') {
-										if (storedMeta.peerCoords
-												&& typeof storedMeta.peerCoords.latitude === 'number'
-												&& typeof storedMeta.peerCoords.longitude === 'number') {
-											metadataContent.peerCoords = storedMeta.peerCoords;
-										}
-										if (typeof storedMeta.distanceMeters === 'number') {
-											metadataContent.distanceMeters = storedMeta.distanceMeters;
-										}
-									}
-								} catch (e) {
-									// Non-JSON / legacy row — fall through with
-									// just the own-coords bubble. Peer pin will
-									// re-appear on the next tick + propagate.
-								}
-							}
-
-							// peerCoords fallback to in-memory meetingSessions.
-							// `_persistPeerCoordsToSql` is fire-and-forget; if
-							// the user switched chats before it landed, the
-							// SQL metadata column above is still empty (or
-							// stale) on chat re-entry — we'd render the
-							// requester bubble with only the requester's own
-							// pin and have to wait for the NEXT tick before
-							// `_propagatePeerCoordsForSession` re-stamps the
-							// peer pin. Symptom: "1st map loaded with me
-							// alone; once a tick arrived I got two parties."
-							//
-							// `this.meetingSessions` is an instance prop, not
-							// React state — it survives chat switches. If the
-							// pair has both sides' coords there, use them as
-							// the source of truth and the bubble renders both
-							// pins immediately on chat open. The next
-							// propagate then refreshes from a live tick.
-							//
-							// (App-restart still relies on the SQL column
-							// because meetingSessions is empty after process
-							// teardown. That's a separate gap — listed as a
-							// known issue in the audit; for now the SQL row
-							// catches up within one tick after restart.)
-							if (metadataContent.action === 'location'
-								&& item.msg_id === metadataContent.messageId
-								&& !metadataContent.peerCoords
-								&& this.meetingSessions) {
-								let _sid = null;
-								// `_bubbleRole` is the role this BUBBLE represents,
-								// which determines its `peerCoords` semantics. The
-								// previous version branched on whether the LOCAL
-								// user was the requester — that's wrong: peerCoords
-								// is "the OTHER party from the bubble's perspective"
-								// and is invariant across devices.
-								//
-								// Concrete failure of the old logic: on the accepter's
-								// device the bubble represents the requester, so its
-								// peerCoords should be the accepter's coords (rendered
-								// as the accepter's blue pin). The old code computed
-								// _iAmRequester=false and stamped _peerC=requesterCoords,
-								// duplicating the value field — both pins overlapped at
-								// the requester's location. Distance label was still
-								// right (haversine is symmetric) but the visual was
-								// wrong until the next live tick re-stamped via the
-								// correct path.
-								let _bubbleRole = null;
-								if (metadataContent.meeting_request === true) {
-									_sid = metadataContent.messageId;
-									_bubbleRole = 'requester';
-								} else if (metadataContent.in_reply_to) {
-									_sid = metadataContent.in_reply_to;
-									_bubbleRole = 'accepter';
-								}
-								const _s = _sid ? this.meetingSessions[_sid] : null;
-								if (_s && _s.requesterCoords && _s.accepterCoords) {
-									// peerCoords = the OTHER side of the bubble's owner
-									// ownC      = the bubble's own owner coords (used for
-									//             the haversine distance label)
-									const _peerC = _bubbleRole === 'requester'
-										? _s.accepterCoords
-										: _s.requesterCoords;
-									const _ownC  = _bubbleRole === 'requester'
-										? _s.requesterCoords
-										: _s.accepterCoords;
-									if (_peerC
-											&& typeof _peerC.latitude === 'number'
-											&& typeof _peerC.longitude === 'number') {
-										metadataContent.peerCoords = _peerC;
-										if (_ownC
-												&& typeof _ownC.latitude === 'number'
-												&& typeof _ownC.longitude === 'number') {
-											const _d = haversineMeters(_ownC, _peerC);
-											if (Number.isFinite(_d)) {
-												metadataContent.distanceMeters = _d;
-											}
-										}
-										try {
-											utils.timestampedLog(
-												'[location] [meet] SQL restore: peerCoords recovered from meetingSessions',
-												'session=' + this._meetShortId(_sid),
-												'bubble=' + _bubbleRole);
-										} catch (e) {}
-									}
-								}
-							}
-							if (metadataContent.action === 'location'
-								&& item.msg_id === metadataContent.messageId) {
-								const direction = item.direction
-									|| (item.from_uri === this.state.accountId ? 'outgoing' : 'incoming');
-
-								// Apply the same meeting-session dedup as
-								// _injectLocationBubble so SQL restore after a
-								// reconnect / chat-reopen doesn't resurrect the
-								// acceptance-leg bubble that the live path
-								// already skipped.
-								//
-								// Requester side: an INCOMING reply whose
-								// in_reply_to is one of our outgoing meeting
-								// request ids.
-								// Accepter side: an OUTGOING reply whose
-								// in_reply_to is a request we explicitly
-								// accepted.
-								const inReplyTo = metadataContent.in_reply_to;
-								if (inReplyTo) {
-									if (direction === 'incoming'
-										&& this.myOutgoingMeetingRequestIds
-										&& this.myOutgoingMeetingRequestIds.has(inReplyTo)) {
-										console.log('[location] SQL restore: skip — incoming reply to our own request',
-											'msg_id=', item.msg_id, 'in_reply_to=', inReplyTo);
-										continue;
-									}
-									if (direction === 'outgoing'
-										&& this.acceptedMeetingRequestIds
-										&& this.acceptedMeetingRequestIds.has(inReplyTo)) {
-										console.log('[location] SQL restore: skip — outgoing reply to a request we accepted',
-											'msg_id=', item.msg_id, 'in_reply_to=', inReplyTo);
-										continue;
-									}
-								}
-
-								const createdAt = metadataContent.timestamp
-									? new Date(metadataContent.timestamp)
-									: new Date(item.unix_timestamp * 1000);
-								const locBubble = {
-									_id: item.msg_id,
-									key: item.msg_id,
-									createdAt: createdAt,
-									contentType: 'application/sylk-live-location',
-									metadata: metadataContent,
-									text: String(createdAt.getTime()),
-									direction: direction,
-									user: direction === 'incoming'
-										? { _id: item.from_uri, name: item.from_uri }
-										: {},
-									// Carry IMDN flags forward so the
-									// outgoing bubble's tick state survives
-									// chat reload. messageStateChanged stores
-									// `received = 2` (or 1 for delivered)
-									// against the origin row's msg_id when
-									// the receiver fires its IMDN displayed
-									// for the location origin tick (see
-									// saveIncomingMessage), and we want the
-									// double-tick indicator to come back when
-									// the user reopens the chat.
-									pending: !!item.pending,
-									sent:    !!item.sent,
-									received: !!item.received,
-								};
-								// Tombstone gate: the user deleted this bubble
-								// in the current session. Don't restore from
-								// SQL even if a row somehow lingers.
-								if (this._deletedLocationBubbleIds
-										&& this._deletedLocationBubbleIds.has(locBubble._id)) {
-									// drop the restore — render path will
-									// not see this bubble
-								} else if (orig_uri in messages
-									&& !messages[orig_uri].some(m => m._id === locBubble._id)) {
-									// Restored a live-location bubble from SQL.
-									// Logged once per restored bubble per chat
-									// open — silenced now that it works.
-									messages[orig_uri].push(locBubble);
-								}
+							
+							// Legacy plaintext location metadata
+							// (application/sylk-message-metadata, action='location') is no longer
+							// rendered. Location bubbles come exclusively from the encrypted
+							// application/sylk-location-sharing path now, so these legacy rows
+							// draw nothing (fresh start; old location history is inert).
+							if (metadataContent.action === 'location') {
+								contact.totalMessages = contact.totalMessages - 1;
+								continue;
 							}
 
 							const messageId = metadataContent.messageId;
@@ -28252,26 +29381,6 @@ class Sylk extends Component {
 								//console.log("---- Loaded metadata from SQL:", item.msg_id, action, value, 'for message', messageId);
 								//console.log('---- messagesMetadata', metadataContent);
 
-								// Location trail aggregation. For plain timed
-								// shares (4h / 8h / 24h / once) we keep every
-								// follow-up tick as its own SQL row (see
-								// saveOutgoingMessageSqlBatch + saveIncomingMessage:
-								// trail rows have related_action='location_update'
-								// but their content's action is still 'location'
-								// and their messageId points at the origin tick).
-								// Append each tick as-is so a future ▶︎ Replay UI
-								// has the ordered history available under
-								// messagesMetadata[originMsgId]. Bypass the
-								// findIndex(action==='location') path below — that
-								// dedup was designed for one-tick-per-message
-								// actions like rotation/label/consumed and would
-								// collapse the trail down to the last tick.
-								if (action === 'location') {
-									metaArray.push(metadataContent);
-									_locationMsgIdsSeen.add(item.msg_id);
-									foundMetadata = true;
-									continue;
-								}
 
 								/*
 								const existingTargetMsg = messages[orig_uri].find(m => m._id === messageId);
@@ -28360,6 +29469,17 @@ class Sylk extends Component {
 							foundMetadata = true;
 							continue;
 
+						} else if (item.content_type === 'application/sylk-request') {
+							// A request is a signal, never a chat row. Older
+							// native builds inserted it into the messages table
+							// before the JS/native guards landed — delete any
+							// such rows so they stop logging as "Unknown
+							// message" and can never be miscounted. Silent.
+							try {
+								this.ExecuteQuery('DELETE FROM messages WHERE msg_id = ?', [item.msg_id]);
+							} catch (e) { /* best-effort cleanup */ }
+							contact.totalMessages = contact.totalMessages - 1;
+							continue;
 						} else {
 							console.log('Unknown message', item.msg_id, 'type', item.content_type);
 							contact.totalMessages = contact.totalMessages - 1;
@@ -28521,81 +29641,138 @@ class Sylk extends Component {
 			last_messages = messages[orig_uri] || [];
 			last_messages.reverse();
 
-			// Secondary location-metadata query — uncoupled from the
-			// main slice. The slice (limit 100, order unix_timestamp
-			// DESC) is great for "show recent chat" but misses live-
-			// location data when the chat has more than 100 newer
-			// messages: a long-running plain share's origin row sits
-			// at its original timestamp (trail INSERTs never refresh
-			// it) and the trail itself can scroll out of the slice
-			// when chat traffic outpaces the 60 s tick rate.
-			//
-			// Re-enabled after the contacts-list-reordering bug was
-			// pinned to the lastMessage forEach picking up the
-			// synthesised bubble's createdAt; the forEach now skips
-			// live-location bubbles, so the secondary query's
-			// synthesised bubbles can no longer bump contact.timestamp.
-			//
-			// Gate: only run when the user is browsing the mixed
-			// timeline (no category filter) or explicitly filtering
-			// to locations. Other category fetches (image / video /
-			// audio / file / pinned) have no business pulling 1000
-			// extra location rows — that was both a wasted SQL
-			// round-trip per chip tap AND a confusing log line
-			// ("[location] secondary query: added 247 entries"
-			// printed even when the user asked for audio).
+			// Secondary location query for the new-format encrypted shares
+			// (application/sylk-location-sharing). Uncoupled from the main slice so a
+			// long-running share's trail is reconstructed even when its origin row
+			// scrolled out of the ~100-row window. Legacy plaintext
+			// (application/sylk-message-metadata) location rows are intentionally NOT
+			// queried here — that format is no longer rendered.
+
+			// New-format (application/sylk-location-sharing) LIVE rows. Their
+			// `content` column is the PGP-encrypted coords; the cleartext
+			// lifecycle fields (action, messageId, expires…) live in
+			// the metadata column. Decrypt each row's coords and push a
+			// reconstructed metadataContent into messagesMetadata so the synthesis
+			// below builds the bubble + trail exactly like the plaintext path.
+			// One-shot rows (one_shot:true) are rendered by decryptMessage via the
+			// main-loop fall-through, so they are excluded here.
 			if (category && category !== 'location') {
-				// Skip — see gate comment above.
+				// Skip — same gate as the plaintext secondary query above.
 			} else
 			try {
-				const locationQuery = `SELECT rowid, * FROM messages
+				const shareQuery = `SELECT rowid, * FROM messages
 					WHERE account = ?
-					  AND content_type = 'application/sylk-message-metadata'
-					  AND related_action IN ('location', 'location_update')
+					  AND content_type = 'application/sylk-location-sharing'
 					  AND ((from_uri = ? AND to_uri IN (${placeholders}))
 						OR (from_uri IN (${placeholders}) AND to_uri = ?))
 					  AND (deleted IS NULL OR deleted = 0)
 					ORDER BY unix_timestamp DESC
 					LIMIT 1000`;
-				const locationParams = [
+				const shareParams = [
 					this.state.accountId,
 					this.state.accountId,
 					...uris,
 					...uris,
 					this.state.accountId,
 				];
-				const locResult = await this.ExecuteQuery(locationQuery, locationParams);
-				const locRows = locResult.rows;
-				let _locAdded = 0;
-				for (let li = 0; li < locRows.length; li++) {
-					const lit = locRows.item(li);
-					if (_locationMsgIdsSeen.has(lit.msg_id)) continue;
-					if (!lit.content) continue;
-					let mc;
-					try {
-						mc = JSON.parse(lit.content);
-					} catch (e) {
+				const shareResult = await this.ExecuteQuery(shareQuery, shareParams);
+				const shareRows = shareResult.rows;
+				let _shareAdded = 0;
+				const _haveSharePriv = !!(this.state.keys && this.state.keys.private);
+				for (let si = 0; si < shareRows.length; si++) {
+					const sit = shareRows.item(si);
+					if (_locationMsgIdsSeen.has(sit.msg_id)) continue;
+					// Stored location_stop marker (no coords): the track ended. Record its
+					// session (related_msg_id) so the bubble shows "Track ended"; the stop
+					// row renders no bubble of its own.
+					if (sit.related_action === 'location_stop') {
+						if (sit.related_msg_id) {
+							_endedSessionsThisLoad.add(sit.related_msg_id);
+							_endedAtThisLoad[sit.related_msg_id] = sit.unix_timestamp ? sit.unix_timestamp * 1000 : Date.now();
+							try { const _sm = JSON.parse(sit.metadata || '{}'); if (_sm && _sm.reason) _endedReasonThisLoad[sit.related_msg_id] = _sm.reason; } catch (e) {}
+						}
+						_locationMsgIdsSeen.add(sit.msg_id);
 						continue;
 					}
-					if (!mc || mc.action !== 'location') continue;
-					const messageId = mc.messageId;
-					if (!messageId) continue;
-					mc.author = lit.from_uri;
-					if (!Array.isArray(messagesMetadata[messageId])) {
-						messagesMetadata[messageId] = [];
+					// New rows are plaintext (no key needed); legacy rows need the
+					// private key, handled inside _locationGeoFromContent.
+					if (!sit.content) continue;
+					// one-shot rows render via decryptMessage (main-loop fall-through)
+					if (sit.related_action === 'location_once') continue;
+					let sfields;
+					try { sfields = JSON.parse(sit.metadata || '{}'); } catch (e) { continue; }
+					if (!sfields || sfields.one_shot) continue;   // legacy one-shot
+					let scoords = null, sdest = null;
+					{
+						const _sgeo = await this._locationGeoFromContent(sit.content, sit.encrypted);
+						if (!_sgeo) continue;
+						scoords = _sgeo.coords;
+						sdest = _sgeo.destination;
 					}
-					messagesMetadata[messageId].push(mc);
-					_locationMsgIdsSeen.add(lit.msg_id);
-					_locAdded += 1;
+					const smc = this._locationEngine._locationContentFromRow(sit, scoords, sdest);
+					const smid = smc.messageId;
+					if (!smid) continue;
+					// The ORIGIN row (the one map message) is the row whose own
+					// msg_id equals the session/origin id; update rows have their
+					// own msg_id but point related_msg_id at the origin. Capture the
+					// origin's tick flags for the synthesized bubble below.
+					if (sit.msg_id === smid) {
+						_originTickFlags[smid] = {
+							pending: !!sit.pending,
+							sent: !!sit.sent,
+							received: !!sit.received,
+						};
+					}
+					if (!Array.isArray(messagesMetadata[smid])) messagesMetadata[smid] = [];
+					messagesMetadata[smid].push(smc);
+					_locationMsgIdsSeen.add(sit.msg_id);
+					_shareAdded += 1;
+					if (sit.related_action === 'meeting_request' || smc.meeting_request === true) {
+						//utils.timestampedLog('[location] [synth] shareQuery ADD origin session', String(smid).slice(0, 8), 'msg_id=', String(sit.msg_id).slice(0, 8), 'ra=', sit.related_action, 'isOrigin=', sit.msg_id === smid, 'meeting_request=', smc.meeting_request === true, 'role=', smc.role || '-');
+					}
 				}
-				if (_locAdded > 0) {
-					console.log('[location] secondary query: added', _locAdded,
-						'entries from', locRows.length, 'rows for', uri);
+				if (_shareAdded > 0) {
+					//console.log('[location] sharing secondary query: added', _shareAdded, 'entries from', shareRows.length, 'rows for', uri);
 				}
 			} catch (e) {
-				console.log('[location] secondary query failed',
-					e && e.message ? e.message : e);
+				console.log('[location] sharing secondary query failed', e && e.message ? e.message : e);
 			}
+
+			// Propagate a session's "track ended" flag across ALL its metadata
+			// entries. `ended` is persisted on the ORIGIN row only (stamped by
+			// _endLocationTrack on location_stop), but the bubble renders the
+			// NEWEST tick's metadata — which may be a trail row that lacks the
+			// flag. OR-in the persisted flag (any entry ended) and the in-memory
+			// ended-session set, then stamp every entry so whichever one the
+			// synthesis below picks shows "Track ended" instead of "Expires in …".
+			try {
+				for (const [_sid, _arr] of Object.entries(messagesMetadata)) {
+					if (!Array.isArray(_arr)) continue;
+					const _isEnded = _endedSessionsThisLoad.has(_sid)
+						|| (this._endedLocationSessions
+							&& this._endedLocationSessions.has(_sid))
+						|| _arr.some(e => e && e.ended);
+					if (_isEnded) {
+						const _reason = _endedReasonThisLoad[_sid]
+							|| (this._endedLocationSessionReasons && this._endedLocationSessionReasons[_sid]);
+						const _at = _endedAtThisLoad[_sid]
+							|| (this._endedLocationSessionEndedAt && this._endedLocationSessionEndedAt[_sid]);
+						for (const e of _arr) { if (e) { e.ended = true; if (_reason) e.endedReason = _reason; if (_at) e.endedAt = _at; } }
+					}
+				}
+				// Repopulate the in-memory ended-session set from the durable
+				// stop rows found this load. This set is what the JOURNAL
+				// zombie-guard (handleMessage: "dropping tick for ended session")
+				// and the boot-replay mirror seed consult — but it's wiped on a
+				// fresh JS context, so without this a stored stop is invisible to
+				// them after a reload and a late journal tick (or the seed) would
+				// revive a session the user already stopped. Persisted rows are
+				// the source of truth; fold them back in.
+				try {
+					if (!this._endedLocationSessions) this._endedLocationSessions = new Set();
+					for (const _eid of _endedSessionsThisLoad) this._endedLocationSessions.add(_eid);
+				} catch (e) { /* best-effort */ }
+			} catch (e) { /* best-effort */ }
 
 			// Salvage / synthesise location bubbles from messagesMetadata.
 			// Two distinct legacy / load-window scenarios this handles:
@@ -28629,15 +29806,37 @@ class Sylk extends Component {
 						// bubble in the current session. Don't let any
 						// straggler trail row (legacy related_msg_id,
 						// journal-replayed tick, etc.) resurrect it.
-						if (this._deletedLocationBubbleIds
-								&& this._deletedLocationBubbleIds.has(messageId)) {
+						if (this._locationEngine._deletedLocationBubbleIds.has(messageId)) {
 							continue;
 						}
-						// Pick the newest entry that carries usable coords.
+						// For a MEET session both legs group under one sessionId, but the
+						// bubble represents OUR OWN leg (peer leg only feeds peerCoords).
+						// Restrict `best` to OUR OWN ticks (author === our account) on a
+						// meet. Without this the peer's freshly-accepted `invited` tick —
+						// newest in the trail — became `best`, and the role-dedup below saw
+						// rowRole=invited vs myRole=inviter and SUPPRESSED the whole bubble:
+						// the sender's map vanished the instant the peer accepted. Plain
+						// (non-meet) shares keep the old behaviour (no author filter).
+						const _isMeetSyn = arr.some(e => e && (e.role || e.meeting_request === true));
+						// FROZEN SUCCESS SUMMARY: a succeeded meet shows each party's
+						// START point, so pick the EARLIEST valid-coords tick instead
+						// of the latest. Every other case (live, or a failed meet)
+						// keeps the newest = last-known.
+						const _frozenStart = arr.some(e => e && e.meetOutcome === 'succeeded');
+						// ANY ended meet (success OR failure) must rebuild both legs from
+						// synthesis rather than keep the stale live bubble via SALVAGE — the
+						// live bubble on this device often carries only OUR final coords (no
+						// peerCoords), which is exactly the "peer pin missing at meet end"
+						// symptom. Detecting the end via meetOutcome/ended on any row lets the
+						// SYNTHESIS branch below recompute value (own) + peerCoords (peer) + dest.
+						const _meetEnded = _isMeetSyn && arr.some(e => e && (e.meetOutcome || e.ended));
+						// Pick the newest (or, for a succeeded meet, the earliest)
+						// entry that carries usable coords.
 						let best = null;
-						let bestTs = -Infinity;
+						let bestTs = _frozenStart ? Infinity : -Infinity;
 						for (const e of arr) {
 							if (!e || e.action !== 'location') continue;
+							if (_isMeetSyn && e.author && e.author !== this.state.accountId) continue;
 							const v = e.value;
 							if (!v
 									|| typeof v.latitude !== 'number'
@@ -28646,15 +29845,29 @@ class Sylk extends Component {
 							}
 							const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
 							const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
-							if (ts > bestTs) {
+							if (_frozenStart ? (ts < bestTs) : (ts > bestTs)) {
 								best = e;
 								bestTs = ts;
 							}
 						}
-						if (!best) continue;
+						if (!best) {
+							//utils.timestampedLog('[location] [synth] SKIP no-coords session', String(messageId).slice(0, 8), 'entries=', arr.length, 'actions=', JSON.stringify(arr.map(e => e && (e.action + (e.meeting_request ? '+mreq' : '') + (e.privacyDeferred ? '+pdef' : '')))));
+							continue;
+						}
 
-						const existing = _ms.find(m => m && m._id === messageId);
+						let existing = _ms.find(m => m && m._id === messageId);
+						// FROZEN SUCCESS: the live bubble carries each party's FINAL
+						// coords. The summary must show START coords (best = earliest
+						// tick when _frozenStart). Drop the existing bubble so the
+						// synthesis below rebuilds it from `best` (+ peer earliest)
+						// instead of SALVAGE keeping the stale final coords.
+						if ((_frozenStart || _meetEnded) && existing) {
+							const _ei = _ms.findIndex(m => m && m._id === messageId);
+							if (_ei !== -1) _ms.splice(_ei, 1);
+							existing = null;
+						}
 						if (existing && existing.contentType === 'application/sylk-live-location') {
+							utils.timestampedLog('[location] [synth] SALVAGE session', String(messageId).slice(0, 8), 'existingHasCoords=', !!(existing.metadata && existing.metadata.value && typeof existing.metadata.value.latitude === 'number'));
 							// (a) SALVAGE path.
 							const md = existing.metadata || {};
 							const ev = md.value || {};
@@ -28664,16 +29877,13 @@ class Sylk extends Component {
 							}
 							const carry = {};
 							if (md.meeting_request === true) carry.meeting_request = true;
-							if (md.in_reply_to) carry.in_reply_to = md.in_reply_to;
+							if (md.role) carry.role = md.role;
 							if (md.destination) carry.destination = md.destination;
 							if (md.peerCoords) carry.peerCoords = md.peerCoords;
 							if (typeof md.distanceMeters === 'number') carry.distanceMeters = md.distanceMeters;
 							if (md.expires) carry.expires = md.expires;
 							existing.metadata = { ...best, ...carry };
-							console.log('[location] salvaged last-known coords for bubble', messageId,
-								'lat=', best.value.latitude.toFixed(5),
-								'lng=', best.value.longitude.toFixed(5),
-								'tickAt=', best.value.timestamp || best.timestamp);
+							console.log('[location] salvaged last-known coords for bubble', messageId, 'lat=', best.value.latitude.toFixed(5), 'lng=', best.value.longitude.toFixed(5), 'tickAt=', best.value.timestamp || best.timestamp);
 						} else if (!existing) {
 							// (b) SYNTHESIS path. Build the bubble from
 							// the latest valid trail entry. Direction
@@ -28707,30 +29917,16 @@ class Sylk extends Component {
 							// re-entry. The live path doesn't run this
 							// synthesis, which is why the bug only shows
 							// up after switching away and back.
-							const inReplyTo = best && best.in_reply_to;
-							if (inReplyTo) {
-								if (direction === 'incoming'
-									&& this.myOutgoingMeetingRequestIds
-									&& this.myOutgoingMeetingRequestIds.has(inReplyTo)) {
-									try {
-										utils.timestampedLog('[location] [meet] synthesis SUPPRESS (requester side)',
-											'session=' + this._meetShortId(inReplyTo),
-											'mid=' + this._meetShortId(messageId),
-											'reason=in_reply_to matches our outgoing meeting_request');
-									} catch (e) {}
-									continue;
-								}
-								if (direction === 'outgoing'
-									&& this.acceptedMeetingRequestIds
-									&& this.acceptedMeetingRequestIds.has(inReplyTo)) {
-									try {
-										utils.timestampedLog('[location] [meet] synthesis SUPPRESS (accepter side)',
-											'session=' + this._meetShortId(inReplyTo),
-											'mid=' + this._meetShortId(messageId),
-											'reason=in_reply_to matches a request we accepted');
-									} catch (e) {}
-									continue;
-								}
+							// Unified meet model: both legs group under one sessionId; keep only
+							// MY leg as the bubble, the peer leg feeds peerCoords (not a 2nd bubble).
+							const _sidSyn = best && (best.sessionId || best.messageId);
+							const _myRoleSyn = (_sidSyn && this._locationEngine.myOutgoingMeetingRequestIds.has(_sidSyn))
+								? 'inviter'
+								: ((_sidSyn && this._locationEngine.acceptedMeetingRequestIds.has(_sidSyn)) ? 'invited' : null);
+							const _rowRoleSyn = best && (best.role || (best.meeting_request === true ? 'inviter' : null));
+							if (_myRoleSyn && _rowRoleSyn && _rowRoleSyn !== _myRoleSyn) {
+								console.log('[location] [synth] SUPPRESS meet-dedup session', String(messageId).slice(0, 8), 'rowRole=', _rowRoleSyn, 'myRole=', _myRoleSyn);
+								continue;
 							}
 
 							// Anchor `createdAt` to the ORIGIN tick (the
@@ -28754,19 +29950,60 @@ class Sylk extends Component {
 							const createdAt = (originTs !== Infinity)
 								? new Date(originTs)
 								: new Date();
+							// MEET: stamp the PEER's last-known coords onto OUR bubble so the
+							// peer pin survives a from-SQL reload. The live path stamps peerCoords
+							// on each incoming tick, but a rebuild has only the two origin rows and
+							// `best` is OUR leg (no peerCoords). Pull the newest PEER-leg entry
+							// (author !== us, real coords) + carry the destination from whichever
+							// leg holds it, so the bubble renders all 3 points after reload.
+							let _mergedMeta = best;
+							if (_isMeetSyn) {
+								// Match the own-leg rule: a succeeded meet shows the
+								// peer's START (earliest) point, everything else the
+								// peer's last-known (newest).
+								let _peerBest = null, _peerTs = _frozenStart ? Infinity : -Infinity;
+								for (const e of arr) {
+									if (!e || e.action !== 'location') continue;
+									if (!e.author || e.author === this.state.accountId) continue;
+									if (e.privacyDeferred) continue;
+									const v = e.value;
+									if (!v || typeof v.latitude !== 'number' || typeof v.longitude !== 'number') continue;
+									const tsRaw = (v.timestamp != null) ? v.timestamp : e.timestamp;
+									const ts = tsRaw ? new Date(tsRaw).getTime() : 0;
+									if (_frozenStart ? (ts < _peerTs) : (ts > _peerTs)) { _peerBest = e; _peerTs = ts; }
+								}
+								const _destE = (best && best.destination) ? best.destination
+									: ((arr.find(e => e && e.destination) || {}).destination || null);
+								const _extra = {};
+								if (_peerBest && _peerBest.value) {
+									_extra.peerCoords = { latitude: _peerBest.value.latitude, longitude: _peerBest.value.longitude };
+									if (best && best.value) { try { _extra.distanceMeters = haversineMeters(best.value, _peerBest.value); } catch (e) {} }
+								}
+								if (_destE) _extra.destination = _destE;
+								if (Object.keys(_extra).length) _mergedMeta = Object.assign({}, best, _extra);
+							}
 							const bubble = {
 								_id: messageId,
 								key: messageId,
 								createdAt: createdAt,
 								contentType: 'application/sylk-live-location',
-								metadata: best,
+								metadata: _mergedMeta,
 								text: String(createdAt.getTime()),
 								direction: direction,
 								user: direction === 'incoming'
 									? { _id: best.author || orig_uri, name: best.author || orig_uri }
 									: {},
 							};
+							// One map = one chat message: carry the ORIGIN's tick state
+							// (delivered/displayed), frozen — trail updates never touch it.
+							const _oflags = _originTickFlags[messageId];
+							if (_oflags) {
+								bubble.pending = _oflags.pending;
+								bubble.sent = _oflags.sent;
+								bubble.received = _oflags.received;
+							}
 							_ms.push(bubble);
+							//utils.timestampedLog('[location] [synth] BUILT bubble session', String(messageId).slice(0, 8), 'direction=', direction, 'role=', best.role || (best.meeting_request ? 'inviter' : '-'), 'lat=', best.value.latitude.toFixed(5));
 							// Synthesis-pass diagnostic — silenced as
 							// noisy on chat-open with multiple shares
 							// in history. One-line uncomment to revive
@@ -28780,8 +30017,7 @@ class Sylk extends Component {
 					}
 				}
 			} catch (e) {
-				console.log('[location] salvage / synthesis pass failed',
-					e && e.message ? e.message : e);
+				console.log('[location] salvage / synthesis pass failed', e && e.message ? e.message : e);
 			}
 
 			// Meet-session rebuild + peerCoords stamping pass.
@@ -28837,8 +30073,8 @@ class Sylk extends Component {
 							_side = 'requester';
 							break;
 						}
-						if (ev.in_reply_to) {
-							_sid = ev.in_reply_to;
+						if (ev.role === 'invited') {
+							_sid = ev.messageId;
 							_side = 'accepter';
 							break;
 						}
@@ -28872,7 +30108,7 @@ class Sylk extends Component {
 							_bestTs = ts;
 						}
 					}
-					const _s = this.meetingSessions[_sid] || {};
+					const _s = this._locationEngine.meetingSessions[_sid] || {};
 					if (_side === 'requester') {
 						if (!_s.requesterOriginId) _s.requesterOriginId = messageId;
 						if (_bestCoords) _s.requesterCoords = _bestCoords;
@@ -28892,7 +30128,7 @@ class Sylk extends Component {
 							}
 						}
 					}
-					this.meetingSessions[_sid] = _s;
+					this._locationEngine.meetingSessions[_sid] = _s;
 				}
 
 				// PASS 2: stamp peerCoords on bubbles that don't already
@@ -28918,12 +30154,12 @@ class Sylk extends Component {
 					if (md.meeting_request === true) {
 						_sid = md.messageId;
 						_bubbleRole = 'requester';
-					} else if (md.in_reply_to) {
-						_sid = md.in_reply_to;
+					} else if (md.role === 'invited') {
+						_sid = md.messageId;
 						_bubbleRole = 'accepter';
 					}
 					if (!_sid) continue;
-					const _s = this.meetingSessions[_sid];
+					const _s = this._locationEngine.meetingSessions[_sid];
 					if (!_s || !_s.requesterCoords || !_s.accepterCoords) continue;
 					const _peerC = _bubbleRole === 'requester'
 						? _s.accepterCoords
@@ -28944,17 +30180,12 @@ class Sylk extends Component {
 							}
 						}
 						try {
-							utils.timestampedLog(
-								'[location] [meet] SQL load: rebuilt meetingSession + stamped peerCoords',
-								'session=' + this._meetShortId(_sid),
-								'bubble=' + _bubbleRole,
-								'mid=' + this._meetShortId(bubble._id));
+							utils.timestampedLog('[location] [meet] SQL load: rebuilt meetingSession + stamped peerCoords', 'session=' + this._locationEngine._meetShortId(_sid), 'bubble=' + _bubbleRole, 'mid=' + this._locationEngine._meetShortId(bubble._id));
 						} catch (e) {}
 					}
 				}
 			} catch (e) {
-				console.log('[location] [meet] rebuild + stamp pass failed',
-					e && e.message ? e.message : e);
+				console.log('[location] [meet] rebuild + stamp pass failed', e && e.message ? e.message : e);
 			}
 
 			// Per-session summary log on contact change. For every
@@ -28988,7 +30219,7 @@ class Sylk extends Component {
 						&& typeof t.value.longitude === 'number');
 					let kind = 'plain';
 					if (md.meeting_request === true) kind = 'meet (request)';
-					else if (md.in_reply_to) kind = 'meet (reply)';
+					else if (md.role === 'invited') kind = 'meet (reply)';
 					else if (md.one_shot) kind = 'one-shot';
 					let isExpired = false;
 					if (md.expires) {
@@ -29027,8 +30258,7 @@ class Sylk extends Component {
 				//         'active=', _activeCount);
 				// }
 			} catch (e) {
-				console.log('[location] session-log failed',
-					e && e.message ? e.message : e);
+				console.log('[location] session-log failed', e && e.message ? e.message : e);
 			}
 
 			// ---- Diagnostic: location-track availability at journal load.
@@ -29108,25 +30338,10 @@ class Sylk extends Component {
 					}
 				} catch (e) { /* never throw from logging */ }
 				if (_shareBubbles > 0 || _pendingMetaRows > 0) {
-					utils.timestampedLog(
-						'[location] [load] track availability',
-						'uri=' + uri,
-						'shareBubbles=' + _shareBubbles,
-						'bubblesWithTrail>=2=' + _bubblesWithTrail,
-						'bubblesSingle<=1=' + _bubblesSingle,
-						'metaKeys=' + _mmKeys.length,
-						'keysWithTrail>=2=' + _keysMulti,
-						'maxTrailLen=' + _maxLen,
-						'maxTrailKey=' + _maxKey,
-						'maxDistOrigin=' + _maxDistOrigin.toFixed(1) + 'm',
-						'lastDistOrigin=' + _lastDistOrigin.toFixed(1) + 'm',
-						'ticksLoaded=' + _shareTicks,
-						'readablePoints=' + _shareReadable,
-						'metaRowsPendingDecrypt=' + _pendingMetaRows);
+					utils.timestampedLog('[location] [load] track availability', 'uri=' + uri, 'shareBubbles=' + _shareBubbles, 'bubblesWithTrail>=2=' + _bubblesWithTrail, 'bubblesSingle<=1=' + _bubblesSingle, 'metaKeys=' + _mmKeys.length, 'keysWithTrail>=2=' + _keysMulti, 'maxTrailLen=' + _maxLen, 'maxTrailKey=' + _maxKey, 'maxDistOrigin=' + _maxDistOrigin.toFixed(1) + 'm', 'lastDistOrigin=' + _lastDistOrigin.toFixed(1) + 'm', 'ticksLoaded=' + _shareTicks, 'readablePoints=' + _shareReadable, 'metaRowsPendingDecrypt=' + _pendingMetaRows);
 				}
 			} catch (e) {
-				console.log('[location] [load] track-availability log failed',
-					e && e.message ? e.message : e);
+				console.log('[location] [load] track-availability log failed', e && e.message ? e.message : e);
 			}
 
 			// Multi-device mirror — boot / chat-re-entry replay.
@@ -29139,23 +30354,31 @@ class Sylk extends Component {
 			// case where A2 was offline / app-killed when A1 sent the
 			// last few ticks — the SQL trail is already populated, we
 			// just need to read it forward into the live state. Skip
-			// when this device IS the broadcaster (locationTimers
+			// when this device IS the broadcaster (outgoingLocationSessions
 			// entry exists for the same anchor) so we don't double-
 			// count.
 			try {
 				const ACTIVE_WINDOW_MS = 90 * 1000;
 				const now = Date.now();
-				const navBar = this.navigationBarRef && this.navigationBarRef.current;
-				const localEntry = navBar
-					&& navBar.locationTimers
-					&& navBar.locationTimers[uri];
-				const localOriginId = localEntry && localEntry.originMetadataId;
+				// Our own broadcast for this uri may be a plain share AND/OR a meet
+				// leg — collect every local origin/session id across both stores so
+				// boot-replay never seeds a remote mirror for a session THIS device
+				// is broadcasting.
+				const _localOriginIds = new Set();
+				for (const le of this._locationEngine._allEntriesForUri(uri)) {
+					if (le && le.originLocationId) _localOriginIds.add(le.originLocationId);
+					if (le && le.meetingSessionId) _localOriginIds.add(le.meetingSessionId);
+				}
 				let bestRemote = null; // {originMid, lastTickAt, lastCoords, role}
 				for (const [messageId, arr] of Object.entries(messagesMetadata)) {
 					if (!Array.isArray(arr)) continue;
-					if (this._deletedLocationBubbleIds
-							&& this._deletedLocationBubbleIds.has(messageId)) continue;
-					if (localOriginId && messageId === localOriginId) continue;
+					if (this._locationEngine._deletedLocationBubbleIds.has(messageId)) continue;
+					if (_localOriginIds.has(messageId)) continue;
+					// Skip sessions whose track already ENDED — a stored location_stop
+					// exists (or we ended it this session). Without this, boot-replay would
+					// resurrect a stopped share from its still-recent trail (resume-after-stop).
+					if (_endedSessionsThisLoad.has(messageId)
+							|| (this._endedLocationSessions && this._endedLocationSessions.has(messageId))) continue;
 					let latestOwn = null;
 					let latestOwnTs = -Infinity;
 					for (const e of arr) {
@@ -29182,7 +30405,7 @@ class Sylk extends Component {
 					if (!bestRemote || latestOwnTs > bestRemote.lastTickAt) {
 						const _role = latestOwn.meeting_request === true
 							? 'requester'
-							: (latestOwn.in_reply_to ? 'accepter' : 'plain');
+							: (latestOwn.role === 'invited' ? 'accepter' : 'plain');
 						bestRemote = {
 							originMid: messageId,
 							lastTickAt: latestOwnTs,
@@ -29192,16 +30415,32 @@ class Sylk extends Component {
 							},
 							role: _role,
 							radiusMeters: Number(latestOwn.privacyDeferredRadiusMeters) || 0,
+							deviceId: latestOwn.deviceId || null,
 						};
 					}
 				}
 				if (bestRemote) {
-					this._activeRemoteShares.set(uri, {
+					const _seededEntry = {
 						originMid: bestRemote.originMid,
 						role: bestRemote.role,
+							peerUri: uri,
+						deviceId: bestRemote.deviceId || null,
 						lastTickAt: bestRemote.lastTickAt,
 						lastCoords: bestRemote.lastCoords,
-					});
+					};
+					const _seedKey = (bestRemote.role === 'plain') ? uri : (uri + '#meet');
+						this._locationEngine._activeRemoteShares.set(_seedKey, _seededEntry);
+					// Mirror the seed into React state too. Without this the Map
+					// (read by isShareActiveForUri) has the entry but the state
+					// prop (activeRemoteSharesByUri — read by the pulse union AND
+					// the active-shares stop panel merge) stays empty after a
+					// reload, so the panel opens empty. Keep them in lock-step.
+					this.setState((prev) => ({
+						activeRemoteSharesByUri: {
+							...(prev.activeRemoteSharesByUri || {}),
+							[uri]: _seededEntry,
+						},
+					}));
 					if (typeof this._setLocalOwnerCoordsForBubble === 'function') {
 						this._setLocalOwnerCoordsForBubble(
 							uri, bestRemote.originMid,
@@ -29209,18 +30448,10 @@ class Sylk extends Component {
 							bestRemote.radiusMeters
 						);
 					}
-					utils.timestampedLog(
-						'[mirror] boot replay: seeded active remote share for ' + uri
-						+ ' mid=' + (typeof this._meetShortId === 'function'
-							? this._meetShortId(bestRemote.originMid)
-							: String(bestRemote.originMid).slice(0, 8))
-						+ ' role=' + bestRemote.role
-						+ ' age=' + Math.round((now - bestRemote.lastTickAt) / 1000) + 's'
-					);
+					utils.timestampedLog('[mirror] boot replay: seeded active remote share for ' + uri + ' mid=' + this._locationEngine._meetShortId(bestRemote.originMid) + ' role=' + bestRemote.role + ' age=' + Math.round((now - bestRemote.lastTickAt) / 1000) + 's');
 				}
 			} catch (e) {
-				console.log('[mirror] boot replay failed',
-					e && e.message ? e.message : e);
+				console.log('[mirror] boot replay failed', e && e.message ? e.message : e);
 			}
 
 			let last_message_ts;
@@ -29298,7 +30529,19 @@ class Sylk extends Component {
 						'lastMessageId', contact.lastMessageId, '->', last_message_id,
 						'(idMismatch=', _idMismatch, 'tsAdvance=', _tsAdvance, ')');
 					if (last_message_ts) {
-						contact.timestamp = last_message_ts;
+						// NEVER move the contact's activity time BACKWARDS here. This
+						// refresh updates the preview off the last TEXT message, but a
+						// newer meet / location origin (e.g. an outgoing meeting_request,
+						// not counted as a text 'last message') may have already advanced
+						// contact.timestamp. The id-mismatch branch fires even when the
+						// text row is OLDER, so assigning unconditionally dragged the sort
+						// time back to the stale text (the 'inviter shows an old timestamp
+						// after sending a meet request' bug). Only take it if it's newer.
+						const _curTs = contact.timestamp ? new Date(contact.timestamp).getTime() : 0;
+						const _lmTs = new Date(last_message_ts).getTime();
+						if (!contact.timestamp || (Number.isFinite(_lmTs) && _lmTs > _curTs)) {
+							contact.timestamp = last_message_ts;
+						}
 					}
 					contact.lastMessageId = last_message_id;
 					contact.lastMessage = last_message;
@@ -29314,7 +30557,13 @@ class Sylk extends Component {
 					if (!_isConferenceContact) {
 						this.addJournal(uri, 'readConversation');
 					}
-					contact.messagesMetadata = {...messagesMetadata};
+					// Partition the loaded map: location bubbles go to the
+					// isolated locationData store, everything else stays in
+					// messagesMetadata. (The local `messagesMetadata` var kept its
+					// location entries for the synthesis/seed above; only the
+					// stored halves are split.)
+					contact.messagesMetadata = this._nonLocationSubset(messagesMetadata);
+					contact.locationData = this._locationSubset(messagesMetadata);
 					this.updateContactInState(contact);
 				}
 			}
@@ -29573,7 +30822,7 @@ class Sylk extends Component {
 				}
 				const _haveBidi = _hasOut && _hasIn;
 				if (_haveKeyForLoc && _haveBidi) {
-					utils.timestampedLog('[location] sharing available for', uri);
+					//utils.timestampedLog('[location] sharing available for', uri);
 				} else {
 					const reasons = [];
 					if (!_haveKeyForLoc) reasons.push('no PGP key');
@@ -29583,13 +30832,11 @@ class Sylk extends Component {
 						else if (!_hasOut) reasons.push('no outgoing message yet (have ' + _msgs.length + ' total, ' + _filtered + ' filtered)');
 						else if (!_hasIn) reasons.push('no incoming message yet (have ' + _msgs.length + ' total, ' + _filtered + ' filtered)');
 					}
-					utils.timestampedLog('[location] location sharing not available for', uri,
-						'(' + reasons.join('; ') + ')');
+					utils.timestampedLog('[location] location sharing not available for', uri, '(' + reasons.join('; ') + ')');
 				}
 				} // end else: not a conference room
 			} catch (e) {
-				console.log('[location] status-hint failed',
-					e && e.message ? e.message : e);
+				console.log('[location] status-hint failed', e && e.message ? e.message : e);
 			}
 
 			// Load summary: how many messages were loaded per content_type,
@@ -29622,7 +30869,8 @@ class Sylk extends Component {
 				console.log('[contactMessages] build failed', e && e.message ? e.message : e);
 			}
 
-			this.setState({messagesMetadata: messagesMetadata,
+			this.setState({messagesMetadata: this._nonLocationSubset(messagesMetadata),
+						   locationData: this._locationSubset(messagesMetadata),
 						   decryptingMessages: decryptingMessages,
 						   ..._contactMessagesUpdate,
 						   // Clear the cold-start chat-open spinner when
@@ -29842,6 +31090,10 @@ class Sylk extends Component {
         let messages = {...this._messagesMap()};
         let timestamp;
         let purgeMessages = [];
+        // Dedup for location-session collapse (see the push site below): every
+        // trail tick of a map shares the session origin id, so we replicate ONE
+        // removeMessage per session instead of one per point.
+        const _purgeSeen = new Set();
         let deleteAll = filter.deleteContact && !filter.simulate
         let uris = [uri];
         let query;
@@ -30059,7 +31311,24 @@ class Sylk extends Component {
 				   continue;  
                 }
 
-			    purgeMessages.push(item.msg_id);
+			    // Location rows (the origin bubble AND every trail tick, which
+			    // carry related_msg_id = session origin id) collapse to that
+			    // single session id, so the delete loop below issues ONE
+			    // deleteMessage → ONE wire removeMessage per MAP. deleteMessage's
+			    // local SQL cascade (msg_id = ? OR related_msg_id = ?) removes the
+			    // children here, and the peer/server cascade does the same on
+			    // receipt. Non-location rows keep their own msg_id.
+			    const _isLocationRow = item.content_type === 'application/sylk-live-location'
+			        || (typeof item.related_action === 'string'
+			            && (item.related_action.indexOf('location') === 0
+			                || item.related_action.indexOf('meeting') === 0));
+			    const _purgeKey = _isLocationRow
+			        ? (item.related_msg_id || item.msg_id)
+			        : item.msg_id;
+			    if (!_purgeSeen.has(_purgeKey)) {
+			        _purgeSeen.add(_purgeKey);
+			        purgeMessages.push(_purgeKey);
+			    }
             }
             
             if (!filter.simulate && purgeMessages.length > 10) {
@@ -30418,13 +31687,9 @@ class Sylk extends Component {
 		// also drops a system note in the chat timeline so the user has
 		// a visible record of why the share ended.
 		try {
-			const navBar = this.navigationBarRef && this.navigationBarRef.current;
-			if (navBar && typeof navBar.stopSharesRepliesTo === 'function') {
-				navBar.stopSharesRepliesTo(message.id);
-			}
+			this._locationEngine.stopSharesRepliesTo(message.id);
 		} catch (e) {
-			console.log('[location] removeMessage: stopSharesRepliesTo failed',
-				e && e.message ? e.message : e);
+			console.log('[location] removeMessage: stopSharesRepliesTo failed', e && e.message ? e.message : e);
 		}
 
 		try {
@@ -31050,6 +32315,32 @@ class Sylk extends Component {
     async _runSyncConversations(messages) {
         utils.timestampedLog('sync [journal], lastSyncId =', this.state.lastSyncId,
             'batchSize =', Array.isArray(messages) ? messages.length : 'n/a');
+        // Journal-batch pre-scan: tombstone every meet-END in this batch BEFORE
+        // any meeting_request is dispatched, so a request whose meeting_stop is
+        // present in the same fetch is discarded (no modal) rather than replayed
+        // as a live invite. action + sessionId are cleartext on the envelope.
+        try {
+            if (Array.isArray(messages)) {
+                let _endAdded = false;
+                for (const _m of messages) {
+                    if (!_m || _m.contentType !== 'application/sylk-location-sharing') continue;
+                    let _env = null;
+                    const _c = _m.content;
+                    if (typeof _c === 'string' && _c.trim().startsWith('{')) {
+                        try { _env = JSON.parse(_c); } catch (e2) { _env = null; }
+                    } else if (_c && typeof _c === 'object') { _env = _c; }
+                    if (!_env) continue;
+                    const _act = _env.action;
+                    const _isEnd = _act === 'meeting_end' || _act === 'meeting_reject'
+                        || (_act === 'location_stop' && (_env.reason === 'meet_end' || _env.reason === 'proximity'));
+                    if (!_isEnd) continue;
+                    const _sid = _env.meeting_session_id || _env.sessionId || _env.messageId;
+                    if (!_sid) continue;
+                    if (!this._locationEngine.endedMeetingSessionIds.has(_sid)) { this._locationEngine.endedMeetingSessionIds.add(_sid); _endAdded = true; }
+                }
+                if (_endAdded) this._persistMeetingHandshakeState();
+            }
+        } catch (e) { console.log('[meeting] journal end-scan failed', e && e.message); }
         // [IMDN-DIAG] one-line summary so we can see the burst's
         // arrival shape vs the per-entry incomingMessageFromJournal
         // logs below.
@@ -31200,12 +32491,12 @@ class Sylk extends Component {
                             if (_p && _p.action) {
                                 const _action = _p.action;
                                 inc(S.byMetaAction, _action);
-                                const _meta = _p.metadataId ? 'follow-up' : 'origin';
+                                const _meta = _p.isUpdate ? 'follow-up' : 'origin';
                                 inc(S.byMetaActionMeta, _action + ':' + _meta);
                                 if (_action === 'location') {
                                     const _meet = (_p.meeting_request === true)
                                         ? 'request'
-                                        : (_p.in_reply_to ? 'reply' : 'plain');
+                                        : (_p.role === 'invited' ? 'reply' : 'plain');
                                     inc(S.byMeetFlag, _meet);
                                     const _origin = _p.messageId || _envId;
                                     if (_origin) {
@@ -31689,6 +32980,14 @@ class Sylk extends Component {
 				// ("Sync N journal messages from <file>") still marks progress.
 				if (!firstSync && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
 					console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri);
+			    } else if (!firstSync && message.contentType === 'application/sylk-location-sharing') {
+					// Location payloads: also trace the wire action (location_start /
+					// location_update / location_stop / meeting_request / meeting_start
+					// / meeting_update / meeting_end / location_once / location_request)
+					// so a journal replay of a share is legible in the log.
+					let _lwAction = '(unparsed)';
+					try { const _lw = JSON.parse(message.content); _lwAction = (_lw && _lw.action) || '(none)'; } catch (e) {}
+					console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri, 'action=', _lwAction);
 			    }
 				
 				if (this.state.refetchMessagesForUri) {
@@ -31909,7 +33208,7 @@ class Sylk extends Component {
 						     // Drop location-sharing metadata from journal replay —
 						     // they are ephemeral live-only payloads; re-injecting
 						     // them on startup creates duplicate bubbles.
-						     if (this._isLocationJournalPayload(message)) {
+						     if (this._locationEngine._isLocationJournalPayload(message)) {
 						         stats.outgoing = stats.outgoing + 1;
 						         j = j + 1;
 						         continue;
@@ -31956,6 +33255,17 @@ class Sylk extends Component {
 	
 					} else {
 					    //console.log('Incoming', message.contentType);
+						// application/sylk-request replayed from the journal (the
+						// request arrived while the app was dead). Route it to the
+						// request handler so the modal (if still valid), the
+						// system-note breadcrumb and the contact bump all fire —
+						// same as a live/push arrival. The unread count is added
+						// by the journal unread block below; _handleSylkRequest
+						// itself doesn't touch unread, so there's no double count.
+						if (message.contentType === 'application/sylk-request') {
+							try { this._handleSylkRequest(uri, message.content, {viaPush: false, messageId: message.id}); }
+							catch (e) { console.log('[request] journal sylk-request failed', e && e.message); }
+						}
 						if (message.contentType !== 'application/sylk-message-metadata') {
 							for (const contact of contacts) {
 								if (contact.tags.indexOf('messages') === -1 && (message.contentType === 'text/plain' || message.contentType === 'text/html')) {
@@ -31989,7 +33299,13 @@ class Sylk extends Component {
 							lastMessages[uri] = message.id;
 		
 							if (message.dispositionNotification.indexOf('display') > -1) {
-								if (unreadCounterTypes.has(message.contentType)) {
+								// application/sylk-request is a signal, not a
+								// counted chat type, but an UNACTED request that
+								// arrived while the app was dead should surface as
+								// one unread after launch (journal replay). Count
+								// it alongside the normal unread types.
+								if (unreadCounterTypes.has(message.contentType)
+										|| message.contentType === 'application/sylk-request') {
 									for (const contact of contacts) {
 										// Only treat user as "in chat" if app is in foreground.
 										const isActiveChat =
@@ -32001,8 +33317,9 @@ class Sylk extends Component {
 										// unread. Re-fetching a PAST message must not
 										// resurrect unread on an up-to-date contact.
 										const _isNewMessage = messageTimestamp > (contact._origTs || 0);
-										if (!isActiveChat && _isNewMessage) {
+										if (!isActiveChat && _isNewMessage && contact.unread.indexOf(message.id) === -1) {
 											contact.unread.push(message.id);
+											updateContacts[contact.id] = contact;
 											utils.timestampedLog('[message] Increment unread (journal) from', uri,
 												'contentType=' + message.contentType,
 												'new length =', contact.unread.length,
@@ -32020,9 +33337,7 @@ class Sylk extends Component {
 									// pair with native "[fcm] incrementing unread badge ...
 									// contentType=application/sylk-public-key" to confirm
 									// the source of any [badge] DRIFT.
-									utils.timestampedLog('[message] Skip unread bump (journal) from', uri,
-										'contentType=' + message.contentType,
-										'(not in unreadCounterTypes allowlist)');
+									utils.timestampedLog('[message] Skip unread bump (journal) from', uri, 'contentType=' + message.contentType, '(not in unreadCounterTypes allowlist)');
 								}
 							}
 						} else {
@@ -32031,6 +33346,34 @@ class Sylk extends Component {
 						     }
 						}
 	
+						// Location ORIGIN ticks (one-shot / live-share start / meet start)
+						// bump unread like a normal incoming message. They are not in
+						// unreadCounterTypes, so the generic gate above skips them, but the
+						// receiver should still see the badge when a share arrives while the
+						// chat is closed. An ORIGIN's action is not an update; trail
+						// UPDATE ticks never bump. Derived from the cleartext envelope — no
+						// decryption (only the coords are encrypted).
+						let _isLocOriginJournal = false;
+						if (message.contentType === 'application/sylk-location-sharing') {
+							try {
+								const _lw = JSON.parse(message.content);
+								_isLocOriginJournal = _lw && typeof _lw.value === 'string' && _lw.action !== 'location_update' && _lw.action !== 'meeting_update'; // origin = coord tick whose action is NOT an update
+							} catch (e) { _isLocOriginJournal = false; }
+						}
+						if (_isLocOriginJournal) {
+							for (const contact of contacts) {
+								const isActiveChat = this.state.appState === 'active'
+									&& this.state.selectedContact
+									&& this.state.selectedContact.id === contact.id;
+								const _isNewMessage = messageTimestamp > (contact._origTs || 0);
+								if (!isActiveChat && _isNewMessage && contact.unread.indexOf(message.id) === -1) {
+									contact.unread.push(message.id);
+									updateContacts[contact.id] = contact;
+									utils.timestampedLog('[message] Increment unread (journal location origin) from', uri,
+										'new length =', contact.unread.length);
+								}
+							}
+						}
 						stats.incoming = stats.incoming + 1;
 						await this.incomingMessageFromJournal(message, {idx: i, total: messages.length});
 						j = j + 1;
@@ -32619,7 +33962,15 @@ class Sylk extends Component {
             }
         } catch (e) {}
 
-        console.log('incoming [message]', message.id, 'from', message.sender.uri, 'from [wss]', message.contentType);
+        if (message.contentType === 'application/sylk-location-sharing') {
+            let _lw = null;
+            try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+            if (_lw) {
+				utils.timestampedLog('Incoming [location]', message.contentType, _lw.action, message.id, 'from', message.sender.uri);
+			}
+		} else {
+			utils.timestampedLog('Incoming [message]', message.id, 'from', message.sender.uri, 'from [wss]', message.contentType);
+        }
         // Handle incoming messages
 
 		if (this.state.blockedUris.indexOf(message.sender.uri) > -1) { 
@@ -32725,7 +34076,25 @@ class Sylk extends Component {
             return;
         }
 
-        const is_encrypted =  message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        // application/sylk-location-sharing: the wire body is cleartext JSON
+        // (lifecycle fields) with only `value` PGP-encrypted. The whole-message
+        // is_encrypted path below would try to decrypt the JSON and fail, so
+        // route it straight through — saveIncomingMessage splits it into the
+        // encrypted-coords `content` column and the cleartext columns.
+        if (message.contentType === 'application/sylk-location-sharing') {
+            // DEBUG (location one-shot bring-up): dump the raw wire body as
+            // received. Commented out — it printed the full PGP blob on every
+            // incoming tick, flooding the log. Re-enable if wire debugging needed.
+            // console.log('[location][debug] RECV [wss]', message.id, 'from',
+            //     message.sender && message.sender.uri,
+            //     'contentStartsWith=', (message.content || '').slice(0, 12),
+            //     'contentLen=', message.content ? message.content.length : 0,
+            //     'content=', message.content);
+            this.dispatchIncomingMessage(message);
+            return;
+        }
+
+        const is_encrypted = isPgpEncryptedBody(message.content);
 
         if (is_encrypted) {
             if (!this.state.keys || !this.state.keys.private) {
@@ -32828,7 +34197,7 @@ class Sylk extends Component {
     }
 
     handleIncomingMessage(message, decryptedBody=null) {
-        utils.timestampedLog('[message] handleIncomingMessage', message.id, 'from', message.sender.uri, message.contentType, 'app state', this.state.appState);
+        //utils.timestampedLog('[message] handleIncomingMessage', message.id, 'from', message.sender.uri, message.contentType, 'app state', this.state.appState);
 
         // Drop control / sync content types here BEFORE saveIncomingMessage
         // runs. These are server-routed signals, not user-visible chat
@@ -32855,6 +34224,21 @@ class Sylk extends Component {
                     || message.contentType === 'application/sylk-conversation-read'
                     || message.contentType === 'application/sylk-message-remove'
                     || message.contentType === 'message/imdn')) {
+            return;
+        }
+
+        // application/sylk-request: a location / meet-up invitation whose
+        // cleartext JSON body carries everything the request modal needs.
+        // Route it to the modal and stop — it is a signal, never a stored
+        // chat row or bubble. (Live/websocket delivery path; the push path
+        // is handled in incomingMessageFromPush.)
+        if (message && message.contentType === 'application/sylk-request') {
+            try {
+                this._handleSylkRequest(message.sender && message.sender.uri,
+                    decryptedBody || message.content, {messageId: message.id});
+            } catch (e) {
+                console.log('[request] handleIncomingMessage sylk-request failed', e && e.message);
+            }
             return;
         }
 
@@ -32948,6 +34332,19 @@ class Sylk extends Component {
 
         this.saveIncomingMessage(message, decryptedBody);
 
+        // application/sylk-location-sharing is fully handled by
+        // saveIncomingMessage: it persists the row, injects the map bubble
+        // (as application/sylk-live-location via _injectLocationBubble) and
+        // sends its own IMDN. Stop here so it never reaches the generic
+        // sylk2GiftedChat render below — that helper emits a bogus
+        // "Unknown message received application/sylk-location-sharing" chat
+        // bubble for any content type it doesn't recognise. Log to the app
+        // log instead of showing anything on screen.
+        if (message.contentType === 'application/sylk-location-sharing') {
+            //utils.timestampedLog('[location] handleIncomingMessage: sharing row handled by saveIncomingMessage; skipping generic render', message.id, 'from', message.sender && message.sender.uri);
+            return;
+        }
+
         let content = decryptedBody || message.content;
 
         if (!this.isMessageAllowed(message.contentType, content)) {
@@ -32981,49 +34378,33 @@ class Sylk extends Component {
                     );
                 }
             } catch (e) {
-                console.log('[location] [meet] arrival push fire failed',
-                    e && e.message ? e.message : e);
+                console.log('[location] [meet] arrival push fire failed', e && e.message ? e.message : e);
             }
         }
 
         // -----------------------------------------------------------------
         // Classify metadata messages before firing any notifications.
         //
-        // Location sharing is transported as `application/sylk-message-metadata`.
-        // Without special-casing, two things go wrong:
-        //   1. The Android notification body is the raw JSON blob (ugly).
-        //   2. Every 60s tick produces a new notification (spammy).
-        //
-        // So we:
-        //   - Show a friendly notification ONLY on the origin tick (no
-        //     metadataId yet) — "📍 Live location from <name>".
-        //   - Silently swallow follow-up ticks (metadataId set) so the
-        //     receiver isn't nagged every minute while sharing is active.
+        // A location payload arriving as `application/sylk-message-metadata` is
+        // a legacy old-wire tick and is no longer supported — current location
+        // sharing uses `application/sylk-location-sharing`. Such ticks are
+        // dropped below so they neither render nor notify.
         // -----------------------------------------------------------------
         const isMetadata = message.contentType === 'application/sylk-message-metadata';
-        let isLocationOriginTick = false;
-        let isLocationFollowup = false;
 
         if (isMetadata) {
             try {
                 const parsed = JSON.parse(content);
                 if (parsed && parsed.action === 'location') {
-                    if (parsed.metadataId) {
-                        isLocationFollowup = true;
-                    } else {
-                        isLocationOriginTick = true;
-                    }
+                    // Legacy old-wire location (application/sylk-message-metadata) is no
+                    // longer supported; current location uses application/sylk-location-sharing.
+                    // Drop the legacy tick so it neither renders nor notifies (fresh start).
+                    try { utils.timestampedLog("[location] dropping legacy metadata-location tick from", message.sender && message.sender.uri); } catch (e) {}
+                    return;
                 }
             } catch (e) {
                 // non-JSON metadata — treat as a generic metadata message
             }
-        }
-
-        // Don't post any OS-level notification for a location follow-up tick.
-        if (isLocationFollowup) {
-            //console.log('[location] handleIncomingMessage: suppressing notification for follow-up tick');
-            this.handleMessageMetadata(message.sender.uri, content, message.sender.uri);
-            return;
         }
 
         // NOTE: an Android JS-side message banner used to be "posted" here,
@@ -33036,22 +34417,6 @@ class Sylk extends Component {
 			// Fire an iOS local notification for the origin location share
 			// (mirrors what notifyIncomingMessage does for plain messages, which
 			// we skip below for metadata to avoid duplicate UI entries).
-			if (isLocationOriginTick && Platform.OS === 'ios') {
-				const contact = this.lookupContact(message.sender.uri);
-				const displayName = (contact && contact.name) || message.sender.uri;
-				const userInfo = {'data': {
-					'event': 'message',
-					'from_uri': message.sender.uri,
-					'display_name': displayName,
-					'to_uri': this.state.accountId,
-					'message_id': message.id,
-					'origin': 'reactNative',
-				}};
-				if (!this.state.selectedContact ||
-					this.state.selectedContact.uri !== message.sender.uri) {
-					this.sendLocalNotification('Live location', 'From ' + displayName, userInfo);
-				}
-			}
 			this.handleMessageMetadata(message.sender.uri, content, message.sender.uri);
 			return;
 		}
@@ -33082,64 +34447,6 @@ class Sylk extends Component {
 		}
     }
 
-	// Is the journal payload a location-sharing UPDATE tick (or meeting_end)
-	// that can be safely dropped on journal replay?
-	//
-	// Policy (per product decision after the "target was offline when I
-	// started sharing" bug):
-	//   • ORIGIN ticks (action='location', no metadataId) — KEEP. Needed so
-	//     receivers who came online after the live event still see the share
-	//     bubble and, for meeting requests, the accept modal. Includes plain
-	//     timed-share origins, meeting-request origins (meeting_request:true)
-	//     and acceptance origins (in_reply_to set).
-	//   • UPDATE ticks (action='location', metadataId set) — DROP. The origin
-	//     row already carries the last-known position (live handling UPDATEs
-	//     the origin's content in place), so replaying follow-ups would waste
-	//     work and, worse, fail a rowid UPDATE if the origin was also dropped.
-	//   • meeting_end — DROP. The "wipe now" signal is only meaningful live;
-	//     the `expire` column + purgeExpiredMessages() handles the SQL side.
-	//   • Encrypted blobs we can't introspect (contentOverride missing) —
-	//     DROP, same as before: we can't tell origin from update, so the
-	//     conservative move is to skip. Callers that want origin ticks
-	//     through MUST pre-decrypt and pass the plaintext via contentOverride.
-	_isLocationJournalPayload(message, contentOverride) {
-		if (!message || message.contentType !== 'application/sylk-message-metadata') {
-			return false;
-		}
-		const content = contentOverride != null ? contentOverride : message.content;
-		if (typeof content !== 'string') return false;
-		// Caller couldn't provide a decrypted body → we have no way to tell
-		// origin from update. Drop (existing conservative default).
-		if (content.startsWith('-----BEGIN PGP')) return true;
-		try {
-			const parsed = JSON.parse(content);
-			if (!parsed || typeof parsed !== 'object') return false;
-			const action = parsed.action;
-			if (action === 'meeting_end') return true;
-			if (action === 'location') {
-				// Origin tick (meeting request, acceptance, or plain timed
-				// share) → pass through so SQL gets the row and the modal
-				// can be queued.
-				if (!parsed.metadataId) return false;
-				// Follow-up tick. Two cases:
-				//   • Meet session (meeting_request:true OR in_reply_to):
-				//     UPDATE-in-place semantics; the origin row already
-				//     carries the latest position once live, and journal
-				//     replay would just duplicate. Drop.
-				//   • Plain timed share (4h / 8h / 24h / once): we
-				//     preserve every tick as its own SQL row so the trail
-				//     can be replayed later. Pass through.
-				const isMeetSession = parsed.meeting_request === true
-					|| !!parsed.in_reply_to;
-				return isMeetSession;
-			}
-		} catch (e) {
-			// Unparseable — not recognisable as structured metadata; let
-			// the existing pipeline handle (it will silently skip via the
-			// guards in handleMessageMetadata / saveOutgoingMessageSqlBatch).
-		}
-		return false;
-	}
 
 	handleMessageMetadata(uri, content, author) {
 		let metadataContent;
@@ -33150,8 +34457,7 @@ class Sylk extends Component {
 		// up with "Unexpected character in number: -" and spams the console.
 		// Skip silently — the decrypted version is handled through
 		// handleIncomingMessage / outgoingMessage paths separately.
-		if (typeof content !== 'string'
-				|| content.startsWith('-----BEGIN PGP')) {
+		if (typeof content !== 'string' || content.startsWith('-----BEGIN PGP')) {
 			return;
 		}
 
@@ -33164,6 +34470,18 @@ class Sylk extends Component {
 
 	    //console.log('-- handleMessageMetadata', metadataContent.action);
 	
+		// Location/meet is owned by handleLocationPayload now; this generic
+		// dispatcher no longer supports it. Drop defensively so a stray
+		// location/meet payload can't fall through to the metadata store.
+		if (this._isLocationMetaActionName(metadataContent.action)) {
+			return;
+		}
+
+		if (metadataContent.action === 'location') {
+			return;
+		}
+
+
 		if (metadataContent.action === 'autoanswer') {
 			if (
 				metadataContent.value &&
@@ -33179,17 +34497,6 @@ class Sylk extends Component {
 			return;
 		}
 
-		// "Please share your current location" request from a peer.
-		// Symmetric to meeting_request, but a one-shot ask: receiver
-		// sees a Yes/No modal and on Yes ships shareLocationOnce
-		// back. We ignore our own outgoing echoes (no `author`) — the
-		// sender doesn't need a modal asking themselves.
-		if (metadataContent.action === 'location_request') {
-			if (author) {
-				this._noteIncomingLocationRequest(author, metadataContent);
-			}
-			return;
-		}
 
 		// "Escalate this call to a conference" handshake. Mirrors the
 		// location_request flow: the originator ships a metadata blob
@@ -33280,69 +34587,6 @@ class Sylk extends Component {
 			return;
 		}
 
-		// Peer ended their side of an "Until we meet" session (user tap,
-		// message deleted, permission lost). Route straight to NavigationBar
-		// so it can walk its locationTimers map and stop any share that was
-		// part of this session. Ignore our own outgoing echoes — the local
-		// stop already torn everything down before we emitted the signal.
-		if (metadataContent.action === 'meeting_end') {
-			if (!author) {
-				// Outgoing echo of our own signal — no-op.
-				return;
-			}
-			const sessionId = metadataContent.meeting_session_id
-				|| metadataContent.messageId;
-			// reason is propagated from _maybeFireProximityMeet so the peer's
-			// system-note wording matches ours. Undefined when the signal was
-			// user-initiated — stopSharesForMeetingSession falls back to
-			// 'peer-stopped' in that case.
-			const remoteReason = metadataContent.reason;
-			this._reportMeetingEnded(sessionId, remoteReason || 'peer-stopped');
-			// When the peer ended because of proximity-met, route through
-			// the shared "Meeting succeeded" helper. The helper's internal
-			// _proximityNotedSessionIds dedup coexists with the local-
-			// proximity path in _maybeFireProximityMeet: whichever fires
-			// first for a given session emits the message (if this device
-			// is the initiator), later callers are no-ops. No system note
-			// is written — the chat message itself records the meetup,
-			// with its own timestamp providing the "at HH:MM" marker.
-			if (remoteReason === 'proximity' && sessionId) {
-				this._sendMeetingSucceededIfInitiator(sessionId, author);
-			}
-			try {
-				const navBar = this.navigationBarRef && this.navigationBarRef.current;
-				if (navBar && typeof navBar.stopSharesForMeetingSession === 'function' && sessionId) {
-					navBar.stopSharesForMeetingSession(sessionId, {reason: remoteReason});
-				}
-			} catch (e) {
-				console.log('[location] stopSharesForMeetingSession failed',
-					e && e.message ? e.message : e);
-			}
-			// SQL + in-memory wipe. Without this, sibling devices of
-			// EITHER party (multi-device replication) keep the
-			// location bubble in their local SQL and `state.messages`
-			// even after the meeting-end signal arrives. The
-			// originating device wipes via _maybeFireProximityMeet's
-			// own _wipeMeetingSession call; siblings only got the
-			// _reportMeetingEnded + stopShares partial cleanup above.
-			// _wipeMeetingSession is idempotent (SQL DELETE on
-			// already-deleted rows is a no-op, state filter is also
-			// no-op when nothing matches) so it's safe to run on any
-			// device that observes the meeting_end message — the
-			// device that originated the wipe just no-ops the second
-			// time. Conversation URI is `uri` (the chat key, peer's
-			// uri) computed by handleIncomingMessage / by the
-			// outgoing-replication caller.
-			if (sessionId) {
-				try {
-					this._wipeMeetingSession(sessionId, uri, remoteReason || 'peer-stopped');
-				} catch (e) {
-					console.log('[meeting] meeting_end wipe failed',
-						e && e.message ? e.message : e);
-				}
-			}
-			return;
-		}
 	
 		// `metadataContent.uri` is filled in by the sender with the
 		// *recipient's* URI. On an outgoing local echo the recipient is
@@ -33357,140 +34601,6 @@ class Sylk extends Component {
 			uri = metadataContent.uri || uri;
 		}
 
-		// Meeting-request handshake hooks ("Until we meet"). Run BEFORE the
-		// selectedContact gate below, because:
-		//   • an incoming meeting_request may arrive while the user is
-		//     looking at a different chat — we still need to queue it so
-		//     the modal fires when they open it;
-		//   • the outgoing local echo of our own meeting request needs to
-		//     record the origin _id into myOutgoingMeetingRequestIds so we
-		//     can later recognise an incoming acceptance tick;
-		//   • an incoming acceptance tick (metadata.in_reply_to pointing
-		//     at one of our requests) needs to persist a "peer accepted"
-		//     system note even if we're not currently in that chat.
-		//   • coord pairing (this.meetingSessions) wants every tick, even
-		//     when the user is viewing a different chat — that way the
-		//     bubble already knows the peer's position the moment they
-		//     re-open the chat and the next tick lands.
-		let preGatePair = null;
-		if (metadataContent.action === 'location') {
-			if (!author && metadataContent.meeting_request === true && metadataContent.messageId) {
-				// Outgoing echo of our own meeting request — remember the _id
-				// and schedule the end-of-session wipe for this device.
-				const expiresMs = this._parseExpiresToMs(metadataContent.expires);
-				this._noteOutgoingMeetingRequest(metadataContent.messageId, expiresMs, uri);
-			}
-			if (author && metadataContent.meeting_request === true) {
-				this._noteIncomingMeetingRequest(author, metadataContent);
-			}
-			if (author && metadataContent.in_reply_to) {
-				this._noteIncomingAcceptanceTick(author, metadataContent);
-			}
-			// Multi-device sync for the meeting handshake AND the
-			// one-shot location-request handshake. Both ride on
-			// outgoingMessage replication (no `author`, in_reply_to
-			// set), and we differentiate by the one_shot flag:
-			//
-			//   • one_shot:true  → sibling answered a location_request.
-			//     Close any open LocationRequestModal on this device,
-			//     mark requestId handled.
-			//   • otherwise      → sibling accepted a meet-up request.
-			//     Existing acceptedMeetingRequestIds mirror.
-			if (!author && metadataContent.in_reply_to) {
-				if (metadataContent.one_shot) {
-					this._noteSiblingAnsweredLocationRequest(
-						metadataContent.in_reply_to, uri);
-				} else if (metadataContent.meeting_request !== true) {
-					this._noteSiblingAcceptedMeetingRequest(
-						metadataContent.in_reply_to, uri);
-				}
-			}
-			preGatePair = this._updateMeetingSessionCoords(metadataContent, uri);
-
-			// Per-tick APPLOG for plain (non-meet) location shares.
-			// Meet-session ticks already log a richer line inside
-			// `_updateMeetingSessionCoords` (with session id, side, and
-			// pair-state) — emitting another line here for them would
-			// just be noise. preGatePair is non-null only when the tick
-			// was classified into a meet session, so the absence of it
-			// is a clean "this is a plain timed share" signal.
-			//
-			// We log every plain tick regardless of selectedContact —
-			// the user explicitly asked to see receiver-side ticks in
-			// real time, and ticks for non-selected chats are exactly
-			// what they need ("17 ticks but no movement" reports come
-			// from re-opening a chat that received ticks while away).
-			//
-			// Fields: direction (in/out), sender, mId (short), coords,
-			// accuracy. Distance-from-origin is not knowable on the
-			// receiver because the origin is captured per-share on the
-			// SENDER (it's part of the "until I return" state machine);
-			// the sender now stamps `distFromOrigin=Nm` on its own
-			// breadcrumb (NavigationBar.js post-send log) so a side-by-
-			// side of sender + receiver logs reads as "alice sent X,Y at
-			// 200m from origin → bob got it 0.3 s later".
-			if (!preGatePair) {
-				try {
-					const _v = metadataContent.value || {};
-					const _dir = author ? 'in' : 'out-echo';
-					const _sender = author || this.state.accountId || '?';
-					const _mid = metadataContent.messageId
-						? (typeof this._meetShortId === 'function'
-							? this._meetShortId(metadataContent.messageId)
-							: String(metadataContent.messageId).slice(0, 8))
-						: '?';
-					const _lat = typeof _v.latitude === 'number'
-						? _v.latitude.toFixed(5) : '?';
-					const _lng = typeof _v.longitude === 'number'
-						? _v.longitude.toFixed(5) : '?';
-					const _acc = typeof _v.accuracy === 'number'
-						? ` ±${Math.round(_v.accuracy)}m` : '';
-					// Distance from the share's ORIGIN point (the first
-					// valid fix already stored under this messageId). Tells
-					// us at a glance whether successive ticks actually move
-					// or are stacking on the same spot — a frozen sender
-					// shows distOrigin≈0 forever while the tick count climbs.
-					let _distStr = '';
-					try {
-						const _trail = (this.state.messagesMetadata
-							&& this.state.messagesMetadata[metadataContent.messageId]) || [];
-						let _origin = null;
-						for (const _e of _trail) {
-							const _ev = _e && _e.value;
-							if (_ev && typeof _ev.latitude === 'number'
-									&& typeof _ev.longitude === 'number') {
-								_origin = _ev;
-								break;
-							}
-						}
-						if (_origin && typeof _v.latitude === 'number'
-								&& typeof _v.longitude === 'number') {
-							const _d = haversineMeters(_origin, _v);
-							_distStr = ` distOrigin=${_d.toFixed(1)}m`;
-						}
-					} catch (e) { /* never throw from logging */ }
-					utils.timestampedLog(
-						`[location] tick ${_dir} ← ${_sender} ${_lat},${_lng}${_acc}${_distStr} (_id=${_mid})`
-					);
-				} catch (e) { /* logging must never throw */ }
-			}
-
-			// Multi-device mirror stamp.
-			//
-			// `!author` on a location tick = this is a self-echo of
-			// an outgoing message replicated by the server, observed
-			// through the live-message path. Most own-account ticks
-			// flow through `outgoingMessage` instead and are stamped
-			// from there (the follow-up-drop guard inside
-			// outgoingMessage would otherwise short-circuit them
-			// before they reached this path); the call here covers
-			// the remaining handshake / origin variants that DO get
-			// here. The helper is idempotent and gates on whether
-			// THIS device is broadcasting (locationTimers entry).
-			if (!author) {
-				this._mirrorStampFromSelfEcho(uri, metadataContent);
-			}
-		}
 
 		if (!this.state.selectedContact || this.state.selectedContact.uri !== uri) {
 			// Per-tick noise; silenced now that the meet flow is
@@ -33505,20 +34615,6 @@ class Sylk extends Component {
 		const mId = metadataContent.messageId;
 		if (!mId) return;
 
-		// Live location: the first tick of a sharing session needs a visible
-		// bubble injected into the rendered messages list. Subsequent ticks
-		// reuse the same bubble — they only update `messagesMetadata[mId]`
-		// via the generic setState below, which ContactsListBox watches.
-		let meetingPair = null;
-		if (metadataContent.action === 'location') {
-			this._injectLocationBubble(uri, metadataContent, mId);
-			// The coord-pair classification happened above the gate so
-			// background ticks still populate this.meetingSessions. We
-			// reuse that result here to decide whether we need to run
-			// the state-mutating peer-coords propagation (which is only
-			// meaningful for the currently selected contact).
-			meetingPair = preGatePair;
-		}
 
 		this.updateMetadataFromRemote(
 			mId,
@@ -33529,10 +34625,6 @@ class Sylk extends Component {
 		this.setState(prev => {
 			const contactIndex = prev.allContacts.findIndex(c => c.uri === uri);
 			if (contactIndex === -1) {
-				if (metadataContent.action === 'location') {
-					console.log('[location] handleMessageMetadata setState: contact not found',
-						'uri=', uri);
-				}
 				return null;
 			}
 
@@ -33560,34 +34652,11 @@ class Sylk extends Component {
 
 			const oldMetaByMessage = mergedPriorMeta[mId] || [];
 
-			// Action-specific lookup of the "prior" entry to compare against:
-			//   • 'location' — keep the full tick trail so the receiver
-			//     bubble's tick counter grows in real time (one entry per
-			//     incoming tick, one per outgoing local echo). The
-			//     "previous" entry we want for the carry-forward /
-			//     downgrade-guard logic below is the LATEST tick by
-			//     timestamp, not the FIRST one in array order — with a
-			//     non-collapsed trail the array can hold many entries
-			//     and find()'s first-match would return the oldest.
-			//   • everything else — single-entry-per-action semantics
-			//     (rotation, label, consumed, …); first-match find()
-			//     remains correct.
-			let previousForAction = null;
-			if (metadataContent.action === 'location') {
-				let prevTs = -Infinity;
-				for (const ev of oldMetaByMessage) {
-					if (!ev || ev.action !== 'location') continue;
-					const ts = ev.timestamp ? new Date(ev.timestamp).getTime() : 0;
-					if (ts >= prevTs) {
-						previousForAction = ev;
-						prevTs = ts;
-					}
-				}
-			} else {
-				previousForAction = oldMetaByMessage.find(
-					ev => ev.action === metadataContent.action
-				);
-			}
+			// Single-entry-per-action semantics (rotation, label, consumed, …):
+			// first-match find() returns the prior entry for this action.
+			const previousForAction = oldMetaByMessage.find(
+				ev => ev.action === metadataContent.action
+			);
 
 			// Local author wins
 			if (
@@ -33602,61 +34671,12 @@ class Sylk extends Component {
 				return null;
 			}
 
-			// 'location' action retains the trail (each tick is a row in
-			// the array — drives the receiver-side counter). All other
-			// actions still collapse to one-entry-per-action via
-			// filter+append.
-			const filtered = metadataContent.action === 'location'
-				? oldMetaByMessage
-				: oldMetaByMessage.filter(
-					ev => ev.action !== metadataContent.action
-				);
+			// Collapse to one-entry-per-action via filter+append.
+			const filtered = oldMetaByMessage.filter(
+				ev => ev.action !== metadataContent.action
+			);
 
-			// Live-location ticks carry only the freshly-reported coords.
-			// Two derived fields live only on the client — they're stamped
-			// onto the previous 'location' entry by
-			// _propagatePeerCoordsForSession AFTER the tick lands:
-			//   • peerCoords      — the other participant's coords
-			//   • distanceMeters  — haversine(self, peer)
-			// The filter+append pattern above would drop them on every new
-			// tick, wiping the second pin between propagation cycles (the
-			// "Android shows one pin" regression). Carry them forward.
-			//
-			// Defensive guard: an out-of-order placeholder tick (no
-			// lat/lng — emitted once at session origin before GPS lock)
-			// must never downgrade a real-coords entry that already
-			// committed. Without this guard the map bubble reverts to
-			// the "Acquiring location" spinner on the receiving side
-			// (the iOS regression observed after the remote ACCEPT reply
-			// placed the accepter's placeholder tick through this path).
-			let augmentedEntry = metadataContent;
-			if (metadataContent.action === 'location') {
-				const prior = previousForAction;
-				const newHasCoords = metadataContent.value
-					&& typeof metadataContent.value.latitude === 'number'
-					&& typeof metadataContent.value.longitude === 'number';
-				const priorHasCoords = prior
-					&& prior.value
-					&& typeof prior.value.latitude === 'number'
-					&& typeof prior.value.longitude === 'number';
-
-				if (prior && priorHasCoords && !newHasCoords) {
-					console.log('[location] handleMessageMetadata setState: ignoring placeholder tick (real coords already present)',
-						'mId=', mId);
-					return null;
-				}
-
-				if (prior
-					&& (prior.peerCoords || prior.distanceMeters != null)
-					&& !metadataContent.peerCoords
-					&& metadataContent.distanceMeters == null) {
-					augmentedEntry = {
-						...metadataContent,
-						peerCoords: prior.peerCoords,
-						distanceMeters: prior.distanceMeters,
-					};
-				}
-			}
+			const augmentedEntry = metadataContent;
 
 			const newArray = [...filtered, augmentedEntry];
 
@@ -33694,10 +34714,9 @@ class Sylk extends Component {
 		}, () => {
 			// Re-bake this message's overlay (label / rotation / reply) into
 			// the new contactMessages model so the live change survives the
-			// next merge in ChatBox. Location ticks are handled separately
-			// (deferred); only the selected contact's list carries an index
-			// entry, so this is a no-op for anything else.
-			if (metadataContent.action !== 'location' && this.contactMessageIndex) {
+			// next merge in ChatBox. Only the selected contact's list carries
+			// an index entry, so this is a no-op for anything else.
+			if (this.contactMessageIndex) {
 				const _cur = this.contactMessageIndex.get(mId);
 				if (_cur) {
 					const _rebaked = this._overlayMessage(_cur, this.state.messagesMetadata);
@@ -33706,6 +34725,601 @@ class Sylk extends Component {
 			}
 		});
 
+	}
+
+	// True when a metadata action belongs to the location/meet family that is
+	// now owned by handleLocationPayload (and dropped by handleMessageMetadata).
+	_isLocationMetaActionName(action) {
+		return action === 'location' || action === 'location_request'
+			|| action === 'meeting_request' || action === 'meeting_accept'
+			|| action === 'meeting_reject' || action === 'meeting_end';
+	}
+
+	// Same test against a raw (JSON string) metadata payload — used by the
+	// mixed sibling/outgoing dispatchers to route location vs generic metadata.
+	_isLocationMetaAction(content) {
+		try { return this._isLocationMetaActionName((JSON.parse(content) || {}).action); }
+		catch (e) { return false; }
+	}
+
+	updateLocationFromRemote(uri, mId, locationContent) {
+		this.setState(prev => {
+			const contactIndex = prev.allContacts.findIndex(c => c.uri === uri);
+			if (contactIndex === -1) {
+				if (locationContent.action === 'location') {
+					console.log('[location] handleLocationPayload setState: contact not found', 'uri=', uri);
+				}
+				return null;
+			}
+
+			const oldContact = prev.allContacts[contactIndex];
+
+			// There are TWO sources of prior metadata in the tree, and they
+			// can drift apart:
+			//   • prev.messagesMetadata[mId]                 — top-level
+			//   • prev.allContacts[i].messagesMetadata[mId]  — contact-level mirror
+			// Drift happens because _propagatePeerCoordsForSession (and other
+			// in-between setStates) write peerCoords / distanceMeters ONTO the
+			// top-level entry, while contact-level updates may lag by one
+			// commit. If we rebuild the contact mirror from its own stale
+			// copy AND then return it as the top-level too (line below), we
+			// downgrade every OTHER mId in the top-level to its pre-drift
+			// version — which is exactly the "iOS map reverts to Locating..."
+			// regression when the Android accepter's placeholder tick lands
+			// on the requester: the placeholder's setState for mId=acceptId
+			// stomps the real-coords entry for mId=requestId carried only on
+			// the top-level branch. Fix: merge top-level on top of contact
+			// so the freshest per-mId data wins as the shared base.
+			// Location lives in the isolated locationData store now — base the
+			// merge on it (top-level preferred over the per-contact mirror, same
+			// drift guard as before) and write the result back to locationData
+			// only. messagesMetadata no longer carries location.
+			const prevTopMeta = prev.locationData || {};
+			const prevContactMeta = oldContact.locationData || {};
+			const mergedPriorMeta = {...prevContactMeta, ...prevTopMeta};
+
+			const oldMetaByMessage = mergedPriorMeta[mId] || [];
+
+			// Action-specific lookup of the "prior" entry to compare against:
+			//   • 'location' — keep the full tick trail so the receiver
+			//     bubble's tick counter grows in real time (one entry per
+			//     incoming tick, one per outgoing local echo). The
+			//     "previous" entry we want for the carry-forward /
+			//     downgrade-guard logic below is the LATEST tick by
+			//     timestamp, not the FIRST one in array order — with a
+			//     non-collapsed trail the array can hold many entries
+			//     and find()'s first-match would return the oldest.
+			//   • everything else — single-entry-per-action semantics
+			//     (rotation, label, consumed, …); first-match find()
+			//     remains correct.
+			let previousForAction = null;
+			if (locationContent.action === 'location') {
+				let prevTs = -Infinity;
+				for (const ev of oldMetaByMessage) {
+					if (!ev || ev.action !== 'location') continue;
+					const ts = ev.timestamp ? new Date(ev.timestamp).getTime() : 0;
+					if (ts >= prevTs) {
+						previousForAction = ev;
+						prevTs = ts;
+					}
+				}
+			} else {
+				previousForAction = oldMetaByMessage.find(
+					ev => ev.action === locationContent.action
+				);
+			}
+
+			// Local author wins
+			if (
+				previousForAction &&
+				previousForAction.author === prev.accountId &&
+				locationContent.author !== prev.accountId
+			) {
+				console.log(
+					"Ignoring metadata: local uri wins for action",
+					locationContent.action
+				);
+				return null;
+			}
+
+			// 'location' action retains the trail (each tick is a row in
+			// the array — drives the receiver-side counter). All other
+			// actions still collapse to one-entry-per-action via
+			// filter+append.
+			const filtered = locationContent.action === 'location'
+				? oldMetaByMessage
+				: oldMetaByMessage.filter(
+					ev => ev.action !== locationContent.action
+				);
+
+			// Live-location ticks carry only the freshly-reported coords.
+			// Two derived fields live only on the client — they're stamped
+			// onto the previous 'location' entry by
+			// _propagatePeerCoordsForSession AFTER the tick lands:
+			//   • peerCoords      — the other participant's coords
+			//   • distanceMeters  — haversine(self, peer)
+			// The filter+append pattern above would drop them on every new
+			// tick, wiping the second pin between propagation cycles (the
+			// "Android shows one pin" regression). Carry them forward.
+			//
+			// Defensive guard: an out-of-order placeholder tick (no
+			// lat/lng — emitted once at session origin before GPS lock)
+			// must never downgrade a real-coords entry that already
+			// committed. Without this guard the map bubble reverts to
+			// the "Acquiring location" spinner on the receiving side
+			// (the iOS regression observed after the remote ACCEPT reply
+			// placed the accepter's placeholder tick through this path).
+			let augmentedEntry = locationContent;
+			if (locationContent.action === 'location') {
+				const prior = previousForAction;
+				const newHasCoords = locationContent.value
+					&& typeof locationContent.value.latitude === 'number'
+					&& typeof locationContent.value.longitude === 'number';
+				const priorHasCoords = prior
+					&& prior.value
+					&& typeof prior.value.latitude === 'number'
+					&& typeof prior.value.longitude === 'number';
+
+				if (prior && priorHasCoords && !newHasCoords) {
+					console.log('[location] handleLocationPayload setState: ignoring placeholder tick (real coords already present)', 'mId=', mId);
+					return null;
+				}
+
+				if (prior
+					&& (prior.peerCoords || prior.distanceMeters != null)
+					&& !locationContent.peerCoords
+					&& locationContent.distanceMeters == null) {
+					augmentedEntry = {
+						...locationContent,
+						peerCoords: prior.peerCoords,
+						distanceMeters: prior.distanceMeters,
+					};
+				}
+			}
+
+			const newArray = [...filtered, augmentedEntry];
+
+			// Use the merged base (top-level preferred) as the source of
+			// truth so OTHER mIds — e.g. the requester's origin bubble when
+			// we're processing the accepter's placeholder tick — retain
+			// their freshest peerCoords / real-coords entries. Basing the
+			// merge on oldContact.messagesMetadata alone would quietly roll
+			// those back whenever the contact mirror lagged.
+			const newLocationDataForUri = {
+				...mergedPriorMeta,
+				[mId]: newArray
+			};
+
+
+			const updatedContact = {
+				...oldContact,
+				locationData: newLocationDataForUri
+			};
+
+			const newAllContacts = [...prev.allContacts];
+			newAllContacts[contactIndex] = updatedContact;
+
+			let selectedContact = this.state.selectedContact;
+
+			if (this.state.selectedContact.id && updatedContact.id && this.state.selectedContact.id == updatedContact.id) {
+				selectedContact = updatedContact;
+			}
+
+			return {
+				allContacts: newAllContacts,
+				selectedContact: selectedContact,
+				locationData: newLocationDataForUri
+			};
+		});
+	}
+
+	handleLocationPayload(uri, content, incoming) {
+		let locationContent;
+
+		// During startup / journal replay the caller sometimes hands us the
+		// raw server payload for an encrypted sylk-message-metadata. JSON.parse
+		// on a PGP envelope (starts with "-----BEGIN PGP MESSAGE-----") blows
+		// up with "Unexpected character in number: -" and spams the console.
+		// Skip silently — the decrypted version is handled through
+		// handleIncomingMessage / outgoingMessage paths separately.
+		if (typeof content !== 'string'
+				|| content.startsWith('-----BEGIN PGP')) {
+			return;
+		}
+
+		try {
+			locationContent = JSON.parse(content);
+		} catch (error) {
+			console.log('handleLocationPayload cannot parse payload', error);
+			return;
+		}
+
+	    //console.log('-- handleLocationPayload', locationContent.action);
+	
+
+		// "Please share your current location" request from a peer.
+		// Symmetric to meeting_request, but a one-shot ask: receiver
+		// sees a Yes/No modal and on Yes ships shareLocationOnce
+		// back. We ignore our own outgoing echoes (no `author`) — the
+		// sender doesn't need a modal asking themselves.
+		if (locationContent.action === 'location_request') {
+			if (incoming) {
+				this._noteIncomingLocationRequest(uri, locationContent);
+			}
+			return;
+		}
+
+		// "Let's meet up" invite from a peer — a coordinate-free handshake
+		// signal (no coords). Present the meeting modal; the actual coordinate
+		// share starts only AFTER the user accepts. Ignore our own outgoing echo.
+		if (locationContent.action === 'meeting_request') {
+			if (incoming) {
+				this._noteIncomingMeetingRequest(uri, locationContent);
+				try { this._presentMeetingRequestForUri(uri); } catch (e) { /* noop */ }
+			}
+			return;
+		}
+
+		// Peer accepted our meet invite — a coordinate-free handshake signal.
+		// Match it to our outgoing invite by the common sessionId (== the invite
+		// id we registered in myOutgoingMeetingRequestIds), mark handled, and
+		// start OUR (the inviter's) share so coordinates begin flowing. role is
+		// 'invited' on this signal; in_reply_to is obsolete (sessionId + role).
+		if (locationContent.action === 'meeting_accept') {
+			if (incoming) {
+				const _sid = locationContent.sessionId || locationContent.messageId;
+				if (_sid && this._locationEngine.myOutgoingMeetingRequestIds.has(_sid)
+						&& !this._locationEngine.handledAcceptanceIds.has(_sid)) {
+					this._locationEngine.handledAcceptanceIds.add(_sid);
+					this._persistMeetingHandshakeState();
+					this._locationEngine._reportPeerAccepted(_sid, uri);
+					{ const _ts = locationContent.timestamp || null;
+					  const _atStart = new Date(_ts || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+					  this._saveMeetingNote(uri, _sid, 'start', `Meet-up accepted at ${_atStart}`, _ts); }
+					this._startRequesterMeetShareOnAccept(_sid, uri);
+					try {
+						this._locationEngine.resumeMeetShareOnAccept(_sid);
+					} catch (e) { /* noop */ }
+					// Now that the invite is accepted, the inviter sends ONE
+					// coord-bearing `meeting_start` (its first GPS) — mirroring the
+					// invitee, which already emits a meeting_start. sendMeetingRequest
+					// is untouched; this is a separate origin tick under the same
+					// session. See _sendRequesterMeetingStart.
+					try { this._sendRequesterMeetingStart(_sid, uri); } catch (e) {
+						console.log('[request] requester meeting_start emit failed', e && e.message ? e.message : e);
+					}
+				}
+			}
+			return;
+		}
+
+		// Peer DECLINED our meet-me invite (action=meeting_reject). Stop our
+		// share for this session, note who declined, tombstone + wipe. No push —
+		// it arrives over the websocket / journal.
+		if (locationContent.action === 'meeting_reject') {
+			if (incoming) {
+				const _sid = locationContent.sessionId || locationContent.messageId;
+				if (_sid) {
+					const _rc = this.lookupContact(uri);
+					const _rname = (_rc && _rc.name) || uri;
+					const _rts = locationContent.timestamp || null;
+					const _rat = new Date(_rts || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+					this._saveMeetingNote(uri, _sid, 'end', `${_rname} declined your meet-up request at ${_rat}`, _rts);
+					this._locationEngine.endedMeetingSessionIds.add(_sid);
+					try { this._wipeMeetingSession(_sid, uri, 'declined', _rts); }
+					catch (e) { console.log('[meeting] meeting_reject wipe failed', e && e.message); }
+				}
+			}
+			return;
+		}
+
+		// Peer ended their side of an "Until we meet" session (user tap,
+		// message deleted, permission lost). Route straight to NavigationBar
+		// so it can walk its outgoingLocationSessions map and stop any share that was
+		// part of this session. Ignore our own outgoing echoes — the local
+		// stop already torn everything down before we emitted the signal.
+		if (locationContent.action === 'meeting_end') {
+			if (!incoming) {
+				// Outgoing echo of our own signal — no-op.
+				return;
+			}
+			const sessionId = locationContent.meeting_session_id
+				|| locationContent.messageId;
+			// reason is propagated from _maybeFireProximityMeet so the peer's
+			// system-note wording matches ours. Undefined when the signal was
+			// user-initiated — stopSharesForMeetingSession falls back to
+			// 'peer-stopped' in that case.
+			const remoteReason = locationContent.reason;
+			// Reason-aware meet-end note. meeting_end now carries the note itself
+			// (replacing the old location_stop{meet_end} companion) and is
+			// journaled + replayed below, so an offline peer still sees why the
+			// meet ended. Proximity has its own "succeeded" chat message, so skip
+			// the note there.
+			if (remoteReason !== 'proximity') {
+				try {
+					const _mc = this.lookupContact(uri);
+					const _mname = (_mc && _mc.name) || uri;
+					let _mat = '';
+					try {
+						_mat = new Date(locationContent.timestamp || Date.now())
+							.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+					} catch (e) {}
+					const _matSuffix = _mat ? ' at ' + _mat : '';
+					const _mnote = remoteReason === 'expired'
+						? `📍 Meet-up with ${_mname} expired${_matSuffix}`
+						: `📍 Meet-up with ${_mname} ended${_matSuffix}`;
+					this.saveSystemMessage(uri, _mnote, 'incoming');
+					// Canonical "Meet-up with X ended/expired" note posted for this
+					// session; _wipeMeetingSession below must not add a duplicate
+					// "Meet-up ended at HH:MM" for this same peer-driven end.
+					this._meetEndNoteSessions = this._meetEndNoteSessions || new Set();
+					if (sessionId) this._meetEndNoteSessions.add(sessionId);
+				} catch (e) {}
+			}
+			this._locationEngine._reportMeetingEnded(sessionId, remoteReason || 'peer-stopped');
+			// When the peer ended because of proximity-met, route through
+			// the shared "Meeting succeeded" helper. The helper's internal
+			// _proximityNotedSessionIds dedup coexists with the local-
+			// proximity path in _maybeFireProximityMeet: whichever fires
+			// first for a given session emits the message (if this device
+			// is the initiator), later callers are no-ops. No system note
+			// is written — the chat message itself records the meetup,
+			// with its own timestamp providing the "at HH:MM" marker.
+			if (remoteReason === 'proximity' && sessionId) {
+				this._locationEngine._sendMeetingSucceededIfInitiator(sessionId, uri);
+			}
+			try {
+				if (sessionId) {
+					this._locationEngine.stopSharesForMeetingSession(sessionId, {reason: remoteReason});
+				}
+			} catch (e) {
+				console.log('[location] stopSharesForMeetingSession failed', e && e.message ? e.message : e);
+			}
+			// The requester cancelled before we accepted: if the accept/decline
+			// modal is still open for THIS session, dismiss it, and drop any queued
+			// pending request so it can't re-open on the next chat-open drain.
+			try {
+				const _mr = this.state.meetingRequestModal;
+				if (_mr && _mr.show
+						&& ((sessionId && _mr.requestId === sessionId) || _mr.fromUri === uri)) {
+					this._closeMeetingRequestModal();
+				}
+				const _pmr = this._locationEngine.pendingMeetingRequests;
+				if (_pmr && _pmr[uri] && (!sessionId || _pmr[uri].requestId === sessionId)) {
+					delete _pmr[uri];
+				}
+			} catch (e) { /* best-effort modal dismiss */ }
+			// SQL + in-memory wipe. Without this, sibling devices of
+			// EITHER party (multi-device replication) keep the
+			// location bubble in their local SQL and `state.messages`
+			// even after the meeting-end signal arrives. The
+			// originating device wipes via _maybeFireProximityMeet's
+			// own _wipeMeetingSession call; siblings only got the
+			// _reportMeetingEnded + stopShares partial cleanup above.
+			// _wipeMeetingSession is idempotent (SQL DELETE on
+			// already-deleted rows is a no-op, state filter is also
+			// no-op when nothing matches) so it's safe to run on any
+			// device that observes the meeting_end message — the
+			// device that originated the wipe just no-ops the second
+			// time. Conversation URI is `uri` (the chat key, peer's
+			// uri) computed by handleIncomingMessage / by the
+			// outgoing-replication caller.
+			if (sessionId) {
+				try {
+					this._wipeMeetingSession(sessionId, uri, remoteReason || 'peer-stopped', locationContent.timestamp || null);
+				} catch (e) {
+					console.log('[meeting] meeting_end wipe failed', e && e.message ? e.message : e);
+				}
+			}
+			return;
+		}
+	
+		// `locationContent.uri` is filled in by the sender with the
+		// *recipient's* URI. On an outgoing local echo the recipient is
+		// indeed our conversation key, so honoring it is fine. But on an
+		// incoming message it is *our own* URI — using it would compare
+		// our account id against `selectedContact.uri` (the remote party)
+		// and the gate below would always reject. So only honour the
+		// metadata-side uri when this call is an outgoing echo (no
+		// `author` arg). On incoming, keep the sender's uri we were
+		// passed in.
+		if (!incoming) {
+			uri = locationContent.uri || uri;
+		}
+
+		// Meeting-request handshake hooks ("Until we meet"). Run BEFORE the
+		// selectedContact gate below, because:
+		//   • an incoming meeting_request may arrive while the user is
+		//     looking at a different chat — we still need to queue it so
+		//     the modal fires when they open it;
+		//   • the outgoing local echo of our own meeting request needs to
+		//     record the origin _id into myOutgoingMeetingRequestIds so we
+		//     can later recognise an incoming acceptance tick;
+		//   • an incoming acceptance tick (metadata.in_reply_to pointing
+		//     at one of our requests) needs to persist a "peer accepted"
+		//     system note even if we're not currently in that chat.
+		//   • coord pairing (this.meetingSessions) wants every tick, even
+		//     when the user is viewing a different chat — that way the
+		//     bubble already knows the peer's position the moment they
+		//     re-open the chat and the next tick lands.
+		let preGatePair = null;
+		if (locationContent.action === 'location') {
+			// Incoming (peer→us) plain live share origin = "location_start": record
+			// it in the incoming-session registry so the active-session list reflects
+			// shares we are RECEIVING, not just ones we send. Gated to genuine incoming
+			// (author set), origin ticks only (not an update), plain live (has expires,
+			// not one-shot, not a meet handshake). Keyed by session/origin id; idempotent.
+			if (incoming
+					&& locationContent.messageId
+					&& !locationContent.isUpdate
+					&& !locationContent.one_shot
+					&& locationContent.meeting_request !== true
+					&& locationContent.role !== 'invited'
+					&& locationContent.expires) {
+				this._addIncomingLocationSession(locationContent.messageId, {
+					uri,
+					expiresAt: this._parseExpiresToMs(locationContent.expires),
+					deviceId: locationContent.deviceId || null,
+				});
+			}
+			if (!incoming && locationContent.meeting_request === true && locationContent.messageId) {
+				// Outgoing echo of our own meeting request — remember the _id
+				// and schedule the end-of-session wipe for this device.
+				const expiresMs = this._parseExpiresToMs(locationContent.expires);
+				this._noteOutgoingMeetingRequest(locationContent.messageId, expiresMs, uri);
+			}
+			if (incoming && locationContent.meeting_request === true) {
+				this._noteIncomingMeetingRequest(uri, locationContent);
+			}
+			if (incoming && locationContent.role === 'invited') {
+				this._noteIncomingAcceptanceTick(uri, locationContent);
+			}
+			// Multi-device sync for the meeting handshake AND the
+			// one-shot location-request handshake. Both ride on
+			// outgoingMessage replication (no `author`, in_reply_to
+			// set), and we differentiate by the one_shot flag:
+			//
+			//   • one_shot:true  → sibling answered a location_request.
+			//     Close any open LocationRequestModal on this device,
+			//     mark requestId handled.
+			//   • otherwise      → sibling accepted a meet-up request.
+			//     Existing acceptedMeetingRequestIds mirror.
+			if (!incoming && locationContent.role === 'invited' && locationContent.sessionId) {
+				// A sibling device accepted a meet-up — mirror the state.
+				this._noteSiblingAcceptedMeetingRequest(
+					locationContent.sessionId, uri);
+			}
+			preGatePair = this._locationEngine._updateMeetingSessionCoords(locationContent, uri);
+
+			// Per-tick APPLOG for plain (non-meet) location shares.
+			// Meet-session ticks already log a richer line inside
+			// `_updateMeetingSessionCoords` (with session id, side, and
+			// pair-state) — emitting another line here for them would
+			// just be noise. preGatePair is non-null only when the tick
+			// was classified into a meet session, so the absence of it
+			// is a clean "this is a plain timed share" signal.
+			//
+			// We log every plain tick regardless of selectedContact —
+			// the user explicitly asked to see receiver-side ticks in
+			// real time, and ticks for non-selected chats are exactly
+			// what they need ("17 ticks but no movement" reports come
+			// from re-opening a chat that received ticks while away).
+			//
+			// Fields: direction (in/out), sender, mId (short), coords,
+			// accuracy. Distance-from-origin is not knowable on the
+			// receiver because the origin is captured per-share on the
+			// SENDER (it's part of the "until I return" state machine);
+			// the sender now stamps `distFromOrigin=Nm` on its own
+			// breadcrumb (NavigationBar.js post-send log) so a side-by-
+			// side of sender + receiver logs reads as "alice sent X,Y at
+			// 200m from origin → bob got it 0.3 s later".
+			if (!preGatePair) {
+				try {
+					const _v = locationContent.value || {};
+					const _dir = incoming ? 'in' : 'out-echo';
+					const _sender = (incoming ? uri : this.state.accountId) || '?';
+					const _mid = locationContent.messageId
+						? this._locationEngine._meetShortId(locationContent.messageId)
+						: '?';
+					const _lat = typeof _v.latitude === 'number'
+						? _v.latitude.toFixed(5) : '?';
+					const _lng = typeof _v.longitude === 'number'
+						? _v.longitude.toFixed(5) : '?';
+					const _acc = typeof _v.accuracy === 'number'
+						? ` ±${Math.round(_v.accuracy)}m` : '';
+					// Distance from the share's ORIGIN point (the first
+					// valid fix already stored under this messageId). Tells
+					// us at a glance whether successive ticks actually move
+					// or are stacking on the same spot — a frozen sender
+					// shows distOrigin≈0 forever while the tick count climbs.
+					let _distStr = '';
+					try {
+						const _trail = (this.state.messagesMetadata
+							&& this.state.messagesMetadata[locationContent.messageId]) || [];
+						let _origin = null;
+						for (const _e of _trail) {
+							const _ev = _e && _e.value;
+							if (_ev && typeof _ev.latitude === 'number'
+									&& typeof _ev.longitude === 'number') {
+								_origin = _ev;
+								break;
+							}
+						}
+						if (_origin && typeof _v.latitude === 'number'
+								&& typeof _v.longitude === 'number') {
+							const _d = haversineMeters(_origin, _v);
+							_distStr = ` distOrigin=${_d.toFixed(1)}m`;
+						}
+					} catch (e) { /* never throw from logging */ }
+					// utils.timestampedLog(`[location] tick ${_dir} ← ${_sender} ${_lat},${_lng}${_acc}${_distStr} (_id=${_mid})`);
+				} catch (e) { /* logging must never throw */ }
+			}
+
+			// Multi-device mirror stamp.
+			//
+			// `!author` on a location tick = this is a self-echo of
+			// an outgoing message replicated by the server, observed
+			// through the live-message path. Most own-account ticks
+			// flow through `outgoingMessage` instead and are stamped
+			// from there (the follow-up-drop guard inside
+			// outgoingMessage would otherwise short-circuit them
+			// before they reached this path); the call here covers
+			// the remaining handshake / origin variants that DO get
+			// here. The helper is idempotent and gates on whether
+			// THIS device is broadcasting (outgoingLocationSessions entry).
+			if (!incoming) {
+				this._mirrorStampFromSelfEcho(uri, locationContent);
+			}
+		}
+
+		if (!this.state.selectedContact || this.state.selectedContact.uri !== uri) {
+			// Per-tick noise; silenced now that the meet flow is
+			// stable. Background ticks for non-selected chats fall
+			// through this gate every interval and there's nothing
+			// to learn from logging them once it works.
+			return;
+		}
+
+		locationContent.author = incoming ? uri : this.state.accountId;
+
+		const mId = locationContent.messageId;
+		if (!mId) return;
+
+		// Unified meet model: both legs share ONE bubble (sessionId) and are
+		// told apart by `role`. On this device only MY OWN role's ticks fill the
+		// bubble (the owner pin); the PEER's incoming ticks must NOT extend the
+		// owner trail (that would flip the owner pin between the two parties) —
+		// they only feed peerCoords via the meeting-session propagate. So for an
+		// incoming (author set) meet tick, stamp peerCoords and return.
+		if (locationContent.action === 'location'
+				&& (locationContent.role
+					|| locationContent.meeting_request === true)
+				&& incoming && uri !== this.state.accountId) {
+			try {
+				if (preGatePair) {
+					this._locationEngine._propagatePeerCoordsForSession(preGatePair.sessionId, uri);
+				}
+			} catch (e) { /* peer-coords stamp best-effort */ }
+			return;
+		}
+
+		// Live location: the first tick of a sharing session needs a visible
+		// bubble injected into the rendered messages list. Subsequent ticks
+		// reuse the same bubble — they only update `messagesMetadata[mId]`
+		// via the generic setState below, which ContactsListBox watches.
+		let meetingPair = null;
+		if (locationContent.action === 'location') {
+			this._injectLocationBubble(uri, locationContent, mId);
+			// The coord-pair classification happened above the gate so
+			// background ticks still populate this.meetingSessions. We
+			// reuse that result here to decide whether we need to run
+			// the state-mutating peer-coords propagation (which is only
+			// meaningful for the currently selected contact).
+			meetingPair = preGatePair;
+		}
+	
+		this.updateLocationFromRemote(uri, mId, locationContent);
+
 		// After the per-tick metadata update has landed, cross-inject the
 		// peer's latest coords (+ computed distance) into both sides'
 		// location entries for this meeting session. Runs on the next
@@ -33713,7 +35327,7 @@ class Sylk extends Component {
 		// when the tick isn't part of a meeting session.
 		if (meetingPair && meetingPair.sessionId) {
 			setTimeout(() => {
-				this._propagatePeerCoordsForSession(meetingPair.sessionId, uri);
+				this._locationEngine._propagatePeerCoordsForSession(meetingPair.sessionId, uri);
 			}, 0);
 		}
 	}
@@ -33727,12 +35341,6 @@ class Sylk extends Component {
 		// Always seed empty sets first so callers downstream don't crash
 		// on undefined when accountId is not yet known (boot ordering).
 		const toSet = (a) => new Set(Array.isArray(a) ? a : []);
-		this.handledMeetingRequestIds    = this.handledMeetingRequestIds    || new Set();
-		this.myOutgoingMeetingRequestIds = this.myOutgoingMeetingRequestIds || new Set();
-		this.handledAcceptanceIds        = this.handledAcceptanceIds        || new Set();
-		this.acceptedMeetingRequestIds   = this.acceptedMeetingRequestIds   || new Set();
-		this.metPeerUris                 = this.metPeerUris                 || new Set();
-		this._deletedLocationBubbleIds   = this._deletedLocationBubbleIds   || new Set();
 		// Allow the caller to pass accountId explicitly for the case
 		// where this runs immediately after a setState(accountId) and
 		// this.state.accountId hasn't propagated yet (handleRegistration's
@@ -33744,11 +35352,13 @@ class Sylk extends Component {
 		try {
 			const location = await this._readAppStateNamespace(accountId, 'location');
 			const mr = (location && location.meetingRequests) || {};
-			this.handledMeetingRequestIds    = toSet(mr.handled);
-			this.myOutgoingMeetingRequestIds = toSet(mr.mine);
-			this.handledAcceptanceIds        = toSet(mr.acceptancesHandled);
-			this.acceptedMeetingRequestIds   = toSet(mr.accepted);
-			this.metPeerUris                 = toSet(mr.metPeers);
+			this._locationEngine.handledMeetingRequestIds    = toSet(mr.handled);
+			this._locationEngine.handledLocationRequestIds   = toSet(mr.locationHandled);
+			this._locationEngine.myOutgoingMeetingRequestIds = toSet(mr.mine);
+			this._locationEngine.handledAcceptanceIds        = toSet(mr.acceptancesHandled);
+			this._locationEngine.acceptedMeetingRequestIds   = toSet(mr.accepted);
+			this._locationEngine.endedMeetingSessionIds      = toSet(mr.ended);
+			this._locationEngine.metPeerUris                 = toSet(mr.metPeers);
 			// Persistent tombstone of bubble ids the user deleted via
 			// the chat UI. Survives app restart so the synthesis pass
 			// in getMessages can't resurrect a bubble from any straggler
@@ -33760,10 +35370,9 @@ class Sylk extends Component {
 			// tapping Delete and them re-opening the chat wipes the
 			// in-memory set, the SQL trail row remains, and the
 			// synthesis pass re-creates the bubble.
-			this._deletedLocationBubbleIds   = toSet(location && location.deletedBubbleIds);
-			if (this._deletedLocationBubbleIds.size > 0) {
-				console.log('[location] hydrated deleted bubble tombstones:',
-					this._deletedLocationBubbleIds.size, 'ids');
+			this._locationEngine._deletedLocationBubbleIds   = toSet(location && location.deletedBubbleIds);
+			if (this._locationEngine._deletedLocationBubbleIds.size > 0) {
+				//console.log('[location] hydrated deleted bubble tombstones:', this._locationEngine._deletedLocationBubbleIds.size, 'ids');
 			}
 
 			// GC pass: drop ids whose underlying SQL row has been
@@ -33789,11 +35398,11 @@ class Sylk extends Component {
 	async _gcMeetingHandshakeState(accountId) {
 		if (!accountId) return;
 		const sets = [
-			['mine',               this.myOutgoingMeetingRequestIds],
-			['accepted',           this.acceptedMeetingRequestIds],
-			['handled',            this.handledMeetingRequestIds],
-			['acceptancesHandled', this.handledAcceptanceIds],
-			['deletedBubbleIds',   this._deletedLocationBubbleIds],
+			['mine',               this._locationEngine.myOutgoingMeetingRequestIds],
+			['accepted',           this._locationEngine.acceptedMeetingRequestIds],
+			['handled',            this._locationEngine.handledMeetingRequestIds],
+			['acceptancesHandled', this._locationEngine.handledAcceptanceIds],
+			['deletedBubbleIds',   this._locationEngine._deletedLocationBubbleIds],
 		];
 		const allIds = new Set();
 		for (const [, set] of sets) {
@@ -33843,8 +35452,7 @@ class Sylk extends Component {
 			}
 		}
 		if (totalDropped > 0) {
-			console.log('[location] handshake GC dropped',
-				totalDropped, 'stale id(s):', JSON.stringify(droppedPerSet));
+			console.log('[location] handshake GC dropped', totalDropped, 'stale id(s):', JSON.stringify(droppedPerSet));
 			// Persist both halves of the location blob so the next
 			// hydrate sees a clean state.
 			await this._persistMeetingHandshakeState();
@@ -33858,11 +35466,13 @@ class Sylk extends Component {
 		try {
 			const location = await this._readAppStateNamespace(accountId, 'location');
 			location.meetingRequests = {
-				handled:            [...(this.handledMeetingRequestIds    || [])],
-				mine:               [...(this.myOutgoingMeetingRequestIds || [])],
-				acceptancesHandled: [...(this.handledAcceptanceIds        || [])],
-				accepted:           [...(this.acceptedMeetingRequestIds   || [])],
-				metPeers:           [...(this.metPeerUris                 || [])],
+				handled:            [...(this._locationEngine.handledMeetingRequestIds    || [])],
+				locationHandled:    [...(this._locationEngine.handledLocationRequestIds   || [])],
+				mine:               [...(this._locationEngine.myOutgoingMeetingRequestIds || [])],
+				acceptancesHandled: [...(this._locationEngine.handledAcceptanceIds        || [])],
+				accepted:           [...(this._locationEngine.acceptedMeetingRequestIds   || [])],
+				ended:              [...(this._locationEngine.endedMeetingSessionIds     || [])],
+				metPeers:           [...(this._locationEngine.metPeerUris                 || [])],
 			};
 			await this._writeAppStateNamespace(accountId, 'location', location);
 		} catch (e) {
@@ -33881,13 +35491,158 @@ class Sylk extends Component {
 		if (!accountId) return;
 		try {
 			const location = await this._readAppStateNamespace(accountId, 'location');
-			location.deletedBubbleIds = [...(this._deletedLocationBubbleIds || [])];
+			location.deletedBubbleIds = [...(this._locationEngine._deletedLocationBubbleIds || [])];
 			await this._writeAppStateNamespace(accountId, 'location', location);
 		} catch (e) {
 			console.log('_persistDeletedLocationBubbleIds failed', e && e.message ? e.message : e);
 		}
 	}
 
+	// ===== Active location-session registry logging =====
+	// Outgoing shares (ones THIS device initiated) live in
+	// this._locationEngine.outgoingLocationSessions, keyed by peer uri. Shares we are
+	// RECEIVING live from a peer live in this._locationEngine.incomingLocationSessions,
+	// keyed by the sender's session/origin id. Direction is implied by
+	// which map the entry is in, so each map has its OWN dump helper and
+	// every change dumps BOTH (see _onLocationSessionsChanged) so the pair
+	// of log lines is always the full, symmetric picture.
+	_dumpOutgoingLocationSessions(reason) {
+		try {
+			// Dump BOTH outgoing stores \u2014 plain timed shares and meet legs \u2014 so
+			// a contact's concurrent sessions both show in the diagnostic line.
+			const _rowsFor = (map, tag) => Object.keys(map || {}).map((uri) => {
+				const e = (map && map[uri]) || {};
+				const sid = e.originLocationId || e.meetingSessionId || e.forcedOriginId || '?';
+				return `    [${tag}] uri=${uri} sid=${sid} kind=${e.kind || 'fixed'} exp=${e.expiresAt || '?'}`;
+			});
+			const rows = [
+				..._rowsFor(this._locationEngine.outgoingLocationSessions, 'share'),
+				..._rowsFor(this._locationEngine.outgoingMeetSessions, 'meet'),
+			];
+			utils.timestampedLog(
+				`[location] [sessions] outgoing ${reason} \u2014 ${rows.length} active`
+				+ (rows.length ? ':\n' + rows.join('\n') : ''));
+		} catch (e) { /* logging must never throw */ }
+	}
+
+	_dumpIncomingLocationSessions(reason) {
+		try {
+			const map = this._locationEngine.incomingLocationSessions || {};
+			const rows = Object.keys(map).map((sid) => {
+				const e = map[sid] || {};
+				return `    uri=${e.uri || '?'} sid=${sid} exp=${e.expiresAt || '?'}`;
+			});
+			utils.timestampedLog(
+				`[location] [sessions] incoming ${reason} \u2014 ${rows.length} active`
+				+ (rows.length ? ':\n' + rows.join('\n') : ''));
+		} catch (e) { /* logging must never throw */ }
+	}
+
+	// One-line add/remove marker, then a full registry dump. Called from every
+	// mutation path (outgoing start/stop in LocationSharingManager, incoming
+	// add/remove below).
+	_onLocationSessionsChanged(verb, direction, key, extra) {
+		try {
+			utils.timestampedLog(
+				`[location] [sessions] ${verb} ${direction} ${key}`
+				+ (extra ? ' ' + extra : ''));
+		} catch (e) { /* noop */ }
+		const _reason = `after ${verb} ${direction} ${key}`;
+		this._dumpOutgoingLocationSessions(_reason);
+		this._dumpIncomingLocationSessions(_reason);
+		// Keep the OPEN share picker's disabled options reactive: if a session
+		// started or ended for the contact the picker is currently open for,
+		// recompute its live types into NavigationBar state so the modal
+		// re-renders with the right options enabled/disabled. Captured at open
+		// (showShareLocationModal); refreshed here for the while-open case.
+		try {
+			const _nb = this._locationEngine && this._locationEngine.navbar;
+			if (_nb && !_nb._unmounted && _nb.state && _nb.state.showShareLocationModal
+					&& _nb.state.shareModalUri
+					&& typeof this._locationEngine.getStartableLiveTypes === 'function') {
+				const _t = this._locationEngine.getStartableLiveTypes(_nb.state.shareModalUri);
+				const _cur = _nb.state.shareLiveTypes || {};
+				if (!_cur || _cur.meet !== _t.meet || _cur.share !== _t.share) {
+					_nb.setState({ shareLiveTypes: _t });
+				}
+			}
+		} catch (e) { /* best-effort */ }
+	}
+
+	// Record an incoming (peer\u2192us) live share, keyed by its session/origin
+	// id. Idempotent: a re-seen origin just refreshes the expiry timer. An
+	// active BackgroundTimer auto-removes the entry at `expiresAt` if no
+	// explicit location_stop arrives first (see _removeIncomingLocationSession,
+	// also called from _endLocationTrack on an incoming stop).
+	_addIncomingLocationSession(sessionId, fields) {
+		if (!sessionId) return;
+		this._locationEngine.incomingLocationSessions = this._locationEngine.incomingLocationSessions || {};
+		const _f = fields || {};
+		const _armExpiry = (entry) => {
+			if (entry.expiryTimeoutId != null) {
+				try { BackgroundTimer.clearTimeout(entry.expiryTimeoutId); } catch (e) {}
+				entry.expiryTimeoutId = null;
+			}
+			const ms = (typeof entry.expiresAt === 'number') ? entry.expiresAt - Date.now() : null;
+			if (ms != null && ms > 0) {
+				entry.expiryTimeoutId = BackgroundTimer.setTimeout(() => {
+					this._removeIncomingLocationSession(sessionId, 'expired');
+				}, ms);
+			}
+		};
+		const existing = this._locationEngine.incomingLocationSessions[sessionId];
+		if (existing) {
+			if (_f.uri) existing.uri = _f.uri;
+			if (typeof _f.expiresAt === 'number') existing.expiresAt = _f.expiresAt;
+			if (_f.deviceId) existing.deviceId = _f.deviceId;
+			_armExpiry(existing);
+			this._refreshIncomingLocationShareUris();
+			return;
+		}
+		const entry = {
+			direction: 'incoming',
+			uri: _f.uri || null,
+			sessionId,
+			expiresAt: (typeof _f.expiresAt === 'number') ? _f.expiresAt : null,
+			deviceId: _f.deviceId || null,
+			expiryTimeoutId: null,
+			startedAt: Date.now(),
+		};
+		this._locationEngine.incomingLocationSessions[sessionId] = entry;
+		_armExpiry(entry);
+		this._onLocationSessionsChanged('ADD', 'incoming', sessionId,
+			`uri=${entry.uri || '?'} exp=${entry.expiresAt || '?'}`);
+		this._refreshIncomingLocationShareUris();
+	}
+
+	// Drop an incoming live share (peer sent location_stop, or its window
+	// expired). Idempotent \u2014 a no-op if the session isn't tracked.
+	_removeIncomingLocationSession(sessionId, reason) {
+		if (!sessionId) return;
+		const map = this._locationEngine.incomingLocationSessions;
+		if (!map || !map[sessionId]) return;
+		const entry = map[sessionId];
+		if (entry.expiryTimeoutId != null) {
+			try { BackgroundTimer.clearTimeout(entry.expiryTimeoutId); } catch (e) {}
+		}
+		delete map[sessionId];
+		this._onLocationSessionsChanged('REMOVE', 'incoming', sessionId, `reason=${reason || 'ended'}`);
+		this._refreshIncomingLocationShareUris();
+	}
+
+	// Reactive mirror of incomingLocationSessions for the contact-tile pin:
+	// a plain { uri: true } map derived from the session registry and pushed
+	// into React state so ContactCard re-renders when an incoming share
+	// starts or ends (the registry itself is a non-reactive plain object).
+	_refreshIncomingLocationShareUris() {
+		const map = {};
+		const src = this._locationEngine.incomingLocationSessions || {};
+		for (const sid of Object.keys(src)) {
+			const e = src[sid];
+			if (e && e.uri) map[e.uri] = true;
+		}
+		this.setState({ incomingLocationShareUris: map });
+	}
 	_parseExpiresToMs(v) {
 		if (typeof v === 'number') return v;
 		if (typeof v === 'string') {
@@ -33897,143 +35652,32 @@ class Sylk extends Component {
 		return null;
 	}
 
-	// --- Human-readable [location] [meet] narrative logger --------------------------
-	// These emit a compact lifecycle trail, one line per event. Designed to
-	// be readable at a glance without scrolling through per-tick noise.
-	//
-	//   [location] [meet] INVITATION SENT → <peer> — session <id8> expires <hh:mm>
-	//   [location] [meet] INVITATION RECEIVED ← <peer> — session <id8> expires <hh:mm>
-	//   [location] [meet] ACCEPTED ← <peer> — session <id8>
-	//   [location] [meet] PEER ACCEPTED — session <id8> (both sides sharing)
-	//   [location] [meet] Distance: ~<N> <unit> — session <id8>  (band change only)
-	//   [location] [meet] Proximity dwell started — <N> m — session <id8>
-	//   [location] [meet] PROXIMITY MET — session <id8>
-	//   [location] [meet] SESSION ENDED — reason=<why> session <id8>
-	_meetShortId(id) {
-		if (!id) return '????????';
-		const s = String(id);
-		return s.length > 8 ? s.slice(0, 8) : s;
-	}
 
-	_meetFormatExpires(expiresAt) {
-		if (typeof expiresAt !== 'number' || !isFinite(expiresAt)) return '(no-expiry)';
-		try {
-			const d = new Date(expiresAt);
-			const hh = String(d.getHours()).padStart(2, '0');
-			const mm = String(d.getMinutes()).padStart(2, '0');
-			return hh + ':' + mm;
-		} catch (e) {
-			return '(invalid)';
-		}
-	}
 
-	_meetDistanceBand(meters) {
-		if (meters == null || !isFinite(meters)) return 'unknown';
-		if (meters <= 10)   return 'proximity';     // meeting threshold
-		if (meters <= 100)  return 'tens';          // 11–100 m
-		if (meters <= 1000) return 'hundreds';      // 101 m – 1 km
-		if (meters <= 10000) return 'km';           // 1–10 km
-		return 'far';                                // > 10 km
-	}
 
-	_meetFormatDistance(meters) {
-		if (meters == null || !isFinite(meters)) return '?';
-		if (meters < 1000) return Math.round(meters) + ' m';
-		return (meters / 1000).toFixed(meters < 10000 ? 1 : 0) + ' km';
-	}
 
-	// High-level narrative meeting-lifecycle events. These are routed
-	// through utils.timestampedLog so they land in the persisted user-
-	// facing log file (exposed in the app's logs UI), not just the dev
-	// console. Low-level `[location] [meet] propagate …` diagnostics remain on
-	// plain console.log (they're too noisy for the user log).
-	_reportMeetingInvitationSent(requestId, peerUri, expiresAt) {
-		utils.timestampedLog('[location] [meet] INVITATION SENT →', peerUri,
-			'— session', this._meetShortId(requestId),
-			'expires', this._meetFormatExpires(expiresAt));
-	}
 
-	_reportMeetingInvitationReceived(requestId, fromUri, expiresAt) {
-		utils.timestampedLog('[location] [meet] INVITATION RECEIVED ←', fromUri,
-			'— session', this._meetShortId(requestId),
-			'expires', this._meetFormatExpires(expiresAt));
-	}
 
-	_reportMeetingAccepted(requestId, fromUri) {
-		utils.timestampedLog('[location] [meet] ACCEPTED ←', fromUri,
-			'— session', this._meetShortId(requestId));
-	}
 
-	_reportPeerAccepted(requestId, fromUri) {
-		utils.timestampedLog('[location] [meet] PEER ACCEPTED — session', this._meetShortId(requestId),
-			'peer=', fromUri, '(both sides sharing)');
-	}
 
-	_reportMeetingDistance(sessionId, meters, ownCoords, destinationCoords) {
-		if (meters == null || !isFinite(meters)) return;
-		const band = this._meetDistanceBand(meters);
-		const prev = this._meetLastDistanceBand[sessionId];
-		if (prev === band) return;
-		this._meetLastDistanceBand[sessionId] = band;
-		// Optional "and how far am *I* from the destination?" suffix.
-		// Each device computes against its own current coords (the
-		// caller passes ownCoords from this device's session side —
-		// requesterCoords or accepterCoords depending on which side
-		// we are), so the same line on both phones reads as that
-		// device's own progress, not a shared number.
-		let toDestSuffix = '';
-		if (destinationCoords && ownCoords) {
-			const toDest = haversineMeters(ownCoords, destinationCoords);
-			if (Number.isFinite(toDest)) {
-				toDestSuffix = ' • ' + this._meetFormatDistance(toDest) + ' to dest';
-			}
-		}
-		utils.timestampedLog('[location] [meet] Distance: ~' + this._meetFormatDistance(meters)
-			+ ' peer' + toDestSuffix,
-			'— session', this._meetShortId(sessionId),
-			'(band', prev ? prev + '→' + band : band, ')');
-	}
 
-	_reportProximityDwellStarted(sessionId, meters) {
-		utils.timestampedLog('[location] [meet] Proximity dwell started —',
-			this._meetFormatDistance(meters),
-			'— session', this._meetShortId(sessionId));
-	}
 
-	_reportProximityMet(sessionId, meters) {
-		utils.timestampedLog('[location] [meet] PROXIMITY MET — session', this._meetShortId(sessionId),
-			'distance=', this._meetFormatDistance(meters));
-	}
 
-	_reportMeetingEnded(sessionId, reason) {
-		// Dedup: this is called from both the incoming meeting_end
-		// signal handler AND the local teardown helper, so without
-		// a guard the SESSION ENDED log fires twice for the same
-		// session. Track reported sessions in a Set; the
-		// _meetLastDistanceBand cleanup still runs idempotently.
-		if (!this._meetReportedEnded) this._meetReportedEnded = new Set();
-		if (!this._meetReportedEnded.has(sessionId)) {
-			this._meetReportedEnded.add(sessionId);
-			utils.timestampedLog('[meet] [location] SESSION ENDED — reason=' + (reason || 'unknown'),
-				'session', this._meetShortId(sessionId));
-		}
-		delete this._meetLastDistanceBand[sessionId];
-	}
 
 	_noteOutgoingMeetingRequest(requestId, expiresAt, peerUri) {
 		if (!requestId) return;
-		const firstTimeSeen = !this.myOutgoingMeetingRequestIds.has(requestId);
+		const firstTimeSeen = !this._locationEngine.myOutgoingMeetingRequestIds.has(requestId);
 		if (firstTimeSeen) {
-			this.myOutgoingMeetingRequestIds.add(requestId);
+			this._locationEngine.myOutgoingMeetingRequestIds.add(requestId);
 			this._persistMeetingHandshakeState();
-			this._reportMeetingInvitationSent(requestId, peerUri, expiresAt);
+			this._locationEngine._reportMeetingInvitationSent(requestId, peerUri, expiresAt);
 		}
 		// Sender-side wipe: triggers on our device at expiresAt regardless
 		// of whether the accepter ever joins. Uses this.state.accountId as
 		// the conversation URI only if peerUri is missing — in normal flow
 		// peerUri is the remote contact's uri.
 		if (typeof expiresAt === 'number' && expiresAt > Date.now()) {
-			this._scheduleMeetingSessionWipe(requestId, peerUri, expiresAt);
+			this._locationEngine._scheduleMeetingSessionWipe(requestId, peerUri, expiresAt);
 		}
 	}
 
@@ -34045,7 +35689,7 @@ class Sylk extends Component {
 		// we still want the wipe timer — the messages are the same and
 		// should disappear at session end regardless of user action.
 		if (typeof expiresAt === 'number' && expiresAt > Date.now()) {
-			this._scheduleMeetingSessionWipe(requestId, fromUri, expiresAt);
+			this._locationEngine._scheduleMeetingSessionWipe(requestId, fromUri, expiresAt);
 		}
 		// Capture the shared meeting destination if the requester
 		// included one (debug convergence simulator today; future
@@ -34057,17 +35701,22 @@ class Sylk extends Component {
 		if (dest
 				&& typeof dest.latitude === 'number'
 				&& typeof dest.longitude === 'number') {
-			if (!this.meetingSessions) this.meetingSessions = {};
-			const s = this.meetingSessions[requestId] || {};
+			const s = this._locationEngine.meetingSessions[requestId] || {};
 			if (!s.destination) {
 				s.destination = {latitude: dest.latitude, longitude: dest.longitude};
-				this.meetingSessions[requestId] = s;
+				this._locationEngine.meetingSessions[requestId] = s;
 			}
 		}
-		if (this.handledMeetingRequestIds.has(requestId)) return;
+		if (this._locationEngine.handledMeetingRequestIds.has(requestId)) return;
+		if (this._locationEngine.endedMeetingSessionIds.has(requestId)) {
+			// This meet already ended (met / expired / cancelled). A journal replay
+			// of the original meeting_request must NOT re-present the accept modal.
+			this._locationEngine.handledMeetingRequestIds.add(requestId);
+			return;
+		}
 		if (expiresAt == null || Date.now() >= expiresAt) {
 			// Silently swallow already-expired requests — no modal, no note.
-			this.handledMeetingRequestIds.add(requestId);
+			this._locationEngine.handledMeetingRequestIds.add(requestId);
 			this._persistMeetingHandshakeState();
 			return;
 		}
@@ -34079,11 +35728,11 @@ class Sylk extends Component {
 		// id — avoids three identical lines back-to-back in the user
 		// log every time a fresh requester ships their initial burst
 		// of ticks.
-		const alreadyNoted = this.pendingMeetingRequests[fromUri]
-			&& this.pendingMeetingRequests[fromUri].requestId === requestId;
+		const alreadyNoted = this._locationEngine.pendingMeetingRequests[fromUri]
+			&& this._locationEngine.pendingMeetingRequests[fromUri].requestId === requestId;
 		// Carry destination through to the pending entry too so the
 		// Accept handler can pull it out without re-walking sessions.
-		this.pendingMeetingRequests[fromUri] = {
+		this._locationEngine.pendingMeetingRequests[fromUri] = {
 			requestId,
 			expiresAt,
 			fromUri,
@@ -34094,7 +35743,17 @@ class Sylk extends Component {
 				: null,
 		};
 		if (!alreadyNoted) {
-			this._reportMeetingInvitationReceived(requestId, fromUri, expiresAt);
+			this._locationEngine._reportMeetingInvitationReceived(requestId, fromUri, expiresAt);
+		}
+		// Persistent request breadcrumb, written on EVERY path (push / WS /
+		// journal). _saveMeetingNote dedups per session and suppresses it if the
+		// meet already progressed (started/ended), so a journal replay of an old
+		// request can't re-add it.
+		{
+			const _dnReq = (this.lookupContact(fromUri) && this.lookupContact(fromUri).name) || fromUri;
+			const _reqTs = (metadataContent && metadataContent.timestamp) || null;
+			const _atReq = new Date(_reqTs || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+			this._saveMeetingNote(fromUri, requestId, 'request', `Meet-up request by ${_dnReq} at ${_atReq}`, _reqTs);
 		}
 		// If we're already looking at this chat, pop the modal now.
 		// (`_presentMeetingRequestForUri` is itself idempotent against
@@ -34102,33 +35761,117 @@ class Sylk extends Component {
 		if (this.state.selectedContact && this.state.selectedContact.uri === fromUri) {
 			this._presentMeetingRequestForUri(fromUri);
 		}
+		// Honour a meeting-request deep-link tap that arrived BEFORE the
+		// invite was registered (the background push replay races the tap
+		// on resume). Now that we know this uri carries a meeting invite,
+		// switch into its chat. 60 s guard so a stale latch can't hijack a
+		// much-later invite from the same contact.
+		if (this._meetingTapNavigateUri === fromUri
+				&& (Date.now() - (this._meetingTapNavigateTs || 0)) < 60000) {
+			this._meetingTapNavigateUri = null;
+			this._navigateToChatForMeetingTap(fromUri);
+		}
 	}
 
-	// Arm a one-shot BackgroundTimer for session expiry. Idempotent —
-	// repeat calls for the same sessionId are no-ops, so it's safe to
-	// invoke from both the outgoing-echo path and the incoming-request
-	// path on the same device (won't happen in practice but cheap to
-	// guard).
-	_scheduleMeetingSessionWipe(sessionId, uri, expiresAt) {
-		if (!sessionId) return;
-		if (this.meetingSessionWipeTimers[sessionId]) return;
-		const delay = Math.max(0, expiresAt - Date.now());
-		// BackgroundTimer.setTimeout fires on a real alarm on Android and
-		// is reliable in foreground on iOS. If the app is killed before
-		// the timer fires, the next boot's hydrate path could replay the
-		// wipe — but we keep the scheme simple: if the user kills the
-		// app, cleanup happens on the NEXT interaction with that chat
-		// after expires_at (see the defensive check at the top of the
-		// wipe method itself). Good enough for a privacy feature where
-		// "eventually" is acceptable.
-		const id = BackgroundTimer.setTimeout(() => {
-			delete this.meetingSessionWipeTimers[sessionId];
-			this._wipeMeetingSession(sessionId, uri, 'expired');
-		}, delay);
-		this.meetingSessionWipeTimers[sessionId] = id;
-		console.log('[meeting] scheduled wipe for session', sessionId,
-			'uri=', uri, 'in', Math.round(delay / 1000), 's');
+	// Recognise a meet-up INVITE carried on an application/sylk-location-
+	// sharing push and register + present it, mirroring _handleSylkRequest's
+	// 'meeting' branch (which handles the legacy application/sylk-request
+	// invite). Shared by the Android FCM path (incomingMessageFromPush) and
+	// the iOS APNS tap paths (SylkPushTapped / cold-start initialNotification)
+	// so both platforms behave identically.
+	//
+	// `content` is the cleartext wire envelope; only action=="meeting_request"
+	// is pushed by the server (meeting_update/start are not in its push list),
+	// so it's unambiguously the invite. The coords/destination live in the
+	// encrypted `value` and are filled in by the WS/journal copy later — the
+	// accept modal opens fine without them. Idempotent per request id.
+	// Persistent, deduped meeting-lifecycle breadcrumb. system=1 so it
+	// survives _wipeMeetingSession (which deletes only non-system rows — the
+	// map + location dots — leaving these start/end/close notes in the chat).
+	// Deduped per (sessionId:kind); the ended-session tombstone additionally
+	// stops journal replays from re-adding notes for a finished meet.
+	async _saveMeetingNote(uri, sessionId, kind, text, ts=null) {
+		if (!uri || !text) return;
+		try {
+			this._meetingNoteKeys = this._meetingNoteKeys || new Set();
+			const key = (sessionId || uri) + ':' + kind;
+			if (this._meetingNoteKeys.has(key)) return;
+			// The request breadcrumb is only meaningful as the FIRST line of a
+			// meet. If this session already progressed (start/end note in memory,
+			// accepted/ended markers, or a lifecycle note already in SQL — e.g. an
+			// old request replayed from the journal), suppress it. The modal is
+			// separately gated by the ended-session tombstone.
+			if (kind === 'request' && sessionId
+					&& (this._meetingNoteKeys.has(sessionId + ':start')
+						|| this._meetingNoteKeys.has(sessionId + ':end')
+						|| (this._locationEngine.endedMeetingSessionIds.has(sessionId))
+						|| (this._locationEngine.acceptedMeetingRequestIds.has(sessionId))
+						|| (this._locationEngine.handledAcceptanceIds.has(sessionId)))) {
+				return;
+			}
+			this._meetingNoteKeys.add(key);
+			if (kind === 'request' && sessionId && await this._meetingHasSqlLifecycleNote(sessionId)) {
+				return;
+			}
+			// Stamp at the event time when the caller supplies one (journal
+			// replay passes the journalled tick's timestamp) so an offline 2nd
+			// device doesn't insert every replayed meet breadcrumb at "now".
+			this.saveSystemMessage(uri, text, 'incoming', false, 1, {meetingSessionId: sessionId, meetingNote: kind}, null, ts);
+		} catch (e) { console.log('[meeting] note failed', kind, e && e.message); }
 	}
+
+	// True if a meeting-lifecycle system note (request/start/close/end) for this
+	// session already exists in SQL — lets us suppress a re-added request note
+	// when an already-progressed meet is replayed from the journal.
+	async _meetingHasSqlLifecycleNote(sessionId) {
+		if (!sessionId) return false;
+		try {
+			const accountId = this.state && this.state.accountId;
+			if (!accountId) return false;
+			const r = await this.ExecuteQuery(
+				"select 1 from messages where account = ? and system = 1 and metadata like ? limit 1",
+				[accountId, '%"meetingSessionId":"' + sessionId + '"%']
+			);
+			return !!(r && r.rows && r.rows.length > 0);
+		} catch (e) { return false; }
+	}
+
+	_registerMeetingRequestFromPush(from, content) {
+		try {
+			const _env = (typeof content === 'string' && content.trim().startsWith('{'))
+				? JSON.parse(content) : (content && typeof content === 'object' ? content : null);
+			if (!_env || _env.action !== 'meeting_request') return;
+			const _sid = _env.sessionId || _env.messageId;
+			// Never prompt ourselves on a replicated outgoing echo.
+			if (!_sid || from === this.state.accountId) return;
+			this._noteIncomingMeetingRequest(from, {
+				messageId: _sid,
+				expires: _env.expires,
+				meeting_request: true,
+			});
+			try { this._presentMeetingRequestForUri(from); } catch (e) { /* noop */ }
+			// (request breadcrumb is written centrally in _noteIncomingMeetingRequest,
+			//  called above — gated so an already-progressed meet doesn't re-add it.)
+		} catch (e) {
+			console.log('[meeting] _registerMeetingRequestFromPush failed', e && e.message);
+		}
+	}
+
+	// Drop the user into `uri`'s chat for a tapped meeting invite: arm the
+	// "Opening chat…" spinner, select the contact, and kick the fast-load
+	// so the map / sticky invite bubble is on screen under the accept
+	// modal. Mirrors the navigation the 'message' deep-link branch does.
+	_navigateToChatForMeetingTap(uri) {
+		if (!uri) return;
+		try { this._armChatOpenSpinner(uri); } catch (e) { /* noop */ }
+		try { this.selectChatContact(uri); } catch (e) { /* noop */ }
+		try {
+			this._fastLoadInitialMessages(uri).catch((e) => {
+				console.log('[chat-fast] (meeting tap) threw:', e && e.message);
+			});
+		} catch (e) { /* noop */ }
+	}
+
 
 	// Tear down every persisted trace of this session on THIS device.
 	// Callable from the scheduled timer or from a defensive check on
@@ -34138,101 +35881,129 @@ class Sylk extends Component {
 	// What we delete:
 	//   • the message whose msg_id === sessionId (the request origin)
 	//   • every message whose msg_text content JSON references this
-	//     sessionId (metadataContent.messageId / metadataId / in_reply_to)
+	//     sessionId (metadataContent.messageId / in_reply_to)
 	//
 	// What we keep:
 	//   • everything with system=1 (the saveSystemMessage rows — those
 	//     are the "started sharing", "peer accepted", "sharing expired"
 	//     breadcrumbs per product decision).
-	async _wipeMeetingSession(sessionId, uri, reason) {
+	async _wipeMeetingSession(sessionId, uri, reason, ts=null) {
 		if (!sessionId) return;
-		this._reportMeetingEnded(sessionId, reason);
-
-		// 1. If a live share is still running on this device for this uri
-		//    AND its origin/accept points at this session, stop it first.
+		this._locationEngine._reportMeetingEnded(sessionId, reason);
+		// Persistent END breadcrumb, phrased by reason. system=1 so it survives
+		// the row wipe below (map + dots go, the note stays in the chat line).
 		try {
-			const navBar = this.navigationBarRef && this.navigationBarRef.current;
-			if (navBar && typeof navBar.stopLocationSharing === 'function' && uri) {
-				navBar.stopLocationSharing(uri, {silent: true, reason: 'expired'});
+			const _atEnd = new Date(ts || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+			let _endText = null;
+			// Proximity success: NO "You met" end note — the frozen map's
+			// "Meet-up succeeded" label is the record.
+			if (reason === 'expired') _endText = `Meet-up expired at ${_atEnd}`;
+			else if (reason === 'cancelled' || reason === 'deleted' || reason === 'declined') _endText = `Meet-up cancelled at ${_atEnd}`;
+			else if (reason !== 'proximity') {
+				// The incoming meeting_end handler already posts the canonical
+				// "Meet-up with X ended" note (and stopLocationSharing posts
+				// "Meeting stopped by remote party") for a peer-driven end, so
+				// skip this duplicate there. Locally-initiated / other wipes with
+				// no canonical note still post it.
+				_endText = (this._meetEndNoteSessions && this._meetEndNoteSessions.has(sessionId))
+					? null
+					: `Meet-up ended at ${_atEnd}`;
+			}
+			if (uri && _endText) this._saveMeetingNote(uri, sessionId, 'end', _endText, ts);
+		} catch (e) { /* noop */ }
+		// Tombstone this session so a later journal replay of its meeting_request
+		// can't re-present the accept modal after the dedup markers get pruned.
+		try {
+			if (sessionId) {
+				if (!this._locationEngine.endedMeetingSessionIds.has(sessionId)) {
+					this._locationEngine.endedMeetingSessionIds.add(sessionId);
+					this._persistMeetingHandshakeState();
+				}
+			}
+		} catch (e) { /* noop */ }
+		// The meet is over — clear the multi-device mirror for this peer NOW so
+		// the in-chat "Share location" button stops pulsing immediately instead
+		// of lingering ~90s on the self-echo of the final tick.
+		try { if (uri) this._clearRemoteShareForUri(uri); } catch (e) {}
+
+		// 1. If a live MEET leg is still running on this device for this uri,
+		//    stop THAT leg (and only it) — resolve the meet entry by this
+		//    session id so a concurrent plain share to the same contact is left
+		//    untouched. Passing meet:true guarantees we target the meet store.
+		try {
+			if (uri) {
+				const _eng = this._locationEngine;
+				const _meetEntry = _eng._entryByOrigin(uri, sessionId) || _eng._meetEntryForUri(uri);
+				if (_meetEntry) {
+					_eng.stopLocationSharing(uri, {
+						silent: true,
+						reason: 'expired',
+						sessionId: _meetEntry.originLocationId,
+						meet: true,
+					});
+				}
 			}
 		} catch (e) {
 			console.log('[meeting] wipe: stop share failed', e);
 		}
 
-		// 2. SQL wipe. LIKE on the `metadata` column is what we rely on
-		//    for encrypted rows (the `content` column holds PGP ciphertext
-		//    when encrypted=1, so it won't contain the sessionId). The
-		//    `metadata` column is always stored as plaintext JSON for
-		//    location rows (see saveIncomingMessage / saveOutgoingMessage
-		//    — both write JSON.stringify(metadataContent) there). We also
-		//    search `content` as a belt-and-braces for non-encrypted
-		//    rows. Session id is a UUID so false positives are
-		//    vanishingly unlikely.
+		// 2. FREEZE instead of wipe (Stage 3). The meet is over, but we KEEP the
+		//    map as a 3-point summary — each party's point + the meeting point:
+		//      • SUCCESS (proximity / converged): show each party's START point.
+		//        Drop the transient meeting_update rows so the reload synthesis
+		//        falls back to the immutable meeting_start rows (start + start).
+		//      • FAILURE (ended / expired / cancelled): show each party's LAST
+		//        point — keep the update rows (last + last).
+		//    Then stamp meetOutcome + ended onto every surviving row (plaintext
+		//    metadata) so the bubble renders static with the outcome label and
+		//    rebuilds identically on reload. Nothing is wiped wholesale now.
+		const _meetSuccess = (reason === 'proximity');
+		const _meetOutcome = _meetSuccess ? 'succeeded'
+			: (reason === 'expired' ? 'expired'
+				: ((reason === 'cancelled' || reason === 'declined' || reason === 'deleted') ? 'cancelled'
+					: 'ended'));
+		// Tombstone against late ticks so a straggler meeting_update can't
+		// re-create an update row (and drag a SUCCESS summary off the start
+		// points) after the freeze.
 		try {
-			const contentType = 'application/sylk-message-metadata';
-			const likePattern = '%' + sessionId + '%';
-			await this.ExecuteQuery(
-				'delete from messages where (system is null or system = 0) and content_type = ? and (msg_id = ? or content like ? or metadata like ?)',
-				[contentType, sessionId, likePattern, likePattern]
-			);
+			if (!this._endedLocationSessions) this._endedLocationSessions = new Set();
+			this._endedLocationSessions.add(sessionId);
+		} catch (e) { /* best-effort */ }
+		try {
+			// We intentionally do NOT delete any rows on success. The
+			// meeting_start origin can lack coords (a coord-free invite leg), so
+			// deleting the coord-bearing meeting_update rows left an empty map.
+			// Keep ALL rows; the reload synthesis renders each party's EARLIEST
+			// valid-coords tick (≈ the start point) for a SUCCEEDED meet, and the
+			// latest tick for a FAILED one — driven by meta.meetOutcome below.
+			const _fres = await this.ExecuteQuery(
+				"select msg_id, metadata from messages where account = ? and content_type = 'application/sylk-location-sharing' and (msg_id = ? or related_msg_id = ?)",
+				[this.state.accountId, sessionId, sessionId]);
+			const _fn = _fres && _fres.rows ? _fres.rows.length : 0;
+			for (let _i = 0; _i < _fn; _i++) {
+				const _fr = _fres.rows.item(_i);
+				let _fm = {};
+				try { _fm = JSON.parse(_fr.metadata || '{}'); } catch (e) {}
+				_fm.meetOutcome = _meetOutcome;
+				_fm.ended = true;
+				await this.ExecuteQuery('update messages set metadata = ? where account = ? and msg_id = ?',
+					[JSON.stringify(_fm), this.state.accountId, _fr.msg_id]);
+			}
 		} catch (e) {
-			console.log('[meeting] wipe SQL failed', e && e.message ? e.message : e);
+			console.log('[meeting] freeze SQL failed', e && e.message ? e.message : e);
 		}
 
-		// 3. In-memory state. Drop the bubble(s) from state.messages[uri]
-		//    and the per-session metadata accumulator. Keeping system
-		//    messages intact is implicit — they're keyed by their own
-		//    msg_ids, not by the session id.
-		if (uri) {
-			// Drop the session's bubble(s) from the new model (selected contact).
-			const _selWipe = this.state.selectedContact;
-			if (_selWipe && this.getAllContactUris(_selWipe).indexOf(uri) !== -1) {
-				const _cur = this.state.contactMessages || [];
-				const _filtered = _cur.filter(m => {
-					if (!m) return true;
-					if (m._id === sessionId) return false;
-					const md = m.metadata;
-					if (!md) return true;
-					if (md.messageId === sessionId) return false;
-					if (md.metadataId === sessionId) return false;
-					if (md.in_reply_to === sessionId) return false;
-					return true;
-				});
-				if (_filtered.length !== _cur.length) {
-					this.contactMessageIndex = new Map(
-						_filtered.filter(m => m && m._id != null).map(m => [m._id, m]));
-					this.setState({ contactMessages: _filtered });
-				}
+		// 3. Rebuild the frozen bubble from SQL for the open chat so the 3-point
+		//    summary + label appear immediately (identical to a reload). We no
+		//    longer drop the bubble from state — the rebuild replaces it.
+		try {
+			const _selFrozen = this.state.selectedContact;
+			if (uri && _selFrozen && this.getAllContactUris(_selFrozen).indexOf(uri) !== -1
+					&& typeof this.getMessages === 'function') {
+				this.getMessages(_selFrozen, {origin: 'meet-frozen'});
 			}
-
-			this.setState(prev => {
-				const next = {};
-				let changed = false;
-
-				// Strip session-keyed metadata from allContacts entries so
-				// a re-entry to the chat doesn't re-inject a stale bubble.
-				if (prev.allContacts) {
-					const idx = prev.allContacts.findIndex(c => c.uri === uri);
-					if (idx !== -1) {
-						const c = prev.allContacts[idx];
-						if (c.messagesMetadata && c.messagesMetadata[sessionId]) {
-							const newMeta = {...c.messagesMetadata};
-							delete newMeta[sessionId];
-							const newContact = {...c, messagesMetadata: newMeta};
-							const newContacts = [...prev.allContacts];
-							newContacts[idx] = newContact;
-							next.allContacts = newContacts;
-							if (prev.selectedContact && prev.selectedContact.uri === uri) {
-								next.selectedContact = newContact;
-							}
-							next.messagesMetadata = newMeta;
-							changed = true;
-						}
-					}
-				}
-
-				return changed ? next : null;
-			});
+		} catch (e) {
+			console.log('[meeting] freeze rebuild failed', e && e.message ? e.message : e);
 		}
 
 		// 4. Clean up the handshake markers for this session. We keep
@@ -34243,8 +36014,8 @@ class Sylk extends Component {
 		//  / handledAcceptanceIds — those markers guard against ever
 		//  re-prompting for an already-consumed session, even if the
 		//  server re-delivers the message later. They're small.)
-		if (this.meetingSessions && this.meetingSessions[sessionId]) {
-			delete this.meetingSessions[sessionId];
+		if (this._locationEngine.meetingSessions[sessionId]) {
+			delete this._locationEngine.meetingSessions[sessionId];
 		}
 
 		// Forget the once-per-session "we suppressed an inject" markers so
@@ -34260,10 +36031,17 @@ class Sylk extends Component {
 	}
 
 	_presentMeetingRequestForUri(uri) {
-		const entry = this.pendingMeetingRequests[uri];
+		const entry = this._locationEngine.pendingMeetingRequests[uri];
 		if (!entry) return;
-		if (this.handledMeetingRequestIds.has(entry.requestId)) {
-			delete this.pendingMeetingRequests[uri];
+		if (this._locationEngine.endedMeetingSessionIds.has(entry.requestId)) {
+			// Meet already ended (possibly learned from a journal end that arrived
+			// after the request was queued) — never present a stale accept modal.
+			this._locationEngine.handledMeetingRequestIds.add(entry.requestId);
+			delete this._locationEngine.pendingMeetingRequests[uri];
+			return;
+		}
+		if (this._locationEngine.handledMeetingRequestIds.has(entry.requestId)) {
+			delete this._locationEngine.pendingMeetingRequests[uri];
 			return;
 		}
 		// "Only the latest invitation matters." The pending entry was
@@ -34292,26 +36070,23 @@ class Sylk extends Component {
 				: null
 		);
 		if (!target) {
-			console.log('[meeting] _presentMeetingRequestForUri: no actionable',
-				'invitation in chat for', uri, '— skipping modal');
-			this.handledMeetingRequestIds.add(entry.requestId);
+			console.log('[meeting] _presentMeetingRequestForUri: no actionable', 'invitation in chat for', uri, '— skipping modal');
+			this._locationEngine.handledMeetingRequestIds.add(entry.requestId);
 			this._persistMeetingHandshakeState();
-			delete this.pendingMeetingRequests[uri];
+			delete this._locationEngine.pendingMeetingRequests[uri];
 			return;
 		}
 		// Mark target (and the original entry, if different) as handled
 		// BEFORE showing so a re-entry — second tick, chat-reopen, hot
 		// reload — can't pop the modal a second time.
-		this.handledMeetingRequestIds.add(target.requestId);
+		this._locationEngine.handledMeetingRequestIds.add(target.requestId);
 		if (target.requestId !== entry.requestId) {
-			this.handledMeetingRequestIds.add(entry.requestId);
+			this._locationEngine.handledMeetingRequestIds.add(entry.requestId);
 		}
 		this._persistMeetingHandshakeState();
-		console.log('[meeting] presenting modal for', uri, 'request', target.requestId,
-			'(2s delay)');
-		// Small delay so the modal doesn't slam in over whatever screen
-		// animation is in progress (chat opening, nav transition, etc.).
-		// Gives the user a moment to orient before the dialog appears.
+		console.log('[meeting] presenting modal for', uri, 'request', target.requestId, '(immediate)');
+		// Present immediately (setTimeout 0 just to hop off the current
+		// call stack so setState isn't invoked mid-metadata-handling).
 		// Carry the meeting destination through to the modal so the
 		// receiver can see WHERE they're being invited before they
 		// accept. Two sources: the pending entry (set by
@@ -34326,10 +36101,9 @@ class Sylk extends Component {
 				latitude: entry.destination.latitude,
 				longitude: entry.destination.longitude,
 			};
-		} else if (this.meetingSessions
-				&& this.meetingSessions[target.requestId]
-				&& this.meetingSessions[target.requestId].destination) {
-			const d = this.meetingSessions[target.requestId].destination;
+		} else if (this._locationEngine.meetingSessions[target.requestId]
+				&& this._locationEngine.meetingSessions[target.requestId].destination) {
+			const d = this._locationEngine.meetingSessions[target.requestId].destination;
 			if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
 				modalDestination = {latitude: d.latitude, longitude: d.longitude};
 			}
@@ -34340,13 +36114,12 @@ class Sylk extends Component {
 			expiresAt: target.expiresAt,
 			destination: modalDestination,
 		};
-		delete this.pendingMeetingRequests[uri];
+		delete this._locationEngine.pendingMeetingRequests[uri];
 		setTimeout(async () => {
 			// Defensive: the request could have expired during the delay,
 			// or the session could have been cleaned up (remote cancel).
 			if (Date.now() >= entryCopy.expiresAt) {
-				console.log('[meeting] delayed modal: request expired during delay, skipping',
-					entryCopy.requestId);
+				console.log('[meeting] delayed modal: request expired during delay, skipping', entryCopy.requestId);
 				return;
 			}
 			// Multi-device dedup. While we were waiting out the 2 s
@@ -34364,10 +36137,8 @@ class Sylk extends Component {
 			// scheduling this very setTimeout, so checking it here
 			// would cause the gate to fire on every legitimate
 			// presentation, hiding the modal on every device.
-			if (this.acceptedMeetingRequestIds
-					&& this.acceptedMeetingRequestIds.has(entryCopy.requestId)) {
-				console.log('[meeting] delayed modal: sibling accepted during delay, skipping',
-					entryCopy.requestId);
+			if (this._locationEngine.acceptedMeetingRequestIds.has(entryCopy.requestId)) {
+				console.log('[meeting] delayed modal: sibling accepted during delay, skipping', entryCopy.requestId);
 				return;
 			}
 			// Read the location-disclosure flag so the modal can warn
@@ -34427,87 +36198,49 @@ class Sylk extends Component {
 			// getCurrentCoordinates is implemented there.
 			try {
 				utils.timestampedLog('[location] meeting-modal preview: requesting current location');
-				const _navBar = this.navigationBarRef && this.navigationBarRef.current;
-				if (_navBar && typeof _navBar.getCurrentCoordinates === 'function') {
-					_navBar.getCurrentCoordinates().then((coords) => {
-						if (!coords
-								|| typeof coords.latitude !== 'number'
-								|| typeof coords.longitude !== 'number') {
-							utils.timestampedLog(
-								'[location] meeting-modal preview: GPS fix returned invalid coords',
-								JSON.stringify(coords)
-							);
-							return;
-						}
-						// Bail if the modal was closed (e.g. user
-						// declined or 90 s auto-dismiss fired)
-						// before the fix landed.
-						const _modalNow = this.state && this.state.meetingRequestModal;
-						if (!_modalNow || !_modalNow.show
-								|| _modalNow.requestId !== entryCopy.requestId) {
-							utils.timestampedLog(
-								'[location] meeting-modal preview: GPS fix landed but modal closed/changed — discarding'
-							);
-							return;
-						}
-						utils.timestampedLog(
-							'[location] meeting-modal preview: current location acquired —',
-							coords.latitude.toFixed(5) + ',' + coords.longitude.toFixed(5),
-							typeof coords.accuracy === 'number'
-								? `±${Math.round(coords.accuracy)}m` : ''
-						);
-						this.setState({
-							meetingRequestModal: {
-								...this.state.meetingRequestModal,
-								userLocation: {
-									latitude: coords.latitude,
-									longitude: coords.longitude,
-								},
+				this._locationEngine.getCurrentCoordinates().then((coords) => {
+					if (!coords
+							|| typeof coords.latitude !== 'number'
+							|| typeof coords.longitude !== 'number') {
+						utils.timestampedLog('[location] meeting-modal preview: GPS fix returned invalid coords', JSON.stringify(coords));
+						return;
+					}
+					// Bail if the modal was closed (e.g. user
+					// declined or 90 s auto-dismiss fired)
+					// before the fix landed.
+					const _modalNow = this.state && this.state.meetingRequestModal;
+					if (!_modalNow || !_modalNow.show
+							|| _modalNow.requestId !== entryCopy.requestId) {
+						utils.timestampedLog('[location] meeting-modal preview: GPS fix landed but modal closed/changed — discarding');
+						return;
+					}
+					utils.timestampedLog('[location] meeting-modal preview: current location acquired —', coords.latitude.toFixed(5) + ',' + coords.longitude.toFixed(5), typeof coords.accuracy === 'number' ? `±${Math.round(coords.accuracy)}m` : '');
+					this.setState({
+						meetingRequestModal: {
+							...this.state.meetingRequestModal,
+							userLocation: {
+								latitude: coords.latitude,
+								longitude: coords.longitude,
 							},
-						});
-					}).catch((err) => {
-						utils.timestampedLog(
-							'[location] meeting-modal preview: getCurrentCoordinates failed —',
-							err && err.message ? err.message : err
-						);
+						},
 					});
-				} else {
-					utils.timestampedLog(
-						'[location] meeting-modal preview: navBar.getCurrentCoordinates unavailable'
-					);
-				}
+				}).catch((err) => {
+					utils.timestampedLog('[location] meeting-modal preview: getCurrentCoordinates failed —', err && err.message ? err.message : err);
+				});
 			} catch (e) {
-				utils.timestampedLog(
-					'[location] meeting-modal preview: fetch threw —',
-					e && e.message ? e.message : e
-				);
+				utils.timestampedLog('[location] meeting-modal preview: fetch threw —', e && e.message ? e.message : e);
 			}
-			// 90-second auto-dismiss. If the user hasn't tapped Accept
-			// or Cancel by the time the timer fires we close the modal
-			// silently. Stored on `this` (not in state) so we can clear
-			// it from _closeMeetingRequestModal regardless of which path
-			// closed the modal — Accept, Cancel, tap-outside, or this
-			// timeout itself. Using BackgroundTimer would be overkill;
-			// a vanilla setTimeout is fine because the modal can only
-			// be dismissed while the app is foreground anyway.
+			// NO auto-dismiss for a meet-up request. The user must make an
+			// explicit choice (Accept / Decline) — a meet-up invite is a
+			// decision, not a transient banner, so it must never vanish on a
+			// timer while the user is deciding. Any stale timer from an older
+			// build is still cleared defensively (Accept/Decline paths also
+			// clear it via _closeMeetingRequestModal).
 			if (this._meetingRequestModalDismissTimerId) {
 				clearTimeout(this._meetingRequestModalDismissTimerId);
 				this._meetingRequestModalDismissTimerId = null;
 			}
-			this._meetingRequestModalDismissTimerId = setTimeout(() => {
-				this._meetingRequestModalDismissTimerId = null;
-				// Only auto-close if the user truly hasn't acted — i.e.
-				// the same request is still on screen. Guards against a
-				// stale timer from a previous request firing on a new
-				// modal.
-				const m = this.state.meetingRequestModal;
-				if (m && m.show && m.requestId === entryCopy.requestId) {
-					console.log('[meeting] auto-dismissing modal after 90s of inactivity',
-						'request=', entryCopy.requestId);
-					this._closeMeetingRequestModal();
-				}
-			}, 90000);
-		}, 2000);
+		}, 0);
 	}
 
 	// Walk state.messages[uri] from newest to oldest looking for the
@@ -34544,8 +36277,7 @@ class Sylk extends Component {
 			if (m.deleted || m.removed) return null;
 			// Already accepted on this device or another (the ack id is
 			// persisted across restarts in acceptedMeetingRequestIds).
-			if (this.acceptedMeetingRequestIds
-					&& this.acceptedMeetingRequestIds.has(requestId)) {
+			if (this._locationEngine.acceptedMeetingRequestIds.has(requestId)) {
 				return null;
 			}
 			// Expired — read the expires field from metadata. _parseExpiresToMs
@@ -34553,7 +36285,7 @@ class Sylk extends Component {
 			// we fall back to a pending-entry expiresAt if it exists.
 			let expiresAt = this._parseExpiresToMs(meta.expires);
 			if (expiresAt == null) {
-				const pending = this.pendingMeetingRequests[uri];
+				const pending = this._locationEngine.pendingMeetingRequests[uri];
 				if (pending && pending.requestId === requestId
 						&& typeof pending.expiresAt === 'number') {
 					expiresAt = pending.expiresAt;
@@ -34590,14 +36322,9 @@ class Sylk extends Component {
 	// access to NavigationBar; these forward to its corresponding
 	// methods (defined alongside startLocationSharing /
 	// stopLocationSharing in NavigationBar.js).
-	pauseLocationShare(uri, originMetadataId) {
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar || typeof navBar.pauseLocationSharing !== 'function') {
-			console.log('[location] pauseLocationShare: navBar.pauseLocationSharing missing');
-			return false;
-		}
-		const ok = navBar.pauseLocationSharing(uri, originMetadataId);
-		if (ok && typeof this.renderSystemMessage === 'function') {
+	pauseLocationShare(uri, originLocationId) {
+		const ok = this._locationEngine.pauseLocationSharing(uri, originLocationId);
+		if (ok) {
 			this.renderSystemMessage(uri,
 				'⏸ Live location sharing paused', 'outgoing', new Date(), true);
 		}
@@ -34611,43 +36338,27 @@ class Sylk extends Component {
 	//     returns true.
 	//   • stopped share — the entry is gone (e.g. the user deleted the
 	//     bubble or the timer was torn down). Fall back to a fresh
-	//     startLocationSharing call with resumeOriginMetadataId set so
+	//     startLocationSharing call with resumeOriginLocationId set so
 	//     the existing bubble keeps updating in place. Pulls
 	//     duration / kind / periodLabel from `bubbleMeta` (the
 	//     metadata of the long-pressed bubble), defaulting kind to
 	//     'fixed' when not a meet session.
-	resumeLocationShare(uri, originMetadataId, bubbleMeta) {
-		console.log('[location] resumeLocationShare ENTER',
-			'uri=', uri,
-			'originMetadataId=', originMetadataId,
-			'bubbleMeta keys=', bubbleMeta ? Object.keys(bubbleMeta) : '(none)');
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar) {
-			console.log('[location] resumeLocationShare: navBar missing');
-			return false;
-		}
+	resumeLocationShare(uri, originLocationId, bubbleMeta) {
+		console.log('[location] resumeLocationShare ENTER', 'uri=', uri, 'originLocationId=', originLocationId, 'bubbleMeta keys=', bubbleMeta ? Object.keys(bubbleMeta) : '(none)');
 
 		// Pause path first.
-		if (typeof navBar.resumeLocationSharing === 'function') {
-			const resumed = navBar.resumeLocationSharing(uri, originMetadataId);
-			console.log('[location] resumeLocationShare: navBar.resumeLocationSharing →', resumed);
-			if (resumed) {
-				if (typeof this.renderSystemMessage === 'function') {
-					this.renderSystemMessage(uri,
-						'▶️ Live location sharing resumed', 'outgoing', new Date(), true);
-				}
-				return true;
-			}
+		const resumed = this._locationEngine.resumeLocationSharing(uri, originLocationId);
+		console.log('[location] resumeLocationShare: this._locationEngine.resumeLocationSharing →', resumed);
+		if (resumed) {
+			this.renderSystemMessage(uri,
+				'▶️ Live location sharing resumed', 'outgoing', new Date(), true);
+			return true;
 		}
 
 		// Stopped path: re-arm via startLocationSharing with the
 		// existing bubble id so subsequent ticks UPDATE the bubble
 		// rather than spawning a new one. Compute durationMs from
 		// metadata.expires.
-		if (typeof navBar.startLocationSharing !== 'function') {
-			console.log('[location] resumeLocationShare: navBar.startLocationSharing missing');
-			return false;
-		}
 		const md = bubbleMeta || {};
 		let expMs = null;
 		if (md.expires) {
@@ -34655,10 +36366,7 @@ class Sylk extends Component {
 			if (Number.isFinite(v)) expMs = v;
 		}
 		const remainingMs = expMs != null ? expMs - Date.now() : 0;
-		console.log('[location] resumeLocationShare: stopped-path',
-			'expires=', md.expires,
-			'expMs=', expMs,
-			'remainingMs=', remainingMs);
+		console.log('[location] resumeLocationShare: stopped-path', 'expires=', md.expires, 'expMs=', expMs, 'remainingMs=', remainingMs);
 		if (remainingMs <= 0) {
 			console.log('[location] resumeLocationShare: bubble already expired — refusing');
 			return false;
@@ -34669,49 +36377,38 @@ class Sylk extends Component {
 		// they only ever fire one tick and aren't expected to.
 		let kind = 'fixed';
 		if (md.meeting_request === true) kind = 'meetingRequest';
-		else if (md.in_reply_to) kind = 'meetingAccept';
+		else if (md.role === 'invited') kind = 'meetingAccept';
 		else if (md.one_shot === true) kind = 'once';
-		console.log('[location] resumeLocationShare: kind=', kind,
-			'meeting_request=', md.meeting_request,
-			'in_reply_to=', md.in_reply_to,
-			'one_shot=', md.one_shot);
+		console.log('[location] resumeLocationShare: kind=', kind, 'meeting_request=', md.meeting_request, 'role=', md.role, 'one_shot=', md.one_shot);
 		if (kind === 'once') {
 			console.log('[location] resumeLocationShare: refusing to resume one-shot');
 			return false;
 		}
 
 		try {
-			console.log('[location] resumeLocationShare: calling startLocationSharing',
-				'durationMs=', remainingMs,
-				'kind=', kind,
-				'resumeOriginMetadataId=', originMetadataId);
+			console.log('[location] resumeLocationShare: calling startLocationSharing', 'durationMs=', remainingMs, 'kind=', kind, 'resumeOriginLocationId=', originLocationId);
 			// startLocationSharing's actual signature is
 			// (uri, durationMs, periodLabel, opts). Calling it as
 			// (uri, optsObject) (which I did initially) silently took
 			// the second arg as durationMs — a {…} object — which fails
 			// the numeric checks inside, and the share never armed.
-			navBar.startLocationSharing(uri, remainingMs, 'remaining time', {
+			this._locationEngine.startLocationSharing(uri, remainingMs, 'remaining time', {
 				kind,
-				resumeOriginMetadataId: originMetadataId,
+				resumeOriginLocationId: originLocationId,
 				suppressAnnouncement: true,
-				inReplyTo: md.in_reply_to || null,
+				inReplyTo: md.role === 'invited' ? md.messageId : null,
 			});
-			if (typeof this.renderSystemMessage === 'function') {
-				this.renderSystemMessage(uri,
-					'▶️ Live location sharing resumed', 'outgoing', new Date(), true);
-			}
+			this.renderSystemMessage(uri,
+				'▶️ Live location sharing resumed', 'outgoing', new Date(), true);
 			return true;
 		} catch (e) {
-			console.log('[location] resumeLocationShare: startLocationSharing threw',
-				e && e.message ? e.message : e);
+			console.log('[location] resumeLocationShare: startLocationSharing threw', e && e.message ? e.message : e);
 			return false;
 		}
 	}
 
-	getLocationShareState(uri, originMetadataId) {
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar || typeof navBar.getLocationShareState !== 'function') return 'stopped';
-		return navBar.getLocationShareState(uri, originMetadataId);
+	getLocationShareState(uri, originLocationId) {
+		return this._locationEngine.getLocationShareState(uri, originLocationId);
 	}
 
 	// Bridge from a chat-bubble's "Meet me there..." kebab into
@@ -34719,12 +36416,7 @@ class Sylk extends Component {
 	// link out of an incoming text message and wants to start a
 	// meet-up share with those coords as the destination.
 	meetMeAt(uri, destination) {
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar || typeof navBar.meetMeAt !== 'function') {
-			console.log('[location] meetMeAt: NavigationBar not ready');
-			return;
-		}
-		navBar.meetMeAt(uri, destination);
+		this._locationEngine.meetMeAt(uri, destination);
 	}
 
 	// In-call bridges for the Share / Request location items the
@@ -34784,16 +36476,25 @@ class Sylk extends Component {
 			console.log('[meeting] accept: request expired, ignoring', 'id=', requestId);
 			return;
 		}
-		if (this.acceptedMeetingRequestIds && this.acceptedMeetingRequestIds.has(requestId)) {
+		if (this._locationEngine.acceptedMeetingRequestIds.has(requestId)) {
 			console.log('[meeting] accept: already accepted, ignoring', 'id=', requestId);
 			return;
 		}
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar || typeof navBar.startMeetingAcceptance !== 'function') {
-			console.log('[meeting] accept: NavigationBar not available');
-			return;
-		}
-		this._reportMeetingAccepted(requestId, fromUri);
+		this._locationEngine._reportMeetingAccepted(requestId, fromUri);
+		// Persistent chat breadcrumb: the meet started when we accepted.
+		{ const _atStart = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+		  this._saveMeetingNote(fromUri, requestId, 'start', `Meet-up accepted at ${_atStart}`); }
+		// Coordinate-free acceptance signal → the inviter, so THEY start sharing
+		// first (handled by the meeting_accept branch in handleMessageMetadata).
+		// Keyed off the common sessionId + role='invited'; in_reply_to is obsolete.
+		try {
+			const _accId = uuid.v4();
+			const _accBody = { action: 'meeting_accept', sessionId: requestId, role: 'invited', messageId: _accId };
+			const _accMsg = { _id: _accId, key: _accId, createdAt: new Date(),
+				metadata: _accBody, text: JSON.stringify(_accBody), user: {} };
+			this.sendMessage(fromUri, _accMsg, 'application/sylk-location-sharing');
+			utils.timestampedLog('[meeting] sent meeting_accept', String(requestId).slice(0,8), 'to', fromUri);
+		} catch (e) { console.log('[meeting] send meeting_accept failed', e && e.message); }
 		// Optimistically mark this request as accepted BEFORE the share
 		// starts. Two reasons we have to do it up front rather than
 		// after success:
@@ -34822,9 +36523,9 @@ class Sylk extends Component {
 		// run — but then have no way to retry, the modal having closed
 		// and isMeetingRequestAcceptable returning false because of the
 		// lingering marker.
-		const optimisticallyMarked = !this.acceptedMeetingRequestIds.has(requestId);
+		const optimisticallyMarked = !this._locationEngine.acceptedMeetingRequestIds.has(requestId);
 		if (optimisticallyMarked) {
-			this.acceptedMeetingRequestIds.add(requestId);
+			this._locationEngine.acceptedMeetingRequestIds.add(requestId);
 			this._persistMeetingHandshakeState();
 		}
 		// Look up the destination we captured when the request came
@@ -34833,18 +36534,17 @@ class Sylk extends Component {
 		// requester). Fall back to the meetingSessions record if the
 		// pending entry was already drained.
 		let destination = null;
-		const pending = this.pendingMeetingRequests
-			? this.pendingMeetingRequests[fromUri] : null;
+		const pending = this._locationEngine.pendingMeetingRequests
+			? this._locationEngine.pendingMeetingRequests[fromUri] : null;
 		if (pending && pending.destination) {
 			destination = pending.destination;
-		} else if (this.meetingSessions
-				&& this.meetingSessions[requestId]
-				&& this.meetingSessions[requestId].destination) {
-			destination = this.meetingSessions[requestId].destination;
+		} else if (this._locationEngine.meetingSessions[requestId]
+				&& this._locationEngine.meetingSessions[requestId].destination) {
+			destination = this._locationEngine.meetingSessions[requestId].destination;
 		}
 		let started = false;
 		try {
-			started = await navBar.startMeetingAcceptance(fromUri, {
+			started = await this._locationEngine.startMeetingAcceptance(fromUri, {
 				requestId: requestId,
 				expiresAt: expiresAt,
 				periodLabel: 'until we meet',
@@ -34853,8 +36553,7 @@ class Sylk extends Component {
 			});
 		} catch (e) {
 			started = false;
-			console.log('[meeting] accept: startMeetingAcceptance threw',
-				e && e.message ? e.message : e);
+			console.log('[meeting] accept: startMeetingAcceptance threw', e && e.message ? e.message : e);
 		}
 		if (!started && optimisticallyMarked) {
 			// Share didn't start — but distinguish two cases:
@@ -34875,23 +36574,17 @@ class Sylk extends Component {
 			//      _pendingPermissionShares (or never armed). REMOVE
 			//      the marker so the user can re-tap Accept on the
 			//      meeting-request bubble's kebab menu.
-			const stillNoShare = !(navBar.locationTimers && navBar.locationTimers[fromUri]);
-			const pendingPermission = !!(navBar._pendingPermissionShares
-				&& navBar._pendingPermissionShares[fromUri]);
+			// A meet accept's leg lives in the meet store — check THAT, not the
+			// plain-share store, to tell "share started" from "never started".
+			const stillNoShare = !this._locationEngine._meetEntryForUri(fromUri);
+			const pendingPermission = !!(this._locationEngine._pendingPermissionShares[fromUri]);
 			if (stillNoShare && !pendingPermission
-					&& this.acceptedMeetingRequestIds
-					&& this.acceptedMeetingRequestIds.has(requestId)) {
-				this.acceptedMeetingRequestIds.delete(requestId);
+					&& this._locationEngine.acceptedMeetingRequestIds.has(requestId)) {
+				this._locationEngine.acceptedMeetingRequestIds.delete(requestId);
 				this._persistMeetingHandshakeState();
-				utils.timestampedLog(
-					'[meeting] accept: share never started and no permission retry pending — cleared marker so retry is possible',
-					'id=', requestId, 'peer=', fromUri
-				);
+				utils.timestampedLog('[meeting] accept: share never started and no permission retry pending — cleared marker so retry is possible', 'id=', requestId, 'peer=', fromUri);
 			} else if (pendingPermission) {
-				utils.timestampedLog(
-					'[meeting] accept: share parked for permission grant — marker kept, will auto-resume on app foreground',
-					'id=', requestId, 'peer=', fromUri
-				);
+				utils.timestampedLog('[meeting] accept: share parked for permission grant — marker kept, will auto-resume on app foreground', 'id=', requestId, 'peer=', fromUri);
 			}
 		}
 	}
@@ -34923,16 +36616,15 @@ class Sylk extends Component {
 			console.log('[meeting] prompt: request expired, ignoring', 'id=', requestId);
 			return;
 		}
-		if (this.acceptedMeetingRequestIds
-				&& this.acceptedMeetingRequestIds.has(requestId)) {
+		if (this._locationEngine.acceptedMeetingRequestIds.has(requestId)) {
 			console.log('[meeting] prompt: already accepted, ignoring', 'id=', requestId);
 			return;
 		}
 		// Look up the destination (same path as the modal-show
 		// helper inside _presentMeetingRequestForUri).
 		let destination = null;
-		const pending = this.pendingMeetingRequests
-			? this.pendingMeetingRequests[fromUri] : null;
+		const pending = this._locationEngine.pendingMeetingRequests
+			? this._locationEngine.pendingMeetingRequests[fromUri] : null;
 		if (pending && pending.destination
 				&& typeof pending.destination.latitude === 'number'
 				&& typeof pending.destination.longitude === 'number') {
@@ -34940,10 +36632,9 @@ class Sylk extends Component {
 				latitude: pending.destination.latitude,
 				longitude: pending.destination.longitude,
 			};
-		} else if (this.meetingSessions
-				&& this.meetingSessions[requestId]
-				&& this.meetingSessions[requestId].destination) {
-			const d = this.meetingSessions[requestId].destination;
+		} else if (this._locationEngine.meetingSessions[requestId]
+				&& this._locationEngine.meetingSessions[requestId].destination) {
+			const d = this._locationEngine.meetingSessions[requestId].destination;
 			if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
 				destination = {latitude: d.latitude, longitude: d.longitude};
 			}
@@ -34975,47 +36666,28 @@ class Sylk extends Component {
 		// the preview map. Same wiring as _presentMeetingRequestForUri.
 		try {
 			utils.timestampedLog('[location] meeting-modal preview (kebab): requesting current location');
-			const _navBar = this.navigationBarRef && this.navigationBarRef.current;
-			if (_navBar && typeof _navBar.getCurrentCoordinates === 'function') {
-				_navBar.getCurrentCoordinates().then((coords) => {
-					if (!coords
-							|| typeof coords.latitude !== 'number'
-							|| typeof coords.longitude !== 'number') return;
-					const _modalNow = this.state && this.state.meetingRequestModal;
-					if (!_modalNow || !_modalNow.show
-							|| _modalNow.requestId !== requestId) return;
-					this.setState({
-						meetingRequestModal: {
-							...this.state.meetingRequestModal,
-							userLocation: {
-								latitude: coords.latitude,
-								longitude: coords.longitude,
-							},
+			this._locationEngine.getCurrentCoordinates().then((coords) => {
+				if (!coords
+						|| typeof coords.latitude !== 'number'
+						|| typeof coords.longitude !== 'number') return;
+				const _modalNow = this.state && this.state.meetingRequestModal;
+				if (!_modalNow || !_modalNow.show
+						|| _modalNow.requestId !== requestId) return;
+				this.setState({
+					meetingRequestModal: {
+						...this.state.meetingRequestModal,
+						userLocation: {
+							latitude: coords.latitude,
+							longitude: coords.longitude,
 						},
-					});
-				}).catch((err) => {
-					utils.timestampedLog(
-						'[location] meeting-modal preview (kebab): GPS failed —',
-						err && err.message ? err.message : err
-					);
+					},
 				});
-			}
+			}).catch((err) => {
+				utils.timestampedLog('[location] meeting-modal preview (kebab): GPS failed —', err && err.message ? err.message : err);
+			});
 		} catch (e) { /* noop */ }
 	}
 
-	// Predicate exposed as a prop so UI below (kebab menu) can decide whether
-	// to surface the "Show meeting request..." option. Treats expired requests
-	// as "not acceptable" too.
-	isMeetingRequestAcceptable(requestId, expiresAt) {
-		if (!requestId) return false;
-		if (this.acceptedMeetingRequestIds && this.acceptedMeetingRequestIds.has(requestId)) {
-			return false;
-		}
-		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
-			return false;
-		}
-		return true;
-	}
 
 	// Decline is silent on the wire — no message goes back to the
 	// requester (we've already marked the request handled at
@@ -35026,10 +36698,64 @@ class Sylk extends Component {
 	_declineMeetingRequest() {
 		try {
 			const m = this.state.meetingRequestModal || {};
-			utils.timestampedLog('[location] [meet] REQUEST CANCELED — declined locally from',
-				m.fromUri || '(unknown)',
-				'— session', this._meetShortId(m.requestId));
+			utils.timestampedLog('[location] [meet] REQUEST CANCELED — declined locally from', m.fromUri || '(unknown)', '— session', this._locationEngine._meetShortId(m.requestId));
 		} catch (e) { /* noop */ }
+	}
+
+	// Reject a meet invitation: mark it handled (so it never re-pops), drop the
+	// pending entry, close the modal if it's showing this request, and DELETE
+	// the invite map bubble locally. Invoked from the modal's Reject/Decline
+	// button and from the map bubble's long-press "Reject meeting" action (for
+	// when the modal already expired or was dismissed). Arrow-bound so it can be
+	// passed to ChatBox as a prop and still see `this`.
+	//
+	// Local-only delete (remote=false): the inviter keeps their own session/
+	// bubble; we just remove ours. The requester origin's msg_id IS the session/
+	// request id (consistent-id fix), so the receiver's bubble _id === requestId
+	// and deleteMessage(requestId, …) removes it. deleteMessage also records the
+	// id in _deletedLocationBubbleIds, so subsequent inviter ticks can't
+	// resurrect the bubble in the getMessages synthesis pass.
+	_rejectMeetingRequest = (args = {}) => {
+		try {
+			const modal = this.state.meetingRequestModal || {};
+			const fromUri = args.fromUri || modal.fromUri;
+			const requestId = args.requestId || modal.requestId;
+			utils.timestampedLog('[location] [meet] REQUEST REJECTED — deleting invite bubble from', fromUri || '(unknown)', '— session', this._locationEngine._meetShortId(requestId));
+			if (requestId) {
+				try { this._locationEngine.handledMeetingRequestIds.add(requestId); } catch (e) { /* noop */ }
+				try { this._persistMeetingHandshakeState(); } catch (e) { /* noop */ }
+			}
+			if (fromUri && this._locationEngine.pendingMeetingRequests) {
+				delete this._locationEngine.pendingMeetingRequests[fromUri];
+			}
+			// Tell the inviter we declined so THEY stop their meet share, and drop
+			// a breadcrumb on our side. No push (server doesn't push meeting_reject);
+			// delivered over the websocket / journal.
+			if (fromUri && requestId) {
+				try {
+					const _rejId = uuid.v4();
+					const _rejBody = { action: 'meeting_reject', sessionId: requestId, role: 'invited', messageId: _rejId };
+					const _rejMsg = { _id: _rejId, key: _rejId, createdAt: new Date(),
+						metadata: _rejBody, text: JSON.stringify(_rejBody), user: {} };
+					this.sendMessage(fromUri, _rejMsg, 'application/sylk-location-sharing');
+					utils.timestampedLog('[meeting] sent meeting_reject', this._locationEngine._meetShortId(requestId), 'to', fromUri);
+				} catch (e) { console.log('[meeting] send meeting_reject failed', e && e.message); }
+				this._saveMeetingNote(fromUri, requestId, 'end', 'Meet-up declined');
+				this._locationEngine.endedMeetingSessionIds.add(requestId);
+				try { this._persistMeetingHandshakeState(); } catch (e) { /* noop */ }
+			}
+			// Close the modal only if it's the request we're rejecting.
+			if (modal.show && (!args.requestId || modal.requestId === requestId)) {
+				try { this._closeMeetingRequestModal(); } catch (e) { /* noop */ }
+			}
+			if (requestId && fromUri && typeof this.deleteMessage === 'function') {
+				this.deleteMessage(requestId, fromUri, false).catch((e) => {
+					console.log('[meeting] reject: deleteMessage failed', e && e.message);
+				});
+			}
+		} catch (e) {
+			console.log('[meeting] _rejectMeetingRequest failed', e && e.message);
+		}
 	}
 
 	// ===== One-shot location-request handshake =====
@@ -35038,17 +36764,17 @@ class Sylk extends Component {
 		const requestId = metadataContent && metadataContent.messageId;
 		if (!requestId) return;
 		const expiresAt = this._parseExpiresToMs(metadataContent.expires);
-		if (this.handledLocationRequestIds.has(requestId)) return;
+		if (this._locationEngine.handledLocationRequestIds.has(requestId)) return;
 		if (expiresAt == null || Date.now() >= expiresAt) {
 			// Already-stale request: never prompt, never reply.
-			this.handledLocationRequestIds.add(requestId);
+			this._locationEngine.handledLocationRequestIds.add(requestId);
+			this._persistMeetingHandshakeState();
 			return;
 		}
-		this.pendingLocationRequests[fromUri] = {requestId, expiresAt, fromUri};
+		this._locationEngine.pendingLocationRequests[fromUri] = {requestId, expiresAt, fromUri};
 		// User-visible breadcrumb in the chat log.
 		try {
-			utils.timestampedLog('[location] [meet] LOCATION REQUEST RECEIVED ←',
-				fromUri, '— request', requestId.slice(0, 8));
+			utils.timestampedLog('[location] [meet] LOCATION REQUEST RECEIVED ←', fromUri, '— request', requestId.slice(0, 8));
 		} catch (e) { /* noop */ }
 		if (this.state.selectedContact && this.state.selectedContact.uri === fromUri) {
 			this._presentLocationRequestModalForUri(fromUri);
@@ -35056,28 +36782,29 @@ class Sylk extends Component {
 	}
 
 	_presentLocationRequestModalForUri(uri) {
-		const entry = this.pendingLocationRequests[uri];
+		const entry = this._locationEngine.pendingLocationRequests[uri];
 		if (!entry) return;
-		if (this.handledLocationRequestIds.has(entry.requestId)) {
-			delete this.pendingLocationRequests[uri];
+		if (this._locationEngine.handledLocationRequestIds.has(entry.requestId)) {
+			delete this._locationEngine.pendingLocationRequests[uri];
 			return;
 		}
 		if (Date.now() >= entry.expiresAt) {
-			this.handledLocationRequestIds.add(entry.requestId);
-			delete this.pendingLocationRequests[uri];
+			this._locationEngine.handledLocationRequestIds.add(entry.requestId);
+			delete this._locationEngine.pendingLocationRequests[uri];
 			return;
 		}
 		// Mark handled before showing — same "show once" guarantee
 		// pattern as _presentMeetingRequestForUri.
-		this.handledLocationRequestIds.add(entry.requestId);
+		this._locationEngine.handledLocationRequestIds.add(entry.requestId);
+		this._persistMeetingHandshakeState();
 		const entryCopy = {
 			fromUri: entry.fromUri,
 			requestId: entry.requestId,
 			expiresAt: entry.expiresAt,
 		};
-		delete this.pendingLocationRequests[uri];
-		// Small delay matching the meet modal so it doesn't slam in
-		// over a chat-open animation.
+		delete this._locationEngine.pendingLocationRequests[uri];
+		// Present immediately (setTimeout 0 just to hop off the current
+		// call stack so setState isn't invoked mid-metadata-handling).
 		setTimeout(async () => {
 			if (Date.now() >= entryCopy.expiresAt) return;
 			// Multi-device dedup, mirroring the meeting-request
@@ -35087,10 +36814,8 @@ class Sylk extends Component {
 			// set (NOT `handledLocationRequestIds` — that one is
 			// stamped at local presentation time, which is BEFORE
 			// this setTimeout fires, so it would always be true).
-			if (this.siblingAnsweredLocationRequestIds
-					&& this.siblingAnsweredLocationRequestIds.has(entryCopy.requestId)) {
-				console.log('[location] delayed modal: sibling answered during delay, skipping',
-					entryCopy.requestId);
+			if (this._locationEngine.siblingAnsweredLocationRequestIds.has(entryCopy.requestId)) {
+				console.log('[location] delayed modal: sibling answered during delay, skipping', entryCopy.requestId);
 				return;
 			}
 			// Read the location-disclosure acknowledgement flag so
@@ -35107,9 +36832,7 @@ class Sylk extends Component {
 					policyAcknowledged = await readLocationDisclosure(this.state.accountId);
 				} catch (e) { /* noop */ }
 			}
-			utils.timestampedLog('[location] presenting accept-share modal from', entryCopy.fromUri,
-				'request', entryCopy.requestId, 'expires in',
-				Math.max(0, Math.round((entryCopy.expiresAt - Date.now()) / 1000)), 's');
+			utils.timestampedLog('[location] presenting accept-share modal from', entryCopy.fromUri, 'request', entryCopy.requestId, 'expires in', Math.max(0, Math.round((entryCopy.expiresAt - Date.now()) / 1000)), 's');
 			this.setState({locationRequestModal: {
 				show: true,
 				fromUri: entryCopy.fromUri,
@@ -35126,10 +36849,12 @@ class Sylk extends Component {
 				this._locationRequestModalDismissTimerId = null;
 				const m = this.state.locationRequestModal;
 				if (m && m.show && m.requestId === entryCopy.requestId) {
+					// Timed out without the user acting: surface as unread.
+					this._incrementUnreadForRequest(entryCopy.fromUri, entryCopy.requestId);
 					this._closeLocationRequestModal();
 				}
-			}, 90000);
-		}, 2000);
+			}, 45000);
+		}, 0);
 	}
 
 	_closeLocationRequestModal() {
@@ -35149,29 +36874,307 @@ class Sylk extends Component {
 		const expiresAt = src.expiresAt;
 		if (!fromUri) return;
 		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
-			console.log('[location] [meet] location request expired, ignoring',
-				'id=', requestId);
-			return;
-		}
-		const navBar = this.navigationBarRef && this.navigationBarRef.current;
-		if (!navBar || typeof navBar.shareLocationOnce !== 'function') {
-			console.log('[location] [meet] location request: NavigationBar not available');
+			console.log('[location] [meet] location request expired, ignoring', 'id=', requestId);
 			return;
 		}
 		try {
-			utils.timestampedLog('[location] [meet] LOCATION REQUEST ACCEPTED ←',
-				fromUri, '— sending current location once');
+			utils.timestampedLog('[location] [meet] LOCATION REQUEST ACCEPTED ←', fromUri, '— sending current location once');
 		} catch (e) { /* noop */ }
-		// Stamp in_reply_to on the one-shot reply so any sibling
-		// device on the same account sees the replicated tick and
-		// closes its prompt for the same requestId.
-		navBar.shareLocationOnce(fromUri, {inReplyTo: requestId});
+		// Carry requestId on the one-shot reply so the answerer's
+		// OTHER devices see the replicated carbon and close their prompt for the
+		// same request (handled in outgoingMessage's sylk-location-sharing branch).
+		this._locationEngine.shareLocationOnce(fromUri, {inReplyTo: requestId});
 	}
 
 	// Decline is silent — same convention as meeting request. Sender
 	// gets no response either way; their kebab can offer a re-send if
 	// they want to nudge.
 	_declineLocationRequest() { /* no-op */ }
+
+	// "Please share your current location." Fire-and-forget; the peer sees
+	// a Yes/No modal (from the push or the live message) and answers one-shot.
+	sendLocationRequest(uri) {
+		if (!uri) return;
+		const requestId = uuid.v4();
+		const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+		// The "please share your location" ask rides application/sylk-location-sharing
+		// as a coordinate-free `location_request` signal (no coords ever), so the
+		// server wakes the peer with the dedicated location push and the same
+		// receive/modal path handles it. messageId == the request key (also the SIP
+		// envelope id); expires bounds the ask.
+		const body = {
+			action: 'location_request',
+			messageId: requestId,
+			expires,
+		};
+		const msg = {
+			_id: requestId, key: requestId, createdAt: new Date(),
+			metadata: body, text: JSON.stringify(body), user: {},
+		};
+		utils.timestampedLog('[request] sending location_request', requestId.slice(0, 8), 'to', uri);
+		this.sendMessage(uri, msg, 'application/sylk-location-sharing');
+		// Sender-side chat breadcrumb so the timeline shows the request was made
+		// (the signal is coordinate-free and stores no bubble).
+		try {
+			const _at = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+			this.saveSystemMessage(uri, `📍 Location requested at ${_at}`, 'outgoing', false, 1);
+		} catch (e) { /* noop */ }
+	}
+
+
+	sendMeetingRequest(uri, opts = {}) {
+		if (!uri) return;
+		const {durationMs, periodLabel, excludeOriginRadiusMeters, destination} = opts;
+		const requestId = uuid.v4();
+		const now = new Date();
+		const _dur = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : (8 * 60 * 60 * 1000);
+		const expiresAt = Date.now() + _dur;
+		const expires = new Date(expiresAt).toISOString();
+		// Enforce one meet per contact: tear down any prior meet with this
+		// peer before inviting them to a new one.
+		try { this._locationEngine._endPriorMeetsForUri(uri, requestId); } catch (e) { /* best effort */ }
+		// Remember our own invite so _noteIncomingAcceptanceTick matches it.
+		this._noteOutgoingMeetingRequest(requestId, expiresAt, uri);
+		this.outgoingMeetingRequestParams = this.outgoingMeetingRequestParams || {};
+		this.outgoingMeetingRequestParams[requestId] = {
+			uri,
+			requestId,
+			expiresAt,
+			durationMs: _dur,
+			periodLabel: periodLabel || 'until we meet',
+			excludeOriginRadiusMeters: excludeOriginRadiusMeters || 0,
+			destination: (destination
+				&& typeof destination.latitude === 'number'
+				&& typeof destination.longitude === 'number')
+				? {latitude: destination.latitude, longitude: destination.longitude} : null,
+		};
+		// VALUE-BEARING INVITE. The meet request is no longer a coordinate-free
+		// signal. Instead we start the requester's share right here (forced
+		// origin = request id): its ORIGIN tick is a value-bearing meeting_start
+		// carrying the inviter's live coords + destination AND meeting_request:true.
+		// That single message:
+		//   • is encrypted to the receiver and E2EE-delivered + journaled by the
+		//     server, so the receiver gets it live or on reconnect like any msg;
+		//   • triggers the invite push (server pushes meeting_start — see
+		//     sip_handlers.py), so a tap opens the chat with the map ready;
+		//   • renders on the receiver as the FULL 3-point map — sender pin (from
+		//     the tick), the receiver's own pin (their local GPS), and the
+		//     destination — and fires the accept/reject modal (handleMessageMetadata
+		//     keys the modal off meeting_request:true on a value tick);
+		//   • is a normal, sticky, deletable location row on BOTH sides — reject
+		//     just deletes it.
+		// On Accept the share simply continues (the accept path's
+		// _startRequesterMeetShareOnAccept is a no-op here via the
+		// _startedRequesterShareFor guard) rather than spawning a second origin.
+		utils.timestampedLog('[request] meeting invite (value-bearing)', requestId.slice(0, 8), 'to', uri, 'expires', expires, destination ? '(with destination)' : '(no destination)');
+		// Sender-side chat breadcrumb.
+		try {
+			const _at = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+			this.saveSystemMessage(uri, `📍 Meet-up requested at ${_at}`, 'outgoing', false, 1);
+		} catch (e) { /* noop */ }
+		// The meet-up session starts ON REQUEST, not on accept: the requester's
+		// recurring update stream flows immediately after the invite origin tick,
+		// so the invitee sees the requester's live position from the moment the
+		// invite lands (not only after they accept). Previously we called
+		// holdMeetShareUntilAccept(requestId) here to suppress meeting_update
+		// ticks until meeting_accept; that hold is intentionally removed so the
+		// session is live at request time. (resumeMeetShareOnAccept on accept is
+		// now a no-op for the tick gate and only kicks off the sim walker.)
+		try { this._startRequesterMeetShareOnAccept(requestId, uri); } catch (e) {
+			console.log('[request] value-bearing invite share start failed', e && e.message ? e.message : e);
+		}
+	}
+
+	// Route an incoming application/sylk-request (live websocket OR a
+	// tapped / replayed push) to the right modal. Reuses the existing
+	// note-functions by synthesising the small metadataContent shape they
+	// expect. opts.viaPush selects the sender's chat so a tapped push
+	// surfaces the modal.
+	_handleSylkRequest(fromUri, contentStr, opts = {}) {
+		if (!fromUri || !contentStr) return;
+		let body;
+		try {
+			body = (typeof contentStr === 'string') ? JSON.parse(contentStr) : contentStr;
+		} catch (e) {
+			console.log('[request] _handleSylkRequest: bad JSON from', fromUri, e && e.message);
+			return;
+		}
+		if (!body || typeof body !== 'object') return;
+		// The request/session key is the SIP envelope message id, passed in as
+		// opts.messageId by every call site; body.request_id is a legacy
+		// fallback for older peers that still inline it.
+		const requestId = opts.messageId || body.request_id;
+		if (!requestId) return;
+		// Our own outgoing echo (replicated to sibling devices): never prompt
+		// ourselves on the requester side. The envelope sender (fromUri) is the
+		// authoritative source; body.from is a legacy fallback.
+		if (fromUri === this.state.accountId
+				|| (body.from && body.from === this.state.accountId)) return;
+		utils.timestampedLog('[request] incoming', body.request_type, 'request', String(requestId).slice(0, 8), 'from', fromUri, opts.viaPush ? '(push)' : '(live)');
+		if (body.request_type === 'location') {
+			this._noteIncomingLocationRequest(fromUri, {
+				messageId: requestId,
+				expires: body.expires,
+				uri: this.state.accountId,
+			});
+			// Surface the modal regardless of which chat is open — an
+			// incoming request should interrupt like an ask, not wait for
+			// the user to navigate to the sender's conversation. The
+			// present-fn is idempotent (dedup on handledLocationRequestIds),
+			// so this is a no-op if _noteIncomingLocationRequest already
+			// presented it (user was on that chat).
+			try { this._presentLocationRequestModalForUri(fromUri); } catch (e) { /* noop */ }
+		} else if (body.request_type === 'meeting') {
+			this._noteIncomingMeetingRequest(fromUri, {
+				messageId: requestId,
+				expires: body.expires,
+				meeting_request: true,
+			});
+			try { this._presentMeetingRequestForUri(fromUri); } catch (e) { /* noop */ }
+		} else {
+			console.log('[request] _handleSylkRequest: unknown request_type', body.request_type);
+			return;
+		}
+		// The modal is presented directly above and carries fromUri /
+		// requestId in its own state, so accepting/declining works from
+		// anywhere — no need to navigate into the requester's chat.
+		//
+		// Receiver-side timeline breadcrumb so the request is visible in the
+		// chat even after the modal is gone. saveSystemMessage persists a
+		// system row and renders it (and does NOT touch unread). Deduped per
+		// request id — the request can arrive twice (websocket + push).
+		this._requestSystemNotes = this._requestSystemNotes || new Set();
+		if (!this._requestSystemNotes.has(requestId)) {
+			this._requestSystemNotes.add(requestId);
+			const _at = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+			const _dn = (this.lookupContact(fromUri) && this.lookupContact(fromUri).name) || fromUri;
+			const _label = body.request_type === 'meeting'
+				? `Meet-up request by ${_dn} at ${_at}`
+				: `Location request by ${_dn} at ${_at}`;
+			try { this.saveSystemMessage(fromUri, _label, 'incoming', false, 1); } catch (e) { /* noop */ }
+		}
+		// Float the requester's contact to the top of the conversation
+		// list — a sylk-request isn't stored as a chat row, so the normal
+		// saveIncomingMessage timestamp bump never runs for it.
+		this._bumpContactForIncomingRequest(fromUri);
+	}
+
+	// Bump the requester's contact timestamp on an incoming request so the
+	// conversation floats to the top of the list (sylk-request is a signal,
+	// not a stored message, so nothing else bumps it). Timestamp only — the
+	// unread badge is bumped separately, on modal timeout.
+	_bumpContactForIncomingRequest(fromUri) {
+		try {
+			const contact = this.lookupContact(fromUri, true);
+			if (!contact) return;
+			if (Array.isArray(contact.tags) && contact.tags.indexOf('messages') === -1) {
+				contact.tags.push('messages');
+			}
+			contact.lastCallDuration = null;
+			contact.timestamp = new Date();
+			contact.direction = 'incoming';
+			this.saveSylkContact(fromUri, contact, 'incomingRequest');
+		} catch (e) { console.log('[request] contact bump failed', e && e.message); }
+	}
+
+	// The request modal auto-dismissed without the user acting — surface it
+	// as one unread on the requester's contact so it isn't silently lost.
+	// Keyed by requestId so a re-delivery of the same request can't double-
+	// count. Also refreshes the timestamp so it stays at the top.
+	_incrementUnreadForRequest(fromUri, requestId) {
+		try {
+			const contact = this.lookupContact(fromUri, true);
+			if (!contact) return;
+			if (!Array.isArray(contact.unread)) contact.unread = [];
+			const _id = requestId || ('req-' + Date.now());
+			if (contact.unread.indexOf(_id) === -1) {
+				contact.unread.push(_id);
+				try { utils.timestampedLog('[unread][add] requestTimeout', fromUri, 'id', _id, '→', JSON.stringify(contact.unread)); } catch (e) {}
+			}
+			contact.timestamp = new Date();
+			contact.direction = 'incoming';
+			this.saveSylkContact(fromUri, contact, 'requestTimeout');
+		} catch (e) { console.log('[request] unread bump failed', e && e.message); }
+	}
+
+	// Requester side: the peer accepted our meeting invite. Start OUR meet
+	// share now (share-only-after-accept), forcing the origin id to the
+	// request id so the accepter's in_reply_to = request_id ticks merge
+	// into one session. Idempotent per request id.
+	_startRequesterMeetShareOnAccept(requestId, peerUri) {
+		const params = this.outgoingMeetingRequestParams && this.outgoingMeetingRequestParams[requestId];
+		if (!params) return;
+		this._startedRequesterShareFor = this._startedRequesterShareFor || new Set();
+		if (this._startedRequesterShareFor.has(requestId)) return;
+		this._startedRequesterShareFor.add(requestId);
+		if (typeof params.expiresAt === 'number' && params.expiresAt <= Date.now()) return;
+		const durationMs = Math.max(0, params.expiresAt - Date.now());
+		if (durationMs <= 0) return;
+		utils.timestampedLog('[request] peer accepted meeting', String(requestId).slice(0, 8), '— starting requester share (forced origin)');
+		this._locationEngine.startLocationSharing(params.uri || peerUri, durationMs, params.periodLabel || 'until we meet', {
+			kind: 'meetingRequest',
+			expiresAt: params.expiresAt,
+			excludeOriginRadiusMeters: params.excludeOriginRadiusMeters || 0,
+			destination: params.destination || undefined,
+			forcedOriginId: requestId,
+		});
+	}
+
+	// After the invitee accepts, the INVITER emits one coord-bearing
+	// `meeting_start` (its first GPS) — mirroring the invitee (whose share's
+	// first tick is already a meeting_start). sendMeetingRequest is NOT touched;
+	// this is a separate origin tick grouped under the same meet session. It
+	// gives BOTH legs a meeting_start row for the end-of-meet 3-point summary.
+	// role='inviter' with NO meeting_request flag classifies the wire action as
+	// `meeting_start` (see _locationRelatedAction). Idempotent per session.
+	_sendRequesterMeetingStart(sessionId, peerUri) {
+		if (!sessionId || !peerUri) return;
+		this._sentRequesterMeetingStart = this._sentRequesterMeetingStart || new Set();
+		if (this._sentRequesterMeetingStart.has(sessionId)) return;
+		const s = (this._locationEngine.meetingSessions[sessionId]) || {};
+		// Prefer the captured first GPS (start); fall back to last-known.
+		const _c = s.requesterStartCoords || s.requesterCoords;
+		if (!_c || typeof _c.latitude !== 'number' || typeof _c.longitude !== 'number') {
+			// No inviter coords yet — the recurring share ticks still flow; the
+			// next accept re-entry (idempotent) or a later tick covers it.
+			return;
+		}
+		this._sentRequesterMeetingStart.add(sessionId);
+		const params = this.outgoingMeetingRequestParams && this.outgoingMeetingRequestParams[sessionId];
+		const _expiresIso = (params && typeof params.expiresAt === 'number')
+			? new Date(params.expiresAt).toISOString() : undefined;
+		const _dest = (s.destination
+			&& typeof s.destination.latitude === 'number'
+			&& typeof s.destination.longitude === 'number')
+			? {latitude: s.destination.latitude, longitude: s.destination.longitude} : undefined;
+		const _startId = uuid.v4();
+		const _msg = {
+			_id: _startId,
+			key: _startId,
+			createdAt: new Date(),
+			contentType: 'application/sylk-location-sharing',
+			metadata: {
+				action: 'location',
+				value: {
+					latitude: _c.latitude,
+					longitude: _c.longitude,
+					accuracy: typeof _c.accuracy === 'number' ? _c.accuracy : null,
+					timestamp: new Date().toISOString(),
+				},
+				role: 'inviter',      // → meeting_start (no meeting_request flag)
+				messageId: sessionId, // groups under the meet session (origin tick)
+				expires: _expiresIso,
+				destination: _dest,
+			},
+		};
+		try {
+			utils.timestampedLog('[request] inviter sending meeting_start', String(sessionId).slice(0, 8), 'to', peerUri);
+			this._sendLocationSharing(peerUri, _msg);
+		} catch (e) {
+			this._sentRequesterMeetingStart.delete(sessionId);
+			console.log('[request] inviter meeting_start send failed', e && e.message ? e.message : e);
+		}
+	}
 
 	// Multi-device handshake mirror for one-shot location requests.
 	// Fired when this device receives an outgoingMessage replication
@@ -35184,36 +37187,29 @@ class Sylk extends Component {
 	// Idempotent — re-firing is harmless.
 	_noteSiblingAnsweredLocationRequest(requestId, peerUri) {
 		if (!requestId) return;
-		if (!this.handledLocationRequestIds) {
-			this.handledLocationRequestIds = new Set();
-		}
-		if (!this.siblingAnsweredLocationRequestIds) {
-			this.siblingAnsweredLocationRequestIds = new Set();
-		}
 		// Always stamp the sibling-answered set so the pre-modal
 		// 2 s delay (in _presentLocationRequestForUri) can detect
 		// "sibling already answered while we were waiting" and skip
 		// presenting the modal. Distinct from handledLocationRequestIds
 		// which is also stamped at local-presentation time and
 		// therefore can't be used inside the same setTimeout chain.
-		this.siblingAnsweredLocationRequestIds.add(requestId);
-		if (this.handledLocationRequestIds.has(requestId)) {
+		this._locationEngine.siblingAnsweredLocationRequestIds.add(requestId);
+		if (this._locationEngine.handledLocationRequestIds.has(requestId)) {
 			// Already handled on this device (we may have answered
 			// here). Still close the modal defensively in case it's
 			// somehow lingering.
 		} else {
-			this.handledLocationRequestIds.add(requestId);
+			this._locationEngine.handledLocationRequestIds.add(requestId);
 		}
-		if (this.pendingLocationRequests
+		if (this._locationEngine.pendingLocationRequests
 				&& peerUri
-				&& this.pendingLocationRequests[peerUri]
-				&& this.pendingLocationRequests[peerUri].requestId === requestId) {
-			delete this.pendingLocationRequests[peerUri];
+				&& this._locationEngine.pendingLocationRequests[peerUri]
+				&& this._locationEngine.pendingLocationRequests[peerUri].requestId === requestId) {
+			delete this._locationEngine.pendingLocationRequests[peerUri];
 		}
 		const modal = this.state && this.state.locationRequestModal;
 		if (modal && modal.show && modal.requestId === requestId) {
-			console.log('[location] [meet] sibling device answered location request',
-				requestId, '— closing modal on this device');
+			console.log('[location] [meet] sibling device answered location request', requestId, '— closing modal on this device');
 			this._closeLocationRequestModal();
 		}
 	}
@@ -35691,39 +37687,25 @@ class Sylk extends Component {
 		} catch (e) { /* noop */ }
 	}
 
-	// Has this meeting session progressed past the acceptance handshake?
-	// Exposed as a prop to NavigationBar so stopLocationSharing can
-	// pick the right vocabulary for its system notes: before acceptance
-	// we call the thing a "Meeting request" (it's still a request, the
-	// peer hasn't responded yet); after acceptance it's just a "Meeting"
-	// because the label of "request" stops making sense — both sides
-	// are actively sharing.
-	//
-	// Accepted on either side counts:
-	//   • this device was the accepter → acceptedMeetingRequestIds has it
-	//   • this device was the requester → handledAcceptanceIds has it
-	//     once we've seen the peer's first reply tick
-	isMeetingSessionAccepted(sessionId) {
-		if (!sessionId) return false;
-		if (this.acceptedMeetingRequestIds
-			&& this.acceptedMeetingRequestIds.has(sessionId)) {
-			return true;
-		}
-		if (this.handledAcceptanceIds
-			&& this.handledAcceptanceIds.has(sessionId)) {
-			return true;
-		}
-		return false;
-	}
 
 	_noteIncomingAcceptanceTick(fromUri, metadataContent) {
-		const refId = metadataContent.in_reply_to;
+		const refId = metadataContent.sessionId || metadataContent.messageId;
 		if (!refId) return;
-		if (!this.myOutgoingMeetingRequestIds.has(refId)) return;
-		if (this.handledAcceptanceIds.has(refId)) return;
-		this.handledAcceptanceIds.add(refId);
+		if (!this._locationEngine.myOutgoingMeetingRequestIds.has(refId)) return;
+		if (this._locationEngine.handledAcceptanceIds.has(refId)) return;
+		this._locationEngine.handledAcceptanceIds.add(refId);
 		this._persistMeetingHandshakeState();
-		this._reportPeerAccepted(refId, fromUri);
+		this._locationEngine._reportPeerAccepted(refId, fromUri);
+		// Share-only-after-accept: the requester didn't start sharing when
+		// it sent the sylk-request invite. Now that the peer has accepted,
+		// start OUR meet share (forced origin id = request id) so both
+		// sides converge. No-op for legacy requests we don't have params
+		// for (e.g. the requester was already sharing).
+		this._startRequesterMeetShareOnAccept(refId, fromUri);
+		try {
+			const _nb2 = this.navigationBarRef && this.navigationBarRef.current;
+			if (_nb2 && typeof _nb2.resumeMeetShareOnAccept === 'function') _nb2.resumeMeetShareOnAccept(refId);
+		} catch (e) { /* noop */ }
 		// No system note here. The accepter now sends a real text message
 		// ("I want to meet with you, too!") on acceptance, which arrives
 		// just ahead of the first reply tick and serves as the handshake
@@ -35743,176 +37725,35 @@ class Sylk extends Component {
 	// acceptedMeetingRequestIds contains the requestId.
 	_noteSiblingAcceptedMeetingRequest(requestId, peerUri) {
 		if (!requestId) return;
-		if (this.acceptedMeetingRequestIds
-				&& this.acceptedMeetingRequestIds.has(requestId)) {
+		if (this._locationEngine.acceptedMeetingRequestIds.has(requestId)) {
 			return;
 		}
-		if (!this.acceptedMeetingRequestIds) {
-			this.acceptedMeetingRequestIds = new Set();
-		}
-		this.acceptedMeetingRequestIds.add(requestId);
+		this._locationEngine.acceptedMeetingRequestIds.add(requestId);
 		// Mark handled so a future _presentMeetingRequestForUri call
 		// (chat reopen, navigation back to the chat, etc.) early-exits
 		// instead of re-popping the modal.
-		if (!this.handledMeetingRequestIds) {
-			this.handledMeetingRequestIds = new Set();
-		}
-		this.handledMeetingRequestIds.add(requestId);
+		this._locationEngine.handledMeetingRequestIds.add(requestId);
 		this._persistMeetingHandshakeState();
 		// Drop any pending entry — we don't need the modal anymore on
 		// this device.
-		if (this.pendingMeetingRequests
+		if (this._locationEngine.pendingMeetingRequests
 				&& peerUri
-				&& this.pendingMeetingRequests[peerUri]
-				&& this.pendingMeetingRequests[peerUri].requestId === requestId) {
-			delete this.pendingMeetingRequests[peerUri];
+				&& this._locationEngine.pendingMeetingRequests[peerUri]
+				&& this._locationEngine.pendingMeetingRequests[peerUri].requestId === requestId) {
+			delete this._locationEngine.pendingMeetingRequests[peerUri];
 		}
 		// If the modal for this request is currently on screen, close
 		// it now. _closeMeetingRequestModal also clears the 90 s
 		// auto-dismiss timer cleanly.
 		const modal = this.state && this.state.meetingRequestModal;
 		if (modal && modal.show && modal.requestId === requestId) {
-			console.log('[meeting] sibling device accepted request', requestId,
-				'— closing modal on this device');
+			console.log('[meeting] sibling device accepted request', requestId, '— closing modal on this device');
 			this._closeMeetingRequestModal();
 		} else {
-			console.log('[meeting] sibling device accepted request', requestId,
-				'— marked handled (modal not currently open)');
+			console.log('[meeting] sibling device accepted request', requestId, '— marked handled (modal not currently open)');
 		}
 	}
 
-	// Per-tick pair update for meeting sessions. Determines which session
-	// this tick belongs to (if any) and which side of it it came from,
-	// then stores the latest coords on the matching side. Returns
-	// {sessionId, side, peerUri} if the tick was paired, else null.
-	//
-	// Tick → (sessionId, side) classification:
-	//   • in_reply_to present               → session=in_reply_to, side='accepter'
-	//   • meeting_request:true + messageId  → session=messageId,   side='requester' (origin)
-	//   • messageId in myOutgoingMeetingRequestIds → session=messageId, side='requester'
-	//     (continuation tick of our own request; follow-up ticks don't
-	//     restamp meeting_request:true.)
-	//   • messageId matches a known session's requesterOriginId
-	//     or accepterOriginId                → matching session + side
-	//     (covers continuation ticks once we've already seen the origin.)
-	_updateMeetingSessionCoords(metadataContent, conversationUri) {
-		if (!metadataContent || metadataContent.action !== 'location') return null;
-		const mid = metadataContent.messageId;
-		if (!mid) return null;
-
-		let sessionId = null;
-		let side = null;
-
-		if (metadataContent.in_reply_to) {
-			sessionId = metadataContent.in_reply_to;
-			side = 'accepter';
-		} else if (metadataContent.meeting_request === true) {
-			sessionId = mid;
-			side = 'requester';
-		} else if (this.myOutgoingMeetingRequestIds.has(mid)) {
-			sessionId = mid;
-			side = 'requester';
-		} else {
-			// Fallback: continuation tick for a session we've already
-			// classified. Look it up by known origin ids.
-			for (const [sid, s] of Object.entries(this.meetingSessions)) {
-				if (!s) continue;
-				if (s.requesterOriginId === mid) { sessionId = sid; side = 'requester'; break; }
-				if (s.accepterOriginId  === mid) { sessionId = sid; side = 'accepter';  break; }
-			}
-		}
-
-		if (!sessionId || !side) return null;
-
-		const s = this.meetingSessions[sessionId] || {};
-		// Record origin ids and conversation uri for each side the first
-		// time we see them. conversationUri is the "other party" from this
-		// device's perspective — it's the right key for state.messages.
-		if (side === 'requester') {
-			if (!s.requesterOriginId) s.requesterOriginId = mid;
-			if (!s.requesterUri && conversationUri) s.requesterUri = conversationUri;
-		} else {
-			if (!s.accepterOriginId) s.accepterOriginId = mid;
-			if (!s.accepterUri && conversationUri) s.accepterUri = conversationUri;
-		}
-
-		// Privacy-deferred ticks carry the destination as `value` (a
-		// stand-in while that side is hiding their position). Don't
-		// extract them as that side's coords — would render the side's
-		// pin at the meeting point on the OTHER side's map (cross-leak).
-		const v = metadataContent.value;
-		if (!metadataContent.privacyDeferred
-				&& v && typeof v.latitude === 'number' && typeof v.longitude === 'number') {
-			const coords = {
-				latitude: v.latitude,
-				longitude: v.longitude,
-				accuracy: typeof v.accuracy === 'number' ? v.accuracy : null,
-				timestamp: metadataContent.timestamp || Date.now(),
-			};
-			if (side === 'requester') s.requesterCoords = coords;
-			else                      s.accepterCoords  = coords;
-		}
-		// Capture shared meeting destination from any tick that
-		// carries it (origin or update; requester broadcasts it once
-		// they pick one — usually after their first GPS fix). Keep
-		// the first non-null value we ever see; subsequent broadcasts
-		// of the same destination are no-ops, and we don't want a
-		// rogue update to flip an established destination mid-session.
-		// If a NavBar share is already active for this conversation
-		// (the accepter side after they tapped Accept), forward the
-		// destination so its simulator/tick stamping picks it up.
-		const dest = metadataContent.destination;
-		if (dest
-				&& typeof dest.latitude === 'number'
-				&& typeof dest.longitude === 'number'
-				&& !s.destination) {
-			s.destination = {latitude: dest.latitude, longitude: dest.longitude};
-			try {
-				const navBar = this.navigationBarRef && this.navigationBarRef.current;
-				if (navBar
-						&& typeof navBar.setMeetingDestination === 'function'
-						&& conversationUri) {
-					navBar.setMeetingDestination(conversationUri, s.destination);
-				}
-			} catch (e) {
-				console.log('[meeting] propagating destination to NavBar failed',
-					e && e.message ? e.message : e);
-			}
-		}
-		this.meetingSessions[sessionId] = s;
-
-		// One-line APPLOG summary of what this tick is and what the session
-		// looks like AFTER it lands. This is the breadcrumb we want next time
-		// the "two maps instead of one" symptom shows up — it tells us:
-		//   • which side (requester / accepter) the tick was classified as
-		//   • whether both origin ids are now known (without both we cannot
-		//     stamp peerCoords on the partner's bubble — the symptom of two
-		//     separate bubbles drifting independently)
-		//   • whether both coord pairs are now known (precondition for the
-		//     haversine/distance computation and the second pin)
-		//   • the in_reply_to / meeting_request flags that drive the
-		//     _injectLocationBubble dedup
-		// We deliberately keep this on `utils.timestampedLog` so it lands in
-		// the on-device log file (Show logs / Support needed…), not just the
-		// dev console.
-		try {
-			utils.timestampedLog('[location] [meet] tick',
-				'session=' + this._meetShortId(sessionId),
-				'side=' + side,
-				'mid=' + this._meetShortId(mid),
-				'in_reply_to=' + (metadataContent.in_reply_to
-					? this._meetShortId(metadataContent.in_reply_to)
-					: '-'),
-				'meeting_request=' + (metadataContent.meeting_request === true ? 'y' : 'n'),
-				'has_coords=' + (v && typeof v.latitude === 'number' ? 'y' : 'n'),
-				'pair=req:' + (s.requesterOriginId ? 'id' : '-')
-					+ (s.requesterCoords ? '+gps' : '')
-					+ '/acc:' + (s.accepterOriginId ? 'id' : '-')
-					+ (s.accepterCoords ? '+gps' : ''));
-		} catch (e) { /* logging must never throw */ }
-
-		return {sessionId, side, peerUri: conversationUri, session: s};
-	}
 
 	// Persist the pair state (peerCoords + distanceMeters) into the
 	// `metadata` column of a given origin row, so the two-pin view survives
@@ -35943,429 +37784,14 @@ class Sylk extends Component {
 			"update messages set metadata = ? where msg_id = ? and account = ?",
 			[metadataJson, originMsgId, this.state.accountId]
 		).catch((error) => {
-			console.log('[meeting] persist peerCoords SQL error:',
-				error && error.message ? error.message : error);
+			console.log('[meeting] persist peerCoords SQL error:', error && error.message ? error.message : error);
 		});
 	}
 
 	// Compute great-circle distance between two coord pairs, in metres.
 
-	// Patch peerCoords (+ distance) into the latest 'location' metadata
-	// entry of each bubble that belongs to this session, so LocationBubble
-	// can read them off metadata.peerCoords / metadata.distanceMeters on
-	// its next render.
-	//
-	// We update both this.state.messagesMetadata (flat map used by
-	// ContactsListBox's locationData getter) and the mirrored copy inside
-	// allContacts[uri].messagesMetadata — the tick setState above keeps
-	// these in sync, so we do too.
-	_propagatePeerCoordsForSession(sessionId, conversationUri) {
-		const s = this.meetingSessions[sessionId];
-		if (!s) return;
-		const {requesterOriginId, requesterCoords, accepterOriginId, accepterCoords} = s;
-		// Need at least one coord pair and both origin ids for the current
-		// conversation to make a difference. If only one origin is known
-		// on this device (e.g. the remote side's accept bubble hasn't
-		// arrived yet) we still stamp peerCoords on whatever we have.
-		if (!requesterCoords && !accepterCoords) return;
 
-		const distance = haversineMeters(requesterCoords, accepterCoords);
-		// Pick "our own" coords for this side. We're the requester
-		// when this session id is in myOutgoingMeetingRequestIds (set
-		// when our outgoing meeting_request tick echoed locally).
-		// Otherwise we're the accepter side. The distance-to-dest
-		// log uses these so each device shows its own remaining
-		// walking distance to the meeting point.
-		const iAmRequester = !!(this.myOutgoingMeetingRequestIds
-			&& this.myOutgoingMeetingRequestIds.has(sessionId));
-		const ownCoords = iAmRequester ? requesterCoords : accepterCoords;
-		this._reportMeetingDistance(sessionId, distance, ownCoords, s.destination);
 
-		// Proximity auto-end. If the two participants have been within
-		// MEETING_PROXIMITY_METERS of each other for MEETING_PROXIMITY_DWELL_MS
-		// continuously, treat the meetup as completed: notify the user
-		// locally, relay a meeting_end signal to the peer, stop this side's
-		// share, and wipe the session. Gated by a once-per-session flag so
-		// a stream of "near" ticks doesn't replay the alert. Called here
-		// (and not in _updateMeetingSessionCoords) because we need both
-		// coords populated, which is the same precondition this routine
-		// already enforces above.
-		this._maybeFireProximityMeet(sessionId, conversationUri, distance);
-
-		this.setState(prev => {
-			if (!prev || !prev.allContacts) return null;
-			const idx = prev.allContacts.findIndex(c => c.uri === conversationUri);
-			if (idx === -1) {
-				console.log('[location] [meet] propagate: contact NOT FOUND for uri=', conversationUri,
-					'— session', this._meetShortId(sessionId));
-				return null;
-			}
-			const oldContact = prev.allContacts[idx];
-			// Same drift trap as handleMessageMetadata's setState: basing
-			// newMm solely on oldContact.messagesMetadata and then writing
-			// it back to the top level quietly rolls OTHER mIds back to
-			// whatever the contact mirror last had. Merge top-level on top
-			// so the freshest per-mId entries survive — peerCoords that
-			// were stamped by a prior run of this same routine live at the
-			// top level and would be lost otherwise.
-			const prevTopMeta = prev.messagesMetadata || {};
-			const prevContactMeta = oldContact.messagesMetadata || {};
-			const prevMm = {...prevContactMeta, ...prevTopMeta};
-			const newMm = {...prevMm};
-			let changed = false;
-
-			// `[location] [meet] propagate START / END / skip …` chatter used to
-			// fire on every tick here (≈80 lines per minute during a
-			// live meet). It was a debug aid for the two-pin
-			// asymmetry bug — that's been fixed for ages, so the
-			// noise is just clutter now. Keep the logic; drop the
-			// per-tick console output. Errors / contact-not-found
-			// retains a single log so a future regression still
-			// leaves a trail.
-
-			const applyPeer = (originId, peerCoords, label) => {
-				if (!originId) return;
-				// No peer yet (one side hasn't been seen on this device) —
-				// don't overwrite an absent peerCoords with explicit null.
-				// Leaves the bubble showing a single pin until pairing
-				// completes, which is the correct visual.
-				if (!peerCoords) return;
-				const arr = prevMm[originId];
-				if (!Array.isArray(arr) || arr.length === 0) return;
-				// Find the most recent 'location' entry (may not be last).
-				let realIdx = -1;
-				for (let i = arr.length - 1; i >= 0; i--) {
-					if (arr[i] && arr[i].action === 'location') { realIdx = i; break; }
-				}
-				if (realIdx < 0) return;
-				const existing = arr[realIdx];
-				// Cheap equality check — skip setState if nothing changed.
-				const same = existing.peerCoords
-					&& existing.peerCoords.latitude === peerCoords.latitude
-					&& existing.peerCoords.longitude === peerCoords.longitude
-					&& existing.distanceMeters === distance;
-				if (same) return;
-				const updated = {
-					...existing,
-					peerCoords,
-					distanceMeters: distance,
-				};
-				const newArr = [...arr];
-				newArr[realIdx] = updated;
-				newMm[originId] = newArr;
-				changed = true;
-				// Persist to SQL on the same path — the origin row for this
-				// side exists on this device regardless of direction (both
-				// saveOutgoingMessage and saveIncomingMessage INSERT one on
-				// origin tick). Scheduling the UPDATE outside setState so
-				// the state commit isn't blocked on SQL; the helper is
-				// fire-and-forget and logs its own errors.
-				this._persistPeerCoordsToSql(originId, updated);
-			};
-
-			applyPeer(requesterOriginId, accepterCoords, 'req←acc');
-			applyPeer(accepterOriginId, requesterCoords, 'acc←req');
-
-			// One-line APPLOG summary of THIS propagation pass. We log:
-			//   • whether each origin id was known (without both, the
-			//     partner's bubble can't be stamped — that's the
-			//     "two independent maps" symptom)
-			//   • whether both coord pairs were known
-			//   • the resulting distance
-			//   • whether a state change actually happened (changed=y/n)
-			// Skipped passes (no peer yet, peerCoords already match) are
-			// the common case once the session has been paired and is just
-			// echoing the same merge — they show up as changed=n.
-			try {
-				utils.timestampedLog('[location] [meet] propagate',
-					'session=' + this._meetShortId(sessionId),
-					'reqOrigin=' + (requesterOriginId ? this._meetShortId(requesterOriginId) : '-'),
-					'accOrigin=' + (accepterOriginId ? this._meetShortId(accepterOriginId) : '-'),
-					'reqCoords=' + (requesterCoords ? 'y' : 'n'),
-					'accCoords=' + (accepterCoords ? 'y' : 'n'),
-					'distance=' + (distance != null ? this._meetFormatDistance(distance) : '-'),
-					'changed=' + (changed ? 'y' : 'n'));
-			} catch (e) { /* never throw from logging */ }
-
-			if (!changed) return null;
-
-			const updatedContact = {...oldContact, messagesMetadata: newMm};
-			const newContacts = [...prev.allContacts];
-			newContacts[idx] = updatedContact;
-
-			const next = {
-				allContacts: newContacts,
-				messagesMetadata: newMm,
-			};
-			if (prev.selectedContact && prev.selectedContact.uri === conversationUri) {
-				next.selectedContact = updatedContact;
-			}
-			return next;
-		});
-	}
-
-	// Proximity gate for "Until we meet" auto-end. Called on every tick
-	// after peerCoords are paired. Three possible outcomes per call:
-	//
-	//   • distance > threshold → reset dwell ("they drifted apart")
-	//   • distance ≤ threshold but dwell not reached → remember when the
-	//     near phase started and bail (waiting for sustained proximity)
-	//   • distance ≤ threshold for ≥ dwell window → FIRE: notify user,
-	//     relay meeting_end to peer, stop this side's share, wipe session.
-	//
-	// The once-per-session `proximityFired` flag guards against double-
-	// firing before the session is torn down (the wipe is async — a tick
-	// in flight could re-enter this block before meetingSessions[sid]
-	// is deleted).
-	//
-	// Threshold / dwell tuning notes:
-	//   • 10 m is "arm's length / same table" with consumer GPS. Tight
-	//     enough to mean "they're actually at the same spot," at the
-	//     cost of tolerating less GPS jitter — a single bad fix can
-	//     push the reported distance past 10 m even when the phones
-	//     are side by side. The dwell debounce below absorbs that.
-	//   • 60 s dwell prevents a one-tick GPS glitch from killing an active
-	//     session while the users are actually still walking toward each
-	//     other. At the default 60 s tick cadence that's roughly "two
-	//     ticks in a row both near" — reasonable signal / noise ratio.
-	_maybeFireProximityMeet(sessionId, conversationUri, distance) {
-		if (distance == null) return;
-		const s = this.meetingSessions[sessionId];
-		if (!s) return;
-		if (s.proximityFired) return;
-
-		// 10 m is "arm's length / same table / same doorway" — i.e. the
-		// two phones are really at the same spot, not just nearby. This
-		// is tighter than the "same block" 50 m earlier drafts used; the
-		// downside is we're now squarely inside consumer-GPS noise (5–15 m
-		// CEP is typical outdoors, worse indoors), so a single noisy fix
-		// can bounce above the threshold. DWELL_MS + accuracy-aware gating
-		// below absorb that — we require the sustained-near state, not a
-		// single tick, AND we refuse to trust fixes whose reported
-		// accuracy is too coarse to resolve proximity at 10 m.
-		//
-		// 15 s dwell is a deliberately-short debounce: at a 1-tick-every-
-		// few-seconds cadence that's roughly 2–3 sustained near ticks
-		// before we fire. Earlier drafts used 60 s, which felt unresponsive
-		// when two people were clearly together at 2–3 m apart — by the
-		// time they pulled out the phone to check, they'd been staring at
-		// "distance: 3 m" for a minute.
-		//
-		// No accuracy gate on the meetup-confirmed fire (see comment on
-		// the distance check below). Indoors / weak-GPS environments
-		// report coarse accuracy (±50–150 m via cell+wifi positioning)
-		// even when phones are side-by-side; gating on accuracy prevents
-		// the meeting from ever auto-ending in that common case. Trust
-		// the reported distance; DWELL_MS debounces single-tick glitches.
-		// THRESHOLD_M raised from 10 m to 20 m after indoor testing: two
-		// phones in the same room, with the peer physically within arm's
-		// reach, consistently reported ~14 m apart because consumer GPS
-		// accuracy indoors is ~20 m (reported by both iOS and Android as
-		// `accuracy: 20` in the logs). A 10 m cutoff meant the meetup-
-		// confirmed fire never triggered for in-building meetings. 20 m
-		// matches that observed indoor accuracy floor while still being
-		// tight enough that "within the same building" is the scale at
-		// which we consider the meeting complete.
-		//
-		// User-overridable via Preferences → Location → "Meet-up
-		// proximity": 10 m (tight / outdoor with clear sky view), 20 m
-		// (default), or 50 m (relaxed / indoor / dense city). Read fresh
-		// on every call so a change applies on the next tick without
-		// any session teardown.
-		const _prefProximity = this.state
-			&& this.state.accountSetting
-			&& this.state.accountSetting.location
-			&& this.state.accountSetting.location.proximityMeters;
-		const THRESHOLD_M = (typeof _prefProximity === 'number' && _prefProximity > 0)
-			? _prefProximity
-			: 20;
-		const ALERT_THRESHOLD_M = 250;
-		const DWELL_MS = 15 * 1000;
-
-		// First-proximity heads-up — fire BEFORE the strict accuracy
-		// gate and BEFORE effDistance-based dwell logic. Rationale: the
-		// "You are close to each other" push is a low-stakes hint with
-		// no permanent side-effects (no chat message, no session teardown),
-		// so we'd rather err on the side of "tell the user they might be
-		// nearby" than "stay silent because one device briefly reported a
-		// coarse fix". Using the RAW reported distance here — no accuracy
-		// adjustment — so the alert still fires when one device has a
-		// coarse fix.
-		//
-		// ALERT_THRESHOLD_M (20 m) is intentionally roomier than
-		// THRESHOLD_M (10 m): "close to each other" should trigger as the
-		// phones approach, not only once they're already at the meetup
-		// point. 20 m is about "in the same shop / around the corner" —
-		// the right scale for a heads-up. The meetup-confirmed fire below
-		// keeps the tighter 10 m threshold with the accuracy-aware gate.
-		//
-		// Once-per-session via s.proximityAlertSent; a subsequent
-		// near→far→near bounce won't retrigger. Session teardown wipes
-		// the object so a future meeting starts with a fresh flag.
-		if (!s.proximityAlertSent && distance < ALERT_THRESHOLD_M) {
-			s.proximityAlertSent = true;
-			console.log('[meeting] proximity alert fired for session',
-				sessionId, 'distance=', Math.round(distance), 'm',
-				'(threshold', ALERT_THRESHOLD_M, 'm)');
-			this._showProximityAlertNotification(conversationUri);
-		}
-
-		// MEETUP-CONFIRMED fire. Uses the raw reported distance — no
-		// accuracy gate, no effDistance inflation. If both devices are
-		// reporting they're within THRESHOLD_M of each other, treat that
-		// as "they met" regardless of whether GPS claims ±5 m or ±150 m
-		// precision. The indoor / weak-GPS case is the motivating one:
-		// accuracy there is routinely ±50–150 m even when phones are
-		// physically touching, and an accuracy-gated fire would never
-		// trigger. DWELL_MS below still debounces single-tick glitches.
-		// accA/accB are retained purely for logging — they no longer
-		// affect the decision.
-		const accA = s.requesterCoords && typeof s.requesterCoords.accuracy === 'number'
-			? s.requesterCoords.accuracy : null;
-		const accB = s.accepterCoords && typeof s.accepterCoords.accuracy === 'number'
-			? s.accepterCoords.accuracy : null;
-
-		if (distance > THRESHOLD_M) {
-			if (s.nearSince) {
-				console.log('[meeting] proximity dwell reset for session',
-					sessionId, 'distance=', Math.round(distance), 'm',
-					'accA=', accA == null ? '(none)' : Math.round(accA) + ' m',
-					'accB=', accB == null ? '(none)' : Math.round(accB) + ' m');
-			}
-			s.nearSince = null;
-			return;
-		}
-
-		const now = Date.now();
-		if (!s.nearSince) {
-			s.nearSince = now;
-			this._reportProximityDwellStarted(sessionId, distance);
-			return;
-		}
-
-		const dwelled = now - s.nearSince;
-		if (dwelled < DWELL_MS) {
-			return;
-		}
-
-		// Fire: flip the flag first so any re-entry bails immediately.
-		s.proximityFired = true;
-		this._reportProximityMet(sessionId, distance);
-
-		// Local notification on this device — "You met!". Shown whether the
-		// app is foreground or background; when foreground the OS still
-		// raises it as a banner (see sendLocalNotification for the
-		// established iOS pattern).
-		this._showMeetingProximityNotification(conversationUri, distance);
-
-		// Emit the initiator-only "Meeting succeeded" real chat message for
-		// this session. The helper is idempotent across paths — same call
-		// happens on meeting_end reason='proximity' reception — so whichever
-		// device/path reaches here first wins and the other is deduped. No
-		// system note: the chat message carries its own timestamp, which is
-		// all the "met at HH:MM" marker we need on both sides.
-		this._sendMeetingSucceededIfInitiator(sessionId, conversationUri);
-
-		// Relay meeting_end to the peer BEFORE local wipe, while the
-		// NavigationBar timer entry (which carries meetingSessionId) still
-		// exists. _wipeMeetingSession calls stopLocationSharing with
-		// reason='expired', which is in peerRelayReasons and therefore
-		// suppresses the relay — so we fire it explicitly here. The peer
-		// will independently hit their own proximity threshold too, but the
-		// explicit signal is a belt-and-braces in case one device's GPS is
-		// laggy or dropped a tick.
-		try {
-			const navBar = this.navigationBarRef && this.navigationBarRef.current;
-			if (navBar && typeof navBar.sendMeetingEndSignal === 'function' && conversationUri) {
-				// reason:'proximity' tells the peer this end was triggered by
-				// the proximity-met threshold (not user-initiated / expired /
-				// deleted). The peer's meeting_end handler forwards this
-				// reason to stopSharesForMeetingSession → stopLocationSharing
-				// so the note they emit ("Location sharing stopped at HH:MM")
-				// matches the one we just logged locally.
-				navBar.sendMeetingEndSignal(conversationUri, sessionId, {reason: 'proximity'});
-			}
-		} catch (e) {
-			console.log('[meeting] proximity sendMeetingEndSignal failed', e);
-		}
-
-		// Full session teardown: stops the local timer, wipes SQL rows,
-		// strips in-memory state, deletes meetingSessions[sid].
-		this._wipeMeetingSession(sessionId, conversationUri, 'proximity');
-	}
-
-	// Emit the "Meeting succeeded" chat message when a meeting-session
-	// ends via proximity. Called from two independent paths:
-	//   • _maybeFireProximityMeet — our own proximity dwell just fired.
-	//   • handleMessageMetadata meeting_end with reason='proximity' —
-	//     the peer's proximity dwell fired and they signalled us.
-	//
-	// Both devices may reach one or both of these paths for the same
-	// session (each hits its own proximity threshold independently, AND
-	// each receives the peer's meeting_end signal). We want a single
-	// message per session, so the helper is guarded by
-	// _proximityNotedSessionIds — first caller claims the session, later
-	// callers are no-ops. Only the initiator (the party whose session id
-	// is in myOutgoingMeetingRequestIds) actually sends; the accepter
-	// stays silent because they'll receive the initiator's message as a
-	// normal incoming chat.
-	//
-	// Text is intentionally bare ("Meeting succeeded"): the message's
-	// own createdAt timestamp supplies the "at HH:MM" display that the
-	// transcript already renders next to every bubble. No accompanying
-	// system note — the real message is the record of the meetup.
-	_sendMeetingSucceededIfInitiator(sessionId, conversationUri) {
-		if (!sessionId || !conversationUri) return;
-		try {
-			if (!this._proximityNotedSessionIds) this._proximityNotedSessionIds = new Set();
-			if (this._proximityNotedSessionIds.has(sessionId)) {
-				return;
-			}
-			// Determine initiator directly from myOutgoingMeetingRequestIds
-			// (persisted across restarts). Using this rather than the live
-			// meetingSessions[sid] entry means the gate still works after
-			// a local proximity fire has already wiped the session, which
-			// is the usual case on the peer-signal path.
-			const isInitiator = !!(this.myOutgoingMeetingRequestIds
-				&& this.myOutgoingMeetingRequestIds.has(sessionId));
-			// Diagnostic trace was here. Silenced now that the flow
-			// is stable; if the user ever reports "no Meeting
-			// succeeded message" again, the SESSION ENDED log on
-			// both sides + the absence of the Meeting-succeeded
-			// chat message together pinpoint the gate.
-			if (!isInitiator) return;
-			if (typeof this.sendMessage !== 'function') return;
-			// Claim the session BEFORE dispatching sendMessage so a
-			// simultaneous call on the other path can't race past the
-			// dedup check.
-			this._proximityNotedSessionIds.add(sessionId);
-			const msgId = uuid.v4();
-			const now = new Date();
-			const message = {
-				_id: msgId,
-				key: msgId,
-				createdAt: now,
-				text: 'Meeting succeeded',
-				// GiftedChat requires a user field on every outgoing message.
-				user: {},
-			};
-			this.sendMessage(conversationUri, message);
-			// Persist "we've met this peer" — not used for text variation
-			// anymore (the message is invariant) but retained so a future
-			// feature can key off met-before state without another round
-			// of migration.
-			if (!this.metPeerUris) this.metPeerUris = new Set();
-			if (!this.metPeerUris.has(conversationUri)) {
-				this.metPeerUris.add(conversationUri);
-				if (typeof this._persistMeetingHandshakeState === 'function') {
-					this._persistMeetingHandshakeState();
-				}
-			}
-		} catch (e) {
-			console.log('[meeting] Meeting-succeeded emit failed',
-				e && e.message ? e.message : e);
-		}
-	}
 
 	// Cross-platform local notification fired the FIRST time the two
 	// phones enter the meeting radius for a session. Unlike
@@ -36386,8 +37812,7 @@ class Sylk extends Component {
 				title = contact.name;
 			}
 		} catch (e) {
-			console.log('[meeting] proximity alert: contact lookup failed',
-				e && e.message ? e.message : e);
+			console.log('[meeting] proximity alert: contact lookup failed', e && e.message ? e.message : e);
 		}
 		const body = 'You are close to each other';
 		try {
@@ -36413,8 +37838,7 @@ class Sylk extends Component {
 				});
 			}
 		} catch (e) {
-			console.log('[meeting] proximity alert notification failed',
-				e && e.message ? e.message : e);
+			console.log('[meeting] proximity alert notification failed', e && e.message ? e.message : e);
 		}
 	}
 
@@ -36439,10 +37863,9 @@ class Sylk extends Component {
 		} catch (e) {
 			// lookupContact is safe, but keep the fallback explicit —
 			// if anything goes sideways we still ship a usable banner.
-			console.log('[meeting] proximity notification: contact lookup failed',
-				e && e.message ? e.message : e);
+			console.log('[meeting] proximity notification: contact lookup failed', e && e.message ? e.message : e);
 		}
-		const body = 'Nice to meet you!';
+		const body = 'Look around you to find me!';
 		try {
 			if (Platform.OS === 'ios') {
 				// Same iOS 17+ fix as _showProximityAlertNotification: the
@@ -36464,15 +37887,14 @@ class Sylk extends Component {
 				});
 			}
 		} catch (e) {
-			console.log('[meeting] proximity notification failed',
-				e && e.message ? e.message : e);
+			console.log('[meeting] proximity notification failed', e && e.message ? e.message : e);
 		}
 	}
 
 	// Inject a rendered bubble for the first tick of a live-location sharing
 	// session. `mId` is the envelope _id of the origin tick; it's also the
 	// messagesMetadata key that subsequent update ticks refresh. Update ticks
-	// set metadataId to this same id; they don't add another bubble, they
+	// (isUpdate) group under this same id; they don't add another bubble, they
 	// just update the existing one via ContactsListBox's metadata watcher.
 	_injectLocationBubble(uri, metadataContent, mId) {
 		// Drop ticks without usable coordinates BEFORE doing anything else.
@@ -36495,12 +37917,10 @@ class Sylk extends Component {
 		// matches metadataContent.in_reply_to — the request bubble
 		// they killed shouldn't get re-rendered just because the
 		// peer's reply tick now arrives.
-		if (this._deletedLocationBubbleIds
-				&& (this._deletedLocationBubbleIds.has(mId)
+		if (this._locationEngine._deletedLocationBubbleIds
+				&& (this._locationEngine._deletedLocationBubbleIds.has(mId)
 					|| (metadataContent.messageId
-						&& this._deletedLocationBubbleIds.has(metadataContent.messageId))
-					|| (metadataContent.in_reply_to
-						&& this._deletedLocationBubbleIds.has(metadataContent.in_reply_to)))) {
+						&& this._locationEngine._deletedLocationBubbleIds.has(metadataContent.messageId)))) {
 			console.log('[location] _injectLocationBubble: skip — bubble was deleted by user', mId);
 			return;
 		}
@@ -36509,90 +37929,17 @@ class Sylk extends Component {
 		// selected contact; state.messages[uri] is only populated for the
 		// open conversation.
 		if (!this.state.selectedContact || this.state.selectedContact.uri !== uri) {
-			console.log('[location] _injectLocationBubble: not in this conversation, skip',
-				'selected=', this.state.selectedContact ? this.state.selectedContact.uri : '(none)',
-				'tick uri=', uri);
+			//console.log('[location] _injectLocationBubble: not in this conversation, skip', 'selected=', this.state.selectedContact ? this.state.selectedContact.uri : '(none)', 'tick uri=', uri);
 			return;
 		}
 
-		// Meeting-request acceptance flow: the accepter's origin tick carries
-		// `in_reply_to` pointing at our (the requester's) original request
-		// message _id. On the requester's device we already have a bubble for
-		// that _id; the peer's coords are merged into it by
-		// _propagatePeerCoordsForSession (peerCoords + distanceMeters on the
-		// existing metadata entry). Injecting a second bubble keyed by the
-		// accepter's own messageId creates the duplicate the user reported.
-		//
-		// Gate on three conditions so we only suppress the spurious second
-		// bubble on the requester side, not legitimate origin bubbles
-		// elsewhere:
-		//   1. `in_reply_to` is set (this is a reply tick),
-		//   2. the tick is incoming (author != our own accountId),
-		//   3. `in_reply_to` references one of our outstanding outgoing
-		//      meeting request ids — i.e. a bubble we definitely own on
-		//      this device.
-		if (metadataContent.in_reply_to
-			&& metadataContent.author
-			&& metadataContent.author !== this.state.accountId
-			&& this.myOutgoingMeetingRequestIds
-			&& this.myOutgoingMeetingRequestIds.has(metadataContent.in_reply_to)) {
-			// Per-tick dedup. APPLOG once-per-session-side: the first time
-			// we suppress an accepter tick on this device for a given
-			// session, it means our dedup is doing its job (the existing
-			// requester bubble will absorb the peer's coords). If the
-			// "two maps" symptom recurs, the absence of this line in the
-			// log on the affected device is the smoking gun.
-			if (!this._meetSuppressLogged) this._meetSuppressLogged = new Set();
-			const tag = 'req:' + metadataContent.in_reply_to;
-			if (!this._meetSuppressLogged.has(tag)) {
-				this._meetSuppressLogged.add(tag);
-				try {
-					utils.timestampedLog('[location] [meet] inject SUPPRESS (accepter→requester dedup)',
-						'session=' + this._meetShortId(metadataContent.in_reply_to),
-						'mid=' + this._meetShortId(mId),
-						'reason=in_reply_to matches our outgoing meeting_request');
-				} catch (e) {}
-			}
-			return;
-		}
+		// Unified meet model: incoming peer-role ticks are routed to peerCoords
+		// (not injected) by the live handler, and the reload path role-filters the
+		// peer leg — so there is no duplicate second bubble to suppress here.
 
-		// Symmetric guard for the ACCEPTER side. After we accept an incoming
-		// meeting request, our own outgoing reply tick carries
-		// `in_reply_to` pointing at that request _id. The request already
-		// has an incoming bubble in this conversation; injecting a second
-		// outgoing bubble for our reply would duplicate. Skip it, and let
-		// peerCoords merge our coords onto the existing incoming bubble.
-		//
-		// Gate on: (1) tick is outgoing (author === our accountId),
-		// (2) it carries in_reply_to, (3) the referenced request id is
-		// one we explicitly accepted on this device.
-		if (metadataContent.in_reply_to
-			&& metadataContent.author
-			&& metadataContent.author === this.state.accountId
-			&& this.acceptedMeetingRequestIds
-			&& this.acceptedMeetingRequestIds.has(metadataContent.in_reply_to)) {
-			// Per-tick dedup. Same reasoning as the accepter→requester
-			// branch above, but mirrored: this is the accepter's own
-			// outgoing reply tick being absorbed into the existing
-			// incoming request bubble. Log once per session side so we
-			// have evidence both gates are doing their job.
-			if (!this._meetSuppressLogged) this._meetSuppressLogged = new Set();
-			const tag = 'acc:' + metadataContent.in_reply_to;
-			if (!this._meetSuppressLogged.has(tag)) {
-				this._meetSuppressLogged.add(tag);
-				try {
-					utils.timestampedLog('[location] [meet] inject SUPPRESS (requester→accepter dedup)',
-						'session=' + this._meetShortId(metadataContent.in_reply_to),
-						'mid=' + this._meetShortId(mId),
-						'reason=in_reply_to matches a request we accepted');
-				} catch (e) {}
-			}
-			return;
-		}
-
-		// metadataId == null is the convention for "origin tick, new session".
+		// A falsy isUpdate is the convention for "origin tick, new session".
 		// Anything else is a follow-up and the bubble already exists.
-		const isOrigin = metadataContent.metadataId == null;
+		const isOrigin = !metadataContent.isUpdate;
 		if (!isOrigin) {
 			return;
 		}
@@ -36644,7 +37991,7 @@ class Sylk extends Component {
 		// startSharing log already covers the open event.
 		const meetRole = (() => {
 			if (metadataContent.meeting_request === true) return 'requester-origin';
-			if (metadataContent.in_reply_to) return 'accepter-origin';
+			if (metadataContent.role === 'invited') return 'accepter-origin';
 			return null;
 		})();
 
@@ -36654,16 +38001,10 @@ class Sylk extends Component {
 		} else {
 			if (meetRole) {
 				try {
-					utils.timestampedLog('[location] [meet] inject CREATE bubble',
-						'role=' + meetRole,
-						'mid=' + this._meetShortId(mId),
-						'direction=' + direction,
-						'uri=' + uri);
+					utils.timestampedLog('[location] [meet] inject CREATE bubble', 'role=' + meetRole, 'mid=' + this._locationEngine._meetShortId(mId), 'direction=' + direction, 'uri=' + uri);
 				} catch (e) {}
 			} else {
-				console.log('[location] _injectLocationBubble: INJECTING bubble',
-					'_id=', mId, 'direction=', direction, 'into uri=', uri,
-					'(prev count', _curList.length, '→', _curList.length + 1, ')');
+				//console.log('[location] _injectLocationBubble: INJECTING bubble', '_id=', mId, 'direction=', direction, 'into uri=', uri, '(prev count', _curList.length, '→', _curList.length + 1, ')');
 			}
 			// When the user just confirmed sharing FROM the chat they may be
 			// scrolled up; bump chatScrollTrigger to scroll to the latest
@@ -36921,8 +38262,7 @@ class Sylk extends Component {
 		if (!info?.decryptedBody
 				&& message.contentType === 'application/sylk-message-metadata'
 				&& typeof message.content === 'string'
-				&& message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1
-				&& message.content.indexOf('-----END PGP MESSAGE-----') > -1
+				&& isPgpEncryptedBody(message.content)
 				&& this.state.keys && this.state.keys.private) {
 			try {
 				const decrypted = await OpenPGP.decrypt(message.content, this.state.keys.private);
@@ -36938,44 +38278,8 @@ class Sylk extends Component {
 		// Ephemeral live-only metadata (location ticks, meeting handshakes)
 		// should never be replayed from the journal — if we didn't catch it
 		// live, we don't want it later. Drop before any SQL / handler work.
-		if (this._isLocationJournalPayload(message, info?.decryptedBody)) {
+		if (this._locationEngine._isLocationJournalPayload(message, info?.decryptedBody)) {
 			return;
-		}
-
-		// Origin tick of a meeting request survived the gate above. Queue it
-		// so the modal pops when the user opens that chat (or immediately if
-		// they're already looking at it). The 2s delay is applied inside
-		// _presentMeetingRequestForUri.
-		//
-		// ALSO seed this.meetingSessions so that subsequent live update ticks
-		// from the requester (which arrive with no `in_reply_to` and no
-		// `meeting_request: true` — they're just bare location ticks carrying
-		// `mid === requesterOriginId`) can be classified via the fallback
-		// branch in _updateMeetingSessionCoords (`s.requesterOriginId === mid`).
-		// Without this seed, the accepter side sees only its own pin and no
-		// distance, because peer-coord propagation has no session to stamp.
-		if (message.contentType === 'application/sylk-message-metadata'
-				&& typeof info?.decryptedBody === 'string') {
-			try {
-				const parsed = JSON.parse(info.decryptedBody);
-				if (parsed && parsed.action === 'location'
-						&& parsed.meeting_request === true
-						&& !parsed.metadataId) {
-					console.log('[meeting] journal: queuing incoming meeting-request origin',
-						'id=', parsed.messageId, 'from=', message.sender.uri);
-					this._noteIncomingMeetingRequest(message.sender.uri, parsed);
-					// Seed the session with requesterOriginId + (if the origin
-					// carried a fix) requesterCoords. Re-using the live-path
-					// routine keeps the classification rules in one place.
-					try {
-						this._updateMeetingSessionCoords(parsed, message.sender.uri);
-					} catch (e) {
-						console.log('[meeting] journal: seed session coords failed', e);
-					}
-				}
-			} catch (e) {
-				// already guarded above; nothing to do
-			}
 		}
 
 		if (this.state.blockedUris.indexOf(message.sender.uri) > -1) {
@@ -37004,7 +38308,7 @@ class Sylk extends Component {
             return;
         }
 
-        const is_encrypted =  message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        const is_encrypted = isPgpEncryptedBody(message.content);
         info.is_encrypted = is_encrypted;
 
         // Chunked-text reassembly (journal path). A long message was sent as
@@ -37038,8 +38342,155 @@ class Sylk extends Component {
 		await this.saveincomingMessageFromJournal(message, info);
     }
 
+
+    // A SECONDARY device receives our own location shares as outgoing carbons
+    // (account.on('outgoingMessage')). Render + persist them exactly like the
+    // sending device did, so the secondary shows the live map (origin + trail)
+    // instead of an empty bubble. The coordinate blob is encrypted to own+peer,
+    // so our OWN private key decrypts it. Returns true when the carbon was a
+    // location tick/signal we fully handled (caller then returns without
+    // falling through to the generic message rendering).
+    async _renderOwnLocationCarbon(message, wire, uri, opts={}) {
+        if (!wire || typeof wire.action !== 'string' || !uri) return false;
+        // persistOnly: store the carbon (SQL row + ended/stop stamping) WITHOUT
+        // the per-tick in-memory render/mirror. Used by the OUTGOING journal
+        // replay path so an offline sibling catching up on a large backlog
+        // stores every track row (rendered from SQL on chat open) without
+        // firing a setState storm — mirroring the incoming journal path, which
+        // is also store-only. The live carbon path leaves this false and both
+        // renders and persists.
+        const _persistOnly = opts && opts.persistOnly === true;
+        const _action = wire.action;
+        // Coordinate-free lifecycle signals: end/stop our own track on this
+        // sibling; nothing to decrypt or render.
+        if (_action === 'location_stop' || _action === 'meeting_end' || _action === 'meeting_reject') {
+            const _sid = wire.sessionId || wire.messageId;
+            try {
+                // The broadcast we're ending may be a plain share OR a meet leg —
+                // resolve the specific entry (either store) by the signal's
+                // session id so we stop the right one without disturbing the other.
+                const _entry = (this._locationEngine._entryByOrigin(uri, _sid))
+                    || (this._locationEngine.outgoingLocationSessions && this._locationEngine.outgoingLocationSessions[uri])
+                    || (this._locationEngine.outgoingMeetSessions && this._locationEngine.outgoingMeetSessions[uri])
+                    || null;
+                const _hasTimer = !!_entry;
+                if (_hasTimer) {
+                    // A sibling device stopped the session we are broadcasting —
+                    // tear down our own GPS/timer so the share truly ends here.
+                    // reason 'peer-stopped' is in the relay skip-sets, so this
+                    // does NOT re-emit another stop (no loop between devices).
+                    this._locationEngine.stopLocationSharing(uri, {
+                        silent: true,
+                        reason: 'peer-stopped',
+                        sessionId: _entry.originLocationId,
+                        meet: this._locationEngine._isMeetKind(_entry.kind),
+                    });
+                } else if (_sid) {
+                    this._endLocationTrack(uri, _sid, wire.reason, message.id,
+                        message.timestamp || message.createdAt, 'outgoing');
+                }
+            } catch (e) { /* best-effort */ }
+            // Drop any mirror entry so the pulsing indicator clears on this
+            // (non-broadcasting) sibling too.
+            try { if (typeof this._clearRemoteShareForUri === 'function') this._clearRemoteShareForUri(uri); } catch (e) {}
+            return true;
+        }
+        // Coordinate-free handshake asks make no map bubble for a sibling.
+        if (_action === 'location_request' || _action === 'meeting_accept') return true;
+        // Everything else must carry an encrypted coordinate blob.
+        if (typeof wire.value !== 'string') return false;
+        if (!this.state.keys || !this.state.keys.private) return false;
+        let plain = null;
+        try { plain = await OpenPGP.decrypt(wire.value, this.state.keys.private); }
+        catch (e) { return false; }
+        if (plain == null) return false;
+        let _dec = null;
+        try { _dec = JSON.parse(plain); } catch (e) { return false; }
+        let coords = null, destination = null;
+        if (_dec && typeof _dec.latitude === 'number') {
+            coords = _dec;
+        } else if (_dec && _dec.value && typeof _dec.value.latitude === 'number') {
+            coords = _dec.value;
+            if (_dec.destination && typeof _dec.destination.latitude === 'number') destination = _dec.destination;
+        }
+        if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') return false;
+
+        const _isUpdate = _action === 'location_update' || _action === 'meeting_update';
+        // Reconstruct the plaintext content object the sender rendered/stored:
+        // the cleartext wire fields, minus the wire action, with action:'location'
+        // and the decrypted geo folded back in. messageId = session origin id
+        // (wire.sessionId); isUpdate marks a follow-up tick so
+        // _locationRelatedAction derives location_update / meeting_update.
+        const _content = Object.assign({}, wire);
+        delete _content.value;
+        delete _content.action;
+        _content.action = 'location';
+        _content.messageId = wire.sessionId || wire.messageId || message.id;
+        _content.isUpdate = _isUpdate;
+        _content.timestamp = coords.timestamp || wire.timestamp || message.timestamp || message.createdAt;
+        _content.uri = uri;
+        _content.value = coords;
+        if (destination) _content.destination = destination;
+
+        // Render via the SAME pipeline the sender uses for its own echo
+        // (no `author` = our outgoing echo -> _injectLocationBubble + metadata).
+        // Skipped in persist-only journal replay (bubble builds from SQL on open).
+        if (!_persistOnly) { try { this.handleLocationPayload(uri, JSON.stringify(_content)); } catch (e) {} }
+
+        // Initialize / refresh the multi-device sharing state (the mirror map +
+        // its React-state twin) DIRECTLY from this outgoing carbon, so a
+        // secondary device that is already running lights the pulse and can open
+        // the active-shares stop panel the instant a sibling starts sharing —
+        // not only after a reload's boot-replay. Idempotent, and it gates
+        // internally on whether THIS device is the broadcaster (outgoingLocationSessions),
+        // so the sending device is unaffected. Signals (stop/end) and one-shots
+        // are handled/ignored above so this only runs for live coord ticks.
+        // Skipped in persist-only journal replay (no live pulse to light on a
+        // backlog catch-up; the pulse reflects only currently-live sessions).
+        if (!_persistOnly) { try { this._mirrorStampFromSelfEcho(uri, _content); } catch (e) {} }
+
+        // Persist PLAINTEXT (encrypted=2) so the map survives reload, mirroring
+        // the sender's store. Meet UPDATE ticks upsert the single per-leg row
+        // in place (no trail); plain live ticks append trail rows.
+        const _payloadStr = destination
+            ? JSON.stringify({ value: coords, destination })
+            : JSON.stringify(coords);
+        message.text = _payloadStr;
+        message.metadata = _content;
+        message.contentType = 'application/sylk-location-sharing';
+        // The carbon `message` object carries `id` / `timestamp`, but
+        // saveOutgoingMessage (and the meet-update UPSERT) read `_id` /
+        // `createdAt`. Without these the SQL params come out `undefined`, which
+        // corrupts the native bridge batch ("Malformed calls from JS: field
+        // sizes are different"). Normalise before any store.
+        if (message._id == null) message._id = message.id;
+        if (message.createdAt == null) message.createdAt = message.timestamp || new Date();
+        if (message._id == null) { return true; }  // no id to key on — skip store, render already done
+        const _isMeetTick = wire.meeting_request === true || !!wire.role
+            || wire.privacyDeferred === true || wire.dummy === true || !!destination;
+        try {
+            if (_isMeetTick && _isUpdate) {
+                const _sid = _content.messageId;
+                const _oTsRaw = message.timestamp || message.createdAt;
+                const _oUnix = Math.floor(((_oTsRaw instanceof Date ? _oTsRaw.getTime() : new Date(_oTsRaw).getTime())) / 1000);
+                const _ur = await this.ExecuteQuery(
+                    'UPDATE messages SET content = ?, encrypted = 2, unix_timestamp = ?, timestamp = ? '
+                    + "WHERE account = ? AND related_msg_id = ? AND related_action = 'meeting_update' AND direction = ?",
+                    [_payloadStr, _oUnix, JSON.stringify(_oTsRaw), this.state.accountId, _sid, 'outgoing']);
+                if (!_ur || !_ur.rowsAffected) this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+            } else {
+                this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+            }
+        } catch (e) {
+            console.log('[location] sibling carbon store failed', e && e.message ? e.message : e);
+        }
+        return true;
+    }
+
     async outgoingMessage(message) {
-        utils.timestampedLog('Outgoing [message]', message.contentType, message.id, 'to', message.receiver, 'state', message.state);
+        if (message.contentType !== 'application/sylk-location-sharing') {
+			utils.timestampedLog('Outgoing [message]', message.contentType, message.id, 'to', message.receiver, 'state', message.state);
+        }
 
 		await this.waitForContactsLoaded();
 
@@ -37068,55 +38519,49 @@ class Sylk extends Component {
             return;
         }
 
-        // Drop location follow-up ticks (meet-session AND plain-share)
-        // from the live replication path. The server replicates every
-        // outgoing message we send to every other device on the same
-        // account; during an active share that's a tick every 60 s.
-        // After a backlog (multi-day offline stretch followed by boot)
-        // the server flushes the entire replication queue at us in a
-        // tight burst — 10+ saveOutgoingMessageSql calls within 16 ms,
-        // the exact saturation pattern that triggers the "Malformed
-        // calls from JS: field sizes are different" bridge crash.
-        //
-        // We can only safely drop *plaintext* metadata here: an early-
-        // return for PGP envelopes also kills the meeting-acceptance
-        // origin tick replicated to sibling devices, which means
-        // _noteSiblingAcceptedMeetingRequest never fires and the
-        // invitation modal stays open on the sibling. PGP-wrapped
-        // metadata flows through the decrypt path below where it can
-        // be classified and dropped per-action (see the
-        // sylk-message-metadata branch in `is_encrypted`).
-        //
-        // Trade-off (still): sibling devices won't accumulate trail
-        // rows from shares started on a peer device. The originating
-        // device still keeps its own local trail (saveOutgoingMessage
-        // path when the tick was first sent). The bubble's last-known
-        // coords still replicate via the origin row.
-        if (message.contentType === 'application/sylk-message-metadata'
-                && typeof message.content === 'string'
-                && !message.content.startsWith('-----BEGIN PGP')) {
-            try {
-                const parsed = JSON.parse(message.content);
-                // Multi-device mirror: feed plaintext self-echo
-                // location ticks before the early-drop. Same
-                // reasoning as the post-decrypt branch — without
-                // this, follow-up ticks bypass the mirror entirely.
-                if (parsed && parsed.action === 'location') {
-                    this._mirrorStampFromSelfEcho(message.receiver, parsed);
+        // New-format application/sylk-location-sharing self-echo (carbon of our
+        // own send, replicated to sibling devices). Wire is cleartext
+        // {action, sessionId, role, requestId, value?}. Mirror the multi-device
+        // handshake so a modal open on THIS sibling closes when another of our
+        // devices answers/accepts, THEN render + persist the share on this
+        // secondary device (decrypt the coord blob → drive the same location
+        // pipeline the sender used) so the map + live trail appear here too.
+        if (message.contentType === 'application/sylk-location-sharing') {
+            let _lw = null;
+            try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+            if (_lw) {
+                const _peer = message.receiver;
+				utils.timestampedLog('Outgoing [location]', message.contentType, _lw.action, message.id, 'to', message.receiver);
+
+                if (_lw.action === 'location_once' && _lw.requestId) {
+                    this._noteSiblingAnsweredLocationRequest(_lw.requestId, _peer);
                 }
-                if (parsed
-                        && parsed.action === 'location'
-                        && parsed.metadataId) {
-                    // Follow-up tick of any kind — drop.
-                    return;
+                // ANY invited-role carbon for a session is proof that another of
+                // our devices accepted this meet — the explicit meeting_accept,
+                // the coordinate origin (meeting_start), OR any follow-up leg tick
+                // (meeting_update / value-bearing location). Close the still-open
+                // accept/decline modal on THIS sibling for all of them, not just
+                // the accept + origin: if the origin carbon is missed or an update
+                // lands first, the modal would otherwise linger. Idempotent —
+                // _noteSiblingAcceptedMeetingRequest early-returns once handled.
+                if (_lw.sessionId && _lw.role === 'invited'
+                        && (_lw.action === 'meeting_accept'
+                            || _lw.action === 'meeting_start'
+                            || _lw.action === 'meeting_update'
+                            || _lw.action === 'location')) {
+                    this._noteSiblingAcceptedMeetingRequest(_lw.sessionId, _peer);
                 }
-                if (parsed && parsed.action === 'meeting_end') {
-                    return;
+                // Render + persist the carbon as a location bubble on this
+                // sibling. Handles coord ticks (origin + every update) AND
+                // end/stop signals; when it fully handles the carbon we return
+                // so it never falls through to the generic (empty-bubble)
+                // message rendering below.
+                try {
+                    const _handled = await this._renderOwnLocationCarbon(message, _lw, _peer);
+                    if (_handled) return;
+                } catch (e) {
+                    console.log('[location] sibling carbon render error', e && e.message ? e.message : e);
                 }
-            } catch (e) {
-                // Unparseable metadata — let it through; it'll be
-                // dropped by the existing pipeline if it's truly
-                // malformed.
             }
         }
 
@@ -37203,7 +38648,7 @@ class Sylk extends Component {
 			}
 		}
 
-        const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        const is_encrypted = isPgpEncryptedBody(message.content);
         let content = message.content;
 
         if (is_encrypted) {
@@ -37234,11 +38679,11 @@ class Sylk extends Component {
                     // do this filter pre-decrypt without losing the
                     // sibling-accept origin replication, so we do it
                     // here after we know what the payload actually is.
-                    // - Origin (no metadataId): run handleMessageMetadata
+                    // - Origin (not an update): run handleMessageMetadata
                     //   AND save SQL — sibling needs the bubble row
                     //   plus the handshake side-effects (it's also
                     //   how _noteSiblingAcceptedMeetingRequest fires).
-                    // - Follow-up (metadataId set) or meeting_end:
+                    // - Follow-up (isUpdate set) or meeting_end:
                     //   drop entirely. Same trade-off as plaintext —
                     //   sibling devices skip the trail row, the
                     //   originator keeps its own.
@@ -37248,7 +38693,7 @@ class Sylk extends Component {
                         const _parsed = JSON.parse(content);
                         _parsedForMirror = _parsed;
                         if (_parsed && (
-                                (_parsed.action === 'location' && _parsed.metadataId)
+                                (_parsed.action === 'location' && _parsed.isUpdate)
                                 || _parsed.action === 'meeting_end')) {
                             _isFollowupOrEnd = true;
                         }
@@ -37273,7 +38718,8 @@ class Sylk extends Component {
                     // line when the payload classifies as a sibling
                     // acceptance origin tick.
                     console.log('[meeting] decrypted sibling metadata replication', message.id);
-                    this.handleMessageMetadata(this.state.accountId, content);
+                    // Location/meet payloads → dedicated handler; generic metadata stays here.
+					this.handleMessageMetadata(this.state.accountId, content);
                     this.saveOutgoingMessageSql(message, content, 1);
                     return;
                 } else {
@@ -37351,7 +38797,11 @@ class Sylk extends Component {
 				// and the data was lost on reload. Persist the row too so
 				// metadata (labels, replies, rotations, location, …) survives
 				// app restarts regardless of PGP usage.
-				this.handleMessageMetadata(this.state.accountId, content);
+				if (this._isLocationMetaAction(content)) {
+					this.handleLocationPayload(this.state.accountId, content);
+				} else {
+					this.handleMessageMetadata(this.state.accountId, content);
+				}
 				this.saveOutgoingMessageSql(message);
 			} else if (message.contentType === 'application/sylk-contact-update') {
                 this.handleReplicateContact(content);
@@ -37382,7 +38832,25 @@ class Sylk extends Component {
 				// every chat open — must NOT bump recency (isMessageAllowed returns
 				// false for read / remove / imdn / zrtp); otherwise opening a chat
 				// pops the contact to "now".
-				if (!_isCallRec && this._contentBumpsRecency(message.contentType)) {
+				// Location-sharing lifecycle signals are the exception the
+				// content-type gate can't see: only the ORIGINAL share start
+				// (location_start / location_once / meeting_request / meeting_accept)
+				// is new activity. The END signals (location_stop / meeting_end) and
+				// the high-frequency trail/meet UPDATE ticks (location_update /
+				// meeting_update) are lifecycle/refresh, not a fresh message, so they
+				// must NOT re-sort the conversation. Inspect the cleartext wire action.
+				let _locationSuppressBump = false;
+				if (message.contentType === 'application/sylk-location-sharing') {
+					try {
+						const _lwire = JSON.parse(content);
+						const _la = _lwire && _lwire.action;
+						if (_la === 'location_stop' || _la === 'meeting_end'
+								|| _la === 'location_update' || _la === 'meeting_update') {
+							_locationSuppressBump = true;
+						}
+					} catch (e) { /* malformed — treat as a normal bump */ }
+				}
+				if (!_isCallRec && !_locationSuppressBump && this._contentBumpsRecency(message.contentType)) {
 					for (const contact of contacts) {
 						contact.timestamp = message.timestamp;
 					}
@@ -37438,8 +38906,7 @@ class Sylk extends Component {
 		if (!info?.decryptedBody
 				&& message.contentType === 'application/sylk-message-metadata'
 				&& typeof message.content === 'string'
-				&& message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1
-				&& message.content.indexOf('-----END PGP MESSAGE-----') > -1
+				&& isPgpEncryptedBody(message.content)
 				&& this.state.keys && this.state.keys.private) {
 			try {
 				const decrypted = await OpenPGP.decrypt(message.content, this.state.keys.private);
@@ -37455,7 +38922,31 @@ class Sylk extends Component {
 		// Same ephemeral-metadata drop as the incoming side. Replaying our
 		// own location/meeting ticks from the journal would duplicate
 		// bubbles and re-INSERT origin rows that live handling already wrote.
-		if (this._isLocationJournalPayload(message, info?.decryptedBody)) {
+		if (this._locationEngine._isLocationJournalPayload(message, info?.decryptedBody)) {
+			return;
+		}
+
+		// application/sylk-location-sharing (OUTGOING journal replay): an offline
+		// sibling catching up on the journal must store its OWN outgoing location
+		// tracks so they render on chat open, exactly like the incoming journal
+		// path stores a peer's trail. The LIVE carbon path (outgoingMessage →
+		// _renderOwnLocationCarbon) does this in real time; the journal path did
+		// NOT — a device that was offline while another of our devices shared to a
+		// contact never got the track ("started sony, fetched journal, no track").
+		// Reuse the same carbon logic in persist-only mode: decrypt + store every
+		// tick and stamp stop/end, WITHOUT the per-tick in-memory render/mirror so
+		// a large backlog can't storm setState / saturate the bridge (the bubble +
+		// trail build from SQL on chat open, same as the incoming journal path).
+		if (message.contentType === 'application/sylk-location-sharing') {
+			let _lw = null;
+			try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+			if (_lw) {
+				try {
+					await this._renderOwnLocationCarbon(message, _lw, message.receiver, { persistOnly: true });
+				} catch (e) {
+					console.log('[location] outgoing journal carbon store error', e && e.message ? e.message : e);
+				}
+			}
 			return;
 		}
 
@@ -37487,7 +38978,7 @@ class Sylk extends Component {
             return;
         }
 
-        const is_encrypted = message.content.indexOf('-----BEGIN PGP MESSAGE-----') > -1 && message.content.indexOf('-----END PGP MESSAGE-----') > -1;
+        const is_encrypted = isPgpEncryptedBody(message.content);
         let content = message.content;
 
         if (is_encrypted) {
@@ -37577,13 +39068,12 @@ class Sylk extends Component {
 				if (!v
 						|| typeof v.latitude !== 'number'
 						|| typeof v.longitude !== 'number') {
-					console.log('[location] saveOutgoingMessageSql: skipping null-coord tick',
-						message && message.id);
+					console.log('[location] saveOutgoingMessageSql: skipping null-coord tick', message && message.id);
 					return;
 				}
 				const isMeetSession = metadataContent.meeting_request === true
-					|| !!metadataContent.in_reply_to;
-				if (metadataContent.metadataId) {
+					|| !!metadataContent.role;
+				if (metadataContent.isUpdate) {
 					if (isMeetSession) {
 						const originMsgId = metadataContent.messageId;
 						const tsMs = typeof message.timestamp === 'number'
@@ -37596,8 +39086,7 @@ class Sylk extends Component {
 						).then((result) => {
 							const rows = result && result.rowsAffected;
 							if (!rows) {
-								console.log('[location] origin row missing for', originMsgId,
-									'— update tick will not persist until origin is saved');
+								console.log('[location] origin row missing for', originMsgId, '— update tick will not persist until origin is saved');
 							}
 						}).catch((error) => {
 							console.log('[location] UPDATE SQL error:', error && error.message ? error.message : error);
@@ -38194,7 +39683,7 @@ class Sylk extends Component {
 			//     follow-up tick as its own SQL row, related_msg_id pointing
 			//     back at the origin. A future ▶︎ Replay UI walks the trail.
 			//
-			// Origin ticks (metadataId == null) fall through to the normal
+			// Origin ticks (not an update) fall through to the normal
 			// INSERT path below for both kinds.
 			if (metadataContent.action === 'location') {
 				// Drop ticks without usable coordinates BEFORE touching SQL.
@@ -38203,13 +39692,12 @@ class Sylk extends Component {
 				if (!v
 						|| typeof v.latitude !== 'number'
 						|| typeof v.longitude !== 'number') {
-					console.log('[location] saveOutgoingMessageSqlBatch: skipping null-coord tick',
-						message && message.id);
+					console.log('[location] saveOutgoingMessageSqlBatch: skipping null-coord tick', message && message.id);
 					return;
 				}
-				if (metadataContent.metadataId) {
+				if (metadataContent.isUpdate) {
 					const isMeetSession = metadataContent.meeting_request === true
-						|| !!metadataContent.in_reply_to;
+						|| !!metadataContent.role;
 					if (isMeetSession) {
 						const originMsgId = metadataContent.messageId;
 						const tsMs = typeof message.timestamp === 'number'
@@ -38225,8 +39713,7 @@ class Sylk extends Component {
 						).then((result) => {
 							const rows = result && result.rowsAffected;
 							if (!rows) {
-								console.log('[location] origin row missing for', originMsgId,
-									'— update tick will not persist until origin is saved');
+								console.log('[location] origin row missing for', originMsgId, '— update tick will not persist until origin is saved');
 							}
 						}).catch((error) => {
 							console.log('[location] UPDATE SQL error:', error && error.message ? error.message : error);
@@ -38532,7 +40019,7 @@ class Sylk extends Component {
         }
     }
 
-    async saveSystemMessage(uri, content, direction, missed=false, system=1, metadata=null, callId=null, ts=null) {
+    async saveSystemMessage(uri, content, direction, missed=false, system=1, metadata=null, callId=null, ts=null, relatedMsgId=null) {
         // `ts` lets the caller stamp the message at a specific time —
         // e.g. server-synced call messages use the CALL's time, not the
         // sync time, so they sort into the right day and show the right
@@ -38560,11 +40047,16 @@ class Sylk extends Component {
         // Call-ID), so the live call-ended message and the server
         // call-history message converge onto one row.
         const _callId = callId ? String(callId) : null;
-        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', _meta, direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl, _callId];
+        // Optional session/origin id. Lets a system note be tied to a
+        // location track (its "started/stopped sharing" breadcrumbs) so the
+        // track-delete cascade — delete FROM messages WHERE (msg_id = ? OR
+        // related_msg_id = ?) — purges these notes along with the trail.
+        const _relatedMsgId = relatedMsgId ? String(relatedMsgId) : null;
+        let params = [this.state.accountId, id, JSON.stringify(timestamp), unix_timestamp, content, 'text/plain', _meta, direction === 'incoming' ? uri : this.state.account.id, direction === 'outgoing' ? uri : this.state.account.id, 0, system, direction, _cat, _hl, _callId, _relatedMsgId];
 
         this._normalizeInsertUris(params, 7, 8);
-        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, pending, system, direction, category, has_link, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
-            this.renderSystemMessage(uri, content, direction, timestamp, system, metadata, _callId, id);
+        await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, pending, system, direction, category, has_link, call_id, related_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
+            this.renderSystemMessage(uri, content, direction, timestamp, system, metadata, _callId, id, _relatedMsgId);
 
         }).catch((error) => {
             if (error.message.indexOf('UNIQUE constraint failed') === -1) {
@@ -38745,7 +40237,7 @@ class Sylk extends Component {
 		this._patchContactMessage(id, _updatedFtMsg);
 	}
 
-    async renderSystemMessage(uri, content, direction, timestamp, system=true, metadata=null, callId=null, msgId=null) {
+    async renderSystemMessage(uri, content, direction, timestamp, system=true, metadata=null, callId=null, msgId=null, relatedMsgId=null) {
 
         if (utils.isPhoneNumber(uri) && uri.indexOf('@') > -1) {
             uri = uri.split('@')[0];
@@ -38776,6 +40268,12 @@ class Sylk extends Component {
                 // server-history converge step can find this live bubble
                 // in memory and enrich it with trace params.
                 callId: callId || null,
+                // Optional session/origin id tying this note to a location
+                // track (its "started/stopped sharing" breadcrumbs). Lets
+                // deleteRenderMessage purge the live bubble when the track is
+                // deleted — the note's own _id is a fresh uuid, so an _id-only
+                // match would leave it on screen until the next chat reload.
+                related_msg_id: relatedMsgId || null,
                 user: direction == 'incoming' ? {_id: uri, name: uri} : {}
                 }
 
@@ -38821,6 +40319,402 @@ class Sylk extends Component {
             utils.timestampedLog('[message] dropping incoming message', message.id,
                 '— empty/invalid sender URI:', JSON.stringify(uri),
                 'contentType=', message.contentType);
+            return;
+        }
+
+        // application/sylk-location-sharing: cleartext lifecycle fields + an
+        // encrypted `value` (coords). Store the encrypted coords blob in the
+        // `content` column and the cleartext fields in metadata / related_action
+        // / related_msg_id — no decryption needed to tag. Render is the normal
+        // decrypt pool (content is a real PGP blob → decryptMessage's location
+        // branch). We also decrypt once here for the immediate bubble.
+        if (message.contentType === 'application/sylk-location-sharing') {
+            let wire = null;
+            try { wire = JSON.parse(message.content); } catch (e) {}
+            try { utils.timestampedLog('[location] incoming action=', (wire && wire.action) || '(none)', 'session=', wire && (wire.sessionId || wire.messageId || wire.meeting_session_id), 'id=', message.id, 'from', uri); } catch (e) {}
+            // Drop coordinate ticks for a meet session that already ENDED (met /
+            // expired / cancelled / declined / rejected). A late or in-flight update
+            // tick — encrypted just before meet-end but delivered after it — would
+            // otherwise re-light the receiver's pin. Signals (meeting_end /
+            // meeting_reject / location_stop) still pass through below.
+            try {
+                const _tickSid = wire && (wire.sessionId || wire.messageId || wire.meeting_session_id);
+                const _tickAct = wire && wire.action;
+                const _isCoordTick = wire && typeof wire.value === 'string'
+                    && _tickAct !== 'meeting_end' && _tickAct !== 'meeting_reject' && _tickAct !== 'location_stop';
+                if (_isCoordTick && _tickSid
+                        && this._locationEngine.endedMeetingSessionIds.has(_tickSid)) {
+                    utils.timestampedLog('[location] dropping tick for ended meet session', _tickSid, 'action=', _tickAct);
+                    return;
+                }
+            } catch (e) {}
+            if (wire && wire.action === 'location_stop') {
+                // Peer ended a plain live share. Post an explicit end note; the
+                // bubble stays (frozen at its last position) for playback. No
+                // coordinates ride a stop signal, so there is nothing to decrypt
+                // or store.
+                const _stopSid = wire.messageId || wire.sessionId;
+                // Duplicate stop (sender re-sent, or a late stop for a session we
+                // already ended): don't post a second note or re-process.
+                if (_stopSid && this._endedLocationSessions
+                        && this._endedLocationSessions.has(_stopSid)) {
+                    return;
+                }
+                try {
+                    const _c = this.lookupContact(uri);
+                    const _name = (_c && _c.name) || uri;
+                    let _at = '';
+                    try {
+                        _at = new Date(message.timestamp).toLocaleTimeString([],
+                            { hour: '2-digit', minute: '2-digit' });
+                    } catch (e) {}
+                    // Phrase the end note by why the trail stopped (the sender
+                    // stamps `reason` on the stop signal): returned to the start
+                    // point, the timed cap expired, or a plain manual/other stop.
+                    const _atSuffix = _at ? ' at ' + _at : '';
+                    let _stopNote;
+                    if (wire.reason === 'returned') {
+                        // Redundant now: the origin bubble's footer shows
+                        // "Returned at HH:MM" (LocationBubble reads endedReason
+                        // ='returned', stamped by _endLocationTrack), so skip the
+                        // duplicate "<name> returned at …" system note.
+                        _stopNote = null;
+                    } else if (wire.reason === 'expired') {
+                        _stopNote = `📍 ${_name}'s location sharing expired${_atSuffix}`;
+                    } else if (wire.reason === 'meet_end') {
+                        _stopNote = `📍 Meet-up with ${_name} ended${_atSuffix}`;
+                    } else {
+                        _stopNote = `📍 ${_name} stopped sharing live location${_atSuffix}`;
+                    }
+                    if (_stopNote) { this.saveSystemMessage(uri, _stopNote, 'incoming', false, 1, null, null, null, _stopSid); }
+                    utils.timestampedLog('[location] incoming location_stop from', uri, 'origin=', wire.messageId);
+                } catch (e) {}
+                // Mark the track ended: persist an `ended` flag on the origin
+                // bubble (so its footer shows "Track ended" instead of a now-
+                // irrelevant "Expires in …") and remember the session so any
+                // late/zombie ticks for it are dropped rather than resurrecting
+                // the trail (the resume-after-stop race seen on multi-device).
+                try { this._endLocationTrack(uri, _stopSid, wire.reason, message.id, message.timestamp, 'incoming'); } catch (e) {}
+                try {
+                    if (message.dispositionNotification
+                            && message.dispositionNotification.indexOf('positive-delivery') > -1) {
+                        this.sendDispositionNotification(
+                            {id: message.id, timestamp: message.timestamp, from_uri: uri, content_type: message.contentType},
+                            'delivered');
+                    }
+                } catch (e) {}
+                return;
+            }
+            if (wire && (wire.action === 'meeting_end' || wire.action === 'meeting_reject' || wire.action === 'location_request'
+                    || (wire.action === 'meeting_request' && typeof wire.value !== 'string')
+                    || wire.action === 'meeting_accept')) {
+                // Coordinate-free handshake signals routed into the metadata
+                // handler: meeting_request WITHOUT coords (legacy invite → modal),
+                // meeting_accept (peer accepted → inviter starts sharing),
+                // meeting_end (session wipe + note) and location_request ("please
+                // share your location" → Yes/No modal). No coords, nothing to
+                // store as a bubble. NOTE: a VALUE-BEARING meeting_request (the
+                // new single-message invite: wire.value is a PGP blob) is NOT a
+                // signal — it falls through to the value path below so its coords
+                // + destination render the 3-point map, and the accept/reject
+                // modal fires off meeting_request:true in handleMessageMetadata.
+                try {
+                    const _mfields = Object.assign({}, wire);
+                    delete _mfields.value;
+                    _mfields.messageId = wire.sessionId || wire.messageId || message.id;
+                    _mfields.uri = uri;
+                    this.handleLocationPayload(uri, JSON.stringify(_mfields), true);
+                    utils.timestampedLog('[location] incoming', wire.action, 'from', uri, 'ref=', wire.sessionId || wire.meeting_session_id || wire.messageId);
+                } catch (e) {}
+                try {
+                    if (message.dispositionNotification
+                            && message.dispositionNotification.indexOf('positive-delivery') > -1) {
+                        this.sendDispositionNotification(
+                            {id: message.id, timestamp: message.timestamp, from_uri: uri, content_type: message.contentType},
+                            'delivered');
+                    }
+                } catch (e) {}
+                return;
+            }
+            if (!wire || typeof wire.value !== 'string') {
+                utils.timestampedLog('[location] incoming sharing: unparseable / no value', message.id);
+                return;
+            }
+            const valueBlob = wire.value;
+            // Cleartext lifecycle fields = the whole wire minus the encrypted geo,
+            // carrying the meet handshake fields through for filtering.
+            const fields = Object.assign({}, wire);
+            delete fields.value;
+            delete fields.action;   // signals only; a value-bearing tick is 'location'
+            // sessionId (the map's grouping id) + action reconstruct the
+            // internal messageId (the bubble/session id) and isUpdate (the
+            // origin/update discriminator).
+            fields.messageId = wire.sessionId || wire.messageId || message.id;
+            // Zombie-tick guard: this session already received a location_stop.
+            // A late/resumed update (see the resume-after-stop race) must NOT
+            // resurrect the trail or move the frozen pin — drop it before store
+            // + render so "Track ended" sticks.
+            if (fields.messageId && this._endedLocationSessions
+                    && this._endedLocationSessions.has(fields.messageId)) {
+                utils.timestampedLog('[location] dropping tick for ended session', fields.messageId);
+                return;
+            }
+            fields.isUpdate = (wire.action === 'location_update' || wire.action === 'meeting_update');
+            fields.timestamp = wire.timestamp || message.timestamp;
+            fields.uri = uri;
+            // The sender's explicit `action` names the tick's purpose;
+            // reconstruct the one_shot flag from it for the render branch +
+            // storage. (Legacy wires without `action` still carry one_shot
+            // explicitly, so they're untouched.)
+            if (wire.action === 'location_once') {
+                fields.one_shot = true;
+            }
+            // DEBUG (location one-shot bring-up): dump the split result — the
+            // encrypted coords blob goes into `content`, cleartext fields into
+            // the columns. Remove once the round-trip is verified.
+            //console.log('[location] [debug] RECV save', message.id, 'from', uri, 'valueStartsWithPGP=', (valueBlob || '').trimStart().startsWith('-----BEGIN PGP MESSAGE-----'), 'valueLen=', valueBlob ? valueBlob.length : 0, 'fields=', JSON.stringify(fields));
+            const tsMs = typeof message.timestamp === 'number'
+                ? message.timestamp : new Date(message.timestamp).getTime();
+            const unix_ts = Math.floor(tsMs / 1000);
+            const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
+            const expire = Math.floor(Date.now() / 1000) + SEVEN_DAYS_SEC;
+            const disposition = message.dispositionNotification
+                ? message.dispositionNotification.join(',') : '';
+            let _contacts = this.lookupContacts(uri);
+            if (!_contacts || _contacts.length === 0) {
+                try {
+                    const _nc = this.newContact(uri);
+                    _contacts = _nc ? [_nc] : [];
+                } catch (e) { _contacts = _contacts || []; }
+            }
+            // Tag origin vs update so the reload secondary query groups the
+            // trail (same convention as the outgoing path). related_action is
+            // the sender's explicit `action` — stored as-is, no re-derivation.
+            const _relAction = wire.action || this._locationEngine._locationRelatedAction(fields);
+            const _relMsgId = fields.messageId;
+            // Media-browser category: the ORIGIN tick and one-shots are browsable
+            // location bubbles → 'location'; trail update ticks stay uncategorised.
+            const _cat = this._classifyMessageCategory('application/sylk-location-sharing', null, _relAction, null);
+            // Decrypt the coords ONCE, up front, so we can (a) persist them as
+            // plaintext in the metadata column and (b) reuse them for the
+            // render/bubble machinery below without a second OpenPGP.decrypt.
+            // The wire body is EITHER bare coords OR { value, destination } (meet).
+            let coords = null, destination = null, plain = null;
+            try {
+                if (this.state.keys && this.state.keys.private) {
+                    plain = await OpenPGP.decrypt(valueBlob, this.state.keys.private);
+                    const _dec = JSON.parse(plain);
+                    if (_dec && typeof _dec.latitude === 'number') {
+                        coords = _dec;
+                    } else if (_dec && _dec.value && typeof _dec.value.latitude === 'number') {
+                        coords = _dec.value;
+                        destination = (_dec.destination && typeof _dec.destination.latitude === 'number')
+                            ? _dec.destination : null;
+                    }
+                }
+            } catch (e) {
+                console.log('[location] incoming coord decrypt failed', e && e.message ? e.message : e);
+            }
+            // PLAINTEXT AT REST — same model as regular messages. When the coords
+            // decrypted cleanly, store the plaintext geo JSON in the `content`
+            // column and mark the row encrypted=2 (decrypted), keeping the original
+            // ciphertext in content_encrypted for audit/export. Reload then reads
+            // plaintext directly (no OpenPGP.decrypt). If the decrypt failed (no
+            // key yet), fall back to the ciphertext at encrypted=1 so a later pass
+            // can still recover it.
+            const _decrypted = !!(coords && typeof coords.latitude === 'number');
+            const _storedContent = _decrypted ? plain : valueBlob;
+            const _storedEnc = _decrypted ? 2 : 1;
+            const _storedCipher = _decrypted ? valueBlob : null;
+            const params = [this.state.accountId, _storedEnc, message.id, JSON.stringify(message.timestamp),
+                unix_ts, _storedContent, 'application/sylk-location-sharing', JSON.stringify(this._locationEngine._locationStoredMetadata(fields)),
+                uri, this.state.account.id, 'incoming', 1, _relAction, _relMsgId,
+                disposition, expire, _cat, null, _storedCipher];
+            this._normalizeInsertUris(params, 8, 9);
+            // MEET = LAST-KNOWN LOCATION ONLY, NO TRAIL. An incoming meet UPDATE
+            // tick (the PEER's latest position) refreshes the peer's origin row
+            // IN PLACE — keyed by the session id via related_msg_id + incoming
+            // direction — instead of INSERTing a trail row. Meet updates are
+            // live-websocket only (never journaled), so on reconnect the peer
+            // just has the journaled origin at its last-known coords; the trail
+            // was never needed. Plain-live location_update still INSERTs (trail
+            // playback). The render/peerCoords merge runs below regardless.
+            if (_relAction === 'meeting_update') {
+                // TWO-ROW MEET MODEL — last-known only, no trail. The peer's
+                // meeting_update row is SEPARATE from the immutable meeting_start
+                // (origin) row and is upserted IN PLACE. It's located by the
+                // session (related_msg_id) + related_action='meeting_update' +
+                // this leg's direction — NOT by msg_id — so its own real msg_id
+                // (from the first update that inserted it) is preserved and it
+                // never collides. related_action='meeting_start'/'meeting_request'
+                // origins are excluded by the action filter, so the START point
+                // is never overwritten. Both legs coexist (one per direction).
+                try {
+                    const _ur = await this.ExecuteQuery(
+                        'UPDATE messages SET content = ?, encrypted = ?, unix_timestamp = ?, timestamp = ?, content_encrypted = COALESCE(content_encrypted, ?) '
+                        + "WHERE account = ? AND related_msg_id = ? AND related_action = 'meeting_update' AND direction = ?",
+                        [_storedContent, _storedEnc, unix_ts, JSON.stringify(message.timestamp), _storedCipher, this.state.accountId, _relMsgId, 'incoming']);
+                    if (!_ur || !_ur.rowsAffected) {
+                        // First update for this leg — insert it with its own real msg_id.
+                        await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).catch((error) => {
+                            if (!error || (error.message || '').indexOf('UNIQUE constraint failed') === -1) {
+                                console.log('[location] meet update-row INSERT (incoming) error:', error && error.message);
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.log('[location] meet update-row (incoming) failed', e && e.message ? e.message : e);
+                }
+            } else {
+                await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).catch((error) => {
+                    if (!error || (error.message || '').indexOf('UNIQUE constraint failed') === -1) {
+                        console.log('[location] incoming INSERT error:', error && error.message);
+                    }
+                });
+            }
+            try {
+                {
+                    // Coords were decrypted ONCE above and stored plaintext in the
+                    // row (content, encrypted=2); reuse them here — no second decrypt.
+                    if (coords && typeof coords.latitude === 'number') {
+                        const _content = Object.assign({}, fields, { value: coords, action: 'location' });
+                        if (destination) _content.destination = destination;
+                        if (fields.one_shot) {
+                            // Static one-shot: a single map bubble, no trail.
+                            this._injectLocationBubble(uri, Object.assign({}, _content, { author: uri }), fields.messageId);
+                        } else {
+                            // Live / meet share: drive the same machinery as the
+                            // old sylk-message-metadata path so the origin tick
+                            // creates the bubble and update ticks refresh it in
+                            // place (messagesMetadata). author = sender uri.
+                            this.handleLocationPayload(uri, JSON.stringify(_content), true);
+                            // Symmetric "started sharing" SYSTEM note on the
+                            // ORIGIN tick (not an update) of a PLAIN share only —
+                            // meet shares have their own "I want to meet up"
+                            // announcement. Deduped by origin id.
+                            if (!fields.isUpdate
+                                    && !fields.meeting_request
+                                    && !fields.role) {
+                                try {
+                                    if (!this._locationStartNoted) this._locationStartNoted = new Set();
+                                    if (!this._locationStartNoted.has(fields.messageId)) {
+                                        this._locationStartNoted.add(fields.messageId);
+                                        const _cS = this.lookupContact(uri);
+                                        const _nameS = (_cS && _cS.name) || uri;
+                                        let _atS = '';
+                                        try {
+                                            _atS = new Date(message.timestamp).toLocaleTimeString([],
+                                                { hour: '2-digit', minute: '2-digit' });
+                                        } catch (e) {}
+                                        // Stamp ~1s before the origin tick so the
+                                        // note sorts ABOVE the map bubble (whose
+                                        // createdAt is the tick timestamp).
+                                        let _bubbleMs = tsMs;
+                                        try {
+                                            const _ft = new Date(fields.timestamp).getTime();
+                                            if (Number.isFinite(_ft)) _bubbleMs = _ft;
+                                        } catch (e) {}
+                                        this.saveSystemMessage(uri,
+                                            `📍 ${_nameS} started sharing live location${_atS ? ' at ' + _atS : ''}`,
+                                            'incoming', false, 1, null, null, new Date(_bubbleMs - 1000),
+                                            fields.messageId);
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                utils.timestampedLog('[location] incoming: coords decrypt failed', message.id);
+            }
+            try {
+                if (message.dispositionNotification
+                        && message.dispositionNotification.indexOf('positive-delivery') > -1) {
+                    this.sendDispositionNotification(
+                        {id: message.id, timestamp: message.timestamp, from_uri: uri, content_type: message.contentType},
+                        'delivered');
+                }
+            } catch (e) {}
+            // Bump the contact so the one-shot surfaces in the conversation
+            // list: it floats to the top and its "last activity" time advances,
+            // exactly as a normal incoming message does. A location share is not
+            // typed text, so — matching the normal incoming path — we leave
+            // lastMessage untouched (buildLastMessage returns null for it) and
+            // do NOT touch the unread badge (location isn't in
+            // unreadCounterTypes). Only timestamp / tag / direction advance.
+            try {
+                const _tsMsBump = Math.floor(tsMs / 1000) * 1000;
+                // Only the ORIGINAL share (start / one-shot / meet origin)
+                // advances the contact's "last activity" time and re-sorts the
+                // list. A live share ticks every few seconds (related_action
+                // 'location_update' / 'meeting_update'); letting those move the
+                // timestamp keeps yanking the contact to the top for the whole
+                // share. Update ticks refresh the map bubble only, never the tile.
+                const _isLocUpdateTick = (_relAction === 'location_update'
+                    || _relAction === 'meeting_update');
+                const _bumpContacts = (_contacts && _contacts.length)
+                    ? _contacts : (this.lookupContacts(uri) || []);
+                for (const _c of _bumpContacts) {
+                    if (!_c) continue;
+                    // Only re-save the contact when this tick actually changed
+                    // something — an UPDATE tick that moves nothing must not
+                    // re-sort / re-render the list every few seconds.
+                    let _contactChanged = false;
+                    if (!_c.name && message.sender && message.sender.displayName) {
+                        _c.name = message.sender.displayName;
+                        _contactChanged = true;
+                    }
+                    const _cur = _c.timestamp ? new Date(_c.timestamp).getTime() : 0;
+                    if (!_isLocUpdateTick && _tsMsBump > _cur) {
+                        _c.timestamp = new Date(_tsMsBump);
+                        _c.direction = 'incoming';
+                        _contactChanged = true;
+                    }
+                    if (Array.isArray(_c.tags) && _c.tags.indexOf('messages') === -1) {
+                        _c.tags.push('messages');
+                        _contactChanged = true;
+                    }
+                    // Location ORIGIN ticks bump unread like a normal incoming
+                    // message (they aren't in unreadCounterTypes, so the generic
+                    // path skips them). Only the ORIGIN (not an update) counts;
+                    // trail UPDATE ticks never bump. Suppressed when the user is
+                    // actively viewing this chat in the foreground.
+                    if (!fields.isUpdate) {
+                        const _isActiveChat = this.state.appState === 'active'
+                            && this.state.selectedContact
+                            && this.state.selectedContact.id === _c.id;
+                        if (!_isActiveChat) {
+                            if (!Array.isArray(_c.unread)) _c.unread = [];
+                            if (_c.unread.indexOf(message.id) === -1) {
+                                _c.unread.push(message.id);
+                                _contactChanged = true;
+                                utils.timestampedLog('[message] Increment unread (live location origin) from', uri,
+                                    'new length =', _c.unread.length);
+                            }
+                        }
+                    }
+                    if (_contactChanged) {
+                        this.saveSylkContact(uri, _c, 'saveIncomingLocationSharing');
+                    }
+                }
+            } catch (e) {
+                utils.timestampedLog('[location] incoming contact bump failed', message.id, e && e.message ? e.message : e);
+            }
+            // Chat open on this device → the share is on screen right now, so
+            // send the read receipt. This location branch RETURNS below, so the
+            // normal-message confirmRead near the end of saveIncomingMessage is
+            // never reached; without this a live one-shot that lands while the
+            // receiver is actively viewing the chat would never send 'displayed'
+            // back to the sender. Match the selected contact by URI (covers both
+            // warm-start and cold-start-from-push stub ids). confirmRead itself
+            // no-ops when the app is backgrounded, so this only fires when the
+            // chat is genuinely on screen.
+            try {
+                if (this.state.selectedContact
+                        && this.getAllContactUris(this.state.selectedContact).indexOf(uri) !== -1) {
+                    this.confirmRead(uri, 'incoming_location');
+                }
+            } catch (e) {}
             return;
         }
 
@@ -39016,7 +40910,7 @@ class Sylk extends Component {
 			}
 
 			// Location sharing: mirror the outgoing UPSERT model. Origin ticks
-			// (metadataId == null) INSERT normally; follow-up ticks UPDATE the
+			// (not an update) INSERT normally; follow-up ticks UPDATE the
 			// origin row so reload sees the latest position.
 			//
 			// IMPORTANT: we MUST persist the metadata blob into the `metadata`
@@ -39025,91 +40919,13 @@ class Sylk extends Component {
 			// that column with JSON.parse and will throw "Unexpected end of
 			// input" if it's left empty.
 			if (related_action === 'location') {
-				// Drop ticks without usable coordinates BEFORE touching SQL.
-				// Defensive — outgoing path is gated at sendLocationMetadata
-				// already, but a sibling device on an older build might
-				// still ship null-coord ticks; we don't want them
-				// poisoning the local row.
-				const v = metadataContent.value;
-				if (!v
-						|| typeof v.latitude !== 'number'
-						|| typeof v.longitude !== 'number') {
-					console.log('[location] saveIncomingMessage: skipping null-coord tick',
-						message && message.id);
-					return;
-				}
-				const metadataJson = JSON.stringify(metadataContent);
-				// Two retention policies for incoming location updates:
-				//   • Meet sessions (meeting_request:true OR in_reply_to set)
-				//     keep the legacy UPDATE-in-place behaviour: each follow-
-				//     up tick overwrites the origin row, and the trail is
-				//     destroyed on meetup end. No replay history.
-				//   • Plain timed shares (4h / 8h / 24h / once) preserve the
-				//     full trail by INSERTing each follow-up tick as its own
-				//     row, related back to the origin via related_msg_id +
-				//     related_action='location_update'. This lets a future
-				//     ▶︎ Replay UI scrub through the journey, and journal
-				//     replay still reconstructs the live position from the
-				//     newest related row.
-				const isMeetSession = metadataContent.meeting_request === true
-					|| !!metadataContent.in_reply_to;
-				if (metadataContent.metadataId) {
-					if (isMeetSession) {
-						const originMsgId = metadataContent.messageId;
-						const tsMs = typeof message.timestamp === 'number'
-							? message.timestamp
-							: new Date(message.timestamp).getTime();
-						const unix_ts = Math.floor(tsMs / 1000);
-						await this.ExecuteQuery(
-							"update messages set content = ?, metadata = ?, unix_timestamp = ?, timestamp = ? where msg_id = ? and account = ?",
-							[content, metadataJson, unix_ts, JSON.stringify(message.timestamp), originMsgId, this.state.accountId]
-						).then((result) => {
-							const rows = result && result.rowsAffected;
-						}).catch((error) => {
-							console.log('[location] UPDATE SQL error:', error && error.message ? error.message : error);
-						});
-						return;
-					}
-					// Plain time share: fall through to the INSERT path
-					// below, but tag the row so it joins the trail of the
-					// origin tick (origin row's msg_id == metadataContent.messageId).
-					related_msg_id = metadataContent.messageId;
-					related_action = 'location_update';
-					/*
-					console.log('[location] INSERT SQL trail row (incoming)', message.id,
-						'origin=', metadataContent.messageId);
-						*/
-				}
-				// Fall-through (origin tick OR plain-share follow-up):
-				// stash the JSON blob in the metadata column so the INSERT
-				// below carries it through (instead of '').
-				metadata = metadataJson;
-				// Retention policy — mirrors saveOutgoingMessage so both
-				// devices purge on the same schedule:
-				//   • Meetup share (meeting_request or in_reply_to):
-				//     `expire` = session's expires_at (wipes at meetup end).
-				//   • Plain timed share: `expire` = now + 7 days. The live
-				//     window is only an upper bound; after that, the last
-				//     known position should linger for up to a week and
-				//     then be purged.
-				const isIncomingMeetup = metadataContent.meeting_request === true
-					|| !!metadataContent.in_reply_to;
-				const SEVEN_DAYS_SEC_IN = 7 * 24 * 60 * 60;
-				if (isIncomingMeetup) {
-					if (metadataContent.expires) {
-						const expMs = new Date(metadataContent.expires).getTime();
-						if (expMs > 0) {
-							expire = Math.floor(expMs / 1000);
-						}
-					}
-				} else {
-					expire = Math.floor(Date.now() / 1000) + SEVEN_DAYS_SEC_IN;
-				}
-				/*
-				console.log('[location] INSERT SQL', related_msg_id ? 'trail' : 'origin', 'row (incoming)', message.id,
-					'targets messageId=', metadataContent.messageId,
-					'expire=', expire, 'meetup=', isIncomingMeetup);
-				*/
+				// Legacy old-wire location (application/sylk-message-metadata) is no
+				// longer stored — current location uses application/sylk-location-sharing
+				// (handled at the top of this function). Drop the legacy tick so no
+				// old-style row is written; covers live delivery and any journal replay
+				// that funnels an old metadata-location entry through here.
+				try { utils.timestampedLog("[location] saveIncomingMessage: dropping legacy metadata-location row", message && message.id); } catch (e) {}
+				return;
 			}
 		}
 
@@ -39242,60 +41058,6 @@ class Sylk extends Component {
                 }
             }
 
-            // Send IMDN "displayed" for incoming location ORIGIN
-            // ticks ONLY (the first tick of a sharing session).
-            // The sender wants confirmation that their share /
-            // meet request landed on the receiver — a single read
-            // marker on the bubble at session start.
-            //
-            // Refresh ticks (every 60 s during a live share) do
-            // NOT fire IMDN — they're high-frequency telemetry,
-            // and one IMDN per minute per share would bloat the
-            // server-side archive (each tick already costs one
-            // wire message; doubling that with read receipts
-            // doubles the load). The default short-circuit in
-            // sendDispositionNotification stamps received=2
-            // locally for refresh ticks without touching the
-            // wire, so the local UI state is consistent — the
-            // wire IMDN is just suppressed.
-            //
-            // Detection: action='location' AND no metadataId
-            // (origin marker) AND usable coords. The
-            // null-coord stripping above should already have
-            // rejected coordless origins, but the explicit
-            // check keeps the rule self-contained. The
-            // wireSend:true flag bypasses the "save only" gate
-            // inside sendDispositionNotification for sylk-message-
-            // metadata; received=2 still gets stamped on success.
-            if (message.contentType === 'application/sylk-message-metadata') {
-                try {
-                    const _md = JSON.parse(content);
-                    const _v = _md && _md.value;
-                    const _isLocationOrigin = _md
-                        && _md.action === 'location'
-                        && !_md.metadataId
-                        && _v
-                        && typeof _v.latitude === 'number'
-                        && typeof _v.longitude === 'number';
-                    if (_isLocationOrigin) {
-                        const imdnMsg = {
-                            id: message.id,
-                            timestamp: message.timestamp,
-                            from_uri: message.sender ? message.sender.uri : uri,
-                            content_type: message.contentType,
-                            wireSend: true,
-                        };
-                        this.sendDispositionNotification(imdnMsg, 'displayed', true);
-                        console.log('[location] sent IMDN displayed for incoming ORIGIN tick', message.id,
-                            'to', imdnMsg.from_uri,
-                            '(refresh ticks will be save-only)');
-                    }
-                } catch (e) {
-                    // Unparseable metadata — fall through to the
-                    // standard save-only path (no IMDN goes out).
-                }
-            }
-
 			if (message.contentType !== 'application/sylk-message-metadata') {
 				// Intentionally do NOT update contact.lastMessage here.
 				// The contacts-list preview is "the last message the user
@@ -39366,6 +41128,203 @@ class Sylk extends Component {
         if (message.sender.uri in incomingMessage) {
 			delete incomingMessage[message.sender.uri];
 			this.setState({incomingMessage: incomingMessage});
+        }
+
+        // Legacy old-wire location (application/sylk-message-metadata carrying an
+        // action:'location' payload) is no longer stored. Drop it so journal replay
+        // writes no old-style location rows. (Encrypted legacy bodies that cannot be
+        // parsed cheaply fall through as inert rows — skipped on read.)
+        if (message.contentType === 'application/sylk-message-metadata') {
+        	try {
+        		const _mc = JSON.parse(content);
+        		if (_mc && _mc.action === 'location') {
+        			// try { utils.timestampedLog("[location] journal replay: dropping legacy metadata-location entry", message && message.id); } catch (e) {}
+        			return;
+        		}
+        	} catch (e) { /* non-JSON (encrypted/other) — fall through */ }
+        }
+
+        // application/sylk-location-sharing (journal replay): split the
+        // cleartext envelope from the encrypted coords the SAME way the live
+        // saveIncomingMessage path does — the encrypted coords blob goes into
+        // `content`, the cleartext lifecycle fields into metadata /
+        // related_action / related_msg_id — WITHOUT decrypting the coordinates.
+        // The wire body is cleartext JSON with only `value` (the coords)
+        // PGP-encrypted, so the split costs a JSON.parse, not a decrypt: a
+        // journal carrying 1000 location updates stores with zero PGP work.
+        // The coords are decrypted lazily on chat load (secondary query /
+        // decrypt pool). Signal-only ticks (location_stop / meeting_end /
+        // location_request) carry no coordinates and leave no bubble, so they
+        // are skipped here.
+        if (message.contentType === 'application/sylk-location-sharing') {
+            let _lwire = null;
+            try { _lwire = JSON.parse(content); } catch (e) {}
+            // VALUE-BEARING meeting_request (the modern single-message "meet up"
+            // invite carries the inviter's coords in `value`) must ALSO present
+            // the accept modal on journal replay — this is how a request that was
+            // pushed but NOT acted upon (cold-start tap before the journal sync
+            // finished, or an offline reconnect) finally surfaces its panel. The
+            // signal-only block below only presents the COORDINATE-FREE form, so
+            // without this a value-bearing invite from the journal stores its map
+            // bubble but never shows the Accept/Decline modal ("receiver got no
+            // panel"). handleMessageMetadata → _noteIncomingMeetingRequest is
+            // idempotent (dedup + endedMeetingSessionIds tombstone), so this is
+            // safe alongside the live path and the coordinate-free branch, and it
+            // queues into pendingMeetingRequests so opening the chat drains it too.
+            if (_lwire && _lwire.action === 'meeting_request'
+                    && typeof _lwire.value === 'string') {
+                try {
+                    const _rfv = Object.assign({}, _lwire);
+                    delete _rfv.value;
+                    _rfv.messageId = _lwire.sessionId || _lwire.messageId || message.id;
+                    _rfv.uri = message.sender.uri;
+                    this.handleLocationPayload(message.sender.uri, JSON.stringify(_rfv), true);
+                    utils.timestampedLog('[location] journal replay (value-bearing) meeting_request', _rfv.messageId, 'from', message.sender.uri);
+                } catch (e) { /* best-effort */ }
+            }
+            if (!_lwire || typeof _lwire.value !== 'string') {
+                // Signal-only handshake (no coords to store). location_stop is
+                // the one signal a peer returning from offline still needs as a
+                // visible marker — post the SAME reason-aware end note the live
+                // path posts (returned / expired / meet_end / stopped). Other
+                // signals (meeting_end / location_request) are live-only and are
+                // dropped here.
+                if (_lwire && _lwire.action === 'location_stop') {
+                    try {
+                        const _sc = this.lookupContact(message.sender.uri);
+                        const _sname = (_sc && _sc.name) || message.sender.uri;
+                        let _sat = '';
+                        try {
+                            _sat = new Date(message.timestamp).toLocaleTimeString([],
+                                { hour: '2-digit', minute: '2-digit' });
+                        } catch (e) {}
+                        const _satSuffix = _sat ? ' at ' + _sat : '';
+                        let _snote;
+                        if (_lwire.reason === 'returned') {
+                            // Redundant — bubble footer shows "Returned at HH:MM"
+                            // (see the live path). Skip the duplicate system note.
+                            _snote = null;
+                        } else if (_lwire.reason === 'expired') {
+                            _snote = `📍 ${_sname}'s location sharing expired${_satSuffix}`;
+                        } else if (_lwire.reason === 'meet_end') {
+                            _snote = `📍 Meet-up with ${_sname} ended${_satSuffix}`;
+                        } else {
+                            _snote = `📍 ${_sname} stopped sharing live location${_satSuffix}`;
+                        }
+                        if (_snote) {
+                            // Stamp the note at the EVENT time (the journalled
+                            // message's timestamp), not now — otherwise a 2nd
+                            // device replaying the journal on wakeup inserts every
+                            // old breadcrumb at the current time and they all sort
+                            // to the bottom of the chat.
+                            this.saveSystemMessage(message.sender.uri, _snote, 'incoming', false, 1, null, null, message.timestamp,
+                                _lwire.messageId || _lwire.sessionId);
+                        }
+                    } catch (e) {}
+                    // Persist the ended flag + remember the session (see the live
+                    // path) so the bubble shows "Track ended" and zombie ticks drop.
+                    try { this._endLocationTrack(message.sender.uri, _lwire.messageId || _lwire.sessionId, _lwire.reason, message.id, message.timestamp, 'incoming'); } catch (e) {}
+                }
+                // location_request / meeting_request: journaled + replayed so a peer
+                // who was offline when the ask was sent still sees it on reconnect. The
+                // handlers dedup (persisted "show once") and suppress a request whose
+                // `expires` has already passed — so it shows exactly once, and only if
+                // the user reconnects before it expires.
+                if (_lwire && (_lwire.action === 'meeting_request' || _lwire.action === 'location_request')) {
+                    try {
+                        const _rf = Object.assign({}, _lwire);
+                        delete _rf.value;
+                        _rf.messageId = _lwire.sessionId || _lwire.messageId || message.id;
+                        _rf.uri = message.sender.uri;
+                        this.handleLocationPayload(message.sender.uri, JSON.stringify(_rf), true);
+                        utils.timestampedLog('[location] journal replay', _lwire.action, _rf.messageId);
+                    } catch (e) {}
+                }
+                // meeting_end: journaled + replayed like location_stop. Route it
+                // through the live handler so a peer who was offline when the meet
+                // ended gets the session wipe AND the reason-aware end note on
+                // reconnect.
+                if (_lwire && _lwire.action === 'meeting_end') {
+                    try {
+                        const _ef = Object.assign({}, _lwire);
+                        delete _ef.value;
+                        _ef.messageId = _lwire.sessionId || _lwire.meeting_session_id || _lwire.messageId || message.id;
+                        _ef.uri = message.sender.uri;
+                        this.handleLocationPayload(message.sender.uri, JSON.stringify(_ef), true);
+                        utils.timestampedLog('[location] journal replay meeting_end', _ef.messageId);
+                    } catch (e) {}
+                }
+                return;
+            }
+            const _luri = message.sender.uri;
+            const _lvalueBlob = _lwire.value;
+            // Cleartext lifecycle fields = the whole envelope minus the
+            // encrypted geo and the transient `action` (a value-bearing tick
+            // is always 'location'; the purpose is derived from related_action).
+            const _lfields = Object.assign({}, _lwire);
+            delete _lfields.value;
+            delete _lfields.action;
+            _lfields.messageId = _lwire.sessionId || _lwire.messageId || message.id;
+            // Zombie-tick guard (journal): only a MEET tick is dropped for an
+            // already-ended session — a late meeting tick could drag the frozen
+            // 3-point meet summary off its start points. A PLAIN live share's
+            // trail MUST be stored from the journal even after its stop (an
+            // offline device catching up needs its last tracks; the stop row
+            // already stamps the bubble "Track ended", so storing the trail
+            // doesn't revive anything). Meet-me trail ticks (meeting_update) are
+            // never journaled in the first place; this guard only catches a
+            // stray meet origin/leg replay.
+            const _isMeetTick = !!(_lwire.role || _lwire.meeting_request
+                || _lwire.action === 'meeting_start' || _lwire.action === 'meeting_update');
+            if (_isMeetTick && _lfields.messageId && this._endedLocationSessions
+                    && this._endedLocationSessions.has(_lfields.messageId)) {
+                utils.timestampedLog('[location] journal: dropping meet tick for ended session', _lfields.messageId);
+                return;
+            }
+            _lfields.isUpdate = (_lwire.action === 'location_update' || _lwire.action === 'meeting_update');
+            _lfields.timestamp = _lwire.timestamp || message.timestamp;
+            _lfields.uri = _luri;
+            // Explicit action → one_shot flag (see saveIncomingMessage).
+            if (_lwire.action === 'location_once') {
+                _lfields.one_shot = true;
+            }
+            const _ltsMs = typeof message.timestamp === 'number'
+                ? message.timestamp : new Date(message.timestamp).getTime();
+            const _lunix = Math.floor(_ltsMs / 1000);
+            const _lSevenDays = 7 * 24 * 60 * 60;
+            // Keep for 7 days from replay time, matching the live path's
+            // ephemeral-location sweep window (purgeExpiredMessages).
+            const _lexpire = Math.floor(Date.now() / 1000) + _lSevenDays;
+            const _ldisp = message.dispositionNotification
+                ? message.dispositionNotification.join(',') : '';
+            const _lrelAction = _lwire.action || this._locationEngine._locationRelatedAction(_lfields);
+            const _lrelMsgId = _lfields.messageId;
+            const _lcat = this._classifyMessageCategory('application/sylk-location-sharing', null, _lrelAction, null);
+            // Store PLAINTEXT at rest (encrypted=2), same as the live receive path.
+            // Keep the ciphertext in content_encrypted; fall back to storing the
+            // blob at encrypted=1 if the decrypt fails (no key yet).
+            let _lplain = null;
+            try {
+                if (this.state.keys && this.state.keys.private) {
+                    _lplain = await OpenPGP.decrypt(_lvalueBlob, this.state.keys.private);
+                    JSON.parse(_lplain); // validate it's parseable geo JSON
+                }
+            } catch (e) { _lplain = null; }
+            const _lDecrypted = !!_lplain;
+            const _lStoredContent = _lDecrypted ? _lplain : _lvalueBlob;
+            const _lStoredEnc = _lDecrypted ? 2 : 1;
+            const _lStoredCipher = _lDecrypted ? _lvalueBlob : null;
+            const _lparams = [this.state.accountId, _lStoredEnc, message.id, JSON.stringify(message.timestamp),
+                _lunix, _lStoredContent, 'application/sylk-location-sharing', JSON.stringify(this._locationEngine._locationStoredMetadata(_lfields)),
+                _luri, this.state.account.id, 'incoming', 1, _lrelAction, _lrelMsgId,
+                _ldisp, _lexpire, _lcat, null, _lStoredCipher];
+            this._normalizeInsertUris(_lparams, 8, 9);
+            await this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", _lparams).catch((error) => {
+                if (!error || (error.message || '').indexOf('UNIQUE constraint failed') === -1) {
+                    console.log('[location] journal INSERT error:', error && error.message);
+                }
+            });
+            return;
         }
 
         // ---------------- [IMDN-DIAG] instrumentation ----------------
@@ -39860,8 +41819,7 @@ class Sylk extends Component {
 	  for (const alt of this._phoneNumberVariants(uriString)) {
 	    const altHit = this.contactsIndexes?.[alt] || [];
 	    if (altHit.length > 0) {
-	      console.log('lookupContacts: matched', uriString, 'via phone-number variant', alt,
-	        '→', altHit.length, 'contact(s)');
+	      //console.log('lookupContacts: matched', uriString, 'via phone-number variant', alt, '→', altHit.length, 'contact(s)');
 	      return altHit;
 	    }
 	  }
@@ -40046,11 +42004,16 @@ class Sylk extends Component {
 	// (no weekly throttle) and dumps the authoritative LOCAL rows — so it
 	// captures everything on the device, including local-only / not-yet-put
 	// contacts. Returns a small result the caller can surface.
+	// Themed in-app replacement for Alert.alert() one-button notices.
+	_showInfo = (title, message) => {
+	    this.setState({ infoModalVisible: true, infoModalTitle: String(title == null ? '' : title), infoModalMessage: String(message == null ? '' : message) });
+	};
+
 	backupContacts = async () => {
 	    try {
 	        const account = this.state.accountId;
 	        if (!account) {
-	            Alert.alert('Backup contacts', 'No account is active.');
+	            this._showInfo('Backup contacts', 'No account is active.');
 	            return { ok: false, count: 0 };
 	        }
 	        const dir = `${this._abDumpDir(account)}/history`;
@@ -40095,12 +42058,12 @@ class Sylk extends Component {
 	        };
 	        await RNFS.writeFile(path, JSON.stringify(snapshot, null, 2), 'utf8');
 	        utils.timestampedLog('[ab] manual backup ' + path + ' (' + contacts.length + ' contacts)');
-	        Alert.alert('Backup complete', contacts.length + ' contact'
+	        this._showInfo('Backup complete', contacts.length + ' contact'
 	            + (contacts.length === 1 ? '' : 's') + ' backed up on this device.');
 	        return { ok: true, count: contacts.length, path };
 	    } catch (e) {
 	        console.log('[ab] backupContacts error', e && e.message);
-	        Alert.alert('Backup failed', (e && e.message) || 'Unknown error');
+	        this._showInfo('Backup failed', (e && e.message) || 'Unknown error');
 	        return { ok: false, count: 0 };
 	    }
 	};
@@ -40118,7 +42081,7 @@ class Sylk extends Component {
 	    try {
 	        const account = this.state.accountId;
 	        if (!account) {
-	            Alert.alert('Backup messages', 'No account is active.');
+	            this._showInfo('Backup messages', 'No account is active.');
 	            return { ok: false, count: 0 };
 	        }
 	        const dir = `${this._msgDumpDir(account)}/history`;
@@ -40157,12 +42120,12 @@ class Sylk extends Component {
 	        const path = `${dir}/${fname}`;
 	        await RNFS.writeFile(path, plaintext, 'utf8');
 	        utils.timestampedLog('[backup] messages backup ' + path + ' (' + messages.length + ' messages)');
-	        Alert.alert('Backup complete', messages.length + ' message'
+	        this._showInfo('Backup complete', messages.length + ' message'
 	            + (messages.length === 1 ? '' : 's') + ' backed up on this device.');
 	        return { ok: true, count: messages.length, path };
 	    } catch (e) {
 	        console.log('[backup] backupMessages error', e && e.message);
-	        Alert.alert('Backup failed', (e && e.message) || 'Unknown error');
+	        this._showInfo('Backup failed', (e && e.message) || 'Unknown error');
 	        return { ok: false, count: 0 };
 	    }
 	};
@@ -41253,6 +43216,9 @@ class Sylk extends Component {
 	        }
 	        // Good (non-anomalous) snapshot — writes are safe again.
 	        this._abSnapshotAnomaly = false;
+	        // FIRST genuine server snapshot this session: contacts are now known
+	        // fetched, so XCAP writes are unblocked (see _abWritesReady).
+	        this._abServerFetched = true;
 
 	        await this.ExecuteQuery('DELETE FROM contacts_groups WHERE account = ?', [account]);
 	        for (const g of groups) {
@@ -41687,6 +43653,16 @@ class Sylk extends Component {
 	        const serverOnlyList = sContacts.filter(s =>
 	            !linkedIds.has(s.id)
 	            && !this._abServerUris(s).some(u => this._abIsLocalDomain(u)) // Bonjour/LAN contact \u2014 not ours, ignore
+	            // IP-domain URIs (e.g. 12345@192.168.1.10) are junk from direct-IP /
+	            // LAN calls. The local side already excludes them everywhere:
+	            // localSyncable drops them, and the local->server PUT refuses them
+	            // (both via _abIsIpDomain). They can therefore NEVER match a local
+	            // contact, so without this guard they were reported as "server-only"
+	            // on every reconcile forever (never imported, never deleted \u2014 pure
+	            // noise). Exclude them here so the OUT OF SYNC report reflects real
+	            // divergence only. (To also clear them from the server, purge via the
+	            // migration planner's IP-domain path \u2014 that's a separate action.)
+	            && !this._abServerUris(s).some(u => this._abIsIpDomain(u))
             // Conference rooms ARE imported from the server so every device holds
             // the same set the server does (local == server), regardless of which
             // device placed the call. Only ANOMALY rooms (username starts with 0)
@@ -42235,11 +44211,41 @@ class Sylk extends Component {
 
 	// Promisified addressbook call (fn takes a node-style cb(err)); the method tag
 	// and optional _abCtx sub-tag are derived from the label.
+	// XCAP writes are allowed ONLY once BOTH conditions hold:
+	//   1. AUTHENTICATED - registered on the signalling connection, which
+	//      proves the SIP credentials XCAP reuses are accepted. The raw
+	//      "Account not authenticated" XCAP rejection seen at cold start is
+	//      exactly this not yet being true.
+	//   2. FETCHED - a genuine, non-anomalous server addressbook snapshot has
+	//      been loaded this session (_abServerFetched, set in syncGroupsTable
+	//      once the empty-snapshot safety gate has passed). Guarantees we never
+	//      write into a still-empty / not-yet-loaded document and SEED it - the
+	//      seeding that lets a bogus empty fetch slip past the safety gate and
+	//      mass-bury every contact (2026-07-30 incident).
+	_abWritesReady = () => !!(
+	    this.state.registrationState === 'registered'
+	    && this.state.connection && this.state.connection.state === 'ready'
+	    && this._abServerFetched
+	);
+
 	_abExec = (label, fn) => new Promise((resolve) => {
 	    // FINAL CHOKE POINT for every XCAP write. No server addressbook on
 	    // this deployment → no write leaves the device, whatever path asked.
 	    if (!this.state.addressBookServer) {
 	        utils.timestampedLog('[ab] ' + label + ' skipped — no server addressbook (addressBookServer=false)');
+	        resolve(false);
+	        return;
+	    }
+	    // Not authenticated yet, or no real server snapshot fetched this session:
+	    // refuse the write instead of seeding an empty/unauthenticated document.
+	    // Nothing is lost - local state is authoritative and the next good
+	    // reconcile (also re-armed on the 'registered' edge) re-PUTs everything
+	    // not yet on the server.
+	    if (!this._abWritesReady()) {
+	        utils.timestampedLog('[ab] ' + label + ' deferred - writes not ready'
+	            + ' (registered=' + (this.state.registrationState === 'registered')
+	            + ' connReady=' + !!(this.state.connection && this.state.connection.state === 'ready')
+	            + ' serverFetched=' + !!this._abServerFetched + ')');
 	        resolve(false);
 	        return;
 	    }
@@ -43241,15 +45247,27 @@ class Sylk extends Component {
 		}
 		let displayName = name || data.name || derivedName;
 
-		// The single canonical anonymous/guest caller contact always
-		// presents as "Unknown caller" — never the URI-derived
-		// "Anonymous" local part, and never a per-call SIP display name
-		// (the whole point of collapsing guests into one row is a single
-		// stable identity). Detected via the same normalizer the
-		// call/history/lookup paths use, so both anonymous@anonymous.invalid
-		// and the legacy <random>@guest.<host> form resolve here.
-		if (utils.normalizeAnonymousUri(uri) === 'anonymous@anonymous.invalid') {
-			displayName = 'Unknown caller';
+		// The single canonical anonymous/guest caller contact defaults to
+		// "Anonymous caller" ONLY at first creation — i.e. when this row is
+		// being minted with no known name (typically an incoming anonymous
+		// call, where no display name was supplied). Detected via the same
+		// normalizer the call/history/lookup paths use, so both
+		// anonymous@anonymous.invalid and the legacy <random>@guest.<host>
+		// form resolve here.
+		//
+		// Once the contact exists, its display name is SERVER-DRIVEN like any
+		// other contact: a name loaded from the DB or passed by a caller
+		// (`name`/`data.name`) is respected, so a user who renames this row on
+		// any device (to "Unknown caller", or anything else) has that name
+		// synced through the addressbook and adopted here. Previously this
+		// unconditionally slammed the name back to the fixed "Anonymous caller"
+		// label, which fought the server value and re-adopted + re-wrote the
+		// row on every single reconcile pass (endless churn). Only substitute
+		// the friendly default when no explicit name was provided — never
+		// override a real one.
+		if (!name && !data.name
+				&& utils.normalizeAnonymousUri(uri) === 'anonymous@anonymous.invalid') {
+			displayName = 'Anonymous caller';
 		}
 
         let contact = {   id: data?.id || uuid.v4(),
@@ -43266,6 +45284,8 @@ class Sylk extends Component {
                           lastCallTimestamp: null,
                           participants: [],
                           messagesMetadata: {},
+                          // Location-only twin of messagesMetadata (see state.locationData).
+                          locationData: {},
                           timestamp: current_datetime,
                           properties: {}
                       }
@@ -43288,6 +45308,27 @@ class Sylk extends Component {
 			contact.tags = item.tags ? item.tags.split(',').map(tag => tag.trim()) : [];
 			contact.participants = item.participants ? item.participants.split(',') : [];
 			contact.unread = item.unread_messages ? item.unread_messages.split(',') : [];
+			if (contact.unread.length > 0) {
+				//try { utils.timestampedLog('[unread] [load] from SQL', contact.uri, 'unread_messages=', JSON.stringify(item.unread_messages), '→', JSON.stringify(contact.unread)); } catch (e) {}
+				// Look up each unread id in the messages table so we can see
+				// what content type is keeping the badge up (and whether the
+				// row even exists — a missing row means a stray/synthetic
+				// unread id that nothing will ever mark displayed).
+				const _dbgUri = contact.uri;
+				contact.unread.forEach((mid) => {
+					try {
+						this.ExecuteQuery('SELECT content_type, system, received, direction FROM messages WHERE msg_id = ? LIMIT 1', [mid])
+							.then((r) => {
+								const row = (r && r.rows && r.rows.length > 0) ? r.rows.item(0) : null;
+								utils.timestampedLog('[unread][load] id', mid, 'for', _dbgUri,
+									'contentType=', row ? row.content_type : '(NO MESSAGE ROW)',
+									'system=', row ? row.system : '-',
+									'received=', row ? row.received : '-',
+									'direction=', row ? row.direction : '-');
+							}).catch(() => {});
+					} catch (e) { /* noop */ }
+				});
+			}
 			contact.lastCallId = item.last_call_id;
 			contact.lastCallMedia = item.last_call_media ? item.last_call_media.split(',') : [];
 			contact.lastCallDuration = item.last_call_duration;
@@ -43296,9 +45337,11 @@ class Sylk extends Component {
 			    ? new Date(item.last_call_timestamp * 1000)
 			    : null;
 			contact.messagesMetadata = {}
+			contact.locationData = {}
 			contact.lastMessageId = item.last_message_id === '' ? null : item.last_message_id;
 			contact.lastMessage = item.last_message === '' ? null : item.last_message;
 			contact.messagesMetadata = {}
+			contact.locationData = {}
 
 			let properties = {}
 
@@ -43464,10 +45507,12 @@ class Sylk extends Component {
                         const _fmt = (label, n, map) =>
                             '[badge]   ' + label.padEnd(18) + ' total=' + String(n).padStart(3)
                             + ' perContact=' + JSON.stringify(map || {});
-                        utils.timestampedLog('[badge] ' + status + ' appState=' + this.state.appState);
-                        utils.timestampedLog(_fmt('JS messages',        total_unread,      perContact));
-                        utils.timestampedLog(_fmt('native messages',    nativeTotal,       nativeMap));
-                        utils.timestampedLog(_fmt('native missedCalls', nativeMissedTotal, nativeMissed));
+                        if (drift) {
+                            utils.timestampedLog('[badge] ' + status + ' appState=' + this.state.appState);
+                            utils.timestampedLog(_fmt('JS messages',        total_unread,      perContact));
+                            utils.timestampedLog(_fmt('native messages',    nativeTotal,       nativeMap));
+                            utils.timestampedLog(_fmt('native missedCalls', nativeMissedTotal, nativeMissed));
+                        }
                     }).catch((e) => {
                         // Old build without getAllMissedCalls — fall back
                         // to the two-source snapshot.
@@ -43480,11 +45525,13 @@ class Sylk extends Component {
                         const _fmt = (label, n, map) =>
                             '[badge]   ' + label.padEnd(18) + ' total=' + String(n).padStart(3)
                             + ' perContact=' + JSON.stringify(map || {});
-                        utils.timestampedLog('[badge] ' + status + ' appState=' + this.state.appState);
-                        utils.timestampedLog(_fmt('JS messages',     total_unread, perContact));
-                        utils.timestampedLog(_fmt('native messages', nativeTotal,  nativeMap));
-                        console.log('[badge]   native missedCalls unavailable',
-                            e && e.message ? e.message : e);
+                        if (drift) {
+                            utils.timestampedLog('[badge] ' + status + ' appState=' + this.state.appState);
+                            utils.timestampedLog(_fmt('JS messages',     total_unread, perContact));
+                            utils.timestampedLog(_fmt('native messages', nativeTotal,  nativeMap));
+                            console.log('[badge]   native missedCalls unavailable',
+                                e && e.message ? e.message : e);
+                        }
                     });
                 }).catch((e) => {
                     console.log('[badge] getAllUnread failed', e && e.message);
@@ -45126,6 +47173,57 @@ class Sylk extends Component {
 		 this.setState({contactIsSharing: false});    
     }
 
+	// True while a 1-to-1 call or a conference is the on-screen
+	// route. Used to decide whether an incoming share intent must
+	// first navigate out of the call view before the contact-select
+	// list can appear.
+	_shareInCallRoute() {
+		return this.currentRoute === '/call' || this.currentRoute === '/conference';
+	}
+
+	// The remote party of the CURRENT 1-to-1 call, when one is active.
+	// Returns null for a conference (its callContact is the conference
+	// room URI, which the share list filters out — so there is no single
+	// contact to pre-select) or when no call is up.
+	_activeCallContactForShare() {
+		const call = this.state.currentCall;
+		const isConference = (call && call.hasOwnProperty('_participants'))
+			|| this.currentRoute === '/conference';
+		if (isConference) return null;
+		const cc = this.state.callContact;
+		return (cc && cc.uri) ? cc : null;
+	}
+
+	// Single entry point for every incoming share intent (Android
+	// warm/cold, iOS). Puts the app into share-to-contacts select
+	// mode. When a call is on screen the call view (AudioCallBox /
+	// ConferenceBox) sits on top of the contact list, so the selection
+	// UI never appears. In that case we leave the call view for the
+	// contact list — the call keeps running in the background exactly
+	// like the in-call Back button — and, for a 1-to-1 call, pre-select
+	// the party we're talking to so the shared item is one tap away
+	// from being sent to them.
+	_startShareToContacts(files) {
+		const callContact = this._activeCallContactForShare();
+
+		this.setState({
+			shareToContacts: true,
+			sharedContent: files,
+			selectedContact: null,
+			selectedContacts: callContact ? [callContact.uri] : [],
+		}, () => {
+			if (this._shareInCallRoute()) {
+				utils.timestampedLog('[app] [share] share intent during active call —'
+					+ ' leaving call view for contacts list, preselect='
+					+ (callContact ? callContact.uri : 'none'));
+				// 'back to home' is the ONLY changeRoute reason that
+				// navigates to /ready WITHOUT tearing the call down (see
+				// changeRoute). The call stays live in the background.
+				this.changeRoute('/ready', 'back to home');
+			}
+		});
+	}
+
 	async handleAndroidShare(payload) {
 
       if (this.state.shareToContacts) {
@@ -45179,11 +47277,7 @@ class Sylk extends Component {
 	  if (files.length === 0) return;
 	
 	  this.sharedAndroidFiles = files;
-	  this.setState({
-		shareToContacts: true,
-		sharedContent: files,
-		selectedContact: null,
-	  });
+	  this._startShareToContacts(files);
 	}
 	
 	async resolveSharedFile({ uri, type }) {
@@ -45218,9 +47312,7 @@ class Sylk extends Component {
                     this.sharedAndroidFiles = files;
                     console.log('Android share', files.length, 'items');
 
-                    this.setState({shareToContacts: true,
-                                   sharedContent: files,
-                                   selectedContact: null});
+                    this._startShareToContacts(files);
 
                     let item = files[0];
                     
@@ -46131,7 +48223,12 @@ return (
 					edges={Platform.OS === 'android' ? [] : ['top', 'bottom', 'right']}
                   >
 
-				{this.state.chatOpenLoading && (
+				{/* [0.77] chat-open spinner overlay disabled per request — its
+				    teardown after the journal fetch was un-compositing the navbar +
+				    button bar on Android. The chatOpenLoading STATE machinery is kept
+				    (watchdog, clears) so nothing else changes; only the visual overlay
+				    is suppressed. Flip `false` back to re-enable. */}
+				{false && this.state.chatOpenLoading && (
 					// In-chat spinner overlay. selectedContact has been
 					// pre-seeded with a stub in the constructor when the
 					// launch was from a sylk://message tap, so ReadyBox
@@ -46159,7 +48256,7 @@ return (
 						justifyContent: 'center',
 						alignItems: 'center',
 						zIndex: 10000,
-						elevation: 10000,
+						elevation: 0, // [0.77 navbar-vanish fix] was 10000 — extreme native Android elevation on this toggled full-screen overlay left the navbar + tablet button bar un-composited when it was torn down (chatOpenLoading->false after the journal fetch). zIndex handles stacking; no native elevation needed for a transparent spinner.
 					  }}
 						>
 						<ActivityIndicator animating={true} size={'large'} color={"#D32F2F"} />
@@ -46231,6 +48328,12 @@ return (
                       account={this.state.accountId}
                       requestSupportFromLogs={this.requestSupportFromLogs}
                       attachedLogContent={this.state.attachedLogContent}
+                      // Developer mode (persisted, works in release too) gates
+                      // the in-modal "Throw test crash" trigger — see
+                      // app/crashCapture.js + app/appExitReporter.js.
+                      devMode={!!(this.state.accountSetting
+                          && this.state.accountSetting.device
+                          && this.state.accountSetting.device.devMode)}
                       // subtitle: SIP URI the logs belong to, but only when it
                       // isn't the current device's own account — there's no
                       // point labelling the live tail or a self-attached
@@ -46337,6 +48440,13 @@ return (
                             || ''
                         }
                     />
+                    <InfoModal
+                        show={this.state.infoModalVisible}
+                        title={this.state.infoModalTitle}
+                        message={this.state.infoModalMessage}
+                        close={() => this.setState({ infoModalVisible: false })}
+                    />
+                    <ThemedAlertHost />
                   </SafeAreaView>
                 );
               }}
@@ -46807,7 +48917,11 @@ return (
         }
         
         const messagesMetadata = this.state.selectedContact ? this.state.messagesMetadata : {};
-        
+        // Location-only twin passed alongside messagesMetadata so the chat's
+        // location readers can consume the isolated store (commit two of the
+        // messagesMetadata→locationData migration). Same open-contact gating.
+        const locationData = this.state.selectedContact ? this.state.locationData : {};
+
         return (
             <Fragment>
                { !this.state.fullScreen ?
@@ -46873,6 +48987,23 @@ return (
                     setLocationPrivacyRadiusMeters = {(m) =>
                         this.setAccountSetting('location.privacyRadiusMeters', m)
                     }
+                    /* Persist the user's last-used location-share option for
+                       the selected contact (once / until stopped / until I
+                       return — never "meet") so ShareLocationModal reopens
+                       pre-selected on it. Stored in
+                       contact.localProperties.shareLocationPrefs (local, never
+                       synced). ShareLocationModal reads it via lastShareOption
+                       to seed defaultSelectionFor, and calls it on Confirm for
+                       any non-meet share. Regression fix: this prop pass was
+                       dropped by a darcs revert, silently disabling both the
+                       save and the pre-select. */
+                    saveShareLocationPrefs = {this.saveShareLocationPrefs}
+                    /* Boot-resume guard: NavigationBar's active-share resume
+                       scan calls this to skip reviving a share whose track
+                       already ended (a stored location_stop exists — including
+                       one another device sent while we were offline). Prevents
+                       the resume-after-stop race that re-emits zombie ticks. */
+                    hasStoredLocationStop = {(sid) => this.hasStoredLocationStop(sid)}
                     email = {this.state.email}
                     logout = {this.logout}
                     /* Same per-account password cache that RegisterForm
@@ -47132,6 +49263,10 @@ return (
                     setLocationProximityMeters = {(m) => this.setAccountSetting('location.proximityMeters', m)}
                     locationPrivacyRadiusMeters = {Number(this.state.accountSetting.location.privacyRadiusMeters) || 0}
                     setLocationPrivacyRadiusMeters = {(m) => this.setAccountSetting('location.privacyRadiusMeters', m)}
+                    locationSimulatorEnabled = {!!(this.state.accountSetting.location && this.state.accountSetting.location.simulatorEnabled)}
+                    setLocationSimulatorEnabled = {(v) => this.setAccountSetting('location.simulatorEnabled', !!v)}
+                    sendLocationRequest = {(uri) => this.sendLocationRequest(uri)}
+                    sendMeetingRequest = {(uri, opts) => this.sendMeetingRequest(uri, opts)}
                     /* Visual theme — persisted in
                        accountSetting.device.themeMode like every
                        other Preferences knob. setThemeMode both
@@ -47257,7 +49392,7 @@ return (
                         // final tick (sent by stopLocationSharing
                         // immediately before clearing the timer).
                         // Without this guard, the final tick's echo
-                        // arrives ~500ms after locationTimers[uri]
+                        // arrives ~500ms after outgoingLocationSessions[uri]
                         // is gone and the mirror gate concludes
                         // "another device is broadcasting" — flips
                         // the chat-header indicator to pulse for
@@ -47291,7 +49426,37 @@ return (
                     // the end-of-session system note. Once the handshake
                     // has completed (either side accepted), the word
                     // "request" stops applying and we drop it.
-                    isMeetingSessionAccepted = {this.isMeetingSessionAccepted.bind(this)}
+                    isMeetingSessionAccepted = {this._locationEngine.isMeetingSessionAccepted.bind(this._locationEngine)}
+                    /* Multi-device share status: true when EITHER this device is
+                       broadcasting OR it is mirroring an active share started on
+                       another of our devices. Lets the share menu offer "Stop"
+                       on a secondary device so a session started on one device
+                       can be finished on another. */
+                    isShareActiveForUri = {this.isShareActiveForUri}
+                    /* The raw mirror map ({uri: {originMid, role, lastTickAt,
+                       lastCoords}}) of shares active on OTHER devices of mine.
+                       NavigationBar merges it into the active-shares stop panel
+                       and its Share↔Stop detection so a secondary device can
+                       see + end a session started elsewhere. */
+                    activeRemoteSharesByUri = {this.state.activeRemoteSharesByUri}
+                    /* Authoritative active share sessions (keyed by sessionId,
+                       with ownerDeviceId + owned flag). NavigationBar reads THIS
+                       for the active-shares panel + Share/Stop detection instead
+                       of its own per-URI maps — one source of truth. */
+                    getActiveShareSessions = {this.getActiveShareSessions}
+                    /* App-owned live-share timer registry, shared by
+                       reference. NavigationBar borrows this object rather
+                       than owning its own — the timers live in the app so
+                       they survive NavigationBar unmount/remount. */
+                    outgoingLocationSessionsRef = {this._locationEngine.outgoingLocationSessions}
+                    /* The app instance itself. Location's authoritative
+                       cross-device state (the remote-share mirror, the
+                       recently-stopped guard, mirror-clear, device id) lives on
+                       the app; the location engine reaches it via this.app so
+                       the mirror / remote-share stop paths resolve on any
+                       device — including a mirror-only secondary that has no
+                       local timer. */
+                    app = {this}
                 />
                 : null}
 
@@ -47327,6 +49492,11 @@ return (
                     onRestore = {(p) => this.restoreMessagesFromBackup(p)}
                 />
 
+                {/* Provide the location engine to the CHAT subtree too (ReadyBox
+                    → ChatBox → LocationBubble). NavigationBar has its own provider,
+                    but the chat is a sibling of it, so the map bubble's Stop button
+                    (which reads the engine via useContext) needs this wrapper. */}
+                <LocationSharingContext.Provider value={this._locationEngine}>
                 <ReadyBox
                     account = {this.state.account}
                     password = {this.state.password}
@@ -47408,6 +49578,7 @@ return (
                         ...this.state.activeLocationShares,
                         ...this.state.activeRemoteSharesByUri,
                     }}
+                    incomingLocationShareUris = {this.state.incomingLocationShareUris}
                     orientation = {this.state.orientation}
                     /* Member-count prefix in the contacts category bar is
                        disabled — the category / group pills always render
@@ -47590,6 +49761,7 @@ return (
                     defaultConferenceDomain = {this.state.defaultConferenceDomain}
                     dark = {this.state.dark}
                     messagesMetadata = {messagesMetadata}
+                    locationData = {locationData}
                     messagesMetadataById = {this._getMetadataLookups().byId}
                     messagesMetadataByOriginalId = {this._getMetadataLookups().byOriginalId}
                     chatScrollTrigger = {this.state.chatScrollTrigger}
@@ -47622,7 +49794,8 @@ return (
 					   modal's own Accept button still calls
 					   _acceptMeetingRequest with the chosen radius. */
 					promptMeetingRequest = {this._promptMeetingRequest}
-					isMeetingRequestAcceptable = {this.isMeetingRequestAcceptable}
+					rejectMeetingRequest = {this._rejectMeetingRequest}
+					isMeetingRequestAcceptable = {this._locationEngine.isMeetingRequestAcceptable}
 					pauseLocationShare = {this.pauseLocationShare}
 					resumeLocationShare = {this.resumeLocationShare}
 					getLocationShareState = {this.getLocationShareState}
@@ -47648,6 +49821,7 @@ return (
  					remoteConferenceRoom = {this.state.remoteConferenceRoom}
  					remoteConferenceDomain = {this.state.remoteConferenceDomain}
                 />
+                </LocationSharingContext.Provider>
 
                 <ImportPrivateKeyModal
                     show={this.state.showImportPrivateKeyModal}
@@ -47672,6 +49846,17 @@ return (
                 <MeetingRequestModal
                     show={this.state.meetingRequestModal.show}
                     fromUri={this.state.meetingRequestModal.fromUri}
+                    /* Resolve the requester's saved display name from the
+                       contact record so the modal shows it instead of the raw
+                       URI. Only pass a REAL name (not the URI echoed back), so
+                       the modal's fromName || fromUri chain degrades cleanly. */
+                    fromName={(() => {
+                        const _u = this.state.meetingRequestModal.fromUri;
+                        if (!_u) return null;
+                        const _c = this.lookupContact(_u);
+                        const _n = _c && _c.name ? _c.name.trim() : '';
+                        return (_n && _n !== _u) ? _n : null;
+                    })()}
                     expiresAt={this.state.meetingRequestModal.expiresAt}
                     policyAcknowledged={this.state.meetingRequestModal.policyAcknowledged}
                     destination={this.state.meetingRequestModal.destination}
@@ -47704,13 +49889,23 @@ return (
                     onAccept={(opts) => this._acceptMeetingRequest({
                         excludeOriginRadiusMeters: opts && opts.excludeOriginRadiusMeters,
                     })}
-                    onDecline={() => this._declineMeetingRequest()}
+                    /* Reject deletes the invite bubble (user's explicit "no").
+                       The silent auto-dismiss timer still routes through
+                       `close` below, which keeps the bubble so the user can
+                       Accept/Reject later from the map's long-press menu. */
+                    onDecline={() => this._rejectMeetingRequest()}
                     close={() => this._closeMeetingRequestModal()}
                 />
 
                 <LocationRequestModal
                     show={this.state.locationRequestModal.show}
                     fromUri={this.state.locationRequestModal.fromUri}
+                    fromName={(() => {
+                        const _u = this.state.locationRequestModal.fromUri;
+                        if (!_u) return null;
+                        const _c = this.lookupContact(_u);
+                        return (_c && _c.name && _c.name !== _u) ? _c.name : null;
+                    })()}
                     policyAcknowledged={this.state.locationRequestModal.policyAcknowledged}
                     onAccept={() => this._acceptLocationRequest()}
                     onDecline={() => this._declineLocationRequest()}
@@ -48316,6 +50511,7 @@ return (
         this._abAuthoritativeDataAccount = null;
         this._abImportClaim = null;
         this._abSnapshotAnomaly = false;
+        this._abServerFetched = false;
         this._abLastPassSig = '';
         this._abWriteRepeat = 0;
 
@@ -48435,7 +50631,7 @@ return (
 
         // Tear down every active location share BEFORE the SIP
         // connection goes away. stopAllSharesForLogout iterates
-        // locationTimers and calls stopLocationSharing(silent:true,
+        // outgoingLocationSessions and calls stopLocationSharing(silent:true,
         // reason:'logout') for each — peer notification (meeting_end
         // signal) goes out while the connection is still alive,
         // which is the only thing that lets the peer's reciprocal
@@ -48444,13 +50640,10 @@ return (
         // app foreground doesn't auto-resume A's parked share under
         // B's identity. No-op when the navBar ref isn't available
         // (e.g. logout fires before the navbar mounted, edge case).
-        const navBar = this.navigationBarRef && this.navigationBarRef.current;
-        if (navBar && typeof navBar.stopAllSharesForLogout === 'function') {
-            try { navBar.stopAllSharesForLogout(); }
-            catch (e) {
-                console.log('[logout] stopAllSharesForLogout threw',
-                    e && e.message ? e.message : e);
-            }
+        try { this._locationEngine.stopAllSharesForLogout(); }
+        catch (e) {
+            console.log('[logout] stopAllSharesForLogout threw',
+                e && e.message ? e.message : e);
         }
 
         // Wipe in-memory + persisted location state for the account

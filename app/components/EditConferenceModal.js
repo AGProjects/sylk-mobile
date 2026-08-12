@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import utils from '../utils';
 import {
@@ -560,7 +562,7 @@ const EditConferenceModal = ({
           control. Hidden while the picker is open — Done lives
           inside the search bar in that mode. */}
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-        <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', flex: 1 }}>
+        <Text style={{ fontSize: 14, fontWeight: '600', color: getModalColors().textPrimary, flex: 1 }}>
           People to invite when you join the room
         </Text>
         {!pickerOpen && (
@@ -687,7 +689,7 @@ const EditConferenceModal = ({
                       style={{ marginRight: 8 }}
                     />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 14, color: '#222' }} numberOfLines={1}>
+                      <Text style={{ fontSize: 14, color: getModalColors().textPrimary }} numberOfLines={1}>
                         {name}
                       </Text>
                       {name !== uri ? (
@@ -880,7 +882,7 @@ const EditConferenceModal = ({
           keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
           style={{ maxHeight: surfaceMaxHeight, alignSelf: 'center', width: '100%' }}
         >
-          <Surface
+          <ThemedModalSurface
             style={[
               containerStyles.modalSurface,
               { maxHeight: surfaceMaxHeight, overflow: 'hidden' },
@@ -896,7 +898,7 @@ const EditConferenceModal = ({
                 subtree remount, no nested Modal, nothing to
                 fight the search input for focus. */}
             {renderBody()}
-          </Surface>
+          </ThemedModalSurface>
         </KeyboardAvoidingView>
       </View>
     </Modal>

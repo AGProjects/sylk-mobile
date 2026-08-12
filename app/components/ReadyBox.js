@@ -564,6 +564,39 @@ class ReadyBox extends Component {
 	      this._reconcileProps(prevProps);
 	  }
 
+	  // Sync targetUri when a chat is opened PROGRAMMATICALLY (push-tap →
+	  // selectChatContact, deep link, missed-call tap) rather than by the
+	  // in-list tap handler (which already sets targetUri). The constructor
+	  // seeds targetUri from selectedContact on cold-start, but on a warm open
+	  // only the selectedContact PROP changes — nothing else mirrors it into
+	  // state.targetUri, and showButtonsBar gates on `!targetUri`, so the
+	  // ReadyBox call-button bar stays hidden on the push→chat path. Guard to
+	  // only fill an EMPTY targetUri (never overwrite the tap handler's value)
+	  // and only when selectedContact actually changed (no loop).
+	  if (this.props.selectedContact
+	          && this.props.selectedContact !== prevProps.selectedContact
+	          && !this.state.targetUri) {
+	      this.setState({ targetUri: this.props.selectedContact.uri });
+	  }
+
+	  // Sync targetUri when a chat is opened PROGRAMMATICALLY (push-tap →
+	  // selectChatContact, deep link, missed-call tap, etc.) rather than by
+	  // the in-list tap handler (handleSearch, which already sets targetUri).
+	  // The constructor seeds targetUri from selectedContact on cold-start,
+	  // but on a warm open only the selectedContact PROP changes — nothing
+	  // else mirrors it into state.targetUri. showButtonsBar gates on
+	  // `!targetUri` (returns false), so without this the ReadyBox call-button
+	  // bar under the navbar stays hidden on the push→chat path even though it
+	  // shows fine after a manual contact-list tap. Guarded to only fill an
+	  // EMPTY targetUri so it never overwrites the value the tap handler
+	  // deliberately shapes, and never loops (selectedContact must have just
+	  // changed).
+	  if (this.props.selectedContact
+	          && this.props.selectedContact !== prevProps.selectedContact
+	          && !this.state.targetUri) {
+	      this.setState({ targetUri: this.props.selectedContact.uri });
+	  }
+
 	  // Surface the active contacts filter to the parent (so the navbar can
 	  // hide its kebab in the Deleted / Graveyard views).
 	  if (prevState.contactsFilter !== this.state.contactsFilter
@@ -2186,9 +2219,40 @@ class ReadyBox extends Component {
                 customTags.add(tag);
             });
         });
+        // Recognise common group names and give them a fitting glyph instead
+        // of the generic tag. Keyed by the lowercased tag; anything not listed
+        // falls back to 'tag'. Synonyms/plurals map to the same icon so e.g.
+        // "Friend" and "Friends" both get the people glyph.
+        const _groupIconByName = {
+            family:    'human-male-female-child',
+            families:  'human-male-female-child',
+            kids:      'human-male-female-child',
+            home:      'home-heart',
+            friend:    'account-multiple-outline',
+            friends:   'account-multiple-outline',
+            buddies:   'account-multiple-outline',
+            work:      'briefcase',
+            works:     'briefcase',
+            job:       'briefcase',
+            office:    'briefcase',
+            colleague: 'briefcase-account',
+            colleagues:'briefcase-account',
+            team:      'account-tie',
+            email:     'email',
+            emails:    'email',
+            mail:      'email',
+            business:  'office-building',
+            company:   'office-building',
+            clients:   'briefcase-account-outline',
+            client:    'briefcase-account-outline',
+            school:    'school',
+            vip:       'crown',
+        };
         const customGroupItems = [...customTags].sort().map(tag => ({
             key: tag,
             title: tag.charAt(0).toUpperCase() + tag.slice(1),
+            icon: _groupIconByName[tag.toLowerCase()] || 'tag',
+            isTab: true,
             enabled: true,
             selected: this.state.contactsFilter === tag,
             // Dynamic group pills opt out of the member counter — the
@@ -2217,18 +2281,18 @@ class ReadyBox extends Component {
         const hasGraveyardContacts = (this.props.graveyardCount || 0) > 0;
         const _inDeletedMode = this.state.contactsFilter === 'deleted'
             || this.state.contactsFilter === 'graveyard';
-        const _deletedItem = {key: 'deleted', title: 'Deleted', enabled: hasDeletedContacts || hasGraveyardContacts || _inDeletedMode, selected: this.state.contactsFilter === 'deleted'};
+        const _deletedItem = {key: 'deleted', title: 'Deleted', icon: 'delete', isTab: true, enabled: hasDeletedContacts || hasGraveyardContacts || _inDeletedMode, selected: this.state.contactsFilter === 'deleted'};
         // Graveyard chip is hidden when the graveyard is empty — there's
         // nothing to show. It's force-enabled while the user is already
         // inside the Graveyard view so the selected chip stays visible and
         // they can toggle back out.
-        const _graveyardItem = {key: 'graveyard', title: 'Graveyard', enabled: hasGraveyardContacts || this.state.contactsFilter === 'graveyard', selected: this.state.contactsFilter === 'graveyard'};
+        const _graveyardItem = {key: 'graveyard', title: 'Graveyard', icon: 'delete-forever', isTab: true, enabled: hasGraveyardContacts || this.state.contactsFilter === 'graveyard', selected: this.state.contactsFilter === 'graveyard'};
         // "All" is ALWAYS the first pill — tapping it clears any active filter
         // (reset). It is never highlighted: "All" means no criteria, so there's
         // no active selection to indicate (highlighting it implied a filter was
         // applied when in fact nothing is). It only ever shows the active chip
         // styling for real category filters, not for the no-filter default.
-        const _allItem = {key: 'all', title: 'All', enabled: true,
+        const _allItem = {key: 'all', title: 'All', icon: 'account-multiple', isTab: true, enabled: true,
             selected: false};
 
         // "Deleted mode": once the user enters the Deleted folder (or the
@@ -2247,16 +2311,16 @@ class ReadyBox extends Component {
 
         return this._withCategoryCounts([
               _allItem,
-              {key: 'recent', title: 'Recent', enabled: this.props.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
-              {key: 'messages', title: 'Messages', enabled: hasChatContacts, selected: this.state.contactsFilter === 'messages'},
-              {key: 'calls', title: 'Calls', enabled: true, selected: this.state.contactsFilter === 'calls'},
-              {key: 'favorite', title: 'Favorites', enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
-              {key: 'autoanswer', title: 'Caregivers', enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
-              {key: 'tel', title: 'Tel', enabled: hasTelContacts, selected: this.state.contactsFilter === 'tel'},
-              {key: 'missed', title: 'Missed', enabled: this.props.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
-              {key: 'blocked', title: 'Blocked', enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
-              {key: 'conference', title: 'Conference', enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
-              {key: 'test', title: 'Test', enabled: !this.props.shareToContacts && !this.props.inviteContacts, selected: this.state.contactsFilter === 'test'},
+              {key: 'recent', title: 'Recent', icon: 'history', isTab: true, enabled: this.props.navigationItems['recent'], selected: this.state.historyPeriodFilter === 'recent'},
+              {key: 'messages', title: 'Messages', icon: 'message-text', isTab: true, enabled: hasChatContacts, selected: this.state.contactsFilter === 'messages'},
+              {key: 'calls', title: 'Calls', icon: 'phone', isTab: true, enabled: true, selected: this.state.contactsFilter === 'calls'},
+              {key: 'favorite', title: 'Favorites', icon: 'star', isTab: true, enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
+              {key: 'autoanswer', title: 'Caregivers', icon: 'account-heart', isTab: true, enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
+              {key: 'tel', title: 'Tel', icon: 'dialpad', isTab: true, enabled: hasTelContacts, selected: this.state.contactsFilter === 'tel'},
+              {key: 'missed', title: 'Missed', icon: 'phone-missed', isTab: true, enabled: this.props.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
+              {key: 'blocked', title: 'Blocked', icon: 'block-helper', isTab: true, enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},
+              {key: 'conference', title: 'Conference', icon: 'account-group', isTab: true, enabled: conferenceEnabled, selected: this.state.contactsFilter === 'conference'},
+              {key: 'test', title: 'Test', icon: 'test-tube', isTab: true, enabled: !this.props.shareToContacts && !this.props.inviteContacts, selected: this.state.contactsFilter === 'test'},
               ...customGroupItems,
               _deletedItem,
               ]);
@@ -2658,6 +2722,115 @@ class ReadyBox extends Component {
                         }}
                     />
                     <Text style={_sortAxisLabelStyle} numberOfLines={1}>Desc</Text>
+                </TouchableOpacity>
+            );
+        }
+
+        // Telegram-style category tab: a larger, stacked icon-over-label
+        // cell. The main contacts category bar (All / Recent / Messages /
+        // Calls / …) renders through here — each item carries `isTab:true`
+        // plus an MDI `icon` name from the navigationItems getter. Compared
+        // to the old text-only pills these tabs are bigger, easier to hit,
+        // and read at a glance from the pictogram.
+        //
+        //   • Active tab   → icon + label tinted Telegram-blue, sitting on a
+        //     soft translucent-blue rounded highlight behind the glyph, and a
+        //     600-weight label. This replaces the old deep-blue chip so the
+        //     selection reads the same in Day and Night without a hard pill.
+        //   • Inactive tab → icon + label in the theme's muted secondary
+        //     colour (grey in Day, light-grey in Night), matching Telegram's
+        //     dimmed inactive tabs.
+        //
+        // An optional count badge (driven by the existing showGroupMemberCounts
+        // toggle) rides the top-right of the icon. The "All" tab never shows a
+        // badge — the total-contacts number over the All icon was unwanted.
+        if (object.item.isTab && icon) {
+            const _tabActive = !!object.item.selected;
+            const _tabAccent = '#3390EC';               // Telegram blue
+            const _tabInactive = _theme.textSecondary || _theme.textPrimary;
+            const _tabColor = _tabActive ? _tabAccent : _tabInactive;
+
+            // Count badge: reuse the same source the text-button path used —
+            // a numeric `count` stamped by _withCategoryCounts when the
+            // per-device showGroupMemberCounts toggle is on. The "All" tab is
+            // deliberately excluded: no total-contacts number over its icon.
+            let _tabBadge = null;
+            if (key !== 'all'
+                    && this.props.showGroupMemberCounts
+                    && object.item.count != null
+                    && object.item.count > 0) {
+                _tabBadge = object.item.count;
+            }
+
+            const _tabColStyle = {
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+                minWidth: 60,
+                paddingHorizontal: 4,
+                marginHorizontal: 2,
+                paddingTop: 3,
+            };
+            // Rounded highlight behind the glyph on the active tab. Height is
+            // kept close to the 24dp glyph so there's little dead space under
+            // the icon — the label sits right beneath it.
+            const _tabIconWrapStyle = {
+                width: 48,
+                height: 26,
+                borderRadius: 13,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: _tabActive ? 'rgba(51,144,236,0.14)' : 'transparent',
+            };
+            const _tabLabelStyle = {
+                fontSize: 11,
+                // Pull the label up tight under the icon (small negative margin
+                // claws back the wrap's residual bottom space) so the
+                // icon+label read as one compact unit.
+                marginTop: -1,
+                textAlign: 'center',
+                letterSpacing: 0,
+                color: _tabColor,
+                fontWeight: _tabActive ? '600' : '400',
+            };
+            // Small count badge pinned to the icon's top-right corner.
+            const _tabBadgeStyle = {
+                position: 'absolute',
+                top: -2,
+                right: 2,
+                minWidth: 16,
+                height: 16,
+                borderRadius: 8,
+                paddingHorizontal: 4,
+                backgroundColor: _tabActive ? _tabAccent : (_theme.textSecondary || '#8E8E93'),
+                alignItems: 'center',
+                justifyContent: 'center',
+            };
+            const _tabBadgeTextStyle = {
+                color: '#FFFFFF',
+                fontSize: 10,
+                lineHeight: 14,
+                fontWeight: '600',
+            };
+
+            return (
+                <TouchableOpacity
+                    key={_bbRemountKey}
+                    onPress={() => {this.filterHistory(key)}}
+                    accessibilityLabel={title}
+                    accessibilityState={{ selected: _tabActive }}
+                    style={_tabColStyle}
+                >
+                    <View style={_tabIconWrapStyle}>
+                        <MaterialCommunityIcon name={icon} size={24} color={_tabColor} />
+                        {_tabBadge != null ? (
+                            <View style={_tabBadgeStyle}>
+                                <Text style={_tabBadgeTextStyle} numberOfLines={1}>
+                                    {_tabBadge > 999 ? '999+' : _tabBadge}
+                                </Text>
+                            </View>
+                        ) : null}
+                    </View>
+                    <Text style={_tabLabelStyle} numberOfLines={1}>{title}</Text>
                 </TouchableOpacity>
             );
         }
@@ -3476,11 +3649,14 @@ class ReadyBox extends Component {
 						defaultConferenceDomain = {this.props.defaultConferenceDomain}
 						dark = {this.props.dark}
 						messagesMetadata = {this.props.messagesMetadata}
+						locationData = {this.props.locationData}
 						messagesMetadataById = {this.props.messagesMetadataById}
 						messagesMetadataByOriginalId = {this.props.messagesMetadataByOriginalId}
 						chatScrollTrigger = {this.props.chatScrollTrigger}
 						localOwnerCoordsByMid = {this.props.localOwnerCoordsByMid}
 						activeRemoteSharesByUri = {this.props.activeRemoteSharesByUri}
+						activeLocationShares = {this.props.activeLocationShares}
+						incomingLocationShareUris = {this.props.incomingLocationShareUris}
 						contactStartShare = {this.props.contactStartShare}
 						contactStopShare = {this.props.contactStopShare}
 						acceptMeetingRequest = {this.props.acceptMeetingRequest}
@@ -3620,6 +3796,10 @@ ReadyBox.propTypes = {
     // chat-header pin's pulse + red tint while the current chat is
     // sharing. Optional; treated as empty if not passed.
     activeLocationShares: PropTypes.object,
+    // { uri: true } for contacts who are live-sharing their location TO us
+    // (incoming). Forwarded to ContactsListBox → ContactCard so the incoming
+    // pin renders on the tile. Optional; treated as empty if not passed.
+    incomingLocationShareUris: PropTypes.object,
     orientation     : PropTypes.string,
     // Per-device toggle: prefix each category/group pill with its member count.
     showGroupMemberCounts: PropTypes.bool,
@@ -3742,6 +3922,7 @@ ReadyBox.propTypes = {
     defaultConferenceDomain: PropTypes.string,
     dark: PropTypes.bool,
     messagesMetadata: PropTypes.object,
+    locationData: PropTypes.object,
     file2GiftedChat : PropTypes.func,
     appBarHeight    : PropTypes.number,
     contactStartShare: PropTypes.func,

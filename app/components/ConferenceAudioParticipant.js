@@ -50,7 +50,14 @@ function beautifyIdentity(identity) {
     const uri = identity.uri || identity._uri || '';
     const dn = identity.displayName || identity._displayName || '';
     if (utils.isAnonymous(uri)) {
-        return 'Unknown caller';
+        // Anonymous / guest peers: prefer the display name the caller
+        // presented (guests can set their own name from the web), and
+        // fall back to the canonical "Anonymous caller" label when none
+        // was provided.
+        if (dn && dn.trim() && dn.trim() !== uri) {
+            return dn.trim();
+        }
+        return 'Anonymous caller';
     }
     if (dn && dn.trim() && dn.trim() !== uri) {
         return dn.trim();

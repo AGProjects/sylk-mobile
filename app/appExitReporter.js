@@ -14,6 +14,7 @@
 import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { anonymizeEmails } from './utils';
+import { getCrashRecords, pruneCrashRecords } from './crashCapture';
 
 // Watermark: epoch-ms of the newest exit we've already accounted for. Anything
 // at or before this is never looked at again.
@@ -93,11 +94,18 @@ export async function flushExitReports(deps = {}) {
 
         if (reportable.length > 0 && typeof dispatch === 'function') {
             reportable.sort((a, b) => a.timestamp - b.timestamp);
+            // For CRASH records the OS keeps no thread dump (getTraceInputStream
+            // only retains one for ANR / native crashes), so pull any JS stacks
+            // we captured in-app around those times and splice them in.
+            let jsCrashes = [];
+            try {
+                jsCrashes = await getCrashRecords();
+            } catch (_) { /* best-effort — report still goes out without them */ }
             // Scrub user@domain identifiers out of the report (thread dumps and
             // descriptions can carry account/peer URIs) using the same stable
             // substitution as the manual "Send to support" flow, so support
             // gets a coherent-but-anonymized report.
-            const body = anonymizeEmails(formatReport(reportable, accountId));
+            const body = anonymizeEmails(formatReport(reportable, accountId, jsCrashes));
             const hasAnr = reportable.some((e) => e.reason === REASON_ANR);
             const subject = hasAnr ? 'ANR report' : 'Crash report';
 
@@ -125,13 +133,21 @@ export async function flushExitReports(deps = {}) {
         try {
             await AsyncStorage.setItem(WATERMARK_KEY, String(newestTs));
         } catch (_) { /* will simply re-evaluate next launch */ }
+
+        // Drop captured JS stacks at or before the watermark: they've either
+        // been attached to a delivered report or belong to exits we've now
+        // accounted for. Records for a held-back (undelivered) report have
+        // ts > newestTs and are kept for the retry next launch.
+        try {
+            await pruneCrashRecords(newestTs);
+        } catch (_) { /* non-fatal — ring buffer is self-trimming anyway */ }
     } catch (err) {
         _log('[exit-report] flush error:',
             err && err.message ? err.message : err);
     }
 }
 
-function formatReport(exits, accountId) {
+function formatReport(exits, accountId, jsCrashes = []) {
     const lines = [];
     lines.push('SYLK app exit report');
     lines.push('account:   ' + (accountId || 'unknown'));
@@ -155,12 +171,54 @@ function formatReport(exits, accountId) {
             lines.push(e.trace);
             lines.push('---- end thread dump ----');
         } else {
-            lines.push('(no thread dump retained for this exit)');
+            // No OS-retained trace. Say why (from the native module), then
+            // splice in any JS stack we captured in-app near this exit.
+            lines.push('(no thread dump retained for this exit' +
+                (e.traceUnavailableReason ? ' — ' + e.traceUnavailableReason : '') + ')');
+            const js = matchJsCrash(jsCrashes, e.timestamp);
+            if (js) {
+                lines.push('');
+                lines.push('---- JS crash captured in-app ----');
+                lines.push('captured:    ' + safeIso(js.ts) +
+                    '  (' + signedDeltaMs(js.ts, e.timestamp) + ' vs OS exit)');
+                lines.push('fatal:       ' + (js.isFatal ? 'yes' : 'no') +
+                    (js.kind ? '   kind: ' + js.kind : ''));
+                if (js.name || js.message) {
+                    lines.push('error:       ' +
+                        [js.name, js.message].filter(Boolean).join(': '));
+                }
+                lines.push(js.stack || '(no stack captured)');
+                lines.push('---- end JS crash ----');
+            }
         }
         lines.push('');
     });
 
     return lines.join('\n');
+}
+
+// Pick the captured JS crash closest in time to an OS exit, within a window.
+// The JS throw precedes the OS recording the death, so allow a small window on
+// both sides and prefer the nearest record.
+const JS_MATCH_WINDOW_MS = 60 * 1000;
+function matchJsCrash(jsCrashes, exitTs) {
+    if (!Array.isArray(jsCrashes) || typeof exitTs !== 'number') return null;
+    let best = null;
+    let bestDelta = Infinity;
+    for (const r of jsCrashes) {
+        if (!r || typeof r.ts !== 'number') continue;
+        const delta = Math.abs(exitTs - r.ts);
+        if (delta <= JS_MATCH_WINDOW_MS && delta < bestDelta) {
+            best = r;
+            bestDelta = delta;
+        }
+    }
+    return best;
+}
+
+function signedDeltaMs(fromTs, toTs) {
+    const d = fromTs - toTs;
+    return (d >= 0 ? '+' : '') + d + 'ms';
 }
 
 function safeIso(ts) {

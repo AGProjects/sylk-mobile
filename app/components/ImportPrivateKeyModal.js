@@ -1,4 +1,5 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Platform, View } from 'react-native';
@@ -100,7 +101,7 @@ class ImportPrivateKeyModal extends Component {
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                        <Surface style={styles.container}>
+                        <ThemedModalSurface style={styles.container}>
                             <Dialog.Title style={styles.title}>Import private key</Dialog.Title>
                              <Text style={styles.body}>
                                  {'Enter the pincode shown on the sending device to import your private key:'}
@@ -140,7 +141,7 @@ class ImportPrivateKeyModal extends Component {
                             </Text>
                             }
                             </View>
-                        </Surface>
+                        </ThemedModalSurface>
                     </DialogType>
                 </Portal>
             );

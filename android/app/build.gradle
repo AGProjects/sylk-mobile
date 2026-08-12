@@ -158,14 +158,26 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    // Multiple native modules emit an identical libc++_shared.so; pickFirst
+    // dedups them so the merge doesn't fail. On NDK 29 that libc++ is 16 KB-
+    // aligned AND has std::__ndk1::basic_stringstream (fbjni needs it), so no
+    // hand-vendored libc++ is required. (History: on NDK 25 we had to drop an
+    // NDK-27 libc++_shared.so into app/src/main/jniLibs/<abi>/ to get both the
+    // symbol and 16 KB alignment; the NDK 29 bump retired that — see plan doc.)
+    packaging {
+        jniLibs {
+            pickFirst '**/libc++_shared.so'
+        }
+    }
+
     defaultConfig {
         applicationId "com.agprojects.sylk"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         missingDimensionStrategy "RNNotifications.reactNativeVersion", "reactNative60"
         missingDimensionStrategy "react-native-camera", "general"
-        versionCode 823
-        versionName "8.2.3"
+        versionCode 825
+        versionName "8.2.5"
         multiDexEnabled true
     }
 

@@ -78,6 +78,7 @@ const isPrimaryLabel = (label) =>
     label === 'Reply' ||
     label === 'Copy' ||
     label === 'Full screen' ||
+    label === 'Share location point' ||
     label.indexOf('Forward') === 0;
 
 // Labels that should read as destructive (red) wherever they appear.
@@ -95,6 +96,7 @@ const primaryIconFor = (label) => {
     if (label === 'Resend') return 'send';
     if (label.indexOf('Download') === 0) return 'cloud-download';
     if (label.indexOf('Delete') === 0) return 'delete';
+    if (label === 'Share location point') return 'share-variant';
     if (label.indexOf('Forward') === 0) return 'share';
     return 'dots-horizontal';
 };
@@ -109,7 +111,20 @@ const secondaryIconFor = (label) => {
     if (label === 'Edit' || label === 'Edit caption') return 'file-document-edit';
     if (label === 'Pin') return 'pin';
     if (label === 'Unpin') return 'pin-off';
-    if (label === 'Share location') return 'map-marker';
+    // Location-share actions. These MUST precede the generic 'Share' prefix
+    // rule below, or the two 'Share location …' labels would fall into it and
+    // render the plain 'share' glyph instead of their map icons. 'Open track in
+    // Maps' has no 'Share' prefix but is grouped here for clarity. All names are
+    // MaterialDesignIcons (this menu's Icon set — see import) and original-batch
+    // glyphs guaranteed to exist in the font compiled into the app; without an
+    // entry a label falls through to 'circle-small' (the dot seen for the two
+    // new export actions).
+    // 'Share location point' shares the bubble's pin via the system share
+    // sheet — show the standard share glyph (its caption already reads
+    // "Share" via shortLabel) so it reads as a Share action in the fast bar.
+    if (label === 'Share location point') return 'share-variant';
+    if (label === 'Share location track') return 'map-marker-multiple';
+    if (label === 'Open track in Maps') return 'map';
     if (label.indexOf('Share') === 0) return 'share';
     // Matches both 'Download' and 'Download again' (received-file re-fetch).
     if (label.indexOf('Download') === 0) return 'cloud-download';
@@ -305,7 +320,22 @@ const MessageContextMenu = ({
                 </View>
             );
         }
-        const body = (message.text || md.filename || '').trim();
+        // Live-location bubbles carry a stringified JSON metadata blob in
+        // `message.text` (action/messageId/value/expires/…). Echoing that
+        // raw payload shows a meaningless integer/JSON soup. Show the
+        // coordinates instead — the exact string the "Copy" action puts on
+        // the clipboard (`${lat}, ${lng}` from metadata.value), so the echo
+        // matches what the user can paste into Maps.
+        const isLiveLocation =
+            message.contentType === 'application/sylk-live-location';
+        const _locVal = md && md.value;
+        const locBody = (isLiveLocation
+            && _locVal
+            && typeof _locVal.latitude === 'number'
+            && typeof _locVal.longitude === 'number')
+            ? `${_locVal.latitude}, ${_locVal.longitude}`
+            : null;
+        const body = (locBody || message.text || md.filename || '').trim();
         if (!body) return null;
         return (
             <View

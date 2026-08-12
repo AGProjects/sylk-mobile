@@ -1,4 +1,6 @@
 import React, { Component } from 'react';
+import { getModalColors } from '../paperTheme';
+import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, ScrollView, KeyboardAvoidingView, Platform, Linking, StyleSheet, Dimensions } from 'react-native';
@@ -119,7 +121,7 @@ class CallRecordingDisclosureModal extends Component {
                             the outer white card stretched full-width in
                             landscape/tablet while the content stayed
                             capped in its left half. */}
-                        <Surface style={[containerStyles.modalSurface, { padding: 6, width: _isLandscape ? Math.min(560, _winW * 0.85) : undefined, alignSelf: 'center' }]}>
+                        <ThemedModalSurface style={[containerStyles.modalSurface, { padding: 6, width: _isLandscape ? Math.min(560, _winW * 0.85) : undefined, alignSelf: 'center' }]}>
                             {/* Title — override the shared
                                 containerStyles.title (24pt, 14pt
                                 padding) with a tighter version so
@@ -215,7 +217,7 @@ class CallRecordingDisclosureModal extends Component {
                                         {
                                             marginTop: 2,
                                             fontSize: 12,
-                                            color: '#1976d2',
+                                            color: getModalColors().link,
                                             textDecorationLine: 'underline',
                                         },
                                     ]}
@@ -302,7 +304,7 @@ class CallRecordingDisclosureModal extends Component {
                                     </>
                                 )}
                             </View>
-                        </Surface>
+                        </ThemedModalSurface>
                     </KeyboardAvoidingView>
                 </View>
         );

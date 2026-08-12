@@ -1,12 +1,18 @@
-# Blink Mobile
+# Blink WebRTC - mobile version
 
-Blink Mobile is using Sylk Suite, a set of real-time communications
-applications using IETF SIP protocol and WebRTC specifications to deliver a
-rich realtime multimedia experience.
+Blink WebRTC brings rich, real-time voice, video, and messaging to mobile
+devices using SIP.  Fully open source and built on open standards, it
+provides end-to-end encryption for voice and video with ZRTP and for
+messaging with PGP.
+
+Blink WebRTC uses SylkSuite to translate between WebRTC and SIP.  SylkServer
+and SylkPushServer are required if you want to use Blink WebRTC with your
+own SIP infrastructure.
+
 
 ## License
 
-Blink Mobile licensed under GNU General Public License version 3.  A copy of
+Blink WebRTC is licensed under GNU General Public License version 3.  A copy of
 the license is available at http://www.fsf.org/licensing/licenses/gpl-3.0.html
 
 Copyright 2019-2026 [AG Projects](https://ag-projects.com)

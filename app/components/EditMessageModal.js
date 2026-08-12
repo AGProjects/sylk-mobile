@@ -1,8 +1,9 @@
 import React, { Component } from 'react';
+import getAppPaperTheme, { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, StyleSheet, Modal, KeyboardAvoidingView, ScrollView, Platform } from 'react-native';
-import { Button, TextInput, Text, IconButton } from 'react-native-paper';
+import { ThemeProvider, Button, TextInput, Text, IconButton } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -62,7 +63,8 @@ class EditMessageModal extends Component {
         if (!show) return null;
 
         return (
-            <Modal
+            <ThemeProvider theme={getAppPaperTheme()}>
+<Modal
                 visible={show}
                 transparent={true}
                 animationType="slide"
@@ -79,7 +81,7 @@ class EditMessageModal extends Component {
                     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                     keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
                 >
-                        <View style={containerStyles.modal}>
+                        <View style={[containerStyles.modal, { backgroundColor: getModalColors().surface }]}>
                             <Text style={styles.title}>
                                 {this.props.message
                                     && (this.props.message.image || this.props.message.video)
@@ -88,7 +90,7 @@ class EditMessageModal extends Component {
                             </Text>
                             <View>
                                 <TextInput
-                                    style={[styles.input, { height: 120, textAlignVertical: 'top' }]}
+                                    style={[styles.input, { height: 120, textAlignVertical: 'top', backgroundColor: getModalColors().isDark ? '#2c2c2c' : '#ffffff' }]}
                                     multiline={true}
                                     scrollEnabled={true}
                                     autoFocus={true}
@@ -134,6 +136,7 @@ class EditMessageModal extends Component {
                         </View>
                 </KeyboardAvoidingView>
             </Modal>
+</ThemeProvider>
         );
     }
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
 import {
   Modal,
   View,
@@ -115,7 +116,7 @@ const AddContactModal = ({
             {/* Prevent taps inside modal from dismissing */}
             <TouchableWithoutFeedback onPress={() => {}}>
 
-   		    <Surface style={containerStyles.modalSurface}>
+   		    <ThemedModalSurface style={containerStyles.modalSurface}>
             {/* Modal content start */}
 				<Text style={containerStyles.title}>{title}</Text>
 
@@ -172,7 +173,7 @@ const AddContactModal = ({
 			   </View>
 
                {/* Modal content end */}
-              </Surface>
+              </ThemedModalSurface>
             </TouchableWithoutFeedback>
           </KeyboardAvoidingView>
         </View>

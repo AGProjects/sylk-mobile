@@ -1,4 +1,6 @@
 import React, { Component } from 'react';
+import ThemedModalSurface from './ThemedModalSurface';
+import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions } from 'react-native';
@@ -185,7 +187,9 @@ class MeetingRequestModal extends Component {
     }
 
     render() {
-        const from = this.props.fromUri || 'your contact';
+        // Prefer the contact's display name when app.js resolved one; fall
+        // back to the bare URI, then a generic label.
+        const from = this.props.fromName || this.props.fromUri || 'your contact';
         const expiry = this.formatExpiry();
 
         return (
@@ -209,8 +213,8 @@ class MeetingRequestModal extends Component {
                             keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
                         >
                             <TouchableWithoutFeedback onPress={() => {}}>
-                                <Surface style={containerStyles.modalSurface}>
-                                    <Text style={containerStyles.title}>Location sharing request</Text>
+                                <ThemedModalSurface style={containerStyles.modalSurface}>
+                                    <Text style={containerStyles.title}>Meet-up request</Text>
 
                                     <Text style={styles.body}>
                                         Would you like to share location with {from} until you meet?
@@ -394,7 +398,7 @@ class MeetingRequestModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="plus" size={20} color="#222" />
+                                                    <Icon name="plus" size={20} color={getModalColors().textPrimary} />
                                                 </TouchableOpacity>
                                                 {/* Zoom - (just below the +). */}
                                                 <TouchableOpacity
@@ -420,7 +424,7 @@ class MeetingRequestModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="minus" size={20} color="#222" />
+                                                    <Icon name="minus" size={20} color={getModalColors().textPrimary} />
                                                 </TouchableOpacity>
                                                 {/* Coordinates strip overlay. */}
                                                 <View
@@ -543,6 +547,8 @@ class MeetingRequestModal extends Component {
                                         into NavigationBar's acceptance
                                         path. */}
                                     <PrivacyRadiusSlider
+                                        textColor={getModalColors().textPrimary}
+                                        markerFillColor={getModalColors().surface}
                                         value={this.state.excludeOriginRadiusMeters}
                                         onChange={this.setRadiusStop}
                                         title="Hide my starting location until I move:"
@@ -558,11 +564,12 @@ class MeetingRequestModal extends Component {
                                     <View style={[styles.buttonRow, { marginBottom: 16 }]}>
                                         <Button
                                             mode="outlined"
-                                            style={styles.button}
+                                            style={[styles.button, { borderColor: '#D32F2F' }]}
+                                            textColor="#D32F2F"
                                             onPress={this.onCancel}
-                                            accessibilityLabel="Cancel location sharing request"
+                                            accessibilityLabel="Decline meeting request"
                                         >
-                                            Cancel
+                                            Decline
                                         </Button>
                                         <Button
                                             mode="contained"
@@ -574,7 +581,7 @@ class MeetingRequestModal extends Component {
                                             Accept
                                         </Button>
                                     </View>
-                                </Surface>
+                                </ThemedModalSurface>
                             </TouchableWithoutFeedback>
                         </KeyboardAvoidingView>
                     </View>
@@ -590,6 +597,9 @@ MeetingRequestModal.propTypes = {
     onAccept:            PropTypes.func,
     onDecline:           PropTypes.func,
     fromUri:             PropTypes.string,
+    // Requester's display name, resolved from the contact record by app.js.
+    // Preferred over fromUri in the title/body when present. Optional.
+    fromName:            PropTypes.string,
     expiresAt:           PropTypes.number,  // ms epoch
     // True when the user has previously agreed to Sylk's location
     // privacy policy. When false, the modal renders an inline note

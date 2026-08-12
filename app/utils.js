@@ -316,7 +316,21 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
         image = `data:${sylkMessage.contentType};base64,${content}`
         text = 'Photo';
+    } else if (sylkMessage.contentType === 'application/sylk-location-sharing'
+            || sylkMessage.contentType === 'application/sylk-live-location') {
+        // Location shares are rendered as their own map bubble via
+        // _injectLocationBubble, never as chat text. If one ever reaches this
+        // generic builder it must be LOGGED to the app log, not shown on the
+        // phone as an "Unknown message received ..." bubble. Leave text null so
+        // no chat bubble text is produced.
+        timestampedLog('[location] sylk2GiftedChat: location content not rendered as chat text: '
+            + sylkMessage.contentType + ' id=' + sylkMessage.id);
+        text = null;
     } else {
+        // Unknown/unsupported type — log it to the app log so it is diagnosable
+        // there rather than surfacing a bare "Unknown message" bubble silently.
+        timestampedLog('[message] Unknown message received ' + sylkMessage.contentType
+            + ' id=' + sylkMessage.id);
         text = 'Unknown message received ' + sylkMessage.contentType;
     }
 
@@ -658,120 +672,221 @@ function extractLocationLink(text) {
 // Network failures, non-2xx responses, and URLs that resolve to a
 // non-coord landing page all return null. Caller should surface a
 // brief "couldn't resolve" hint to the user in that case.
-async function resolveShortLocationUrl(shortUrl) {
-    if (!shortUrl || typeof shortUrl !== 'string') return null;
+// Decode the escape forms Google uses to embed a destination Maps URL
+// inside an interstitial HTML body: percent-encoding (in a consent-form
+// `continue=` value) and JS string escapes (\uXXXX / \/ inside inline
+// <script> JSON). Returns a decoded copy safe to run through
+// parseSharedLocationUrl; never throws. We translate a fixed set of URL /
+// coordinate punctuation rather than calling decodeURIComponent on the
+// whole page (which throws on any stray % in the HTML).
+function decodeEmbeddedLocationUrls(s) {
+    if (!s || typeof s !== 'string') return '';
+    let out = s;
     try {
-        // Spoof a desktop Chrome User-Agent — Google's mobile share
-        // URL handlers branch on UA and return different responses for
-        // mobile clients. The canonical /maps/place/.../@lat,lng/...
-        // URL we want comes back reliably for desktop UAs; mobile
-        // UAs sometimes get a bare HTML interstitial with no coords.
-        const _UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-            + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        // Full browser-shape headers. Google's edge handlers branch
-        // not just on UA but on the presence/values of Accept and
-        // Accept-Language too; without these we sometimes get a
-        // self-referencing HTML stub instead of the canonical
-        // /maps/place URL we want.
-        const response = await fetch(shortUrl, {
-            method: 'GET',
-            redirect: 'follow',
+        // JS string escapes.
+        out = out
+            .replace(/\\u002[fF]/g, '/')
+            .replace(/\\u0026/g, '&')
+            .replace(/\\u003[dD]/g, '=')
+            .replace(/\\u0040/g, '@')
+            .replace(/\\u0021/g, '!')
+            .replace(/\\x2[fF]/g, '/')
+            .replace(/\\x40/g, '@')
+            .replace(/\\\//g, '/');
+    } catch (e) {}
+    try {
+        // Percent-encoded punctuation from a consent continue= URL.
+        out = out
+            .replace(/%2[Ff]/g, '/')
+            .replace(/%40/g, '@')
+            .replace(/%2[Cc]/g, ',')
+            .replace(/%3[Aa]/g, ':')
+            .replace(/%3[Ff]/g, '?')
+            .replace(/%3[Dd]/g, '=')
+            .replace(/%26/g, '&')
+            .replace(/%21/g, '!');
+    } catch (e) {}
+    return out;
+}
+
+// Pull the `continue=<url>` destination out of a Google consent
+// interstitial — from the (possibly stale) final URL query string or from
+// a form field / link in the body. Google percent-encodes the value
+// (occasionally twice). Returns a decoded absolute URL or null.
+function extractContinueUrl(finalUrl, body) {
+    const _find = (str) => {
+        if (!str || typeof str !== 'string') return null;
+        // Query-string form: ...?continue=<url>&...  (consent redirect URL
+        // or an href inside the page).
+        let m = str.match(/[?&]continue=([^&"'\\\s]+)/i);
+        if (m) return m[1];
+        // Hidden-form-field form: <input name="continue" value="<url>">
+        // (the consent page POSTs this).
+        m = str.match(/name=["']continue["'][^>]*?value=["']([^"']+)["']/i);
+        if (m) return m[1];
+        return null;
+    };
+    let raw = _find(finalUrl) || _find(body);
+    if (!raw) return null;
+    for (let i = 0; i < 2; i++) {
+        try {
+            const dec = decodeURIComponent(raw);
+            if (dec === raw) break;
+            raw = dec;
+        } catch (e) { break; }
+    }
+    if (!/^https?:\/\//i.test(raw)) return null;
+    return raw;
+}
+
+// Emit a compact structural summary of an unparseable resolve body so a
+// field log tells us exactly what Google served (consent wall vs JS stub
+// vs something new) without dumping 34 KB of markup.
+function logResolveDiagnostics(label, finalUrl, sampled) {
+    try {
+        const _titleM = sampled.match(/<title[^>]*>([^<]{0,120})/i);
+        const _title = _titleM ? _titleM[1].trim() : '(none)';
+        const _isConsent = /consent\.google|Before you continue|consent\.youtube/i.test(sampled);
+        const _snippet = (needle) => {
+            const k = sampled.search(needle);
+            if (k < 0) return null;
+            return sampled.slice(Math.max(0, k - 20), k + 180).replace(/\s+/g, ' ').trim();
+        };
+        timestampedLog('[location] resolveShort: NO MATCH (' + label + ')',
+            'finalUrl=', finalUrl,
+            'bodyLen=', sampled.length,
+            'title=', JSON.stringify(_title),
+            'consentPage=', _isConsent);
+        const _c = _snippet(/continue=/i);
+        if (_c) timestampedLog('[location] resolveShort: diag continue~', JSON.stringify(_c));
+        const _m = _snippet(/\/maps\//i);
+        if (_m) timestampedLog('[location] resolveShort: diag maps~', JSON.stringify(_m));
+        const _f = _snippet(/<form[^>]*action=/i);
+        if (_f) timestampedLog('[location] resolveShort: diag form~', JSON.stringify(_f));
+        const _g = _snippet(/!3d-?\d|@-?\d{1,3}\.\d|center=-?\d/);
+        if (_g) timestampedLog('[location] resolveShort: diag geo~', JSON.stringify(_g));
+    } catch (e) {}
+}
+
+async function resolveShortLocationUrl(shortUrl, _depth) {
+    if (!shortUrl || typeof shortUrl !== 'string') return null;
+    _depth = _depth || 0;
+    // Version marker — lets a field log confirm which build's resolver ran.
+    if (_depth === 0) {
+        try { timestampedLog('[location] resolveShort: v3 (consent-aware) for', shortUrl); } catch (e) {}
+    }
+
+    const _UA_BROWSER = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+    // Resolution strategies, tried in order until one yields coords. From an
+    // EU / GDPR network Google answers browser-shaped requests to
+    // maps.app.goo.gl with a "Before you continue to Google Maps" consent
+    // interstitial (HTTP 200, ~34 KB, no coords, response.url unchanged)
+    // instead of the 302 -> canonical /maps/place/.../data=!3d<lat>!4d<lng>
+    // URL. A logged-in browser clears the wall with a stored consent cookie
+    // (which is why sharing works in the web app but not here). We try:
+    //   1. browser UA + accepted-consent cookies (SOCS is the current
+    //      post-2022 cookie; CONSENT=YES+ is the legacy one — send both)
+    //   2. a plain non-browser UA, no cookies — Google commonly serves the
+    //      raw 302 to non-interactive clients, skipping the wall entirely
+    // Each attempt parses response.url, the body, and a de-escaped copy of
+    // the body, then follows a consent `continue=` target once (bounded by
+    // _depth) before falling through to the next strategy.
+    const _strategies = [
+        {
+            label: 'browser+consent',
             headers: {
-                'User-Agent': _UA,
+                'User-Agent': _UA_BROWSER,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
+                // SOCS: a published "consent granted" value. If Google rotates
+                // its expected token this attempt simply falls through to the
+                // plain-UA strategy and the continue= follow below.
+                'Cookie': 'SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+',
             },
-        });
+        },
+        {
+            label: 'plain',
+            headers: {
+                'User-Agent': 'curl/8.4.0',
+            },
+        },
+    ];
+
+    for (const strat of _strategies) {
+        let response;
+        try {
+            response = await fetch(shortUrl, {method: 'GET', redirect: 'follow', headers: strat.headers});
+        } catch (e) {
+            try { timestampedLog('[location] resolveShort: fetch failed (' + strat.label + ')', e && e.message ? e.message : e); } catch (e2) {}
+            continue;
+        }
         if (!response) {
-            try { timestampedLog('[location] resolveShort: no response for', shortUrl); } catch (e) {}
-            return null;
+            try { timestampedLog('[location] resolveShort: no response (' + strat.label + ') for', shortUrl); } catch (e) {}
+            continue;
         }
         try {
             timestampedLog('[location] resolveShort: HTTP', response.status,
-                'shortUrl=', shortUrl,
-                'finalUrl=', response.url);
+                '(' + strat.label + ')', 'finalUrl=', response.url);
         } catch (e) {}
 
-        // Try the redirected URL first — by far the most common case.
+        // (a) the redirected URL — the common non-EU case.
         if (response.url && response.url !== shortUrl) {
             const fromUrl = parseSharedLocationUrl(response.url);
             if (fromUrl) {
-                try { timestampedLog('[location] resolveShort: matched final URL'); } catch (e) {}
+                try { timestampedLog('[location] resolveShort: matched final URL (' + strat.label + ')'); } catch (e) {}
                 return fromUrl;
             }
         }
 
-        // Fall back to scanning the body for coords. Some short URLs
-        // return an interstitial HTML page with the coords embedded.
-        // Cap the read so a giant page doesn't pin memory.
+        // Read + cap the body once (200 KB — modern Maps HTML is ~150 KB).
+        let sampled = '';
         try {
             const body = await response.text();
-            const sampled = body && body.length > 0
-                ? body.slice(0, 200 * 1024)  // 200 KB — modern Maps HTML is ~150 KB
-                : '';
-            if (sampled) {
-                const fromBody = parseSharedLocationUrl(sampled);
-                if (fromBody) {
-                    try { timestampedLog('[location] resolveShort: matched body'); } catch (e) {}
-                    return fromBody;
-                }
-                // Last-ditch: log up to 4000 chars of the body in
-                // chunks so a future "URL we couldn't parse" report
-                // shows the actual embedded data. Google's mobile
-                // share endpoint serves an HTML interstitial with the
-                // destination URL in a `<meta property="al:web:url">`
-                // / `og:url` / `og:image` tag (the static-map URL
-                // usually carries `?center=lat,lng`) — those land
-                // somewhere in the first ~2-3 KB. timestampedLog has
-                // a per-line cap so we chunk long bodies into
-                // multiple lines for full visibility.
-                try {
-                    // Targeted preview: log just the lines that
-                    // typically hold a destination URL — meta tags,
-                    // anchors, and any line containing "lat" / "lng"
-                    // or a coord-like decimal pair. Full dump is
-                    // skipped in favour of these targeted lines so the
-                    // log file doesn't fill with 16KB of JS bootstrap.
-                    const _scanLines = sampled.split(/\n|>/).slice(0, 4000);
-                    const _hits = [];
-                    for (const line of _scanLines) {
-                        if (line.length < 5 || line.length > 600) continue;
-                        if (/<meta\s/i.test(line)
-                                && /(al:web:url|og:url|og:image|twitter:|description)/i.test(line)) {
-                            _hits.push('META ' + line.trim());
-                            continue;
-                        }
-                        if (/<a\s+[^>]*href=/i.test(line)
-                                && /(google\.com\/maps|geo:|@-?\d+\.\d|center=)/i.test(line)) {
-                            _hits.push('A ' + line.trim());
-                            continue;
-                        }
-                        if (/(@-?\d{1,3}\.\d{2,}|!3d-?\d|center=-?\d|"lat"|"lng"|"latitude"|"longitude")/.test(line)) {
-                            _hits.push('GEO ' + line.trim());
-                            continue;
-                        }
-                    }
-                    timestampedLog('[location] resolveShort: NO MATCH —',
-                        'finalUrl=', response.url,
-                        'bodyLen=', sampled.length,
-                        'hits=', _hits.length);
-                    for (let i = 0; i < Math.min(_hits.length, 12); i++) {
-                        timestampedLog('[location] resolveShort: hit[' + (i + 1) + ']',
-                            JSON.stringify(_hits[i].slice(0, 400)));
-                    }
-                } catch (e) {}
-            }
+            sampled = body && body.length > 0 ? body.slice(0, 200 * 1024) : '';
         } catch (e) {
-            try { timestampedLog('[location] resolveShort: body read failed', e && e.message ? e.message : e); } catch (e2) {}
+            try { timestampedLog('[location] resolveShort: body read failed (' + strat.label + ')', e && e.message ? e.message : e); } catch (e2) {}
+        }
+        if (!sampled) continue;
+
+        // (b) coords embedded directly in the body.
+        let fromBody = parseSharedLocationUrl(sampled);
+        if (fromBody) {
+            try { timestampedLog('[location] resolveShort: matched body (' + strat.label + ')'); } catch (e) {}
+            return fromBody;
+        }
+        // (c) coords embedded percent-/unicode-escaped in the body.
+        const _decoded = decodeEmbeddedLocationUrls(sampled);
+        if (_decoded && _decoded !== sampled) {
+            fromBody = parseSharedLocationUrl(_decoded);
+            if (fromBody) {
+                try { timestampedLog('[location] resolveShort: matched body decoded (' + strat.label + ')'); } catch (e) {}
+                return fromBody;
+            }
         }
 
-        return null;
-    } catch (e) {
-        try { timestampedLog('[location] resolveShort: fetch failed', shortUrl, e && e.message ? e.message : e); } catch (e2) {}
-        return null;
-    }
-}
+        // (d) consent wall: follow the `continue=` destination once.
+        if (_depth < 2) {
+            const cont = extractContinueUrl(response.url, _decoded || sampled);
+            if (cont && cont !== shortUrl) {
+                const fromCont = parseSharedLocationUrl(cont);
+                if (fromCont) {
+                    try { timestampedLog('[location] resolveShort: matched continue= url'); } catch (e) {}
+                    return fromCont;
+                }
+                try { timestampedLog('[location] resolveShort: following continue= (' + strat.label + ') ->', cont.slice(0, 200)); } catch (e) {}
+                const r2 = await resolveShortLocationUrl(cont, _depth + 1);
+                if (r2) return r2;
+            }
+        }
 
+        // Structural diagnostics for this failed attempt.
+        logResolveDiagnostics(strat.label, response.url, sampled);
+    }
+
+    return null;
+}
 // Extract a `?q=<value>` parameter from a URL. Used by the meet-me-there
 // fallback path to recover an address string from a Google Maps "share by
 // name" URL like `maps.google.com/?q=Atic+Millennium,+Bulevardul+Mamaia`

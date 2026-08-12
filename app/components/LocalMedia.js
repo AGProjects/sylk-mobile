@@ -638,6 +638,8 @@ class LocalMedia extends Component {
 
         let buttonContainerClass = this.props.isTablet ? styles.tabletButtonContainer : styles.buttonContainer;
 		const bottomInset = this.state.insets?.bottom || 0;
+		const leftInset = this.state.insets?.left || 0;
+		const rightInset = this.state.insets?.right || 0;
 
         const participants = this.state.participants ? this.state.participants.toString().replace(/,/g, ', '): '';
 
@@ -648,9 +650,24 @@ class LocalMedia extends Component {
             : {paddingTop: 1, backgroundColor: 'rgba(249, 249, 249, 0.7)', margin: 10};
 
         return (
-            <Fragment>
+            /* Landscape: pull the whole view left by leftInset so the video
+               AND the CallOverlay navbar bleed to the physical left edge of
+               the phone instead of starting after the safe-area left inset.
+               (This screen renders inside the app SafeAreaView, unlike the
+               edge-to-edge audio call screen.) */
+            <View style={{
+                flex: 1,
+                marginLeft: (this.state.isLandscape ? -leftInset : 0),
+                // Landscape: span exactly [0, width - rightInset] — bleed under
+                // the left inset (to the physical edge) but STOP at the right
+                // safe-area inset (Android nav buttons bar). overflow:hidden
+                // clips the full-window-width video + navbar to this rect.
+                width: (this.state.isLandscape ? (width - rightInset) : undefined),
+                overflow: 'hidden',
+            }}>
                 <CallOverlay
                     show = {true}
+                    parentBledLeft = {true}
                     remoteUri = {this.props.remoteUri}
                     remoteDisplayName = {displayName}
                     call = {this.props.call}
@@ -779,12 +796,16 @@ class LocalMedia extends Component {
                                 than floating high near the preview. */}
                             <View style={{
                                 position: 'absolute',
-                                // bottom:190 (non-folded) leaves a
-                                // comfortable gap above the camera /
-                                // audio-device picker bar.
-                                bottom: this.props.isFolded ? 130 : 190,
+                                // Lowered 190 -> 120 so the Start button +
+                                // countdown sit closer to the call buttons bar.
+                                bottom: this.props.isFolded ? 130 : (this.state.isLandscape ? 120 : 150),
                                 left: 0,
-                                right: 0,
+                                // Center the Start button on the PHYSICAL
+                                // screen: the parent wrapper is narrowed by
+                                // rightInset (it stops at the nav bar), so push
+                                // this row's right edge back out by rightInset
+                                // in landscape so alignItems centers at width/2.
+                                right: (this.state.isLandscape ? -rightInset : 0),
                                 alignItems: 'center',
                                 zIndex: 2000,
                                 elevation: 30,
@@ -894,7 +915,7 @@ class LocalMedia extends Component {
                                     // the +bottomInset so both bars
                                     // pin at the same 50 dp from the
                                     // screen edge.
-                                    { bottom: buttonContainerClass.bottom, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                                    { bottom: (this.state.isLandscape ? 30 : buttonContainerClass.bottom), flexDirection: 'row', zIndex: 2000, elevation: 30 },
                                   ]}>
                                 {this.state.mediaType == 'video'
                                     ? this.renderVideoPicker(buttonSize, previewButtonClass)
@@ -927,7 +948,7 @@ class LocalMedia extends Component {
                         // downward the moment the call connected.
                         <View style={[
                                 buttonContainerClass,
-                                { bottom: buttonContainerClass.bottom, flexDirection: 'row', zIndex: 2000, elevation: 30 },
+                                { bottom: (this.state.isLandscape ? 30 : buttonContainerClass.bottom), flexDirection: 'row', zIndex: 2000, elevation: 30 },
                               ]}>
                             {this.state.mediaType == 'video'
                                 ? this.renderVideoPicker(buttonSize, previewButtonClass)
@@ -992,7 +1013,7 @@ class LocalMedia extends Component {
                         ]} />
                     )}
                 </View>
-            </Fragment>
+            </View>
         );
     }
 }

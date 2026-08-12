@@ -76,13 +76,36 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
       return;
   }
 
+  // Preserve app-managed state that lives in the SAME App Group
+  // container but is NOT a share-extension leftover. This purge runs on
+  // every app background (via JS purgeSharedFiles) to clear imported
+  // share files — but a blanket delete also wiped:
+  //   • contactDisplayNames.plist — the {uri: display_name} map the
+  //     SylkNotificationService extension reads to retitle message push
+  //     banners with the local contact name. Deleting it on background
+  //     meant the NSE always saw an empty map and fell back to the bare
+  //     URI (the "push notification shows no display name" bug).
+  //   • Library — holds the App Group NSUserDefaults plist
+  //     (Library/Preferences/group.com.agprojects.sylk-ios.plist). Wiping
+  //     it destroyed every shared default too.
+  // Only genuine share-drop artifacts should be purged here.
+  NSSet<NSString *> *preserve = [NSSet setWithArray:@[
+      @"contactDisplayNames.plist",
+      @"Library",
+  ]];
+
   for (NSURL *fileURL in files) {
+      NSString *name = fileURL.lastPathComponent;
+      if ([preserve containsObject:name]) {
+          [SylkLogger log:@"[shared-data] Preserving %@ (app state, not a shared file)", name];
+          continue;
+      }
       NSError *removeError = nil;
       [fm removeItemAtURL:fileURL error:&removeError];
       if (removeError) {
-          [SylkLogger log:@"[shared-data] Failed to delete %@: %@", fileURL.lastPathComponent, removeError];
+          [SylkLogger log:@"[shared-data] Failed to delete %@: %@", name, removeError];
       } else {
-          [SylkLogger log:@"[shared-data] Deleted %@", fileURL.lastPathComponent];
+          [SylkLogger log:@"[shared-data] Deleted %@", name];
       }
   }
 

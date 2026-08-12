@@ -1,9 +1,10 @@
 import React, { Component } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import ThemedModalSurface from './ThemedModalSurface';
+import { View, TouchableOpacity } from 'react-native';
 import PropTypes from 'prop-types';
 import superagent from 'superagent';
 import autoBind from 'auto-bind';
-import { Portal, Dialog, TextInput, Button, Snackbar, Surface } from 'react-native-paper';
+import { Text, Portal, Dialog, TextInput, Button, Snackbar, Surface } from 'react-native-paper';
 import { Modal, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView } from 'react-native';
 
 import MaterialCommunityIcons from '@react-native-vector-icons/material-design-icons';
@@ -205,7 +206,7 @@ class EnrollmentModal extends Component {
 				{/* Prevent taps inside modal from dismissing */}
 				<TouchableWithoutFeedback onPress={() => {}}>
 	
-				<Surface style={containerStyles.modalSurface}>
+				<ThemedModalSurface style={containerStyles.modalSurface}>
 
 					<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
 					  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
@@ -300,7 +301,7 @@ class EnrollmentModal extends Component {
 					  {this.state.error}
 					</Snackbar>
 	
-				</Surface>
+				</ThemedModalSurface>
 				</TouchableWithoutFeedback>
 			  </KeyboardAvoidingView>
 			</View>

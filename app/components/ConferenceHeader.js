@@ -9,6 +9,7 @@ import { StyleSheet } from 'react-native';
 import { Platform, Dimensions} from 'react-native';
 import momentFormat from 'moment-duration-format';
 import { Text, Appbar, Menu, Divider } from 'react-native-paper';
+import getMenuTheme from '../menuTheme';
 import Icon from '@react-native-vector-icons/material-design-icons';
 
 import utils from '../utils';
@@ -20,6 +21,16 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 1000,         // ensures it's on top
+  },
+
+  // Rounded surface for the conference-header kebab menu. Applied via
+  // <Menu theme={getMenuTheme().menuTheme} contentStyle={styles.roundedMenu}>; contentStyle is applied last
+  // on Paper's menu Surface so the 14dp radius overrides the theme's
+  // rectangular default. overflow:hidden clips the first/last Menu.Item
+  // press ripple to the rounded corners.
+  roundedMenu: {
+    borderRadius: 14,
+    overflow: 'hidden',
   },
 });
 
@@ -860,9 +871,10 @@ class ConferenceHeader extends React.Component {
                     action is still available from the kebab menu's
                     "Invite participants…" entry below. */}
 
-                <Menu
+                <Menu theme={getMenuTheme().menuTheme}
                     visible={this.state.menuVisible}
-                    onDismiss={() => this.setState({menuVisible: !this.state.menuVisible})}
+                    onDismiss={() => this.setState({menuVisible: false})}
+                    contentStyle={styles.roundedMenu}
                     anchor={
                     /* marginLeft trimmed from 30 → 4. The kebab
                        used to sit a noticeable gap to the right
@@ -901,8 +913,8 @@ class ConferenceHeader extends React.Component {
                         </View>
                     }
                 >
-                    <Menu.Item onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
-                    <Menu.Item onPress={() => this.handleMenu('share')} icon="share-variant" title="Share conference link..." />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('invite')} icon="account-plus" title="Invite participants..." />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('share')} icon="share-variant" title="Share conference link..." />
 
                     {/* Show / Hide PSTN bridge — surfaced only in the
                         AUDIO PARTICIPANTS view (the participant list
@@ -921,7 +933,7 @@ class ConferenceHeader extends React.Component {
                             && !this.props.audioChatView
                             && this.props.bridgePresent
                             && !this.props.isFolded ? (
-                        <Menu.Item
+                        <Menu.Item theme={getMenuTheme().menuTheme}
                             onPress={() => this.handleMenu('bridge')}
                             icon="bridge"
                             title={this.props.showBridge ? 'Hide PSTN bridge' : 'Show PSTN bridge'}
@@ -938,7 +950,7 @@ class ConferenceHeader extends React.Component {
                             && !this.props.isFolded
                             && this.props.conferenceRecordingAvailable
                             && typeof this.props.toggleConferenceRecordingFunc === 'function' ? (
-                        <Menu.Item
+                        <Menu.Item theme={getMenuTheme().menuTheme}
                             onPress={() => {
                                 this.setState({menuVisible: false});
                                 setTimeout(() => this.props.toggleConferenceRecordingFunc(), 50);
@@ -961,7 +973,7 @@ class ConferenceHeader extends React.Component {
                             && (this.props.videoParticipantCount != null
                                 ? this.props.videoParticipantCount > 1
                                 : this.state.participants > 2) ? (
-                        <Menu.Item
+                        <Menu.Item theme={getMenuTheme().menuTheme}
                             onPress={() => this.handleMenu('speakers')}
                             icon="account-tie"
                             title="Select speakers..."
@@ -989,7 +1001,7 @@ class ConferenceHeader extends React.Component {
                         duplicate from the overflow menu cleans up the
                         cramped UI per user request. */}
                     {!this.props.isFolded ? (
-                        <Menu.Item onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Leave"/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('hangup')} icon="phone-hangup" title="Leave"/>
                     ) : null}
                 </Menu>
 

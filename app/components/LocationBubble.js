@@ -31,6 +31,7 @@ import Svg, { Polyline as SvgPolyline, Circle as SvgCircle, Polygon as SvgPolygo
 // timeline" — onSeekStart/Change/Release callbacks expose the
 // dragged percentage, which we map to a trail index here.
 import AudioProgressSlider from './AudioProgressSlider';
+import { LocationSharingContext } from './LocationSharingContext';
 import DarkModeManager from '../DarkModeManager';
 import * as storage from '../storage';
 
@@ -42,6 +43,16 @@ import * as storage from '../storage';
 // follow-up ticks land). On reopen, the bubble re-loads the saved zoom
 // and renders at the same level the user last chose.
 const ZOOM_STORAGE_PREFIX = 'locationZoom.';
+
+// GiftedChat clock format — matches ChatBox renderTime's dayjs('h:mm A')
+// (e.g. "6:10 PM") so location-bubble times don't clash with chat-bubble times.
+const _clock12 = (ms) => {
+    const d = new Date(ms);
+    const h24 = d.getHours();
+    const ap = h24 >= 12 ? 'PM' : 'AM';
+    const h12 = (h24 % 12) === 0 ? 12 : (h24 % 12);
+    return `${h12}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+};
 // Deep import: GiftedChatContext isn't re-exported from the package's
 // public entry point, but we need it so a long-press anywhere on the
 // LocationBubble can call back into the host (ContactsListBox) with the
@@ -395,7 +406,27 @@ const StaticMap = memo((props) => {
         circleCenterLatitude,
         circleCenterLongitude,
         circleRadiusMeters,
+        // When true, swap the two avatar fill colours so the LOCAL
+        // user always reads as red and the peer as blue on THIS device.
+        // The parent passes this on incoming bubbles: the pin coords /
+        // initials are still author=owner-slot, peer=peer-slot, but the
+        // receiver wants to see *themselves* (the peer slot on incoming)
+        // in red. Swapping just the two colours keeps every initial
+        // glued to its own pin while flipping which person is red.
+        swapAvatarColors = false,
+        // Meet-session START points — each party's FIRST GPS fix. Rendered as
+        // small secondary dots beneath the live avatars so a live meet shows
+        // all four positions: each party's start + current. `start*` pairs with
+        // the owner slot (same colour as the owner avatar), `peerStart*` with
+        // the peer slot. Undefined for plain shares and for the frozen
+        // end-of-meet summary (which renders its own 3-point view).
+        startLatitude,
+        startLongitude,
+        peerStartLatitude,
+        peerStartLongitude,
     } = props;
+    const OWNER_PIN_COLOR = swapAvatarColors ? '#2E86DE' : '#E74C3C';
+    const PEER_PIN_COLOR = swapAvatarColors ? '#E74C3C' : '#2E86DE';
     const MAP_WIDTH = mapWidth;
     const MAP_HEIGHT = mapHeight;
 
@@ -431,6 +462,16 @@ const StaticMap = memo((props) => {
     const destination = hasDestination
         ? { latitude: destinationLatitude, longitude: destinationLongitude }
         : null;
+    // Meet START points (secondary dots). Nullable — either party may not
+    // have a captured start yet on the very first ticks.
+    const hasStart =
+        typeof startLatitude === 'number' &&
+        typeof startLongitude === 'number';
+    const hasPeerStart =
+        typeof peerStartLatitude === 'number' &&
+        typeof peerStartLongitude === 'number';
+    const start = hasStart ? { latitude: startLatitude, longitude: startLongitude } : null;
+    const peerStart = hasPeerStart ? { latitude: peerStartLatitude, longitude: peerStartLongitude } : null;
 
     // Sanitise the optional trail. Filter out null/NaN entries so we
     // can rely on every member being a valid {latitude, longitude}
@@ -454,6 +495,8 @@ const StaticMap = memo((props) => {
     if (owner) visiblePoints.push(owner);
     if (peer) visiblePoints.push(peer);
     if (destination) visiblePoints.push(destination);
+    if (start) visiblePoints.push(start);
+    if (peerStart) visiblePoints.push(peerStart);
     for (const p of trailPoints) visiblePoints.push(p);
 
     // Explicit `zoom` prop wins unconditionally — this is what lets
@@ -596,6 +639,8 @@ const StaticMap = memo((props) => {
     const rawDestPos = destination
         ? project(destination.latitude, destination.longitude)
         : null;
+    const startPos = start ? project(start.latitude, start.longitude) : null;
+    const peerStartPos = peerStart ? project(peerStart.latitude, peerStart.longitude) : null;
     const PIN_OVERLAP_PX = 8;
     const PIN_NUDGE_PX = 14;
     const nudgeIfOverlap = (a, b, dx, dy) => {
@@ -660,6 +705,39 @@ const StaticMap = memo((props) => {
                 {initials || '?'}
             </Text>
         </View>
+    );
+
+    // Small secondary dot for a meet party's START position. Same colour as
+    // that party's avatar (so red-owner / blue-peer stay consistent), but
+    // smaller and semi-transparent so the CURRENT-position avatar reads as
+    // primary. A thin white ring lifts it off the tiles. No initials — the
+    // avatar already carries them at the current position.
+    const START_DOT = 13;
+    const START_HALF = START_DOT / 2;
+    const renderStartDot = (pos, color, key) => (
+        <View
+            key={key}
+            pointerEvents="none"
+            style={[
+                styles.pin,
+                {
+                    left: pos.x - START_HALF,
+                    top: pos.y - START_HALF,
+                    width: START_DOT,
+                    height: START_DOT,
+                    borderRadius: START_HALF,
+                    backgroundColor: color,
+                    opacity: 0.6,
+                    borderWidth: 2,
+                    borderColor: '#fff',
+                    shadowColor: '#000',
+                    shadowOpacity: 0.2,
+                    shadowRadius: 1,
+                    shadowOffset: {width: 0, height: 1},
+                    elevation: 2,
+                },
+            ]}
+        />
     );
 
     // Trail polyline. Project every trail point through the same
@@ -907,6 +985,12 @@ const StaticMap = memo((props) => {
                     of the polyline. */}
                 {trailPolyline}
                 {trailStartMarker}
+                {/* Meet START dots, drawn BELOW the destination flag and the
+                    live avatars so the current-position markers stay visually
+                    dominant. Own start uses the owner colour, peer start the
+                    peer colour, matching their respective avatars. */}
+                {startPos ? renderStartDot(startPos, OWNER_PIN_COLOR, 'owner-start-dot') : null}
+                {peerStartPos ? renderStartDot(peerStartPos, PEER_PIN_COLOR, 'peer-start-dot') : null}
                 {/* Destination keeps a flag-style pin — it's a place,
                     not a person, so an avatar circle would be misleading.
                     Map-marker icon, green, anchored bottom-tip on the
@@ -922,8 +1006,8 @@ const StaticMap = memo((props) => {
                         <Icon name="map-marker" size={28} color="#27AE60" />
                     </View>
                 ) : null}
-                {peerPos ? renderAvatar(peerPos, '#2E86DE', peerInitials, 'peer-avatar') : null}
-                {ownerPos ? renderAvatar(ownerPos, '#E74C3C', ownerInitials, 'owner-avatar') : null}
+                {peerPos ? renderAvatar(peerPos, PEER_PIN_COLOR, peerInitials, 'peer-avatar') : null}
+                {ownerPos ? renderAvatar(ownerPos, OWNER_PIN_COLOR, ownerInitials, 'owner-avatar') : null}
             </View>
         </View>
     );
@@ -932,7 +1016,7 @@ const StaticMap = memo((props) => {
 // Prototype bubble for a live-location message. Renders inside the normal
 // GiftedChat bubble wrapper (via renderMessageText) so the bubble background
 // and tail still come from ChatBubble.
-const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, ownerName, peerName, fullScreen = false, onOpenFullScreen }) => {
+const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, ownerName, peerName, fullScreen = false, onOpenFullScreen, insets = null }) => {
     // Per-render map dimensions. Inline bubble keeps the cosy
     // 300x200 tile grid; the fullscreen viewer (long-press → "Full
     // screen") fills the whole window — minus the Modal padding /
@@ -942,17 +1026,41 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // immediately so the rest of the function (auto-fit math, scale
     // label, scrubber width, pan-button positions) reads them
     // transparently.
+    //
+    // Android insets: the fullscreen viewer lives in an RN <Modal>,
+    // which on Android is its OWN edge-to-edge window — the host
+    // SafeAreaView does NOT clip it, and Dimensions.get('window')
+    // reports the whole screen INCLUDING the status bar (top) and the
+    // gesture / navigation bar (bottom). Without subtracting the
+    // safe-area insets the centered card runs UNDER those system bars
+    // and its map controls (Focus/zoom at top:16, pan arrows, scrubber)
+    // hide beneath them. ChatBox hands the insets down via the `insets`
+    // prop (with the Android StatusBar.currentHeight fallback already
+    // applied), so we shrink the width/height budget by them here. The
+    // card is centered in the Modal, so removing the FULL top+bottom
+    // (and left+right) inset from the budget guarantees the symmetric
+    // margins clear both system bars. Insets are only meaningful in
+    // fullScreen mode; the inline chat bubble ignores them.
     const _winDims = fullScreen ? Dimensions.get('window') : null;
+    const _fsInsetTop = (fullScreen && insets && typeof insets.top === 'number') ? insets.top : 0;
+    const _fsInsetBottom = (fullScreen && insets && typeof insets.bottom === 'number') ? insets.bottom : 0;
+    const _fsInsetLeft = (fullScreen && insets && typeof insets.left === 'number') ? insets.left : 0;
+    const _fsInsetRight = (fullScreen && insets && typeof insets.right === 'number') ? insets.right : 0;
     const MAP_WIDTH = fullScreen
-        ? Math.max(280, Math.floor(_winDims.width - 16))
+        ? Math.max(280, Math.floor(_winDims.width - _fsInsetLeft - _fsInsetRight - 16))
         : DEFAULT_MAP_WIDTH;
     const MAP_HEIGHT = fullScreen
-        ? Math.max(280, Math.floor(_winDims.height - 220))
+        ? Math.max(280, Math.floor(_winDims.height - _fsInsetTop - _fsInsetBottom - 220))
         : DEFAULT_MAP_HEIGHT;
     // We need GiftedChat's own context here so we can hand it back to the
     // host's `onLongMessagePress(context, message)` — the ActionSheet APIs
     // that contextual menu uses live on `context.actionSheet()`.
     const chatContext = useContext(GiftedChatContext);
+    // Location engine (null if this bubble is somehow rendered outside the
+    // NavigationBar provider — guarded everywhere below). Used to (a) tell
+    // whether THIS device still has a live session backing this bubble and
+    // (b) stop it straight from the map footer.
+    const locationEngine = useContext(LocationSharingContext);
 
     // Per-sharing-entity zoom override. `null` means "use auto" (the
     // bounding-box fit picked by pickZoomToFitPoints, or DEFAULT_ZOOM
@@ -977,6 +1085,16 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // no peer). Centred + zoomed-in via StaticMap's `focusOnTarget`
     // prop. null = no override (auto-fit / centroid path).
     const [focusTarget, setFocusTarget] = useState(null);
+
+    // Optimistic "I just tapped Stop on this bubble" flag. The engine tears the
+    // session down synchronously, but the live map bubble's meta only refreshes
+    // to "Track ended" on the next getMessages rebuild — which is gated on
+    // selectedContact and can lag (or be skipped when that state momentarily
+    // flickers null). Flipping this on tap forces THIS bubble to re-render and
+    // drop the Stop button immediately, instead of leaving a dead button until
+    // the user reloads the chat. A fresh session = a new bubble instance = fresh
+    // state, so it never needs an explicit reset.
+    const [justStopped, setJustStopped] = useState(false);
 
     // Pan offset in pixels. {x: 0, y: 0} = no pan, view centered on
     // the auto-fit centroid (or whatever StaticMap's centering math
@@ -1053,7 +1171,19 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // because for those the path IS the story. Declared early so the
     // auto-fit + trail-rendering passes below can branch on it without
     // tripping the const TDZ.
-    const isMeetSession = !!(meta && (meta.meeting_request === true || meta.in_reply_to));
+    const isMeetSession = !!(meta && (meta.meeting_request === true || meta.role));
+
+    // FROZEN MEET SUMMARY (Stage 3). When a meet ends, app.js stamps
+    // meta.meetOutcome on the session's rows and keeps the map: a 3-point
+    // summary (each party's point + the meeting point). SUCCESS shows each
+    // party's START point, failure their LAST point (chosen in app.js by which
+    // rows survive). Here we only need the outcome LABEL and to render static.
+    const meetOutcome = meta && meta.meetOutcome ? meta.meetOutcome : null;
+    const meetOutcomeLabel = meetOutcome === 'succeeded' ? 'Meet-up succeeded'
+        : meetOutcome === 'expired' ? 'Meet-up expired'
+        : meetOutcome === 'cancelled' ? 'Meet-up cancelled'
+        : meetOutcome === 'ended' ? 'Meet-up ended'
+        : null;
 
     // Compute peer-coords derived values with null-safe guards so the
     // hooks below can run unconditionally (rules-of-hooks — we cannot
@@ -1234,9 +1364,15 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // stays readable on either bubble in either mode — same approach the
     // image bubble's footer uses.
     const _bubbleTheme = DarkModeManager.getTheme();
-    const textColor = isIncoming
-        ? _bubbleTheme.bubbleIncomingText
-        : _bubbleTheme.bubbleOutgoingText;
+    // In the fullscreen viewer the card sits on the app's themed screen
+    // background (see ChatBox's fullScreenLocation wrapper), so the info
+    // text follows the active day/night theme (textPrimary) rather than the
+    // per-bubble text colour — otherwise the text can't contrast the backdrop.
+    const textColor = fullScreen
+        ? _bubbleTheme.textPrimary
+        : (isIncoming
+            ? _bubbleTheme.bubbleIncomingText
+            : _bubbleTheme.bubbleOutgoingText);
     // Secondary (muted) text: a translucent version of the primary colour
     // so it reads as de-emphasised against whichever bubble background the
     // theme provides. Derived from textColor's RGB with reduced alpha
@@ -1248,7 +1384,9 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     const _bubbleBg = isIncoming
         ? _bubbleTheme.bubbleIncoming
         : _bubbleTheme.bubbleOutgoing;
-    const bubbleIsDark = _isDarkColor(_bubbleBg);
+    // Fullscreen backdrop is black, so treat the surface as dark for the
+    // scrubber / control colouring too.
+    const bubbleIsDark = fullScreen ? DarkModeManager.isDark() : _isDarkColor(_bubbleBg);
 
     const openMap = () => {
         // Guard: without coords (placeholder "Locating…" state) there's
@@ -1314,7 +1452,30 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     };
 
     const remaining = formatRemaining(remainingMs);
-    const expirationLine = isExpired
+    // The peer (or we) explicitly stopped the live track — stamped as
+    // meta.ended by app.js._endLocationTrack on location_stop. Once a track
+    // has ended, its expiry window is irrelevant, so show "Track ended"
+    // instead of a stale "Expires in …" countdown. Takes precedence over the
+    // expiry-based "Sharing ended".
+    // `justStopped` (the user just tapped Stop on THIS bubble) is folded in so
+    // the footer flips to the ended label and the Stop button drops immediately,
+    // without waiting for the meta.ended repaint that a getMessages rebuild
+    // brings.
+    const trackEnded = !!(meta && meta.ended) || justStopped;
+    // Until-I-return shares end with reason 'returned' — show "Returned"
+    // rather than the generic "Track ended".
+    const _endedReason = meta && meta.endedReason;
+    const _endedAt = meta && meta.endedAt;
+    const _returnedLabel = _endedAt
+        ? `Returned at ${_clock12(_endedAt)}`
+        : 'Returned';
+    const expirationLine = meetOutcomeLabel
+        // Frozen meet summary: the footer echoes the outcome ("Meet-up ended"
+        // etc.) instead of the generic "Track ended".
+        ? meetOutcomeLabel
+        : trackEnded
+        ? (_endedReason === 'returned' ? _returnedLabel : 'Ended')
+        : isExpired
         ? 'Sharing ended'
         : remaining
         ? `Expires in ${remaining}`
@@ -1328,6 +1489,60 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
         if (typeof onLongPress === 'function') {
             onLongPress(chatContext, currentMessage);
         }
+    };
+
+    // "Stop sharing" affordance on the OWNER's own live map. Shown in place of
+    // the "Expires in …" countdown when THIS device is still broadcasting the
+    // session this bubble represents, so the user can end it straight from the
+    // map. Gated on the engine's REAL session state (a matching live entry),
+    // not on meta.expires — a stale/ended bubble that still carries a future
+    // expiry must NOT offer a dead Stop button. Incoming and one-shot bubbles
+    // never qualify (nothing local to stop).
+    const _shareUri = (meta && meta.uri) || null;
+    // Session anchor the engine keys by: a plain share's == its
+    // originLocationId, a meet's == its meetingSessionId. Both resolve through
+    // stopLocationSharing({sessionId}) → _entryByOrigin.
+    const _shareSessionId = (meta && meta.messageId) || null;
+    // A plain incoming share (peer→us) has nothing local to stop, so it's gated
+    // out. A MEET bubble is the exception: a meet is mutual, so either side can
+    // end it — including the accepter, whose bubble arrived 'incoming'. So meet
+    // bubbles are eligible regardless of direction; plain bubbles only when
+    // outgoing (ours). One-shot bubbles never qualify.
+    // Once THIS session's track has ended (peer stopped, we stopped, it
+    // expired, or an until-I-return auto-stop) the bubble is frozen — meta.ended
+    // is stamped by _endLocationTrack. Never offer Stop on an ended/expired
+    // bubble: the local timer is already gone, so a tap would only relay a
+    // no-op stop on the wire and the button would never clear (reported: emu
+    // kept "sending another stop" after the mirror ended the share). trackEnded
+    // is computed above from meta.ended; isExpired from the expiry window.
+    const _stopEligible = !isOneShot && !trackEnded && !isExpired
+        && (isMeetSession || !isIncoming);
+    let _sessionActive = false;
+    if (_stopEligible && locationEngine && _shareUri && _shareSessionId
+            && typeof locationEngine.hasStoppableSessionForBubble === 'function') {
+        try {
+            _sessionActive = locationEngine.hasStoppableSessionForBubble(
+                _shareUri, _shareSessionId, isMeetSession);
+        } catch (e) { _sessionActive = false; }
+    }
+    const onStopShareFromMap = () => {
+        if (!locationEngine || !_shareUri
+                || typeof locationEngine.stopLocationSharing !== 'function') return;
+        // Optimistically drop the Stop button on this bubble right away — the
+        // engine teardown is synchronous but the bubble's "Track ended" repaint
+        // can lag behind it.
+        try { setJustStopped(true); } catch (e) { /* best-effort */ }
+        try {
+            // Pass the TYPE (meet vs plain) so the engine routes to the right
+            // store / relay even when _shareSessionId no longer matches the
+            // (post-accept) origin id, and stops the correct one of a contact's
+            // two possible concurrent sessions.
+            locationEngine.stopLocationSharing(_shareUri, {
+                sessionId: _shareSessionId,
+                meet: isMeetSession,
+                reason: 'user',
+            });
+        } catch (e) { /* best-effort */ }
     };
 
     // Compute the auto-fit zoom that StaticMap would otherwise pick on
@@ -1462,6 +1677,10 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
     // the JSX to a sibling lets the slider's gesture handlers stand
     // alone with no responder competition; the bubble's tap-anywhere-
     // to-open-maps still works on the map + info area above.
+    // The trail is already de-duplicated (one point per real tick) by the
+    // caller that builds it from messagesMetadata — see ChatBox's trail
+    // assembly, which keys on the TICK timestamp so distinct stationary ticks
+    // survive while the out-echo/carbon duplicates of a single tick collapse.
     const _scrubValidTrail = Array.isArray(trail)
         ? trail.filter(p => p
             && typeof p.latitude === 'number'
@@ -1487,12 +1706,10 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
             const sameDay = d.getFullYear() === now.getFullYear()
                 && d.getMonth() === now.getMonth()
                 && d.getDate() === now.getDate();
-            const hh = String(d.getHours()).padStart(2, '0');
-            const mm = String(d.getMinutes()).padStart(2, '0');
-            if (sameDay) return `${hh}:${mm}`;
+            if (sameDay) return _clock12(ms);
             const day = String(d.getDate()).padStart(2, '0');
             const mon = String(d.getMonth() + 1).padStart(2, '0');
-            return `${day}/${mon} ${hh}:${mm}`;
+            return `${day}/${mon} ${_clock12(ms)}`;
         };
         const _formatShareTime = (ms) => {
             if (!Number.isFinite(ms) || ms <= 0) return '';
@@ -1747,7 +1964,7 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                         : peerLongitude;
                     // Format the radius (metres → "500 m" / "1.5 km")
                     // for the bottom-strip hint. Stamped by
-                    // sendLocationMetadata from the timer entry's
+                    // sendLocationPayload from the timer entry's
                     // excludeOriginRadiusMeters when the deferred
                     // origin tick goes out, so we don't have to
                     // re-derive it on the render side.
@@ -1810,6 +2027,34 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             longitude={_effOwnerLng}
                             peerLatitude={_effPeerLat}
                             peerLongitude={_effPeerLng}
+                            // Meet START dots (secondary). Only present on a
+                            // live meet — ChatBox injects startCoords /
+                            // peerStartCoords, matched to the owner / peer
+                            // slots, and omits them once the meet is frozen.
+                            startLatitude={
+                                meta.startCoords
+                                    && typeof meta.startCoords.latitude === 'number'
+                                    ? meta.startCoords.latitude
+                                    : undefined
+                            }
+                            startLongitude={
+                                meta.startCoords
+                                    && typeof meta.startCoords.longitude === 'number'
+                                    ? meta.startCoords.longitude
+                                    : undefined
+                            }
+                            peerStartLatitude={
+                                meta.peerStartCoords
+                                    && typeof meta.peerStartCoords.latitude === 'number'
+                                    ? meta.peerStartCoords.latitude
+                                    : undefined
+                            }
+                            peerStartLongitude={
+                                meta.peerStartCoords
+                                    && typeof meta.peerStartCoords.longitude === 'number'
+                                    ? meta.peerStartCoords.longitude
+                                    : undefined
+                            }
                             circleCenterLatitude={_circleLat}
                             circleCenterLongitude={_circleLng}
                             circleRadiusMeters={_circleR}
@@ -1848,6 +2093,9 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             }
                             ownerInitials={redInitials}
                             peerInitials={blueInitials}
+                            // Receiver sees themselves in red: swap the two
+                            // avatar fill colours on incoming bubbles only.
+                            swapAvatarColors={isIncoming}
                             zoom={effectiveZoom}
                             // Meet-session bubbles never draw the trail
                             // polyline. The two participants are always
@@ -2235,7 +2483,13 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             style={[styles.title, { color: textColor, flexShrink: 1 }]}
                             numberOfLines={1}
                         >
-                            {isOneShot
+                            {meetOutcomeLabel
+                                // Frozen meet summary — the outcome label
+                                // ("Meet-up succeeded" / "…ended" / "…expired"
+                                // / "…cancelled") takes precedence over every
+                                // live-state title below.
+                                ? meetOutcomeLabel
+                                : isOneShot
                                 // One-shot share: a single GPS fix, no
                                 // follow-up ticks. The bubble represents
                                 // "where I am right now" — labelled
@@ -2298,7 +2552,11 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                             {distanceLabel} apart
                         </Text>
                     ) : null}
-                    {toDestLabel ? (
+                    {/* "X to meeting point" is a LIVE metric — hide it once the
+                        meet has ended (meetOutcome set); the frozen summary's
+                        outcome label is the record, and a stale distance-to-
+                        destination would be misleading. */}
+                    {toDestLabel && !meetOutcome ? (
                         <Text
                             style={[styles.sub, { color: subColor }]}
                             numberOfLines={1}
@@ -2363,12 +2621,28 @@ const LocationBubble = memo(({ currentMessage, metadata, trail, onLongPress, own
                         />
                     </TouchableOpacity>
                 )}
-                <Text
-                    style={[styles.footerExpires, { color: subColor }]}
-                    numberOfLines={1}
-                >
-                    {isOneShot ? '' : (expirationLine || '')}
-                </Text>
+                {_sessionActive ? (
+                    /* Session still live on THIS device — offer a one-tap Stop
+                       in place of the countdown. */
+                    <TouchableOpacity
+                        onPress={onStopShareFromMap}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityLabel="Stop sharing location"
+                        style={styles.footerStopButton}
+                    >
+                        <Icon name="map-marker-off" size={16} color="#d9534f" />
+                        <Text style={styles.footerStopText} numberOfLines={1}>
+                            Stop sharing
+                        </Text>
+                    </TouchableOpacity>
+                ) : (
+                    <Text
+                        style={[styles.footerExpires, { color: subColor }]}
+                        numberOfLines={1}
+                    >
+                        {isOneShot ? '' : (expirationLine || '')}
+                    </Text>
+                )}
                 <TouchableOpacity
                     onPress={openMap}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -2683,6 +2957,22 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         fontSize: 12,
         paddingHorizontal: 6,
+    },
+    // Occupies the same middle slot as footerExpires, but as a tappable
+    // "Stop sharing" control centered between the kebab and open-in-maps icons.
+    footerStopButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 2,
+        paddingHorizontal: 6,
+    },
+    footerStopText: {
+        color: '#d9534f',
+        fontSize: 12,
+        fontWeight: '600',
+        marginLeft: 4,
     },
 });
 
