@@ -32,10 +32,39 @@ RCT_EXPORT_MODULE();
   return YES;
 }
 
-// RCTEventEmitter requires this even if we don't emit anything yet —
-// returning an empty array silences the "no supported events" warning.
+// Events this module relays to JS.
+//
+// 'sylkAutoAnswered' — an incoming call is being answered by the auto-answer
+// timer rather than by the user. AppDelegate posts SylkAutoAnsweredCall just
+// before it hands the answer to CallKit; JS uses it to bring the camera up
+// without the "Enable your camera?" prompt (nobody is holding the phone). The
+// Android equivalent rides on the IncomingCallAction payload as `autoAnswered`.
 - (NSArray<NSString *> *)supportedEvents {
-  return @[];
+  return @[@"sylkAutoAnswered"];
+}
+
+// RCTEventEmitter only wants observers wired while JS actually has listeners;
+// emitting outside that window logs a "sending event with no listeners" warning.
+- (void)startObserving {
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleAutoAnswered:)
+                                               name:@"SylkAutoAnsweredCall"
+                                             object:nil];
+}
+
+- (void)stopObserving {
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                  name:@"SylkAutoAnsweredCall"
+                                                object:nil];
+}
+
+- (void)handleAutoAnswered:(NSNotification *)note {
+  NSString *callUUID = note.userInfo[@"callUUID"];
+  if (!callUUID) {
+    return;
+  }
+  [SylkLogger log:@"[shared-data] relaying auto-answer signal for %@", callUUID];
+  [self sendEventWithName:@"sylkAutoAnswered" body:@{@"callUUID": callUUID}];
 }
 
 // --- Get App Group container path ---
@@ -92,7 +121,24 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
   NSSet<NSString *> *preserve = [NSSet setWithArray:@[
       @"contactDisplayNames.plist",
       @"Library",
+      // WebRTC screen-share sockets. getDisplayMedia() binds these Unix-domain
+      // sockets in THIS container so the broadcast-upload extension (SylkBroadcast)
+      // can connect and stream the shared screen. The purge runs on every app
+      // background — and starting a screen share backgrounds the app when the
+      // broadcast begins — so without preserving these, the purge deleted the
+      // live socket and the extension reported "socket file missing" (no frames
+      // ever reached the peer). See react-native-webrtc ScreenCaptureController
+      // (rtc_SSFD) / the SylkBroadcast SampleHandler (rtc_SSFD + rtc_SSFD_audio).
+      @"rtc_SSFD",
+      @"rtc_SSFD_audio",
   ]];
+
+  // Only purge files older than 24h. A recently-created file may still be
+  // in use — e.g. the WebRTC screen-share socket (rtc_SSFD) bound moments
+  // ago, or a share just dropped in — and deleting it mid-use breaks the
+  // feature. Age it out instead so genuinely stale leftovers are still
+  // cleaned up but fresh artifacts survive a background purge.
+  NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-24 * 60 * 60];
 
   for (NSURL *fileURL in files) {
       NSString *name = fileURL.lastPathComponent;
@@ -100,12 +146,22 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
           [SylkLogger log:@"[shared-data] Preserving %@ (app state, not a shared file)", name];
           continue;
       }
+      // Skip files modified within the last 24h.
+      NSDate *modDate = nil;
+      NSError *dateErr = nil;
+      if (![fileURL getResourceValue:&modDate forKey:NSURLContentModificationDateKey error:&dateErr]) {
+          modDate = nil;
+      }
+      if (modDate && [modDate compare:cutoff] == NSOrderedDescending) {
+          [SylkLogger log:@"[shared-data] Keeping %@ (modified %@, younger than 24h)", name, modDate];
+          continue;
+      }
       NSError *removeError = nil;
       [fm removeItemAtURL:fileURL error:&removeError];
       if (removeError) {
           [SylkLogger log:@"[shared-data] Failed to delete %@: %@", name, removeError];
       } else {
-          [SylkLogger log:@"[shared-data] Deleted %@", name];
+          [SylkLogger log:@"[shared-data] Deleted %@ (older than 24h)", name];
       }
   }
 

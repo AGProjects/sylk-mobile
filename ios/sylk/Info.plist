@@ -2,6 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- react-native-webrtc iOS screen sharing: the app opens a UNIX-socket
+	     server in this App Group's shared container; the Broadcast Upload
+	     Extension connects to it and streams screen frames. Must match the
+	     group in sylk.entitlements. -->
+	<key>RTCAppGroupIdentifier</key>
+	<string>group.com.agprojects.sylk-ios</string>
+	<!-- Bundle id of the Broadcast Upload Extension; react-native-webrtc's
+	     ScreenCapturePickerView pre-selects it in the system picker. -->
+	<key>RTCScreenSharingExtension</key>
+	<string>com.agprojects.sylk-ios.SylkBroadcast</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>

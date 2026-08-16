@@ -269,12 +269,27 @@
         }
 
         sqlite3_stmt *stmt = NULL;
-        const char *sql = "SELECT name, tags FROM contacts WHERE account = ? AND uri = ?";
+        // Also pull local_properties (the per-device flag bag) and match the
+        // `uris` alias list the way the JS side does, so a caller reaching us on
+        // a secondary URI resolves to the same contact.
+        const char *sql =
+            "SELECT name, tags, local_properties FROM contacts "
+            "WHERE account = ? AND ("
+            "uri = ? OR uris = ? OR uris LIKE ? OR uris LIKE ? OR uris LIKE ?"
+            ")";
+
+        NSString *likeStart  = [NSString stringWithFormat:@"%@,%%", uri];
+        NSString *likeMiddle = [NSString stringWithFormat:@"%%,%@,%%", uri];
+        NSString *likeEnd    = [NSString stringWithFormat:@"%%,%@", uri];
 
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
 
             sqlite3_bind_text(stmt, 1, [account UTF8String], -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 2, [uri UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 3, [uri UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, [likeStart UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 5, [likeMiddle UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 6, [likeEnd UTF8String], -1, SQLITE_TRANSIENT);
 
             if (sqlite3_step(stmt) == SQLITE_ROW) {
 
@@ -314,8 +329,40 @@
                     }
                 }
 
+                // ---- LOCAL PROPERTIES (per-device flags) ----
+                // nil unless the column carries an explicit `autoanswer` key —
+                // see Contact.h for why "absent" must not collapse to "false".
+                NSNumber *autoAnswerFlag = nil;
+                const char *cLocalProps = (const char *)sqlite3_column_text(stmt, 2);
+                if (cLocalProps) {
+                    NSString *lp = [NSString stringWithUTF8String:cLocalProps];
+                    lp = [lp stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    if (lp.length > 0) {
+                        NSError *jsonErr = nil;
+                        NSData *lpData = [lp dataUsingEncoding:NSUTF8StringEncoding];
+                        id parsed = [NSJSONSerialization JSONObjectWithData:lpData
+                                                                    options:0
+                                                                      error:&jsonErr];
+                        if (!jsonErr && [parsed isKindOfClass:[NSDictionary class]]) {
+                            id v = parsed[@"autoanswer"];
+                            // Tolerate both JSON booleans and "true"/"false"
+                            // strings, matching how the address-book layer reads
+                            // XCAP attribute values.
+                            if ([v isKindOfClass:[NSNumber class]]) {
+                                autoAnswerFlag = @([v boolValue]);
+                            } else if ([v isKindOfClass:[NSString class]]) {
+                                autoAnswerFlag = @([(NSString *)v caseInsensitiveCompare:@"true"] == NSOrderedSame);
+                            }
+                        } else if (jsonErr) {
+                            [SylkLogger log:@"[app] getContact: bad local_properties for %@ — falling back to tags", uri];
+                        }
+                    }
+                }
+
                 contact = [[Contact alloc] initWithDisplayName:displayName
-                                                          tags:cleanTags];
+                                                          tags:cleanTags
+                                                    autoAnswer:autoAnswerFlag];
             }
 
             sqlite3_finalize(stmt);
@@ -360,6 +407,36 @@
         }
     }
     return NO;
+}
+
+/// Whether THIS DEVICE should auto-answer a call from `contact`.
+///
+/// local_properties.autoanswer is the authority — it is the field the contact
+/// menu writes and anyContactHasAutoAnswer() reads, and it is per device by
+/// design (toggling it on one device replicates a message telling the others to
+/// switch OFF). The `autoanswer` TAG is NOT authoritative: it round-trips
+/// through the server address book, so a tag set on another device — or
+/// restored by a sync — made this device auto-answer while its own contact
+/// screen correctly showed the feature as off. Same bug was fixed on Android in
+/// IncomingCallService.getContactsByTag (2026-08-16).
+///
+/// The tag is consulted ONLY when local_properties has nothing to say (legacy
+/// row with no such key), so existing setups keep working.
+- (BOOL)shouldAutoAnswerForContact:(Contact * _Nullable)contact {
+    if (!contact) return NO;
+
+    BOOL tagSaysYes = [self shouldAutoAnswer:contact.tags];
+
+    if (contact.autoAnswer != nil) {
+        BOOL localSaysYes = [contact.autoAnswer boolValue];
+        if (localSaysYes != tagSaysYes) {
+            [SylkLogger log:@"[app] auto-answer mismatch: local_properties=%@ tag=%@ — honouring local_properties",
+                  localSaysYes ? @"YES" : @"NO", tagSaysYes ? @"YES" : @"NO"];
+        }
+        return localSaysYes;
+    }
+
+    return tagSaysYes;
 }
 
 - (BOOL)canBypassDnd:(NSArray<NSString *> * _Nullable)contactTags {
@@ -1171,7 +1248,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         [SylkLogger log:@"[app] Contact %@ not found in contacts (tags=nil)", fromUri];
     }
 
-    autoAnswer = [self shouldAutoAnswer:tags];
+    autoAnswer = [self shouldAutoAnswerForContact:contact];
     if (autoAnswer) {
         [SylkLogger log:@"[app] must autoAnswer"];
     }
@@ -2068,6 +2145,23 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
     if (!uuid) return;
+
+    // Tell JS this accept is AUTOMATIC before CallKit delivers it.
+    //
+    // On iOS the accept reaches JS as an ordinary RNCallKeep answer event, which
+    // looks identical whether the user tapped Answer or this timer fired — so
+    // without this signal JS cannot tell them apart, and an auto-answered video
+    // call still stops on the "Enable your camera?" prompt waiting for a tap
+    // that, by definition, nobody is there to give. Android carries the same
+    // information as an `autoAnswered` flag on its IncomingCallAction payload
+    // (ReactEventEmitter); this notification is the iOS equivalent.
+    //
+    // Posted BEFORE requesting the CallKit transaction so the flag is recorded
+    // by the time the answer round-trips back through RNCallKeep.
+    // SharedDataModule relays it to JS as the 'sylkAutoAnswered' event.
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SylkAutoAnsweredCall"
+                                                        object:nil
+                                                      userInfo:@{@"callUUID": uuidString}];
 
     CXAnswerCallAction *answerAction =
         [[CXAnswerCallAction alloc] initWithCallUUID:uuid];

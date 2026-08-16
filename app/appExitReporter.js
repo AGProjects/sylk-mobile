@@ -13,12 +13,35 @@
 
 import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DeviceInfo from 'react-native-device-info';
 import { anonymizeEmails } from './utils';
 import { getCrashRecords, pruneCrashRecords } from './crashCapture';
 
 // Watermark: epoch-ms of the newest exit we've already accounted for. Anything
 // at or before this is never looked at again.
 const WATERMARK_KEY = 'appExitReporter.lastTimestamp';
+
+// Retry bookkeeping for a report we could not deliver:
+// { ts: <oldest reportable timestamp in that report>, attempts, firstAttempt }.
+const RETRY_KEY = 'appExitReporter.retry';
+
+// FIRST RUN ONLY: how far back into the OS exit history we are willing to look
+// when no watermark exists yet. getHistoricalProcessExitReasons keeps records
+// across app updates, so a `since = 0` first run mails up to MAX_RECORDS of
+// arbitrarily old history - crashes from weeks ago, on builds that are long
+// gone, with no in-app JS stack to match (crashCapture only started persisting
+// stacks in Aug 2026) and often with empty pss/rss/description. Those reports
+// cost support time and tell nobody anything. A launch that finds no watermark
+// therefore starts one week back, not at the epoch.
+const FIRST_RUN_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Retry bounds for an undeliverable report. Without these, the hold-back in the
+// !delivered branch pins the watermark just before the oldest reportable record
+// FOREVER: the same crash is re-sent on every single launch, and every benign
+// exit newer than it gets rescanned each time too. Give up after either bound
+// and let the watermark advance past the record.
+const MAX_RETRY_LAUNCHES = 10;
+const MAX_RETRY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 // ApplicationExitInfo.REASON_* values we consider worth reporting. (The native
 // module sends the numeric reason plus a human-readable reasonText.)
@@ -65,13 +88,32 @@ export async function flushExitReports(deps = {}) {
         }
 
         let since = 0;
+        let haveWatermark = false;
         try {
             const raw = await AsyncStorage.getItem(WATERMARK_KEY);
             if (raw != null) {
                 const parsed = parseInt(raw, 10);
-                if (!Number.isNaN(parsed)) since = parsed;
+                if (!Number.isNaN(parsed)) {
+                    since = parsed;
+                    haveWatermark = true;
+                }
             }
-        } catch (_) { /* first run / storage hiccup — treat as 0 */ }
+        } catch (_) { /* storage hiccup - treated as a first run below */ }
+
+        // No watermark (fresh install, cleared storage, first build with the
+        // reporter): do NOT scan back to the epoch. See FIRST_RUN_LOOKBACK_MS.
+        if (!haveWatermark) {
+            since = Date.now() - FIRST_RUN_LOOKBACK_MS;
+            _log('[exit-report] no watermark - first run, looking back',
+                Math.round(FIRST_RUN_LOOKBACK_MS / 86400000), 'day(s) only');
+        }
+
+        // Retry state for the report we may be about to re-send.
+        let retry = null;
+        try {
+            const rawRetry = await AsyncStorage.getItem(RETRY_KEY);
+            if (rawRetry) retry = JSON.parse(rawRetry);
+        } catch (_) { retry = null; }
 
         const exits = await native.getRecentExits(since, MAX_RECORDS);
         if (!Array.isArray(exits) || exits.length === 0) {
@@ -120,13 +162,45 @@ export async function flushExitReports(deps = {}) {
                     err && err.message ? err.message : err);
             }
 
-            if (!delivered) {
+            if (delivered) {
+                // Clean slate: nothing outstanding to retry.
+                if (retry) {
+                    try { await AsyncStorage.removeItem(RETRY_KEY); } catch (_) { /* noop */ }
+                }
+            } else {
                 // Couldn't deliver (offline, no support key, etc). Hold the
                 // watermark just before the oldest reportable record so those
                 // reports are retried next launch, while still not rescanning
-                // older benign exits.
-                _log('[exit-report] dispatch not delivered — will retry next launch');
-                newestTs = Math.min(newestTs, reportable[0].timestamp - 1);
+                // older benign exits - but only up to the retry bounds, so one
+                // permanently undeliverable crash can't pin the watermark and
+                // re-send itself on every launch for the life of the install.
+                const _oldestTs = reportable[0].timestamp;
+                const _now = Date.now();
+                if (!retry || retry.ts !== _oldestTs
+                        || typeof retry.attempts !== 'number'
+                        || typeof retry.firstAttempt !== 'number') {
+                    retry = { ts: _oldestTs, attempts: 0, firstAttempt: _now };
+                }
+                retry.attempts += 1;
+                const _tooMany = retry.attempts >= MAX_RETRY_LAUNCHES;
+                const _tooOld = (_now - retry.firstAttempt) >= MAX_RETRY_AGE_MS;
+
+                if (_tooMany || _tooOld) {
+                    _log('[exit-report] giving up on report for exit', safeIso(_oldestTs),
+                        'after', retry.attempts, 'attempt(s) over',
+                        Math.round((_now - retry.firstAttempt) / 3600000), 'h -',
+                        'advancing watermark past it');
+                    try { await AsyncStorage.removeItem(RETRY_KEY); } catch (_) { /* noop */ }
+                    // newestTs is left at the newest exit: these records are
+                    // now accounted for and never rescanned.
+                } else {
+                    _log('[exit-report] dispatch not delivered - will retry next launch',
+                        '(attempt', retry.attempts, 'of', MAX_RETRY_LAUNCHES + ')');
+                    newestTs = Math.min(newestTs, _oldestTs - 1);
+                    try {
+                        await AsyncStorage.setItem(RETRY_KEY, JSON.stringify(retry));
+                    } catch (_) { /* retry count simply restarts next launch */ }
+                }
             }
         }
 
@@ -154,6 +228,13 @@ function formatReport(exits, accountId, jsCrashes = []) {
     lines.push('generated: ' + new Date().toISOString());
     lines.push('platform:  ' + Platform.OS + ' ' +
         (Platform.Version != null ? Platform.Version : ''));
+    // Build + hardware the report was generated on. An exit record carries no
+    // build info of its own, so without these a crash from an older process is
+    // unattributable - which is exactly the case where it matters most. Note
+    // this is the CURRENT build: a record older than the last app update may
+    // have crashed on a previous version.
+    lines.push('app:       ' + appVersionLabel());
+    lines.push('device:    ' + deviceLabel());
     lines.push('records:   ' + exits.length);
     lines.push('');
 
@@ -219,6 +300,40 @@ function matchJsCrash(jsCrashes, exitTs) {
 function signedDeltaMs(fromTs, toTs) {
     const d = fromTs - toTs;
     return (d >= 0 ? '+' : '') + d + 'ms';
+}
+
+// "8.3.0 (830)" - never throws, degrades to 'unknown'.
+function appVersionLabel() {
+    try {
+        const v = (DeviceInfo.getVersion() || '').trim();
+        const b = (DeviceInfo.getBuildNumber() || '').trim();
+        if (v && b) return v + ' (' + b + ')';
+        return v || b || 'unknown';
+    } catch (_) {
+        return 'unknown';
+    }
+}
+
+// "motorola razr 60 ultra (Android 14)" - mirrors app.js's DEVICE_LABEL, which
+// collapses the brand when getModel() already starts with it.
+function deviceLabel() {
+    try {
+        const brand = (DeviceInfo.getBrand() || '').trim();
+        const model = (DeviceInfo.getModel() || '').trim();
+        const label = (model && brand
+            && model.toLowerCase().startsWith(brand.toLowerCase()))
+            ? model
+            : (brand + ' ' + model).trim();
+        let os = '';
+        try {
+            const sv = (DeviceInfo.getSystemVersion() || '').trim();
+            if (sv) os = (Platform.OS === 'ios' ? 'iOS ' : 'Android ') + sv;
+        } catch (_) { /* os stays blank */ }
+        if (label && os) return label + ' (' + os + ')';
+        return label || os || 'unknown';
+    } catch (_) {
+        return 'unknown';
+    }
 }
 
 function safeIso(ts) {

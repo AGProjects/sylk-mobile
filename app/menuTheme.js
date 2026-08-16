@@ -56,6 +56,11 @@ export function getMenuTheme() {
     };
     const menuTheme = {
         ...base,
+        // Mirror getAppPaperTheme(): carry the palette's own isDark rather than
+        // inheriting whatever MD3DarkTheme/MD3LightTheme happens to set. It
+        // agrees with `base` today, but any Paper component that branches on
+        // theme.dark inside a <Menu> would otherwise be trusting a coincidence.
+        dark: dm.isDark,
         roundness: 2,
         colors: {
             ...base.colors,

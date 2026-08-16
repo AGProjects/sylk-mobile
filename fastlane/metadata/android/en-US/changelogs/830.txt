@@ -1,0 +1,3 @@
+ * Added screen sharing
+ * Allow share location to myself
+ * Bug fixes

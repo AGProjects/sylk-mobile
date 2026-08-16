@@ -4,7 +4,8 @@ import React, { Component, Fragment } from 'react';
 import { Alert, View, Dimensions, SafeAreaView, ImageBackground, AppState, Linking, Platform, StyleSheet, Vibration, PermissionsAndroid, Image, PixelRatio, InteractionManager} from 'react-native';
 import { DeviceEventEmitter, BackHandler } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Provider as PaperProvider, DefaultTheme, ActivityIndicator, Modal, Title} from 'react-native-paper';
+import { Provider as PaperProvider, DefaultTheme, ActivityIndicator, Modal, Title, Portal} from 'react-native-paper';
+import PointerGuideOverlay from './components/PointerGuideOverlay';
 // react-native-vector-icons per-family migration: paper's string-name icons
 // (IconButton/Menu.Item/TextInput.Icon/Appbar.Action) resolve through its
 // settings.icon component, wired to the new material-design-icons package.
@@ -71,6 +72,8 @@ function playBundledSound(filename) {
 }
 import OpenPGP from "react-native-fast-openpgp";
 import exportAnnounce from './ExportAnnounce';
+import { CAPABILITIES_CONTENT_TYPE, parseCallCapabilities,
+         setPeerCallCapabilities } from './components/CallCapabilities';
 import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams, registerZrtpRs1Handlers, setLocalDeviceId } from './components/CallZrtp';
 import ShortcutBadge from 'react-native-shortcut-badge';
 import ReceiveSharingIntent from 'react-native-receive-sharing-intent';
@@ -965,6 +968,7 @@ import RestoreKeyModal from './components/RestoreKeyModal';
 import MeetingRequestModal from './components/MeetingRequestModal';
 import LocationRequestModal from './components/LocationRequestModal';
 import ConferenceRequestModal from './components/ConferenceRequestModal';
+import ScreenShareRequestModal from './components/ScreenShareRequestModal';
 // IncomingCallModal import removed — panel no longer used; the modal
 // was spuriously reappearing on conference WSS reconnect even though
 // Android long ago moved to FCM/CallKeep for incoming-call alerting.
@@ -2001,6 +2005,10 @@ class Sylk extends Component {
             chatReactionMode: false,
             transferProgress: {},
             incomingMessage: {},
+            // Remote-pointer guide marker (iOS / in-app). Set from an
+            // incoming sylk-pointer message while we're sharing; rendered
+            // by <PointerGuideOverlay> in a Portal. null = hidden.
+            guidePoint: null,
             // Set when a fresh data-export announcement arrives from one of our
             // own devices → drives the Import modal. { server, key } or null.
             importDataExport: null,
@@ -2234,6 +2242,35 @@ class Sylk extends Component {
         this.pendingOutgoingConferenceRequests = {};
         this._conferenceRequestModalDismissTimerId = null;
 
+        // ===== Screen-share request handshake (in-call kebab ->
+        // "Request screen") =====
+        //
+        // The requester asks the PEER to share THEIR screen. Same
+        // receiver-side shape as conferenceRequestModal: a small
+        // Accept / Reject panel with a 60 s expiry.
+        //
+        // Unlike the conference / location handshakes this one does NOT
+        // ride chat metadata. It travels on the existing in-call
+        // application/sylk-screen-sharing content type with new
+        // `request` / `request_accept` / `request_reject` actions,
+        // because (a) it is meaningless outside the specific call, so
+        // it should never be journalled or replayed, and (b) peers on
+        // older builds parse only 'start' / 'stop' on that content type
+        // and return unconditionally, so they ignore the new actions
+        // silently instead of rendering a junk chat bubble.
+        this.state.screenShareRequestModal = {
+            show: false,
+            fromUri: null,
+            requestId: null,
+            expiresAt: null,
+            callId: null,
+        };
+        // Ids of incoming screen requests we've already presented or
+        // answered. Prevents a re-prompt on duplicate in-dialog
+        // delivery (socket reconnect, multi-device fork).
+        this.handledScreenShareRequestIds = new Set();
+        this._screenShareRequestModalDismissTimerId = null;
+
         // this.myParticipants — REMOVED. The per-room collected
         // participant list was only ever read by a commented-out
         // block in the /call render path; no consumer remains.
@@ -2268,6 +2305,26 @@ class Sylk extends Component {
         this.mustPlayIncomingSoundAfterSync = false;
         this.ringbackActive = false;
         this.sharedAndroidFiles = [];
+
+        // iOS: names of App Group `share-*` files we have ALREADY handed to
+        // the share-to-contacts flow.
+        //
+        // fetchSharedItemsiOS() re-scans the App Group container on every
+        // foreground transition, and nothing deletes the file once it has
+        // been imported: purgeAppGroupContainer skips anything younger than
+        // 24h (a deliberate guard so a background purge can't delete the live
+        // rtc_SSFD screen-share socket out from under the broadcast
+        // extension). With no consumed-marker, every foreground re-opened the
+        // share sheet for a file the user dealt with hours ago -- very
+        // visible during screen sharing, which backgrounds and foregrounds
+        // the app several times per share.
+        //
+        // Marked rather than deleted because the send is asynchronous: the
+        // file path is handed to sendMessage and the upload reads it long
+        // after the share UI has closed. The 24h purge is what eventually
+        // removes the file; this set only stops us prompting for it again.
+        // Persisted so a restart inside that window doesn't re-prompt either.
+        this._consumedSharedFileNames = new Set();
         this.localiOSPushSubscriber = null;
         this.remoteiOSPushSubscriber = null;
         this.cancelledUploads = {};
@@ -2436,7 +2493,25 @@ class Sylk extends Component {
 					}
 				});
         }
-        		
+
+		// A screen share ended from OUTSIDE the app — the Android system cast
+		// pill, or iOS Control Center. Starting a share navigates the sharer to
+		// the chat (so the peer sees the conversation rather than a mirror of
+		// their own video), which means the call screen is unmounted by the time
+		// the share stops. Route back to it: with nothing left to present, the
+		// call UI is where the controls are. VideoBox stamps the pre-share
+		// camera on the call object and reads it back on mount.
+		//
+		// Registered for both platforms (not just Android) — iOS Control Center
+		// stop takes the same path. goBackToCall() no-ops when there is no
+		// active call, so a share that ended because the CALL ended can't strand
+		// the user on the call screen.
+		DeviceEventEmitter.addListener('sylkScreenShareStopped', () => {
+			if (this.currentRoute === '/call') return;
+			utils.timestampedLog('[screen-share] stopped outside the app — returning to the call screen');
+			try { this.goBackToCall(); } catch (e) { /* noop */ }
+		});
+
 		DarkModeManager.addListener((isDark) => {
 		    this.onDarkModeChanged(isDark); // optional callback
 		});
@@ -2476,8 +2551,20 @@ class Sylk extends Component {
 			return;
 		} 
 
+		// A share flow is already on screen -- don't stack another one
+		// on top of it. Same guard handleAndroidShare() has always had;
+		// this path never got it, and it runs on EVERY foreground.
+		if (this.state.shareToContacts) {
+			return;
+		}
+
 	    console.log('---fetchSharedItemsiOS');
 	    //this.purgeSharedFiles();
+
+		  // Restore the consumed markers once per session, before the
+		  // first scan, so files imported before a restart aren't
+		  // offered again.
+		  await this._loadConsumedSharedFiles();
 
 		  // 1. Get the App Group container path
 		  const appGroupPath = await SharedDataModule.appGroupContainerPath();
@@ -2487,6 +2574,11 @@ class Sylk extends Component {
 			  //console.log('No shared files');
 			  return;
 		  }
+
+		  // Mark BEFORE handing them on: _startShareToContacts sets
+		  // state and may change route, and another foreground can land
+		  // while the user is still choosing recipients.
+		  this._markSharedFilesConsumed(sharedFiles);
 
 		  //console.log('Shared container:', appGroupPath);
 		  sharedFiles.forEach((file) => {
@@ -2632,6 +2724,45 @@ class Sylk extends Component {
 	  }
 
   
+	// Consumed-marker persistence. Keyed by file NAME rather than full
+	// path -- the name is what the scan compares, and it is stable
+	// across container-path changes.
+	async _loadConsumedSharedFiles() {
+		if (this._consumedSharedFilesLoaded) return;
+		this._consumedSharedFilesLoaded = true;
+		try {
+			const saved = await storage.get('consumedSharedFiles');
+			if (Array.isArray(saved)) {
+				saved.forEach(n => {
+					if (typeof n === 'string') this._consumedSharedFileNames.add(n);
+				});
+			}
+		} catch (e) {
+			console.log('[share] could not load consumed share markers:', e && e.message);
+		}
+	}
+
+	_markSharedFilesConsumed(files) {
+		try {
+			(files || []).forEach(f => {
+				const name = f && (f.name || f.fileName);
+				if (name) this._consumedSharedFileNames.add(name);
+			});
+			// Bounded: the 24h purge deletes the files themselves, so
+			// markers for names that no longer exist are dead weight.
+			// Keep the most recent 200 -- far beyond any realistic
+			// backlog -- so this can never grow without limit.
+			let names = Array.from(this._consumedSharedFileNames);
+			if (names.length > 200) {
+				names = names.slice(names.length - 200);
+				this._consumedSharedFileNames = new Set(names);
+			}
+			storage.set('consumedSharedFiles', names);
+		} catch (e) {
+			console.log('[share] could not persist consumed share markers:', e && e.message);
+		}
+	}
+
 	async getSharedFiles() {
 	  try {
 		const appGroupPath = await SharedDataModule.appGroupContainerPath();
@@ -2639,8 +2770,15 @@ class Sylk extends Component {
 		// List all files in the App Group container
 		const files = await RNFS.readDir(appGroupPath);
 	
-		// Filter files that start with 'share-'
-		const shareFiles = files.filter(file => file.name.startsWith('share-'));
+		// Filter files that start with 'share-' -- the naming the share
+		// extension uses (ShareViewController writes share-<uuid>.<ext>).
+		// Everything else in this container belongs to another feature
+		// (rtc_SSFD / rtc_SSFD_audio are the live screen-share sockets,
+		// contactDisplayNames.plist is read by the notification-service
+		// extension) and must never be offered as user content.
+		const shareFiles = files.filter(file =>
+			file.name.startsWith('share-')
+			&& !this._consumedSharedFileNames.has(file.name));
 	
 		return shareFiles;
 	  } catch (err) {
@@ -4207,6 +4345,26 @@ class Sylk extends Component {
                             } else {
                                 this.setState({email: contact.email});
                             }
+
+                            // Ensure the self contact carries our own public
+                            // key so sharing location to self is possible (the
+                            // gates and _sendLocationSharing both read
+                            // contact.publicKey). savePublicKey persists this
+                            // to SQL when the key arrives after the contact
+                            // exists; this covers the reverse ordering — keys
+                            // already in state.keys when the self contact
+                            // loads — by stamping the in-memory object the UI
+                            // reads. Only fills a MISSING/stale key; never
+                            // clears one.
+                            const _selfPub = (this.state.keys && this.state.keys.public)
+                                ? this.state.keys.public.replace(/\r/g, '').trim() : '';
+                            if (_selfPub) {
+                                const _curPub = contact.publicKey
+                                    ? contact.publicKey.replace(/\r/g, '').trim() : '';
+                                if (_curPub !== _selfPub) {
+                                    contact.publicKey = _selfPub;
+                                }
+                            }
                             _myselfApplied = true;
                         }
                     }
@@ -4891,7 +5049,14 @@ class Sylk extends Component {
 			 }
 		 }
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		// Screen sharing suspends proximity entirely. Blanking the display while
+		// the user is presenting it is wrong on its own terms, and on Android an
+		// off display pauses the mirrored VirtualDisplay that feeds the capture.
+		// On 2026-08-16 the sharing device blanked and unblanked ~10 times during
+		// a single 60s share.
+		const _screenSharingNow = !!(this.activeCall && this.activeCall._sylkScreenShare);
+
+		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && !_screenSharingNow && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			utils.timestampedLog('[proximity] in-call route change', prevState.proximityNear, '->', this.state.proximityNear, 'useInCallManger=' + !!this.useInCallManger);
 			if (this.state.proximityNear) {
 				utils.timestampedLog('[proximity] in-call -> EARPIECE + screen OFF');
@@ -4917,15 +5082,24 @@ class Sylk extends Component {
 				} else {
 					this.selectAudioDevice('BUILTIN_SPEAKER');
 				}
-				try { InCallManager.turnScreenOn(); } catch (e) {
-					utils.timestampedLog('[proximity] turnScreenOn failed', e && e.message);
+				if (Platform.OS === 'android') {
+					try { InCallManager.turnScreenOn(); } catch (e) {
+						utils.timestampedLog('[proximity] turnScreenOn failed', e && e.message);
+					}
 				}
 			}
          } else if (prevState.proximityNear !== this.state.proximityNear) {
 			// proximityNear changed but the in-call route branch did not
 			// fire — log why so we can tell whether the gate (enabled /
 			// headset / folded) or the missing activeCall is the cause.
-			utils.timestampedLog('[proximity] in-call route skipped', prevState.proximityNear, '->', this.state.proximityNear, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'folded=' + !!this.state.isFolded, 'inCall=' + (this.activeCall ? true : false));
+			utils.timestampedLog('[proximity] in-call route skipped', prevState.proximityNear, '->', this.state.proximityNear, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'folded=' + !!this.state.isFolded, 'screenSharing=' + _screenSharingNow, 'inCall=' + (this.activeCall ? true : false));
+			// Never leave the display blanked while a share is running — e.g. the
+			// screen was already off from a proximity event when the share began.
+			if (_screenSharingNow && Platform.OS === 'android') {
+				try { InCallManager.turnScreenOn(); } catch (e) {
+					utils.timestampedLog('[proximity] turnScreenOn (screen share) failed', e && e.message);
+				}
+			}
          }
 
 		 if (prevState.selectedDevice !== this.state.selectedDevice ) {
@@ -7595,6 +7769,14 @@ class Sylk extends Component {
 		// behave correctly.
 		this.unmounted = true;
 
+		// Drop the iOS auto-answer relay subscription (see componentDidMount).
+		try {
+			if (this._autoAnsweredSub) {
+				this._autoAnsweredSub.remove();
+				this._autoAnsweredSub = null;
+			}
+		} catch (e) { /* noop */ }
+
 		// Release the heartbeat timer so it stops holding any timer/
 		// background-task resource once the app is torn down.
 		try {
@@ -10258,6 +10440,40 @@ class Sylk extends Component {
 	    }
 		this.handledCalls.add(payload.callUUID);
 		this.phoneWasLocked = payload.phoneLocked;
+
+		// AUTO-ANSWERED calls come up with the camera already on.
+		//
+		// Normally an incoming video call answers with the camera muted and
+		// VideoBox shows the "Enable your camera?" preview prompt, so the user
+		// can check their framing before going on the wire (see the videoMuted
+		// computation in render()). An auto-answered call has no user at the
+		// device by definition — that is the entire point of the feature — so
+		// the prompt would just leave a caregiver looking at a black rectangle
+		// until somebody walks over and taps a button. Skip it and go live.
+		//
+		// `autoAnswered` is set by IncomingCallService only on the countdown
+		// path; a manual tap on the same notification sends false, so answering
+		// early by hand still gets the normal prompt.
+		if (payload.autoAnswered) {
+			if (!this._autoAnsweredCalls) this._autoAnsweredCalls = new Set();
+			this._autoAnsweredCalls.add(payload.callUUID);
+			utils.timestampedLog('[call] [ui] call_id=' + payload.callUUID,
+				'auto-answered — camera will start without the enable prompt');
+			// Stamp the ringing call object directly when we already have it, so
+			// the decision survives VideoBox unmount/remount for the whole call.
+			const _ringing = this.state.incomingCall;
+			if (_ringing && (_ringing.id === payload.callUUID
+					|| _ringing._callId === payload.callUUID)) {
+				_ringing._sylkAutoAnswered = true;
+				_ringing._sylkCameraPromptHandled = true;
+			}
+			// Same retention as handledCalls above — long enough to cover the
+			// whole call, short enough that the set can't grow unbounded.
+			setTimeout(() => {
+				if (this._autoAnsweredCalls) this._autoAnsweredCalls.delete(payload.callUUID);
+			}, 5 * 60 * 1000);
+		}
+
 		if (payload.action === 'ACTION_ACCEPT_VIDEO') {
 			console.log('accept video');
 		} else {
@@ -10292,6 +10508,39 @@ class Sylk extends Component {
 	}
 
     async componentDidMount() {
+        // iOS auto-answer signal.
+        //
+        // On Android an automatic accept arrives as `autoAnswered` on the
+        // IncomingCallAction payload (ReactEventEmitter). iOS answers through
+        // CallKit, where the event is indistinguishable from the user tapping
+        // Answer — so AppDelegate posts SylkAutoAnsweredCall just before it
+        // hands the answer to CallKit and SharedDataModule relays it here.
+        //
+        // Both platforms end up feeding the same _autoAnsweredCalls set, which
+        // render() consults to bring the camera up without the "Enable your
+        // camera?" prompt (see the videoMuted computation).
+        if (Platform.OS === 'ios' && NativeModules.SharedDataModule) {
+            try {
+                this._sharedDataEmitter = new NativeEventEmitter(NativeModules.SharedDataModule);
+                this._autoAnsweredSub = this._sharedDataEmitter.addListener(
+                    'sylkAutoAnswered',
+                    (data) => {
+                        const callUUID = data && data.callUUID;
+                        if (!callUUID) return;
+                        if (!this._autoAnsweredCalls) this._autoAnsweredCalls = new Set();
+                        this._autoAnsweredCalls.add(callUUID);
+                        utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                            'auto-answered (iOS) — camera will start without the enable prompt');
+                        // Same retention as the Android path's handledCalls.
+                        setTimeout(() => {
+                            if (this._autoAnsweredCalls) this._autoAnsweredCalls.delete(callUUID);
+                        }, 5 * 60 * 1000);
+                    });
+            } catch (e) {
+                console.log('[call] auto-answer listener setup failed', e && e.message);
+            }
+        }
+
         // Pair to the constructor's consumeLaunchMessageUri() read.
         // Initial state already has chatOpenLoading/chatOpenUri set;
         // here we trigger selectChatContact so ReadyBox flips into
@@ -11012,8 +11261,10 @@ class Sylk extends Component {
 		// near while the user hangs up at the ear, listener already torn down,
 		// etc.), the user would be left staring at a dead screen post-call.
 		// Force it back on here. iOS is a no-op.
-		try { InCallManager.turnScreenOn(); } catch (e) {
-			utils.timestampedLog('[proximity] audioManagerStop turnScreenOn failed', e && e.message);
+		if (Platform.OS === 'android') {
+			try { InCallManager.turnScreenOn(); } catch (e) {
+				utils.timestampedLog('[proximity] audioManagerStop turnScreenOn failed', e && e.message);
+			}
 		}
 
 		// Stop the incall-manager proximity sensor. Placed before the
@@ -12519,6 +12770,22 @@ class Sylk extends Component {
         );
 
         this.setState({appState: nextAppState});
+
+        // If WE are screen-sharing on iOS, tell the peer whether our app is in
+        // the foreground. iOS can only draw the remote pointer marker INSIDE our
+        // own app, so when we leave it the viewer must hide their cursor (the
+        // marker can't appear). Android draws system-wide, so it never needs to
+        // report. Sent over the same in-dialog channel as the pointer itself.
+        try {
+            if (Platform.OS === 'ios' && this.activeCall && this.activeCall._sylkScreenShare
+                    && typeof this.activeCall.sendMessage === 'function') {
+                const _inApp = nextAppState === 'active';
+                this.activeCall.sendMessage(
+                    JSON.stringify({ inApp: _inApp }),
+                    'application/sylk-pointer-visibility', {}, () => {});
+                utils.timestampedLog('[pointer] sent visibility inApp=', _inApp);
+            }
+        } catch (e) { /* best effort */ }
 
         // Drop the native-unread write-dedup cache whenever we leave the
         // foreground. While backgrounded the native FCM service owns and
@@ -15261,6 +15528,10 @@ class Sylk extends Component {
         const connection = this.getConnection();
         utils.timestampedLog('Sylkrtc [call]', callUUID, 'state change:', oldState, '->', newState);
 
+        // Auto-dialer soak loop — no-op unless it owns this call.
+        try { this._autodialerOnCallState(call, callUUID, newState); }
+        catch (e) { utils.timestampedLog('[autodialer] state hook threw:', (e && e.message) || String(e)); }
+
         // Push-accept route gate lifecycle. The gate held /call open
         // while we waited for the WSS Call to materialise after a
         // cold-start push accept. Now that the Call is talking to us:
@@ -17402,6 +17673,16 @@ class Sylk extends Component {
             try {
                 sylkrtc.utils.closeMediaStream(_stream);
             } catch (_) {}
+            // closeMediaStream only stop()s, which in react-native-webrtc is a
+            // JS-side flag flip — release() is what frees the native source.
+            // Reaching here means we still OWN the stream: the 'consumed'
+            // hand-off nulls _prewarmedMicStream before this can run, so there
+            // is no risk of releasing a stream getLocalMedia now owns.
+            try {
+                _stream.getTracks().forEach((t) => {
+                    try { if (t && typeof t.release === 'function') t.release(); } catch (e) {}
+                });
+            } catch (_) {}
             utils.timestampedLog('[call] [ui] call_id='
                 + (this._prewarmedMicCallUUID || '?'),
                 'prewarm_mic_closed reason=' + reason);
@@ -18955,10 +19236,292 @@ class Sylk extends Component {
         this.forceUpdate();
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // AUTO-DIALER — automated call loop for leak / ANR hunting.
+    //
+    // Drives calls to one contact in a loop so a soak run can be left going and
+    // the logs read afterwards for things that don't get released: capturers
+    // ([sylk-leak] video capturer CREATED/DISPOSED, CaptureThread count),
+    // PeerConnections, camera sessions, Telecom connections.
+    //
+    // Configured from AutoDialerModal (contact menu → Auto-dialer, gated on
+    // Developer mode). Media, redial gap and hangup delay all come from there:
+    //
+    //   dial (chosen media) → answered → hang up after hangupMs (0 = never)
+    //                                  → redial after redialMs
+    //                       → failed   → redial after redialMs
+    //
+    // Pressing the hangup button yourself stops the loop — hangupCall() sees a
+    // reason starting with 'user_' and shuts it down, so you can always break
+    // out of a soak by ending one call by hand. The auto-dialer's own teardown
+    // uses reason 'autodialer_hangup', deliberately NOT a 'user_' reason.
+    //
+    // Everything it does is tagged '[autodialer]' for easy grepping:
+    //     grep '\[autodialer\]' release.log
+    // ─────────────────────────────────────────────────────────────────────
+
+    AUTODIALER_STALL_MS = 60000;   // give up on a call that never changes state
+
+    /** Start the loop. Called from AutoDialerModal's Start button. */
+    startAutoDialer(contact, options) {
+        const uri = contact && contact.uri;
+        if (!uri) return;
+        if (this._autodialer) this._autodialerStop('restarting with new settings');
+
+        const opts = options || {};
+        const redialMs = Math.max(1, parseInt(opts.redialSeconds, 10) || 10) * 1000;
+        // 0 is meaningful here: never hang up, let the call run until the peer
+        // ends it. Guard against NaN without collapsing a deliberate 0.
+        const rawHangup = parseInt(opts.hangupSeconds, 10);
+        const hangupMs = (isNaN(rawHangup) || rawHangup < 0) ? 0 : rawHangup * 1000;
+        const audio = opts.audio !== false;
+        const video = opts.video !== false;
+
+        this._autodialer = {
+            uri: uri,
+            cycle: 0,
+            callUUID: null,
+            established: false,
+            timer: null,
+            redialMs: redialMs,
+            hangupMs: hangupMs,
+            audio: audio,
+            video: video,
+        };
+        this.setState({
+            autoDialerUri: uri,
+            autoDialerRedialSeconds: Math.round(redialMs / 1000),
+            autoDialerHangupSeconds: Math.round(hangupMs / 1000),
+            autoDialerAudio: audio,
+            autoDialerVideo: video,
+        });
+        utils.timestampedLog('[autodialer] START target=' + uri
+            + ' media=' + (audio ? 'audio' : '') + (audio && video ? '+' : '') + (video ? 'video' : '')
+            + ' redialAfter=' + Math.round(redialMs / 1000) + 's'
+            + ' hangupAfter=' + (hangupMs === 0 ? 'never' : Math.round(hangupMs / 1000) + 's'));
+        this._autodialerDial();
+    }
+
+    /** Menu entry point: stop the loop when it is running for this contact.
+     *  Starting is done from the modal, which needs the settings first. */
+    toggleAutoDialer(contact) {
+        const uri = contact && contact.uri;
+        if (!uri) return;
+        if (this._autodialer && this._autodialer.uri === uri) {
+            this._autodialerStop('stopped from the menu');
+        }
+    }
+
+    _autodialerStop(reason) {
+        if (!this._autodialer) return;
+        const a = this._autodialer;
+        if (a.timer) { clearTimeout(a.timer); a.timer = null; }
+        this._autodialer = null;
+        this.setState({autoDialerUri: null});
+        utils.timestampedLog('[autodialer] STOP after', a.cycle, 'call(s) —', reason);
+    }
+
+    /** One pending action at a time. Whatever is scheduled is replaced by the
+     *  next event, which is what makes the stall guard free: it only ever fires
+     *  when nothing else happened. */
+    _autodialerSchedule(ms, label, fn) {
+        const a = this._autodialer;
+        if (!a) return;
+        if (a.timer) clearTimeout(a.timer);
+        utils.timestampedLog('[autodialer] next:', label, 'in', Math.round(ms / 1000) + 's');
+        a.timer = setTimeout(() => {
+            if (!this._autodialer) return;
+            this._autodialer.timer = null;
+            try { fn(); }
+            catch (e) { utils.timestampedLog('[autodialer] scheduled action threw:', (e && e.message) || String(e)); }
+        }, ms);
+    }
+
+    _autodialerDial() {
+        const a = this._autodialer;
+        if (!a) return;
+        // Never stack calls. Two reasons to hold off:
+        //   • something is already on the line;
+        //   • the app's OWN auto-redial is mid-flight. Failed outgoing calls
+        //     are already retried 5s later by the 'outgoing_connection_failed'
+        //     branch in changeRoute() — we deliberately do not duplicate that.
+        //     Deferring here is what keeps the two from double-dialling, with
+        //     no coupling to that path's internals: if its call lands first we
+        //     simply adopt it (matching is by target URI, not callUUID).
+        if (this.state.currentCall || this.state.incomingCall || this.state.reconnectingCall) {
+            this._autodialerSchedule(a.redialMs, 'retry dial (line busy / app reconnecting)',
+                () => this._autodialerDial());
+            return;
+        }
+        a.cycle = a.cycle + 1;
+        a.established = false;
+        a.callUUID = uuid.v4();
+        utils.timestampedLog('[autodialer] cycle', a.cycle, '— dialing', a.uri,
+            'media=' + (a.audio ? 'audio' : '') + (a.audio && a.video ? '+' : '') + (a.video ? 'video' : ''),
+            'callUUID=' + a.callUUID);
+        // Stall guard — replaced by the 'established' or 'terminated' handler.
+        this._autodialerSchedule(this.AUTODIALER_STALL_MS, 'redial (call stalled, no state change)',
+            () => this._autodialerDial());
+        try {
+            // skipCountdown: an auto-dialer call is pre-committed by definition —
+            // nobody is standing there to tap "Start call". Without it,
+            // callKeepStartCall stashes the options in outgoingMedia, Call.js
+            // computes userStartedCall=false and parks on the camera-preview
+            // Start-call gate with its arming countdown, and the INVITE is never
+            // sent — every cycle would stall until the stall guard fired.
+            // Same flag the Bluetooth-headset redial hotkey uses (headsetRedial).
+            this.callKeepStartCall(a.uri, {
+                audio: a.audio,
+                video: a.video,
+                callUUID: a.callUUID,
+                skipCountdown: true,
+            });
+        } catch (e) {
+            utils.timestampedLog('[autodialer] dial threw:', (e && e.message) || String(e));
+            this._autodialerSchedule(a.redialMs, 'redial after dial error',
+                () => this._autodialerDial());
+        }
+    }
+
+    /** Fed from callStateChanged. No-op unless the auto-dialer owns this call.
+     *
+     *  Ownership is matched on the TARGET URI, not the callUUID we dialled
+     *  with: when an outgoing call fails, the app's own reconnect branch
+     *  redials with a fresh UUID, and we want to adopt that call as the current
+     *  cycle rather than lose track of it and let the stall guard fire. */
+    _autodialerOnCallState(call, callUUID, newState) {
+        const a = this._autodialer;
+        if (!a || !call) return;
+        let remoteUri = null;
+        try { remoteUri = (call.remoteIdentity && call.remoteIdentity.uri || '').toLowerCase(); }
+        catch (e) { return; }
+        const isOurs = (callUUID && callUUID === a.callUUID)
+            || (remoteUri && remoteUri === (a.uri || '').toLowerCase());
+        if (!isOurs) return;
+        // Adopt whatever call is actually running for this target.
+        if (callUUID) a.callUUID = callUUID;
+
+        if (newState === 'established') {
+            a.established = true;
+            if (a.hangupMs === 0) {
+                // "Never" — hold the call for as long as the peer keeps it up.
+                // No timer at all: the next thing we act on is 'terminated'.
+                utils.timestampedLog('[autodialer] cycle', a.cycle,
+                    '— answered; holding (auto hangup disabled)');
+                if (a.timer) { clearTimeout(a.timer); a.timer = null; }
+                return;
+            }
+            utils.timestampedLog('[autodialer] cycle', a.cycle, '— answered');
+            this._autodialerSchedule(a.hangupMs, 'auto hangup', () => {
+                if (!this._autodialer) return;
+                utils.timestampedLog('[autodialer] cycle', this._autodialer.cycle, '— auto hangup');
+                this.hangupCall(callUUID, 'autodialer_hangup');
+                // Guard in case 'terminated' never arrives.
+                this._autodialerSchedule(this.AUTODIALER_STALL_MS, 'redial (no terminated after hangup)',
+                    () => this._autodialerDial());
+            });
+        } else if (newState === 'terminated') {
+            utils.timestampedLog('[autodialer] cycle', a.cycle, '—',
+                a.established ? 'call ended normally' : 'call FAILED (never established)');
+            a.callUUID = null;
+            // Scheduled unconditionally, including after a failure: if the app's
+            // own 5s reconnect gets there first, _autodialerDial() sees a live
+            // call (or reconnectingCall) and simply waits another round, then
+            // picks the cycle back up when that call ends. No arbitration needed
+            // between the two.
+            this._autodialerSchedule(a.redialMs, 'redial', () => this._autodialerDial());
+        }
+    }
+
+    /** True when this call was accepted by the auto-answer countdown rather
+     *  than by the user. Read in render() to decide whether the camera comes up
+     *  live or behind the "Enable your camera?" prompt.
+     *
+     *  Checks the stamp on the call object first — set in callEventHandler when
+     *  the ringing call was already in state — and falls back to the UUID set
+     *  for the cold-start case where the accept event beats the Call object. */
+    _isAutoAnsweredCall(call) {
+        if (!call) return false;
+        if (call._sylkAutoAnswered) return true;
+        if (!this._autoAnsweredCalls) return false;
+        const id = call.id || call._callId;
+        return !!(id && this._autoAnsweredCalls.has(id));
+    }
+
     closeLocalMedia() {
         if (this.state.localMedia != null) {
             utils.timestampedLog('[call] Close local [media]');
-            sylkrtc.utils.closeMediaStream(this.state.localMedia);
+            const _stream = this.state.localMedia;
+
+            // stop() the tracks (JS-side readyState/enabled bookkeeping)...
+            sylkrtc.utils.closeMediaStream(_stream);
+
+            // ...and then RELEASE them, which is the part that actually frees
+            // the native capturer.
+            //
+            // sylkrtc's closeMediaStream() only calls track.stop(), and in
+            // react-native-webrtc MediaStreamTrack.stop() is, in full:
+            //     this.enabled = false; this._readyState = 'ended';
+            // Its only native call is the `enabled` setter, and our own
+            // GetUserMediaImpl patch deliberately makes that a NO-OP with
+            // respect to the capturer (stock rn-webrtc stopped the capturer on
+            // mute, which hung on the Sony XQ-EC72's camera HAL and froze the JS
+            // thread). Correct — but it means NOTHING in the app ever reached
+            // stopCapture()/dispose() for a camera track. Only track.release()
+            // does: release -> mediaStreamTrackRelease -> disposeTrack ->
+            // TrackPrivate.dispose() -> stopCapture() + capturer.dispose() +
+            // surfaceTextureHelper.dispose(), the last of which is what ends the
+            // capturer's "CaptureThread".
+            //
+            // Consequence before this fix: every video call leaked one open
+            // Camera2 session and one CaptureThread for the life of the process.
+            // Measured on the razr 2026-08-16 — 4 getUserMedia, 4 "Close local
+            // [media]", 4 live CaptureThreads, 0 disposals. Four camera
+            // pipelines still streaming put vendor.qti.camera.provider-service
+            // at 57% CPU, which starved SystemUI until it ANR'd on a 5s input
+            // timeout ("NavigationBar0 is not responding") — the phone looked
+            // frozen while Sylk's own threads were all idle.
+            //
+            // Deferred: peerConnectionClose() is queued on the shared WebRTC
+            // executor by the terminate path that called us, and we must not
+            // dispose a track while a live sender still references it. Yielding
+            // guarantees the close is enqueued first.
+            //
+            // Why a delay and not setTimeout(…, 0): WebRTCView attaches itself
+            // to a video track from a thread pool (tryAddRendererToVideoTrack),
+            // so a renderer bind queued just before teardown can land AFTER the
+            // track is disposed —
+            //     Failed to add renderer
+            //     java.lang.IllegalStateException: MediaStreamTrack has been disposed.
+            //       at org.webrtc.VideoTrack.addSink
+            // observed once in ~9 calls on 2026-08-16. The library catches it
+            // and the call is over anyway, so it is noise rather than breakage,
+            // but giving React a beat to commit the call screen's unmount (and
+            // its RTCViews to detach) closes the window. Still ~9.5s of margin
+            // before the next call in a 10s auto-dialer cycle.
+            //
+            // The blocking part of the teardown (Camera2Capturer.stopCapture()
+            // can wait forever on a HAL callback that never comes — again, the
+            // XQ-EC72) runs on GetUserMediaImpl's dedicated "CameraCaptureControl"
+            // serial thread, never on the shared executor. Worst case a wedged
+            // HAL stalls that one daemon thread and later disposals queue behind
+            // it, i.e. we degrade back to the old leak instead of freezing.
+            setTimeout(() => {
+                let _released = 0;
+                try {
+                    _stream.getTracks().forEach((t) => {
+                        try {
+                            if (t && typeof t.release === 'function') {
+                                t.release();
+                                _released++;
+                            }
+                        } catch (e) { /* noop */ }
+                    });
+                } catch (e) { /* noop */ }
+                utils.timestampedLog('[call] [media] released', _released,
+                    'local track(s) — native capturer disposed');
+            }, 400);
+
             this.setState({localMedia: null});
         }
     }
@@ -19349,6 +19912,15 @@ class Sylk extends Component {
 
     hangupCall(callUUID, reason) {
         utils.timestampedLog('[call]', callUUID, 'hangup with reason:', reason);
+
+        // Manual hangup breaks the auto-dialer soak loop. Every hangup the USER
+        // initiates carries a 'user_' reason ('user_hangup_call' from the in-call
+        // button, 'user_cancel_call' while dialling); the auto-dialer's own
+        // teardown uses 'autodialer_hangup', so it doesn't trip this. That makes
+        // "press the red button" the always-available way out of a soak run.
+        if (this._autodialer && typeof reason === 'string' && reason.indexOf('user_') === 0) {
+            this._autodialerStop('manual hangup (' + reason + ')');
+        }
         this.setState({loading: null});
         this.disableFullScreen();
 
@@ -21181,7 +21753,7 @@ class Sylk extends Component {
         // Cost of disabling on iOS: answer() rebuilds the PC at accept (still
         // WITH iceServers), so cellular calls still gather STUN, just ~0.5-1.5s
         // later. No loss of correctness, only setup latency.
-        const PC_PREWARM_ENABLED = Platform.OS !== 'ios';
+        const PC_PREWARM_ENABLED = Platform.OS !== 'ios'; // Android on / iOS off (iOS: separate incoming-audio-not-rendered bug). Re-enabled 2026-08-13 after the camera stopCapture executor-wedge (the real freeze cause) was fixed in GetUserMediaImpl.
         if (PC_PREWARM_ENABLED && typeof call.prewarm === 'function') {
             const cid = call._callId || call.callId || call.id;
             const _iceServers = this.state.iceServers || [];
@@ -21243,7 +21815,7 @@ class Sylk extends Component {
         //   * rejectCall (user dismissed),
         //   * callStateChanged when state==='terminated' for the
         //     same callUUID (auto-cancel before user reacted).
-        const PREWARM_MIC_RING_ANDROID_AUDIO = true;
+        const PREWARM_MIC_RING_ANDROID_AUDIO = true; // re-enabled 2026-08-13 with PC prewarm (audio-only path, does not touch the camera).
 
         // Same-UUID guard: when WSS drops mid-ring and reconnects,
         // the server re-delivers the SAME call on the new WSS and
@@ -21297,7 +21869,16 @@ class Sylk extends Component {
                             && this._prewarmedMicCallUUID !== _expectedCallUUID) {
                         utils.timestampedLog('[call] [ui] call_id=' + _expectedCallUUID,
                             '00 prewarm_mic_late_arrival — superseded, closing');
-                        try { stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+                        // stop() alone leaves the native source alive (see
+                        // closeLocalMedia); release() frees it. This stream was
+                        // never attached to a PeerConnection, so releasing it
+                        // here is unconditionally safe.
+                        try {
+                            stream.getTracks().forEach((t) => {
+                                try { t.stop(); } catch (e) {}
+                                try { if (typeof t.release === 'function') t.release(); } catch (e) {}
+                            });
+                        } catch (e) {}
                         return;
                     }
                     // Stash. The getLocalMedia fast path (line ~11046)
@@ -22783,7 +23364,48 @@ class Sylk extends Component {
             return;
         }
         if (uri === this.state.accountId) {
-            console.log('[pgp] [message] savePublicKey skip: uri matches own accountId', uri);
+            // Self chat: we used to early-return here, which left the "Myself"
+            // contact with no publicKey. That silently disabled sharing your
+            // own location to yourself — BOTH the button/menu gates
+            // (canShareLocationWith / hasContactKey) and the encryption path in
+            // _sendLocationSharing require a publicKey on the recipient
+            // contact, and our own public key IS the correct recipient key
+            // when the target is us. So instead of skipping, stamp our own key
+            // onto the self contact — quietly: no "Public key received" note,
+            // no timestamp bump (housekeeping must not pop the self row up the
+            // conversation list), and none of the peer-handshake / cross-domain
+            // key-reply machinery below (meaningless for self). Then return.
+            let _selfKey = key ? key.replace(/\r/g, '').trim() : '';
+            if (!_selfKey
+                    || !_selfKey.startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----')
+                    || !_selfKey.endsWith('-----END PGP PUBLIC KEY BLOCK-----')) {
+                // Incoming self key missing/malformed — fall back to the
+                // locally-held public key (for self they are the same key).
+                _selfKey = (this.state.keys && this.state.keys.public)
+                    ? this.state.keys.public.replace(/\r/g, '').trim() : '';
+            }
+            if (!_selfKey) {
+                console.log('[pgp] [message] savePublicKey skip: own accountId and no usable self key yet', uri);
+                return;
+            }
+            const _selfContacts = this.lookupContacts(uri);
+            for (const _c of _selfContacts) {
+                const _stored = _c.publicKey
+                    ? _c.publicKey.replace(/\r/g, '').trim() : '';
+                if (_stored !== _selfKey) {
+                    const _tsPreserve = _c.timestamp;
+                    _c.publicKey = _selfKey;
+                    _c.timestamp = _tsPreserve;
+                    // origin 'PGP key generated' — already whitelisted by the
+                    // self-contact save trace guard and never replicated to the
+                    // server (see saveSylkContact / _abReplicateToServer gating).
+                    this.saveSylkContact(uri, _c, 'PGP key generated');
+                    console.log('[pgp] [message] savePublicKey STORED self key on self contact',
+                        uri, 'len=', _selfKey.length);
+                } else {
+                    console.log('[pgp] [message] savePublicKey self key unchanged for', uri);
+                }
+            }
             return;
         }
 
@@ -25003,7 +25625,7 @@ class Sylk extends Component {
 		try {
 			const msgList = this._messagesFor(uri);
 			const target = msgList.find(m => m._id === id);
-			if (target && target.contentType === 'application/sylk-live-location') {
+			if (target && target.contentType === 'application/sylk-location-sharing') {
 				_wasLocationBubble = true;
 				// Only stop the active share when the deleted bubble IS
 				// the active session's origin. Plain-share trail rows
@@ -25065,7 +25687,7 @@ class Sylk extends Component {
 			const msgList = this._messagesFor(uri);
 			const target = msgList.find(m => m._id === id);
 			if (target
-					&& target.contentType === 'application/sylk-live-location'
+					&& target.contentType === 'application/sylk-location-sharing'
 					&& target.metadata
 					&& this._locationEngine.meetingSessions) {
 				const _md = target.metadata;
@@ -29192,7 +29814,7 @@ class Sylk extends Component {
 										_id: item.msg_id,
 										key: item.msg_id,
 										createdAt: _osCreatedAt,
-										contentType: 'application/sylk-live-location',
+										contentType: 'application/sylk-location-sharing',
 										metadata: _osMeta,
 										text: String(_osCreatedAt.getTime()),
 										direction: item.direction,
@@ -29866,7 +30488,7 @@ class Sylk extends Component {
 							if (_ei !== -1) _ms.splice(_ei, 1);
 							existing = null;
 						}
-						if (existing && existing.contentType === 'application/sylk-live-location') {
+						if (existing && existing.contentType === 'application/sylk-location-sharing') {
 							utils.timestampedLog('[location] [synth] SALVAGE session', String(messageId).slice(0, 8), 'existingHasCoords=', !!(existing.metadata && existing.metadata.value && typeof existing.metadata.value.latitude === 'number'));
 							// (a) SALVAGE path.
 							const md = existing.metadata || {};
@@ -29986,7 +30608,7 @@ class Sylk extends Component {
 								_id: messageId,
 								key: messageId,
 								createdAt: createdAt,
-								contentType: 'application/sylk-live-location',
+								contentType: 'application/sylk-location-sharing',
 								metadata: _mergedMeta,
 								text: String(createdAt.getTime()),
 								direction: direction,
@@ -30145,7 +30767,7 @@ class Sylk extends Component {
 				const _bubbles = Array.isArray(messages[orig_uri]) ? messages[orig_uri] : [];
 				for (const bubble of _bubbles) {
 					if (!bubble
-							|| bubble.contentType !== 'application/sylk-live-location'
+							|| bubble.contentType !== 'application/sylk-location-sharing'
 							|| !bubble.metadata) continue;
 					const md = bubble.metadata;
 					if (md.peerCoords) continue;
@@ -30209,7 +30831,7 @@ class Sylk extends Component {
 				let _shareCount = 0;
 				let _activeCount = 0;
 				for (const m of last_messages) {
-					if (!m || m.contentType !== 'application/sylk-live-location') continue;
+					if (!m || m.contentType !== 'application/sylk-location-sharing') continue;
 					_shareCount += 1;
 					const md = m.metadata || {};
 					const v = md.value || {};
@@ -30289,7 +30911,7 @@ class Sylk extends Component {
 				let _bubblesWithTrail = 0;   // bubbles whose own _id has >=2 points
 				let _bubblesSingle = 0;      // bubbles whose own _id has <=1 point
 				for (const m of last_messages) {
-					if (!m || m.contentType !== 'application/sylk-live-location') continue;
+					if (!m || m.contentType !== 'application/sylk-location-sharing') continue;
 					_shareBubbles += 1;
 					const trail = messagesMetadata[m._id] || [];
 					_shareTicks += trail.length;
@@ -30472,7 +31094,7 @@ class Sylk extends Component {
 						// already bypass the contact-timestamp update on
 						// receive (saveIncomingMessage) for the same
 						// reason — this is the load-side mirror.
-						if (ct === 'application/sylk-live-location') {
+						if (ct === 'application/sylk-location-sharing') {
 							return;
 						}
 						// System / housekeeping rows (call notes, 'Public key received',
@@ -30811,7 +31433,7 @@ class Sylk extends Component {
 					// ReadyBox for the rationale. Field bug:
 					// receive-only "until I return" share would otherwise
 					// hide the share button after the share ended.
-					if (ct === 'application/sylk-live-location') {
+					if (ct === 'application/sylk-location-sharing') {
 						_hasOut = true;
 						_hasIn = true;
 						break;
@@ -31318,7 +31940,7 @@ class Sylk extends Component {
 			    // local SQL cascade (msg_id = ? OR related_msg_id = ?) removes the
 			    // children here, and the peer/server cascade does the same on
 			    // receipt. Non-location rows keep their own msg_id.
-			    const _isLocationRow = item.content_type === 'application/sylk-live-location'
+			    const _isLocationRow = item.content_type === 'application/sylk-location-sharing'
 			        || (typeof item.related_action === 'string'
 			            && (item.related_action.indexOf('location') === 0
 			                || item.related_action.indexOf('meeting') === 0));
@@ -34017,6 +34639,143 @@ class Sylk extends Component {
         // SFU mix makes the watchdog meaningless against the central
         // mixer, so a callee's stall doesn't mean the conference
         // itself is gone.
+        // Peer's per-call capability advertisement, sent once by both
+        // sides at 'established' (see components/CallCapabilities.js).
+        // Stashed on the Call object -- not in component state -- so it
+        // survives VideoBox unmounting when the user navigates away from
+        // the call screen mid-call. Re-broadcast so a mounted VideoBox
+        // can re-render its kebab now that it knows what the peer can do.
+        if (message.contentType === CAPABILITIES_CONTENT_TYPE) {
+            try {
+                const _ccall = this._findActiveCallForUri(message.sender.uri);
+                const _caps = parseCallCapabilities(message.content);
+                if (_ccall && _caps) {
+                    setPeerCallCapabilities(_ccall, _caps);
+                    utils.timestampedLog('[capabilities] peer', message.sender.uri,
+                        'advertised ->', _caps.join(',') || '(none)');
+                    DeviceEventEmitter.emit('sylkPeerCapabilities', {
+                        callId: _ccall.id || _ccall._callId,
+                        capabilities: _caps,
+                    });
+                }
+            } catch (e) { /* ignore malformed advertisement */ }
+            return;
+        }
+
+        // Screen-sharing start/stop signal from the peer. Tells the far side
+        // that we're presenting (so their pointer button can appear) and, by
+        // its mere arrival, that the sender supports the pointer protocol.
+        if (message.contentType === 'application/sylk-screen-sharing') {
+            try {
+                const _scall = this._findActiveCallForUri(message.sender.uri);
+                const _sd = JSON.parse(message.content);
+                if (_scall && _sd && (_sd.action === 'start' || _sd.action === 'stop')) {
+                    const _sharing = (_sd.action === 'start');
+                    _scall._remotePeerSharing = _sharing;
+                    utils.timestampedLog('[screen-share] peer', message.sender.uri, _sd.action + 'ed screen sharing');
+                    DeviceEventEmitter.emit('sylkScreenSharingChanged', {
+                        callId: _scall.id || _scall._callId,
+                        sharing: _sharing
+                    });
+                }
+                // "Please share your screen" handshake, piggybacked on the
+                // same content type so older peers (which only understand
+                // start/stop and return) drop it silently. See
+                // _noteIncomingScreenShareRequest for the receiver flow.
+                if (_scall && _sd && _sd.action === 'request') {
+                    this._noteIncomingScreenShareRequest(message.sender.uri, _scall, _sd);
+                } else if (_scall && _sd
+                        && (_sd.action === 'request_accept' || _sd.action === 'request_reject')) {
+                    // Requester side: the peer answered the request we sent.
+                    // Route it to the mounted VideoBox so its kebab can drop
+                    // out of "Requesting screen..." right away rather than
+                    // sitting there until the 60 s expiry. The share itself
+                    // arrives separately as a normal 'start' signal once the
+                    // peer clears their OS screen-capture consent dialog.
+                    const _accepted = (_sd.action === 'request_accept');
+                    utils.timestampedLog('[screen-request] peer', message.sender.uri,
+                        _accepted ? 'ACCEPTED' : 'REJECTED', 'our screen request', _sd.id);
+                    DeviceEventEmitter.emit('sylkScreenShareRequestResolved', {
+                        callId: _scall.id || _scall._callId,
+                        requestId: _sd.id,
+                        accepted: _accepted,
+                    });
+                }
+            } catch (e) { /* ignore malformed signal */ }
+            return;
+        }
+
+        // Remote pointer (1-1 screen-share guidance). The peer tapped our
+        // shared screen and sent normalized (0..1) coords over the in-call
+        // channel. Draw a guide marker over our screen via the native overlay
+        // — but ONLY if this device is currently sharing its screen.
+        if (message.contentType === 'application/sylk-pointer') {
+            try {
+                const _pcall = this._findActiveCallForUri(message.sender.uri);
+                utils.timestampedLog('[pointer] recv sylk-pointer from', message.sender && message.sender.uri,
+                    'sharing=', !!(_pcall && _pcall._sylkScreenShare), 'platform=', Platform.OS);
+                if (_pcall && _pcall._sylkScreenShare) {
+                    const _p = JSON.parse(message.content);
+                    if (_p && typeof _p.x === 'number' && typeof _p.y === 'number') {
+                        if (Platform.OS === 'android'
+                            && NativeModules.PointerOverlay
+                            && NativeModules.PointerOverlay.showPointer) {
+                            NativeModules.PointerOverlay.showPointer(_p.x, _p.y);
+                        } else {
+                            utils.timestampedLog('[pointer] drawing guide marker (RN overlay) at', _p.x, _p.y);
+                            // Use the sender's t as the marker id so a duplicate
+                            // DELIVERY of the same click (same t) is deduped by
+                            // PointerGuideOverlay's own last-id guard (was Date.now(),
+                            // which differed per delivery → double animation).
+                            this.setState({ guidePoint: { x: _p.x, y: _p.y, id: (_p.t != null ? _p.t : Date.now()) } });
+                        }
+                        // ACK back so the sender knows we actually rendered this
+                        // click and can echo it locally. Echo the same 't' id.
+                        if (_p.t != null && _pcall && typeof _pcall.sendMessage === 'function') {
+                            try {
+                                _pcall.sendMessage(JSON.stringify({ t: _p.t }),
+                                    'application/sylk-pointer-ack', {}, () => {});
+                            } catch (e) { /* best effort */ }
+                        }
+                    }
+                }
+            } catch (e) { /* ignore malformed pointer */ }
+            return;
+        }
+
+        // Pointer ACK — the peer confirmed they rendered a click WE sent while
+        // viewing their shared screen. Route it to the sender's VideoBox (via a
+        // device event, since the ack lands here on the account, not the
+        // component) so it can echo the click locally as visual confirmation.
+        if (message.contentType === 'application/sylk-pointer-ack') {
+            try {
+                const _pcall = this._findActiveCallForUri(message.sender.uri);
+                const _a = JSON.parse(message.content);
+                const _cid = _pcall && (_pcall.id || _pcall._callId);
+                if (_a && _a.t != null && _cid) {
+                    utils.timestampedLog('[pointer] recv ack t=', _a.t, 'call=', _cid);
+                    DeviceEventEmitter.emit('sylkPointerAck', { callId: _cid, t: _a.t });
+                }
+            } catch (e) { /* ignore malformed ack */ }
+            return;
+        }
+
+        // Sharer is telling us whether their app is in the FOREGROUND. On iOS the
+        // pointer marker can only be drawn inside their app, so when they leave it
+        // our pointer can't be shown — the viewer uses this to hide its cursor.
+        if (message.contentType === 'application/sylk-pointer-visibility') {
+            try {
+                const _pcall = this._findActiveCallForUri(message.sender.uri);
+                const _v = JSON.parse(message.content);
+                const _cid = _pcall && (_pcall.id || _pcall._callId);
+                if (_v && typeof _v.inApp === 'boolean' && _cid) {
+                    utils.timestampedLog('[pointer] recv visibility inApp=', _v.inApp, 'call=', _cid);
+                    DeviceEventEmitter.emit('sylkPointerVisibility', { callId: _cid, inApp: _v.inApp });
+                }
+            } catch (e) { /* ignore malformed visibility */ }
+            return;
+        }
+
         if (message.contentType === 'application/sylk-media-lost') {
             const call = this._findActiveCallForUri(message.sender.uri);
             if (call) {
@@ -34334,7 +35093,7 @@ class Sylk extends Component {
 
         // application/sylk-location-sharing is fully handled by
         // saveIncomingMessage: it persists the row, injects the map bubble
-        // (as application/sylk-live-location via _injectLocationBubble) and
+        // (as application/sylk-location-sharing via _injectLocationBubble) and
         // sends its own IMDN. Stop here so it never reaches the generic
         // sylk2GiftedChat render below — that helper emits a bogus
         // "Unknown message received application/sylk-location-sharing" chat
@@ -37688,6 +38447,168 @@ class Sylk extends Component {
 	}
 
 
+	// ===== Screen-share request handshake (in-call kebab ->
+	// "Request screen") =====
+	//
+	// Requester: VideoBox.sendScreenShareRequest() ships
+	//   {action:'request', id, expires} on the call's
+	//   application/sylk-screen-sharing channel.
+	// Receiver:  the branch in incomingMessage() lands here, we pop
+	//   ScreenShareRequestModal, and on Accept we reply
+	//   {action:'request_accept', id} and kick the local VideoBox into
+	//   its ordinary selectScreenShare() path. Accepting here does NOT
+	//   bypass the OS screen-capture consent dialog -- that still runs,
+	//   which is deliberate: this modal is consent to be *asked*, the
+	//   system prompt is consent to actually capture.
+	// Reject:   {action:'request_reject', id}, no share started.
+
+	_noteIncomingScreenShareRequest(fromUri, call, data) {
+		const requestId = data && data.id;
+		if (!requestId || !call) return;
+		if (this.handledScreenShareRequestIds.has(requestId)) return;
+		const expiresAt = this._parseExpiresToMs(data.expires);
+		if (expiresAt == null || Date.now() >= expiresAt) {
+			// Stale on arrival: never prompt, never reply.
+			this.handledScreenShareRequestIds.add(requestId);
+			return;
+		}
+		// Already sharing on this call -- there is nothing to ask the
+		// user. Ack immediately so the requester's menu item clears,
+		// and don't raise a modal over an in-progress share.
+		if (call._sylkScreenShare) {
+			this.handledScreenShareRequestIds.add(requestId);
+			this._sendScreenShareRequestReply(call, 'request_accept', requestId);
+			return;
+		}
+		// Stamp handled BEFORE showing so a duplicate in-dialog
+		// delivery can't double-prompt.
+		this.handledScreenShareRequestIds.add(requestId);
+		try {
+			utils.timestampedLog('[screen-request] RECEIVED <-', fromUri,
+				'-- request', requestId.slice(0, 8),
+				'expires in', Math.max(0, Math.round((expiresAt - Date.now()) / 1000)), 's');
+		} catch (e) { /* noop */ }
+		this.setState({screenShareRequestModal: {
+			show: true,
+			fromUri,
+			requestId,
+			expiresAt,
+			callId: (call.id || call._callId),
+		}}, () => {
+			try {
+				utils.timestampedLog('[screen-request] modal state ->',
+					'show=', this.state.screenShareRequestModal.show,
+					'route=', this.currentRoute || '(unknown)');
+			} catch (e) { /* noop */ }
+		});
+		// Auto-dismiss at the request's expiry, same as the conference
+		// and location prompts. Silent -- no reply is sent, so the
+		// requester's own expiry timer clears its pending state.
+		if (this._screenShareRequestModalDismissTimerId) {
+			clearTimeout(this._screenShareRequestModalDismissTimerId);
+			this._screenShareRequestModalDismissTimerId = null;
+		}
+		this._screenShareRequestModalDismissTimerId = setTimeout(() => {
+			this._screenShareRequestModalDismissTimerId = null;
+			const m = this.state.screenShareRequestModal;
+			if (m && m.show && m.requestId === requestId) {
+				this._closeScreenShareRequestModal();
+			}
+		}, Math.max(0, expiresAt - Date.now()));
+	}
+
+	_closeScreenShareRequestModal() {
+		if (this._screenShareRequestModalDismissTimerId) {
+			clearTimeout(this._screenShareRequestModalDismissTimerId);
+			this._screenShareRequestModalDismissTimerId = null;
+		}
+		this.setState({screenShareRequestModal: {
+			show: false, fromUri: null, requestId: null, expiresAt: null, callId: null,
+		}});
+	}
+
+	// Shared sender for the two one-line replies. Rides the call, not
+	// the chat, so nothing is journalled.
+	_sendScreenShareRequestReply(call, action, requestId) {
+		if (!call || typeof call.sendMessage !== 'function') return;
+		try {
+			call.sendMessage(JSON.stringify({action, id: requestId}),
+				'application/sylk-screen-sharing', {}, (err) => {
+					if (err) {
+						console.log('[screen-request] ' + action + ' send failed:',
+							(err && err.message) || String(err));
+					}
+				});
+		} catch (e) {
+			console.log('[screen-request] ' + action + ' send threw:',
+				(e && e.message) || String(e));
+		}
+	}
+
+	// User tapped Accept. Reply, then start OUR screen share.
+	//
+	// The capture machinery (getDisplayMedia + replaceTrack onto the
+	// existing video sender, plus the iOS broadcast picker) lives in
+	// VideoBox.selectScreenShare, so we poke that component rather than
+	// duplicating it here. Two delivery paths, because the user may not
+	// be looking at the call screen when they accept:
+	//   - DeviceEventEmitter for a currently-mounted VideoBox;
+	//   - a stamp on the call object for one that is unmounted (the
+	//     user wandered into the chat mid-call), consumed by
+	//     VideoBox.componentDidMount when it remounts.
+	// We also route back to /call so that remount actually happens.
+	_acceptScreenShareRequest() {
+		const src = this.state.screenShareRequestModal || {};
+		const fromUri = src.fromUri;
+		const requestId = src.requestId;
+		const expiresAt = src.expiresAt;
+		if (!fromUri || !requestId) return;
+		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+			console.log('[screen-request] accept: already expired, ignoring id=', requestId);
+			return;
+		}
+		const call = this._findActiveCallForUri(fromUri);
+		if (!call) {
+			console.log('[screen-request] accept: no active call with', fromUri,
+				'-- cannot start a share');
+			return;
+		}
+		try {
+			utils.timestampedLog('[screen-request] ACCEPTED <-', fromUri,
+				'-- request', requestId.slice(0, 8), '-- starting screen share');
+		} catch (e) { /* noop */ }
+		this._sendScreenShareRequestReply(call, 'request_accept', requestId);
+		call._sylkPendingScreenShareStart = requestId;
+		try {
+			DeviceEventEmitter.emit('sylkScreenShareRequested', {
+				callId: (call.id || call._callId),
+				requestId,
+			});
+		} catch (e) { /* noop */ }
+		if (this.currentRoute !== '/call') {
+			try { this.goBackToCall(); } catch (e) { /* noop */ }
+		}
+	}
+
+	// User tapped Reject. Explicit reply so the requester's menu item
+	// leaves its pending state at once instead of waiting out the 60 s
+	// expiry. Modal state is cleared by the modal's own close().
+	_declineScreenShareRequest() {
+		const src = this.state.screenShareRequestModal || {};
+		const fromUri = src.fromUri;
+		const requestId = src.requestId;
+		if (!fromUri || !requestId) return;
+		try {
+			utils.timestampedLog('[screen-request] REJECTED <-', fromUri,
+				'-- request', requestId.slice(0, 8));
+		} catch (e) { /* noop */ }
+		const call = this._findActiveCallForUri(fromUri);
+		if (call) {
+			this._sendScreenShareRequestReply(call, 'request_reject', requestId);
+		}
+	}
+
+
 	_noteIncomingAcceptanceTick(fromUri, metadataContent) {
 		const refId = metadataContent.sessionId || metadataContent.messageId;
 		if (!refId) return;
@@ -37965,7 +38886,7 @@ class Sylk extends Component {
 			// Distinct from 'application/sylk-message-metadata' so the
 			// metadata filter in updateRenderMessageState doesn't drop this,
 			// and so ContactsListBox.renderMessageText can branch on it.
-			contentType: 'application/sylk-live-location',
+			contentType: 'application/sylk-location-sharing',
 			metadata: metadataContent,
 			// Text is bumped on every subsequent tick (by ContactsListBox)
 			// so ChatBubble's memoization detects content changes.
@@ -38069,8 +38990,7 @@ class Sylk extends Component {
                 )) {
                 return null;
             }
-            if (message.contentType === 'application/sylk-live-location'
-                || message.contentType === 'application/sylk-message-metadata') {
+            if (message.contentType === 'application/sylk-location-sharing' || message.contentType === 'application/sylk-message-metadata') {
                 return null;
             }
 
@@ -40844,7 +41764,20 @@ class Sylk extends Component {
 
 		if (contacts.length === 0) {
 		    contact = this.newContact(uri);
-		    contacts.push(contact);
+		    // newContact() returns null for URIs sanitizeContact rejects.
+		    // Do NOT push it: the `for (const contact of contacts)` loops
+		    // further down would throw on contact.name / contact.timestamp
+		    // and take the app with them. Leaving `contacts` empty still
+		    // persists the message row itself - only the contact-side
+		    // bookkeeping (unread bump, 'messages' tag, saveSylkContact)
+		    // is skipped, which is the correct outcome for a URI that can
+		    // never have a contact row.
+		    if (contact) {
+		        contacts.push(contact);
+		    } else {
+		        console.log('saveIncomingMessage: sanitizeContact rejected uri', uri,
+		            '- message stored without a contact row');
+		    }
 		}
 
         let incomingMessage = this.state.incomingMessage;
@@ -42789,7 +43722,20 @@ class Sylk extends Component {
 
 	// Tag values that are functional flags, not groups (e.g. 'caregiver') - exclude
 	// so they never show as local-only groups or get put as server groups.
-	_abNonGroupTags = new Set(['bypassdnd', 'muted', 'noread', 'history', 'caregiver']);
+	// Tags that are FLAGS, not user-visible groups. These are stripped from the
+	// group list during address-book migration/sync so they never surface as a
+	// group name and never round-trip through the server as one.
+	//
+	// 'autoanswer' belongs here even though it looks like an ordinary tag.
+	// Auto-answer is a PER-DEVICE setting — toggleAutoAnswer() even replicates a
+	// metadata message whose only job is to switch it OFF on your other devices.
+	// While it was missing from this set the XCAP layer treated it as a group,
+	// synced it, and could restore it into contact.tags on a device whose own
+	// localProperties.autoanswer was false. The native incoming-call path read
+	// the tag, so that device auto-answered while its contact screen correctly
+	// showed the feature off (observed 2026-08-16: pushes carried
+	// [messages, calls, autoanswer, favorite] with localProperties saying false).
+	_abNonGroupTags = new Set(['bypassdnd', 'muted', 'noread', 'history', 'caregiver', 'autoanswer']);
 
 	// Fixed historic timestamp (2010-04-12) for contacts with no message history,
 	// so pure imports sort below contacts the user has actually talked to.
@@ -42829,14 +43775,35 @@ class Sylk extends Component {
 
 	// Reserved tag <-> server group name mapping; the server name is canonical
 	// (e.g. 'chat' tag <-> "Messages" group). Custom tags use the Capitalized tag.
+	// NOTE: there is deliberately NO autoanswer <-> 'Caregivers' entry in either
+	// direction. It used to be here, and it was a spec violation:
+	// docs/addressbook/addressbook.md — "Per-device data — codecs, encryption
+	// mode, zRTP state, auto-record, AUTO-ANSWER, and the OS-address-book link —
+	// is never synced." docs/addressbook/code-reference.md documents this map as
+	// favorite/blocked/tel/chat only; 'Caregivers' appears nowhere in the docs.
+	//
+	// The effect of the stray entry was that auto-answer — a per-device setting,
+	// whose whole replication protocol exists to switch it OFF on your other
+	// devices — round-tripped through the server as a group. Adoption then did
+	// what chapter 7 says it must ("for every server group, any local member
+	// missing the corresponding tag is tagged — continuously, on every sync"),
+	// so the tag was re-stamped onto contacts on every sync and the native
+	// incoming-call path auto-answered on a device whose own
+	// localProperties.autoanswer was false (2026-08-16).
+	//
+	// 'Caregivers' is now an ordinary group like any other: it maps to the
+	// 'caregivers' tag by the identity fallback and has no bearing on
+	// auto-answer. The per-device flag lives in localProperties.autoanswer and
+	// its 'autoanswer' tag is listed in _abNonGroupTags, so it is neither
+	// published nor adopted.
 	_abTagToGroupName = (tag) => {
-	    const map = { favorite: 'Favorites', blocked: 'Blocked', tel: 'Tel', autoanswer: 'Caregivers', chat: 'Messages' };
+	    const map = { favorite: 'Favorites', blocked: 'Blocked', tel: 'Tel', chat: 'Messages' };
 	    return map[(tag || '').toLowerCase()] || this._abCapitalizeGroup(tag);
 	};
 
 	// Reverse: the local tag we store for a given server group name.
 	_abGroupNameToTag = (name) => {
-	    const rev = { favorites: 'favorite', blocked: 'blocked', tel: 'tel', caregivers: 'autoanswer' };
+	    const rev = { favorites: 'favorite', blocked: 'blocked', tel: 'tel' };
 	    const n = (name || '').trim();
 	    return rev[n.toLowerCase()] || n;
 	};
@@ -44098,6 +45065,19 @@ class Sylk extends Component {
 	            if (key === 'conference') continue;                // URI-derived, handled separately
 	            if (this._abAutoLocalGroups.has(key)) continue;    // messages/chat/calls/recent/missed are local-authoritative
 	            const wantTag = this._abGroupNameToTag(gName);
+	            // Never adopt a FLAG tag from a server group. These are settings,
+	            // not groups — and 'autoanswer' in particular is PER DEVICE. While
+	            // this guard was missing, an 'Autoanswer' group left on the server
+	            // was re-adopted into contact.tags on every sync and written
+	            // straight to SQL, so the native incoming-call path auto-answered
+	            // on a device whose own localProperties.autoanswer was false
+	            // (2026-08-16). Publishing is already filtered by _abNonGroupTags;
+	            // this is the matching guard on the import side.
+	            if (this._abNonGroupTags.has(wantTag.trim().toLowerCase())) {
+	                utils.timestampedLog('[ab] [get] ignoring server group "' + gName
+	                    + '" — "' + wantTag + '" is a per-device flag, not a group');
+	                continue;
+	            }
 	            const members = Array.isArray(g.contacts) ? g.contacts : [];
 	            for (const m of members) {
 	                for (const u of this._abServerUris(m)) {
@@ -44988,6 +45968,14 @@ class Sylk extends Component {
 	        const g = byName[key];
 	        if (key === 'conference') continue;
 	        const wantTag = this._abGroupNameToTag(g.name);
+	        // Flag tags are not groups — see the matching guard in the [ab] [get]
+	        // adoption loop. Without this, a stale 'Autoanswer' server group is
+	        // re-imported into contact.tags on every migration pass.
+	        if (this._abNonGroupTags.has(wantTag.trim().toLowerCase())) {
+	            utils.timestampedLog('[ab] [migrate] ignoring server group "' + g.name
+	                + '" — "' + wantTag + '" is a per-device flag, not a group');
+	            continue;
+	        }
 	        for (const m of g.members) {
 	            for (const u of this._abServerUris(m)) {
 	                for (const c of this.lookupContacts(u)) {
@@ -45380,10 +46368,74 @@ class Sylk extends Component {
 			}
 
 			contact.localProperties = localProperties;
+
+			// Reconcile the 'autoanswer' TAG with its per-device authority,
+			// localProperties.autoanswer.
+			//
+			// These are two storage locations for one setting: the UI and
+			// anyContactHasAutoAnswer() read localProperties, while the native
+			// incoming-call path historically read the tag. toggleAutoAnswer()
+			// writes both, but the tag also used to round-trip through the server
+			// address book (it was missing from _abNonGroupTags), so a sync could
+			// reinstate it on a device whose own localProperties said false. The
+			// result was a phone that auto-answered while its contact screen
+			// correctly showed the feature off, and the only way out was to toggle
+			// ON then OFF to bring the two back into line (2026-08-16 14:30).
+			//
+			// localProperties wins: auto-answer is per-device by design —
+			// toggleAutoAnswer() replicates a message whose sole purpose is to
+			// switch it OFF on your other devices.
+			if (Array.isArray(contact.tags)) {
+				const _autoIdx = contact.tags.findIndex(
+					(t) => (t || '').trim().toLowerCase() === 'autoanswer');
+				const _autoLocal = localProperties.autoanswer === true;
+				if (_autoIdx > -1 && !_autoLocal) {
+					contact.tags.splice(_autoIdx, 1);
+					this._queueAutoAnswerTagRepair(contact, 'stale tag removed');
+				} else if (_autoIdx === -1 && _autoLocal) {
+					// Harmless direction (the native path reads localProperties
+					// now), but keep the tag-driven filter/preview surfaces honest.
+					contact.tags.push('autoanswer');
+					this._queueAutoAnswerTagRepair(contact, 'missing tag restored');
+				}
+			}
         }
 
         contact = this.sanitizeContact(uri, contact);
         return contact;
+    }
+
+    /** Persist an auto-answer tag reconciliation made in newContact().
+     *
+     *  Fixing the in-memory contact is not enough: the native incoming-call
+     *  service reads the DB directly, so a stale tag left in the `tags` column
+     *  would keep auto-answering calls no matter what the app shows. Writes are
+     *  coalesced and deferred because newContact() runs in tight loops during
+     *  contact load — in practice the drifted set is empty or a single row. */
+    _queueAutoAnswerTagRepair(contact, reason) {
+        if (!contact || !contact.uri) return;
+        if (!this._autoAnswerRepairQueue) this._autoAnswerRepairQueue = new Map();
+        if (this._autoAnswerRepairQueue.has(contact.uri)) return;
+        this._autoAnswerRepairQueue.set(contact.uri, contact);
+        utils.timestampedLog('[contact] [autoanswer] tag/localProperties drift on',
+            contact.uri, '—', reason, '(queued for repair)');
+        clearTimeout(this._autoAnswerRepairTimer);
+        this._autoAnswerRepairTimer = setTimeout(() => {
+            const pending = [...this._autoAnswerRepairQueue.values()];
+            this._autoAnswerRepairQueue.clear();
+            pending.forEach((c) => {
+                try {
+                    this.saveSylkContact(c.uri, c, 'autoanswerTagRepair');
+                } catch (e) {
+                    console.log('[contact] [autoanswer] repair save failed for',
+                        c.uri, (e && e.message) || String(e));
+                }
+            });
+            if (pending.length) {
+                utils.timestampedLog('[contact] [autoanswer] repaired',
+                    pending.length, 'contact(s)');
+            }
+        }, 3000);
     }
 
     newSyntheticContact(uri, name=null, data={}) {
@@ -47763,6 +48815,26 @@ class Sylk extends Component {
 		if (contacts.length === 0) {
 			let newContact = this.newContact(uri);
 
+			// newContact() returns null whenever sanitizeContact() rejects the
+			// URI - i.e. it is not a UUID, not a phone number, not email-shaped
+			// per utils.isEmailAddress and not a sylk://<host>/conference/<room>
+			// URL. Real cases seen off a SIP trunk: an IP-address domain
+			// (alice@192.168.1.5 - the domain regex demands an alphabetic TLD),
+			// a :port suffix, a leftover `sip:` prefix in the local part, and
+			// `room@videoconference.` when state.defaultDomain hasn't settled.
+			// The old code pushed that null straight into `contacts` and the
+			// loop below died on `contact.conference = ...` with a FATAL
+			// uncaughtException ("Cannot set property 'conference' of null"),
+			// taking the whole app down from the deferred call-teardown path.
+			// No contact row can exist for such a URI, so log the offending
+			// value (previously invisible - sanitizeContact rejects silently)
+			// and skip the history entry rather than crashing.
+			if (!newContact) {
+				console.log('addHistoryEntry: sanitizeContact rejected uri', uri,
+					'- skipping history entry');
+				return;
+			}
+
 			// First-time contact creation for a phone-number call: copy
 			// over identity from the system address book (display name +
 			// photo) so the new Sylk row reads "Flori Georgescu" instead
@@ -47814,6 +48886,11 @@ class Sylk extends Component {
 		}
 
 		for (const contact of contacts) {
+			// Belt-and-braces: lookupContacts() hands back whatever is in
+			// contactsIndexes, so never dereference an entry unchecked here.
+			if (!contact) {
+				continue;
+			}
 			contact.conference = participants.length > 1;
 			contact.timestamp = new Date();
 			contact.lastCallId = callUUID;
@@ -47877,9 +48954,21 @@ class Sylk extends Component {
 
         let contacts = this.lookupContacts(uri);
         if (!contacts || contacts.length === 0) {
-            contacts = [this.newContact(uri)];
+            // Same null-return guard as addHistoryEntry: newContact()
+            // yields null for any URI sanitizeContact rejects, and the
+            // loop below would then throw on contact.timestamp.
+            const _newContact = this.newContact(uri);
+            if (!_newContact) {
+                console.log('updateContactOnConferenceInvite: sanitizeContact rejected uri', uri,
+                    '- skipping contact bump');
+                return;
+            }
+            contacts = [_newContact];
         }
         for (const contact of contacts) {
+            if (!contact) {
+                continue;
+            }
             contact.timestamp = new Date();
             contact.lastMessage = 'Conference call';
             if (!Array.isArray(contact.tags)) {
@@ -48454,6 +49543,14 @@ return (
           </View>
         </ImageBackground>
       </Router>
+      <Portal>
+        {this.state.guidePoint ? (
+          <PointerGuideOverlay
+            point={this.state.guidePoint}
+            onDone={() => this.setState({ guidePoint: null })}
+          />
+        ) : null}
+      </Portal>
     </PaperProvider>
   </SafeAreaProvider>
   </GestureHandlerRootView>
@@ -49161,6 +50258,13 @@ return (
                     deleteFiles = {this.deleteFiles}
                     toggleFavorite = {this.toggleFavorite}
                     toggleAutoAnswer = {this.toggleAutoAnswer}
+                    toggleAutoDialer = {this.toggleAutoDialer}
+                    startAutoDialer = {this.startAutoDialer}
+                    autoDialerUri = {this.state.autoDialerUri}
+                    autoDialerRedialSeconds = {this.state.autoDialerRedialSeconds}
+                    autoDialerHangupSeconds = {this.state.autoDialerHangupSeconds}
+                    autoDialerAudio = {this.state.autoDialerAudio}
+                    autoDialerVideo = {this.state.autoDialerVideo}
                     toggleCaregiver = {this.toggleCaregiver}
                     toggleBlocked = {this.toggleBlocked}
                     saveConference={this.saveConference}
@@ -49231,6 +50335,10 @@ return (
                     rejectAnonymous = {this.state.accountSetting.privacy.rejectAnonymous}
                     toggleChatSounds = {this.toggleChatSounds}
                     chatSounds = {this.state.accountSetting.device.chatSounds}
+                    toggleDevMode = {this.toggleDevMode}
+                    devMode = {!!(this.state.accountSetting
+                        && this.state.accountSetting.device
+                        && this.state.accountSetting.device.devMode)}
                     toggleReadReceipts = {this.toggleReadReceipts}
                     readReceipts = {this.state.accountSetting.privacy.readReceipts}
                     toggleRejectNonContacts = {this.toggleRejectNonContacts}
@@ -49925,6 +51033,24 @@ return (
                     onDecline={() => this._declineConferenceRequest()}
                     close={() => this._closeConferenceRequestModal()}
                 />
+
+                {/* Receiver-side prompt for an in-call "Request screen".
+                    Mounted here as well as on /call for the same reason
+                    the conference prompt is: the request can land while
+                    the user has stepped off the call screen. */}
+                <ScreenShareRequestModal
+                    show={this.state.screenShareRequestModal.show}
+                    fromUri={this.state.screenShareRequestModal.fromUri}
+                    fromName={(() => {
+                        const _u = this.state.screenShareRequestModal.fromUri;
+                        if (!_u) return null;
+                        const _c = this.lookupContact(_u);
+                        return (_c && _c.name && _c.name !== _u) ? _c.name : null;
+                    })()}
+                    onAccept={() => this._acceptScreenShareRequest()}
+                    onDecline={() => this._declineScreenShareRequest()}
+                    close={() => this._closeScreenShareRequestModal()}
+                />
             </Fragment>
         );
     }
@@ -50002,7 +51128,15 @@ return (
         // Coerce to a real boolean; `incomingCall` is either a Call
         // object or null. PropTypes.bool warns when we forward the
         // raw object/null.
-        const videoMuted = !!this.state.incomingCall;
+        //
+        // ...EXCEPT for an auto-answered call, which starts with the camera
+        // live and no prompt. Nobody is holding the phone to approve a preview
+        // — see the autoAnswered branch in callEventHandler. Passing false here
+        // is sufficient on its own: VideoBox gates BOTH the prompt
+        // (videoEnableDialogVisible) and the initial `track.enabled = false`
+        // on props.videoMuted.
+        const videoMuted = !!this.state.incomingCall
+            && !this._isAutoAnsweredCall(this.state.incomingCall);
 
         // Compute the <Call> mount key (see the comment on the key prop
         // below for what this is for). When activeCall is non-null we
@@ -50197,6 +51331,23 @@ return (
                 onAccept={() => this._acceptConferenceRequest()}
                 onDecline={() => this._declineConferenceRequest()}
                 close={() => this._closeConferenceRequestModal()}
+            />
+
+            {/* Receiver-side "share your screen" prompt. This is the
+                mount that matters -- the receiver is by definition in a
+                video call when the request arrives. */}
+            <ScreenShareRequestModal
+                show={this.state.screenShareRequestModal.show}
+                fromUri={this.state.screenShareRequestModal.fromUri}
+                fromName={(() => {
+                    const _u = this.state.screenShareRequestModal.fromUri;
+                    if (!_u) return null;
+                    const _c = this.lookupContact(_u);
+                    return (_c && _c.name && _c.name !== _u) ? _c.name : null;
+                })()}
+                onAccept={() => this._acceptScreenShareRequest()}
+                onDecline={() => this._declineScreenShareRequest()}
+                close={() => this._closeScreenShareRequestModal()}
             />
             </Fragment>
         )

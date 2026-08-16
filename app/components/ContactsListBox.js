@@ -471,7 +471,7 @@ class ContactsListBox extends Component {
 				// update that re-emits messages[uri] would revert the
 				// visibly flicker between "Locating…" and the real
 				const isLocBubble = a
-					&& a.contentType === 'application/sylk-live-location';
+					&& a.contentType === 'application/sylk-location-sharing';
 				for (const f of fields) {
 				  if (isLocBubble && (f === 'text')) continue;
 				  if (!equalNullish(a[f], b[f])) {
@@ -519,7 +519,7 @@ class ContactsListBox extends Component {
 				// "unchanged → keep old" shortcut and the live-location metadata
 				// preservation below, which would otherwise keep the stale live
 				// (final-coords) metadata and show the final points on success.
-				if (m && m.contentType === 'application/sylk-live-location'
+				if (m && m.contentType === 'application/sylk-location-sharing'
 						&& m.metadata && m.metadata.meetOutcome) {
 				  const _oldF = idsEqual ? oldMessages[i] : oldMessages.find(o => o && o._id === m._id);
 				  const _oldOutcome = _oldF && _oldF.metadata && _oldF.metadata.meetOutcome;
@@ -530,12 +530,12 @@ class ContactsListBox extends Component {
 				if (idsEqual && !changedIds.includes(m._id)) {
 				  return oldMessages[i];
 				}
-				if (m && m.contentType === 'application/sylk-live-location') {
+				if (m && m.contentType === 'application/sylk-location-sharing') {
 				  const old = idsEqual
 					? oldMessages[i]
 					: oldMessages.find(o => o && o._id === m._id);
 				  if (old
-					  && old.contentType === 'application/sylk-live-location') {
+					  && old.contentType === 'application/sylk-location-sharing') {
 					return {
 					  ...m,
 					  text: old.text,

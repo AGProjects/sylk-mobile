@@ -31,7 +31,13 @@ PID_FILE="$SCRIPT_DIR/.release-logs.pid"
 
 # Filter spec: app logs + JS console + native crashes; everything else
 # silenced. Kept in sync with the single-device version.
-FILTER=(SYLK_APP:D ReactNativeJS:D AndroidRuntime:E '*:S')
+# NOTE on tags: '*:S' silences everything not listed here, so a Log.* call is
+# invisible to this script unless its TAG appears above. react-native-webrtc
+# logs under WebRTCModule.class.getCanonicalName() —
+# 'com.oney.WebRTCModule.WebRTCModule' — which is where the [sylk-leak]
+# capturer/factory counters print. Without it in the list those counters are
+# compiled into the APK and emitted by the app, but never reach release.log.
+FILTER=(SYLK_APP:D ReactNativeJS:D AndroidRuntime:E com.oney.WebRTCModule.WebRTCModule:W '*:S')
 
 # Recursively send a signal to every descendant of $1 (NOT $1 itself).
 # Uses pgrep, which is available on macOS and Linux. This is the

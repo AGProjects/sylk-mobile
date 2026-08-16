@@ -248,6 +248,57 @@ class SylkBridgeModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // Bring the app's MainActivity back to the foreground. Used when the
+    // user taps "Stop" on the Android system screen-cast pill while the app
+    // is backgrounded (they'd shared their screen and switched away): once
+    // the projection stops we want to return them to the live call UI rather
+    // than leave them staring at whatever app was on top. Uses the launcher
+    // intent with REORDER_TO_FRONT so an existing task instance is raised
+    // (no relaunch / no state loss); NEW_TASK is required to start an
+    // activity from a non-activity context.
+    @ReactMethod
+    fun bringAppToForeground() {
+        try {
+            val ctx = reactApplicationContext
+            val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+            if (intent != null) {
+                intent.addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                    android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                )
+                ctx.startActivity(intent)
+            } else {
+                SylkLogger.e("[bridge] bringAppToForeground: no launch intent")
+            }
+        } catch (e: Exception) {
+            SylkLogger.e("[bridge] bringAppToForeground failed: ${e.message}")
+        }
+    }
+
+    // Force Android to re-show the system bars and RE-DISPATCH window insets
+    // to the (react-native-safe-area-context) SafeAreaProvider. Needed after a
+    // screen-share session ends: while sharing/immersive the status + nav bars
+    // were hidden and the insets collapsed to 0; when the bars come back the
+    // inset listener isn't always re-fired, so JS keeps the stale 0 insets and
+    // the app content overlaps the phone's top status bar and bottom button
+    // bar. Clearing the immersive flags and calling requestApplyInsets() makes
+    // the OS deliver a fresh WindowInsets pass so the safe-area padding is
+    // recomputed. Android-only; no-op if there's no current activity.
+    @ReactMethod
+    fun refreshSystemInsets() {
+        val activity = currentActivity ?: return
+        activity.runOnUiThread {
+            try {
+                val decor = activity.window.decorView
+                @Suppress("DEPRECATION")
+                decor.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+                androidx.core.view.ViewCompat.requestApplyInsets(decor)
+            } catch (e: Exception) {
+                SylkLogger.e("[bridge] refreshSystemInsets failed: ${e.message}")
+            }
+        }
+    }
+
     // Inlined from the dead react-native-immersive package (2026-07-22):
     // sticky-immersive fullscreen toggle used by the video call /
     // conference UI. Same SYSTEM_UI flags as the removed lib. The API is

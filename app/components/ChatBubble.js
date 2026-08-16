@@ -726,7 +726,7 @@ const ChatBubble = memo(
           textStyle={{ left: { color: leftTimeTextColor }, right: { color: rightTimeTextColor } }}
         />
       );
-    } else if (currentMessage.contentType === 'application/sylk-live-location') {
+    } else if (currentMessage.contentType === 'application/sylk-location-sharing') {
       // Live-location bubbles host an interactive trail scrubber
       // (AudioProgressSlider) plus zoom / pan / current-location /
       // restore icon buttons. GiftedChat's default Bubble wrapper
@@ -982,7 +982,7 @@ const ChatBubble = memo(
 	  // re-render whenever the bubble's id flips in/out of
 	  // visibleMessageIds so the placeholder → real LocationBubble
 	  // swap can land.
-	  if (p.contentType === 'application/sylk-live-location') {
+	  if (p.contentType === 'application/sylk-location-sharing') {
 		const prevVisible = !!(prev.visibleMessageIds
 			&& prev.visibleMessageIds.includes(id));
 		const nextVisible = !!(next.visibleMessageIds

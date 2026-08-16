@@ -442,7 +442,7 @@ export default class LocationSharingManager {
             if (ct === 'application/sylk-contact-update') continue;
             if (ct === 'message/imdn') continue;
             if (ct.indexOf('pgp') !== -1) continue;
-            if (ct === 'application/sylk-live-location') {
+            if (ct === 'application/sylk-location-sharing') {
                 return true;
             }
             const dir = m.direction;
@@ -3048,7 +3048,7 @@ export default class LocationSharingManager {
         // The _pendingStops guard at the top of this function short-
         // circuits the recursive re-entry that app.js.deleteMessage
         // triggers via its live-location detection (it calls
-        // stopLocationSharing on any sylk-live-location bubble delete),
+        // stopLocationSharing on any sylk-location-sharing bubble delete),
         // so calling deleteMessage from inside this block is safe.
         // FROZEN SUMMARY: a normal meet-end must KEEP the 3-point summary, so
         // 'user' (tapped Stop) and 'peer-stopped' (meeting_end / proximity from

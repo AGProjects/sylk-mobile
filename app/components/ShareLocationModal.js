@@ -3,7 +3,7 @@ import ThemedModalSurface from './ThemedModalSurface';
 import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions, Linking, AppState } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions, Linking, AppState, StyleSheet } from 'react-native';
 import { Text, Button, Surface, RadioButton, Checkbox, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import { openSettings } from 'react-native-permissions';
@@ -144,6 +144,80 @@ const UNTIL_RETURN_OPTION = {
     kind: 'untilIReturn',
 };
 
+
+// ---------------------------------------------------------------------------
+// Stop-condition pills.
+//
+// The four stop conditions used to be a column of identical grey radio
+// buttons distinguished only by their English labels. That's unusable for
+// the people this feature is actually for: an elderly or non-English-speaking
+// user being talked through the screen over the phone. A helper can't say
+// "press the third radio button" and be understood.
+//
+// So each mode now renders as a pill with its OWN colour and its OWN glyph —
+// two independent, language-free handles. Over the phone it becomes "press
+// the green one with the round arrow", which works regardless of what the
+// label says or whether the user can read it.
+//
+// Selected = solid fill in the mode's colour with white icon+label.
+// Unselected = same colour as a 2px outline with coloured icon+label.
+// That's a large, unmistakable difference at arm's length, and it doesn't
+// rely on colour alone (fill vs. outline + a distinct glyph per row), so it
+// still reads for colour-blind users.
+//
+// Colours are picked to be nameable in any language ("green", "blue") and
+// far enough apart in hue to survive a cheap screen: blue / orange / green /
+// purple. Icon names are @react-native-vector-icons/material-design-icons
+// glyphs (verified present in the bundled glyphmap).
+const MODE_PILLS = {
+    // `color` is the saturated fill used when the pill is selected (and, at low
+    // alpha, as the always-on tint when it isn't). `lightColor` is the pale
+    // variant used for the icon/label/border of an UNSELECTED pill in dark
+    // mode, where the mid-tone brand colour doesn't have the contrast to be
+    // read as text.
+    //
+    // A single pin dropped once — one fix, then done.
+    once:         { icon: 'map-marker',        color: '#1565C0', lightColor: '#7FB2F0' }, // blue
+    // A clock: it keeps running until you stop it.
+    untilStopped: { icon: 'clock-outline',     color: '#EF6C00', lightColor: '#FFB74D' }, // orange
+    // A circle of arrow curving back on itself — "goes away and comes back
+    // round", the same shape as the activity spinner people already see
+    // everywhere else on the phone.
+    untilReturn:  { icon: 'restore',           color: '#2E7D32', lightColor: '#81C784' }, // green
+    // Two people side by side — the two of you converging on one point.
+    meet:         { icon: 'account-multiple',  color: '#6A1B9A', lightColor: '#CE93D8' }, // purple
+};
+
+const pillStyles = StyleSheet.create({
+    pill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        // Generous vertical padding: this is a touch target for someone with
+        // unsteady hands, not a dense settings list.
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        marginBottom: 8,
+        marginRight: 6,
+        borderRadius: 24,
+        borderWidth: 2,
+        minHeight: 44, // iOS HIG minimum tappable height
+    },
+    // Lift the selected pill off the sheet so the choice is legible even to
+    // someone who can't distinguish the tint from the fill.
+    pillSelected: {
+        elevation: 3,
+        shadowColor: '#000',
+        shadowOpacity: 0.25,
+        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 1 },
+    },
+    pillLabel: {
+        marginLeft: 8,
+        fontSize: 14,
+        fontWeight: '600',
+        flexShrink: 1,
+    },
+});
 
 class ShareLocationModal extends Component {
     constructor(props) {
@@ -302,17 +376,33 @@ class ShareLocationModal extends Component {
                 untilReturnChecked: false,
             };
         }
+        // Caregiver contacts ALWAYS default to "Until I return", and we
+        // deliberately IGNORE any learned per-contact preference for them.
+        // A caregiver's purpose is open-ended presence sharing, so the safe
+        // default must not be overridden by a one-off (e.g. "Once") the user
+        // happened to pick last time. Placed ABOVE the saved-option restore so
+        // the caregiver default wins over learned settings. Foreground-only
+        // grant and the explicit meet-me flow above still take priority: the
+        // first is a technical constraint (a background "until return" can't
+        // run under a "While Using" grant), the second an explicit per-tap
+        // choice — neither is a "learned setting".
+        if (props && props.isCaregiver) {
+            return {
+                selectedInterval: INTERVAL_ONCE_INDEX,
+                meetChecked: false,
+                untilReturnChecked: true,
+            };
+        }
         // Restore the user's last-used share option for THIS contact — a
         // local, non-synced per-contact preference persisted on Confirm
         // (see onConfirm → onPersistShareOption, stored by app.js
         // saveShareLocationPrefs under contact.localProperties). We only
         // ever persist / restore once | untilStopped | untilReturn (never
         // "meet" — that's a per-invocation context set by the meet-me flow
-        // above, not a remembered preference). Takes precedence over the
-        // caregiver default: an explicit prior choice for this contact is
-        // more specific than the tag-derived default. Reached only when the
-        // grant isn't foreground-only and this isn't the meet-me flow (both
-        // handled above).
+        // above, not a remembered preference). Only reached for NON-caregiver
+        // contacts (caregivers are handled just above and never fall through
+        // to a learned setting), and only when the grant isn't foreground-only
+        // and this isn't the meet-me flow.
         const saved = props && props.lastShareOption;
         if (saved && saved.mode && saved.mode !== 'meet') {
             if (saved.mode === 'once') {
@@ -342,13 +432,6 @@ class ShareLocationModal extends Component {
                     untilReturnChecked: false,
                 };
             }
-        }
-        if (props && props.isCaregiver) {
-            return {
-                selectedInterval: INTERVAL_ONCE_INDEX,
-                meetChecked: false,
-                untilReturnChecked: true,
-            };
         }
         return base;
     }
@@ -750,32 +833,77 @@ class ShareLocationModal extends Component {
     }
 
     // Render one row of the left-column mutually-exclusive mode group
-    // ('untilStopped' | 'once' | 'untilReturn' | 'meet'). RadioButton.Android
-    // (not a checkbox) so the group reads as a single either/or choice, and so
-    // the unchecked glyph stays visible on iOS. Every non-"Once" mode is
+    // ('untilStopped' | 'once' | 'untilReturn' | 'meet') as a coloured pill —
+    // see MODE_PILLS above for why this isn't a radio list any more. The group
+    // is still exactly-one-of-four; the pill fill IS the selection state, so
+    // there's no separate radio glyph to read.
+    //
+    // Behaviour is unchanged from the radio version: every non-"Once" mode is
     // disabled under a foreground-only grant (they drive a background share the
-    // OS won't sustain); "Once" is always available.
+    // OS won't sustain), "Once" is always available, and a session type that's
+    // already live for this contact disables its own pill.
     _renderLeftModeRow(mode, label) {
         const _disabled = (ShareLocationModal._isForegroundOnly(this.props.permissionLevel)
             && mode !== 'once')
             // …or this session type is already live for the contact.
             || this._liveTypeDisabled(mode);
         const _selected = this._leftMode() === mode;
+        const _cfg = MODE_PILLS[mode] || MODE_PILLS.once;
+        // Every pill carries its colour in BOTH themes — an unselected pill is
+        // a tinted wash of its own colour, never plain white/transparent. The
+        // whole point is that a helper can say "press the green one" at any
+        // time, which fails if the unselected pills are colourless until you
+        // touch them. The tint is the same hue at low alpha, so the four rows
+        // stay tellable apart while the fully-saturated fill still marks the
+        // one that's actually selected.
+        //
+        // Alpha differs per theme: a 13% wash reads on white but disappears on
+        // a dark surface, so dark mode gets a stronger 33% wash.
+        const _isDark = getModalColors().isDark;
+        const _tint = _cfg.color + (_isDark ? '55' : '22');
+        const _fg = _selected
+            ? '#FFFFFF'
+            // On dark surfaces the mid-tone brand colour is too low-contrast
+            // for text, so unselected labels use the pale variant instead.
+            : (_isDark ? (_cfg.lightColor || _cfg.color) : _cfg.color);
         return (
-            <TouchableWithoutFeedback
+            <TouchableOpacity
+                key={mode}
+                activeOpacity={0.7}
+                disabled={_disabled}
                 onPress={_disabled ? undefined : () => this._selectLeftMode(mode)}
+                /* Announce the group to screen readers exactly as it behaves —
+                   a radio group — even though it no longer looks like one. */
+                accessibilityRole="radio"
+                accessibilityState={{ selected: _selected, disabled: _disabled }}
+                accessibilityLabel={label}
+                style={[
+                    pillStyles.pill,
+                    {
+                        backgroundColor: _selected ? _cfg.color : _tint,
+                        borderColor: _selected
+                            ? _cfg.color
+                            : (_isDark ? (_cfg.lightColor || _cfg.color) : _cfg.color),
+                        opacity: _disabled ? 0.35 : 1,
+                    },
+                    _selected ? pillStyles.pillSelected : null,
+                ]}
             >
-                <View style={[styles.checkBoxRow, { marginBottom: 0 }]}>
-                    <RadioButton.Android
-                        value={mode}
-                        status={_selected ? 'checked' : 'unchecked'}
-                        uncheckedColor="#666"
-                        disabled={_disabled}
-                        onPress={_disabled ? undefined : () => this._selectLeftMode(mode)}
-                    />
-                    <Text style={_disabled ? { opacity: 0.4 } : null}>{label}</Text>
-                </View>
-            </TouchableWithoutFeedback>
+                <Icon name={_cfg.icon} size={20} color={_fg} />
+                <Text style={[pillStyles.pillLabel, { color: _fg }]} numberOfLines={1}>
+                    {label}
+                </Text>
+                {/* Tick on the selected pill. Since every pill is now coloured,
+                    fill-vs-tint alone is a weaker selection cue than it was
+                    against a white background — the tick makes "this is the one
+                    that will happen" unambiguous without relying on colour. */}
+                {_selected ? (
+                    <>
+                        <View style={{ flex: 1 }} />
+                        <Icon name="check-circle" size={18} color="#FFFFFF" />
+                    </>
+                ) : null}
+            </TouchableOpacity>
         );
     }
 
@@ -1677,7 +1805,7 @@ class ShareLocationModal extends Component {
                                                 {this._renderLeftModeRow('once', 'Once')}
                                                 {this._renderLeftModeRow('untilStopped', 'Until stopped')}
                                                 {this._renderLeftModeRow('untilReturn', UNTIL_RETURN_OPTION.label)}
-                                                {!this.props.isCaregiver
+                                                {!this.props.isCaregiver && !this.props.selfShare
                                                     ? this._renderLeftModeRow('meet', 'Until we meet')
                                                     : null}
                                             </View>
@@ -2065,6 +2193,11 @@ ShareLocationModal.propTypes = {
     // parent can persist it under the contact's localProperties (never for a
     // meetingRequest share). Non-synced — stays on the device.
     onPersistShareOption      : PropTypes.func,
+    // True when the share target is the user's own account (self chat). Hides
+    // the "Until we meet" option — a meet-up handshake with yourself is
+    // meaningless — while leaving Once / Until stopped / Until I return
+    // available. Computed by NavigationBarModals as uri === accountId.
+    selfShare                 : PropTypes.bool,
 };
 
 export default ShareLocationModal;

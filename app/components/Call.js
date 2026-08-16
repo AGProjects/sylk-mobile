@@ -16,6 +16,7 @@ import { startZrtpForCall, ZRTP_CONTENT_TYPE,
          ZRTP_CAPABILITY_HEADER_NAME, ZRTP_CAPABILITY_HEADER_VALUE,
          peerSupportsZrtpFromHeaders, shouldAdvertiseZrtpCapability,
          reapplyVideoEncoderParams, getVideoEncoderTarget } from './CallZrtp';
+import { sendCallCapabilities } from './CallCapabilities';
 
 // Media-loss watchdog. Polls pc.getStats() every MEDIA_LOSS_POLL_MS and
 // sums packetsReceived across all inbound-rtp reports. If the sum has not
@@ -1162,6 +1163,22 @@ class Call extends Component {
             // could trip during normal ICE/DTLS settling.
             this._startMediaLossPoller();
             const currentCall = this.state.call;
+
+            // Tell the peer what this build can do (screen sharing,
+            // the screen-request handshake, remote pointer, conference
+            // escalation). Both sides send unconditionally at
+            // 'established' -- no round trip, no ordering assumptions.
+            // The peer stashes it on its own Call object and uses it to
+            // decide which peer-dependent controls to offer; a peer
+            // that never sends one is an older build and keeps those
+            // controls hidden. Sent here rather than at 'accepted'
+            // because the media plane is only guaranteed up at this
+            // point, and it is guarded against double-send inside
+            // sendCallCapabilities. Skipped for PSTN destinations --
+            // the gateway on the far end has no use for it; the
+            // conference domain is forwarded so utils.isPhoneNumber
+            // can't mistake an all-digit room for a number.
+            sendCallCapabilities(currentCall, this.props.defaultConferenceDomain);
 
             // Canonical capture point for the OUTGOING case: the callee's
             // answer SDP (and its s= session name) is now applied as the

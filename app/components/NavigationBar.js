@@ -1253,6 +1253,18 @@ class NavigationBar extends Component {
             case 'toggleAutoAnswer':
                 this.props.toggleAutoAnswer(this.props.selectedContact);
                 break;
+            // [AUTO-DIALER — DEVELOPER TOOL] Running -> stop it outright.
+            // Not running -> open the settings dialog, which starts the loop
+            // via props.startAutoDialer once media / timers are chosen.
+            case 'toggleAutoDialer':
+                if (this.props.autoDialerUri
+                        && this.props.selectedContact
+                        && this.props.autoDialerUri === this.props.selectedContact.uri) {
+                    this.props.toggleAutoDialer(this.props.selectedContact);
+                } else {
+                    this.setState({showAutoDialerModal: true});
+                }
+                break;
             case 'toggleCaregiver':
                 this.props.toggleCaregiver(this.props.selectedContact);
                 break;
@@ -1823,6 +1835,12 @@ class NavigationBar extends Component {
         let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
         let favoriteIcon = (this.props.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
         let autoAnswerTitle = this.props.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
+        // [AUTO-DIALER — DEVELOPER TOOL] the menu item is gated on
+        // this.props.devMode; see the matching block further down.
+        let autoDialerRunning = !!(this.props.autoDialerUri
+            && this.props.selectedContact
+            && this.props.autoDialerUri === this.props.selectedContact.uri);
+        let autoDialerTitle = autoDialerRunning ? '✓ Auto-dialer (running)' : 'Auto-dialer';
 		let autoAnswerModeTitle = this.props.autoAnswerMode ? 'Turn Off Auto-answer' : 'Auto-answer Mode';
   
         let extraMenu = false;
@@ -2819,6 +2837,22 @@ class NavigationBar extends Component {
 
                         {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
                         {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+
+                        {/* ─── AUTO-DIALER — DEVELOPER TOOL ───────────────────
+                            Soak-tests calls to this contact in a loop so leaks
+                            and ANRs can be hunted from the logs. Media, redial
+                            gap and hangup delay are chosen in AutoDialerModal;
+                            failed calls fall through to the app's own 5s
+                            auto-redial (changeRoute / outgoing_connection_failed).
+                            Pressing the hangup button yourself stops the loop.
+
+                            Gated on Developer mode (Preferences → Advanced →
+                            Developer). It dials on its own, so it must not sit
+                            one tap away from a normal user's contact menu.
+
+                            Grep a run with:  grep '\[autodialer\]' release.log
+                            ──────────────────────────────────────────────── */}
+                        {this.props.devMode && isCallableUri && !this.props.inCall ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleAutoDialer')} icon="reload" title={autoDialerTitle}/> :null}
                         {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('conferenceCallNow')} icon="account-group" title="Conference call"/> :null}
                         {tags.indexOf('blocked') === -1 && this.props.canSend() && !this.props.inCall && isConference ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('conference')} icon="account-group" title="Join conference..."/> :null}
                         {tags.indexOf('blocked') === -1 && !this.props.inCall && isConference ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('shareConferenceLinkModal')} icon="share-variant" title="Share link..."/> :null}
@@ -2843,16 +2877,28 @@ class NavigationBar extends Component {
                                 this.props.selectedContact.publicKey
                             );
                             const bidir = this._hasBidirectionalChat(_uri);
+                            // Self chat: sharing my own location to my own
+                            // account is allowed. It's exempt from the
+                            // bidirectional-chat requirement (a self chat is
+                            // structurally never bidirectional — every self
+                            // message is `outgoing`) and, unlike the other
+                            // per-contact menu items, `myself` does NOT hide
+                            // the location-share entry. Mirrors the same
+                            // self-exemption in ReadyBox.showLocationShareButton
+                            // that surfaces the button under the navbar. The
+                            // "Until we meet" option is hidden for self in the
+                            // modal itself (a meet-up with yourself is moot).
+                            const isSelf = this.myself;
                             const contactOk =
                                 tags.indexOf('blocked') === -1
                                 && !isConference
                                 && !isAnonymous
-                                && !this.myself
+                                && (isSelf || !this.myself)
                                 && this.props.canSend
                                 && this.props.canSend();
                             const shareItemsVisible = contactOk
                                 && (sharing || hasContactKey)
-                                && (sharing || bidir);
+                                && (sharing || bidir || isSelf);
                             if (!shareItemsVisible) return null;
                             // While a share is active for this contact,
                             // expose Pause / Resume directly on the chat
@@ -3297,7 +3343,7 @@ class NavigationBar extends Component {
                             hide the menu item until consent is on
                             file — there's nothing to review or
                             withdraw before that. */}
-                        {Platform.OS === 'android' && this.state.locationDisclosureAcknowledged && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
+                        {false && Platform.OS === 'android' && this.state.locationDisclosureAcknowledged && !this.props.inCall && !(this.props.isFolded && !this.props.selectedContact) ?
                         <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('viewLocationDisclosure')} icon="shield-account" title="Location privacy policy..."/>
                          : null }
 
@@ -3396,6 +3442,13 @@ NavigationBar.propTypes = {
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
     toggleAutoAnswer   : PropTypes.func,
+    toggleAutoDialer   : PropTypes.func,   // [AUTO-DIALER — DEVELOPER TOOL]
+    startAutoDialer    : PropTypes.func,   // [AUTO-DIALER — DEVELOPER TOOL]
+    autoDialerUri      : PropTypes.string, // [AUTO-DIALER — DEVELOPER TOOL]
+    autoDialerRedialSeconds : PropTypes.number,
+    autoDialerHangupSeconds : PropTypes.number,
+    autoDialerAudio    : PropTypes.bool,
+    autoDialerVideo    : PropTypes.bool,
     toggleCaregiver    : PropTypes.func,
     saveConference     : PropTypes.func,
     defaultDomain      : PropTypes.string,

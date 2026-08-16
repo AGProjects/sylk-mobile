@@ -16,6 +16,8 @@
 		1F207F1527F35DF9000C83CA /* beluga_in.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1327F35DF9000C83CA /* beluga_in.wav */; };
 		1F207F1627F35DF9000C83CA /* beluga_out.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F207F1427F35DF9000C83CA /* beluga_out.wav */; };
 		1F2BEF3C2F4DC14200E88D66 /* Contact.m in Sources */ = {isa = PBXBuildFile; fileRef = 1F2BEF3B2F4DC14200E88D66 /* Contact.m */; };
+		1F308B7C302E01D50053B4C8 /* ReplayKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F308B7B302E01D50053B4C8 /* ReplayKit.framework */; };
+		1F308B84302E01D50053B4C8 /* SylkBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1F308B7A302E01D50053B4C8 /* SylkBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1F31871D26495CFF0096C518 /* hangup_tone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871726495CFF0096C518 /* hangup_tone.wav */; };
 		1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871826495CFF0096C518 /* outbound_ringtone.wav */; };
 		1F31871F26495CFF0096C518 /* participant_joined.wav in Resources */ = {isa = PBXBuildFile; fileRef = 1F31871926495CFF0096C518 /* participant_joined.wav */; };
@@ -67,6 +69,13 @@
 			remoteGlobalIDString = 1F1711213010DC6200CC5926;
 			remoteInfo = SylkNotificationService;
 		};
+		1F308B82302E01D50053B4C8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1F308B79302E01D50053B4C8;
+			remoteInfo = SylkBroadcast;
+		};
 		1FC06CC32A793D9300F8D5A3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
@@ -101,6 +110,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				1F17112A3010DC6200CC5926 /* SylkNotificationService.appex in Embed Foundation Extensions */,
+				1F308B84302E01D50053B4C8 /* SylkBroadcast.appex in Embed Foundation Extensions */,
 				1FC06CC52A793D9300F8D5A3 /* sylk-share.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -129,6 +139,8 @@
 		1F207F1427F35DF9000C83CA /* beluga_out.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = beluga_out.wav; path = ../app/assets/sounds/beluga_out.wav; sourceTree = "<group>"; };
 		1F2BEF3A2F4DC14200E88D66 /* Contact.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Contact.h; path = sylk/Contact.h; sourceTree = "<group>"; };
 		1F2BEF3B2F4DC14200E88D66 /* Contact.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = Contact.m; path = sylk/Contact.m; sourceTree = "<group>"; };
+		1F308B7A302E01D50053B4C8 /* SylkBroadcast.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SylkBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1F308B7B302E01D50053B4C8 /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
 		1F31871726495CFF0096C518 /* hangup_tone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = hangup_tone.wav; path = ../app/assets/sounds/hangup_tone.wav; sourceTree = "<group>"; };
 		1F31871826495CFF0096C518 /* outbound_ringtone.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = outbound_ringtone.wav; path = ../app/assets/sounds/outbound_ringtone.wav; sourceTree = "<group>"; };
 		1F31871926495CFF0096C518 /* participant_joined.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = participant_joined.wav; path = ../app/assets/sounds/participant_joined.wav; sourceTree = "<group>"; };
@@ -189,10 +201,18 @@
 			);
 			target = 1F1711213010DC6200CC5926 /* SylkNotificationService */;
 		};
+		1F308B87302E01D50053B4C8 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1F308B79302E01D50053B4C8 /* SylkBroadcast */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1F1711233010DC6200CC5926 /* SylkNotificationService */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (1F17112D3010DC6200CC5926 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SylkNotificationService; sourceTree = "<group>"; };
+		1F308B7D302E01D50053B4C8 /* SylkBroadcast */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (1F308B87302E01D50053B4C8 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SylkBroadcast; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -218,6 +238,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1F308B77302E01D50053B4C8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1F308B7C302E01D50053B4C8 /* ReplayKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -348,6 +376,7 @@
 				539A17B648320418D6F20DD6 /* libPods-sylk-tvOS.a */,
 				343272235B5BBBF52F8F9507 /* libPods-sylk-tvOSTests.a */,
 				C4AF2000AF1D2415D9312AA5 /* libPods-sylkTests.a */,
+				1F308B7B302E01D50053B4C8 /* ReplayKit.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -391,6 +420,7 @@
 				00E356EF1AD99517003FC87E /* sylkTests */,
 				1FC06CBC2A793D9300F8D5A3 /* sylk-share */,
 				1F1711233010DC6200CC5926 /* SylkNotificationService */,
+				1F308B7D302E01D50053B4C8 /* SylkBroadcast */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				7F8D61712125CE276D8F5B51 /* Pods */,
@@ -411,6 +441,7 @@
 				2D02E4901E0B4A5D006451C7 /* sylk-tvOSTests.xctest */,
 				1FC06CBB2A793D9300F8D5A3 /* sylk-share.appex */,
 				1F1711223010DC6200CC5926 /* SylkNotificationService.appex */,
+				1F308B7A302E01D50053B4C8 /* SylkBroadcast.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -459,6 +490,7 @@
 			dependencies = (
 				1FC06CC42A793D9300F8D5A3 /* PBXTargetDependency */,
 				1F1711293010DC6200CC5926 /* PBXTargetDependency */,
+				1F308B83302E01D50053B4C8 /* PBXTargetDependency */,
 			);
 			name = sylk;
 			productName = sylk;
@@ -483,6 +515,28 @@
 			name = SylkNotificationService;
 			productName = SylkNotificationService;
 			productReference = 1F1711223010DC6200CC5926 /* SylkNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		1F308B79302E01D50053B4C8 /* SylkBroadcast */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1F308B88302E01D50053B4C8 /* Build configuration list for PBXNativeTarget "SylkBroadcast" */;
+			buildPhases = (
+				1F308B76302E01D50053B4C8 /* Sources */,
+				1F308B77302E01D50053B4C8 /* Frameworks */,
+				1F308B78302E01D50053B4C8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1F308B7D302E01D50053B4C8 /* SylkBroadcast */,
+			);
+			name = SylkBroadcast;
+			packageProductDependencies = (
+			);
+			productName = SylkBroadcast;
+			productReference = 1F308B7A302E01D50053B4C8 /* SylkBroadcast.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 		1FC06CBA2A793D9300F8D5A3 /* sylk-share */ = {
@@ -556,10 +610,12 @@
 						TestTargetID = 13B07F861A680F5B00A75B9A;
 					};
 					13B07F861A680F5B00A75B9A = {
-						DevelopmentTeam = 4DFEFUDLKZ;
 						LastSwiftMigration = 1620;
 					};
 					1F1711213010DC6200CC5926 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					1F308B79302E01D50053B4C8 = {
 						CreatedOnToolsVersion = 26.6;
 					};
 					1FC06CBA2A793D9300F8D5A3 = {
@@ -599,6 +655,7 @@
 				2D02E48F1E0B4A5D006451C7 /* sylk-tvOSTests */,
 				1FC06CBA2A793D9300F8D5A3 /* sylk-share */,
 				1F1711213010DC6200CC5926 /* SylkNotificationService */,
+				1F308B79302E01D50053B4C8 /* SylkBroadcast */,
 			);
 		};
 /* End PBXProject section */
@@ -633,6 +690,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1F1711203010DC6200CC5926 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1F308B78302E01D50053B4C8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -973,6 +1037,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1F308B76302E01D50053B4C8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1FC06CB72A793D9300F8D5A3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1010,6 +1081,11 @@
 			isa = PBXTargetDependency;
 			target = 1F1711213010DC6200CC5926 /* SylkNotificationService */;
 			targetProxy = 1F1711283010DC6200CC5926 /* PBXContainerItemProxy */;
+		};
+		1F308B83302E01D50053B4C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1F308B79302E01D50053B4C8 /* SylkBroadcast */;
+			targetProxy = 1F308B82302E01D50053B4C8 /* PBXContainerItemProxy */;
 		};
 		1FC06CC42A793D9300F8D5A3 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1102,7 +1178,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 453;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 466;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1112,13 +1190,13 @@
 				);
 				INFOPLIST_FILE = sylk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.2.5;
+				MARKETING_VERSION = 8.3.1;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1127,6 +1205,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "sylk/sylk-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
@@ -1142,7 +1221,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
-				CURRENT_PROJECT_VERSION = 453;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 466;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1151,13 +1232,13 @@
 				);
 				INFOPLIST_FILE = sylk/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.2.5;
+				MARKETING_VERSION = 8.3.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -1165,6 +1246,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios";
 				PRODUCT_NAME = sylk;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "sylk/sylk-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1248,6 +1330,94 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios.SylkNotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		1F308B85302E01D50053B4C8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_ENTITLEMENTS = SylkBroadcast/SylkBroadcast.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SylkBroadcast/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Facebook. All rights reserved.";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios.SylkBroadcast";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1F308B86302E01D50053B4C8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CODE_SIGN_ENTITLEMENTS = SylkBroadcast/SylkBroadcast.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SylkBroadcast/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Blink WebRTC";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Facebook. All rights reserved.";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.agprojects.sylk-ios.SylkBroadcast";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1604,6 +1774,15 @@
 			buildConfigurations = (
 				1F17112B3010DC6200CC5926 /* Debug */,
 				1F17112C3010DC6200CC5926 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1F308B88302E01D50053B4C8 /* Build configuration list for PBXNativeTarget "SylkBroadcast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1F308B85302E01D50053B4C8 /* Debug */,
+				1F308B86302E01D50053B4C8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

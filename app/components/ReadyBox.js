@@ -990,7 +990,7 @@ class ReadyBox extends Component {
     // Mirrors NavigationBar._hasBidirectionalChat — true when the
     // loaded message slice for `uri` carries at least one substantive
     // exchange in BOTH directions. text/* + image/* + file-transfer
-    // + sylk-live-location (historical share bubbles) all count as
+    // + sylk-location-sharing (historical share bubbles) all count as
     // evidence of an active relationship. Pure control messages
     // (sylk-message-metadata, contact-update, IMDN, PGP-key) are
     // excluded. See the NavigationBar version for the full rationale.
@@ -1014,7 +1014,7 @@ class ReadyBox extends Component {
             // for the rationale (a 60-tick incoming share is clearly
             // a real relationship and the share button should remain
             // available).
-            if (ct === 'application/sylk-live-location') {
+            if (ct === 'application/sylk-location-sharing') {
                 hasOut = true;
                 hasIn = true;
                 return true;
@@ -1054,15 +1054,32 @@ class ReadyBox extends Component {
             return false;
         }
 
+        // Self chat (sharing my own location to my own account) is always
+        // allowed regardless of chat history. The bidirectional-chat rule
+        // below can never be satisfied for the self conversation — every
+        // message you send to yourself is classified `outgoing` (direction
+        // is derived purely from sender === your account id, see app.js
+        // journal replay), so there is never an `incoming` leg and
+        // _hasBidirectionalChat would always return false. Sharing to self is
+        // a legitimate use (drop a pin for your other devices / your own
+        // record), so bypass the history gate for it. The "Until we meet"
+        // option is hidden for self downstream (ShareLocationModal), since a
+        // meet-up handshake with yourself is meaningless.
+        const _selfUri = this.props.account
+            && String(this.props.account.id || '').trim().toLowerCase();
+        const _isSelfContact = !!_selfUri
+            && String(this.props.selectedContact.uri || '').trim().toLowerCase() === _selfUri;
+
         // Bidirectional chat required — same rule as NavigationBar's
         // menu item. Don't surface location sharing on a chat the
         // user has never actually exchanged messages on. EXCEPT when
         // a share is already live for THIS contact: the user needs
         // a Stop affordance regardless of the chat's history (e.g. a
-        // share that started before they cleared the chat history).
+        // share that started before they cleared the chat history),
+        // or when this is the user's own self chat (see above).
         const _activeShares = this.props.activeLocationShares || {};
         const _alreadySharing = !!_activeShares[this.props.selectedContact.uri];
-        if (!_alreadySharing && !this._hasBidirectionalChat(this.props.selectedContact.uri)) {
+        if (!_alreadySharing && !_isSelfContact && !this._hasBidirectionalChat(this.props.selectedContact.uri)) {
             return false;
         }
 
@@ -2315,7 +2332,7 @@ class ReadyBox extends Component {
               {key: 'messages', title: 'Messages', icon: 'message-text', isTab: true, enabled: hasChatContacts, selected: this.state.contactsFilter === 'messages'},
               {key: 'calls', title: 'Calls', icon: 'phone', isTab: true, enabled: true, selected: this.state.contactsFilter === 'calls'},
               {key: 'favorite', title: 'Favorites', icon: 'star', isTab: true, enabled: this.props.favoriteUris.length > 0, selected: this.state.contactsFilter === 'favorite'},
-              {key: 'autoanswer', title: 'Caregivers', icon: 'account-heart', isTab: true, enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
+              {key: 'autoanswer', title: 'Auto answer', icon: 'account-heart', isTab: true, enabled: this.props.hasAutoAnswerContacts, selected: this.state.contactsFilter === 'autoanswer'},
               {key: 'tel', title: 'Tel', icon: 'dialpad', isTab: true, enabled: hasTelContacts, selected: this.state.contactsFilter === 'tel'},
               {key: 'missed', title: 'Missed', icon: 'phone-missed', isTab: true, enabled: this.props.missedCalls.length > 0, selected: this.state.contactsFilter === 'missed'},
               {key: 'blocked', title: 'Blocked', icon: 'block-helper', isTab: true, enabled: this.props.blockedUris.length > 0, selected: this.state.contactsFilter === 'blocked'},

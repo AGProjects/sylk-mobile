@@ -314,6 +314,7 @@ public class IncomingCallActivity extends AppCompatActivity {
 	
 		Intent intent = new Intent(this, IncomingCallActionReceiver.class)
 				.setAction("ACTION_REJECT_CALL")
+				.putExtra("reject-source", "activity-decline-button")
 				.putExtra("session-id", callId)
 				.putExtra("phoneLocked", phoneLocked)
 				.putExtra("from_uri", from_uri)

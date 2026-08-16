@@ -18,6 +18,7 @@ import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.SoLoader
 
 import com.agprojects.sylk.SylkBridgePackage
+import com.oney.WebRTCModule.WebRTCModuleOptions
 
 class MainApplication : Application(), ReactApplication {
 
@@ -39,6 +40,7 @@ class MainApplication : Application(), ReactApplication {
               add(SylkCallRecorderPackage())
               add(NativeLoggerPackage())
               add(AppExitInfoPackage())
+              add(PointerOverlayPackage())
 
             }
 
@@ -77,6 +79,20 @@ class MainApplication : Application(), ReactApplication {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
+
+    // Enable react-native-webrtc's MediaProjection foreground service.
+    // getDisplayMedia() screen capture only delivers frames while a
+    // foregroundServiceType=mediaProjection service is running — and on
+    // Android 14+ (API 34) the OS mandates it: without a running such
+    // service the MediaProjection is torn down immediately. rn-webrtc ships
+    // that service (MediaProjectionService, merged from its own manifest)
+    // but gates *starting* it behind this opt-in flag, which defaults to
+    // false. With the flag off, getDisplayMedia() still resolves with a
+    // screen track but it produces ZERO frames and the video encoder stalls
+    // (outbound video freezes; the far end sees nothing). Pairs with the
+    // FOREGROUND_SERVICE_MEDIA_PROJECTION permission in AndroidManifest.xml.
+    WebRTCModuleOptions.getInstance().enableMediaProjectionService = true
+
     // Flipper was removed in React Native 0.76, so there is no longer a
     // debug-only Flipper init here. (The previous concern — that
     // ReactNativeFlipper.initializeFlipper eagerly built the RN bridge at

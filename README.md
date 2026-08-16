@@ -33,6 +33,7 @@ Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 * File sharing to and from other mobile applications
 * End-to-end enryption for all media (zRTP and PGP)
 * Location sharing (meet-me, caregiver tracking)
+* Screen sharing with remote pointer
 * Support for phones and tablets in landscape and portrait modes
 * Synchronization between multiple devices (media and contacts)
 * History management and data export

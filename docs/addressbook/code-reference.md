@@ -161,12 +161,12 @@ tell a cache load apart from an authoritative one.
 
 | Function | Role |
 |----------|------|
-| `_abTagToGroupName(tag)` | Reserved tag → server group name (`favorite → Favorites`, `blocked → Blocked`, `tel → Tel`, `chat → Messages`); custom tags pass through. |
+| `_abTagToGroupName(tag)` | Reserved tag → server group name (`favorite → Favorites`, `blocked → Blocked`, `tel → Tel`, `chat → Messages`); custom tags pass through. Note: `autoanswer` deliberately has **no** reserved group name — it is per-device and must never sync. |
 | `_abGroupNameToTag(name)` | Reverse mapping, server group name → local tag. |
 | `_abIsPurgeGroup(name)` | A server group that must be deleted from the server, never imported. |
 | `_abIsPurgeTag(tag)` | A local tag mapping to a purge group. |
 | `_abContactQualifiesForTag(c, tag)` | Whether a contact legitimately belongs to the group for a tag. |
-| `_abNonGroupTags` | Set of per-contact flag tags excluded from group sync (`bypassdnd`, `muted`, `noread`, `history`, `caregiver`). |
+| `_abNonGroupTags` | Set of per-contact flag tags excluded from group sync (`bypassdnd`, `muted`, `noread`, `history`, `caregiver`, `autoanswer`). |
 | `_abDynamicLocalGroups` | Locally-authoritative dynamic groups (`calls`, `recent`). |
 | `_abAutoLocalGroups` | Auto-derived categories, never user groups (`messages`, `chat`, `calls`, `recent`). |
 | `_abSeenGroupsKey(account)` | AsyncStorage key for the seen-groups baseline, `ab_seen_groups.<account>`. |

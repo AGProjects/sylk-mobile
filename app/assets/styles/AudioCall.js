@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 // --- Debug alignment borders -------------------------------------------
 // Flip DEBUG_BORDERS to true to overlay 1px coloured borders on the
@@ -72,7 +72,19 @@ const styles = StyleSheet.create({
     // pushes the record row + this button bar (V2) to the bottom as a
     // group, so an auto top-margin here would just add a gap between the
     // record row and the buttons.
-    marginBottom: 50,
+    // iOS 50 → 26: the 24 px given back here is exactly AudioCallBox's
+    // PORTRAIT_TOP_GAP, which is added as paddingTop above the
+    // avatar / speedometer / graphs block. Net effect is the whole
+    // portrait stack sliding 24 px DOWN (so the avatar clears the
+    // in-call navbar) with every row keeping its original height.
+    // The bar still clears the home indicator — the app-level
+    // SafeAreaView already pads the bottom inset underneath this.
+    //
+    // Android keeps the original 50: PORTRAIT_TOP_GAP is 0 there (the
+    // ~24 px status bar leaves row 1 enough slack without it), so
+    // shrinking this margin would just slide the whole stack down for
+    // no reason. The two numbers must always sum to the same total.
+    marginBottom: Platform.OS === 'ios' ? 26 : 50,
     paddingLeft: 20,
     paddingRight: 20,
     justifyContent: 'center',

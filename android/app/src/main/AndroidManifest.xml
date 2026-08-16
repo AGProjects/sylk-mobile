@@ -55,6 +55,12 @@
          to declare foregroundServiceType="location". Without this the
          service fails to start on modern devices. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Required on Android 14+ (API 34) for screen sharing. react-native-webrtc
+         ships a MediaProjectionService with foregroundServiceType="mediaProjection"
+         (merged from its own manifest) that getDisplayMedia() starts when the
+         user shares their screen; without this permission that service fails to
+         start on modern devices. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <uses-permission android:name="android.permission.READ_PHONE_STATE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />

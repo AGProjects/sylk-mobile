@@ -162,6 +162,15 @@ static NSDictionary *SylkReadDisplayNames(void) {
                 } else {
                     self.bestAttemptContent.body = @"\U0001F4CD Meet-up ended";
                 }
+            } else if ([locAction isEqualToString:@"location_request"]) {
+                // "Please share your current location" — a coordinate-free ASK,
+                // not a share. It rides application/sylk-location-sharing (see
+                // sendLocationRequest in app.js) so without this branch it fell
+                // through to the generic "Location update" below, which read as
+                // if the sender had shared something. Mirrors the Android FCM
+                // service. The tap still opens the sender's chat, where the
+                // Yes/No modal is presented by the WS/journal copy.
+                self.bestAttemptContent.body = @"\U0001F4CD Requests your location";
             } else if ([locAction isEqualToString:@"location_once"]) {
                 self.bestAttemptContent.body = @"\U0001F4CD Shared current location";
             } else if ([locAction isEqualToString:@"location_start"]) {

@@ -2026,7 +2026,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 						locAction = _lo.optString("action", "");
 						locReason = _lo.optString("reason", "");
 					} catch (JSONException _e) {
-						if (content.contains("location_stop")) locAction = "location_stop";
+						if (content.contains("location_request")) locAction = "location_request";
+						else if (content.contains("location_stop")) locAction = "location_stop";
 					}
 				}
 				if ("meeting_request".equals(locAction)) {
@@ -2043,6 +2044,15 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					} else {
 						notifBody = "\uD83D\uDCCD Meet-up ended";
 					}
+				} else if ("location_request".equals(locAction)) {
+					// "Please share your current location" — a coordinate-free ASK,
+					// not a share. It rides application/sylk-location-sharing (see
+					// sendLocationRequest in app.js), so without this branch it fell
+					// through to the generic "Location update" below, which read as
+					// if the sender had shared something. Mirrors the iOS NSE. The
+					// tap keeps the chat-navigation scheme; the Yes/No modal is
+					// presented by the WS/journal copy.
+					notifBody = "\uD83D\uDCCD Requests your location";
 				} else if ("location_once".equals(locAction)) {
 					notifBody = "\uD83D\uDCCD Shared current location";
 				} else if ("location_start".equals(locAction)) {

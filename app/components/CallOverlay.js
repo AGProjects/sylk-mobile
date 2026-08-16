@@ -388,6 +388,18 @@ class CallOverlay extends React.Component {
                     }, 150);
                 }
                 break;
+            case 'requestScreen':
+                // Ask the peer to share THEIR screen. Unlike the two
+                // location items above this one does NOT pop back to
+                // the chat: the request is sent on the call itself
+                // (application/sylk-screen-sharing) and both the
+                // pending state and the accept/decline outcome are
+                // rendered by VideoBox over the video, so there is
+                // nothing to navigate to.
+                if (typeof this.props.requestScreenShare === 'function') {
+                    this.props.requestScreenShare();
+                }
+                break;
             case 'dtmf':
                 // Toggle the AudioCallBox-owned DTMF modal. Unlike the
                 // chat / location items above, this one stays inside
@@ -656,8 +668,40 @@ class CallOverlay extends React.Component {
 					// give the inner Appbar the window's full width so
 					// it spans edge-to-edge.
 					const paperPad = Math.max(leftInset, rightInset);
-					appBarContainer.marginLeft = -(paperPad + (this.props.leftInsetOrigin ? leftInset : 0));  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
-					appBarContainer.width = this.props.parentBledLeft ? (width - rightInset) : (width - leftInset - rightInset);  // parentBledLeft: the parent (e.g. LocalMedia) already pulled the view to x=0, so fill to the right nav bar; don't subtract leftInset again (that left a gap on the right)  // keep the right edge (kebab) inside the safe area / clear of the right nav bar
+					// How far LEFT of the parent's content origin the
+					// inner Appbar ends up after the negative margin
+					// below. leftInsetOrigin parents (VideoBox) get
+					// pulled an extra leftInset to the left, so the
+					// bar starts at device x = -leftInset.
+					const bledLeft = this.props.leftInsetOrigin ? leftInset : 0;
+					appBarContainer.marginLeft = -(paperPad + bledLeft);  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
+					// The bar starts at device x = -bledLeft, so to
+					// reach the physical RIGHT edge (device x = width)
+					// the box must be `width + bledLeft` wide. The old
+					// `width - rightInset` stopped one right-inset short
+					// of the edge — that's the gap reported on the iOS
+					// video call in landscape (the notch-side inset
+					// showed as a dark strip to the right of the navbar).
+					appBarContainer.width = this.props.parentBledLeft ? (width + bledLeft) : (width - leftInset - rightInset);
+					if (this.props.parentBledLeft) {
+						// 4 = Paper's own styles.appbar
+						// paddingHorizontal, which the style we pass
+						// here would otherwise clobber — restate it so
+						// nothing changes by accident.
+						//
+						// LEFT: deliberately NOT + leftInset. The bar's
+						// background bleeds leftInset past the parent
+						// origin, and padding the content back in by
+						// the same amount visibly pushed the back arrow
+						// inward (reported as "back button shifted
+						// right by the iOS left inset"). The arrow
+						// stays flush with the bar's own left edge.
+						appBarContainer.paddingLeft = 4;
+						// RIGHT: the bar now runs to the physical right
+						// edge, so keep the kebab out of the notch /
+						// nav-bar strip.
+						appBarContainer.paddingRight = 4 + rightInset;
+					}
 				}
 			} else {
 				if (Platform.Version < 34) {
@@ -675,8 +719,18 @@ class CallOverlay extends React.Component {
 				// edge-to-edge.
 				if (this.state.isLandscape) {
 					const paperPad = Math.max(leftInset, rightInset);
-					appBarContainer.marginLeft = -(paperPad + (this.props.leftInsetOrigin ? leftInset : 0));  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
-					appBarContainer.width = this.props.parentBledLeft ? (width - rightInset) : (width - leftInset - rightInset);  // parentBledLeft: the parent (e.g. LocalMedia) already pulled the view to x=0, so fill to the right nav bar; don't subtract leftInset again (that left a gap on the right)  // keep the right edge (kebab) clear of the right nav bar
+					// Same geometry as the iOS branch above — see the
+					// comment there for why width has to grow by
+					// bledLeft instead of shrinking by rightInset.
+					const bledLeft = this.props.leftInsetOrigin ? leftInset : 0;
+					appBarContainer.marginLeft = -(paperPad + bledLeft);  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
+					appBarContainer.width = this.props.parentBledLeft ? (width + bledLeft) : (width - leftInset - rightInset);
+					if (this.props.parentBledLeft) {
+						// Left stays at Paper's default 4 (no
+						// + leftInset) — see the iOS branch above.
+						appBarContainer.paddingLeft = 4;
+						appBarContainer.paddingRight = 4 + rightInset;
+					}
 				}
 			}
         
@@ -784,13 +838,33 @@ class CallOverlay extends React.Component {
                         && this.state.callState == "established"
                         && typeof this.props.swapVideo === 'function' ? (
                     <View style={{ marginLeft: 50 }}>
-                        <Appbar.Action
-                            key={'co-swap-' + _overlayRemountKey}
-                            color="white"
-                            icon="camera-switch"
-                            accessibilityLabel="Swap video"
-                            onPress={() => this.handleMenu('swapVideo')}
-                        />
+                        {this.props.remotePeerSharing ? (
+                            /* Viewer: remote-pointer toggle in the navbar. */
+                            <Appbar.Action
+                                key={'co-pointer-' + _overlayRemountKey}
+                                color={this.props.pointerMode ? '#4CAF50' : 'white'}
+                                icon={this.props.pointerMode ? 'hand-back-right' : 'gesture-tap'}
+                                accessibilityLabel="Remote pointer"
+                                onPress={() => { if (typeof this.props.togglePointerMode === 'function') this.props.togglePointerMode(); }}
+                            />
+                        ) : this.props.screenSharing ? (
+                            /* Sharer: stop screen share in the navbar. */
+                            <Appbar.Action
+                                key={'co-stopshare-' + _overlayRemountKey}
+                                color="#E53935"
+                                icon="monitor-off"
+                                accessibilityLabel="Stop screen share"
+                                onPress={() => { if (typeof this.props.stopScreenShare === 'function') this.props.stopScreenShare(); }}
+                            />
+                        ) : (
+                            <Appbar.Action
+                                key={'co-swap-' + _overlayRemountKey}
+                                color="white"
+                                icon="camera-switch"
+                                accessibilityLabel="Swap video"
+                                onPress={() => this.handleMenu('swapVideo')}
+                            />
+                        )}
                     </View>
                 ) : null}
 
@@ -819,15 +893,15 @@ class CallOverlay extends React.Component {
                 >
 					{this.state.media === 'video' && this.state.callState == "established" && (
 					<>
-                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('myVideo')} icon="video" title={myVideoTitle} disabled={this.props.remotePeerSharing} />
                     <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('aspectRatio')} icon="video" title={myAspectRatio} />
-                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} />
-                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('swapVideo')} icon="camera-switch" title={'Swap video'} disabled={this.props.remotePeerSharing} />
+                    <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleUsage')} icon="network" title={myUsageTitle} disabled={this.props.remotePeerSharing} />
                     {/* Switch to the audio call layout without dropping
                         video — the call keeps its video tracks; only the
                         on-screen component changes. */}
                     {typeof this.props.switchCallView === 'function' && (
-                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="phone" title={'Switch to audio view'} />
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="phone" title={'Switch to audio view'} disabled={this.props.remotePeerSharing} />
                     )}
 					<Divider />
 					</>
@@ -842,7 +916,7 @@ class CallOverlay extends React.Component {
 						&& this.props.callHasVideo
 						&& this.state.callState == "established"
 						&& typeof this.props.switchCallView === 'function' && (
-						<Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="video" title={'Switch to video view'} />
+						<Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('switchView')} icon="video" title={'Switch to video view'} disabled={this.props.remotePeerSharing} />
 					)}
 			
 					<Menu theme={getMenuTheme().menuTheme}
@@ -933,7 +1007,8 @@ class CallOverlay extends React.Component {
 						group reads as a single block. */}
 					{(typeof this.props.goBackFunc === 'function'
 					  || typeof this.props.shareLocationFromCall === 'function'
-					  || typeof this.props.requestLocationFromCall === 'function') && (
+					  || typeof this.props.requestLocationFromCall === 'function'
+					  || typeof this.props.requestScreenShare === 'function') && (
 						<>
 							<Divider />
 							{typeof this.props.goBackFunc === 'function' ? (
@@ -951,7 +1026,8 @@ class CallOverlay extends React.Component {
 								visual sub-group. */}
 							{typeof this.props.goBackFunc === 'function'
 							  && (typeof this.props.shareLocationFromCall === 'function'
-								  || typeof this.props.requestLocationFromCall === 'function') ? (
+								  || typeof this.props.requestLocationFromCall === 'function'
+								  || typeof this.props.requestScreenShare === 'function') ? (
 								<Divider />
 							) : null}
 							{typeof this.props.shareLocationFromCall === 'function' ? (
@@ -966,6 +1042,44 @@ class CallOverlay extends React.Component {
 									onPress={() => this.handleMenu('requestLocation')}
 									icon="map-marker-question"
 									title="Request location"
+								/>
+							) : null}
+							{/* Ask the peer to share their screen. Sits next
+								to "Request location" because it is the same
+								kind of action — a request the far side must
+								accept — rather than up in the video block,
+								which is all local view controls.
+
+								Also capability-gated: VideoBox passes
+								requestScreenShare as undefined unless the peer
+								advertised screen-sharing support at call setup
+								(components/CallCapabilities.js), so this item
+								never appears against an older client that
+								would silently ignore the request.
+
+								Video only, and only once the call is up:
+								the share is delivered by replacing the track
+								on the existing video sender, so there has to
+								be one. Hidden while EITHER side is already
+								sharing — the peer's screen is already on
+								screen in the first case, and in the second
+								our own capture owns the sender, so asking
+								them to share too has no meaning. Disabled
+								(not hidden) while a request is in flight, so
+								the menu doesn't reflow under the user's
+								finger and the label can report the state. */}
+							{this.state.media === 'video'
+							  && this.state.callState == "established"
+							  && typeof this.props.requestScreenShare === 'function'
+							  && !this.props.remotePeerSharing
+							  && !this.props.screenSharing ? (
+								<Menu.Item theme={getMenuTheme().menuTheme}
+									onPress={() => this.handleMenu('requestScreen')}
+									icon="monitor-share"
+									title={this.props.screenRequestPending
+										? 'Requesting screen\u2026'
+										: 'Request screen'}
+									disabled={!!this.props.screenRequestPending}
 								/>
 							) : null}
 						</>
@@ -1086,6 +1200,18 @@ CallOverlay.propTypes = {
     toggleAspectRatio: PropTypes.func,
     shareLocationFromCall: PropTypes.func,
     requestLocationFromCall: PropTypes.func,
+    // Ask the peer to share their screen (video calls only). Wired by
+    // VideoBox, and only when the peer advertised screen-sharing
+    // support; absent on AudioCallBox and against older peers, which
+    // hides the menu item entirely (every item in that group is gated
+    // on `typeof prop === 'function'`, so undefined is the off switch).
+    // screenRequestPending greys it out while a request is in flight.
+    requestScreenShare: PropTypes.func,
+    screenRequestPending: PropTypes.bool,
+    // True while WE are sharing our screen / the PEER is sharing
+    // theirs. Both hide the "Request screen" item.
+    screenSharing: PropTypes.bool,
+    remotePeerSharing: PropTypes.bool,
     // Optional: opens the DTMF dialpad modal owned by AudioCallBox.
     // When omitted (e.g. on video calls or while the modal is being
     // wired up by another caller), the menu item is hidden.

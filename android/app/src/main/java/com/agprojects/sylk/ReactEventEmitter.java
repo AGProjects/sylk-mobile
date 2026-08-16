@@ -44,6 +44,27 @@ public class ReactEventEmitter {
             String fromDisplayName,
             ReactApplication app
     ) {
+        sendEventToReact(action, callUUID, fromUri, toUri, phoneLocked, event, fromDisplayName, false, app);
+    }
+
+    /**
+     * Full variant. `autoAnswered` is true when the accept was produced by the
+     * per-contact auto-answer countdown rather than by the user. JS uses it to
+     * skip the "Enable your camera?" prompt and bring the camera up
+     * immediately: an auto-answered video call is hands-free by definition, so
+     * stopping to ask defeats the point.
+     */
+    public static synchronized void sendEventToReact(
+            String action,
+            String callUUID,
+            String fromUri,
+            String toUri,
+            boolean phoneLocked,
+            String event,
+            String fromDisplayName,
+            boolean autoAnswered,
+            ReactApplication app
+    ) {
         try {
             ReactInstanceManager rim =
                 app.getReactNativeHost().getReactInstanceManager();
@@ -59,6 +80,7 @@ public class ReactEventEmitter {
             if (fromDisplayName != null) {
                 payload.putString("fromDisplayName", fromDisplayName);
             }
+            payload.putBoolean("autoAnswered", autoAnswered);
 
             SylkLogger.d("[bridge] [event] action " + action);
             SylkLogger.d("[bridge] [event] event " + event);

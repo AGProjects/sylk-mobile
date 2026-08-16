@@ -40,6 +40,8 @@ import android.media.MediaPlayer;
 import android.net.Uri;
 import android.provider.Settings;
 
+import org.json.JSONObject;
+
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteDatabaseLockedException;
@@ -89,7 +91,7 @@ public class IncomingCallService extends Service {
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private Vibrator vibrator; // <-- add this as a field in your class
 
-	private Map<String, List<String>> getContactsByTag() {
+	private Map<String, List<String>> getContactsByTag(String account) {
 		Map<String, List<String>> result = new HashMap<>();
 		List<String> favorites = new ArrayList<>();
 		List<String> autoanswer = new ArrayList<>();
@@ -112,29 +114,109 @@ public class IncomingCallService extends Service {
 					SQLiteDatabase.OPEN_READONLY
 			);
 
-			Cursor cursor = db.rawQuery("SELECT uri, tags FROM contacts", new String[]{});
+			// Scope to the account the call is addressed to. The old query was
+			// "SELECT uri, tags FROM contacts" with NO account filter, so a row for
+			// the same URI under ANY other account (an old login still in the table)
+			// applied its flags to this call. Every other contact lookup in the app
+			// -- MyFirebaseMessagingService.getContact() -- is account-scoped; this
+			// one was the outlier.
+			Cursor cursor;
+			if (account != null && !account.trim().isEmpty()) {
+				cursor = db.rawQuery(
+						"SELECT uri, uris, tags, local_properties FROM contacts WHERE account = ?",
+						new String[]{ account });
+			} else {
+				// No to_uri on the intent (shouldn't happen for incoming_session).
+				// Fall back to the old behaviour rather than silently dropping the
+				// ringtone/favorite treatment for every contact.
+				SylkLogger.w("[call] [service] getContactsByTag: no account on intent — reading contacts unscoped");
+				cursor = db.rawQuery("SELECT uri, uris, tags, local_properties FROM contacts", new String[]{});
+			}
 
 			if (cursor != null) {
 				while (cursor.moveToNext()) {
 					String uri = cursor.getString(cursor.getColumnIndexOrThrow("uri"));
+					String uris = cursor.getString(cursor.getColumnIndexOrThrow("uris"));
 					String tags = cursor.getString(cursor.getColumnIndexOrThrow("tags"));
+					String localProps = cursor.getString(cursor.getColumnIndexOrThrow("local_properties"));
 
+					// Every URI this contact answers to. getContact() matches against
+					// the `uris` alias list as well as `uri`; this used to look only at
+					// `uri`, so the two paths could disagree about who is calling.
+					List<String> contactUris = new ArrayList<>();
+					if (uri != null && !uri.trim().isEmpty()) {
+						contactUris.add(uri.trim());
+					}
+					if (uris != null && !uris.trim().isEmpty()) {
+						for (String u : uris.split(",")) {
+							String clean = u.trim();
+							if (!clean.isEmpty() && !contactUris.contains(clean)) {
+								contactUris.add(clean);
+							}
+						}
+					}
+					if (contactUris.isEmpty()) {
+						continue;
+					}
+
+					// EXACT tag matching. The old code did tags.toLowerCase().contains(),
+					// a substring test against the comma-joined string -- so "noautoanswer"
+					// or "autoanswer_off" matched "autoanswer", and "nonfavorite" matched
+					// "favorite". Split the way getContact() does instead.
+					Set<String> tagSet = new HashSet<>();
 					if (tags != null) {
-						String lowerTags = tags.toLowerCase();
-						if (lowerTags.contains("favorite")) {
-							favorites.add(uri);
+						for (String t : tags.split(",")) {
+							String clean = t.trim().toLowerCase();
+							if (!clean.isEmpty()) {
+								tagSet.add(clean);
+							}
 						}
-						if (lowerTags.contains("autoanswer")) {
-							autoanswer.add(uri);
+					}
+
+					if (tagSet.contains("favorite")) {
+						favorites.addAll(contactUris);
+					}
+					// Match MyFirebaseMessagingService.canBypassDnd(): FCM uses the
+					// "bypassdnd" tag (no underscore) to decide whether to let the push
+					// through during DND. The ringtone path must use the same allow-list,
+					// otherwise the call arrives but doesn't ring.
+					if (tagSet.contains("bypassdnd")) {
+						bypassdnd.addAll(contactUris);
+					}
+
+					// AUTO-ANSWER is a PER-DEVICE setting and its authority is
+					// local_properties.autoanswer -- the field app.js's toggle writes and
+					// anyContactHasAutoAnswer() reads. The `autoanswer` TAG is not
+					// authoritative: tags round-trip through the server address book, so a
+					// tag set on one device (or restored by a sync) made THIS device
+					// auto-answer while its own UI correctly showed the feature off.
+					// Observed 2026-08-16: pushes carried [messages, calls, autoanswer,
+					// favorite] and the phone auto-answered, while localProperties said
+					// false and the contact screen showed no auto-answer.
+					//
+					// Fall back to the tag ONLY when local_properties has nothing to say
+					// (legacy row), so existing setups keep working.
+					Boolean localAuto = null;
+					if (localProps != null && !localProps.trim().isEmpty()) {
+						try {
+							JSONObject lp = new JSONObject(localProps);
+							if (lp.has("autoanswer")) {
+								localAuto = lp.optBoolean("autoanswer", false);
+							}
+						} catch (Exception jsonEx) {
+							SylkLogger.w("[call] [service] getContactsByTag: bad local_properties for "
+									+ contactUris.get(0) + " — falling back to tags");
 						}
-						// Match MyFirebaseMessagingService.canBypassDnd():
-						// FCM uses the "bypassdnd" tag (no underscore) to
-						// decide whether to let the push through during DND.
-						// The ringtone path must use the same allow-list,
-						// otherwise the call arrives but doesn't ring.
-						if (lowerTags.contains("bypassdnd")) {
-							bypassdnd.add(uri);
-						}
+					}
+					boolean tagAuto = tagSet.contains("autoanswer");
+					boolean wantsAutoAnswer = (localAuto != null) ? localAuto.booleanValue() : tagAuto;
+					if (localAuto != null && localAuto.booleanValue() != tagAuto) {
+						SylkLogger.w("[call] [service] auto-answer mismatch for " + contactUris.get(0)
+								+ ": local_properties=" + localAuto + " tag=" + tagAuto
+								+ " — honouring local_properties");
+					}
+					if (wantsAutoAnswer) {
+						autoanswer.addAll(contactUris);
 					}
 				}
 				cursor.close();
@@ -474,8 +556,6 @@ public class IncomingCallService extends Service {
         // with them via the standard service-stop path.
         startCompliancePlaceholder();
 
-        contactsByTag = getContactsByTag();
-
         if (intent == null || intent.getExtras() == null) {
             SylkLogger.w("[call] [service] Started with null intent, stop now");
             stopForeground(true);
@@ -511,6 +591,11 @@ public class IncomingCallService extends Service {
         // notification UI, full-screen intent and Telecom hand-off; we
         // only want to skip audio and vibration.
         boolean suppressRingtone = intent.getBooleanExtra("suppress_ringtone", false);
+
+        // Per-contact flags, scoped to the account this call is FOR. Deliberately
+        // read here rather than before the intent is parsed: to_uri is the local
+        // account, and without it the query used to span every account's contacts.
+        contactsByTag = getContactsByTag(to_uri);
 
 		// Determine the on-device caller label shown by the notification
 		// and Telecom (NOT the JS payload). Order:
@@ -615,7 +700,7 @@ public class IncomingCallService extends Service {
 			// Android Auto switches from the ringing state to the in-call
 			// state immediately, before the RN app has finished launching.
 			SylkTelecom.setActive(callId);
-			handleAcceptCall(callId, displayName, remoteDisplayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event);
+			handleAcceptCall(callId, displayName, remoteDisplayName, from_uri, to_uri, acceptedMediaType, Math.abs(callId.hashCode()), phoneLocked, event, false);
 			return START_NOT_STICKY;
 		}
 
@@ -626,7 +711,7 @@ public class IncomingCallService extends Service {
             startRingtone(from_uri, suppressRingtone);
 
 			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, remoteDisplayName, to_uri, mediaType, phoneLocked, notificationId, 20);
+    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, remoteDisplayName, to_uri, mediaType, phoneLocked, notificationId, 5);
 			}
 
 			showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, "");
@@ -755,6 +840,7 @@ public class IncomingCallService extends Service {
 						this, notificationId + 100,
 						new Intent(this, IncomingCallActionReceiver.class)
 							.setAction("ACTION_REJECT_CALL")
+							.putExtra("reject-source", "notification-callstyle-decline")
 							.putExtra("session-id", callId)
 							.putExtra("from_uri", from_uri)
 							.putExtra("to_uri", to_uri)
@@ -859,7 +945,9 @@ public class IncomingCallService extends Service {
 		NotificationManagerCompat.from(this).cancel(COMPLIANCE_NOTIFICATION_ID);
 	}
 
-	private void handleAcceptCall(String callId, String displayName, String fromDisplayName, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event) {
+	// autoAnswered: true only on the auto-answer countdown path, so JS can tell an
+	// automatic accept from a user tap and enable the camera without prompting.
+	private void handleAcceptCall(String callId, String displayName, String fromDisplayName, String from_uri, String to_uri, String mediaType, int notificationId, boolean phoneLocked, String event, boolean autoAnswered) {
 		stopRingtone();
 
 		if (callId == null) return;
@@ -956,7 +1044,7 @@ public class IncomingCallService extends Service {
 			// to send the app back behind the keyguard when the call ends. With
 			// false hardcoded here, phoneWasLocked was always false and the
 			// lock-screen minimize-on-end never fired for any call type.
-			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, phoneLocked, event, fromDisplayName, (ReactApplication) getApplication());
+			ReactEventEmitter.sendEventToReact(action, callId, from_uri, to_uri, phoneLocked, event, fromDisplayName, autoAnswered, (ReactApplication) getApplication());
 			SylkLogger.d("[call] [service] Sent React Native event for call: " + callId);
 		}
 
@@ -1041,7 +1129,8 @@ public class IncomingCallService extends Service {
 							mediaType,
 							notificationId,
 							phoneLocked,
-							event
+							event,
+							true      // auto-answered: no user tap involved
 					);
 				}
 			}

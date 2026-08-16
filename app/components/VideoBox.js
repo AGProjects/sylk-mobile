@@ -6,8 +6,9 @@ import debug from 'react-native-debug';
 import autoBind from 'auto-bind';
 import { IconButton, ActivityIndicator, Colors, Menu, Dialog, Button, Portal, Text as PaperText } from 'react-native-paper';
 import getMenuTheme from '../menuTheme';
-import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp } from './CallZrtp';
-import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder, DeviceEventEmitter  } from 'react-native';
+import { getZrtpSession, constantTimeStringEqual, formatEncryptedKindsLabel, formatVerifiedTimestamp,
+         reapplyVideoEncoderParams } from './CallZrtp';
+import { View, Text, Dimensions, TouchableWithoutFeedback, TouchableOpacity, Platform, TouchableHighlight, PanResponder, DeviceEventEmitter, PixelRatio, NativeModules, findNodeHandle, Alert  } from 'react-native';
 import uuid from 'react-native-uuid';
 import DeferredRTCView from './DeferredRTCView';
 import UserIcon from './UserIcon';
@@ -28,7 +29,9 @@ import { StyleSheet } from 'react-native';
 import { Surface } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 
+import { mediaDevices, ScreenCapturePickerView } from 'react-native-webrtc';
 import CallOverlay from './CallOverlay';
+import { CAP_SCREEN_SHARING, getPeerCallCapabilities } from './CallCapabilities';
 import NetworkSpeedometer from './NetworkSpeedometer';
 import MediaInfoPanel from './MediaInfoPanel';
 
@@ -46,6 +49,20 @@ const DEBUG = debug('blinkrtc:Video');
 
 
 const MAX_POINTS = 30;
+
+// How long the peer's video track may stay muted, while they claim to be
+// screen sharing, before we tell the viewer the picture is stale.
+//
+// Note what this can and cannot mean. Android's mirrored VirtualDisplay only
+// produces a frame when the screen content CHANGES, so "no frames" is exactly
+// what a healthy share of a motionless screen looks like — it is indis-
+// tinguishable at the transport layer from a capture that has died. So the cue
+// this drives is deliberately neutral ("no updates"), not an accusation
+// ("stalled/broken"), and the delay is long enough that a peer reading a static
+// document does not trip it every few seconds. It exists because on 2026-08-16
+// a deadlocked capture left a viewer staring at a frozen frame for 52 seconds
+// with no cue at all.
+const REMOTE_SHARE_STALL_MS = 15000;
 
 // Audio device picker variant. Change this value to switch styles:
 //   'cycle'    - tap the button to cycle through available devices (legacy behaviour)
@@ -175,6 +192,60 @@ class VideoBox extends Component {
             showConferenceRequestPanel: false,
             conferenceRequestPending: false,
             conferenceRequestPendingId: null,
+            // Screen-share REQUEST (kebab -> "Request screen"): we are
+            // asking the PEER to share THEIR screen. Distinct from
+            // `screenSharing` below, which is about OUR own capture.
+            // True between sending the request and the peer's
+            // accept/reject reply (or the 60 s expiry), which is what
+            // greys the menu item out to "Requesting screen...".
+            screenRequestPending: false,
+            screenRequestPendingId: null,
+            // Transient one-line banner over the video reporting the
+            // outcome of a request we sent ("... declined to share
+            // their screen"). Self-clears after a few seconds.
+            screenRequestNotice: null,
+            // Bumped whenever the local video TRACK is replaced inside the
+            // existing local stream (camera restart after a share). Feeds the
+            // self-view RTCView's remount key — see _videoRemountKey.
+            localViewEpoch: 0,
+            // Render-only override for the self-view.
+            //
+            // When _restartCameraCapture re-acquires the camera it swaps the
+            // fresh track into the EXISTING localStream (so every consumer of
+            // state.localStream.getVideoTracks()[0] — mute, camera switch,
+            // sender re-attach — keeps working). But the RTCView does not
+            // resolve tracks through JS: it hands stream.toURL() to the native
+            // side, which looks the stream up in WebRTCModule's registry and
+            // binds to the track IT has recorded there. A JS-side
+            // removeTrack/addTrack does not reliably update that native
+            // membership, so the renderer stays attached to the track we just
+            // disposed and paints black — even though the wire is fine,
+            // because the SENDER was given the new track directly.
+            //
+            // So render the self-view from the stream getUserMedia actually
+            // returned. Kept separate from state.localStream rather than
+            // replacing it: cWRP recomputes localStream from
+            // call.getLocalStreams()[0] / props.localMedia on every prop
+            // change and would clobber it straight back.
+            //
+            // Seeded from the CALL, because this state cannot start empty on a
+            // remount. Every share navigates to the chat and back, so VideoBox
+            // is a NEW instance after each one — and only the first stop after
+            // a camera re-acquire runs _restartCameraCapture. On the second
+            // and later cycles the camera is fine and no restart happens, so
+            // nothing would re-establish the override: a fresh instance would
+            // fall back to state.localStream, whose NATIVE track binding is
+            // still the disposed original camera track, and the self-view
+            // would come back stuck while the wire stayed perfectly healthy.
+            localViewStream: (this.props.call && this.props.call._sylkLocalViewStream) || null,
+            // What the PEER told us it can do, from its one-shot
+            // advertisement at call setup (components/CallCapabilities.js).
+            // Seeded from the call because the advertisement may well have
+            // landed before this component mounted -- and because it must
+            // survive the unmount/remount cycle of navigating away from the
+            // call screen. Empty = older peer; capability-gated controls
+            // stay hidden.
+            peerCapabilities: getPeerCallCapabilities(this.props.call),
             callContact: this.props.callContact,
             selectedContact: this.props.selectedContact,
             selectedContacts: this.props.selectedContacts,
@@ -203,6 +274,33 @@ class VideoBox extends Component {
 			aspectRatio: 'cover',
 			audioDevicePickerVisible: false,
 			cameraFacing: 'front',
+			// True while the outgoing video is a getDisplayMedia() screen
+			// capture instead of a camera. Drives the picker (Share Screen
+			// vs Stop Sharing) and the bar-button glyph. The share's state
+			// (tracks, sender, encoder snapshot) lives on the CALL object
+			// (call._sylkScreenShare), NOT this component — so it survives
+			// VideoBox unmounting/remounting as the user navigates between
+			// screens in the app while sharing. Seed from the call so a
+			// remount during an active share comes up in the sharing state.
+			screenSharing: !!(this.props.call && this.props.call._sylkScreenShare),
+			// Remote-pointer (screen-share guidance). While pointerMode is on, a
+			// tap on the remote video is sent to the peer as a normalized guide
+			// coordinate (application/sylk-pointer) instead of toggling fullscreen,
+			// and the remote view is forced to 'contain' so the whole shared screen
+			// is visible and the tap maps exactly.
+			pointerMode: false,
+			remoteVideoSize: null,
+			remoteVideoLayout: null,
+			// True when the PEER told us (application/sylk-screen-sharing 'start')
+			// they're sharing: gates the pointer button to the NON-sharing side only
+			// while the peer shares, and proves the peer supports the pointer
+			// protocol. Seeded from the call if the signal beat our mount.
+			remotePeerSharing: !!(this.props.call && this.props.call._remotePeerSharing),
+			// The peer said they are sharing, but their video track has been
+			// muted (no RTP) long enough that the picture on screen is stale.
+			// Drives a viewer-side "stalled" cue so a dead share is never
+			// mistaken for a static one — see _remoteVideoOnMute.
+			remoteShareStalled: false,
 			videoPickerVisible: false,
             // ZRTP state, mirroring AudioCallBox.
             zrtpState: null,
@@ -484,6 +582,20 @@ class VideoBox extends Component {
 			}
 		} else {
 			console.log('No video track');
+			// The self-view is about to bind a local stream that has NO video
+			// track yet. stream.toURL() is derived from the stream ID, which
+			// does not change when a track is added later, so the RTCView would
+			// stay bound to an empty stream and paint nothing — a "transparent
+			// mirror" that only appears once something forces a remount (e.g.
+			// the user toggling Hide/Show mirror from the menu).
+			//
+			// This used to be masked: on an incoming call the camera-enable
+			// modal's cWRP track-gate retried until the track showed up, and
+			// its setState churn remounted the view as a side effect. An
+			// auto-answered call skips that modal entirely, so nothing was left
+			// to re-bind. cWRP now watches for the track appearing and bumps
+			// localViewEpoch — see the matching block there.
+			this._selfViewBoundWithoutTrack = true;
 		}
     }
 
@@ -649,6 +761,17 @@ class VideoBox extends Component {
         // track via replaceTrack(null) the moment the stream arrives.
         const _streamTransitionedToSet = _resolvedLocalStream && _resolvedLocalStream !== this.state.localStream;
         if (_streamTransitionedToSet) {
+            // A genuinely different local stream landed (renegotiation, media
+            // refresh). Any self-view override from an earlier camera restart
+            // describes the OLD stream's track, so drop it — from the call
+            // stash as well as this instance — and let the self-view follow
+            // the new stream again.
+            try {
+                if (nextProps.call) nextProps.call._sylkLocalViewStream = null;
+            } catch (e) { /* noop */ }
+            if (this.state.localViewStream) {
+                this.setState({localViewStream: null});
+            }
             try { this._attachLocalVideoTrackListeners(_resolvedLocalStream); }
             catch (_) { /* listener wiring is best-effort */ }
             // Deferred camera-preference application: the mount-time
@@ -658,6 +781,45 @@ class VideoBox extends Component {
             // committed, so pass the stream instead of reading state).
             try { this._applyVideoCallPrefs(_resolvedLocalStream); }
             catch (_) { /* pref application is best-effort */ }
+        }
+
+        // Self-view re-bind once the local video track finally exists.
+        //
+        // getUserMedia can resolve with the stream before its video track is
+        // attached, so VideoBox's constructor can bind the mirror to a stream
+        // with zero video tracks (it logs 'No video track' and sets
+        // _selfViewBoundWithoutTrack). The track lands moments later, but
+        // stream.toURL() is derived from the stream ID and does not change, so
+        // React sees identical props and the RTCView is never re-created — it
+        // stays attached as a sink on nothing and renders transparent.
+        //
+        // Deliberately NOT gated on videoEnableDialogVisible: that gate is why
+        // this only showed up on auto-answered calls. With the camera-enable
+        // modal in play its retry loop churned setState until the track
+        // appeared and remounted the view as a side effect; skipping the modal
+        // removed the only thing re-binding the mirror.
+        //
+        // Same remedy _restartCameraCapture already uses for the sibling case
+        // (track REPLACED rather than added): bump localViewEpoch, which feeds
+        // _videoRemountKey and re-creates the RTCView against the live track.
+        // One-shot — the flag is cleared before the setState.
+        if (this._selfViewBoundWithoutTrack) {
+            try {
+                const _selfStream = this.state.localViewStream
+                    || _resolvedLocalStream
+                    || this.state.localStream;
+                const _hasVideo = !!(_selfStream && _selfStream.getVideoTracks
+                    && _selfStream.getVideoTracks().length > 0);
+                if (_hasVideo) {
+                    this._selfViewBoundWithoutTrack = false;
+                    console.log('[video-preview] local video track appeared after the self-view'
+                        + ' bound to an empty stream — remounting the mirror');
+                    this.setState(prev => ({ localViewEpoch: (prev.localViewEpoch || 0) + 1 }));
+                }
+            } catch (e) {
+                console.log('[video-preview] self-view re-bind check threw:',
+                    (e && e.message) || String(e));
+            }
         }
 
         // Preview-only-detach retry loop.
@@ -899,6 +1061,13 @@ class VideoBox extends Component {
                     const codec = lookupCodec(stats, inbound.codecId) || '?';
                     const w = inbound.frameWidth || 0;
                     const h = inbound.frameHeight || 0;
+                    // Remote frame size -> maps a tap on the letterboxed remote
+                    // view to a normalized point on the peer's shared screen.
+                    if (w && h && (!this.state.remoteVideoSize
+                        || this.state.remoteVideoSize.w !== w
+                        || this.state.remoteVideoSize.h !== h)) {
+                        this.setState({ remoteVideoSize: { w, h } });
+                    }
                     const fps = inbound.framesPerSecond
                         || fmtRate(inbound.framesDecoded, prev.inF, 2);
                     const kbps = Math.round(
@@ -1419,6 +1588,57 @@ class VideoBox extends Component {
     }
 
     componentDidMount() {
+        this._isMounted = true;
+
+        // Peer started/stopped screen sharing (app.js decodes
+        // application/sylk-screen-sharing and re-broadcasts it here). Drives the
+        // pointer button's visibility for THIS call only.
+        this._screenSharingSub = DeviceEventEmitter.addListener('sylkScreenSharingChanged', (data) => {
+            const myId = this.props.call && (this.props.call.id || this.props.call._callId);
+            if (!data || data.callId !== myId) return;
+            const update = { remotePeerSharing: !!data.sharing };
+            if (!data.sharing && this.state.pointerMode) update.pointerMode = false;
+            // Either edge of the share resets the stall verdict: a fresh share
+            // has not stalled yet, and a stopped one is no longer stalled.
+            this._clearRemoteShareStallTimer();
+            update.remoteShareStalled = false;
+            // Share starting: force the remote view active so a stalled-camera
+            // avatar (or the first sparse-frame 'mute') doesn't hide the screen.
+            if (data.sharing) update.remoteVideoActive = true;
+            // The 'mute' EVENT is edge-triggered, so if the peer's video track
+            // is ALREADY muted when their 'start' arrives — they had video
+            // muted, or the share died before its first frame — no further edge
+            // is ever emitted and the deadline would never be armed. Arm it here
+            // instead, so a share that produces nothing at all still gets a cue.
+            if (data.sharing) {
+                const t = this._monitoredRemoteVideoTrack;
+                if (t && t.muted === true) this._startRemoteShareStallTimer();
+            }
+            // New share → assume the sharer is in-app until told otherwise.
+            if (data.sharing) update.remoteInApp = true;
+            this.setState(update);
+        });
+
+        // Peer ACKed a pointer click WE sent (app.js routes it here). Echo the
+        // click locally as a green "confirmed" dot so the user sees the remote
+        // actually rendered it.
+        this._pointerAckSub = DeviceEventEmitter.addListener('sylkPointerAck', (data) => {
+            const myId = this.props.call && (this.props.call.id || this.props.call._callId);
+            if (!data || data.callId !== myId) return;
+            const pos = this._pendingPointers && this._pendingPointers[data.t];
+            if (!pos) return;
+            delete this._pendingPointers[data.t];
+            this._showLocalAck(pos.locX, pos.locY);
+        });
+
+        // Sharer (iOS) reports whether their app is foregrounded. When it's not,
+        // our pointer can't be drawn on their screen, so hide the cursor / stop
+        // sending. Default true; reset true when a share (re)starts.
+        this._pointerVisSub = DeviceEventEmitter.addListener('sylkPointerVisibility', (data) => {
+            const myId = this.props.call && (this.props.call.id || this.props.call._callId);
+            if (!data || data.callId !== myId) return;
+            this.setState({ remoteInApp: !!data.inApp });
+        });
         // Keep the screen awake for the entire lifetime of the
         // video call UI. Without this, the OS idle timer dims and
         // locks the screen after ~30s of no touch — fine for an
@@ -1505,9 +1725,83 @@ class VideoBox extends Component {
             'conferenceRequestResolved',
             this._handleConferenceRequestResolved
         );
+
+        // Peer's capability advertisement landed (app.js parses it off the
+        // in-call channel, stashes it on the call and re-broadcasts here).
+        // Drives which peer-dependent kebab items we offer -- notably
+        // "Request screen", which stays hidden until we know the far end
+        // can actually share a screen.
+        this._peerCapabilitiesSub = DeviceEventEmitter.addListener(
+            'sylkPeerCapabilities',
+            this._handlePeerCapabilities
+        );
+
+        // Peer answered a screen-share request WE sent (app.js decodes the
+        // request_accept / request_reject reply off the in-call channel and
+        // re-broadcasts it here). Clears the menu item's pending state
+        // immediately instead of waiting out the 60 s expiry.
+        this._screenRequestResolvedSub = DeviceEventEmitter.addListener(
+            'sylkScreenShareRequestResolved',
+            this._handleScreenShareRequestResolved
+        );
+
+        // The LOCAL user accepted an incoming screen-share request on the
+        // app.js-owned modal. app.js owns the prompt; the capture machinery
+        // lives here (selectScreenShare), so it pokes us to actually start.
+        this._screenShareRequestedSub = DeviceEventEmitter.addListener(
+            'sylkScreenShareRequested',
+            this._handleScreenShareRequested
+        );
+
+        // A screen share was stopped from outside the app (Android cast
+        // pill / iOS Control Center) while we were unmounted, and app.js
+        // routed us back here. Put the camera that was running before the
+        // share back on the wire and align this fresh instance's state with
+        // it. Deferred to the next tick so the first render (and any
+        // localStream the parent is about to hand us) has settled.
+        const _restoreFacing = this.props.call && this.props.call._sylkRestoreCameraFacing;
+        if (_restoreFacing) {
+            this.props.call._sylkRestoreCameraFacing = null;
+            setTimeout(() => {
+                if (this._isMounted === false) return;
+                this._restoreCameraAfterShare(_restoreFacing, 0);
+            }, 0);
+        }
+
+        // Same accept, but taken while this component was NOT mounted (the
+        // user had stepped off the call screen into the chat when the modal
+        // appeared). app.js stamps the call object in that case; consume the
+        // stamp now that we're back. The small defer lets the call screen
+        // finish mounting before the OS capture-consent dialog goes up.
+        const _pendingShareReq = this.props.call && this.props.call._sylkPendingScreenShareStart;
+        if (_pendingShareReq) {
+            this.props.call._sylkPendingScreenShareStart = null;
+            if (!this.props.call._sylkScreenShare) {
+                setTimeout(() => {
+                    if (this._isMounted === false) return;
+                    if (this.state.screenSharing) return;
+                    console.log('[screen-request] resuming accepted share after remount');
+                    this.selectScreenShare();
+                }, 400);
+            }
+        }
     }
 
     componentWillUnmount() {
+        this._isMounted = false;
+        try { if (this._screenSharingSub) this._screenSharingSub.remove(); } catch (e) { /* noop */ }
+        try { if (this._pointerAckSub) this._pointerAckSub.remove(); } catch (e) { /* noop */ }
+        try { if (this._pointerVisSub) this._pointerVisSub.remove(); } catch (e) { /* noop */ }
+        try { if (this._ackEchoTimer) clearTimeout(this._ackEchoTimer); } catch (e) { /* noop */ }
+        // NOTE: we intentionally do NOT stop screen sharing here. VideoBox
+        // unmounts every time the user navigates from the call screen to
+        // another screen in the app — and stopping the share on unmount is
+        // exactly what made "I can't open another screen in my own app while
+        // sharing" happen. The share lives on the call (call._sylkScreenShare)
+        // and keeps running across unmount/remount; it's torn down when the
+        // CALL ends (via the call 'stateChanged'->terminated listener wired in
+        // selectScreenShare) or when the user explicitly taps Stop Sharing.
+
         // Release the keep-screen-on we asserted at mount so the
         // OS idle timer resumes once the video UI is torn down.
         // Counterpart to setKeepScreenOn(true) in componentDidMount.
@@ -1572,6 +1866,30 @@ class VideoBox extends Component {
         if (this._conferenceRequestResolvedSub) {
             this._conferenceRequestResolvedSub.remove();
             this._conferenceRequestResolvedSub = null;
+        }
+
+        // Screen-share request: same ordering (timers first, then the
+        // listeners) so a pending self-clear can't setState on an
+        // unmounted instance.
+        if (this._screenRequestExpiryTimer) {
+            clearTimeout(this._screenRequestExpiryTimer);
+            this._screenRequestExpiryTimer = null;
+        }
+        if (this._screenRequestNoticeTimer) {
+            clearTimeout(this._screenRequestNoticeTimer);
+            this._screenRequestNoticeTimer = null;
+        }
+        if (this._peerCapabilitiesSub) {
+            this._peerCapabilitiesSub.remove();
+            this._peerCapabilitiesSub = null;
+        }
+        if (this._screenRequestResolvedSub) {
+            this._screenRequestResolvedSub.remove();
+            this._screenRequestResolvedSub = null;
+        }
+        if (this._screenShareRequestedSub) {
+            this._screenShareRequestedSub.remove();
+            this._screenShareRequestedSub = null;
         }
     }
 
@@ -1813,6 +2131,30 @@ class VideoBox extends Component {
     // already-unmuted may never fire 'unmute'), then keep it in sync
     // via mute/unmute/ended.
     // ---------------------------------------------------------------
+    /** Arm the "peer's screen share looks dead" deadline. A static screen
+     *  legitimately mutes the track for a few seconds at a time, so we only
+     *  believe it once the track has stayed muted for REMOTE_SHARE_STALL_MS. */
+    _startRemoteShareStallTimer() {
+        if (this._remoteShareStallTimer) return;   // already counting down
+        this._remoteShareStallTimer = setTimeout(() => {
+            this._remoteShareStallTimer = null;
+            if (!this.state.remotePeerSharing) return;
+            const track = this._monitoredRemoteVideoTrack;
+            // Recovered while we were waiting — nothing to report.
+            if (track && track.muted !== true) return;
+            utils.timestampedLog('[video-track] [remote] no screen updates for',
+                (REMOTE_SHARE_STALL_MS / 1000) + 's —',
+                'the picture on screen is stale (peer screen may simply be idle)');
+            if (!this.state.remoteShareStalled) this.setState({ remoteShareStalled: true });
+        }, REMOTE_SHARE_STALL_MS);
+    }
+
+    _clearRemoteShareStallTimer() {
+        if (!this._remoteShareStallTimer) return;
+        clearTimeout(this._remoteShareStallTimer);
+        this._remoteShareStallTimer = null;
+    }
+
     _attachRemoteVideoTrackListeners(remoteStream) {
         try {
             this._detachRemoteVideoTrackListeners();
@@ -1821,8 +2163,12 @@ class VideoBox extends Component {
                 ? remoteStream.getVideoTracks() : [];
             const track = (tracks && tracks.length > 0) ? tracks[0] : null;
 
-            // No live/unmuted remote video track → show the avatar.
-            const activeNow = !!(track && track.muted !== true);
+            // No live/unmuted remote video track → show the avatar. But if the
+            // peer is screen sharing, treat it as active regardless of the
+            // track's momentary mute state (sparse screen frames read as muted).
+            const activeNow = this.state.remotePeerSharing
+                ? true
+                : !!(track && track.muted !== true);
             if (this.state.remoteVideoActive !== activeNow) {
                 this.setState({ remoteVideoActive: activeNow });
             }
@@ -1830,17 +2176,41 @@ class VideoBox extends Component {
 
             this._remoteVideoOnMute = () => {
                 utils.timestampedLog('[video-track] [remote] mute', 'id=', track.id,
-                    'callUUID=', (this.props.call && this.props.call.id));
+                    'callUUID=', (this.props.call && this.props.call.id),
+                    'remotePeerSharing=', !!this.state.remotePeerSharing);
+                // While the peer is SCREEN SHARING, a static screen sends very
+                // few frames, so the track fires spurious 'mute' events even
+                // though the share is fine. Switching to the avatar there is too
+                // aggressive — keep showing the (last) shared frame.
+                //
+                // But "sparse" is not "dead", and we used to make no distinction:
+                // on 2026-08-16 the peer's capture deadlocked, this fired at
+                // 12:29:39, we returned, and the viewer sat on a frozen frame for
+                // 52 seconds with no indication anything was wrong. So give it a
+                // DEADLINE instead: if the track is still muted when the timer
+                // fires, the share really is stalled and we say so.
+                if (this.state.remotePeerSharing) {
+                    this._startRemoteShareStallTimer();
+                    return;
+                }
                 if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
             };
             this._remoteVideoOnUnmute = () => {
                 utils.timestampedLog('[video-track] [remote] unmute', 'id=', track.id,
                     'callUUID=', (this.props.call && this.props.call.id));
+                this._clearRemoteShareStallTimer();
+                if (this.state.remoteShareStalled) this.setState({ remoteShareStalled: false });
                 if (!this.state.remoteVideoActive) this.setState({ remoteVideoActive: true });
             };
             this._remoteVideoOnEnded = () => {
                 utils.timestampedLog('[video-track] [remote] ended', 'id=', track.id,
                     'callUUID=', (this.props.call && this.props.call.id));
+                this._clearRemoteShareStallTimer();
+                // Also drop the "no updates" cue: the track is gone, so the cue
+                // would otherwise stay on screen forever whenever the peer's
+                // 'stop' signal never arrives — which is the whole premise of
+                // the bug this was added for.
+                if (this.state.remoteShareStalled) this.setState({ remoteShareStalled: false });
                 if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
             };
 
@@ -1860,6 +2230,7 @@ class VideoBox extends Component {
     }
 
     _detachRemoteVideoTrackListeners() {
+        this._clearRemoteShareStallTimer();
         const track = this._monitoredRemoteVideoTrack;
         if (!track) return;
         try {
@@ -1886,6 +2257,11 @@ class VideoBox extends Component {
 		// user doesn't see two corner copies of their own face
 		// fighting for attention while the modal is up.
 		if (this.state.videoEnableDialogVisible) return false;
+		// While the PEER is sharing their screen, hide our own self-view
+		// ("mirror") so the shared screen has the corner to itself. Auto-
+		// restores when they stop: remotePeerSharing flips back to false via
+		// the sylkScreenSharingChanged listener and this getter re-evaluates.
+		if (this.state.remotePeerSharing) return false;
 		return this.state.showMyself && !this.state.videoMuted && this.state.enableMyVideo;
 	}
 
@@ -2182,6 +2558,18 @@ class VideoBox extends Component {
      * lets that cWRP call pass the new stream before setState lands.
      */
     _applyVideoCallPrefs(streamOverride) {
+        // DISABLED 2026-08-13 (per request): do NOT load/apply the last
+        // per-contact video settings (video_swapped / show_mirror /
+        // last_camera). Every video call now starts from the constructor
+        // defaults — no swap, default mirror, front camera — regardless of
+        // what layout was used with this contact before. The mark-flags are
+        // set so the cWRP retry loop stops immediately. Persistence
+        // (_persistVideoCallPrefs) is left intact but its output is no longer
+        // read. To re-enable, delete the next three lines.
+        this._videoPrefsUiApplied = true;
+        this._videoPrefsCameraApplied = true;
+        return;
+
         const prefs = this._getVideoCallPrefs();
         if (!prefs) {
             this._videoPrefsUiApplied = true;
@@ -2248,6 +2636,13 @@ class VideoBox extends Component {
     }
 
     selectCamera(facing) {
+        // Picking a camera while sharing the screen means "go back to the
+        // camera" — tear the screen capture down first. _stopScreenShare
+        // restores the camera track onto the sender, so the code below
+        // then just applies the requested front/back facing on top.
+        if (this.state.screenSharing) {
+            this._stopScreenShare();
+        }
         // If video is currently muted, picking a camera should also
         // unmute it — that's the only way out of the muted state from
         // the picker (the Unmute row is hidden when muted).
@@ -2277,7 +2672,1310 @@ class VideoBox extends Component {
         }
     }
 
+    /** Return the RTCRtpSender that carries (or should carry) the outgoing
+     *  video. Prefers a sender already holding a video track; falls back to
+     *  a detached sender (e.g. when video was muted). Null if the peer
+     *  connection isn't available yet. */
+    _getVideoSender() {
+        const pc = this.props.call && this.props.call._pc;
+        if (!pc || typeof pc.getSenders !== 'function') return null;
+        let detachedSender = null;
+        for (const s of pc.getSenders()) {
+            if (s.track && s.track.kind === 'video') return s;
+            if (!s.track && !detachedSender) detachedSender = s;
+        }
+        return detachedSender;
+    }
+
+    /** Downscale the outgoing video so a full-resolution screen capture fits
+     *  the negotiated H264 level. This is THE reason a naive replaceTrack of a
+     *  phone-screen track produces no video on the far end: CallZrtp's
+     *  _applyVideoBitrate() computes scaleResolutionDownBy once, from the
+     *  camera size (scale≈1), and is guarded so it never re-runs. The screen
+     *  (e.g. 1080x2400 on a tall device) then far exceeds level 3.1's ~3600
+     *  macroblock / 1280x720 budget and the hardware encoder emits nothing —
+     *  the receiver just sends unanswered PLI/FIRs and shows a frozen frame.
+     *
+     *  We snapshot the sender's current encodings (to restore the camera's
+     *  tuning on stop) then set scaleResolutionDownBy so the longest edge is
+     *  <= 1280 AND the area is within a 1280x720 budget, whichever is more
+     *  aggressive. We only touch the fields we own and merge onto a fresh
+     *  getParameters() snapshot, mirroring _applyVideoBitrate so we don't
+     *  clobber `active` or anything else. */
+    async _applyScreenEncoderParams(sender, screenTrack, share) {
+        if (!sender || typeof sender.getParameters !== 'function') return;
+
+        // Resolve the capture dimensions. Prefer the track's own settings;
+        // fall back to the physical screen size in device pixels.
+        let w = null, h = null;
+        try {
+            const st = (typeof screenTrack.getSettings === 'function') ? screenTrack.getSettings() : null;
+            if (st && st.width && st.height) { w = st.width; h = st.height; }
+        } catch (e) { /* fall through */ }
+        if (!w || !h) {
+            try {
+                const d = Dimensions.get('screen');
+                const pr = PixelRatio.get();
+                w = Math.round(d.width * pr);
+                h = Math.round(d.height * pr);
+            } catch (e) { /* leave null */ }
+        }
+
+        const TARGET_MAX_LONG_EDGE = 1280;      // level 3.1 max width
+        const TARGET_MAX_PIXELS = 1280 * 720;   // ~3600 macroblocks
+        let scale = 1.0;
+        if (w && h) {
+            const longEdge = Math.max(w, h);
+            const scaleLong = longEdge / TARGET_MAX_LONG_EDGE;
+            const scaleArea = Math.sqrt((w * h) / TARGET_MAX_PIXELS);
+            scale = Math.max(1.0, scaleLong, scaleArea);
+        }
+        console.log('[screen-share] capture', (w && h) ? (w + 'x' + h) : 'unknown',
+            '-> scaleResolutionDownBy=', scale.toFixed(3));
+
+        // Screen content favours resolution/clarity over motion smoothness.
+        try { if ('contentHint' in screenTrack) screenTrack.contentHint = 'detail'; } catch (e) { /* noop */ }
+
+        try {
+            const params = sender.getParameters();
+            if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+            // Snapshot the pre-share encodings so the camera's tuning can be
+            // put back exactly on stop. Stored on the share object (which lives
+            // on the call) so a VideoBox that remounts mid-share can still
+            // restore correctly.
+            const snapshot = params.encodings.map(e => ({
+                scaleResolutionDownBy: e.scaleResolutionDownBy,
+                maxBitrate: e.maxBitrate,
+                maxFramerate: e.maxFramerate
+            }));
+            if (share) share.preScreenEncodings = snapshot;
+            else this._preScreenEncodings = snapshot;
+            params.encodings.forEach(e => {
+                e.active = true;
+                e.scaleResolutionDownBy = scale;
+                e.maxBitrate = 2000 * 1000;   // screen benefits from more bits
+                e.maxFramerate = 15;          // ...at a lower frame rate
+            });
+            await sender.setParameters(params);
+            console.log('[screen-share] encoder params applied for screen capture');
+        } catch (e) {
+            console.log('[screen-share] setParameters(screen) failed:', (e && e.message) || String(e));
+        }
+    }
+
+    /** Restore the camera's encoder params captured in
+     *  _applyScreenEncoderParams. Best-effort; merges onto a fresh snapshot. */
+    async _restoreCameraEncoderParams(sender, share) {
+        if (!sender || typeof sender.getParameters !== 'function') return;
+        const snap = (share && share.preScreenEncodings) || this._preScreenEncodings;
+        this._preScreenEncodings = null;
+        if (!snap) return;
+        try {
+            const params = sender.getParameters();
+            if (!params.encodings || params.encodings.length === 0) return;
+            params.encodings.forEach((e, i) => {
+                const prev = snap[i] || snap[0] || {};
+                // scaleResolutionDownBy has no valid "unset" < 1; default to 1.
+                e.scaleResolutionDownBy = (prev.scaleResolutionDownBy && prev.scaleResolutionDownBy >= 1)
+                    ? prev.scaleResolutionDownBy : 1;
+                if (prev.maxBitrate !== undefined) e.maxBitrate = prev.maxBitrate;
+                if (prev.maxFramerate !== undefined) e.maxFramerate = prev.maxFramerate;
+            });
+            await sender.setParameters(params);
+            console.log('[screen-share] camera encoder params restored');
+        } catch (e) {
+            console.log('[screen-share] restore encoder params failed:', (e && e.message) || String(e));
+        }
+    }
+
+    /** Read the outbound-rtp framesSent counter for the video sender. Returns
+     *  null when stats are unavailable — which is NOT the same as "no frames",
+     *  and callers must not treat it as a stall. */
+    async _readScreenFramesSent(call, sender) {
+        try {
+            let report = null;
+            if (sender && typeof sender.getStats === 'function') {
+                report = await sender.getStats();
+            } else if (call && call._pc && typeof call._pc.getStats === 'function') {
+                report = await call._pc.getStats();
+            }
+            if (!report || typeof report.forEach !== 'function') return null;
+            let sent = null;
+            report.forEach(s => {
+                if (s && s.type === 'outbound-rtp'
+                    && (s.kind === 'video' || s.mediaType === 'video')
+                    && typeof s.framesSent === 'number') {
+                    sent = s.framesSent;
+                }
+            });
+            return sent;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** Confirmation that the screen capture is actually being transmitted.
+     *  Samples the sender's outbound-rtp framesSent now and again a few seconds
+     *  later; logs a clear ✓/✗ line so a test run shows at a glance whether
+     *  frames are leaving the device (capture + encode OK) or the pipeline is
+     *  stalled (e.g. MediaProjection foreground service not running → zero
+     *  frames). Then hands over to the continuous watchdog below. */
+    async _verifyScreenFramesFlowing(sender) {
+        const call = this.props.call;
+        const before = await this._readScreenFramesSent(call, sender);
+        const myToken = (this._screenFrameCheckToken = (this._screenFrameCheckToken || 0) + 1);
+        setTimeout(async () => {
+            // Bail if sharing already stopped or a newer share superseded us.
+            if (!this.state.screenSharing || myToken !== this._screenFrameCheckToken) return;
+            const after = await this._readScreenFramesSent(call, sender);
+            if (before === null || after === null) {
+                console.log('[screen-share] frame check: outbound-rtp stats unavailable (before=' + before + ' after=' + after + ')');
+            } else if (after > before) {
+                console.log('[screen-share] ✓ screen frames FLOWING — framesSent ' + before + ' -> ' + after + ' (remote should see the screen)');
+            } else {
+                console.log('[screen-share] ✗ NO screen frames — framesSent stuck at ' + after
+                    + ' — capture/projection not delivering (check MediaProjection foreground service + FOREGROUND_SERVICE_MEDIA_PROJECTION)');
+            }
+            // Whatever the verdict, keep watching for the rest of the share.
+            this._startScreenShareWatchdog(call, sender);
+        }, 3000);
+    }
+
+    /** Continuous liveness watchdog for an ACTIVE screen share.
+     *
+     *  Why this exists (freeze of 2026-08-16): the projection can die WITHOUT
+     *  the native layer ever firing 'ended' on the capture track. On that
+     *  occasion ScreenCapturerAndroid deadlocked between its orientation
+     *  handler and MediaProjection.Callback.onStop, so onCapturerEnded() was
+     *  never reached. The old one-shot +3s check had passed one second earlier
+     *  and nothing ever looked again: the peer stared at a frozen frame for 52
+     *  seconds, the navbar kept offering "stop sharing" with no session behind
+     *  it, and no 'stop' was ever signalled.
+     *
+     *  So: poll framesSent for the LIFE of the share. When it stops advancing,
+     *  synthesise the 'ended' the OS owed us — which runs the identical
+     *  teardown path as a real system stop (restore camera, tell the peer,
+     *  route back to the call).
+     *
+     *  The timer lives on the SHARE object, not on `this`: starting a share
+     *  navigates to the chat and unmounts this VideoBox, so a component-bound
+     *  timer would die exactly when we most need to be watching. */
+    _startScreenShareWatchdog(call, sender) {
+        const share = (call && call._sylkScreenShare) || null;
+        if (!share) return;
+
+        const POLL_MS = 3000;
+        // Advisory only — see the note on framesSent below. Deliberately long:
+        // somebody presenting a document really can leave the screen untouched
+        // for half a minute.
+        const NO_FRAMES_WARN_MS = 30000;
+
+        try { clearTimeout(share.watchdogTimer); } catch (e) { /* noop */ }
+
+        let lastFrames = null;
+        let lastProgressAt = Date.now();
+        let warned = false;
+
+        const tick = async () => {
+            // Torn down, stopped, or superseded by a newer share: we're done.
+            if (!call || call._sylkScreenShare !== share) return;
+
+            // ---- The decisive check -------------------------------------
+            // A capture track whose readyState has left 'live' is dead, full
+            // stop — there is no ambiguity and no false positive. We poll it
+            // because the 'ended' EVENT is exactly what went missing: on
+            // 2026-08-16 ScreenCapturerAndroid deadlocked before
+            // onCapturerEnded() could run, so JS was never told. The native
+            // deadlock itself is fixed in ScreenCaptureController.java; this is
+            // the belt to that fix's braces, and it costs one property read.
+            const track = share.screenTrack || null;
+            if (!track || (track.readyState && track.readyState !== 'live')) {
+                console.log('[screen-share] ✗ capture track is '
+                    + (track ? track.readyState : 'gone')
+                    + ' but no "ended" event arrived — ending the share');
+                share.watchdogTimer = null;
+                try {
+                    // share.onEnded is the same handler the real 'ended' event
+                    // runs, and is explicitly safe from an unmounted instance.
+                    if (typeof share.onEnded === 'function') share.onEnded();
+                    else this._teardownScreenShareResources(call, true);
+                } catch (e) {
+                    console.log('[screen-share] watchdog teardown threw:', (e && e.message) || String(e));
+                }
+                return;
+            }
+
+            // ---- The advisory check -------------------------------------
+            // framesSent going flat CANNOT distinguish "the capture died" from
+            // "the shared screen simply is not changing": Android's mirrored
+            // VirtualDisplay only produces a buffer when the content changes, so
+            // a motionless screen legitimately sends nothing. (The viewer side
+            // knows this too — see the 'mute' handling in
+            // _attachRemoteVideoTrackListeners.) So this NEVER tears anything
+            // down; it only leaves a breadcrumb in the log, once per stall.
+            const now = await this._readScreenFramesSent(call, sender);
+
+            // Re-check after the await: teardown may have run while we were
+            // reading stats, and resuming with a stale share would fire
+            // onEnded() over the top of a share that is already gone.
+            if (!call || call._sylkScreenShare !== share) return;
+
+            if (now === null) {
+                // Stats unreadable — not evidence of anything. Keep watching.
+                share.watchdogTimer = setTimeout(tick, POLL_MS);
+                return;
+            }
+            // `!==` rather than `>`: the counter can go BACKWARDS when the
+            // outbound-rtp SSRC changes, and a `>` test would latch a permanent
+            // false stall from which it could never recover.
+            if (lastFrames === null || now !== lastFrames) {
+                lastFrames = now;
+                lastProgressAt = Date.now();
+                if (warned) {
+                    console.log('[screen-share] frames resumed — framesSent now ' + now);
+                    warned = false;
+                }
+                share.watchdogTimer = setTimeout(tick, POLL_MS);
+                return;
+            }
+
+            const flatFor = Date.now() - lastProgressAt;
+            if (!warned && flatFor >= NO_FRAMES_WARN_MS) {
+                warned = true;
+                console.log('[screen-share] ⚠ no new frames for ' + Math.round(flatFor / 1000)
+                    + 's (framesSent flat at ' + now + '). Normal for a motionless screen;'
+                    + ' the share is NOT being touched. Capture track is still "live".');
+            }
+            share.watchdogTimer = setTimeout(tick, POLL_MS);
+        };
+
+        share.watchdogTimer = setTimeout(tick, POLL_MS);
+    }
+
+    /** Start (or, if already sharing, stop) a screen share. Presented in the
+     *  video picker as a third input source alongside Front / Back Camera.
+     *
+     *  Mechanics: getDisplayMedia() prompts the OS consent dialog and (on
+     *  Android) starts react-native-webrtc's MediaProjection foreground
+     *  service internally. We replaceTrack() the screen track onto the
+     *  existing video sender — same sender, same media kind, so there is NO
+     *  SDP renegotiation and the remote/desktop side simply sees the picture
+     *  change. The camera track is left running and stashed so restoring it
+     *  on stop is a single replaceTrack. */
+    async selectScreenShare() {
+        const call = this.props.call;
+        if (this.state.screenSharing || (call && call._sylkScreenShare)) {
+            this._stopScreenShare();
+            return;
+        }
+        const sender = this._getVideoSender();
+        if (!sender || typeof sender.replaceTrack !== 'function') {
+            // No video sender means this is an audio-only call: swapping in a
+            // video track here would require a full renegotiation, which is a
+            // separate path we don't attempt from the picker.
+            console.log('[screen-share] no usable video sender — start a video call first');
+            return;
+        }
+
+        console.log('[screen-share] start requested — platform=' + Platform.OS);
+        let screenStream;
+        try {
+            // rn-webrtc registers getDisplayMedia on navigator.mediaDevices
+            // as well; we use the imported mediaDevices for an explicit ref.
+            screenStream = await mediaDevices.getDisplayMedia();
+            console.log('[screen-share] getDisplayMedia resolved — capture track acquired'
+                + (Platform.OS === 'ios' ? ' (awaiting broadcast start via picker)' : ''));
+        } catch (e) {
+            // User cancelled the system "Start recording/casting?" dialog, or
+            // the projection failed to start. Nothing to clean up.
+            console.log('[screen-share] getDisplayMedia rejected:', (e && e.message) || String(e));
+            return;
+        }
+
+        const screenTrack = screenStream && screenStream.getVideoTracks
+            && screenStream.getVideoTracks()[0];
+        if (!screenTrack) {
+            console.log('[screen-share] no video track in display stream');
+            try { screenStream.getTracks().forEach(t => t.stop()); } catch (e) { /* noop */ }
+            return;
+        }
+
+        // iOS: getDisplayMedia set up the capture socket + returned the track,
+        // but on iOS the OS only starts delivering frames once the user starts
+        // the broadcast via the system picker (RPSystemBroadcastPickerView).
+        // Present it now by simulating a tap on the hidden ScreenCapturePickerView
+        // (the extension is pre-selected via the RTCScreenSharingExtension key in
+        // Info.plist). The broadcast extension retries connecting to our socket,
+        // so this can fire before/after replaceTrack. (Android needs none of this
+        // — MediaProjection delivers frames as soon as the foreground service is
+        // up.) If the user cancels the sheet, no frames arrive — they can tap
+        // Stop Sharing to revert.
+        if (Platform.OS === 'ios') {
+            try {
+                const _tag = this._iosBroadcastPicker ? findNodeHandle(this._iosBroadcastPicker) : null;
+                const _mgr = NativeModules.ScreenCapturePickerViewManager;
+                if (_tag != null && _mgr && typeof _mgr.show === 'function') {
+                    _mgr.show(_tag);
+                    console.log('[screen-share] iOS broadcast picker presented');
+                } else {
+                    console.log('[screen-share] iOS picker unavailable (tag/mgr missing)');
+                }
+            } catch (e) {
+                console.log('[screen-share] iOS picker show failed:', (e && e.message) || String(e));
+            }
+        }
+
+        // The camera track currently on the sender — stash it so we can put it
+        // back on stop. (On stop we prefer the CURRENT live camera track from
+        // localStream, but this is a fallback.)
+        const cameraTrack = (sender.track && sender.track.kind === 'video')
+            ? sender.track
+            : (this.state.localStream && this.state.localStream.getVideoTracks
+                && this.state.localStream.getVideoTracks()[0]) || null;
+
+        // The share record lives on the CALL, not this component, so it
+        // survives VideoBox unmount/remount while the user navigates the app.
+        const share = {
+            screenStream,
+            screenTrack,
+            sender,
+            cameraTrack,
+            facingBefore: this.state.cameraFacing,
+            preScreenEncodings: null,
+            onEnded: null,
+            callStateHandler: null
+        };
+        if (call) call._sylkScreenShare = share;
+        // Fresh share: clear the 'broadcast already ended' guard used by the iOS
+        // clean-stop path in _stopScreenShare (see there for why).
+        this._iosBroadcastEnded = false;
+
+        try {
+            await sender.replaceTrack(screenTrack);
+            console.log('[screen-share] outgoing video sender swapped to screen track');
+        } catch (e) {
+            console.log('[screen-share] replaceTrack(screen) failed:', (e && e.message) || String(e));
+            try { screenStream.getTracks().forEach(t => t.stop()); } catch (err) { /* noop */ }
+            if (call) call._sylkScreenShare = null;
+            return;
+        }
+
+        // CRITICAL: without this the far end receives no frames. The sender is
+        // still tuned for the (small) camera; a full-res screen overruns the
+        // negotiated H264 level and the encoder stalls. Re-scale for the screen.
+        await this._applyScreenEncoderParams(sender, screenTrack, share);
+
+        // Diagnostic: log a ✓/✗ line once we know whether frames are actually
+        // being transmitted, so a test run is readable at a glance.
+        this._verifyScreenFramesFlowing(sender);
+
+        // The screen track ends when the user taps "Stop" on the system cast
+        // notification (or the OS revokes projection). Tear the share down —
+        // guard state updates in case the component that started the share has
+        // since unmounted (user navigated away while sharing).
+        const onEnded = () => {
+            console.log('[screen-share] screen track ENDED — broadcast/projection stopped by OS or user');
+            // The broadcast has genuinely ended (system/Control-Center stop, or
+            // our own picker-toggle stop). Mark it so _stopScreenShare tears down
+            // instead of toggling the picker again (which would RESTART sharing).
+            this._iosBroadcastEnded = true;
+            clearTimeout(this._iosStopFallbackTimer);
+            try { if (screenTrack.removeEventListener) screenTrack.removeEventListener('ended', onEnded); } catch (e) { /* noop */ }
+            // Remember which camera was live before the share so the
+            // returning video-call screen can put it back. Read from
+            // `share` BEFORE teardown nulls call._sylkScreenShare, and
+            // stashed on the CALL rather than in component state: on the
+            // system-stop path this instance is normally unmounted (starting
+            // a share navigates to the chat), so a FRESH VideoBox is what
+            // has to consume it.
+            if (call) {
+                call._sylkRestoreCameraFacing = (share.facingBefore === 'back') ? 'back' : 'front';
+            }
+            // The user may have tapped "Stop" on the Android system cast pill
+            // while the app was in the background (they shared, then switched
+            // apps). Bring our call UI back to the foreground so they land on
+            // the live call instead of whatever app was on top.
+            if (Platform.OS === 'android') {
+                try { NativeModules.SylkBridge && NativeModules.SylkBridge.bringAppToForeground(); }
+                catch (e) { /* noop */ }
+            }
+            if (this._isMounted !== false && this.state.screenSharing) {
+                this._stopScreenShare();
+            } else {
+                this._teardownScreenShareResources(call, true);
+                // VideoBox is unmounted (user is on the chat screen), so
+                // _stopScreenShare's inset refresh won't run — do it here so the
+                // returning app doesn't overlap the top/bottom system bars.
+                if (Platform.OS === 'android' && NativeModules.SylkBridge
+                        && typeof NativeModules.SylkBridge.refreshSystemInsets === 'function') {
+                    setTimeout(() => {
+                        try { NativeModules.SylkBridge.refreshSystemInsets(); } catch (e) { /* noop */ }
+                    }, 400);
+                }
+            }
+            // Take the user back to the video-call screen. The share had
+            // moved them to the chat; with nothing left to present, the call
+            // UI is where the controls are. Routing is app.js's job -- this
+            // component is usually unmounted at this point -- so we signal
+            // and let it decide. Emitted LAST so teardown (sender restored to
+            // the camera track, projection released) has finished before the
+            // new VideoBox mounts and reads call._sylkRestoreCameraFacing.
+            //
+            // Suppressed when the CALL is what ended: stopping the tracks in
+            // that path also fires 'ended', and there is nothing to go back
+            // to. app.js's goBackToCall() no-ops without an active call, so
+            // this is belt and braces.
+            const _callAlive = call && call.state !== 'terminated'
+                && call.state !== 'closed' && call.state !== 'failed';
+            if (_callAlive) {
+                try {
+                    DeviceEventEmitter.emit('sylkScreenShareStopped', {
+                        callId: call.id || call._callId,
+                    });
+                } catch (e) { /* noop */ }
+            }
+        };
+        share.onEnded = onEnded;
+        try {
+            if (screenTrack.addEventListener) screenTrack.addEventListener('ended', onEnded);
+            else screenTrack.onended = onEnded;
+        } catch (e) {
+            try { screenTrack.onended = onEnded; } catch (err) { /* noop */ }
+        }
+
+        // When the CALL ends, tear down the projection regardless of whether a
+        // VideoBox is currently mounted — decoupled from component lifecycle.
+        if (call && typeof call.on === 'function') {
+            // sylkrtc emits stateChanged as (oldState, newState, data).
+            const callStateHandler = (oldState, newState) => {
+                if (newState === 'terminated' || newState === 'closed' || newState === 'failed') {
+                    try { call.removeListener && call.removeListener('stateChanged', callStateHandler); } catch (e) { /* noop */ }
+                    // iOS: the call is ending while we're still screen-sharing.
+                    // End the broadcast through the SYSTEM picker FIRST so the
+                    // extension finishes cleanly (broadcastFinished) instead of
+                    // hitting finishBroadcastWithError — otherwise iOS pops a
+                    // "Screen sharing stopped" FAILURE alert as the call hangs up.
+                    // Then tear down our media (deferred briefly so the clean
+                    // stop wins the race with our socket close). Best effort: the
+                    // picker view must be mounted; if not, we fall back to the
+                    // plain teardown (which may still show the alert).
+                    let _sysStopped = false;
+                    if (Platform.OS === 'ios' && !this._iosBroadcastEnded) {
+                        try {
+                            const _tag = this._iosBroadcastPicker ? findNodeHandle(this._iosBroadcastPicker) : null;
+                            const _mgr = NativeModules.ScreenCapturePickerViewManager;
+                            if (_tag != null && _mgr && typeof _mgr.show === 'function') {
+                                this._iosBroadcastEnded = true;
+                                _mgr.show(_tag);
+                                _sysStopped = true;
+                                console.log('[screen-share] call ended — stopping broadcast via system (no failure alert)');
+                            }
+                        } catch (e) { /* fall through to plain teardown */ }
+                    }
+                    if (_sysStopped) {
+                        setTimeout(() => { this._teardownScreenShareResources(call, false); }, 300);
+                    } else {
+                        this._teardownScreenShareResources(call, false);
+                    }
+                }
+            };
+            share.callStateHandler = callStateHandler;
+            try { call.on('stateChanged', callStateHandler); } catch (e) { /* noop */ }
+        }
+
+        // Sharing implicitly un-mutes outgoing video (the sender now has a
+        // live track). Flip the picker into "screen" mode.
+        const update = { screenSharing: true, cameraFacing: 'screen' };
+        if (this.state.videoMuted) update.videoMuted = false;
+        this.setState(update);
+
+        // Commit the share (advertise to the peer + navigate to chat). On
+        // Android MediaProjection delivers frames as soon as getDisplayMedia()
+        // resolves, so we commit immediately. On iOS the broadcast only truly
+        // STARTS once the user confirms the system picker (and its 3s
+        // countdown) AND the broadcast extension connects — no frames flow
+        // until then. Committing early would tell the peer we\'re sharing and
+        // drop us onto the chat while the stream is actually dead (e.g. the
+        // user cancels the sheet). So on iOS we wait for real outbound frames,
+        // then commit — or revert if none ever arrive.
+        if (Platform.OS === 'ios') {
+            // Tell the peer we're sharing RIGHT NOW so their pointer button
+            // appears and they can guide us — do NOT gate this on frame
+            // confirmation. framesSent can lag or read stale on iOS, and if the
+            // peer never learns we're sharing it never sends pointers back (so
+            // the on-screen guide marker never appears). If the broadcast turns
+            // out never to start, _confirmIosBroadcast reverts and
+            // _stopScreenShare sends a matching 'stop'.
+            this._sendScreenSharingSignal('start');
+            this._confirmIosBroadcast(call, sender);
+        } else {
+            this._commitScreenShareStarted(call);
+            this._verifyScreenFramesFlowing(sender);
+        }
+    }
+
+    /** Advertise the started share to the peer and navigate back to the chat so
+     *  our shared screen shows the conversation (not the video-call UI, which
+     *  would echo the remote\'s own video back at them). Split out so iOS can
+     *  defer it until the broadcast is confirmed actually running. */
+    _commitScreenShareStarted(call) {
+        // Tell the peer we\'re now sharing so their pointer button can appear.
+        this._sendScreenSharingSignal('start');
+        // Navigate back to the chat with the caller. The call stays active:
+        // goBackFunc (goBackToHomeFromCall) routes with reason 'back to home',
+        // which skips call teardown, and the screen-capture track lives on
+        // call._sylkScreenShare so it survives this unmount.
+        if (typeof this.props.goBackFunc === 'function') {
+            try { this.props.goBackFunc(); }
+            catch (e) { console.log('[screen-share] goBack on share failed:', (e && e.message) || String(e)); }
+        }
+    }
+
+    /** iOS-only: confirm the broadcast REALLY started before committing.
+     *  getDisplayMedia() resolves when the capture socket is ready, but frames
+     *  only flow once the user starts the broadcast from the system picker and
+     *  the extension connects. Poll outbound framesSent: once it grows the
+     *  broadcast is live -> commit; if it is still zero after a generous
+     *  timeout the user cancelled (or the extension never connected) -> revert
+     *  so we are not stuck showing "sharing" over a dead stream. */
+    async _confirmIosBroadcast(call, sender) {
+        const readFramesSent = () => this._readScreenFramesSent(call, sender);
+
+        const token = (this._screenFrameCheckToken = (this._screenFrameCheckToken || 0) + 1);
+        const baseline = (await readFramesSent()) || 0;
+        const startedAt = Date.now();
+        const TIMEOUT_MS = 20000;   // allow for tapping through the picker + its 3s countdown
+        const POLL_MS = 1000;
+
+        const poll = async () => {
+            // Superseded by a newer share, or the user already stopped manually.
+            if (token !== this._screenFrameCheckToken) return;
+            if (!this.state.screenSharing || !(call && call._sylkScreenShare)) return;
+
+            const now = await readFramesSent();
+            if (now !== null && now > baseline) {
+                console.log('[screen-share] \u2713 iOS broadcast confirmed \u2014 framesSent ' + baseline + ' -> ' + now);
+                this._commitScreenShareStarted(call);
+                // Now that the broadcast is genuinely live, watch it for the
+                // rest of the share the same way Android does.
+                this._startScreenShareWatchdog(call, sender);
+                return;
+            }
+            if (Date.now() - startedAt >= TIMEOUT_MS) {
+                console.log('[screen-share] \u2717 iOS broadcast never started (no frames in '
+                    + (TIMEOUT_MS / 1000) + 's) \u2014 reverting');
+                if (this._isMounted !== false) {
+                    this._stopScreenShare();
+                } else {
+                    this._teardownScreenShareResources(call, true);
+                }
+                try {
+                    Alert.alert('Screen sharing did not start',
+                        'The broadcast was not started. Tap Share Screen and choose Sylk (Blink), then "Start Broadcast".');
+                } catch (e) { /* noop */ }
+                return;
+            }
+            setTimeout(poll, POLL_MS);
+        };
+        setTimeout(poll, POLL_MS);
+    }
+
+    /** Tear down the screen-share MEDIA resources held on the call. Does NOT
+     *  touch component state (safe to call from a stale/unmounted instance or
+     *  the call-terminated listener). `restoreCamera` puts the camera track
+     *  back on the sender + restores its encoder tuning; pass false when the
+     *  call itself is ending (nothing to restore into). */
+    _teardownScreenShareResources(call, restoreCamera) {
+        const share = (call && call._sylkScreenShare) || null;
+        if (!share) return;
+        console.log('[screen-share] tearing down share resources (restoreCamera=' + !!restoreCamera + ')');
+
+        // Stop the liveness watchdog first: clearing call._sylkScreenShare below
+        // would already make it bail on its next tick, but there is no reason to
+        // leave a timer pending through teardown.
+        try { clearTimeout(share.watchdogTimer); } catch (e) { /* noop */ }
+        share.watchdogTimer = null;
+
+        if (call) call._sylkScreenShare = null;
+
+        // Tell the peer we stopped sharing so their pointer button goes away —
+        // unless hangupCall() already did it while the session was still alive.
+        // Signalling from here on the call-ended path is too late: sylkrtc has
+        // destroyed the session and sendMessage fails with "Unknown session".
+        if (!share.stopSignalled) {
+            this._sendScreenSharingSignal('stop');
+            share.stopSignalled = true;
+        }
+
+        const sender = share.sender || this._getVideoSender();
+
+        if (restoreCamera && sender && typeof sender.replaceTrack === 'function') {
+            // Prefer the CURRENT live camera track from localStream over the
+            // one stashed at share start: if the app refreshed local media
+            // during the share, the stashed track may be stale/stopped and
+            // replaceTrack-ing it back would show a black frame. Fall back to
+            // the stash only if we can't read a live one now.
+            const liveCameraTrack = (this.state.localStream && this.state.localStream.getVideoTracks
+                && this.state.localStream.getVideoTracks()[0]) || null;
+            const cameraTrack = liveCameraTrack || share.cameraTrack || null;
+            try {
+                sender.replaceTrack(cameraTrack || null);
+            } catch (e) {
+                console.log('[screen-share] restore camera replaceTrack failed:', (e && e.message) || String(e));
+            }
+            // Undo the screen downscale so the camera returns to normal tuning.
+            this._restoreCameraEncoderParams(sender, share);
+        }
+
+        // Remove the call-terminated listener (if we're not being called from it).
+        try {
+            if (share.callStateHandler && call && call.removeListener) {
+                call.removeListener('stateChanged', share.callStateHandler);
+            }
+        } catch (e) { /* noop */ }
+
+        // Stop AND release the display-capture track. In react-native-webrtc,
+        // track.stop() ONLY marks the track ended (enabled=false); it does NOT
+        // dispose the native capturer, so the Android MediaProjection stays
+        // alive and the system keeps showing its "casting / stop screen sharing"
+        // indicator (and prompts) after we've ended the stream. track.release()
+        // calls mediaStreamTrackRelease -> GetUserMediaImpl.disposeTrack ->
+        // ScreenCaptureController.dispose(), which aborts the foreground service
+        // AND calls mediaProjection.stop() — fully tearing the projection down so
+        // the user is not asked to stop after we already stopped.
+        try {
+            if (share.screenStream) {
+                share.screenStream.getTracks().forEach(t => {
+                    try { t.stop(); } catch (e) { /* noop */ }
+                    try { if (typeof t.release === 'function') t.release(); } catch (e) { /* noop */ }
+                });
+            }
+        } catch (e) { /* noop */ }
+    }
+
+    /** Make sure the camera is actually producing again once a share ends.
+     *
+     *  _teardownScreenShareResources puts the camera track back on the SENDER,
+     *  but that is only half of it: the track itself can still be disabled
+     *  (video was muted before the share started), or the sender can have been
+     *  left detached by an earlier "Audio only" choice. This is the "if not
+     *  already active" part of coming back from a share.
+     *
+     *  Returns false when there is no usable camera track yet, so callers can
+     *  retry -- the local stream can land a beat after mount. */
+    _ensureCameraActiveAfterShare() {
+        const localStream = this.state.localStream
+            || (this.props.call && this.props.call.getLocalStreams
+                && this.props.call.getLocalStreams()[0])
+            || null;
+        const track = (localStream && localStream.getVideoTracks
+            && localStream.getVideoTracks()[0]) || null;
+        if (!track) return false;
+        if (track.readyState === 'ended') {
+            // The camera died during the share (OS reclaimed it, or local
+            // media was refreshed). Nothing to re-attach in place; the user
+            // can restart video from the picker.
+            console.log('[screen-share] camera track ended during share — cannot restore in place');
+            return false;
+        }
+        if (!track.enabled) track.enabled = true;
+        this._ensureSenderHasTrack(track);
+        if (this.state.videoMuted) this.setState({videoMuted: false});
+        return true;
+    }
+
+    /** Read the outbound video sender's framesSent, or null when stats are
+     *  unavailable. Same shape as the reader inside _verifyScreenFramesFlowing;
+     *  kept separate because that one is scoped to a specific share. */
+    async _readOutboundFramesSent() {
+        try {
+            const pc = this.props.call && this.props.call._pc;
+            if (!pc || typeof pc.getStats !== 'function') return null;
+            const report = await pc.getStats();
+            if (!report || typeof report.forEach !== 'function') return null;
+            let sent = null;
+            report.forEach(s => {
+                if (s && s.type === 'outbound-rtp'
+                    && (s.kind === 'video' || s.mediaType === 'video')
+                    && typeof s.framesSent === 'number') {
+                    sent = s.framesSent;
+                }
+            });
+            return sent;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** Confirm the camera is REALLY producing again after a share, and repair
+     *  it if not.
+     *
+     *  Why this is needed at all: see the note in the localStreamUrl getter.
+     *  The self-view deliberately keeps rendering the camera during a share so
+     *  the camera track keeps a sink and its capturer stays running — but
+     *  starting a share navigates to the chat, which UNMOUNTS VideoBox and
+     *  takes that last sink with it. The capturer then goes idle (and if the
+     *  user leaves the app entirely, Android reclaims the camera from the
+     *  backgrounded process outright). Either way the track object still looks
+     *  perfectly healthy afterwards — readyState 'live', enabled true, attached
+     *  to the sender — while producing no frames at all: black self-view,
+     *  framesSent frozen, and the peer's PLI never answered.
+     *
+     *  So don't trust the track's own reported state: measure. Only repair
+     *  when framesSent is genuinely not advancing, which keeps this inert on
+     *  the paths that already work (stopping from the in-app button while the
+     *  call screen stayed mounted). */
+    async _verifyCameraAfterShare() {
+        if (this._isMounted === false) return;
+        const before = await this._readOutboundFramesSent();
+        setTimeout(async () => {
+            if (this._isMounted === false) return;
+            // A new share started in the meantime — the sender is carrying the
+            // screen again and framesSent says nothing about the camera.
+            if (this.state.screenSharing) return;
+            if (this.state.videoMuted) return;   // user chose to stop video
+            const after = await this._readOutboundFramesSent();
+            if (before != null && after != null && after > before) {
+                console.log('[screen-share] camera frames flowing after share'
+                    + ' (framesSent ' + before + ' -> ' + after + ')');
+                return;
+            }
+            console.log('[screen-share] camera NOT producing after share'
+                + ' (framesSent ' + before + ' -> ' + after + ') — restarting capture');
+            this._restartCameraCapture();
+        }, 1500);
+    }
+
+    /** Restart the camera capture after it went idle behind a screen share.
+     *  Two escalating steps, cheapest first. */
+    async _restartCameraCapture() {
+        if (this._cameraRestartInFlight) return;
+        this._cameraRestartInFlight = true;
+        try {
+            const call = this.props.call;
+            const facing = (this.state.cameraFacing === 'back') ? 'back' : 'front';
+            const stream = this.state.localStream
+                || (call && call.getLocalStreams && call.getLocalStreams()[0])
+                || null;
+            const track = (stream && stream.getVideoTracks
+                && stream.getVideoTracks()[0]) || null;
+
+            // Step 1 — bounce the capture session in place with two
+            // _switchCamera() calls. This restarts the Camera2 session (the
+            // same primitive selectCamera / toggleCamera already rely on) and
+            // lands back on the camera we started from. Preferred because the
+            // track and stream identities survive: the sender stays wired and
+            // the self-view renderer stays attached, so nothing else has to be
+            // rebuilt. Skipped when the track is already ended — switchCamera
+            // cannot revive that.
+            if (track && track.readyState !== 'ended'
+                    && typeof track._switchCamera === 'function') {
+                console.log('[screen-share] camera restart: bouncing capture session');
+                try {
+                    track._switchCamera();
+                    await new Promise(r => setTimeout(r, 400));
+                    track._switchCamera();
+                } catch (e) {
+                    console.log('[screen-share] switch-camera bounce threw:',
+                        (e && e.message) || String(e));
+                }
+                await new Promise(r => setTimeout(r, 900));
+                const a = await this._readOutboundFramesSent();
+                await new Promise(r => setTimeout(r, 900));
+                const b = await this._readOutboundFramesSent();
+                if (a != null && b != null && b > a) {
+                    console.log('[screen-share] camera recovered by capture-session bounce'
+                        + ' (framesSent ' + a + ' -> ' + b + ')');
+                    return;
+                }
+                console.log('[screen-share] bounce did not revive the camera'
+                    + ' (framesSent ' + a + ' -> ' + b + ') — re-acquiring');
+            }
+
+            // Step 2 — the old capturer is unrecoverable (OS reclaimed the
+            // camera while we were backgrounded, or the track ended). Acquire a
+            // fresh one and swap it into BOTH the sender (so the peer sees us)
+            // and the local stream (so the self-view stops being black).
+            let fresh = null;
+            try {
+                fresh = await mediaDevices.getUserMedia({
+                    audio: false,
+                    video: {facingMode: (facing === 'back') ? 'environment' : 'user'},
+                });
+            } catch (e) {
+                console.log('[screen-share] camera re-acquire failed:',
+                    (e && e.message) || String(e));
+                return;
+            }
+            const newTrack = (fresh && fresh.getVideoTracks
+                && fresh.getVideoTracks()[0]) || null;
+            if (!newTrack) {
+                console.log('[screen-share] camera re-acquire returned no video track');
+                try { fresh.getTracks().forEach(t => t.stop()); } catch (e) { /* noop */ }
+                return;
+            }
+
+            const sender = this._getVideoSender();
+            if (sender && typeof sender.replaceTrack === 'function') {
+                try {
+                    await sender.replaceTrack(newTrack);
+                } catch (e) {
+                    console.log('[screen-share] replaceTrack(fresh camera) failed:',
+                        (e && e.message) || String(e));
+                }
+            }
+
+            // Swap inside the EXISTING stream object rather than replacing the
+            // stream: call.getLocalStreams()[0] and props.localMedia are held
+            // in several places (app.js, Call.js) and handing out a new stream
+            // would desynchronise them.
+            if (stream) {
+                this._detachLocalVideoTrackListeners();
+                if (track) {
+                    try { stream.removeTrack(track); } catch (e) { /* noop */ }
+                    try { track.stop(); } catch (e) { /* noop */ }
+                    try { if (typeof track.release === 'function') track.release(); } catch (e) { /* noop */ }
+                }
+                try { stream.addTrack(newTrack); } catch (e) { /* noop */ }
+                this._attachLocalVideoTrackListeners(stream);
+            }
+
+            // Outlive this component instance — see the localViewStream note
+            // in the constructor for why a remount has to be able to find it.
+            if (call) call._sylkLocalViewStream = fresh;
+
+            // ...but NOT outlive the call. This stream came from our own
+            // getUserMedia, so it is not part of app.js's state.localMedia and
+            // closeLocalMedia() at hangup never touches it. Left alone it keeps
+            // the camera device open after the call ends, and the NEXT call's
+            // getUserMedia comes up with no usable video -- "video does not get
+            // out of Android any more" on the second call.
+            //
+            // Release it when the call terminates, decoupled from this
+            // component's lifecycle (VideoBox is long gone by then) -- the same
+            // pattern selectScreenShare uses to tear the projection down.
+            if (call && typeof call.on === 'function' && !call._sylkLocalViewStreamHandler) {
+                const freeLocalViewStream = (oldState, newState) => {
+                    if (newState !== 'terminated' && newState !== 'closed'
+                            && newState !== 'failed') {
+                        return;
+                    }
+                    try {
+                        if (call.removeListener) {
+                            call.removeListener('stateChanged', freeLocalViewStream);
+                        }
+                    } catch (e) { /* noop */ }
+                    call._sylkLocalViewStreamHandler = null;
+                    const dead = call._sylkLocalViewStream;
+                    call._sylkLocalViewStream = null;
+                    if (!dead) return;
+                    try {
+                        dead.getTracks().forEach(t => {
+                            try { t.stop(); } catch (e) { /* noop */ }
+                            // stop() only marks the track ended in
+                            // react-native-webrtc; release() is what disposes the
+                            // native capturer and actually frees the camera.
+                            try { if (typeof t.release === 'function') t.release(); } catch (e) { /* noop */ }
+                        });
+                    } catch (e) { /* noop */ }
+                    console.log('[screen-share] released re-acquired camera stream on call end');
+                };
+                call._sylkLocalViewStreamHandler = freeLocalViewStream;
+                try { call.on('stateChanged', freeLocalViewStream); } catch (e) { /* noop */ }
+            }
+
+            if (this._isMounted !== false) {
+                // Render the self-view from the stream getUserMedia handed us,
+                // not the shared one — the native renderer binds to the track
+                // the native stream registry knows about, which a JS-side track
+                // swap does not update. localViewEpoch additionally remounts the
+                // RTCView, since stream.toURL() is stable across the swap and
+                // React would otherwise see no prop change at all.
+                this.setState(st => ({
+                    localViewStream: fresh,
+                    localViewEpoch: (st.localViewEpoch || 0) + 1,
+                    videoMuted: false,
+                    cameraFacing: facing,
+                    mirror: (facing !== 'back'),
+                }));
+            }
+            // A fresh track means a fresh capture size, and CallZrtp's
+            // one-shot _applyVideoBitrate will not re-run on its own — the
+            // sender would keep whatever tuning the previous camera got. Same
+            // call Call.js makes after any mid-call media change.
+            try { if (call) reapplyVideoEncoderParams(call); } catch (e) {
+                console.log('[screen-share] reapplyVideoEncoderParams threw:',
+                    (e && e.message) || String(e));
+            }
+            console.log('[screen-share] camera re-acquired and swapped in (facing=' + facing + ')');
+        } finally {
+            this._cameraRestartInFlight = false;
+        }
+    }
+
+    /** Bring a freshly-remounted VideoBox back in line with the camera that
+     *  was in use before the share.
+     *
+     *  Deliberately NO _switchCamera() / selectCamera() here. The camera track
+     *  kept running throughout the share -- selectScreenShare only swaps what
+     *  the SENDER carries, it never stops the camera -- so the hardware is
+     *  still pointed at `facing`. Calling selectCamera(facing) would flip it to
+     *  the OTHER camera. The only thing out of date is this instance's state,
+     *  which a remount reset to the constructor's front-camera default. */
+    _restoreCameraAfterShare(facing, attempt) {
+        const want = (facing === 'back') ? 'back' : 'front';
+        if (!this._ensureCameraActiveAfterShare()) {
+            const n = attempt || 0;
+            if (n < 5) {
+                setTimeout(() => {
+                    if (this._isMounted === false) return;
+                    this._restoreCameraAfterShare(want, n + 1);
+                }, 300);
+                return;
+            }
+            console.log('[screen-share] no local video track to restore after share');
+        }
+        const update = {};
+        if (this.state.cameraFacing !== want) update.cameraFacing = want;
+        // Mirror follows the facing (front is mirrored, back is not) — same
+        // pairing selectCamera / toggleCamera maintain when switching.
+        const wantMirror = (want !== 'back');
+        if (this.state.mirror !== wantMirror) update.mirror = wantMirror;
+        if (this.state.screenSharing) update.screenSharing = false;
+        if (Object.keys(update).length > 0) this.setState(update);
+        console.log('[screen-share] camera restored after share: facing=' + want);
+        // Re-attaching the track to the sender is not proof it is producing —
+        // verify and repair if it is not. See _verifyCameraAfterShare.
+        this._verifyCameraAfterShare();
+    }
+
+    /** User-initiated stop (Stop Sharing row, tap Share Screen while active, or
+     *  system cast-stop while the call screen is showing). Tears down the media
+     *  and returns the picker to camera mode. Safe to call when not sharing. */
+    _stopScreenShare() {
+        const call = this.props.call;
+        if (!this.state.screenSharing && !(call && call._sylkScreenShare)) return;
+
+        // iOS: end the broadcast through the SYSTEM (toggle the broadcast picker
+        // button) rather than by closing our socket. Closing the socket makes the
+        // extension call finishBroadcastWithError(), which ALWAYS pops a "Screen
+        // sharing stopped" alert — redundant when the user explicitly stopped.
+        // Toggling the picker stops it via broadcastFinished() (clean, no alert);
+        // the screen track's 'ended' event (onEnded) then drives teardown. The
+        // _iosBroadcastEnded guard prevents onEnded's re-entry from re-toggling
+        // (which would restart a broadcast) and avoids toggling an already-
+        // finished broadcast on the Control-Center-stop path.
+        if (Platform.OS === 'ios' && !this._iosBroadcastEnded) {
+            try {
+                const _tag = this._iosBroadcastPicker ? findNodeHandle(this._iosBroadcastPicker) : null;
+                const _mgr = NativeModules.ScreenCapturePickerViewManager;
+                if (_tag != null && _mgr && typeof _mgr.show === 'function') {
+                    console.log('[screen-share] iOS: stopping broadcast via system picker (no alert)');
+                    _mgr.show(_tag);
+                    // Fallback: if the broadcast doesn't actually end (onEnded
+                    // never fires), force a manual teardown so we don't get stuck
+                    // "sharing". That fallback path DOES show the alert, but only
+                    // when the clean stop failed.
+                    clearTimeout(this._iosStopFallbackTimer);
+                    this._iosStopFallbackTimer = setTimeout(() => {
+                        if (this._isMounted !== false && this.state.screenSharing && !this._iosBroadcastEnded) {
+                            console.log('[screen-share] iOS system stop did not end broadcast in time — forcing teardown');
+                            this._iosBroadcastEnded = true;
+                            this._stopScreenShare();
+                        }
+                    }, 3000);
+                    return;
+                }
+            } catch (e) {
+                console.log('[screen-share] iOS system-stop failed, manual teardown:', (e && e.message) || String(e));
+            }
+        }
+        clearTimeout(this._iosStopFallbackTimer);
+
+        const facingBefore = (call && call._sylkScreenShare && call._sylkScreenShare.facingBefore)
+            || this._facingBeforeScreenShare;
+        this._teardownScreenShareResources(call, true);
+
+        const restoredFacing = (facingBefore === 'back') ? 'back' : 'front';
+        this._facingBeforeScreenShare = null;
+        if (this._isMounted !== false) {
+            this.setState({ screenSharing: false, cameraFacing: restoredFacing });
+            // The teardown above re-attached the camera track to the sender;
+            // this makes sure the track is actually enabled and the sender
+            // really is wired up, so stopping a share always ends with live
+            // video rather than a black frame. No camera SWITCH is needed on
+            // this path — the hardware never left `restoredFacing`.
+            this._ensureCameraActiveAfterShare();
+            // The capturer can still be idle even here (the user may have left
+            // the app during the share and come back to the call screen before
+            // stopping), so verify and repair on this path too.
+            this._verifyCameraAfterShare();
+        }
+
+        // The share session hid the system bars (insets collapsed to 0). Ask
+        // Android to re-show them and RE-DISPATCH window insets so the safe-area
+        // padding is recomputed — otherwise the app overlaps the phone's top
+        // status bar and bottom navigation bar and those become unreachable.
+        // Deferred so it runs after the returning layout has settled (and, on
+        // the system-pill path, after bringAppToForeground raises the app).
+        if (Platform.OS === 'android' && NativeModules.SylkBridge
+                && typeof NativeModules.SylkBridge.refreshSystemInsets === 'function') {
+            setTimeout(() => {
+                try { NativeModules.SylkBridge.refreshSystemInsets(); } catch (e) { /* noop */ }
+            }, 350);
+        }
+        // Ready for the next share.
+        this._iosBroadcastEnded = false;
+    }
+
+    togglePointerMode() {
+        this.setState({ pointerMode: !this.state.pointerMode });
+    }
+
+    /** Tell the peer we started/stopped sharing our screen. Doubles as a
+     *  capability advertisement: only clients that implement the pointer
+     *  protocol send this, so a peer that receives 'start' knows it may show
+     *  its pointer button and that WE can render the marker they send back. */
+    _sendScreenSharingSignal(action) {
+        const call = this.props.call;
+        if (!call || typeof call.sendMessage !== 'function') return;
+        // Once the call is terminated the sylkrtc session is gone and sendMessage
+        // rejects with "Unknown session". There is nothing useful to tell a peer
+        // whose call UI is tearing down anyway, so skip it rather than emit a
+        // failure that reads like a bug in the logs. hangupCall() signals 'stop'
+        // before the BYE precisely so this path has nothing left to do.
+        const state = call.state;
+        if (state === 'terminated' || state === 'closed' || state === 'failed') {
+            console.log('[screen-share] skipping ' + action + ' signal — call already ' + state);
+            return;
+        }
+        try {
+            call.sendMessage(JSON.stringify({ action }), 'application/sylk-screen-sharing', {}, (err) => {
+                if (err) console.log('[screen-share] signal ' + action + ' failed:', (err && err.message) || String(err));
+            });
+            console.log('[screen-share] signalled peer: ' + action);
+        } catch (e) {
+            console.log('[screen-share] signal threw:', (e && e.message) || String(e));
+        }
+    }
+
+
+    // ---------------------------------------------------------------
+    // Screen-share REQUEST (kebab -> "Request screen")
+    //
+    // Asks the peer to share THEIR screen; the mirror image of
+    // selectScreenShare, which shares ours. The handshake rides the
+    // existing in-call application/sylk-screen-sharing channel with
+    // three new actions -- request / request_accept / request_reject --
+    // rather than chat metadata, because it is meaningless outside this
+    // call (nothing to journal or replay) and because peers on older
+    // builds parse only 'start'/'stop' on that content type and return,
+    // so they ignore it silently instead of rendering a junk bubble.
+    //
+    // The peer's app.js pops ScreenShareRequestModal; on Accept it
+    // replies request_accept and starts its own share, which reaches us
+    // as an ordinary 'start' signal a moment later (after their OS
+    // capture-consent dialog). On Reject we get request_reject and drop
+    // the pending state at once.
+
+    _handlePeerCapabilities(event) {
+        const myId = this.props.call && (this.props.call.id || this.props.call._callId);
+        if (!event || !myId || event.callId !== myId) return;
+        if (!Array.isArray(event.capabilities)) return;
+        this.setState({peerCapabilities: event.capabilities});
+    }
+
+    /** Can we offer to ask this peer for their screen? Only when they
+     *  explicitly advertised that they can produce one. Absence of an
+     *  advertisement means an older build, and offering the item there
+     *  would send a request nothing will ever answer. */
+    _peerCanShareScreen() {
+        const caps = this.state.peerCapabilities;
+        return Array.isArray(caps) && caps.indexOf(CAP_SCREEN_SHARING) !== -1;
+    }
+
+    /** Human label for the peer, for the outcome banner. Same
+     *  precedence the escalate-to-conference dialog uses. */
+    _peerLabel() {
+        const contact = this.state.callContact;
+        if (contact && contact.name) return contact.name;
+        if (this.state.remoteDisplayName) return this.state.remoteDisplayName;
+        if (this.state.remoteUri) return this.state.remoteUri.split('@')[0];
+        return 'Your contact';
+    }
+
+    /** Transient banner over the video. VideoBox has no notification
+     *  centre of its own (postSystemNotification isn't threaded down
+     *  here), and a reject that produced no feedback at all would read
+     *  as a broken button. */
+    _showScreenRequestNotice(text) {
+        if (this._screenRequestNoticeTimer) {
+            clearTimeout(this._screenRequestNoticeTimer);
+            this._screenRequestNoticeTimer = null;
+        }
+        this.setState({screenRequestNotice: text});
+        this._screenRequestNoticeTimer = setTimeout(() => {
+            this._screenRequestNoticeTimer = null;
+            if (this._isMounted === false) return;
+            this.setState({screenRequestNotice: null});
+        }, 5000);
+    }
+
+    sendScreenShareRequest() {
+        const call = this.props.call;
+        if (!call || typeof call.sendMessage !== 'function') {
+            console.log('[screen-request] no active call, cannot send');
+            return;
+        }
+        if (this.state.screenRequestPending) {
+            console.log('[screen-request] a request is already in flight, ignoring');
+            return;
+        }
+        const requestId = uuid.v4();
+        const expiresAtIso = new Date(Date.now() + 60 * 1000).toISOString();
+        try {
+            call.sendMessage(
+                JSON.stringify({action: 'request', id: requestId, expires: expiresAtIso}),
+                'application/sylk-screen-sharing', {}, (err) => {
+                    if (err) {
+                        console.log('[screen-request] send failed:',
+                            (err && err.message) || String(err));
+                    }
+                });
+        } catch (e) {
+            console.log('[screen-request] send threw:', (e && e.message) || String(e));
+            return;
+        }
+        console.log('[screen-request] sent -> peer, reqId=', requestId);
+        this.setState({
+            screenRequestPending: true,
+            screenRequestPendingId: requestId,
+        });
+        // Self-clear at the same 60 s deadline we put on the wire, so a
+        // peer that never answers (old build, backgrounded, modal timed
+        // out) doesn't leave the menu item stuck on "Requesting...".
+        if (this._screenRequestExpiryTimer) {
+            clearTimeout(this._screenRequestExpiryTimer);
+        }
+        this._screenRequestExpiryTimer = setTimeout(() => {
+            this._screenRequestExpiryTimer = null;
+            if (this.state.screenRequestPendingId !== requestId) return;
+            this.setState({
+                screenRequestPending: false,
+                screenRequestPendingId: null,
+            });
+            this._showScreenRequestNotice(
+                this._peerLabel() + ' did not respond to the screen request');
+        }, 60 * 1000);
+    }
+
+    _handleScreenShareRequestResolved(event) {
+        const myId = this.props.call && (this.props.call.id || this.props.call._callId);
+        if (!event || !myId || event.callId !== myId) return;
+        if (this.state.screenRequestPendingId !== event.requestId) return;
+        if (this._screenRequestExpiryTimer) {
+            clearTimeout(this._screenRequestExpiryTimer);
+            this._screenRequestExpiryTimer = null;
+        }
+        this.setState({
+            screenRequestPending: false,
+            screenRequestPendingId: null,
+        });
+        this._showScreenRequestNotice(event.accepted
+            ? this._peerLabel() + ' accepted \u2014 waiting for their screen\u2026'
+            : this._peerLabel() + ' declined to share their screen');
+    }
+
+    /** The local user accepted an incoming request (modal owned by
+     *  app.js). Run the ordinary share path -- the OS consent dialog
+     *  still applies. */
+    _handleScreenShareRequested(event) {
+        const call = this.props.call;
+        const myId = call && (call.id || call._callId);
+        if (!event || !myId || event.callId !== myId) return;
+        // Consume the unmounted-fallback stamp so a later remount can't
+        // kick off a second share for the same request.
+        if (call._sylkPendingScreenShareStart === event.requestId) {
+            call._sylkPendingScreenShareStart = null;
+        }
+        if (this.state.screenSharing || call._sylkScreenShare) {
+            console.log('[screen-request] accepted but already sharing -- nothing to do');
+            return;
+        }
+        console.log('[screen-request] accepted locally -- starting screen share');
+        this.selectScreenShare();
+    }
+
+    /** Map a tap on the remote-video view (view pixels) to a normalized point
+     *  on the peer's shared screen and send it (application/sylk-pointer). While
+     *  pointerMode is on the remote view is 'contain', so account for the
+     *  letterbox and ignore taps in the bars. */
+    /** Echo a just-ACKed click locally: a green dot at the tap position, in the
+     *  same (locationX/Y) coordinate space as the remote-video tap target.
+     *  Auto-clears after ~900ms. */
+    _showLocalAck(locX, locY) {
+        const id = Date.now();
+        this._ackEchoId = id;
+        this.setState({ ackEcho: { x: locX, y: locY, id } });
+        if (this._ackEchoTimer) clearTimeout(this._ackEchoTimer);
+        this._ackEchoTimer = setTimeout(() => {
+            if (this._ackEchoId === id && this._isMounted !== false) {
+                this.setState({ ackEcho: null });
+            }
+        }, 900);
+    }
+
+    _sendPointer(locX, locY) {
+        const call = this.props.call;
+        if (!call || typeof call.sendMessage !== 'function') return;
+        // Sharer's app is backgrounded (iOS) — the marker can't render there.
+        if (this.state.remoteInApp === false) return;
+        const layout = this.state.remoteVideoLayout;
+        if (!layout || !layout.w || !layout.h) return;
+        const size = this.state.remoteVideoSize;
+        let nx, ny;
+        if (size && size.w && size.h) {
+            const scale = Math.min(layout.w / size.w, layout.h / size.h);
+            const dispW = size.w * scale;
+            const dispH = size.h * scale;
+            const offX = (layout.w - dispW) / 2;
+            const offY = (layout.h - dispH) / 2;
+            nx = (locX - offX) / dispW;
+            ny = (locY - offY) / dispH;
+        } else {
+            nx = locX / layout.w;
+            ny = locY / layout.h;
+        }
+        if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) return;
+        const t = Date.now();
+        // Remember where we clicked, keyed by t, so we can echo it locally when
+        // the peer ACKs that it rendered this click. Prune stale (>5s) entries.
+        this._pendingPointers = this._pendingPointers || {};
+        this._pendingPointers[t] = { locX, locY };
+        Object.keys(this._pendingPointers).forEach((k) => {
+            if (Number(k) < t - 5000) delete this._pendingPointers[k];
+        });
+        const payload = JSON.stringify({
+            x: Math.round(nx * 1000) / 1000,
+            y: Math.round(ny * 1000) / 1000,
+            t
+        });
+        try {
+            call.sendMessage(payload, 'application/sylk-pointer', {}, (err) => {
+                if (err) console.log('[pointer] send failed:', (err && err.message) || String(err));
+            });
+            console.log('[pointer] tap loc=(' + Math.round(locX) + ',' + Math.round(locY) + ') -> norm=' + payload);
+        } catch (e) {
+            console.log('[pointer] sendMessage threw:', (e && e.message) || String(e));
+        }
+    }
+
     renderVideoPicker(buttonSize, buttonClass) {
+        // Hide the camera-selection control while the peer is sharing (viewer:
+        // our camera choices are noise while watching their screen) AND while WE
+        // are sharing (sharer: the navbar Stop-share button is the only control
+        // needed to end the share and return to the video call).
+        if (this.state.remotePeerSharing || this.state.screenSharing) return null;
         const facing = this.state.cameraFacing || 'front';
         const muted = this.state.videoMuted;
         const enableMyVideo = this.state.enableMyVideo;
@@ -2295,7 +3993,7 @@ class VideoBox extends Component {
         // inside the picker dropdown stay distinct (camera-front /
         // camera-rear), so the front/back distinction is still
         // shown when it matters — at the moment of choice.
-        const mainIcon = 'video';
+        const mainIcon = this.state.screenSharing ? 'monitor-share' : 'video';
 
         // Swap-video row icon: same `camera-switch` glyph the
         // CallOverlay navbar quick-access swap button and the kebab's
@@ -2311,6 +4009,7 @@ class VideoBox extends Component {
         // the camera they can switch *to*. When muted, show BOTH so
         // the user can pick which camera to unmute into — tapping
         // either unmutes (and switches if needed) via selectCamera.
+        const screenActive = this.state.screenSharing;
         const cameraOptions = [
             {
                 key: 'front',
@@ -2325,13 +4024,27 @@ class VideoBox extends Component {
                 facing: 'back'
             }
         ]
-            .filter(opt => muted || opt.facing !== facing)
+            .filter(opt => {
+                if (opt.facing === 'screen') return !screenActive;
+                return muted || opt.facing !== facing;
+            })
             .map(opt => ({
                 key: opt.key,
                 icon: opt.icon,
                 label: opt.label,
-                onPress: () => this.selectCamera(opt.facing)
+                onPress: opt.facing === 'screen'
+                    ? () => this.selectScreenShare()
+                    : () => this.selectCamera(opt.facing)
             }));
+
+        // Share Screen row — placed LAST in the menu (per request). Hidden
+        // while already sharing (the Stop Sharing row covers that case).
+        const screenRow = screenActive ? null : {
+            key: 'screen',
+            icon: 'monitor-share',
+            label: 'Share Screen',
+            onPress: () => this.selectScreenShare()
+        };
 
         // The picker rows are *actions*, not radio choices — there is
         // no persistent "selected" highlight. The icon/label of each
@@ -2348,6 +4061,25 @@ class VideoBox extends Component {
         // there is no active local video yet — hide them too.
         const items = muted ? [
             ...cameraOptions,
+            ...(screenRow ? [screenRow] : []),
+        ] : screenActive ? [
+            // While sharing, the picker is deliberately minimal: the two
+            // camera rows (tapping either stops the share and returns to that
+            // camera), an explicit Stop Sharing row, and aspect ratio. Mute /
+            // mirror / swap don't have well-defined meanings mid-share.
+            ...cameraOptions,
+            {
+                key: 'stopshare',
+                icon: 'monitor-off',
+                label: 'Stop Sharing',
+                onPress: () => this._stopScreenShare()
+            },
+            {
+                key: 'aspect',
+                icon: 'aspect-ratio',
+                label: 'Aspect Ratio',
+                onPress: () => this.toggleAspectRatio()
+            }
         ] : [
             ...cameraOptions,
             {
@@ -2384,7 +4116,8 @@ class VideoBox extends Component {
                 icon: 'aspect-ratio',
                 label: 'Aspect Ratio',
                 onPress: () => this.toggleAspectRatio()
-            }
+            },
+            ...(screenRow ? [screenRow] : []),
         ];
 
         // Size the floating-panel icons up to roughly the *visual* size
@@ -2478,6 +4211,15 @@ class VideoBox extends Component {
                 )}
                 <View style={{position: 'relative'}}>
                     <IconButton
+                        // Force a remount whenever the picker opens/closes.
+                        // react-native-paper's IconButton on Android can drop
+                        // its glyph (render blank) after it's used to toggle an
+                        // overlay that changes the surrounding stacking context
+                        // — the bar button then looks like it "disappeared"
+                        // after you dismiss the camera menu. Keying on the
+                        // open/closed state (plus the glyph itself) guarantees a
+                        // fresh paint on every transition. Cheap: it's one button.
+                        key={'vpick-' + mainIcon + '-' + (this.state.videoPickerVisible ? 'open' : 'closed')}
                         size={buttonSize}
                         style={[buttonClass]}
                         icon={mainIcon}
@@ -2625,12 +4367,30 @@ class VideoBox extends Component {
 	}
 
     hangupCall() {
+        // Tell the peer the share is over BEFORE the session goes away. The
+        // teardown that runs off the 'terminated' state change is too late: by
+        // then sylkrtc has destroyed the session and call.sendMessage() fails
+        // with "Unknown session", so the peer is never told (observed
+        // 2026-08-16 12:30:32). Cheap, idempotent, and a no-op when not sharing.
+        this._signalScreenShareStopIfSharing();
         this.props.hangupCall('user_hangup_call');
         this.userHangup = true;
     }
 
     cancelCall() {
+        this._signalScreenShareStopIfSharing();
         this.props.hangupCall('user_cancel_call');
+    }
+
+    /** Send a screen-share 'stop' to the peer while the session is still alive,
+     *  and mark it sent so the later teardown does not re-send it into a dead
+     *  session. Safe to call when there is no share in progress. */
+    _signalScreenShareStopIfSharing() {
+        const call = this.props.call;
+        const share = (call && call._sylkScreenShare) || null;
+        if (!share || share.stopSignalled) return;
+        this._sendScreenSharingSignal('stop');
+        share.stopSignalled = true;
     }
 
     escalateToConference(participants) {
@@ -2692,7 +4452,16 @@ class VideoBox extends Component {
         if (this.state.swapVideo) {
             _url = this.state.remoteStream ? this.state.remoteStream.toURL() : null;
         } else {
-            _url = this.state.localStream ? this.state.localStream.toURL() : null;
+            // NOTE: even while screen sharing, the self-view keeps rendering the
+            // CAMERA stream, not the screen. This is deliberate: it keeps a live
+            // sink on the camera track so libwebrtc's capturer stays running the
+            // whole time we're sharing. If we render the screen here instead, the
+            // camera track has zero sinks (it's off the sender too) and the
+            // capturer goes idle — so when the user stops sharing, replaceTrack-ing
+            // the camera back yields a black frame until the capturer restarts.
+            // localViewStream wins when set — see its note in the constructor.
+            const _selfStream = this.state.localViewStream || this.state.localStream;
+            _url = _selfStream ? _selfStream.toURL() : null;
         }
         if (this._lastLoggedLocalStreamUrlState !== !!_url) {
             this._lastLoggedLocalStreamUrlState = !!_url;
@@ -2707,7 +4476,10 @@ class VideoBox extends Component {
 
     get remoteStreamUrl() {
 		if (this.state.swapVideo) {
-			return this.state.localStream ? this.state.localStream.toURL() : null;
+			// Swapped: the LOCAL camera is what fills the main view, so it
+			// needs the same localViewStream override the self-view uses.
+			const _selfStream = this.state.localViewStream || this.state.localStream;
+			return _selfStream ? _selfStream.toURL() : null;
         }
 		return this.state.remoteStream ? this.state.remoteStream.toURL() : null
     }
@@ -2841,7 +4613,7 @@ class VideoBox extends Component {
 
         if (this.state.callOverlayVisible) {
             let content = (<View style={buttonsContainerClass}>
-                {!disablePlus ?
+                {(!disablePlus && !this.state.pointerMode && !this.state.remotePeerSharing) ?
                 <View style={styles.buttonContainer}>
                     <IconButton
                         size={buttonSize}
@@ -2863,6 +4635,7 @@ class VideoBox extends Component {
                 </View>
                 : null}
 
+                {(!this.state.pointerMode && !this.state.remotePeerSharing) ? (
                 <View style={styles.buttonContainer}>
                     <IconButton
                         size={buttonSize}
@@ -2871,6 +4644,7 @@ class VideoBox extends Component {
                         icon={muteButtonIcons}
                     />
                 </View>
+                ) : null}
 
                 {/* Single video picker button: tapping it shows a floating
                     panel with Front/Back Camera, Mute, Hide Myself, Swap
@@ -2879,8 +4653,12 @@ class VideoBox extends Component {
                     when the camera is muted. */}
                 {this.renderVideoPicker(buttonSize, buttonClass)}
 
-                {this.renderAudioDevicePicker(buttonSize, buttonClass)}
+                {/* Remote-pointer toggle (viewer) and Stop screen share (sharer)
+                    live in the CallOverlay navbar, in the swap-camera slot. */}
 
+                {(!this.state.pointerMode && !this.state.remotePeerSharing) ? this.renderAudioDevicePicker(buttonSize, buttonClass) : null}
+
+                {(!this.state.pointerMode && !this.state.remotePeerSharing) ? (
                 <View style={[styles.buttonContainer, {marginLeft: 30}]}>
                     <IconButton
                         size={buttonSize}
@@ -2889,6 +4667,7 @@ class VideoBox extends Component {
                         icon="phone-hangup"
                     />
                 </View>
+                ) : null}
             </View>);
             // The local PIP thumbnail wrapper uses zIndex: 1000, so the
             // buttons View (which hosts the floating video/audio picker
@@ -2951,7 +4730,7 @@ class VideoBox extends Component {
 	    remoteVideoContainer = {
 			position: 'absolute',
 			top: this.state.fullScreen ? 0: headerBarHeight,
-			bottom: this.state.fullScreen ? -bottomInset : 0,
+			bottom: this.state.fullScreen ? -bottomInset : (this.state.remotePeerSharing ? bottomInset : 0),
 			borderWidth: debugBorderWidth,
 			borderColor: 'red',
 			width: '100%',
@@ -2960,11 +4739,53 @@ class VideoBox extends Component {
 //			height: this.state.fullScreen ? height : height - headerBarHeight - bottomInset - topInset
 		};
 
+		// Viewer watching the remote shared screen: the base height:'100%'
+		// wins over top+bottom in Yoga (top+height takes precedence), so the
+		// box overflowed the Android nav bar and — being too tall — vertically
+		// re-centred the contained video, making it look shifted down. Drop the
+		// explicit height so top + bottom (= bottomInset, which subtracts the
+		// nav bar) size the box to fit exactly between the header and nav bar.
+		if (this.state.remotePeerSharing && !this.state.fullScreen) {
+			delete remoteVideoContainer.height;
+		}
+
 		if (this.state.isLandscape) {
 			remoteVideoContainer.width = this.state.fullScreen ? width : width - rightInset - leftInset;
 		}
 
-		if (Platform.OS === 'ios') {
+		if (Platform.OS === 'ios' && this.state.remotePeerSharing && !this.state.fullScreen) {
+			// Viewer watching the REMOTE SHARED SCREEN on iOS, windowed.
+			//
+			// The camera path below deliberately bleeds the video under the
+			// header bar (marginTop:-topInset) and oversizes it to the full
+			// window (height:height). That is invisible with objectFit:'cover'
+			// because the overflow is simply cropped -- but the share path
+			// uses objectFit:'contain', so the video is fitted to the BOX,
+			// and a box that starts ~topInset above the screen and runs
+			// headerBarHeight past the bottom pushes the top and bottom of
+			// the remote screen off the visible area (the earlier
+			// `delete remoteVideoContainer.height` was undone right here).
+			//
+			// Size the box explicitly instead. The parent (app-level
+			// SafeAreaView) has its origin at screen-y = topInset, so:
+			//   box top    (screen) = topInset + headerBarHeight  -> just under the appbar
+			//   box bottom (screen) = windowHeight - bottomInset  -> just above the home indicator
+			// top + height also take precedence over `bottom` in Yoga, so we
+			// drop `bottom` rather than leave a conflicting anchor behind.
+			remoteVideoContainer.marginTop = 0;
+			remoteVideoContainer.top = headerBarHeight;
+			remoteVideoContainer.height = height - topInset - headerBarHeight - bottomInset;
+			delete remoteVideoContainer.bottom;
+
+			if (this.state.isLandscape) {
+				// Same edge-to-edge treatment as the windowed landscape
+				// camera path: reach device x=0 and let width carry to the
+				// right edge, so the shared screen is not pillarboxed by
+				// the safe-area insets on top of its own letterboxing.
+				remoteVideoContainer.marginLeft = -leftInset;
+				remoteVideoContainer.width = width;
+			}
+		} else if (Platform.OS === 'ios') {
 		    if (this.state.isLandscape) {
 				if (this.state.fullScreen) {
 					corners = {
@@ -3127,7 +4948,14 @@ class VideoBox extends Component {
 		const _videoRemountKey = (this.props.isFolded ? 'f' : 'u')
 			+ '-' + (this.state.isLandscape ? 'l' : 'p')
 			+ '-' + Math.round(width) + 'x' + Math.round(height)
-			+ '-' + this.state.myVideoCorner;
+			+ '-' + this.state.myVideoCorner
+			// Bumped by _restartCameraCapture when it swaps a FRESH camera
+			// track into the local stream. stream.toURL() is derived from the
+			// stream id, which does not change when its tracks are replaced,
+			// so the renderer would stay bound to the dead track and keep
+			// painting black. Changing the key remounts the RTCView, which
+			// re-attaches it as a sink on the new track.
+			+ '-c' + (this.state.localViewEpoch || 0);
 
         // ZRTP indicator overlay — pill anchored above the call buttons.
         // Hidden together with the buttons when the overlay is collapsed
@@ -3490,14 +5318,24 @@ class VideoBox extends Component {
                         overflow: 'hidden',
                         backgroundColor: '#222',
                     }}>
-                        <CameraPreview
+                        <DeferredRTCView
+                            // Camera-enable modal preview — the webrtc
+                            // localStream itself, NOT a second (vision-camera)
+                            // capture session. The native
+                            // mediaStreamTrackSetEnabled patch keeps the camera
+                            // capturing while the track is "muted"
+                            // (track.enabled=false) during this modal, so the
+                            // webrtc stream keeps producing frames and shows a
+                            // live preview here. One camera client (webrtc)
+                            // removes the vision-camera<->webrtc handoff that left
+                            // the outbound video at 0 frames after Enable on some
+                            // devices (Sony XQ-EC72). Rendered outside the
+                            // <Portal>s above so the RTCView binds on iOS M124.
+                            key={'vb-modal-preview-' + this._remoteRtcMountKey}
                             style={{flex: 1}}
-                            // By the time this modal is up sylkrtc has already
-                            // obtained camera permission via its own getUserMedia
-                            // flow; CameraPreview reuses it and just opens a
-                            // preview session. See CameraPreview.js on the
-                            // webrtc↔camera handoff.
-                            facing={this.state.cameraFacing === 'back' ? 'back' : 'front'}
+                            objectFit='cover'
+                            streamURL={_modalPreviewUrl}
+                            mirror={this.state.mirror}
                         />
                         {/* Top-right camera-flip button — same icon /
                             size / placement / styling as the audio→
@@ -3508,15 +5346,12 @@ class VideoBox extends Component {
                                 icon="camera-flip"
                                 size={28}
                                 onPress={() => {
-                                    // No track._switchCamera here — RNCamera
-                                    // owns the capture, not webrtc. Flipping
-                                    // is just a re-render with the swapped
-                                    // type prop, which RNCamera handles
-                                    // natively.
-                                    this.setState({
-                                        cameraFacing: this.state.cameraFacing === 'front' ? 'back' : 'front',
-                                        mirror: this.state.cameraFacing === 'front' ? false : true,
-                                    });
+                                    // webrtc owns the capture now (the preview is
+                                    // the webrtc localStream), so actually switch
+                                    // the live camera. toggleCamera() calls
+                                    // track._switchCamera() and updates mirror +
+                                    // cameraFacing.
+                                    this.toggleCamera();
                                 }}
                                 style={{backgroundColor: 'rgba(255,255,255,0.85)'}}
                             />
@@ -3710,7 +5545,11 @@ class VideoBox extends Component {
                         </View>
                     </View>
                 )}
-                {renderZrtpBadge()}
+                {/* Hide the ZRTP/SAS security pill while a screen share is
+                    active in EITHER direction — it overlaps the shared content
+                    and adds clutter the sharer/viewer doesn't need mid-share.
+                    Reappears automatically when the share ends. */}
+                {(this.state.screenSharing || this.state.remotePeerSharing) ? null : renderZrtpBadge()}
                 <MediaInfoPanel
                     call={this.state.call}
                     visible={!!this.state.mediaInfoPanelVisible}
@@ -3719,6 +5558,7 @@ class VideoBox extends Component {
                 />
                 <CallOverlay
                     show = {show}
+                    remotePeerSharing = {this.state.remotePeerSharing}
                     leftInsetOrigin = {true}
                     parentBledLeft = {true}
                     systemMessage = {this.props.systemMessage}
@@ -3741,6 +5581,10 @@ class VideoBox extends Component {
                     swapVideo= {this.swapVideo}    
                     enableMyVideo={this.state.enableMyVideo}    
                     hangupCall={this.hangupCall}
+                    screenSharing={this.state.screenSharing}
+                    stopScreenShare={() => this._stopScreenShare()}
+                    pointerMode={this.state.pointerMode}
+                    togglePointerMode={() => this.togglePointerMode()}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
@@ -3753,10 +5597,47 @@ class VideoBox extends Component {
 					hideSpeedometers = {this.state.videoEnableDialogVisible}
 					shareLocationFromCall = {this.props.shareLocationFromCall}
 					requestLocationFromCall = {this.props.requestLocationFromCall}
+					/* Passed as undefined when the peer never advertised
+					   screen-sharing support, which is what hides the
+					   "Request screen" kebab item -- CallOverlay gates
+					   every item in that group on `typeof prop ===
+					   'function'`, so there is no separate flag to keep
+					   in sync. */
+					requestScreenShare = {this._peerCanShareScreen()
+						? this.sendScreenShareRequest
+						: undefined}
+					screenRequestPending = {this.state.screenRequestPending}
 					showMediaInfo = {this._openMediaInfoPanel}
 					callHasVideo = {this.props.callHasVideo}
 					switchCallView = {this.props.switchCallView}
                 />
+
+                {/* Outcome of a screen-share request we sent (accepted /
+                    declined / timed out). Sits just under the header so it
+                    doesn't collide with the network HUD at the top-left or
+                    the action bar at the bottom. pointerEvents none so it
+                    never eats a tap meant for the video. */}
+                {this.state.screenRequestNotice ? (
+                    <View pointerEvents="none" style={{
+                        position: 'absolute',
+                        top: 90,
+                        left: 20,
+                        right: 20,
+                        alignItems: 'center',
+                        zIndex: 1200,
+                    }}>
+                        <View style={{
+                            backgroundColor: 'rgba(0,0,0,0.75)',
+                            borderRadius: 16,
+                            paddingHorizontal: 14,
+                            paddingVertical: 8,
+                        }}>
+                            <PaperText style={{color: '#fff', fontSize: 13, textAlign: 'center'}}>
+                                {this.state.screenRequestNotice}
+                            </PaperText>
+                        </View>
+                    </View>
+                ) : null}
 
                 {/* Remote party's User-Agent moved into the network HUD:
                     it renders under the speedometers, only while the HUD
@@ -3765,7 +5646,57 @@ class VideoBox extends Component {
                     here over the video was removed on request. */}
 
                 {this.showRemote?
-					<View style={[container, remoteVideoContainer]}>
+					<View style={[container, remoteVideoContainer,
+					    this.state.remotePeerSharing
+					        ? { borderWidth: 5, borderColor: '#E53935', backgroundColor: '#000' }
+					        : null]}>
+					  {/* Viewer-side cue: while the peer shares their screen, a
+					      thick red border + a red "REMOTE SCREEN" chip make it
+					      obvious this is THEIR screen, not our own camera (both
+					      apps otherwise look identical). Gated on remotePeerSharing
+					      so it only shows on the watching side and clears on stop.
+					      pointerEvents none so it never eats pointer/fullscreen taps. */}
+					  {/* Viewer-side "remote" label, bottom-right corner, while the
+					      peer is sharing their screen. */}
+					  {this.state.remotePeerSharing ? (
+					    <View pointerEvents="none" style={{
+					        position: 'absolute', bottom: 6, right: 6,
+					        zIndex: 2000, elevation: 30,
+					        backgroundColor: this.state.remoteShareStalled ? '#616161' : '#E53935',
+					        borderRadius: 4,
+					        paddingHorizontal: 5, paddingVertical: 1,
+					    }}>
+					      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 8, letterSpacing: 0.3 }}>
+					        {this.state.remoteShareStalled ? 'REMOTE — NO UPDATES' : 'REMOTE'}
+					      </Text>
+					    </View>
+					  ) : null}
+					  {/* The peer's screen has not sent a frame in a while. State
+					      that neutrally: a motionless screen looks identical to a
+					      dead capture from here, and we must not accuse a working
+					      share of being broken. Either way the viewer now knows
+					      the picture is old, instead of staring at a frozen frame
+					      believing it is live — the failure of 2026-08-16. */}
+					  {(this.state.remotePeerSharing && this.state.remoteShareStalled) ? (
+					    <View pointerEvents="none" style={{
+					        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+					        alignItems: 'center', justifyContent: 'center',
+					        zIndex: 1999, elevation: 29,
+					    }}>
+					      <View style={{
+					          backgroundColor: 'rgba(0,0,0,0.72)',
+					          borderRadius: 8,
+					          paddingHorizontal: 12, paddingVertical: 8,
+					      }}>
+					        <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>
+					          No screen updates
+					        </Text>
+					        <Text style={{ color: '#ddd', fontSize: 11, marginTop: 2, textAlign: 'center' }}>
+					          Showing the last frame received
+					        </Text>
+					      </View>
+					    </View>
+					  ) : null}
 					  <DeferredRTCView
 					    // Force a fresh native view on every VideoBox
 					    // mount by keying on `_remoteRtcMountKey` (set
@@ -3784,14 +5715,55 @@ class VideoBox extends Component {
 					    // carries a stream — see DeferredRTCView.js for
 					    // the UI-thread deadlock this prevents.
 						key={this._remoteRtcMountKey}
-						objectFit={this.state.aspectRatio}
-						style={styles.video}
+						objectFit={(this.state.pointerMode || this.state.remotePeerSharing) ? 'contain' : this.state.aspectRatio}
+						// While viewing the remote screen the container height comes
+						// from top+bottom, so styles.video's height:'100%' can't
+						// resolve (video top-tucks). absoluteFill fills the box, and
+						// objectFit:'contain' then centres the video with equal black
+						// bars (container has a black background).
+						style={this.state.remotePeerSharing ? StyleSheet.absoluteFillObject : styles.video}
 						streamURL={this.remoteStreamUrl}
 					  />
-					  <TouchableWithoutFeedback onPress={this.toggleFullScreen}>
-						<View style={StyleSheet.absoluteFillObject} />
-					  </TouchableWithoutFeedback>
-					  {!this.state.remoteVideoActive ? (
+					  <View
+					      style={StyleSheet.absoluteFillObject}
+					      onLayout={(e) => {
+					          const { width: lw, height: lh } = e.nativeEvent.layout;
+					          if (lw && lh && (!this.state.remoteVideoLayout
+					              || this.state.remoteVideoLayout.w !== lw
+					              || this.state.remoteVideoLayout.h !== lh)) {
+					              this.setState({ remoteVideoLayout: { w: lw, h: lh } });
+					          }
+					      }}
+					      onStartShouldSetResponder={() => true}
+					      onResponderRelease={(e) => {
+					          if (this.state.pointerMode) {
+					              this._sendPointer(e.nativeEvent.locationX, e.nativeEvent.locationY);
+					          } else {
+					              this.toggleFullScreen();
+					          }
+					      }}
+					  />
+					  {/* Local echo of a click the peer ACKed rendering — green dot
+					      at the tap position (same locationX/Y space as the target
+					      above). Confirms the remote actually showed our pointer. */}
+					  {this.state.ackEcho ? (
+					    <View
+					      pointerEvents="none"
+					      style={{
+					        position: 'absolute',
+					        left: this.state.ackEcho.x - 11,
+					        top: this.state.ackEcho.y - 11,
+					        width: 22, height: 22, borderRadius: 11,
+					        borderWidth: 3, borderColor: '#4CAF50',
+					        backgroundColor: 'rgba(76,175,80,0.35)',
+					      }}
+					    />
+					  ) : null}
+					  {/* Show the avatar (video-lost look) whenever the remote video
+					      would render — OR while WE are screen-sharing, so our
+					      captured screen never echoes the peer's own video back
+					      to them. */}
+					  {(!this.state.remoteVideoActive || this.state.screenSharing) ? (
 					    <View
 					      pointerEvents="none"
 					      style={[StyleSheet.absoluteFillObject, {
@@ -3939,6 +5911,16 @@ class VideoBox extends Component {
                         <View style={StyleSheet.absoluteFillObject} />
                     </TouchableWithoutFeedback>
                 )}
+
+                {/* iOS-only, zero-size: the system broadcast picker we tap
+                    programmatically from selectScreenShare to start whole-screen
+                    sharing. Harmless/absent on Android. */}
+                {Platform.OS === 'ios' ? (
+                    <ScreenCapturePickerView
+                        ref={(r) => { this._iosBroadcastPicker = r; }}
+                        style={{ width: 0, height: 0 }}
+                    />
+                ) : null}
 
                 {buttons}
 

@@ -455,8 +455,12 @@ const EditContactModal = ({
 	// tag value is kept as-is). chat→Messages, favorite→Favorites, etc.;
 	// custom tags are shown Capitalized.
 	const tagLabel = (tag) => {
+	  // NOTE: no autoanswer -> 'Caregivers' alias. Auto-answer is a per-device
+	  // flag that is never synced (docs/addressbook/addressbook.md), and
+	  // 'Caregivers' is now an ordinary server group in its own right — aliasing
+	  // the two made one name mean two different things.
 	  const map = { chat: 'Messages', favorite: 'Favorites', blocked: 'Blocked',
-	                tel: 'Tel', autoanswer: 'Caregivers', calls: 'Calls',
+	                tel: 'Tel', calls: 'Calls',
 	                conference: 'Conference', test: 'Test' };
 	  const t = (tag || '').trim();
 	  if (map[t.toLowerCase()]) return map[t.toLowerCase()];
@@ -1744,6 +1748,7 @@ const getTotalPrettyStorage = (entity) => {
                               fontWeight: '600',
                               marginRight: 6,
                               marginBottom: 6,
+                              color: getModalColors().textPrimary,
                             }}
                           >
                             Groups:
@@ -1774,7 +1779,7 @@ const getTotalPrettyStorage = (entity) => {
                             <Text
                               style={{
                                 fontSize: 12,
-                                color: '#888',
+                                color: getModalColors().textSecondary,
                                 marginRight: 6,
                                 marginBottom: 6,
                               }}
@@ -1788,7 +1793,11 @@ const getTotalPrettyStorage = (entity) => {
                                 style={{
                                   flexDirection: 'row',
                                   alignItems: 'center',
-                                  backgroundColor: '#e0e0e0',
+                                  // Chip fill has to follow the theme —
+                                  // a fixed light grey with the Night
+                                  // palette's white textPrimary on top is
+                                  // unreadable.
+                                  backgroundColor: getModalColors().isDark ? '#3A3A3A' : '#e0e0e0',
                                   borderRadius: 12,
                                   paddingLeft: 10,
                                   paddingRight: editingTags ? 4 : 10,
@@ -1806,7 +1815,7 @@ const getTotalPrettyStorage = (entity) => {
                                     style={{ marginLeft: 4, padding: 2 }}
                                     hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                                   >
-                                    <Icon name="close-circle" size={16} color="#666" />
+                                    <Icon name="close-circle" size={16} color={getModalColors().isDark ? '#B0B0B0' : '#666'} />
                                   </TouchableOpacity>
                                 ) : null}
                               </View>
@@ -1829,7 +1838,7 @@ const getTotalPrettyStorage = (entity) => {
                             <Icon
                               name={editingTags ? 'check' : 'pencil'}
                               size={16}
-                              color={editingTags ? '#27ae60' : '#555'}
+                              color={editingTags ? '#27ae60' : (getModalColors().isDark ? '#CCCCCC' : '#555')}
                             />
                           </TouchableOpacity>
                         </View>
@@ -1855,7 +1864,7 @@ const getTotalPrettyStorage = (entity) => {
                           return (
                             <View style={{ marginTop: 8 }}>
                               {_uniq.length > 0 ? (
-                                <Text style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
+                                <Text style={{ fontSize: 11, color: getModalColors().textSecondary, marginBottom: 4 }}>
                                   Existing groups
                                 </Text>
                               ) : null}
@@ -1876,7 +1885,7 @@ const getTotalPrettyStorage = (entity) => {
                                       flexDirection: 'row',
                                       alignItems: 'center',
                                       borderWidth: 1,
-                                      borderColor: '#bbb',
+                                      borderColor: getModalColors().isDark ? '#5A5A5A' : '#bbb',
                                       borderRadius: 12,
                                       paddingHorizontal: 10,
                                       paddingVertical: 3,
@@ -1904,7 +1913,7 @@ const getTotalPrettyStorage = (entity) => {
                                     height: 26,
                                     borderRadius: 13,
                                     borderWidth: 1,
-                                    borderColor: '#bbb',
+                                    borderColor: getModalColors().isDark ? '#5A5A5A' : '#bbb',
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     marginRight: 6,

@@ -209,8 +209,11 @@ the tag, resolved to the server **group id** only when talking to the server.
 - **Auto-derived categories** (`messages`, `chat`, `calls`, `recent`, `missed`) are
   computed on each device from message and call history. They are **not** user groups and
   are excluded from group sync entirely.
-- **Flag tags** (`bypassdnd`, `muted`, `noread`) and the **`caregiver`** flag are
-  per-contact flags, not groups, and are excluded from group treatment.
+- **Flag tags** (`bypassdnd`, `muted`, `noread`) and the **`caregiver`** and
+  **`autoanswer`** flags are per-contact flags, not groups, and are excluded from
+  group treatment — in both directions. `autoanswer` is per-device (see above) and
+  is neither published as a group nor adopted from one; a server group named
+  `Caregivers` is an ordinary group with no bearing on auto-answer.
 - **Conference** group collects all conference contacts (detected by bridge domain).
 
 A per-account local cache maps server group id ↔ name and is replaced from the server set

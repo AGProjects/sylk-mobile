@@ -887,6 +887,976 @@ index 0000000..0dbf6d9
 +        return false;
 +    }
 +}
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+index a9f51cb..a82514a 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+@@ -3,7 +3,9 @@ package com.oney.WebRTCModule;
+ import android.app.Activity;
+ import android.content.Context;
+ import android.content.Intent;
++import android.media.projection.MediaProjectionConfig;
+ import android.media.projection.MediaProjectionManager;
++import android.os.Build;
+ import android.util.DisplayMetrics;
+ import android.util.Log;
+ 
+@@ -226,21 +228,91 @@ class GetUserMediaImpl {
+         });
+     }
+ 
++    // Dedicated SERIAL thread for the BLOCKING camera-capturer teardown (stopCapture+dispose).
++    // Camera2Capturer.stopCapture() blocks on an unbounded Object.wait() for the camera
++    // HAL "session closed" callback; on some devices (e.g. Sony XQ-EC72) that callback
++    // never fires. These calls must NOT run on the shared WebRTC executor, because
++    // peerConnectionInit() does a blocking .get() on that same executor -- a hung camera
++    // stop then freezes the JS thread on the next new RTCPeerConnection(). Serialized on
++    // one thread so start/stop/dispose for a given capturer stay ordered.
++    // [sylk-leak] Live video-capturer count. Each getUserMedia/getDisplayMedia
++    // video track owns one VideoCapturer plus one SurfaceTextureHelper thread
++    // ("CaptureThread"), and for a camera capturer the Camera2 session stays OPEN
++    // until stopCapture()/dispose() runs. If this number climbs by one per call
++    // and never comes down, capturers are leaking: the camera HAL keeps streaming
++    // for every leaked session, which is what starved SystemUI into an input-
++    // dispatch ANR on 2026-08-16. Grep logcat for "[sylk-leak] video capturer".
++    private static final java.util.concurrent.atomic.AtomicInteger sLiveCapturers =
++            new java.util.concurrent.atomic.AtomicInteger(0);
++
++    private final java.util.concurrent.ExecutorService cameraControlExecutor =
++            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
++                Thread t = new Thread(r, "CameraCaptureControl");
++                t.setDaemon(true);
++                return t;
++            });
++
+     void mediaStreamTrackSetEnabled(String trackId, final boolean enabled) {
+-        TrackPrivate track = tracks.get(trackId);
+-        if (track != null && track.videoCaptureController != null) {
+-            if (enabled) {
+-                track.videoCaptureController.startCapture();
+-            } else {
+-                track.videoCaptureController.stopCapture();
+-            }
+-        }
++        // Intentionally does NOT start/stop the camera capturer on mute/unmute.
++        //
++        // WebRTCModule.mediaStreamTrackSetEnabled() already called
++        // track.setEnabled(enabled) before invoking this — that gates frame
++        // delivery and is the correct, non-blocking way to mute/unmute a video
++        // track. The stock code ALSO called videoCaptureController.stopCapture()
++        // on disable and startCapture() on enable, which caused two bugs on some
++        // devices (e.g. Sony XQ-EC72):
++        //   1) FREEZE: Camera2Capturer.stopCapture() blocks on an unbounded wait
++        //      for the camera HAL "session closed" callback. This ran on the
++        //      shared WebRTC executor, and peerConnectionInit() does a blocking
++        //      .get() on that same executor, so a hung mute froze the JS thread
++        //      (captured ANR: mqt_js parked in peerConnectionInit->FutureTask.get,
++        //      executor parked in CameraCapturer.stopCapture).
++        //   2) DEAD CAMERA on the next call: the mute-triggered stop/start races
++        //      the initial startCapture and leaves the capturer stopped -> the
++        //      outbound video track produces 0 frames (TX enc=?, 0/0).
++        // Muting by frame-gating only keeps the camera running, so unmute is
++        // instant and nothing can deadlock or race. The capturer is stopped and
++        // disposed exactly once, at track teardown (disposeTrack), off the shared
++        // executor via cameraControlExecutor.
+     }
+ 
+     void disposeTrack(String id) {
+         TrackPrivate track = tracks.remove(id);
+         if (track != null) {
+-            track.dispose();
++            // Screen-capture teardown (ScreenCapturerAndroid.stopCapture) is a
++            // BLOCKING call that can hang on MediaProjection release on some
++            // devices. disposeTrack runs on the shared WebRTC executor, so a
++            // hang here wedges EVERY subsequent getUserMedia/getDisplayMedia
++            // (they queue behind it and never run — the app then can't start
++            // any call until it is force-restarted). Dispose screen-capture
++            // tracks on a dedicated thread so the executor stays free; camera
++            // tracks go to a serial control thread (they can block the same way).
++            if (track.videoCaptureController instanceof ScreenCaptureController) {
++                final TrackPrivate screenTrack = track;
++                new Thread(() -> {
++                    try {
++                        screenTrack.dispose();
++                    } catch (Exception e) {
++                        Log.w(TAG, "screen-capture track dispose failed", e);
++                    }
++                }, "ScreenCaptureDispose").start();
++            } else if (track.videoCaptureController != null) {
++                // Camera teardown: TrackPrivate.dispose() calls the same blocking
++                // stopCapture() (and capturer.dispose(), which needs the capturer lock a
++                // hung stop may still hold). Run it on the serial camera-control thread so
++                // a wedged camera HAL never blocks the shared executor -> never freezes the
++                // next call's getUserMedia / new RTCPeerConnection().
++                final TrackPrivate cameraTrack = track;
++                cameraControlExecutor.execute(() -> {
++                    try {
++                        cameraTrack.dispose();
++                    } catch (Exception e) {
++                        Log.w(TAG, "camera-capture track dispose failed", e);
++                    }
++                });
++            } else {
++                track.dispose();
++            }
+         }
+     }
+ 
+@@ -286,8 +358,19 @@ class GetUserMediaImpl {
+             UiThreadUtil.runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    currentActivity.startActivityForResult(
+-                            mediaProjectionManager.createScreenCaptureIntent(), PERMISSION_REQUEST_CODE);
++                    // Android 14+ (API 34): pass a MediaProjectionConfig for the
++                    // default display so the consent dialog skips the "single app /
++                    // entire screen" chooser and offers full-screen capture directly.
++                    // The consent tap itself is mandated by the OS and cannot be
++                    // skipped; older versions get the plain intent (full screen only).
++                    Intent screenCaptureIntent;
++                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                        screenCaptureIntent = mediaProjectionManager.createScreenCaptureIntent(
++                                MediaProjectionConfig.createConfigForDefaultDisplay());
++                    } else {
++                        screenCaptureIntent = mediaProjectionManager.createScreenCaptureIntent();
++                    }
++                    currentActivity.startActivityForResult(screenCaptureIntent, PERMISSION_REQUEST_CODE);
+                 }
+             });
+ 
+@@ -408,6 +491,9 @@ class GetUserMediaImpl {
+         track.setEnabled(true);
+         tracks.put(id, new TrackPrivate(track, videoSource, videoCaptureController, surfaceTextureHelper));
+ 
++        Log.w(TAG, "[sylk-leak] video capturer CREATED (" + videoCaptureController.getClass().getSimpleName()
++                + ") live=" + sLiveCapturers.incrementAndGet() + " trackId=" + id);
++
+         videoCaptureController.startCapture();
+ 
+         return track;
+@@ -517,6 +603,11 @@ class GetUserMediaImpl {
+                 mediaSource.dispose();
+                 track.dispose();
+                 disposed = true;
++                if (videoCaptureController != null) {
++                    Log.w(TAG, "[sylk-leak] video capturer DISPOSED ("
++                            + videoCaptureController.getClass().getSimpleName()
++                            + ") live=" + sLiveCapturers.decrementAndGet());
++                }
+             }
+         }
+     }
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java.camera-bak b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java.camera-bak
+new file mode 100644
+index 0000000..f87d0b2
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java.camera-bak
+@@ -0,0 +1,546 @@
++package com.oney.WebRTCModule;
++
++import android.app.Activity;
++import android.content.Context;
++import android.content.Intent;
++import android.media.projection.MediaProjectionManager;
++import android.util.DisplayMetrics;
++import android.util.Log;
++
++import androidx.core.util.Consumer;
++
++import com.facebook.react.bridge.Arguments;
++import com.facebook.react.bridge.BaseActivityEventListener;
++import com.facebook.react.bridge.Callback;
++import com.facebook.react.bridge.Promise;
++import com.facebook.react.bridge.ReactApplicationContext;
++import com.facebook.react.bridge.ReadableArray;
++import com.facebook.react.bridge.ReadableMap;
++import com.facebook.react.bridge.UiThreadUtil;
++import com.facebook.react.bridge.WritableArray;
++import com.facebook.react.bridge.WritableMap;
++import com.oney.WebRTCModule.videoEffects.ProcessorProvider;
++import com.oney.WebRTCModule.videoEffects.VideoEffectProcessor;
++import com.oney.WebRTCModule.videoEffects.VideoFrameProcessor;
++
++import org.webrtc.*;
++
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.UUID;
++import java.util.stream.Collectors;
++
++/**
++ * The implementation of {@code getUserMedia} extracted into a separate file in
++ * order to reduce complexity and to (somewhat) separate concerns.
++ */
++class GetUserMediaImpl {
++    /**
++     * The {@link Log} tag with which {@code GetUserMediaImpl} is to log.
++     */
++    private static final String TAG = WebRTCModule.TAG;
++
++    private static final int PERMISSION_REQUEST_CODE = (int) (Math.random() * Short.MAX_VALUE);
++
++    private CameraEnumerator cameraEnumerator;
++    private final ReactApplicationContext reactContext;
++
++    /**
++     * The application/library-specific private members of local
++     * {@link MediaStreamTrack}s created by {@code GetUserMediaImpl} mapped by
++     * track ID.
++     */
++    private final Map<String, TrackPrivate> tracks = new HashMap<>();
++
++    private final WebRTCModule webRTCModule;
++
++    private Promise displayMediaPromise;
++    private Intent mediaProjectionPermissionResultData;
++
++    GetUserMediaImpl(WebRTCModule webRTCModule, ReactApplicationContext reactContext) {
++        this.webRTCModule = webRTCModule;
++        this.reactContext = reactContext;
++
++        reactContext.addActivityEventListener(new BaseActivityEventListener() {
++            @Override
++            public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
++                super.onActivityResult(activity, requestCode, resultCode, data);
++                if (requestCode == PERMISSION_REQUEST_CODE) {
++                    if (resultCode != Activity.RESULT_OK) {
++                        displayMediaPromise.reject("DOMException", "NotAllowedError");
++                        displayMediaPromise = null;
++                        return;
++                    }
++
++                    mediaProjectionPermissionResultData = data;
++
++                    ThreadUtils.runOnExecutor(() -> {
++                        MediaProjectionService.launch(activity);
++                        createScreenStream();
++                    });
++                }
++            }
++        });
++    }
++
++    private AudioTrack createAudioTrack(ReadableMap constraints) {
++        ReadableMap audioConstraintsMap = constraints.getMap("audio");
++
++        Log.d(TAG, "getUserMedia(audio): " + audioConstraintsMap);
++
++        String id = UUID.randomUUID().toString();
++        PeerConnectionFactory pcFactory = webRTCModule.mFactory;
++        MediaConstraints peerConstraints = webRTCModule.constraintsForOptions(audioConstraintsMap);
++
++        // PeerConnectionFactory.createAudioSource will throw an error when mandatory constraints contain nulls.
++        // so, let's check for nulls
++        checkMandatoryConstraints(peerConstraints);
++
++        AudioSource audioSource = pcFactory.createAudioSource(peerConstraints);
++        AudioTrack track = pcFactory.createAudioTrack(id, audioSource);
++
++        // surfaceTextureHelper is initialized for videoTrack only, so its null here.
++        tracks.put(id, new TrackPrivate(track, audioSource, /* videoCapturer */ null, /* surfaceTextureHelper */ null));
++
++        return track;
++    }
++
++    private void checkMandatoryConstraints(MediaConstraints peerConstraints) {
++        ArrayList<MediaConstraints.KeyValuePair> valid = new ArrayList<>(peerConstraints.mandatory.size());
++
++        for (MediaConstraints.KeyValuePair constraint : peerConstraints.mandatory) {
++            if (constraint.getValue() != null) {
++                valid.add(constraint);
++            } else {
++                Log.d(TAG, String.format("constraint %s is null, ignoring it", constraint.getKey()));
++            }
++        }
++
++        peerConstraints.mandatory.clear();
++        peerConstraints.mandatory.addAll(valid);
++    }
++
++    private CameraEnumerator getCameraEnumerator() {
++        if (cameraEnumerator == null) {
++            if (Camera2Enumerator.isSupported(reactContext)) {
++                Log.d(TAG, "Creating camera enumerator using the Camera2 API");
++                cameraEnumerator = new Camera2Enumerator(reactContext);
++            } else {
++                Log.d(TAG, "Creating camera enumerator using the Camera1 API");
++                cameraEnumerator = new Camera1Enumerator(false);
++            }
++        }
++
++        return cameraEnumerator;
++    }
++
++    ReadableArray enumerateDevices() {
++        WritableArray array = Arguments.createArray();
++        String[] devices = getCameraEnumerator().getDeviceNames();
++
++        for (int i = 0; i < devices.length; ++i) {
++            String deviceName = devices[i];
++            boolean isFrontFacing;
++            try {
++                // This can throw an exception when using the Camera 1 API.
++                isFrontFacing = getCameraEnumerator().isFrontFacing(deviceName);
++            } catch (Exception e) {
++                Log.e(TAG, "Failed to check the facing mode of camera");
++                continue;
++            }
++            WritableMap params = Arguments.createMap();
++            params.putString("facing", isFrontFacing ? "front" : "environment");
++            params.putString("deviceId", "" + i);
++            params.putString("groupId", "");
++            params.putString("label", deviceName);
++            params.putString("kind", "videoinput");
++            array.pushMap(params);
++        }
++
++        WritableMap audio = Arguments.createMap();
++        audio.putString("deviceId", "audio-1");
++        audio.putString("groupId", "");
++        audio.putString("label", "Audio");
++        audio.putString("kind", "audioinput");
++        array.pushMap(audio);
++
++        return array;
++    }
++
++    MediaStreamTrack getTrack(String id) {
++        TrackPrivate private_ = tracks.get(id);
++
++        return private_ == null ? null : private_.track;
++    }
++
++    /**
++     * Implements {@code getUserMedia}. Note that at this point constraints have
++     * been normalized and permissions have been granted. The constraints only
++     * contain keys for which permissions have already been granted, that is,
++     * if audio permission was not granted, there will be no "audio" key in
++     * the constraints map.
++     */
++    void getUserMedia(final ReadableMap constraints, final Callback successCallback, final Callback errorCallback) {
++        AudioTrack audioTrack = null;
++        VideoTrack videoTrack = null;
++
++        if (constraints.hasKey("audio")) {
++            audioTrack = createAudioTrack(constraints);
++        }
++
++        if (constraints.hasKey("video")) {
++            ReadableMap videoConstraintsMap = constraints.getMap("video");
++
++            Log.d(TAG, "getUserMedia(video): " + videoConstraintsMap);
++
++            Activity currentActivity = this.reactContext.getCurrentActivity();
++            if (currentActivity == null) {
++                errorCallback.invoke("Error", "No current Activity.");
++                return;
++            }
++
++            CameraCaptureController cameraCaptureController = new CameraCaptureController(
++                    currentActivity, getCameraEnumerator(), videoConstraintsMap);
++
++            videoTrack = createVideoTrack(cameraCaptureController);
++        }
++
++        if (audioTrack == null && videoTrack == null) {
++            // Fail with DOMException with name AbortError as per:
++            // https://www.w3.org/TR/mediacapture-streams/#dom-mediadevices-getusermedia
++            errorCallback.invoke("DOMException", "AbortError");
++            return;
++        }
++
++        createStream(new MediaStreamTrack[] {audioTrack, videoTrack}, (streamId, tracksInfo) -> {
++            WritableArray tracksInfoWritableArray = Arguments.createArray();
++
++            for (WritableMap trackInfo : tracksInfo) {
++                tracksInfoWritableArray.pushMap(trackInfo);
++            }
++
++            successCallback.invoke(streamId, tracksInfoWritableArray);
++        });
++    }
++
++    void mediaStreamTrackSetEnabled(String trackId, final boolean enabled) {
++        TrackPrivate track = tracks.get(trackId);
++        if (track != null && track.videoCaptureController != null) {
++            if (enabled) {
++                track.videoCaptureController.startCapture();
++            } else {
++                track.videoCaptureController.stopCapture();
++            }
++        }
++    }
++
++    void disposeTrack(String id) {
++        TrackPrivate track = tracks.remove(id);
++        if (track != null) {
++            // Screen-capture teardown (ScreenCapturerAndroid.stopCapture) is a
++            // BLOCKING call that can hang on MediaProjection release on some
++            // devices. disposeTrack runs on the shared WebRTC executor, so a
++            // hang here wedges EVERY subsequent getUserMedia/getDisplayMedia
++            // (they queue behind it and never run — the app then can't start
++            // any call until it is force-restarted). Dispose screen-capture
++            // tracks on a dedicated thread so the executor stays free; camera
++            // tracks (fast, non-blocking) keep disposing inline.
++            if (track.videoCaptureController instanceof ScreenCaptureController) {
++                final TrackPrivate screenTrack = track;
++                new Thread(() -> {
++                    try {
++                        screenTrack.dispose();
++                    } catch (Exception e) {
++                        Log.w(TAG, "screen-capture track dispose failed", e);
++                    }
++                }, "ScreenCaptureDispose").start();
++            } else {
++                track.dispose();
++            }
++        }
++    }
++
++    void applyConstraints(String trackId, ReadableMap constraints, Promise promise) {
++        TrackPrivate track = tracks.get(trackId);
++        if (track != null && track.videoCaptureController instanceof AbstractVideoCaptureController) {
++            AbstractVideoCaptureController captureController =
++                    (AbstractVideoCaptureController) track.videoCaptureController;
++            captureController.applyConstraints(constraints, new Consumer<Exception>() {
++                public void accept(Exception e) {
++                    if (e != null) {
++                        promise.reject(e);
++                        return;
++                    }
++
++                    promise.resolve(captureController.getSettings());
++                }
++            });
++        } else {
++            promise.reject(new Exception("Camera track not found!"));
++        }
++    }
++
++    void getDisplayMedia(Promise promise) {
++        if (this.displayMediaPromise != null) {
++            promise.reject(new RuntimeException("Another operation is pending."));
++            return;
++        }
++
++        Activity currentActivity = this.reactContext.getCurrentActivity();
++        if (currentActivity == null) {
++            promise.reject(new RuntimeException("No current Activity."));
++            return;
++        }
++
++        this.displayMediaPromise = promise;
++
++        MediaProjectionManager mediaProjectionManager =
++                (MediaProjectionManager) currentActivity.getApplication().getSystemService(
++                        Context.MEDIA_PROJECTION_SERVICE);
++
++        if (mediaProjectionManager != null) {
++            UiThreadUtil.runOnUiThread(new Runnable() {
++                @Override
++                public void run() {
++                    currentActivity.startActivityForResult(
++                            mediaProjectionManager.createScreenCaptureIntent(), PERMISSION_REQUEST_CODE);
++                }
++            });
++
++        } else {
++            promise.reject(new RuntimeException("MediaProjectionManager is null."));
++        }
++    }
++
++    private void createScreenStream() {
++        VideoTrack track = createScreenTrack();
++
++        if (track == null) {
++            displayMediaPromise.reject(new RuntimeException("ScreenTrack is null."));
++        } else {
++            createStream(new MediaStreamTrack[] {track}, (streamId, tracksInfo) -> {
++                WritableMap data = Arguments.createMap();
++
++                data.putString("streamId", streamId);
++
++                if (tracksInfo.size() == 0) {
++                    displayMediaPromise.reject(new RuntimeException("No ScreenTrackInfo found."));
++                } else {
++                    data.putMap("track", tracksInfo.get(0));
++                    displayMediaPromise.resolve(data);
++                }
++            });
++        }
++
++        // Cleanup
++        mediaProjectionPermissionResultData = null;
++        displayMediaPromise = null;
++    }
++
++    void createStream(MediaStreamTrack[] tracks, BiConsumer<String, ArrayList<WritableMap>> successCallback) {
++        String streamId = UUID.randomUUID().toString();
++        MediaStream mediaStream = webRTCModule.mFactory.createLocalMediaStream(streamId);
++
++        ArrayList<WritableMap> tracksInfo = new ArrayList<>();
++
++        for (MediaStreamTrack track : tracks) {
++            if (track == null) {
++                continue;
++            }
++
++            if (track instanceof AudioTrack) {
++                mediaStream.addTrack((AudioTrack) track);
++            } else {
++                mediaStream.addTrack((VideoTrack) track);
++            }
++
++            WritableMap trackInfo = Arguments.createMap();
++            String trackId = track.id();
++
++            trackInfo.putBoolean("enabled", track.enabled());
++            trackInfo.putString("id", trackId);
++            trackInfo.putString("kind", track.kind());
++            trackInfo.putString("readyState", "live");
++            trackInfo.putBoolean("remote", false);
++
++            if (track instanceof VideoTrack) {
++                TrackPrivate tp = this.tracks.get(trackId);
++                AbstractVideoCaptureController vcc = tp.videoCaptureController;
++                trackInfo.putMap("settings", vcc.getSettings());
++            }
++
++            if (track instanceof AudioTrack) {
++                WritableMap settings = Arguments.createMap();
++                settings.putString("deviceId", "audio-1");
++                settings.putString("groupId", "");
++                trackInfo.putMap("settings", settings);
++            }
++
++            tracksInfo.add(trackInfo);
++        }
++
++        Log.d(TAG, "MediaStream id: " + streamId);
++        webRTCModule.localStreams.put(streamId, mediaStream);
++
++        successCallback.accept(streamId, tracksInfo);
++    }
++
++    private VideoTrack createScreenTrack() {
++        DisplayMetrics displayMetrics = DisplayUtils.getDisplayMetrics(reactContext.getCurrentActivity());
++        int width = displayMetrics.widthPixels;
++        int height = displayMetrics.heightPixels;
++        ScreenCaptureController screenCaptureController = new ScreenCaptureController(
++                reactContext.getCurrentActivity(), width, height, mediaProjectionPermissionResultData);
++        return createVideoTrack(screenCaptureController);
++    }
++
++    VideoTrack createVideoTrack(AbstractVideoCaptureController videoCaptureController) {
++        videoCaptureController.initializeVideoCapturer();
++
++        VideoCapturer videoCapturer = videoCaptureController.videoCapturer;
++        if (videoCapturer == null) {
++            return null;
++        }
++
++        PeerConnectionFactory pcFactory = webRTCModule.mFactory;
++        EglBase.Context eglContext = EglUtils.getRootEglBaseContext();
++        SurfaceTextureHelper surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglContext);
++
++        if (surfaceTextureHelper == null) {
++            Log.d(TAG, "Error creating SurfaceTextureHelper");
++            return null;
++        }
++
++        String id = UUID.randomUUID().toString();
++
++        TrackCapturerEventsEmitter eventsEmitter = new TrackCapturerEventsEmitter(webRTCModule, id);
++        videoCaptureController.setCapturerEventsListener(eventsEmitter);
++
++        VideoSource videoSource = pcFactory.createVideoSource(videoCapturer.isScreencast());
++        videoCapturer.initialize(surfaceTextureHelper, reactContext, videoSource.getCapturerObserver());
++
++        VideoTrack track = pcFactory.createVideoTrack(id, videoSource);
++
++        track.setEnabled(true);
++        tracks.put(id, new TrackPrivate(track, videoSource, videoCaptureController, surfaceTextureHelper));
++
++        videoCaptureController.startCapture();
++
++        return track;
++    }
++
++    /**
++     * Set video effects to the TrackPrivate corresponding to the trackId with the help of VideoEffectProcessor
++     * corresponding to the names.
++     * @param trackId TrackPrivate id
++     * @param names VideoEffectProcessor names
++     */
++    void setVideoEffects(String trackId, ReadableArray names) {
++        TrackPrivate track = tracks.get(trackId);
++
++        if (track != null && track.videoCaptureController instanceof CameraCaptureController) {
++            VideoSource videoSource = (VideoSource) track.mediaSource;
++            SurfaceTextureHelper surfaceTextureHelper = track.surfaceTextureHelper;
++
++            if (names != null) {
++                List<VideoFrameProcessor> processors =
++                        names.toArrayList()
++                                .stream()
++                                .filter(name -> name instanceof String)
++                                .map(name -> {
++                                    VideoFrameProcessor videoFrameProcessor =
++                                            ProcessorProvider.getProcessor((String) name);
++                                    if (videoFrameProcessor == null) {
++                                        Log.e(TAG, "no videoFrameProcessor associated with this name: " + name);
++                                    }
++                                    return videoFrameProcessor;
++                                })
++                                .filter(Objects::nonNull)
++                                .collect(Collectors.toList());
++
++                VideoEffectProcessor videoEffectProcessor = new VideoEffectProcessor(processors, surfaceTextureHelper);
++                videoSource.setVideoProcessor(videoEffectProcessor);
++
++            } else {
++                videoSource.setVideoProcessor(null);
++            }
++        }
++    }
++
++    /**
++     * Application/library-specific private members of local
++     * {@code MediaStreamTrack}s created by {@code GetUserMediaImpl}.
++     */
++    private static class TrackPrivate {
++        /**
++         * The {@code MediaSource} from which {@link #track} was created.
++         */
++        public final MediaSource mediaSource;
++
++        public final MediaStreamTrack track;
++
++        /**
++         * The {@code VideoCapturer} from which {@link #mediaSource} was created
++         * if {@link #track} is a {@link VideoTrack}.
++         */
++        public final AbstractVideoCaptureController videoCaptureController;
++
++        private final SurfaceTextureHelper surfaceTextureHelper;
++
++        /**
++         * Whether this object has been disposed or not.
++         */
++        private boolean disposed;
++
++        /**
++         * Initializes a new {@code TrackPrivate} instance.
++         *
++         * @param track
++         * @param mediaSource            the {@code MediaSource} from which the specified
++         *                               {@code code} was created
++         * @param videoCaptureController the {@code AbstractVideoCaptureController} from which the
++         *                               specified {@code mediaSource} was created if the specified
++         *                               {@code track} is a {@link VideoTrack}
++         */
++        public TrackPrivate(MediaStreamTrack track, MediaSource mediaSource,
++                AbstractVideoCaptureController videoCaptureController, SurfaceTextureHelper surfaceTextureHelper) {
++            this.track = track;
++            this.mediaSource = mediaSource;
++            this.videoCaptureController = videoCaptureController;
++            this.surfaceTextureHelper = surfaceTextureHelper;
++            this.disposed = false;
++        }
++
++        public void dispose() {
++            if (!disposed) {
++                if (videoCaptureController != null) {
++                    if (videoCaptureController.stopCapture()) {
++                        videoCaptureController.dispose();
++                    }
++                }
++
++                /*
++                 * As per webrtc library documentation - The caller still has ownership of {@code
++                 * surfaceTextureHelper} and is responsible for making sure surfaceTextureHelper.dispose() is
++                 * called. This also means that the caller can reuse the SurfaceTextureHelper to initialize a new
++                 * VideoCapturer once the previous VideoCapturer has been disposed. */
++
++                if (surfaceTextureHelper != null) {
++                    surfaceTextureHelper.stopListening();
++                    surfaceTextureHelper.dispose();
++                }
++
++                mediaSource.dispose();
++                track.dispose();
++                disposed = true;
++            }
++        }
++    }
++
++    public interface BiConsumer<T, U> {
++        void accept(T t, U u);
++    }
++}
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java
+index c22a241..a52f15f 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java
+@@ -1,16 +1,15 @@
+ package com.oney.WebRTCModule;
+ 
+-import android.app.Activity;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.media.projection.MediaProjection;
+-import android.util.DisplayMetrics;
+ import android.util.Log;
+-import android.view.OrientationEventListener;
+ 
+ import org.webrtc.ScreenCapturerAndroid;
+ import org.webrtc.VideoCapturer;
+ 
++import java.util.concurrent.atomic.AtomicBoolean;
++
+ public class ScreenCaptureController extends AbstractVideoCaptureController {
+     /**
+      * The {@link Log} tag with which {@code ScreenCaptureController} is to log.
+@@ -21,10 +20,40 @@ public class ScreenCaptureController extends AbstractVideoCaptureController {
+ 
+     private final Intent mediaProjectionPermissionResultData;
+ 
+-    private final OrientationEventListener orientationListener;
+-
+     private final Context context;
+ 
++    /**
++     * Guarantees that {@link ScreenCapturerAndroid#stopCapture()} is entered by
++     * AT MOST ONE thread, ever.
++     *
++     * Why this exists — the freeze of 2026-08-16:
++     *
++     *   ScreenCapturerAndroid.stopCapture(), startCapture(), dispose() and
++     *   changeCaptureFormat() are all `synchronized` on the capturer, and each
++     *   of them then calls ThreadUtils.invokeAtFrontUninterruptibly() on the
++     *   SurfaceTextureHelper handler. MediaProjection.Callback is registered on
++     *   THAT SAME handler. So any thread which takes the capturer monitor and
++     *   then waits on the handler deadlocks against the handler thread if the
++     *   handler thread is itself waiting for the monitor:
++     *
++     *     thread A  holds <capturer>            -> waits for CaptureThread
++     *     CaptureThread (running onStop)        -> waits for <capturer>
++     *
++     *   invokeAtFrontUninterruptibly cannot be interrupted or timed out, so the
++     *   pair is stuck for the lifetime of the process. Downstream, the shared
++     *   single-threaded WebRTC executor blocks in PeerConnection.nativeClose(),
++     *   and the next peerConnectionInit() — a blocking synchronous React method
++     *   — parks the JS thread permanently. The app freezes with a perfectly
++     *   healthy main thread, so Android never even raises an ANR.
++     *
++     *   libwebrtc's invokeAtFrontUninterruptibly short-circuits when called
++     *   FROM the handler thread, so the projection callback stopping the
++     *   capturer is safe on its own. The danger is exclusively a SECOND thread
++     *   entering a synchronized capturer method concurrently. This flag removes
++     *   that possibility.
++     */
++    private final AtomicBoolean stopping = new AtomicBoolean(false);
++
+     public ScreenCaptureController(Context context, int width, int height, Intent mediaProjectionPermissionResultData) {
+         super(width, height, DEFAULT_FPS);
+ 
+@@ -32,29 +61,23 @@ public class ScreenCaptureController extends AbstractVideoCaptureController {
+ 
+         this.context = context;
+ 
+-        this.orientationListener = new OrientationEventListener(context) {
+-            @Override
+-            public void onOrientationChanged(int orientation) {
+-                DisplayMetrics displayMetrics = DisplayUtils.getDisplayMetrics((Activity) context);
+-                final int width = displayMetrics.widthPixels;
+-                final int height = displayMetrics.heightPixels;
+-
+-                // Pivot to the executor thread because videoCapturer.changeCaptureFormat runs in the main
+-                // thread and may deadlock.
+-                ThreadUtils.runOnExecutor(() -> {
+-                    try {
+-                        videoCapturer.changeCaptureFormat(width, height, DEFAULT_FPS);
+-                    } catch (Exception ex) {
+-                        // We ignore exceptions here. The video capturer runs on its own
+-                        // thread and we cannot synchronize with it.
+-                    }
+-                });
+-            }
+-        };
+-
+-        if (this.orientationListener.canDetectOrientation()) {
+-            this.orientationListener.enable();
+-        }
++        // NOTE: there is deliberately NO OrientationEventListener here.
++        //
++        // It used to call videoCapturer.changeCaptureFormat() on rotation to
++        // re-create the VirtualDisplay at the new size. changeCaptureFormat() is
++        // synchronized on the capturer and then blocks on the SurfaceTextureHelper
++        // handler, which is exactly the "thread A" of the deadlock described on
++        // `stopping` above — and a device rotation is precisely when the user is
++        // most likely to also be ending the share. Moving it to a dedicated
++        // thread (as of 2026-08-14) did not help: the contended resource is the
++        // capturer's monitor, not the executor.
++        //
++        // Dropping it costs nothing visible. A mirrored VirtualDisplay already
++        // follows device rotation, and the encoder tuning applied by the app
++        // (scaleResolutionDownBy) is computed from the capture size, not from the
++        // display metrics. Do not reintroduce this without first moving
++        // MediaProjection.Callback off the SurfaceTextureHelper handler inside
++        // libwebrtc.
+     }
+ 
+     @Override
+@@ -62,8 +85,26 @@ public class ScreenCaptureController extends AbstractVideoCaptureController {
+         return "screen-capture";
+     }
+ 
++    @Override
++    public boolean stopCapture() {
++        if (!stopping.compareAndSet(false, true)) {
++            // A stop is already in flight or has completed. Entering
++            // ScreenCapturerAndroid.stopCapture() from a second thread would block
++            // on the capturer monitor held by the first caller — see `stopping`.
++            Log.d(TAG, "stopCapture: already stopping, ignoring re-entry");
++            return true;
++        }
++        if (videoCapturer == null) {
++            return true;
++        }
++        return super.stopCapture();
++    }
++
+     @Override
+     public void dispose() {
++        // Mark stopped so nothing else can enter a synchronized capturer method
++        // while dispose() holds the monitor.
++        stopping.set(true);
+         MediaProjectionService.abort(context);
+         super.dispose();
+     }
+@@ -75,11 +116,18 @@ public class ScreenCaptureController extends AbstractVideoCaptureController {
+                     @Override
+                     public void onStop() {
+                         Log.w(TAG, "Media projection stopped.");
+-                        orientationListener.disable();
+-                        stopCapture();
+-
+-                        if (capturerEventsListener != null) {
+-                            capturerEventsListener.onCapturerEnded();
++                        try {
++                            stopCapture();
++                        } catch (Throwable t) {
++                            // Never let a failure here swallow the notification below:
++                            // onCapturerEnded() is what tells JS the share is over. If
++                            // it does not fire, the app keeps believing it is sharing
++                            // and the peer is never told to stop.
++                            Log.w(TAG, "stopCapture() failed while handling projection stop", t);
++                        } finally {
++                            if (capturerEventsListener != null) {
++                                capturerEventsListener.onCapturerEnded();
++                            }
+                         }
+                     }
+                 });
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java.orient-bak b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java.orient-bak
+new file mode 100644
+index 0000000..c22a241
+--- /dev/null
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/ScreenCaptureController.java.orient-bak
+@@ -0,0 +1,89 @@
++package com.oney.WebRTCModule;
++
++import android.app.Activity;
++import android.content.Context;
++import android.content.Intent;
++import android.media.projection.MediaProjection;
++import android.util.DisplayMetrics;
++import android.util.Log;
++import android.view.OrientationEventListener;
++
++import org.webrtc.ScreenCapturerAndroid;
++import org.webrtc.VideoCapturer;
++
++public class ScreenCaptureController extends AbstractVideoCaptureController {
++    /**
++     * The {@link Log} tag with which {@code ScreenCaptureController} is to log.
++     */
++    private static final String TAG = ScreenCaptureController.class.getSimpleName();
++
++    private static final int DEFAULT_FPS = 30;
++
++    private final Intent mediaProjectionPermissionResultData;
++
++    private final OrientationEventListener orientationListener;
++
++    private final Context context;
++
++    public ScreenCaptureController(Context context, int width, int height, Intent mediaProjectionPermissionResultData) {
++        super(width, height, DEFAULT_FPS);
++
++        this.mediaProjectionPermissionResultData = mediaProjectionPermissionResultData;
++
++        this.context = context;
++
++        this.orientationListener = new OrientationEventListener(context) {
++            @Override
++            public void onOrientationChanged(int orientation) {
++                DisplayMetrics displayMetrics = DisplayUtils.getDisplayMetrics((Activity) context);
++                final int width = displayMetrics.widthPixels;
++                final int height = displayMetrics.heightPixels;
++
++                // Pivot to the executor thread because videoCapturer.changeCaptureFormat runs in the main
++                // thread and may deadlock.
++                ThreadUtils.runOnExecutor(() -> {
++                    try {
++                        videoCapturer.changeCaptureFormat(width, height, DEFAULT_FPS);
++                    } catch (Exception ex) {
++                        // We ignore exceptions here. The video capturer runs on its own
++                        // thread and we cannot synchronize with it.
++                    }
++                });
++            }
++        };
++
++        if (this.orientationListener.canDetectOrientation()) {
++            this.orientationListener.enable();
++        }
++    }
++
++    @Override
++    public String getDeviceId() {
++        return "screen-capture";
++    }
++
++    @Override
++    public void dispose() {
++        MediaProjectionService.abort(context);
++        super.dispose();
++    }
++
++    @Override
++    protected VideoCapturer createVideoCapturer() {
++        VideoCapturer videoCapturer =
++                new ScreenCapturerAndroid(mediaProjectionPermissionResultData, new MediaProjection.Callback() {
++                    @Override
++                    public void onStop() {
++                        Log.w(TAG, "Media projection stopped.");
++                        orientationListener.disable();
++                        stopCapture();
++
++                        if (capturerEventsListener != null) {
++                            capturerEventsListener.onCapturerEnded();
++                        }
++                    }
++                });
++
++        return videoCapturer;
++    }
++}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/SylkE2EE.java
 new file mode 100644
 index 0000000..4aa61c7
@@ -1075,7 +2045,7 @@ index 0000000..4aa61c7
 +    }
 +}
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
-index 996648c..9e747fb 100644
+index 996648c..b5c5cb6 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
 @@ -35,15 +35,40 @@ import java.util.Map;
@@ -1173,7 +2143,22 @@ index 996648c..9e747fb 100644
          // PeerConnectionFactory now owns the adm native pointer, and we don't need it anymore.
          adm.release();
  
-@@ -395,6 +451,17 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -388,13 +444,47 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                         mPeerConnectionObservers.put(id, observer);
+                         return true;
+                     })
+-                    .get();
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (TimeoutException e) {
++            // The shared WebRTC executor is wedged. Do NOT keep the JS thread
++            // parked -- that is what froze the app on 2026-08-16. Fail this one
++            // call; JS treats false as "could not create the peer connection".
++            Log.w(TAG, "peerConnectionInit timed out after " + SYNC_CALL_TIMEOUT_MS
++                    + "ms (id=" + id + "); WebRTC executor is blocked");
++            return false;
+         } catch (ExecutionException | InterruptedException e) {
+             e.printStackTrace();
+             throw new RuntimeException(e);
          }
      }
  
@@ -1188,10 +2173,26 @@ index 996648c..9e747fb 100644
 +    // deadlock on RTCView mount.
 +    private static final long GET_STREAM_TIMEOUT_MS = 750;
 +
++    // Upper bound for every OTHER blocking synchronous React method below.
++    //
++    // These all run on the RN JS thread (mqt_js) and park it on a Future backed
++    // by the SINGLE shared WebRTC executor. If any task on that executor wedges
++    // -- e.g. PeerConnection.nativeClose() waiting on a deadlocked screen
++    // capturer, as happened on 2026-08-16 -- an unbounded .get() parks the JS
++    // thread for the lifetime of the process. The app then freezes with a
++    // perfectly healthy main thread, so Android never raises an ANR and the user
++    // has no choice but to force-stop.
++    //
++    // Bounding the wait converts "the app is bricked" into "this one call
++    // failed". Healthy calls here complete in single-digit milliseconds, so this
++    // limit is generous by three orders of magnitude and will never trip in
++    // normal operation.
++    private static final long SYNC_CALL_TIMEOUT_MS = 3000;
++
      MediaStream getStreamForReactTag(String streamReactTag) {
          // This function _only_ gets called from WebRTCView, in the UI thread.
          // Hence make sure we run this code in the executor or we run at the risk
-@@ -418,9 +485,16 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -418,9 +508,16 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
  
                          return null;
                      })
@@ -1209,7 +2210,43 @@ index 996648c..9e747fb 100644
          }
      }
  
-@@ -591,6 +665,184 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -513,9 +610,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                         params.putMap("transceiver", SerializeUtils.serializeTransceiver(id, transceiver));
+                         return params;
+                     })
+-                    .get();
+-        } catch (InterruptedException | ExecutionException e) {
+-            Log.d(TAG, "peerConnectionAddTransceiver() " + e.getMessage());
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (InterruptedException | ExecutionException | TimeoutException e) {
++            Log.d(TAG, "peerConnectionAddTransceiver() failed: " + e);
+             return null;
+         }
+     }
+@@ -559,9 +656,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                         params.putMap("sender", SerializeUtils.serializeSender(id, sender));
+                         return params;
+                     })
+-                    .get();
+-        } catch (InterruptedException | ExecutionException e) {
+-            Log.d(TAG, "peerConnectionAddTrack() " + e.getMessage());
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (InterruptedException | ExecutionException | TimeoutException e) {
++            Log.d(TAG, "peerConnectionAddTrack() failed: " + e);
+             return null;
+         }
+     }
+@@ -584,13 +681,191 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+ 
+                         return pco.getPeerConnection().removeTrack(sender);
+                     })
+-                    .get();
+-        } catch (InterruptedException | ExecutionException e) {
+-            Log.d(TAG, "peerConnectionRemoveTrack() " + e.getMessage());
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (InterruptedException | ExecutionException | TimeoutException e) {
++            Log.d(TAG, "peerConnectionRemoveTrack() failed: " + e);
+             return false;
          }
      }
  
@@ -1394,7 +2431,7 @@ index 996648c..9e747fb 100644
      @ReactMethod
      public void senderSetParameters(int id, String senderId, ReadableMap options, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
-@@ -674,6 +926,110 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+@@ -674,6 +949,110 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
          });
      }
  
@@ -1505,6 +2542,44 @@ index 996648c..9e747fb 100644
      @ReactMethod
      public void transceiverSetDirection(int id, String senderId, String direction, Promise promise) {
          ThreadUtils.runOnExecutor(() -> {
+@@ -1206,9 +1585,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                         RtpCapabilities capabilities = mFactory.getRtpReceiverCapabilities(mediaType);
+                         return SerializeUtils.serializeRtpCapabilities(capabilities);
+                     })
+-                    .get();
+-        } catch (ExecutionException | InterruptedException e) {
+-            Log.d(TAG, "receiverGetCapabilities() " + e.getMessage());
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (ExecutionException | InterruptedException | TimeoutException e) {
++            Log.d(TAG, "receiverGetCapabilities() failed: " + e);
+             return null;
+         }
+     }
+@@ -1230,9 +1609,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                         RtpCapabilities capabilities = mFactory.getRtpSenderCapabilities(mediaType);
+                         return SerializeUtils.serializeRtpCapabilities(capabilities);
+                     })
+-                    .get();
+-        } catch (ExecutionException | InterruptedException e) {
+-            Log.d(TAG, "senderGetCapabilities() " + e.getMessage());
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (ExecutionException | InterruptedException | TimeoutException e) {
++            Log.d(TAG, "senderGetCapabilities() failed: " + e);
+             return null;
+         }
+     }
+@@ -1369,8 +1748,9 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
+                             return pco.createDataChannel(label, config);
+                         }
+                     })
+-                    .get();
+-        } catch (ExecutionException | InterruptedException e) {
++                    .get(SYNC_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
++        } catch (ExecutionException | InterruptedException | TimeoutException e) {
++            Log.d(TAG, "createDataChannel() failed: " + e);
+             return null;
+         }
+     }
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
 index acf9998..bf70bb5 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/webrtcutils/H264AndSoftwareVideoDecoderFactory.java
@@ -1605,6 +2680,308 @@ index acf9998..bf70bb5 100644
          codecs.addAll(Arrays.asList(this.softwareVideoDecoderFactory.getSupportedCodecs()));
  
          return codecs.toArray(new VideoCodecInfo[codecs.size()]);
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m
+index caab33c..9cd57ab 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m
+@@ -41,13 +41,29 @@ - (void)dealloc {
+ 
+ - (void)startCapture {
+     if (!self.appGroupIdentifier) {
++        NSLog(@"[SYLK_APP] [screen] startCapture ABORT: RTCAppGroupIdentifier missing from app Info.plist");
+         return;
+     }
+ 
+     self.capturer.eventsDelegate = self;
+     NSString *socketFilePath = [self filePathForApplicationGroupIdentifier:self.appGroupIdentifier];
++    NSLog(@"[SYLK_APP] [screen] startCapture appGroup=%@ socketPath=%@",
++          self.appGroupIdentifier,
++          socketFilePath.length ? socketFilePath : @"(EMPTY — container URL is nil)");
+     SocketConnection *connection = [[SocketConnection alloc] initWithFilePath:socketFilePath];
+     [self.capturer startCaptureWithConnection:connection];
++
++    // DIAGNOSTIC: what does the APP see in the shared container right after bind,
++    // and does the socket still exist ~8s later (when the extension checks)?
++    NSString *dir = [socketFilePath stringByDeletingLastPathComponent];
++    NSFileManager *fm = [NSFileManager defaultManager];
++    NSLog(@"[SYLK_APP] [screen] APP container dir=%@ contents=%@ fileExists=%d",
++          dir, [fm contentsOfDirectoryAtPath:dir error:nil], [fm fileExistsAtPath:socketFilePath]);
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++        NSFileManager *fm2 = [NSFileManager defaultManager];
++        NSLog(@"[SYLK_APP] [screen] APP re-check +8s: contents=%@ fileExists=%d",
++              [fm2 contentsOfDirectoryAtPath:dir error:nil], [fm2 fileExistsAtPath:socketFilePath]);
++    });
+ }
+ 
+ - (void)stopCapture {
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m.diag-bak b/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m.diag-bak
+new file mode 100644
+index 0000000..caab33c
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/ScreenCaptureController.m.diag-bak
+@@ -0,0 +1,83 @@
++#if TARGET_OS_IOS
++
++#import "ScreenCaptureController.h"
++#import "ScreenCapturer.h"
++#import "SocketConnection.h"
++
++NSString *const kRTCScreensharingSocketFD = @"rtc_SSFD";
++NSString *const kRTCAppGroupIdentifier = @"RTCAppGroupIdentifier";
++
++@interface ScreenCaptureController ()
++
++@property(nonatomic, retain) ScreenCapturer *capturer;
++
++@end
++
++@interface ScreenCaptureController (CapturerEventsDelegate)<CapturerEventsDelegate>
++- (void)capturerDidEnd:(RTCVideoCapturer *)capturer;
++@end
++
++@interface ScreenCaptureController (Private)
++
++@property(nonatomic, readonly) NSString *appGroupIdentifier;
++
++@end
++
++@implementation ScreenCaptureController
++
++- (instancetype)initWithCapturer:(nonnull ScreenCapturer *)capturer {
++    self = [super init];
++    if (self) {
++        self.capturer = capturer;
++        self.deviceId = @"screen-capture";
++    }
++
++    return self;
++}
++
++- (void)dealloc {
++    [self.capturer stopCapture];
++}
++
++- (void)startCapture {
++    if (!self.appGroupIdentifier) {
++        return;
++    }
++
++    self.capturer.eventsDelegate = self;
++    NSString *socketFilePath = [self filePathForApplicationGroupIdentifier:self.appGroupIdentifier];
++    SocketConnection *connection = [[SocketConnection alloc] initWithFilePath:socketFilePath];
++    [self.capturer startCaptureWithConnection:connection];
++}
++
++- (void)stopCapture {
++    [self.capturer stopCapture];
++}
++
++- (NSDictionary *)getSettings {
++    return @{@"deviceId" : self.deviceId, @"groupId" : @"", @"frameRate" : @(30)};
++}
++// MARK: CapturerEventsDelegate Methods
++
++- (void)capturerDidEnd:(RTCVideoCapturer *)capturer {
++    [self.eventsDelegate capturerDidEnd:capturer];
++}
++
++// MARK: Private Methods
++
++- (NSString *)appGroupIdentifier {
++    NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
++    return infoDictionary[kRTCAppGroupIdentifier];
++}
++
++- (NSString *)filePathForApplicationGroupIdentifier:(nonnull NSString *)identifier {
++    NSURL *sharedContainer =
++        [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:identifier];
++    NSString *socketFilePath = [[sharedContainer URLByAppendingPathComponent:kRTCScreensharingSocketFD] path];
++
++    return socketFilePath;
++}
++
++@end
++
++#endif
+\ No newline at end of file
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m b/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m
+index 805986d..b584b47 100644
+--- a/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m
+@@ -24,7 +24,7 @@ - (instancetype)initWithFilePath:(nonnull NSString *)filePath {
+ 
+     self.serverSocket = socket(AF_UNIX, SOCK_STREAM, 0);
+     if (self.serverSocket < 0) {
+-        NSLog(@"failure creating socket");
++        NSLog(@"[SYLK_APP] [screen] failure creating socket");
+         return nil;
+     }
+ 
+@@ -108,7 +108,7 @@ - (BOOL)setupSocketWithFileAtPath:(NSString *)filePath {
+     addr.sun_family = AF_UNIX;
+ 
+     if (filePath.length > sizeof(addr.sun_path)) {
+-        NSLog(@"failure: path too long");
++        NSLog(@"[SYLK_APP] [screen] failure: socket path too long: %@", filePath);
+         return false;
+     }
+ 
+@@ -117,10 +117,11 @@ - (BOOL)setupSocketWithFileAtPath:(NSString *)filePath {
+ 
+     int status = bind(self.serverSocket, (struct sockaddr *)&addr, sizeof(addr));
+     if (status < 0) {
+-        NSLog(@"failure: socket binding");
++        NSLog(@"[SYLK_APP] [screen] failure: socket binding (errno=%d) path=%@", errno, filePath);
+         return false;
+     }
+ 
++    NSLog(@"[SYLK_APP] [screen] socket BOUND ok at %@", filePath);
+     return true;
+ }
+ 
+diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m.diag-bak b/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m.diag-bak
+new file mode 100644
+index 0000000..805986d
+--- /dev/null
++++ b/node_modules/react-native-webrtc/ios/RCTWebRTC/SocketConnection.m.diag-bak
+@@ -0,0 +1,137 @@
++#include <sys/socket.h>
++#include <sys/un.h>
++
++#import "SocketConnection.h"
++
++@interface SocketConnection ()
++
++@property(nonatomic, assign) int serverSocket;
++@property(nonatomic, strong) dispatch_source_t listeningSource;
++
++@property(nonatomic, strong) NSThread *networkThread;
++
++@property(nonatomic, strong) NSInputStream *inputStream;
++@property(nonatomic, strong) NSOutputStream *outputStream;
++
++@end
++
++@implementation SocketConnection
++
++- (instancetype)initWithFilePath:(nonnull NSString *)filePath {
++    self = [super init];
++
++    [self setupNetworkThread];
++
++    self.serverSocket = socket(AF_UNIX, SOCK_STREAM, 0);
++    if (self.serverSocket < 0) {
++        NSLog(@"failure creating socket");
++        return nil;
++    }
++
++    if (![self setupSocketWithFileAtPath:filePath]) {
++        close(self.serverSocket);
++        return nil;
++    }
++
++    return self;
++}
++
++- (void)openWithStreamDelegate:(id<NSStreamDelegate>)streamDelegate {
++    int status = listen(self.serverSocket, 10);
++    if (status < 0) {
++        NSLog(@"failure: socket listening");
++        return;
++    }
++
++    dispatch_source_t listeningSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, self.serverSocket, 0, NULL);
++    dispatch_source_set_event_handler(listeningSource, ^{
++        int clientSocket = accept(self.serverSocket, NULL, NULL);
++        if (clientSocket < 0) {
++            NSLog(@"failure accepting connection");
++            return;
++        }
++
++        CFReadStreamRef readStream;
++        CFWriteStreamRef writeStream;
++
++        CFStreamCreatePairWithSocket(kCFAllocatorDefault, clientSocket, &readStream, &writeStream);
++
++        self.inputStream = (__bridge_transfer NSInputStream *)readStream;
++        self.inputStream.delegate = streamDelegate;
++        [self.inputStream setProperty:@"kCFBooleanTrue" forKey:@"kCFStreamPropertyShouldCloseNativeSocket"];
++
++        self.outputStream = (__bridge_transfer NSOutputStream *)writeStream;
++        [self.outputStream setProperty:@"kCFBooleanTrue" forKey:@"kCFStreamPropertyShouldCloseNativeSocket"];
++
++        [self.networkThread start];
++        [self performSelector:@selector(scheduleStreams) onThread:self.networkThread withObject:nil waitUntilDone:true];
++
++        [self.inputStream open];
++        [self.outputStream open];
++    });
++
++    self.listeningSource = listeningSource;
++    dispatch_resume(listeningSource);
++}
++
++- (void)close {
++    [self performSelector:@selector(unscheduleStreams) onThread:self.networkThread withObject:nil waitUntilDone:true];
++
++    self.inputStream.delegate = nil;
++    self.outputStream.delegate = nil;
++
++    [self.inputStream close];
++    [self.outputStream close];
++
++    [self.networkThread cancel];
++
++    dispatch_source_cancel(self.listeningSource);
++    close(self.serverSocket);
++}
++
++// MARK: - Private Methods
++
++- (void)setupNetworkThread {
++    self.networkThread = [[NSThread alloc] initWithBlock:^{
++        do {
++            @autoreleasepool {
++                [[NSRunLoop currentRunLoop] run];
++            }
++        } while (![NSThread currentThread].isCancelled);
++    }];
++    self.networkThread.qualityOfService = NSQualityOfServiceUserInitiated;
++}
++
++- (BOOL)setupSocketWithFileAtPath:(NSString *)filePath {
++    struct sockaddr_un addr;
++    memset(&addr, 0, sizeof(addr));
++    addr.sun_family = AF_UNIX;
++
++    if (filePath.length > sizeof(addr.sun_path)) {
++        NSLog(@"failure: path too long");
++        return false;
++    }
++
++    unlink(filePath.UTF8String);
++    strncpy(addr.sun_path, filePath.UTF8String, sizeof(addr.sun_path) - 1);
++
++    int status = bind(self.serverSocket, (struct sockaddr *)&addr, sizeof(addr));
++    if (status < 0) {
++        NSLog(@"failure: socket binding");
++        return false;
++    }
++
++    return true;
++}
++
++- (void)scheduleStreams {
++    [self.inputStream scheduleInRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
++    [self.outputStream scheduleInRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
++}
++
++- (void)unscheduleStreams {
++    [self.inputStream removeFromRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
++    [self.outputStream removeFromRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
++}
++
++@end
 diff --git a/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h b/node_modules/react-native-webrtc/ios/RCTWebRTC/SylkZRTPBridge.h
 new file mode 100644
 index 0000000..136b57d

@@ -55,6 +55,10 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginHorizontal: 12,
   },
+  updateButton: {
+    marginTop: 12,
+    marginHorizontal: 12,
+  },
 });
 
 function handleLink() {
@@ -145,7 +149,7 @@ const AboutModal = (props) => {
                   style={{ maxHeight: _scrollMaxHeight }}
                   keyboardShouldPersistTaps="handled"
                 >
-                  <Text style={containerStyles.title}>About Blink WebRTC</Text>
+                  <Text style={containerStyles.title}>Blink WebRTC</Text>
                   <View style={styles.inner}>
                     <Text style={styles.body}>
                     Blink WebRTC brings rich, real-time voice, video, and messaging to mobile
@@ -173,12 +177,22 @@ const AboutModal = (props) => {
                       </Text>
                     ) : null}
 
-                    <Text onPress={handleUpdate} style={[styles.link, { color: getModalColors().link }]}>
-                      Check App Store for update...
-                    </Text>
+                    {/* Was a plain text link ("Check App Store for
+                        update..."). Now a green contained button so the
+                        update action reads as an action, not a footnote. */}
+                    <Button
+                      mode="contained"
+                      icon="cloud-download"
+                      buttonColor="#2e7d32"
+                      textColor="#ffffff"
+                      style={styles.updateButton}
+                      onPress={handleUpdate}
+                    >
+                      Update
+                    </Button>
 
                     <Text style={styles.love}>
-                      For family, friends and customers, with love.
+                      This is free and open source software, licensed under the GNU General Public License v3.
                     </Text>
 
                     <Text onPress={handleLink} style={[styles.link, { color: getModalColors().link }]}>

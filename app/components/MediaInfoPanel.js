@@ -28,6 +28,7 @@ import {
     Dimensions,
 } from 'react-native';
 import { Button, Surface, Text } from 'react-native-paper';
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import PropTypes from 'prop-types';
 // Share the Modal + overlay + Surface shell with AboutModal /
 // EditContactModal / ShareLocationModal / ActiveLocationSharesModal /
@@ -195,7 +196,15 @@ async function snapshotMedia(call) {
 class MediaInfoPanel extends Component {
     constructor(props) {
         super(props);
-        this.state = { snapshot: null, qos: null, winHeight: Dimensions.get('window').height };
+        this.state = {
+            snapshot: null,
+            qos: null,
+            winHeight: Dimensions.get('window').height,
+            // Tracked alongside winHeight so render() can tell portrait
+            // from landscape without a prop — the card's horizontal
+            // safe-area handling differs between the two.
+            winWidth: Dimensions.get('window').width,
+        };
         this._poller = null;
     }
 
@@ -205,8 +214,10 @@ class MediaInfoPanel extends Component {
         // otherwise a portrait-sized card would linger after rotating to
         // landscape (and vice-versa) until the next poll re-render.
         this._dimSub = Dimensions.addEventListener('change', ({ window }) => {
-            if (window && window.height && window.height !== this.state.winHeight) {
-                this.setState({ winHeight: window.height });
+            if (!window || !window.height || !window.width) return;
+            if (window.height !== this.state.winHeight
+                    || window.width !== this.state.winWidth) {
+                this.setState({ winHeight: window.height, winWidth: window.width });
             }
         });
         if (this.props.visible) {
@@ -328,13 +339,44 @@ class MediaInfoPanel extends Component {
         const close = this.props.onClose;
         const mediaStuck = !!this.props.mediaStuck;
         const isFolded = !!this.props.isFolded;
+
+        // LANDSCAPE horizontal safe area.
+        //
+        // The panel lives in a plain RN <Modal>, which is always
+        // presented EDGE TO EDGE — it is not a child of the app-level
+        // SafeAreaView, so it knows nothing about the notch. In
+        // portrait that's harmless (left/right insets are 0), but in
+        // landscape iOS reports a ~44-59 px inset on the sensor-housing
+        // side, and containerStyles.overlay's flat padding:16 let the
+        // card run straight under it. The result was a card visibly
+        // WIDER than the call content behind it and off-centre relative
+        // to the visible area.
+        //
+        // Fix: in landscape, pad the overlay by the real inset on each
+        // side on top of the usual 16. The card then matches the width
+        // of the content underneath and sits centred in the area the
+        // user can actually see. this.context is the safe-area inset
+        // object (wired up via MediaInfoPanel.contextType at the bottom
+        // of this file); React context crosses the Modal boundary, so
+        // the values stay live across rotation.
+        const _ctxInsets = this.context || {};
+        const _leftInset = _ctxInsets.left || 0;
+        const _rightInset = _ctxInsets.right || 0;
+        const _winWidth = this.state.winWidth || Dimensions.get('window').width;
+        const _isLandscape = _winWidth > (this.state.winHeight
+            || Dimensions.get('window').height);
+        const _landscapeInsetPad = (!isFolded && _isLandscape
+                && (_leftInset || _rightInset))
+            ? { paddingLeft: 16 + _leftInset, paddingRight: 16 + _rightInset }
+            : null;
+
         // Folded (cover-display) overrides — the Razr outer screen is
         // narrow and short; the default modal overlay padding (16)
         // plus modalSurface borderRadius / title would push the
         // scrollable content out of view. Compact every wrapper.
         const overlayStyle = isFolded
             ? [containerStyles.overlay, { padding: 4 }]
-            : containerStyles.overlay;
+            : [containerStyles.overlay, _landscapeInsetPad];
         const surfaceStyle = isFolded
             ? [containerStyles.modalSurface, { padding: 2 }]
             : containerStyles.modalSurface;
@@ -580,6 +622,15 @@ class MediaInfoPanel extends Component {
         );
     }
 }
+
+// Legacy context API on the class (rather than a `static contextType`
+// class field) so this stays valid whatever the Babel class-properties
+// setup is. Gives render() `this.context` = { top, bottom, left, right }
+// from react-native-safe-area-context — needed because the panel is a
+// bare RN <Modal> and therefore renders OUTSIDE the app-level
+// SafeAreaView. Context still flows across the Modal boundary (it's a
+// React tree relationship, not a native-view one).
+MediaInfoPanel.contextType = SafeAreaInsetsContext;
 
 MediaInfoPanel.propTypes = {
     call: PropTypes.object,

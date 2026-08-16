@@ -33,6 +33,7 @@ import LocationPrivacyDisclosureModal from './LocationPrivacyDisclosureModal';
 import ActiveLocationSharesModal from './ActiveLocationSharesModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import GenerateKeysModal from './GenerateKeysModal';
+import AutoDialerModal from './AutoDialerModal';
 
 export default function NavigationBarModals({ nav, callUrl, showEditModal, conferenceUrl, conferenceRoom }) {
     return (
@@ -279,6 +280,21 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     accountPasswords={nav.props.accountPasswords}
                 />
 
+                {/* [AUTO-DIALER — DEVELOPER TOOL] Settings dialog for the
+                    automated call loop. Opened from the contact menu (itself
+                    gated on Developer mode); Start hands the chosen media and
+                    timers to app.js startAutoDialer(). */}
+                <AutoDialerModal
+                    show={nav.state.showAutoDialerModal}
+                    close={() => nav.setState({ showAutoDialerModal: false })}
+                    contact={nav.props.selectedContact}
+                    startAutoDialer={nav.props.startAutoDialer}
+                    redialSeconds={nav.props.autoDialerRedialSeconds}
+                    hangupSeconds={nav.props.autoDialerHangupSeconds}
+                    audio={nav.props.autoDialerAudio}
+                    video={nav.props.autoDialerVideo}
+                />
+
                 <PreferencesModal
                     show={nav.state.showPreferencesModal}
                     close={() => nav.setState({ showPreferencesModal: false })}
@@ -293,6 +309,13 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     setEnableAudioRecording={nav.props.setEnableAudioRecording}
                     chatSounds={nav.props.chatSounds}
                     toggleChatSounds={nav.props.toggleChatSounds}
+                    // Developer mode lives in Preferences → Advanced → Developer.
+                    // These two were previously forwarded ONLY to AboutModal (its
+                    // hidden tap gesture), so the Preferences toggle rendered as
+                    // permanently Off and its onPress hit the
+                    // `typeof toggleDevMode === 'function'` guard and did nothing.
+                    devMode={nav.props.devMode}
+                    toggleDevMode={nav.props.toggleDevMode}
                     encryptionMode={nav.props.encryptionMode}
                     setEncryptionMode={nav.props.setEncryptionMode}
                     dtmfMode={nav.props.dtmfMode}
@@ -378,6 +401,14 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     onRefreshPermissionLevel={nav.refreshShareLocationPermissionLevel}
                     uri={nav.props.selectedContact ? nav.props.selectedContact.uri : null}
                     displayName={nav.props.selectedContact ? nav.props.selectedContact.name : null}
+                    /* Self chat: the share target is the user's own account.
+                       Hides the "Until we meet" option in the picker (a meet-up
+                       handshake with yourself is meaningless); Once / Until
+                       stopped / Until I return stay available. Same self test
+                       NavigationBar.myself uses. */
+                    selfShare={!!(nav.props.selectedContact
+                        && String(nav.props.selectedContact.uri || '').trim().toLowerCase()
+                           === String(nav.props.accountId || '').trim().toLowerCase())}
                     /* Disclaimer suppression. The flag is hydrated on
                        registration (see _hydrateDisclaimerSuppression)
                        and persisted by _suppressShareLocationDisclaimer

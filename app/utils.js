@@ -316,8 +316,7 @@ function sylk2GiftedChat(sylkMessage, decryptedBody=null, direction='incoming') 
     } else if (sylkMessage.contentType.indexOf('image/') > -1) {
         image = `data:${sylkMessage.contentType};base64,${content}`
         text = 'Photo';
-    } else if (sylkMessage.contentType === 'application/sylk-location-sharing'
-            || sylkMessage.contentType === 'application/sylk-live-location') {
+    } else if (sylkMessage.contentType === 'application/sylk-location-sharing') {
         // Location shares are rendered as their own map bubble via
         // _injectLocationBubble, never as chat text. If one ever reaches this
         // generic builder it must be LOGGED to the app log, not shown on the

@@ -811,7 +811,7 @@ class ChatBox extends Component {
 				// visibly flicker between "Locating…" and the real
 				// position on every tick.
 				const isLocBubble = a
-					&& a.contentType === 'application/sylk-live-location';
+					&& a.contentType === 'application/sylk-location-sharing';
 				for (const f of fields) {
 				  if (isLocBubble && (f === 'text')) continue;
 				  if (!equalNullish(a[f], b[f])) {
@@ -862,12 +862,12 @@ class ChatBox extends Component {
 				if (idsEqual && !changedIds.includes(m._id)) {
 				  return oldMessages[i];
 				}
-				if (m && m.contentType === 'application/sylk-live-location') {
+				if (m && m.contentType === 'application/sylk-location-sharing') {
 				  const old = idsEqual
 					? oldMessages[i]
 					: oldMessages.find(o => o && o._id === m._id);
 				  if (old
-					  && old.contentType === 'application/sylk-live-location') {
+					  && old.contentType === 'application/sylk-location-sharing') {
 					return {
 					  ...m,
 					  text: old.text,
@@ -4519,7 +4519,7 @@ class ChatBox extends Component {
         // Gate those actions so only the universally-safe ones (Copy,
         // Delete, Info, …) show up on the sheet.
         const isLiveLocation =
-            currentMessage.contentType === 'application/sylk-live-location';
+            currentMessage.contentType === 'application/sylk-location-sharing';
 
         // An incoming "Until we meet" meeting-request bubble: an incoming
         // live-location bubble whose metadata carries meeting_request:true.
@@ -5278,7 +5278,7 @@ class ChatBox extends Component {
             '}',
             'options=[', (options || []).join(' | '), ']');
         const isLiveLocation =
-            currentMessage.contentType === 'application/sylk-live-location';
+            currentMessage.contentType === 'application/sylk-location-sharing';
         // A failed send can't carry a reaction (the message itself
         // never made it out), so suppress the emoji strip for it.
         const failed = !!currentMessage.failed
@@ -5413,7 +5413,7 @@ class ChatBox extends Component {
         // GiftedChat so both `props` and `nextProps` carry the
         // current-and-prior reference for .has() comparison.
         const cm = (nextProps && nextProps.currentMessage) || (props && props.currentMessage);
-        if (cm && cm.contentType === 'application/sylk-live-location') {
+        if (cm && cm.contentType === 'application/sylk-location-sharing') {
             const id = cm._id;
             const prevSeen = !!(props && props.renderedMessageIds
                 && props.renderedMessageIds.has
@@ -6543,7 +6543,7 @@ class ChatBox extends Component {
 				// bubble to the bottom of the conversation on every update.
 				// `_id` stays anchored to the origin so subsequent merges
 				// and metadata lookups keep finding the same row.
-				const newLocation = msg.contentType === 'application/sylk-live-location'
+				const newLocation = msg.contentType === 'application/sylk-location-sharing'
 					? locationData?.[msg._id]
 					: null;
 
@@ -6705,12 +6705,12 @@ class ChatBox extends Component {
 			if (_catFilter === 'location') {
 				filteredMessages = filteredMessages.filter(
 				  message => message
-				    && message.contentType === 'application/sylk-live-location'
+				    && message.contentType === 'application/sylk-location-sharing'
 				);
 			} else if (_catFilter) {
 				filteredMessages = filteredMessages.filter(
 				  message => !message
-				    || message.contentType !== 'application/sylk-live-location'
+				    || message.contentType !== 'application/sylk-location-sharing'
 				);
 			}
 
@@ -7278,7 +7278,7 @@ class ChatBox extends Component {
         // Live location: dedicated bubble. Latest coords come from
         // messagesMetadata (tick N); fallback to the embedded metadata
         // that was carried on the origin message itself.
-        if (currentMessage.contentType === 'application/sylk-live-location') {
+        if (currentMessage.contentType === 'application/sylk-location-sharing') {
             // Lazy render: opening a chat with many historical maps
             // would otherwise mount one LocationBubble per share —
             // each kicking off a 3x3 tile-grid fetch (FastImage),
@@ -8786,7 +8786,7 @@ class ChatBox extends Component {
 	  // 1 means the user sees "↻ 1" the moment the share starts instead
 	  // of an unlabelled bubble for a frame.
 	  let liveTickLabel = '';
-	  if (currentMessage.contentType === 'application/sylk-live-location'
+	  if (currentMessage.contentType === 'application/sylk-location-sharing'
 	      && !currentMessage.metadata?.one_shot) {
 	    let validTicks = 1;
 	    const trail = this.props.locationData
@@ -10651,7 +10651,7 @@ scrollToMessage(id) {
 					// messagesMetadata[_id]). Lets metro.log show exactly how
 					// many points loaded for a track and where they sit, so a
 					// "track short / missing points" report can be eyeballed.
-					if (m.contentType === 'application/sylk-live-location') {
+					if (m.contentType === 'application/sylk-location-sharing') {
 						const _pad = (out ? '                         ' : '');
 						let _trail = [];
 						try { _trail = this._buildLocationTrailFromMetadata(m._id) || []; }

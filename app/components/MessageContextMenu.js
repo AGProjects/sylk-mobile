@@ -327,7 +327,7 @@ const MessageContextMenu = ({
         // the clipboard (`${lat}, ${lng}` from metadata.value), so the echo
         // matches what the user can paste into Maps.
         const isLiveLocation =
-            message.contentType === 'application/sylk-live-location';
+            message.contentType === 'application/sylk-location-sharing';
         const _locVal = md && md.value;
         const locBody = (isLiveLocation
             && _locVal

@@ -56,7 +56,10 @@ public class IncomingCallActionReceiver extends BroadcastReceiver {
 
         // Only handle local user actions (Accept/Reject)
         if (action.startsWith("ACTION_ACCEPT") || action.equals("ACTION_REJECT_CALL")) {
-            SylkLogger.d("[call] [action] User action: " + action + " for call: " + callUUID);
+            String rejectSource = intent.getStringExtra("reject-source");
+            if (rejectSource == null) rejectSource = intent.getStringExtra("source");
+            SylkLogger.d("[call] [action] User action: " + action + " for call: " + callUUID
+                + (action.equals("ACTION_REJECT_CALL") ? " reject-source=" + (rejectSource == null ? "unknown" : rejectSource) : ""));
             //SylkLogger.d("[call] [action] event " + event);
 
             // Keep the Telecom/BT-HFP state in sync immediately so the car

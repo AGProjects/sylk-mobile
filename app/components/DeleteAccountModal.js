@@ -885,7 +885,7 @@ class DeleteAccountModal extends Component {
                         <Button
                             mode="contained"
                             style={[styles.button, { backgroundColor: '#c62828' }]}
-                            icon="email-send"
+                            icon="email-arrow-right"
                             onPress={this.handleServerConfirm}
                             accessibilityLabel={label}
                         >

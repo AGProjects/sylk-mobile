@@ -175,7 +175,7 @@ public class SylkCallConnectionService extends ConnectionService {
         @Override
         public void onReject() {
             SylkLogger.d("[call] [connection-service] onReject " + callId);
-            forwardToReceiver("ACTION_REJECT_CALL");
+            forwardToReceiver("ACTION_REJECT_CALL", "telecom-onReject");
             try {
                 setDisconnected(new DisconnectCause(DisconnectCause.REJECTED));
                 destroy();
@@ -186,7 +186,7 @@ public class SylkCallConnectionService extends ConnectionService {
         @Override
         public void onDisconnect() {
             SylkLogger.d("[call] [connection-service] onDisconnect " + callId);
-            forwardToReceiver("ACTION_REJECT_CALL");
+            forwardToReceiver("ACTION_REJECT_CALL", "telecom-onDisconnect");
             try {
                 setDisconnected(new DisconnectCause(DisconnectCause.LOCAL));
                 destroy();
@@ -227,7 +227,8 @@ public class SylkCallConnectionService extends ConnectionService {
             // log warning from the framework.
         }
 
-        private void forwardToReceiver(String action) {
+        private void forwardToReceiver(String action) { forwardToReceiver(action, null); }
+        private void forwardToReceiver(String action, String rejectSource) {
             if (callId == null) return;
             try {
                 Intent i = new Intent(appContext, IncomingCallActionReceiver.class);
@@ -251,6 +252,7 @@ public class SylkCallConnectionService extends ConnectionService {
                 // and the app is launched on Accept-from-car-kit.
                 i.putExtra("notification-id", Math.abs(callId.hashCode()));
                 i.putExtra("source", "telecom");
+                if (rejectSource != null) i.putExtra("reject-source", rejectSource);
                 appContext.sendBroadcast(i);
             } catch (Exception e) {
                 SylkLogger.w("[call] [connection-service] forwardToReceiver failed", e);

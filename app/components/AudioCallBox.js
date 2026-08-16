@@ -80,6 +80,23 @@ import styles, { dbg } from '../assets/styles/AudioCall';
 // flag inside the wrapper class.
 const _callRecorderPlayer = new AudioRecorderPlayer();
 
+// Breathing room between the in-call navbar and the avatar in PHONE
+// PORTRAIT. Applied as paddingTop on the three-row block in render();
+// the same number is subtracted from
+// assets/styles/AudioCall.js → portraitButtonContainer.marginBottom
+// so the whole stack moves down as a unit and none of the three rows
+// loses height. Bump the pair together if the avatar still reads as
+// glued to the navbar on a new device class.
+//
+// iOS ONLY. The crowding this fixes comes from the ~59 px top safe-area
+// inset on notched iPhones eating the slack above row 1; Android's
+// ~24 px status bar leaves that slack intact, so on Android the gap is
+// pure downward drift of the whole portrait stack (reported as "audio
+// call view shifted down"). Keep the pair below in sync:
+// assets/styles/AudioCall.js -> portraitButtonContainer.marginBottom
+// gives back exactly this many pixels, per platform.
+const PORTRAIT_TOP_GAP = Platform.OS === 'ios' ? 24 : 0;
+
 
 function toTitleCase(str) {
     return str.replace(
@@ -3789,8 +3806,23 @@ class AudioCallBox extends Component {
 					/* Phone portrait: everything above the record button +
 					   call-buttons bar, split into three equal rows — avatar
 					   (row 1), speedometer (row 2), graphs (row 3) — each
-					   centering its own content. */
-					<View style={{ flex: 1, alignSelf: 'stretch' }}>
+					   centering its own content.
+
+					   paddingTop (PORTRAIT_TOP_GAP): row 1's content
+					   (102 px avatar + 30 px display name + 18 px URI
+					   ≈ 166 px) very nearly fills its flex-third, so
+					   the avatar was landing ~5 px under the call
+					   navbar — it read as glued to it, most visibly on
+					   iOS where the top safe-area inset (~59 px) eats
+					   the slack that Android's ~24 px status bar leaves.
+					   The gap is taken back out of the button bar's
+					   bottom margin (assets/styles/AudioCall.js →
+					   portraitButtonContainer.marginBottom) so the whole
+					   stack shifts DOWN instead of the three rows being
+					   squeezed — squeezing them would overflow row 2
+					   (the speedometer block is ~177 px tall and has no
+					   slack either). */
+					<View style={{ flex: 1, alignSelf: 'stretch', paddingTop: PORTRAIT_TOP_GAP }}>
 						{/* Row 1: avatar + display name + URI */}
 						<View style={[{ flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' }, dbg('red')]}>
 							<View style={{ width: userIconSize, height: userIconSize }}>

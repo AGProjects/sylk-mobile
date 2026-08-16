@@ -37,7 +37,16 @@
 import React, { useState, useEffect } from 'react';
 import ThemedModalSurface from './ThemedModalSurface';
 import { Modal, View, ScrollView, Pressable, Dimensions, Platform, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
-import { Text, Button, Surface, Divider } from 'react-native-paper';
+import { ThemeProvider, Text, Button, Surface, Divider } from 'react-native-paper';
+// The app-level <PaperProvider> in app.js mounts a single STATIC light theme
+// on purpose (the call / conference screens are built for light Paper), so
+// anything that wants Day/Night has to provide its own Paper theme. Inside the
+// card that's already handled — ThemedModalSurface renders a <ThemeProvider>
+// around its children — but that only covers what's INSIDE the Surface. This
+// outer provider covers the rest of the modal subtree so a Paper component
+// added as a sibling of the card later doesn't silently render with the static
+// light theme. Same pattern as EditMessageModal / LogsModal / QosSummaryModal.
+import getAppPaperTheme from '../paperTheme';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import PropTypes from 'prop-types';
 
@@ -330,6 +339,13 @@ const PreferencesModal = ({
     // app side; from this modal's POV it's just a bool toggle.
     chatSounds,
     toggleChatSounds,
+    // Developer mode. Already existed as accountSetting.device.devMode but
+    // could only be reached by the hidden gesture on the About screen —
+    // surfaced here so it can be turned on deliberately. Gates developer-only
+    // affordances: the "Throw test crash" trigger in LogsModal, the dev tag on
+    // the About screen, and the Auto-dialer soak tool in the contact menu.
+    devMode,
+    toggleDevMode,
     // Proximity sensor — moved here from the main menu since it's a
     // per-device behaviour preference (whether to mute the screen
     // when the user holds the phone to their ear during a call), not
@@ -499,7 +515,25 @@ const PreferencesModal = ({
     // (which also calls DarkModeManager.setMode(mode) so the in-memory
     // singleton stays in sync). 'System' tracks the OS appearance —
     // the historical behaviour.
-    const currentThemeMode = themeMode || 'system';
+    // Which pill is highlighted. Read DarkModeManager FIRST, not the
+    // `themeMode` prop.
+    //
+    // Tapping a pill calls setThemeMode in app.js, which does two things in
+    // order: DarkModeManager.setMode(mode) — unconditional — and then
+    // setAccountSetting('device.themeMode', mode), which early-returns when
+    // there's no active accountId (and can also fail on the persist path).
+    // When that second call bails, the palette flips (so the navbar, the chat
+    // and this panel's own colours all change) while the `themeMode` prop
+    // stays on the old value — leaving the highlight on the wrong pill. That
+    // desync is the "panel didn't refresh properly" half-repaint: the colours
+    // moved, the selection didn't.
+    //
+    // The singleton is the live truth for which theme is actually applied, and
+    // app.js pushes the persisted value into it at account hydration/switch
+    // (setMode(dev.themeMode)), so it's correct on a cold start too. The prop
+    // stays as the fallback for callers that render this modal without the
+    // singleton having been primed.
+    const currentThemeMode = DarkModeManager.getMode() || themeMode || 'system';
     const THEME_OPTIONS = [
         // System pill renders WITHOUT an icon per user request — the
         // mixed dark/light glyph next to "System" read as visual
@@ -752,6 +786,11 @@ const PreferencesModal = ({
     const dividerColor     = theme.divider;        // Paper <Divider> (was Paper default, ~invisible on dark)
 
     return (
+        /* Re-derived every render. getAppPaperTheme() is memoised on the
+           DarkModeManager palette's object identity, so this returns the same
+           object until the theme actually flips — and a new one the moment it
+           does. See the import comment for why this sits outside the card. */
+        <ThemeProvider theme={getAppPaperTheme()}>
         <>
         <Modal
             animationType="fade"
@@ -787,7 +826,21 @@ const PreferencesModal = ({
                     onPress={close}
                     accessibilityLabel="Close preferences"
                 />
-                <ThemedModalSurface style={[containerStyles.modalSurface, { backgroundColor: surfaceBg }]}>
+                {/* key={theme.name} remounts the card subtree whenever the
+                    palette flips ('day' ↔ 'night'). React alone re-renders it
+                    correctly — every colour in here is derived inline per
+                    render, nothing is captured once — but the panel lives
+                    inside an already-presented RN <Modal>, i.e. a separate
+                    native host view, and that window does not reliably repaint
+                    its background/text when only style props change underneath
+                    it. Closing and reopening the modal "fixed" it precisely
+                    because that unmounts the subtree; keying on the theme name
+                    does the same thing at the moment of the flip instead.
+                    Costs a remount only on an actual theme change (the key is
+                    stable across every other render), which resets the
+                    ScrollView offset — acceptable, since the Theme pills are
+                    at the very top of the panel anyway. */}
+                <ThemedModalSurface key={theme.name} style={[containerStyles.modalSurface, { backgroundColor: surfaceBg }]}>
                             <Text style={[containerStyles.title, { color: labelColor }]}>Preferences</Text>
 
                             <ScrollView
@@ -1093,12 +1146,20 @@ const PreferencesModal = ({
                                     style={{
                                         flexDirection: 'row',
                                         alignItems: 'center',
-                                        justifyContent: 'space-between',
+                                        justifyContent: 'flex-start',
                                         marginBottom: 12,
+                                        paddingVertical: 4,
                                     }}
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                     accessibilityRole="button"
                                     accessibilityLabel={showAdvanced ? 'Collapse advanced settings' : 'Expand advanced settings'}
                                 >
+                                    <Icon
+                                        name={showAdvanced ? 'menu-down' : 'menu-right'}
+                                        size={32}
+                                        color={labelColor}
+                                        style={{ marginRight: 4, marginLeft: -6 }}
+                                    />
                                     <Text
                                         style={{
                                             fontSize: FS_LABEL,
@@ -1107,9 +1168,6 @@ const PreferencesModal = ({
                                         }}
                                     >
                                         Advanced
-                                    </Text>
-                                    <Text style={{ fontSize: FS_LABEL, color: captionColor }}>
-                                        {showAdvanced ? '▾' : '▸'}
                                     </Text>
                                 </Pressable>
 
@@ -1778,6 +1836,58 @@ const PreferencesModal = ({
                                         );
                                     })}
                                 </View>
+
+                                <Divider style={{ marginTop: 8, marginBottom: 8, backgroundColor: dividerColor }} />
+
+                                {/* ───── Developer ────────────────────────────────
+                                    Developer mode already existed as
+                                    accountSetting.device.devMode, but the only
+                                    way to reach it was the hidden gesture on
+                                    the About screen. Surfacing it here makes it
+                                    a deliberate choice rather than folklore.
+
+                                    What it gates today:
+                                      • "Throw test crash" in LogsModal
+                                      • the "(dev mode)" tag on the About screen
+                                      • the Auto-dialer in the contact menu —
+                                        an automated call loop used to soak-test
+                                        for media leaks and ANRs. That one dials
+                                        repeatedly on its own, so it has no
+                                        business being one tap away for a normal
+                                        user. */}
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text
+                                        style={{
+                                            fontSize: FS_LABEL,
+                                            fontWeight: '600',
+                                            marginBottom: 4,
+                                            color: labelColor,
+                                        }}
+                                    >
+                                        Developer
+                                    </Text>
+                                    <Text style={{ fontSize: FS_CAPTION, color: captionColor, marginBottom: 8 }}>
+                                        Diagnostic tools for troubleshooting. Leave this off unless
+                                        you were asked to turn it on.
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <Button
+                                            mode={devMode ? 'contained' : 'outlined'}
+                                            compact
+                                            icon={devMode ? 'wrench' : 'wrench-outline'}
+                                            onPress={() => {
+                                                if (typeof toggleDevMode === 'function') {
+                                                    toggleDevMode();
+                                                }
+                                            }}
+                                            style={{ alignSelf: 'flex-start' }}
+                                            contentStyle={pillContentStyle}
+                                            labelStyle={pillLabelStyle}
+                                        >
+                                            {devMode ? 'Developer mode On' : 'Developer mode Off'}
+                                        </Button>
+                                    </View>
+                                </View>
                                 </>
                                 )}
 
@@ -1835,6 +1945,7 @@ const PreferencesModal = ({
             </View>
         </Modal>
         </>
+        </ThemeProvider>
     );
 };
 
@@ -1867,6 +1978,10 @@ PreferencesModal.propTypes = {
     setEnableAudioRecording: PropTypes.func,
     chatSounds: PropTypes.bool,
     toggleChatSounds: PropTypes.func,
+    // Developer mode — optional so callers that haven't wired it still render
+    // the modal; the button guards against a missing setter.
+    devMode: PropTypes.bool,
+    toggleDevMode: PropTypes.func,
     proximity: PropTypes.bool,
     toggleProximity: PropTypes.func,
     // Accepts every mode CallZrtp recognises: 'sdes' (Disabled in the
