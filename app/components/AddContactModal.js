@@ -58,7 +58,21 @@ const AddContactModal = ({
     return () => clearTimeout(t);
   }, [show]);
 
+  // Gate Save on the shared address rule (utils.isUsableContactAddress,
+  // which mirrors app.js sanitizeContact). Anything sanitizeContact
+  // refuses makes newContact() return null, and saveContactByUser used to
+  // dereference that null -- the 8.3.5 crash "TypeError: Cannot set
+  // property 'uri' of null", reachable from a plain Save tap on e.g. a
+  // display name typed into the address field, a trailing '@', or a
+  // Cyrillic local part. A SIP address is an ASCII protocol identifier, so
+  // non-ASCII is refused here on purpose; the contact's Email field and
+  // Display name are separate and DO accept it. app.js guards the
+  // dereference now, but silently dropping the save is a poor answer to a
+  // typo: keep Save disabled so the user sees it before tapping.
+  const uriValid = utils.isUsableContactAddress(uri, defaultDomain);
+
   const handleSave = () => {
+    if (!uriValid) return;
     const contact = {uri: uri,
                      displayName: displayName,
                      organization: organization,
@@ -164,7 +178,7 @@ const AddContactModal = ({
 					<Button
 					  mode="contained"
 					  style={styles.button}
-					  disabled={!uri}
+					  disabled={!uriValid}
 					  onPress={handleSave}
 					  icon="content-save"
 					>

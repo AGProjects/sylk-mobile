@@ -85,8 +85,8 @@ class EditMessageModal extends Component {
                             <Text style={styles.title}>
                                 {this.props.message
                                     && (this.props.message.image || this.props.message.video)
-                                    ? 'Edit Caption'
-                                    : 'Edit Message'}
+                                    ? 'Edit caption'
+                                    : 'Edit message'}
                             </Text>
                             <View>
                                 <TextInput

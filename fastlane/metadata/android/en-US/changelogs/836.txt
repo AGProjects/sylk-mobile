@@ -1,0 +1,10 @@
+ * Improve pagination of older messages
+ * Added registration retry backoff
+ * Fix sanitize email and sip addresses separately
+ * Logs modal fixes
+ * Auto start camera when contact is caregiver
+ * Replace hand with icon for screen pointer
+ * Exit immersive mode after fullscreen video fix for android
+ * Screen sharing fixes
+ * Added video zoom and slow bw detection
+ * Do not show pointer if not supported by remote screen

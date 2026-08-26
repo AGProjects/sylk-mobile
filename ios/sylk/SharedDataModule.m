@@ -120,6 +120,15 @@ RCT_REMAP_METHOD(purgeAppGroupContainer,
   // Only genuine share-drop artifacts should be purged here.
   NSSet<NSString *> *preserve = [NSSet setWithArray:@[
       @"contactDisplayNames.plist",
+      // contactBypassDnd.plist — the set of URIs tagged bypassdnd, read
+      // by the same extension to raise their pushes to .timeSensitive so
+      // they survive a system Focus. Same reasoning as the names map:
+      // purging it on background silently disarms the bypass.
+      @"contactBypassDnd.plist",
+      // appDnd.plist — the mirrored in-app DND flag, read by the same
+      // extension to quiet message banners while the bell is on. Purging it
+      // on background would silently un-mute every message push.
+      @"appDnd.plist",
       @"Library",
       // WebRTC screen-share sockets. getDisplayMedia() binds these Unix-domain
       // sockets in THIS container so the broadcast-upload extension (SylkBroadcast)
@@ -200,6 +209,43 @@ RCT_EXPORT_METHOD(setInConference:(BOOL)active)
     [[NSUserDefaults standardUserDefaults] setBool:active forKey:@"inConference"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     [SylkLogger log:@"[shared-data] inConference set to %@", active ? @"YES" : @"NO"];
+}
+
+// Persist the URI of the party we are currently calling, so the PushKit
+// VoIP handler in AppDelegate (shouldDisplayMessageFromPayload) can drop an
+// "incoming_session" push that is really our OWN call forked back at us.
+//
+// The loop this breaks: the user dials their own AoR to ring their desktop.
+// The SIP proxy forks the INVITE to every contact registered for that AoR --
+// this phone included -- so iOS delivers a VoIP push for a call we placed
+// ourselves. PushKit gives us no way to ignore it: every push MUST be
+// answered with reportNewIncomingCall or the OS kills the app. Knowing "we
+// are already in a call with that URI" is what lets AppDelegate
+// report-and-immediately-end instead of ringing.
+//
+// Stored in standardUserDefaults under "currentCall". Mirrors the Android
+// SylkBridge.setActiveCall path (SharedPreferences "currentCall", read by
+// MyFirebaseMessagingService's "already in call with" drop) -- which is why
+// Android has never had this bug. Cleared on call terminate by JS, and again
+// at every launch by AppDelegate so a force-kill mid-call cannot leave a
+// stale URI behind that silently swallows every future call from it.
+RCT_EXPORT_METHOD(setActiveCall:(NSString * _Nullable)uri)
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+    if (uri != nil && [uri length] > 0) {
+        // Lower-cased on the way in: the push payload's from_uri is
+        // lower-cased before it is compared, while sylkrtc hands us
+        // whatever spelling the SIP From header carried.
+        NSString *normalized = [uri lowercaseString];
+        [defaults setObject:normalized forKey:@"currentCall"];
+        [SylkLogger log:@"[shared-data] Active call set to %@", normalized];
+    } else {
+        [defaults removeObjectForKey:@"currentCall"];
+        [SylkLogger log:@"[shared-data] Active call cleared"];
+    }
+
+    [defaults synchronize]; // ensure it is written before the INVITE goes out
 }
 
 @end

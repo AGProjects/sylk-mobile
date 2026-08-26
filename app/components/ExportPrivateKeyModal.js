@@ -39,10 +39,10 @@ const ExportPrivateKeyModal = ({ show, close, password, exportFunc, status: prop
   const buttonTitle = propBackup ? 'Backup' : 'Export';
   const bodyText1 = propBackup
     ? 'You can restore the private key' 
-    : 'To read messages using Sylk on other devices, you need the same private key on all of them.';
+    : 'To read messages using Blink on other devices, you need the same private key on all of them.';
   const bodyText2 = propBackup
     ? 'by using this code:'
-    : 'Start Sylk on another device and enter this code when prompted:';
+    : 'Start Blink on another device and enter this code when prompted:';
 
   return (
     <Modal

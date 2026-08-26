@@ -719,17 +719,34 @@ class CallOverlay extends React.Component {
 				// edge-to-edge.
 				if (this.state.isLandscape) {
 					const paperPad = Math.max(leftInset, rightInset);
-					// Same geometry as the iOS branch above — see the
-					// comment there for why width has to grow by
-					// bledLeft instead of shrinking by rightInset.
+					// leftInsetOrigin: the parent's content origin is at
+					// device x = leftInset (app.js applies marginLeft:
+					// insets.left to the whole tree in Android landscape),
+					// so pulling an extra leftInset lands the bar at x = 0.
 					const bledLeft = this.props.leftInsetOrigin ? leftInset : 0;
-					appBarContainer.marginLeft = -(paperPad + bledLeft);  // leftInsetOrigin: parent's left edge is at screen-x=leftInset (SafeAreaView, e.g. in-call VideoBox), so add -leftInset to reach x=0. Edge-to-edge parents (audio) / already-bled parents (LocalMedia) pass falsy and get just -paperPad.
-					appBarContainer.width = this.props.parentBledLeft ? (width + bledLeft) : (width - leftInset - rightInset);
+					appBarContainer.marginLeft = -(paperPad + bledLeft);
+					// ── Android landscape right-edge clamp (2026-08-18) ──
+					// After the negative margin above, the bar starts at
+					// device x = leftInset - bledLeft. It must END at the
+					// safe right edge (device x = width - rightInset) so the
+					// blue bar is never painted underneath the Android system
+					// button bar. The previous width, (width + bledLeft), ran
+					// PAST the physical right edge and slid under the buttons
+					// — that is the landscape video-call regression.
+					// iOS keeps its own geometry (branch above) untouched.
+					const barOriginX = leftInset - bledLeft;
+					appBarContainer.width = this.props.parentBledLeft
+						? Math.max(0, width - rightInset - barOriginX)
+						: (width - leftInset - rightInset);
 					if (this.props.parentBledLeft) {
 						// Left stays at Paper's default 4 (no
 						// + leftInset) — see the iOS branch above.
 						appBarContainer.paddingLeft = 4;
-						appBarContainer.paddingRight = 4 + rightInset;
+						// The bar now STOPS at the button bar, so the
+						// trailing icons no longer need to be padded inward
+						// by rightInset — that padding only existed to
+						// compensate for running underneath it.
+						appBarContainer.paddingRight = 4;
 					}
 				}
 			}
@@ -822,6 +839,20 @@ class CallOverlay extends React.Component {
 					) : null}
 					*/}
 
+                {/* Call controls handed up by the parent to live INSIDE the
+                    navbar rather than in a bar of their own. VideoBox uses this
+                    in landscape while the viewer watches a remote screen share:
+                    a bottom bar would eat scarce vertical pixels, so the mute /
+                    camera / audio-device / hangup cluster rides here instead —
+                    the same arrangement ConferenceHeader uses for buttons.bottom
+                    in a landscape conference. Sits left of the pointer / swap
+                    action and the kebab, which keep their existing slots. */}
+                {Array.isArray(this.props.inlineButtons) && this.props.inlineButtons.length ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 12 }}>
+                        {this.props.inlineButtons}
+                    </View>
+                ) : null}
+
                 {/* Quick-access Swap video button — sits directly LEFT
                     of the kebab menu and performs the same action as
                     the kebab's "Swap video" row (handleMenu('swapVideo')
@@ -838,12 +869,21 @@ class CallOverlay extends React.Component {
                         && this.state.callState == "established"
                         && typeof this.props.swapVideo === 'function' ? (
                     <View style={{ marginLeft: 50 }}>
-                        {this.props.remotePeerSharing ? (
+                        {/* Viewer-side pointer toggle is offered only when the
+                            peer BOTH is sharing and advertised the pointer
+                            protocol -- VideoBox passes togglePointerMode as
+                            undefined otherwise (same convention as the kebab's
+                            capability-gated items). Without the capability the
+                            slot falls back to the swap-camera button rather
+                            than showing a control whose taps the sharer would
+                            silently drop. */}
+                        {this.props.remotePeerSharing
+                                && typeof this.props.togglePointerMode === 'function' ? (
                             /* Viewer: remote-pointer toggle in the navbar. */
                             <Appbar.Action
                                 key={'co-pointer-' + _overlayRemountKey}
                                 color={this.props.pointerMode ? '#4CAF50' : 'white'}
-                                icon={this.props.pointerMode ? 'hand-back-right' : 'gesture-tap'}
+                                icon={this.props.pointerMode ? 'eye' : 'gesture-tap'}
                                 accessibilityLabel="Remote pointer"
                                 onPress={() => { if (typeof this.props.togglePointerMode === 'function') this.props.togglePointerMode(); }}
                             />
@@ -1186,6 +1226,10 @@ CallOverlay.propTypes = {
     goBackFunc: PropTypes.func,
     callState : PropTypes.object,
     isLandscape: PropTypes.bool,
+    // Elements rendered inline in the navbar's right-side cluster (see the
+    // render block above). VideoBox passes its remote-share controls here in
+    // landscape; undefined otherwise.
+    inlineButtons: PropTypes.array,
     isFolded: PropTypes.bool,
     toggleMyVideo: PropTypes.func,
     swapVideo: PropTypes.func,

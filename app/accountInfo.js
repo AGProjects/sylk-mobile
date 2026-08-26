@@ -154,7 +154,7 @@ function buildDigestAuthHeader({ username, password, method, uri, challenge }) {
 
 // Perform one digest-authenticated request.
 //
-//   account:  full SIP AOR, e.g. "ag@sylk.link"
+//   account:  full SIP AOR, e.g. "alice@sylk.link"
 //   password: SIP account password
 //   url:      base URL for account_info.phtml (no query string)
 //   method:   "GET" | "POST"
@@ -218,7 +218,7 @@ async function digestRequest({ account, password, url, method = 'GET', body = nu
 
     // Step 2: authenticated retry.
     //
-    // The digest USERNAME must be the bare local-part (e.g. "ag"), not
+    // The digest USERNAME must be the bare local-part (e.g. "alice"), not
     // the full AOR. The server's stored HA1 is computed as
     // md5("<bare>:<realm>:<password>") — see library/sip_settings.php
     // around line 11144 where it builds A1 the same way. Sending the
@@ -287,7 +287,7 @@ async function digestRequest({ account, password, url, method = 'GET', body = nu
  *
  * Returns:
  *   {
- *     account: "ag@sylk.link",
+ *     account: "alice@sylk.link",
  *     mobile_number: "+31...",
  *     balance: 12.34 | null,
  *     currency: "EUR",

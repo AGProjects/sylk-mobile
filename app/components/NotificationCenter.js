@@ -102,7 +102,7 @@ class NotificationCenter extends Component {
         this.setState({
             visible: true,
             message: `${(originator.displayName || originator.uri)} invited you to join conference room ${room.substring(0, idx)} on ${currentDate}`,
-            title: 'Conference Invite',
+            title: 'Conference invite',
             autoDismiss: 20,
             action: action,
         });
@@ -121,7 +121,7 @@ class NotificationCenter extends Component {
         this.setState({
             visible: true,
             message: `From ${(originator.displayName || originator.uri)} <br />On ${currentDate}`,
-            title: 'Missed Call',
+            title: 'Missed call',
             autoDismiss: 0,
             action: action
         });
@@ -157,7 +157,7 @@ class NotificationCenter extends Component {
         this.setState({
             visible: true,
             message: `${filename}`,
-            title: 'Upload Successful',
+            title: 'Upload successful',
             autoDismiss: 3,
             action: null
         });
@@ -192,7 +192,7 @@ class NotificationCenter extends Component {
             title: 'File shared',
             autoDismiss: 10,
             action: {
-                label: 'Show Files',
+                label: 'Show files',
                 onPress: () => cb()
             }
         });

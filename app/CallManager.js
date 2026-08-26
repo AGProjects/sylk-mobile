@@ -26,18 +26,25 @@ const CONSTANTS = {
 
 const options = {
     ios: {
-        appName: 'Sylk',
+        appName: 'Blink',
         maximumCallGroups: 1,
         maximumCallsPerCallGroup: 2,
         supportsVideo: true,
         includesCallsInRecents: true,
         imageName: "Image-1",
-        supportsVideo: true,
+        // CXProviderConfiguration.supportedHandleTypes. RNCallKeep
+        // defaults this to phone-number ONLY when the key is absent
+        // (see getSupportedHandleTypes in RNCallKeep.m), which did not
+        // match reality: startOutgoingCall reports SIP addresses too.
+        // iOS uses this set to decide whether Blink may be offered for a
+        // given handle (the Contacts "Call with..." row, INStartCallIntent
+        // resolution), so it has to list every type we actually hand it.
+        handleType: ['number', 'email', 'generic'],
         displayCallReachabilityTimeout: 61000
     },
     android: {
         alertTitle: 'Calling account permission',
-        alertDescription: 'Please allow Sylk inside All calling accounts',
+        alertDescription: 'Please allow Blink inside All calling accounts',
         cancelButton: 'Deny',
         okButton: 'Allow',
         selfManaged: true,
@@ -46,13 +53,13 @@ const options = {
         foregroundService: {
           channelId: 'com.agprojects.sylk',
           channelName: 'Foreground service for Sylk',
-          notificationTitle: 'Sylk is running in the background'
+          notificationTitle: 'Blink is running in the background'
         }
     }
 };
 
 export default class CallManager extends events.EventEmitter {
-    constructor(RNCallKeep, showInternetAlertPanelFunc, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc, getDtmfModeFunc) {
+    constructor(RNCallKeep, showInternetAlertPanelFunc, acceptFunc, rejectFunc, hangupFunc, timeoutFunc, conferenceCallFunc, startCallFromCallKeeper, muteFunc, getConnectionFunct, missedCallFunc, changeRouteFunc, respawnConnection, isUnmountedFunc, getDtmfModeFunc, getPstnRulesFunc) {
         //logger.debug('constructor()');
         super();
         this.setMaxListeners(Infinity);
@@ -95,6 +102,10 @@ export default class CallManager extends events.EventEmitter {
         // keypad (_rnDTMF) sends tones the same way the in-app keypad does.
         // Defaults to 'info' when not supplied.
         this.getDtmfMode = getDtmfModeFunc;
+        // Effective PSTN dialing rules (app.js getEffectivePstnRules).
+        // Only replacePlus is read, and only to turn the dialed WIRE form
+        // back into E.164 for the CallKit handle — see callKitHandle().
+        this.getPstnRules = getPstnRulesFunc;
         this.showInternetAlertPanel = showInternetAlertPanelFunc;
         this.changeRoute = changeRouteFunc;
         this.respawnConnection = respawnConnection;
@@ -266,8 +277,61 @@ export default class CallManager extends events.EventEmitter {
             return;
         }
 
-        utils.timestampedLog('Callkeep: start call', callUUID, 'to', targetUri);
-        this.callKeep.startCall(callUUID, targetUri, targetUri, 'email', hasVideo);
+        const {handle: _handle, handleType: _handleType} = this.callKitHandle(targetUri);
+        utils.timestampedLog('Callkeep: start call', callUUID, 'to', targetUri,
+                             'handle=', _handle, 'type=', _handleType);
+        this.callKeep.startCall(callUUID, _handle, _handle, _handleType, hasVideo);
+    }
+
+    /**
+     * What CallKit should be told about `uri`, as {handle, handleType}.
+     * One place, because two paths feed CallKit the remote handle and they
+     * MUST agree: startCall() at creation and updateDisplay() later — the
+     * latter overwrites CXCallUpdate.remoteHandle, so a disagreement means
+     * the last writer decides what lands in Recents.
+     *
+     * Two things happen here:
+     *
+     *  1. Type. A phone number goes in as 'number' (CXHandleTypePhoneNumber)
+     *     with the bare digits; a SIP address stays 'email' with the full
+     *     URI. Reporting a PSTN dial as an email handle put the whole SIP
+     *     URI in Recents and broke call-back from that entry — the redial
+     *     arrives as an INStartCallIntent carrying an email handle, which
+     *     iOS will not resolve against the provider's supportedHandleTypes.
+     *
+     *  2. Form. The URI we are handed is call.remoteIdentity.uri — the WIRE
+     *     form, after Call.js applied replaceLeadingZero / replacePlus, e.g.
+     *     '0031612345678@sylk.link'. That is right for the SIP proxy and
+     *     wrong for Recents, where iOS expects E.164 and matches the entry
+     *     against the user's contact cards. pstnWireUriToE164 puts the '+'
+     *     back, so Recents shows '+31612345678' and resolves to a name.
+     *
+     * Conference rooms are excluded from the PSTN branch explicitly:
+     * generateSillyName mints all-numeric room ids, and though today's
+     * range (100000-999999) never starts with '0' or '+', a room is never a
+     * telephone number and must not be classified by digit shape alone.
+     */
+    callKitHandle(uri) {
+        if (typeof uri !== 'string' || !uri) {
+            return {handle: uri, handleType: 'generic'};
+        }
+        const atIdx = uri.indexOf('@');
+        const local = atIdx > -1 ? uri.substring(0, atIdx) : uri;
+        const domain = atIdx > -1 ? uri.substring(atIdx + 1) : '';
+        const isPstn = domain.indexOf('videoconference.') === -1
+                       && !!utils.isPhoneNumber(local);
+        if (!isPstn) {
+            return {handle: uri, handleType: 'email'};
+        }
+        let rules = null;
+        try {
+            rules = this.getPstnRules ? this.getPstnRules() : null;
+        } catch (e) {
+            // Rules not loaded yet (very early call) — fall back to the
+            // plain '00' inverse inside pstnWireUriToE164.
+            rules = null;
+        }
+        return {handle: utils.pstnWireUriToE164(local, rules), handleType: 'number'};
     }
 
     updateDisplay(callUUID, displayName, uri, options = null) {
@@ -286,9 +350,18 @@ export default class CallManager extends events.EventEmitter {
         if (Platform.OS !== 'ios') {
             return;
         }
-        const name = displayName || uri;
-        utils.timestampedLog('Callkeep: report hasVideo', hasVideo, 'for', callUUID);
-        this.callKeep.updateDisplay(callUUID, name, uri, { ios: { hasVideo: !!hasVideo } });
+        // updateDisplay REPLACES CXCallUpdate.remoteHandle (RNCallKeep.m
+        // hardcodes CXHandleTypePhoneNumber there), and this fires twice per
+        // outgoing call — on ringing and again on established. Passing
+        // call.remoteIdentity.uri straight through therefore undid the
+        // handle startCall() had just set and put the raw wire URI back in
+        // Recents. Run it through the same callKitHandle() so both writers
+        // agree on the E.164 form.
+        const {handle} = this.callKitHandle(uri);
+        const name = displayName || handle;
+        utils.timestampedLog('Callkeep: report hasVideo', hasVideo, 'for', callUUID,
+                             'handle=', handle);
+        this.callKeep.updateDisplay(callUUID, name, handle, { ios: { hasVideo: !!hasVideo } });
     }
 
     setCurrentCallActive(callUUID) {
@@ -455,6 +528,34 @@ export default class CallManager extends events.EventEmitter {
         }
     }
 
+    /**
+     * Number of calls that actually OWN media right now.
+     *
+     * sylkrtc's lifecycle is
+     *   incoming|progress -> accepted -> established -> terminated
+     * and only 'accepted' / 'established' carry audio. A call that is
+     * merely ringing has no audio session to protect, so it must not
+     * make us re-activate one — during a call SWAP the old call ends
+     * while the new one is still ringing, and re-activating there would
+     * fight the deliberate audioManagerStop() that the swap performs
+     * (leaving AudioRouteModule._started true, so the new call's
+     * audioManagerStart() early-returns and never pins its route).
+     */
+    get establishedCallCount() {
+        let n = 0;
+        try {
+            this._calls.forEach((c) => {
+                const st = c && c.state;
+                if (st === 'established' || st === 'accepted') {
+                    n += 1;
+                }
+            });
+        } catch (e) {
+            return 0;
+        }
+        return n;
+    }
+
     _rnDeactiveAudioSession() {
         // iOS only: CallKit has deactivated the session (call ended). Stop the
         // audio unit and sync RTCAudioSession state so the next call starts
@@ -469,8 +570,63 @@ export default class CallManager extends events.EventEmitter {
             // _incoming_conferences, NOT _calls) is ended ~45-60s after the
             // user joins, firing didDeactivate while the real conference call
             // (in _calls) is still established. Skip the disable in that case.
-            if (this._calls.size > 0) {
-                utils.timestampedLog('Callkeep: skip audio deactivate, active calls remain', this._calls.size);
+            // Only a call that is 'accepted' / 'established' owns media and
+            // therefore needs the session kept alive. Counting merely-ringing
+            // calls here would make us re-activate during a call SWAP, where
+            // the old call ends while the new one is still ringing — the swap
+            // deliberately stops the audio manager so the new call can start
+            // clean, and re-activating would leave AudioRouteModule._started
+            // true so the new call's start() early-returns and never pins its
+            // route. See establishedCallCount.
+            const _liveCalls = this.establishedCallCount;
+            if (_liveCalls > 0) {
+                // Skipping our own teardown is necessary but NOT sufficient.
+                // didDeactivateAudioSession is a PROVIDER-level callback with
+                // no callUUID, and by the time it reaches JS the OS has
+                // already deactivated the one AVAudioSession the surviving
+                // call's audio unit runs on. CallKit will not re-fire
+                // didActivateAudioSession for a call it already considers
+                // connected, and in manual-audio mode nothing else restarts
+                // the audio unit — so the call stays up with media flowing
+                // and the user hears silence.
+                //
+                // That is what an ignored second incoming call does: a push
+                // arrives during an established call, the user doesn't answer
+                // (or answers on another device), CallKit ends call 2 and
+                // hands the session back with a deactivate.
+                //
+                // So repair instead of just returning: re-activate the
+                // session natively (AudioRouteModule.reactivate re-pins
+                // PlayAndRecord/VoiceChat, does setActive:YES and restores
+                // the route the user picked) and re-arm WebRTC's audio unit.
+                utils.timestampedLog('Callkeep: audio deactivated by CallKit but',
+                    _liveCalls, 'call(s) carrying media — re-activating session');
+
+                const _repair = (tag) => {
+                    try {
+                        const arm = NativeModules.AudioRouteModule;
+                        if (arm && typeof arm.reactivate === 'function') {
+                            arm.reactivate();
+                        }
+                        RTCAudioSession.audioSessionDidActivate();
+                        RTCAudioSession.setAudioEnabled(true);
+                        utils.timestampedLog('Callkeep: audio session repaired', tag);
+                    } catch (e) {
+                        utils.timestampedLog('Callkeep: audio session repair failed', tag, e);
+                    }
+                };
+
+                _repair('(immediate)');
+
+                // CallKit's teardown of the call that just ended can land
+                // right after this callback and deactivate a second time.
+                // Re-assert once when the dust has settled; the second pass
+                // is a cheap no-op if the first one already stuck.
+                setTimeout(() => {
+                    if (this.establishedCallCount > 0 && !this.unmounted()) {
+                        _repair('(re-assert +800ms)');
+                    }
+                }, 800);
                 return;
             }
             utils.timestampedLog('Callkeep: deactivated audio call — RTCAudioSession disable + deactivate');
@@ -1005,8 +1161,25 @@ export default class CallManager extends events.EventEmitter {
             if (accept) {
                 this.acceptCall(call.id);
             } else {
+                // skipNativePanel was accepted as a parameter here but never
+                // read — the iOS CallKit panel went up unconditionally, so
+                // the only way a caller could ever have been silenced on the
+                // websocket path was to reject the call outright, which
+                // cancels it on the user's OTHER devices too.
+                //
+                // app.js now sets it when a system Focus is active and the
+                // caller carries no bypassdnd tag. Withholding the panel is
+                // the whole suppression: the sylkrtc session stays untouched,
+                // so the call keeps ringing on the iPad / desktop and the
+                // caller hears normal ringback until it times out or someone
+                // picks up.
                 if (Platform.OS === 'ios') {
-                    this.showAlertPanelforCall(call);
+                    if (skipNativePanel) {
+                        utils.timestampedLog('Callkeep: withholding CallKit panel for', call.id,
+                            '— silenced on this device, call left live for others');
+                    } else {
+                        this.showAlertPanelforCall(call);
+                    }
                 }
             }
         }
@@ -1128,7 +1301,35 @@ export default class CallManager extends events.EventEmitter {
     }
 
    _startedCall(data) {
+        // Two very different things arrive on this one event.
+        //
+        //  * WITH callUUID — the echo of a call WE started. iOS fires
+        //    provider:performStartCallAction: right after our own
+        //    startCall() (RNCallKeep.m sends {callUUID, handle}), and
+        //    Android always carries EXTRA_CALL_UUID. The _calls check
+        //    below swallows those, which is the whole point of it.
+        //
+        //  * WITHOUT callUUID — the OS is asking US to place a call the
+        //    user picked outside the app: an INStartCallIntent from a
+        //    Contacts card ("Call with Blink"), from Recents, or from
+        //    Siri. RNCallKeep's application:continueUserActivity: sends
+        //    only {handle, video} — no UUID to send, since no call exists
+        //    yet. The old `if (!data.callUUID) return;` therefore dropped
+        //    every one of them on the floor: the native side logged
+        //    'RNCallKeepDidReceiveStartCallAction, hasListeners : YES'
+        //    and nothing whatsoever happened in JS.
         if (!data.callUUID) {
+            // Scrub the handle HERE, at the boundary, not downstream. iOS
+            // hands us the contact card's own spelling — '+31 6 41 37 29 60'
+            // — and every consumer past this point (URI field, contact
+            // matching, the SIP request-URI) needs it collapsed. Cleaning it
+            // once on the way in means no later path can be handed the
+            // spaced form and forget to deal with it.
+            const _handle = utils.cleanDialHandle(data.handle);
+            utils.timestampedLog('Callkeep: OS asked us to call', _handle,
+                                 '(raw:', data.handle + ')',
+                                 'video=', !!data.video);
+            this.startCallFromOutside({...data, handle: _handle});
             return;
         }
 

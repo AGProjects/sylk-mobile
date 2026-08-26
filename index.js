@@ -7,6 +7,15 @@ import { AppRegistry, Text as RNText, NativeModules, StyleSheet } from 'react-na
 import debug from 'debug';
 import App from './app/app';
 import { installCrashCapture } from './app/crashCapture';
+// app.json's `name` is the AppRegistry KEY, not a display name, and it is
+// hardcoded natively in three more places that must all agree:
+//   android .../MainActivity.java  getMainComponentName() -> "Sylk"
+//   ios/sylk/AppDelegate.m         self.moduleName        -> @"Sylk"
+//   ios/sylk/AppDelegate.m         moduleName:            -> @"Sylk"
+// Change it here alone and JS registers a root component under a name the
+// native host never asks for — the app launches to a blank screen. The
+// USER-VISIBLE name lives elsewhere and already says Blink: iOS
+// CFBundleDisplayName, Android res/values/strings.xml app_name.
 import { name as appName } from './app.json';
 import bgCalling from './bgCalling';
 import { Text} from 'react-native-paper';

@@ -22,6 +22,7 @@ import java.io.File;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.Person;
+import androidx.core.graphics.drawable.IconCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
@@ -64,6 +65,14 @@ import android.content.Context;
 public class IncomingCallService extends Service {
 
     public static final String CHANNEL_ID = "incoming-sylk-calls";
+
+    // Delay (in seconds) before an incoming call from an auto-answer
+    // contact is automatically accepted. During this window the
+    // notification shows an "Auto answering in Ns" countdown that the
+    // user can cancel by rejecting the call.
+    // NOTE: the iOS equivalent lives in ios/sylk/AppDelegate.m
+    // (scheduleAutoAnswerForUUID:delay:).
+    public static final int AUTO_ANSWER_DELAY = 20;
 
     // Separate low-importance channel used only to satisfy Android's
     // startForegroundService → startForeground contract on entry paths
@@ -711,7 +720,7 @@ public class IncomingCallService extends Service {
             startRingtone(from_uri, suppressRingtone);
 
 			if ("incoming_session".equals(event) && isAutoAnswer(from_uri)) {
-    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, remoteDisplayName, to_uri, mediaType, phoneLocked, notificationId, 5);
+    			startAutoAnswerCountdownWithProgress(event, callId, from_uri, displayName, remoteDisplayName, to_uri, mediaType, phoneLocked, notificationId, AUTO_ANSWER_DELAY);
 			}
 
 			showIncomingCallNotification(event, callId, from_uri, displayName, to_uri, mediaType, phoneLocked, "");
@@ -910,10 +919,37 @@ public class IncomingCallService extends Service {
 				}
 			}
 
-			Person caller = new Person.Builder()
+			// Same avatar the message notification shows -- contact photo,
+			// else a monogram on a colour hashed from the URI. Without it
+			// CallStyle draws a blank caller, which looked especially odd
+			// once messages from the same person had a face.
+			//
+			// Anonymous / guest callers get no avatar: there is no contact to
+			// match, and a monogram built from the "Unknown contact"
+			// placeholder would imply we know who is calling.
+			IconCompat callerIcon = isAnonymousFrom
+					? null
+					: SylkAvatar.load(getApplicationContext(), to_uri, from_uri, callerName);
+
+			// key + uri, exactly as the message path does. Do Not Disturb
+			// decides whether to let a call through by matching the caller
+			// against the user's contact cards ("Calls from starred contacts"),
+			// and with only a name to go on there is nothing to match -- so
+			// starring the contact had no effect on Blink calls. A Sylk address
+			// is user@domain, so it resolves as a mailto: uri against the email
+			// fields on the card. Anonymous callers are skipped for the same
+			// reason their avatar is: there is no one to match.
+			Person.Builder callerBuilder = new Person.Builder()
 					.setName(callerName)
-					.setImportant(true)
-					.build();
+					.setImportant(true);
+			if (!isAnonymousFrom && from_uri != null && !from_uri.isEmpty()) {
+				callerBuilder.setKey(from_uri);
+				callerBuilder.setUri("mailto:" + from_uri);
+			}
+			if (callerIcon != null) {
+				callerBuilder.setIcon(callerIcon);
+			}
+			Person caller = callerBuilder.build();
 	
 			builder.setStyle(
 					NotificationCompat.CallStyle.forIncomingCall(

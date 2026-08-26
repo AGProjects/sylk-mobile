@@ -1,0 +1,8 @@
+ * Added confirm modal for request location
+ * Hide Contact menu items that have buttons
+ * Added android edit contact link
+ * Fix wrong sampling for iOS audio recordings of PSTN calls
+ * Fix for lookup photos of contacts
+ * Migrate to location sharing v2 envelope
+ * Fix lookup photo for Android incoming calls bubble
+ * Fix showing avatars for incoming message bubbles

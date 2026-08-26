@@ -159,7 +159,7 @@ class EnrollmentModal extends Component {
                     </TouchableOpacity>
 
                 <TextInput
-                    label="Confirm Password"
+                    label="Confirm password"
                     secureTextEntry={!this.state.showPassword}  // same toggle
                     value={this.state.password2}
                     onChangeText={(text) => this.handleFormFieldChange(text, 'password2')}
@@ -210,7 +210,7 @@ class EnrollmentModal extends Component {
 
 					<View style={{ width: '95%', marginHorizontal: '2.5%', marginVertical: 8 }}>
 					  <Text style={{ textAlign: 'center', lineHeight: 20, fontSize: 18}}>
-						Create Sylk account
+						Create Blink account
 					  </Text>
 					</View>
 	
@@ -242,7 +242,7 @@ class EnrollmentModal extends Component {
 			
 					  <TextInput
 						style={styles.row}
-						label="E-mail for password recovery"
+						label="Email for password recovery"
 						keyboardType="email-address"
 						autoCapitalize="none"
 						autoCorrect={false}

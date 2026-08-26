@@ -11,6 +11,7 @@ import {
     withTheme,
 } from 'react-native-paper';
 import dtmf from 'react-native-dtmf';
+import utils from '../utils';
 
 const DEBUG = debug('blinkrtc:DTMF');
 
@@ -69,6 +70,22 @@ class DTMFPadBase extends Component {
     }
 
     handleKeyPress(item) {
+        // First thing on every tap, before any of the mode branches
+        // below can swallow it: record that the user physically
+        // pressed a key, and the full state that decides what
+        // happens next. Without this, a keypad press that never
+        // reaches the wire is invisible in release.log — the log
+        // simply has no line at all, which is indistinguishable
+        // from "the user never pressed anything".
+        const _call = this.props.call;
+        utils.timestampedLog('[DTMF/keypad] key pressed'
+            + ' digit=' + item.digit
+            + ' tone=' + item.tone
+            + ' mode=' + (this.props.onDigit ? 'number-entry' : 'in-call')
+            + ' call=' + (_call ? _call.id : 'none')
+            + ' callState=' + (_call ? _call.state : 'n/a')
+            + ' sender=' + (this.props.callKeepSendDtmf ? 'present' : 'MISSING'));
+
         // Number-entry mode (e.g. typing into the contacts search
         // bar): a digit-collecting consumer takes the printable
         // character ('1', '*', '#', '+', '0' …). Play a short local
@@ -94,10 +111,42 @@ class DTMFPadBase extends Component {
 
         this.playKeyTone(item.tone, 500);
 
-        if (this.props.call && this.props.call.state === 'established'
-            && this.props.callKeepSendDtmf) {
-            this.props.callKeepSendDtmf(item.tone);
+        // Media-flowing states. This USED to test `=== 'established'`
+        // alone, which silently swallowed essentially every in-call
+        // key press: sylkrtc's outgoing state machine runs
+        // proceeding -> established -> accepted, and 'accepted' is the
+        // steady talking state — 'established' is a transient the call
+        // leaves within the same second (see the 14:52:50 transitions
+        // in release.log). By the time a human can tap a digit the
+        // call is always 'accepted', so the guard never passed and no
+        // DTMF ever reached the wire, in any mode.
+        //
+        // 'early-media' matters too: PSTN IVRs play their menu before
+        // the call is answered, and callers legitimately press digits
+        // during that prompt.
+        //
+        // Keep this set in sync with Call.sendDtmfInfo in
+        // node_modules/react-native-sylkrtc/lib/call.js, which gates
+        // on exactly these three.
+        const MEDIA_STATES = ['established', 'accepted', 'early-media'];
+
+        if (!_call) {
+            utils.timestampedLog('[DTMF/keypad] NOT sent — no call prop on the pad');
+            return;
         }
+        if (!this.props.callKeepSendDtmf) {
+            utils.timestampedLog('[DTMF/keypad] NOT sent — callKeepSendDtmf prop missing');
+            return;
+        }
+        if (MEDIA_STATES.indexOf(_call.state) === -1) {
+            utils.timestampedLog('[DTMF/keypad] NOT sent — call state is '
+                + _call.state + ', not one of ' + MEDIA_STATES.join('/'));
+            return;
+        }
+
+        utils.timestampedLog('[DTMF/keypad] forwarding tone ' + item.tone
+            + ' to callKeepSendDtmf');
+        this.props.callKeepSendDtmf(item.tone);
     }
 
     // Hold the 0 key for 1s → enter '+' instead of '0' (the standard

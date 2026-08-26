@@ -129,12 +129,19 @@ class NavigationBar extends Component {
 
         this.state = {
             showPublicKey: false,
+            // Payload for the shared ConfirmActionModal (rendered by
+            // NavigationBarModals): {title, message, actions[]} or null when
+            // no dialog is up. Same shape ContactsListBox / ChatBox /
+            // ConferenceBox use — one modal instance driven by state rather
+            // than a boolean per prompt.
+            confirmDialog: null,
             menuVisible: false,
             keyMenuVisible: false,
             storageMenuVisible: false,
             settingsMenuVisible: false,
             showDeleteFileTransfers: false,
             showEditContactModal: false,
+            showDndModal: false,
             showPreferencesModal: false,
             showExportDataModal: false,
             showRefetchMessagesModal: false,
@@ -969,7 +976,27 @@ class NavigationBar extends Component {
                 {
                     const _uri = this.props.selectedContact && this.props.selectedContact.uri;
                     if (_uri) {
-                        this._locationEngine.requestPeerLocation(_uri);
+                        // Confirm before sending. The request pops a modal on
+                        // the PEER's device, so a mis-tap in the kebab is
+                        // visible to someone else — worth one Yes/No step,
+                        // the same treatment the other one-shot actions get.
+                        // The menu item is titled "Request location..." to
+                        // advertise that a dialog follows.
+                        const _who = (this.props.selectedContact.name
+                                      && this.props.selectedContact.name !== _uri)
+                            ? this.props.selectedContact.name.trim()
+                            : _uri;
+                        this.setState({confirmDialog: {
+                            title: 'Request location',
+                            message: 'Ask ' + _who + ' to share current location?',
+                            actions: [
+                                {label: 'Request', onPress: () => {
+                                    this.closeConfirmDialog();
+                                    this._locationEngine.requestPeerLocation(_uri);
+                                }},
+                                {label: 'Cancel', cancel: true, onPress: () => this.closeConfirmDialog()},
+                            ],
+                        }});
                     }
                 }
                 break;
@@ -1222,6 +1249,9 @@ class NavigationBar extends Component {
                     this.setState({showEditContactModal: true});
                 }
                 break;
+            case 'doNotDisturb':
+                this.setState({showDndModal: true});
+                break;
             case 'searchMessages':
                 this.props.toggleSearchMessages();
                 break;
@@ -1249,9 +1279,6 @@ class NavigationBar extends Component {
                 break;
             case 'toggleFavorite':
                 this.props.toggleFavorite(this.props.selectedContact);
-                break;
-            case 'toggleAutoAnswer':
-                this.props.toggleAutoAnswer(this.props.selectedContact);
                 break;
             // [AUTO-DIALER — DEVELOPER TOOL] Running -> stop it outright.
             // Not running -> open the settings dialog, which starts the loop
@@ -1308,6 +1335,14 @@ class NavigationBar extends Component {
         }
 
         this.setState({menuVisible: false, keyMenuVisible: false, storageMenuVisible: false, settingsMenuVisible: false});
+    }
+
+    // Dismiss the shared ConfirmActionModal. Passed as its onDismiss (so a
+    // backdrop tap / hardware back cancels) and called by each action before
+    // it runs, so the dialog is already gone when the action's own UI (a
+    // toast, another modal) appears.
+    closeConfirmDialog = () => {
+        this.setState({confirmDialog: null});
     }
 
     toggleAboutModal() {
@@ -1665,6 +1700,10 @@ class NavigationBar extends Component {
         this.setState({showEditConferenceModal: false});
     }
 
+    hideDndModal() {
+        this.setState({showDndModal: false});
+    }
+
     toggleEditContactModal() {
         if (this.state.showEditContactModal) {
             this.hideEditContactModal();
@@ -1834,7 +1873,6 @@ class NavigationBar extends Component {
 				
         let favoriteTitle = isFavorite ? '✓ Favorite' : 'Favorite';
         let favoriteIcon = (this.props.selectedContact && tags && tags.indexOf('favorite') > -1) ? 'flag-minus' : 'flag';
-        let autoAnswerTitle = this.props.selectedContact?.localProperties?.autoanswer ? '✓ Auto answer' : 'Auto answer';
         // [AUTO-DIALER — DEVELOPER TOOL] the menu item is gated on
         // this.props.devMode; see the matching block further down.
         let autoDialerRunning = !!(this.props.autoDialerUri
@@ -1852,6 +1890,17 @@ class NavigationBar extends Component {
 
         let isAnonymous = this.props.selectedContact && utils.isAnonymous(this.props.selectedContact.uri);
         let isCallableUri = !isConference && !this.props.inCall && !isAnonymous && tags.indexOf('blocked') === -1;
+
+        // Which session buttons ReadyBox is currently drawing under this
+        // navbar for the selected contact. Reported up by ReadyBox (the only
+        // component that knows — showButtonsBar plus the per-button getters)
+        // and handed down by app.js, so the kebab can drop the items those
+        // buttons already provide instead of re-deriving a dozen visibility
+        // rules and drifting from them. Missing prop → every item shows, i.e.
+        // the pre-existing behaviour.
+        const _sessionButtons = this.props.sessionButtons || {};
+        const hideCallItems = !!_sessionButtons.callButtons;
+        const hideLocationShareItem = !!_sessionButtons.locationShare;
 
         let blockedTitle = (this.props.selectedContact && tags && tags.indexOf('blocked') > -1) ? 'Unblock' : isAnonymous ? 'Block anonymous callers': 'Block';
         if (isAnonymous && this.props.blockedUris.indexOf('anonymous@anonymous.invalid') > -1) {
@@ -1872,7 +1921,7 @@ class NavigationBar extends Component {
         //   2. props.displayName — the explicitly-set display name
         //      for the active account
         //   3. beautified username portion of accountId — e.g.
-        //      'ag@example.com' → 'Ag', 'john.doe@x' → 'John Doe'
+        //      'alice@example.com' → 'Alice', 'john.doe@x' → 'John Doe'
         //      (prettifyName handles the casing + separator
         //      conversion identically to the contact-list rendering)
         //   4. 'Myself' as a last-resort label — only happens when we
@@ -1928,7 +1977,7 @@ class NavigationBar extends Component {
 				// contacts.name column) should appear in the navbar
 				// title too — the contact list and the navbar should
 				// agree on what to call the room, otherwise a user
-				// who renamed "ag" to "Daily Sync" sees "ag" in the
+				// who renamed "standup" to "Daily Sync" sees "standup" in the
 				// header bar after tapping it from the contacts list.
 				// Mirrors the same prefer-name-else-local-part rule
 				// used in the non-conference branch below and now
@@ -2831,12 +2880,44 @@ class NavigationBar extends Component {
 						/>
 						: null}
 
+						{/* Do Not Disturb has its own screen rather than a
+						    checkbox inside Edit contact: it spans two unrelated
+						    mechanisms (Blink's own bell, and the OS Focus /
+						    Do Not Disturb rules, which are themselves split
+						    between messages and calls) and the app can only
+						    guarantee the first. Conferences have no DND story. */}
+						{ !this.props.searchMessages && !isAnonymous && !isConference
+						  && this.props.selectedContact
+						  && !(this.props.isFolded && this.props.selectedContact) ?
+						<Menu.Item theme={getMenuTheme().menuTheme}
+							onPress={() => this.handleMenu('doNotDisturb')}
+							icon="bell-off-outline"
+							title="Do Not Disturb..."
+						/>
+						: null}
+
+						{/* The divider heads the call group. With Audio/Video
+						    hidden (see below) the group can still hold
+						    Conference call / the dev auto-dialer, so it only
+						    disappears when nothing is left under it. */}
 						{isCallableUri && !(this.props.isFolded && this.props.selectedContact) ?
                         <Divider />
 						: null}
 
-                        {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
-                        {isCallableUri ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
+                        {/* Audio / Video call are hidden while the session
+                            button bar under this navbar is showing its green
+                            phone + video buttons for the same contact — the
+                            action is already one tap away, and offering it
+                            twice (button and menu) just pads the kebab. The
+                            flag is computed in ReadyBox (the component that
+                            actually renders the bar) and mirrored down through
+                            app.js, so the menu can never disagree with what's
+                            on screen. When the bar is hidden (folded cover
+                            display, keyboard up, search / recording modes,
+                            landscape phone, …) the items come back — that's
+                            the only way to place the call from here. */}
+                        {isCallableUri && !hideCallItems ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('audio')} icon="phone" title="Audio call"/> :null}
+                        {isCallableUri && !hideCallItems ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('video')} icon="video" title="Video call"/> :null}
 
                         {/* ─── AUTO-DIALER — DEVELOPER TOOL ───────────────────
                             Soak-tests calls to this contact in a loop so leaks
@@ -2900,6 +2981,18 @@ class NavigationBar extends Component {
                                 && (sharing || hasContactKey)
                                 && (sharing || bidir || isSelf);
                             if (!shareItemsVisible) return null;
+                            // The purple pin in the session button bar IS the
+                            // Share/Stop toggle (same handleMenu('shareLocation')
+                            // path), so drop the duplicate menu entry while it's
+                            // on screen. Pause / Resume and "Request location"
+                            // have no button equivalent and always stay.
+                            const _hideShareStop = hideLocationShareItem;
+                            // Nothing left under the divider — don't emit a
+                            // stray separator. Only reachable when not sharing
+                            // (the sharing branch always keeps Pause/Resume)
+                            // and there's no bidirectional chat to justify
+                            // "Request location".
+                            if (!sharing && _hideShareStop && !bidir) return null;
                             // While a share is active for this contact,
                             // expose Pause / Resume directly on the chat
                             // header alongside Stop. Without this the
@@ -2920,6 +3013,7 @@ class NavigationBar extends Component {
                                 <React.Fragment>
                                     <Divider />
                                     {!sharing ? (
+                                        _hideShareStop ? null :
                                         <Menu.Item theme={getMenuTheme().menuTheme}
                                             onPress={() => this.handleMenu('shareLocation')}
                                             icon="map-marker"
@@ -2947,11 +3041,12 @@ class NavigationBar extends Component {
                                                     title="Pause sharing"
                                                 />
                                             )}
+                                            {_hideShareStop ? null :
                                             <Menu.Item theme={getMenuTheme().menuTheme}
                                                 onPress={() => this.handleMenu('shareLocation')}
                                                 icon="map-marker-off"
                                                 title="Stop sharing location"
-                                            />
+                                            />}
                                         </React.Fragment>
                                     )}
                                     {/* Request location is only useful
@@ -2964,7 +3059,7 @@ class NavigationBar extends Component {
                                         <Menu.Item theme={getMenuTheme().menuTheme}
                                             onPress={() => this.handleMenu('requestLocation')}
                                             icon="map-marker-question"
-                                            title="Request location"
+                                            title="Request location..."
                                         />
                                     ) : null}
                                     {/* DEBUG: one location-simulator entry.
@@ -3049,11 +3144,11 @@ class NavigationBar extends Component {
                         { (this.refetchMessagesForDays != 0) ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('refetchMessages')} icon="cloud-download" title="Refetch messages"/> : null}
 
                         {!isConference && !this.props.searchMessages && this.props.publicKey && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key"/>
                         : null}
 
                         {!isConference && !this.props.searchMessages && this.hasMessages && tags.indexOf('test') === -1 && !isConference && !this.myself && !isAnonymous && !(this.props.isFolded && this.props.selectedContact) ?
-                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('sendPublicKey')} icon="key-change" title="Send my public key"/>
                         : null}
 
                         {!this.myself && !this.props.searchMessages && !isAnonymous && tags.indexOf('blocked') === -1 && !(this.props.isFolded && this.props.selectedContact) ?
@@ -3064,13 +3159,14 @@ class NavigationBar extends Component {
                         <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleBlocked')} icon="block-helper" title={blockedTitle}/>
                         : null}
 
-                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Divider />
-                        : null}
-
-                        {!isConference && !this.props.searchMessages && tags.indexOf('test') === -1 && !this.props.inCall && !isAnonymous && tags.indexOf('favorite') > -1 ?
-                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('toggleAutoAnswer')} title={autoAnswerTitle}/>
-                        : null}
+                        {/* Auto answer — no longer offered here. Like
+                            Caregiver it is a favorite-only attribute and is
+                            now a toggle inside EditContactModal, next to the
+                            Caregiver switch. Keeping a quick toggle here as
+                            well would have meant two controls writing the
+                            same tag through different code paths (the kebab
+                            wrote it immediately, the modal writes it on
+                            Save), so whichever the user touched last won. */}
 
                         {/* Caregiver — no longer offered here. It is a
                             favorite-only attribute and is now edited as a
@@ -3213,7 +3309,7 @@ class NavigationBar extends Component {
                         {(!this.props.inCall) ? <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('deleteMessages')} icon="delete" title="Wipe device..."/> :null}
 
                         {this.props.publicKey ?
-                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key..."/>
+                        <Menu.Item theme={getMenuTheme().menuTheme} onPress={() => this.handleMenu('showPublicKey')} icon="key-variant" title="Show public key"/>
                         : null}
 
 					</Menu>
@@ -3392,6 +3488,11 @@ class NavigationBar extends Component {
 
 NavigationBar.propTypes = {
     notificationCenter : PropTypes.func.isRequired,
+    /* {callButtons, locationShare} — the session buttons ReadyBox is
+       currently rendering under this navbar for the selected contact.
+       Used to hide the kebab items those buttons duplicate. Optional;
+       absent means "no bar", so every item stays. */
+    sessionButtons     : PropTypes.object,
     // Actionless system message (from NotificationCenter via app.js).
     // Rendered on the 2nd navbar line in place of the account URI
     // while visible; null when no message is up.
@@ -3441,7 +3542,6 @@ NavigationBar.propTypes = {
     deleteFiles        : PropTypes.func,
     toggleBlocked      : PropTypes.func,
     toggleFavorite     : PropTypes.func,
-    toggleAutoAnswer   : PropTypes.func,
     toggleAutoDialer   : PropTypes.func,   // [AUTO-DIALER — DEVELOPER TOOL]
     startAutoDialer    : PropTypes.func,   // [AUTO-DIALER — DEVELOPER TOOL]
     autoDialerUri      : PropTypes.string, // [AUTO-DIALER — DEVELOPER TOOL]
@@ -3457,6 +3557,7 @@ NavigationBar.propTypes = {
     startCall          : PropTypes.func,
     startConference    : PropTypes.func,
     saveContactByUser        : PropTypes.func,
+    refreshAddressBook       : PropTypes.func,
     contactHasStoredMessages : PropTypes.func,
     addContact         : PropTypes.func,
     deletePublicKey    : PropTypes.func,

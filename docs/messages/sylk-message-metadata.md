@@ -329,7 +329,7 @@ updateFileTransferBubble has_peaks=true   ← bubble refreshed
 ## Notes
 
 - Location metadata rows that aren't part of a meeting handshake get a
-  7-day SQL expiry stamped on them via the `expire` column, so a force-kill
+  30-day SQL expiry stamped on them via the `expire` column, so a force-kill
   of the app doesn't leak location ticks past their useful life.
 - `metadata.action` values of `consumed` and `autoanswer` are skipped by the
   generic save path — they're treated as side-effect-only.

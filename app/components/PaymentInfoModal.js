@@ -151,8 +151,8 @@ function emailBilling(reason) {
   //   donate — nothing to route, plain subject + body.
   const subject = encodeURIComponent(
     reason === 'credit'
-      ? 'Sylk payment receipt — Blink account: '
-      : 'Sylk donation receipt'
+      ? 'Blink payment receipt — account: '
+      : 'Blink donation receipt'
   );
   const body = encodeURIComponent(
     'Please find attached my bank transfer receipt.\n'

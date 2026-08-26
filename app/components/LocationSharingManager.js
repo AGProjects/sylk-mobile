@@ -242,7 +242,7 @@ export default class LocationSharingManager {
     // from the picker; the pin/modal use these to disable already-live options
     // and to decide when to open the active-sessions list instead of the picker.
     // Consults the app's unified session list (covers sibling-device mirrors)
-    // and the local stores as authoritative fallback. Per Adi's decision a
+    // and the local stores as authoritative fallback. By design a
     // sent-but-unaccepted meet invite does NOT count — only an armed meet leg
     // (local meet entry, or an accepted remote meet mirror) does.
     getStartableLiveTypes(uri) {
@@ -250,7 +250,7 @@ export default class LocationSharingManager {
         let share = false;
         if (uri) {
             // LOCAL meet leg. A requester's invite that is still HELD awaiting
-            // the peer's acceptance does NOT count as live (Adi's decision:
+            // the peer's acceptance does NOT count as live (by design:
             // only an accepted/broadcasting meet gates "Until we meet"). The
             // accepter's own leg is never held, so it counts immediately.
             const m = this._meetStore()[uri];
@@ -1067,6 +1067,16 @@ export default class LocationSharingManager {
     //   'undetermined' — never asked; a subsequent request() will prompt
     //   'unavailable'  — device has no location services
     async getLocationPermissionStatus() {
+        // Thin caching wrapper over the native probe below. Synchronous
+        // senders (sendLocationPayload runs inside a GPS callback and can't
+        // await) need the state to stamp on an origin tick, so every probe
+        // leaves its result in `_lastPermState` for them to read.
+        const _state = await this._probeLocationPermissionStatus();
+        this._lastPermState = _state;
+        return _state;
+    }
+
+    async _probeLocationPermissionStatus() {
         if (Platform.OS === 'ios') {
             try {
                 // Probe Always first — that's the capability that matters
@@ -1553,18 +1563,52 @@ export default class LocationSharingManager {
         }
     }
 
-    getCurrentCoordinates() {
-        // Returns a Promise that resolves to {latitude, longitude, accuracy}
-        // or rejects if the geolocation library is missing / the OS denies
-        // access / the fix times out.
-        return new Promise((resolve, reject) => {
+    // Timeout budget for a single fix, in ms. The high-accuracy attempt and
+    // the coarse fallback are sequential, so the worst case is their SUM
+    // (18 s). That has to stay under _awaitInitialShare's 20 s ceiling, or
+    // the share modal's spinner would give up before the fix it is waiting
+    // for arrives. Change one of these three numbers and check the other
+    // two still add up.
+    static get HIGH_ACCURACY_TIMEOUT_MS() { return 12000; }
+    static get COARSE_FALLBACK_TIMEOUT_MS() { return 6000; }
+
+    // Returns a Promise that resolves to {latitude, longitude, accuracy}
+    // or rejects if the geolocation library is missing / the OS denies
+    // access / the fix times out.
+    //
+    // Accuracy policy — this used to pass {enableHighAccuracy: false,
+    // maximumAge: 10000}, which asked the OS for a wifi/cell-tower fused
+    // fix and additionally accepted a cached one up to 10 s old. Those
+    // fixes are routinely 100–500 m out and can land the user on the wrong
+    // side of a river, a motorway, or a border — and because the share
+    // picker's preview fix is reused as the origin tick, the wrong
+    // position was what actually went out to the contact.
+    //
+    // Now: satellite-backed fix, no cache. If that fails (indoors, urban
+    // canyon, GNSS cold start) we fall back ONCE to the old coarse
+    // settings rather than returning nothing — a rough location the user
+    // can see and correct on the picker's map beats a failed share. The
+    // fallback's coords carry their own (large) `accuracy`, so the
+    // provenance log and the UI can both tell the two apart.
+    //
+    // opts.highAccuracy — false to skip straight to a coarse fix.
+    // opts.maximumAge   — accept a cached fix up to this old (default 0).
+    // opts.timeout      — override the high-accuracy attempt's budget.
+    getCurrentCoordinates(opts = {}) {
+        const _wantHigh = opts.highAccuracy !== false;
+        const _maximumAge = (typeof opts.maximumAge === 'number') ? opts.maximumAge : 0;
+        const _acquire = (highAccuracy, timeout) => new Promise((resolve, reject) => {
             if (!Geolocation || typeof Geolocation.getCurrentPosition !== 'function') {
                 reject(new Error('Geolocation module not available'));
                 return;
             }
             Geolocation.getCurrentPosition(
                 (position) => {
-                    this._logFixProvenance('getCurrentPosition', null, position);
+                    this._logFixProvenance(
+                        highAccuracy ? 'getCurrentPosition/high' : 'getCurrentPosition/coarse',
+                        null,
+                        position
+                    );
                     const c = position && position.coords ? position.coords : {};
                     resolve({
                         latitude: c.latitude,
@@ -1574,9 +1618,28 @@ export default class LocationSharingManager {
                     });
                 },
                 (error) => reject(error),
-                {enableHighAccuracy: false, timeout: 15000, maximumAge: 10000}
+                {
+                    enableHighAccuracy: highAccuracy,
+                    timeout,
+                    // A cached fix is the thing we are trying to get away
+                    // from on the high-accuracy attempt: the OS would
+                    // happily hand back the same coarse reading we just
+                    // rejected. Callers on a repeating cadence can opt back
+                    // in via opts.maximumAge.
+                    maximumAge: highAccuracy ? _maximumAge : Math.max(_maximumAge, 10000),
+                }
             );
         });
+        if (!_wantHigh) {
+            return _acquire(false, opts.timeout || LocationSharingManager.COARSE_FALLBACK_TIMEOUT_MS);
+        }
+        return _acquire(true, opts.timeout || LocationSharingManager.HIGH_ACCURACY_TIMEOUT_MS)
+            .catch((err) => {
+                utils.timestampedLog('[location] high-accuracy fix failed —',
+                    err && err.message ? err.message : err,
+                    'code=', err && err.code, '— falling back to coarse');
+                return _acquire(false, LocationSharingManager.COARSE_FALLBACK_TIMEOUT_MS);
+            });
     }
 
     // Log the PROVENANCE of a raw geolocation fix so we can tell whether
@@ -1862,6 +1925,35 @@ export default class LocationSharingManager {
             locationContent.one_shot = true;
         }
 
+        // System location-permission state of THIS device, captured when the
+        // session started: 'always' | 'whenInUse' (iOS foreground-only) |
+        // 'foregroundOnly' (Android, no ACCESS_BACKGROUND_LOCATION) |
+        // 'blocked' | 'undetermined' | 'unavailable'. Stamped on ORIGIN ticks
+        // only — location_start and meeting_start (the invite leg ships it on
+        // its value-bearing meeting_request; location_once stamps its own in
+        // shareLocationOnce). Update ticks omit it: the grant is a property of
+        // the session's start, and re-stamping it 60x/hour would bloat every
+        // trail tick. It rides CLEARTEXT on the wire (app.js
+        // _sendLocationSharing) and is persisted in the row's metadata
+        // (_locationStoredMetadata) on both legs, so the receiver — and any
+        // later diagnostic read of the SQL row — can tell a share that will
+        // survive the sender backgrounding the app from one that will stall.
+        if (!locationContent.isUpdate) {
+            const _perm = extras.permState || this._lastPermState;
+            if (_perm) locationContent.perm = _perm;
+            // This share is the answer to a peer's `location_request` and the
+            // user chose an interval rather than the one-shot reply. Stamp the
+            // request id on the ORIGIN tick — same field shareLocationOnce
+            // uses, and app.js's wire builder ships it cleartext — so the peer
+            // can correlate the stream with its request and our own sibling
+            // devices close their still-open prompt on the replicated carbon.
+            // Origin only: re-stamping it 60x/hour would bloat every trail
+            // tick and the request is a property of the session's start.
+            if (extras.answersRequestId) {
+                locationContent.requestId = extras.answersRequestId;
+            }
+        }
+
         const locationMessage = {
             _id: mId,
             key: mId,
@@ -1988,7 +2080,19 @@ export default class LocationSharingManager {
         // build only had this on the dev console, so a "17 ticks but stuck"
         // report from a phone in the field had no per-tick evidence to
         // correlate with — just an aggregate counter.
-        utils.timestampedLog(`[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})${distFromOriginStr}`);
+        //
+        // socket= is stamped here because this line is emitted BEFORE the
+        // payload reaches _sendMessage, so on its own it only ever meant "a
+        // tick was produced" — never "a tick was delivered". With the socket
+        // state on it, a tick line alone tells you whether it could have gone
+        // out; the `[location] wire →` or `[location] NOT SENT` line that
+        // follows says whether it did.
+        let _sock = '?';
+        try {
+            _sock = (this.app && this.app.state && this.app.state.connection
+                && this.app.state.connection.state) || 'none';
+        } catch (e) { /* leave as ? */ }
+        utils.timestampedLog(`[location] tick ${role} → ${uri} ${lat},${lng}${acc} (_id=${mId})${distFromOriginStr} socket=${_sock}`);
         // Record the just-reported coords on the timer entry so
         // _shouldSendUpdateTick's stationary gate can compare future
         // ticks against this baseline. Only meaningful when this is
@@ -2891,8 +2995,10 @@ export default class LocationSharingManager {
             && Object.keys(this.outgoingMeetSessions || {}).length === 0) {
             try {
                 LocationForegroundServiceModule.stopService();
+                utils.timestampedLog('[location] [fgs] stopService requested — last share ended');
             } catch (e) {
-                console.log('[location] LocationForegroundService.stopService failed', e && e.message ? e.message : e);
+                utils.timestampedLog('[location] [fgs] stopService FAILED: '
+                    + (e && e.message ? e.message : e));
             }
         }
 
@@ -3057,6 +3163,20 @@ export default class LocationSharingManager {
         // Only an EXPLICIT delete removes the map (and propagates the removal to
         // the peer): the user long-pressing the bubble ('deleted'), or the peer
         // remote-deleting a leg ('requester-deleted').
+        //
+        // BOTH entries are user acts — 'requester-deleted' is simply the OTHER
+        // party's user pressing delete, reaching us as an inbound removeMessage.
+        // A deletion the remote side asks for is honoured, in full, including
+        // the sibling-leg propagation below that makes all three devices
+        // converge on the same end state. Do not "protect" the track from it.
+        //
+        // What was wrong until 2026-08-24 was not this set but the SENDERS: the
+        // journal purge (app.js _syncJournal), the pending sweep, the metadata
+        // dedup and the permission-denial rollback all issued removeMessage
+        // with remote=true off their own bat, so a peer's DEVICE could fabricate
+        // a "the user deleted this" request that no user ever made. Those are
+        // now local-only, so an inbound removeMessage once again means what it
+        // says. Fix the fabricators, not the honouring.
         const cleanupReasons = new Set([
             'deleted',          // user long-pressed the bubble to delete
             'requester-deleted', // peer remote-deleted a leg
@@ -3075,7 +3195,8 @@ export default class LocationSharingManager {
                 // journal a duplicate removeMessage event to the peer.
                 if (legId === deletedId) return;
                 try {
-                    this.app.deleteMessage(legId, uri, true);
+                    this.app.deleteMessage(legId, uri, true, false,
+                        'user:bubble-delete-cascade(' + (reason || 'deleted') + ')');
                 } catch (e) {
                     console.log('[location] propagateDelete failed', legId, e && e.message ? e.message : e);
                 }
@@ -3344,6 +3465,18 @@ export default class LocationSharingManager {
     //                   overrides `now + durationMs`. Used by the acceptance
     //                   flow so accepter and requester share the same
     //                   expires_at, guaranteeing synchronized cleanup.
+    // opts.answersRequestId
+    //                 — set when this share is the ANSWER to a peer's
+    //                   `location_request` and the user picked an interval
+    //                   rather than the one-shot reply (LocationRequestModal).
+    //                   Stamped on the ORIGIN tick only, exactly the way
+    //                   shareLocationOnce stamps its own reply, so the peer can
+    //                   correlate it with the request AND our own sibling
+    //                   devices see the replicated origin carbon and close
+    //                   their still-open prompt for the same request (see
+    //                   app.js _noteSiblingAnsweredLocationRequest). Purely
+    //                   correlative: unlike opts.inReplyTo it does NOT mark the
+    //                   session as a meet leg (no role='invited').
     async startLocationSharing(uri, durationMs, periodLabel, opts = {}) {
         if (!uri) {
             return;
@@ -3472,6 +3605,10 @@ export default class LocationSharingManager {
             meetingRequest: kind === 'meetingRequest',
             inReplyTo,
             destination: initialDestination,
+            // Correlation id when this share answers a peer's
+            // `location_request` with an interval instead of a single fix.
+            // Rides the origin tick only (see sendLocationPayload).
+            answersRequestId: opts.answersRequestId || null,
         };
         // Shared identifier both sides use to refer to the same "Until we
         // meet" session. For the requester it's the _id of their origin
@@ -3595,11 +3732,15 @@ export default class LocationSharingManager {
             }
             if (announcementMessageId) {
                 try {
-                    // Local-only removal (third arg true) — no peer
-                    // echo needed because we want to undo a UI message
-                    // that never should have shipped, not record a
-                    // deletion of a real-message history.
-                    this.app.deleteMessage(announcementMessageId, uri, true);
+                    // LOCAL ONLY — the third arg is `remote`, and it is now
+                    // `false`. It used to be `true`, which contradicted the
+                    // comment above it and meant that merely being DENIED an OS
+                    // location permission journaled a removeMessage to the
+                    // server. We are undoing a UI message that never should have
+                    // shipped; that is a local concern and must not touch the
+                    // shared journal or the peer's copy.
+                    this.app.deleteMessage(announcementMessageId, uri, false, false,
+                        'rollback:permission-denied');
                 } catch (e) {
                     console.log('[location] rollback deleteMessage failed', e && e.message ? e.message : e);
                 }
@@ -3840,6 +3981,21 @@ export default class LocationSharingManager {
             return;
         }
 
+        // Re-read the OS permission AFTER the grant round-trip: the probe at
+        // the top of this function ran BEFORE any prompt, so on a first-ever
+        // share it read 'undetermined' / 'foregroundOnly' while the user has
+        // since granted more. This is the value the origin tick stamps, so it
+        // must reflect what we actually hold now. Cheap (a couple of native
+        // check() calls, never a prompt); falls back to the pre-prompt state.
+        try {
+            tickExtras.permState = await this.getLocationPermissionStatus();
+        } catch (e) {
+            tickExtras.permState = permState;
+        }
+        utils.timestampedLog('[location] share start for', uri, 'kind=' + (kind || 'fixed'),
+            'os permission=' + (tickExtras.permState || '(unknown)'),
+            '(pre-prompt probe was ' + (permState || '(unknown)') + ')');
+
         const now = Date.now();
         // Acceptance mode inherits expires_at from the original request so
         // both devices tear down in sync. Otherwise compute from duration.
@@ -3927,12 +4083,38 @@ export default class LocationSharingManager {
         // the reuse on the resume path — that must re-read real GPS, not a
         // stale preview from before the restart.
         {
-            const _freshPreview = opts.resumeOriginLocationId
+            // opts.originOverride — hand-corrected origin from the share
+            // picker's crosshair. Outranks both the preview fix and a live
+            // acquire for THIS tick: the user looked at the fix we would
+            // otherwise send and told us it was wrong. Never on the resume
+            // path — a resume must re-read real GPS, and there is no live
+            // picker behind it to have corrected anything.
+            //
+            // Only the origin. The watch / interval armed below keeps
+            // reporting real GPS, so the correction does not leak into the
+            // rest of the session.
+            const _originOverride = opts.resumeOriginLocationId
+                ? null
+                : (opts.originOverride || null);
+            const _freshPreview = (opts.resumeOriginLocationId || _originOverride)
                 ? null
                 : this._freshPreviewFix();
-            const _initialFix = _freshPreview
-                ? Promise.resolve(_freshPreview)
-                : this.getCurrentCoordinates();
+            const _initialFix = _originOverride
+                ? Promise.resolve({
+                    latitude: _originOverride.latitude,
+                    longitude: _originOverride.longitude,
+                    // No `accuracy`: see shareLocationOnce for why a
+                    // hand-placed point must not inherit the GPS fix's
+                    // precision claim.
+                    timestamp: Date.now(),
+                })
+                : (_freshPreview
+                    ? Promise.resolve(_freshPreview)
+                    : this.getCurrentCoordinates());
+            if (_originOverride) {
+                utils.timestampedLog('[location] initial fix: using hand-adjusted origin for', uri,
+                    '—', _originOverride.latitude.toFixed(6) + ',' + _originOverride.longitude.toFixed(6));
+            }
             if (_freshPreview) {
                 utils.timestampedLog('[location] initial fix: reusing fresh preview location for', uri, '(age', (typeof _freshPreview.timestamp === 'number' ? Math.round((Date.now() - _freshPreview.timestamp) / 1000) + 's' : 'n/a'), ')');
             }
@@ -4579,7 +4761,17 @@ export default class LocationSharingManager {
                             }
                         },
                         {
-                            enableHighAccuracy: false,
+                            // Satellite-backed streaming updates. This is the
+                            // stream a LIVE share rides for its whole duration,
+                            // so a coarse setting here meant every tick after
+                            // the origin was wifi/cell-grade too — the share
+                            // would show the user drifting between cell
+                            // sectors instead of walking down a street.
+                            // CLLocationManager is already running for the
+                            // share's lifetime either way; kBest vs
+                            // kHundredMeters changes how hard the GPS chip
+                            // works, not whether it is powered.
+                            enableHighAccuracy: true,
                             // Fire every time the user moves; throttling is in JS.
                             distanceFilter: 0,
                             // useSignificantChanges would let the OS wake us
@@ -4627,13 +4819,30 @@ export default class LocationSharingManager {
             //
             // We start the service FIRST so that the very first post-origin
             // tick (60s in) is already protected, not just the ones after.
+            //
+            // INSTRUMENTED. Whether this service is actually running is the
+            // biggest unknown behind "the socket died 5s after screen off and
+            // never came back": without a live foreground service the process
+            // drops out of the foreground-service tier and the OS firewalls
+            // its sockets — which is exactly what a sub-second
+            // connecting->disconnected looks like. Until now the ONLY trace of
+            // this call was a console.log on throw, which never reaches the
+            // exported log file, so a field report could not distinguish "FGS
+            // running, network still blocked" from "FGS never started". Both
+            // outcomes now land in the APPLOG.
             if (LocationForegroundServiceModule
                 && typeof LocationForegroundServiceModule.startService === 'function') {
                 try {
                     LocationForegroundServiceModule.startService();
+                    utils.timestampedLog('[location] [fgs] startService requested for ' + uri
+                        + ' — expect a matching "[native] D [location] [fgs] startForeground" line');
                 } catch (e) {
-                    console.log('[location] LocationForegroundService.startService failed', e && e.message ? e.message : e);
+                    utils.timestampedLog('[location] [fgs] startService FAILED for ' + uri + ': '
+                        + (e && e.message ? e.message : e));
                 }
+            } else {
+                utils.timestampedLog('[location] [fgs] startService UNAVAILABLE — native module missing;'
+                    + ' background sharing is at the mercy of OS power management');
             }
 
             const intervalId = BackgroundTimer.setInterval(() => {
@@ -4786,10 +4995,36 @@ export default class LocationSharingManager {
         ]);
     }
 
-    async onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters}) {
+    // `manualOrigin` — {latitude, longitude} the user dragged the share
+    // picker's crosshair onto, or null/absent when they left the map
+    // alone. Set when the GPS fix the picker showed was visibly wrong
+    // (a coarse wifi/cell fix can land hundreds of metres out) and the
+    // user corrected it by hand.
+    //
+    // It replaces the ORIGIN tick's coordinates only. Every later tick in
+    // a live share still comes from real GPS: the correction fixes one bad
+    // reading, it is not a standing offset, and treating it as one would
+    // misreport the user's position for as long as the share ran.
+    async onShareLocationConfirmed({durationMs, periodLabel, kind, excludeOriginRadiusMeters, manualOrigin}) {
         const uri = this.app.state.selectedContact && this.app.state.selectedContact.uri;
         if (!uri) {
             return;
+        }
+        // Validate the hand-picked origin ONCE here rather than at each use
+        // site, so a malformed value can never reach a send path. Anything
+        // that isn't a finite in-range coordinate pair degrades to null,
+        // i.e. to the pre-existing "just use GPS" behaviour.
+        const _manualOrigin = (manualOrigin
+                && Number.isFinite(manualOrigin.latitude)
+                && Number.isFinite(manualOrigin.longitude)
+                && Math.abs(manualOrigin.latitude) <= 90
+                && Math.abs(manualOrigin.longitude) <= 180)
+            ? {latitude: manualOrigin.latitude, longitude: manualOrigin.longitude}
+            : null;
+        if (_manualOrigin) {
+            utils.timestampedLog('[location] confirm: hand-adjusted origin for', uri,
+                '—', _manualOrigin.latitude.toFixed(6) + ',' + _manualOrigin.longitude.toFixed(6),
+                'kind=' + kind);
         }
         // Completion plumbing for ShareLocationModal's in-flight spinner. The
         // modal keeps its Share button spinning + disabled until THIS method's
@@ -4857,13 +5092,14 @@ export default class LocationSharingManager {
         if (kind === 'once') {
             // shareLocationOnce awaits its own getCurrentCoordinates() + send
             // internally, so its completion IS the feedback signal.
-            await this.shareLocationOnce(uri);
+            await this.shareLocationOnce(uri, {originOverride: _manualOrigin});
             return;
         }
         await this.startLocationSharing(uri, durationMs, periodLabel, {
             kind,
             excludeOriginRadiusMeters,
             onInitialShareResult,
+            originOverride: _manualOrigin,
         });
         await this._awaitInitialShare(uri, _initialShareResult, _alreadyActive);
     }
@@ -4941,17 +5177,45 @@ export default class LocationSharingManager {
         // wonders whether the tap registered. Use renderSystemMessage
         // (no SQL INSERT, no replication) so the note disappears on
         // the next chat reload and doesn't clutter restored history.
+        // Skip the "acquiring…" note when the user hand-placed the pin:
+        // there is nothing to acquire, the bubble lands immediately, and
+        // the note would claim a GPS read that never happens.
+        if (!(opts && opts.originOverride)) {
+            try {
+                this.app.renderSystemMessage(
+                    uri,
+                    '📍 Location will be shared as soon as it is acquired…',
+                    'outgoing',
+                    new Date(),
+                    true
+                );
+            } catch (e) { /* noop */ }
+        }
         try {
-            this.app.renderSystemMessage(
-                uri,
-                '📍 Location will be shared as soon as it is acquired…',
-                'outgoing',
-                new Date(),
-                true
-            );
-        } catch (e) { /* noop */ }
-        try {
-            const coords = await this.getCurrentCoordinates();
+            // opts.originOverride — the user dragged the picker's crosshair
+            // off a visibly wrong GPS fix. Use their point and skip the
+            // acquire entirely: re-reading GPS here would just hand back
+            // the same bad fix they had just finished correcting.
+            //
+            // `accuracy` is deliberately NOT carried over from the fix. It
+            // described the GPS reading, not this point, and shipping it
+            // would tell the receiver we have a ±8 m measurement of a
+            // location that was actually placed by hand. Omitting it is the
+            // existing "accuracy unknown" case, which every consumer
+            // already handles, rather than a new field older clients would
+            // have to learn.
+            const _override = opts && opts.originOverride;
+            const coords = _override
+                ? {
+                    latitude: _override.latitude,
+                    longitude: _override.longitude,
+                    timestamp: Date.now(),
+                }
+                : await this.getCurrentCoordinates();
+            if (_override) {
+                utils.timestampedLog('[location] one-shot: using hand-adjusted origin for', uri,
+                    '—', coords.latitude.toFixed(6) + ',' + coords.longitude.toFixed(6));
+            }
             // 24 h expires_at is generous — a one-shot location is
             // useful for a long time after it's sent (you might be
             // showing it to someone the next morning), and the
@@ -4987,6 +5251,16 @@ export default class LocationSharingManager {
             if (opts && opts.inReplyTo) {
                 _msg.metadata.requestId = opts.inReplyTo;
             }
+            // Same origin-tick permission stamp the live shares carry (see
+            // sendLocationPayload). Probed here rather than read from the
+            // cache because ensureLocationPermission above may have just
+            // prompted and flipped the state.
+            try {
+                const _permState = await this.getLocationPermissionStatus();
+                if (_permState) _msg.metadata.perm = _permState;
+                utils.timestampedLog('[location] one-shot share to', uri,
+                    'os permission=' + (_permState || '(unknown)'));
+            } catch (e) { /* stamp is best-effort — never block the share */ }
             this.app.sendMessage(uri, _msg, 'application/sylk-location-sharing');
             // No system-message text ("📍 Shared current location at …") — the
             // share renders as the sender's own outgoing MAP bubble (injected by
@@ -5183,6 +5457,24 @@ export default class LocationSharingManager {
         //   location_once (static) | location_start | location_update | location_stop
         //   meeting_request/meeting_accept (coord-free handshake) | meeting_start (coord origin) | meeting_update | meeting_end
         if (!fields) return 'location_start';
+        // Coordinate-free lifecycle SIGNALS name themselves explicitly in
+        // `fields.action`. The shape-based derivation below can only classify
+        // coord-BEARING ticks: handed a stop it sees "no isUpdate, no one_shot,
+        // no meeting_request, no role" and falls through to 'location_start'.
+        //
+        // That mislabel is not cosmetic. The row is stored with
+        // related_action='location_start', so on resend _resendLocationRow
+        // takes the coordinate branch, finds no coordinates in a stop payload,
+        // and clears pending — silently dropping the stop. The peer and every
+        // sibling device are then left showing a live track that has already
+        // ended.
+        //
+        // Safe against coord-bearing ticks: the send path deletes `action`
+        // before the row is built ("signals only"), so they never reach here
+        // with one set.
+        if (fields.action === 'location_stop' || fields.action === 'meeting_end') {
+            return fields.action;
+        }
         if (fields.isUpdate) {
             // A meet session's update ticks re-stamp the meet flag, so they read
             // as 'meeting_update'; a plain live trail tick is 'location_update'.
@@ -5220,6 +5512,18 @@ export default class LocationSharingManager {
         // the owning device instead of guessing. Present on the cleartext wire
         // (added to every outgoing envelope) and captured on receive.
         if (fields.deviceId) m.deviceId = fields.deviceId;
+        // Sender's OS location-permission state at session start (origin rows
+        // only — 'always' / 'whenInUse' / 'foregroundOnly' / …). Not derivable
+        // from any column, so it has to be persisted here to survive a reload.
+        if (fields.perm) m.perm = fields.perm;
+        // requestId correlates an ANSWER back to the location_request it
+        // replies to. Not derivable from any column. Dropping it was invisible
+        // while a stored row was only ever re-read for rendering; it matters
+        // now that a row can be RE-SENT after an outage. Without it the carbon
+        // reaching our other devices fails the `_lw.requestId` test in
+        // _noteSiblingAnsweredLocationRequest, so their "Share your location?"
+        // modal never closes even though the request has been answered.
+        if (fields.requestId) m.requestId = fields.requestId;
         return m;
     }
 

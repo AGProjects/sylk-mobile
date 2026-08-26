@@ -33,7 +33,7 @@ import ContactsListBox from './ContactsListBox';
 import AudioRecorder from './AudioRecorder';
 
 import SessionButtonsBar from './SessionButtonsBar';
-import ContactsListBanners from './ContactsListBanners';
+import ContactsListBanners, { DndBanner } from './ContactsListBanners';
 import ContactsCategoryBar from './ContactsCategoryBar';
 import ChatFilterSortBar from './ChatFilterSortBar';
 import ContactSelectFab from './ContactSelectFab';
@@ -114,7 +114,19 @@ class ReadyBox extends Component {
 
         this.state = {
             recorderState: { recording: false, recordArmed: false, previewRecording: false, playRecording: false, recordingFile: null, msgPlaybackActive: false },
-            targetUri: this.props.selectedContact ? this.props.selectedContact.uri : '',
+            // A tel:/sip: link tapped while Blink was NOT running is
+            // parsed by app.js (dialFromExternalUrl) from
+            // Linking.getInitialURL BEFORE this component mounts, so
+            // componentDidUpdate's dialUriSignal branch never fires for
+            // it — React does not run componentDidUpdate on mount. Seed
+            // straight from the signal here so the cold-start chooser
+            // path prefills too. It wins over selectedContact because
+            // the user just explicitly named a destination.
+            targetUri: (this.props.dialUriSignal && this.props.dialUriSignal.uri)
+                ? utils.stripTrunkZeroAfterCountryCode(
+                      this.props.dialUriSignal.raw || this.props.dialUriSignal.uri,
+                      this.props.pstnRules)
+                : (this.props.selectedContact ? this.props.selectedContact.uri : ''),
             sticky: false,
             // Custom bulk-delete confirmation dialog (Deleted "Delete
             // permanently" / Graveyard "Delete forever"). Holds
@@ -333,11 +345,47 @@ class ReadyBox extends Component {
     }
 
     getTargetUri(uri) {
-        return utils.normalizeUri(uri, this.props.defaultDomain);
+        // Collapse the visual separators FIRST. stripTrunkZeroAfterCountryCode
+        // matches on a digits-only tail, so '+31 (0)6 4137 2960' would sail
+        // straight past it and dial with the trunk 0 still in place.
+        const _clean = utils.cleanDialHandle(uri);
+
+        // Then drop a trunk 0 left after the country code. handleSearch does
+        // this too, but only for text that arrived in one piece — it runs on
+        // every keystroke and must never rewrite the field while the user is
+        // mid-number. Doing it HERE, at the moment of dialing, is the
+        // guarantee: however the number got into the field (typed, pasted,
+        // scanned, tapped from an old contact row), what leaves for the SIP
+        // layer is repaired.
+        const _repaired = utils.stripTrunkZeroAfterCountryCode(
+            _clean, this.props.pstnRules);
+        if (_repaired !== _clean) {
+            utils.timestampedLog('[pstn] trunk 0 after country code dropped before dialing:',
+                                 _clean, '->', _repaired,
+                                 'pstnRules=' + JSON.stringify(this.props.pstnRules || {}));
+        }
+
+        return utils.normalizeUri(_repaired, this.props.defaultDomain);
     }
 
     async componentDidMount() {
         this.ended = false;
+
+        // The constructor already seeded state.targetUri from a
+        // cold-start tel:/sip: link. Retire the signal so a later
+        // remount of this component (route churn, fold/unfold) does not
+        // silently re-fill a field the user has since cleared.
+        if (this.props.dialUriSignal && this.props.dialUriSignal.uri) {
+            // Latch it for the late-rules repair in componentDidUpdate —
+            // a cold-start link is prefilled before pstn.replaceLeadingZero
+            // has been read back from the accounts table.
+            this._dialFilledValue = this.state.targetUri;
+            utils.timestampedLog('[dial-link] ReadyBox seeded on mount:', this.state.targetUri,
+                                 'pstnRules=' + JSON.stringify(this.props.pstnRules || {}));
+            if (typeof this.props.onDialUriConsumed === 'function') {
+                this.props.onDialUriConsumed(this.props.dialUriSignal.id);
+            }
+        }
 
         // Android hardware back: when the user is inside the Deleted (or its
         // Graveyard sub-view) contact filter, "back" should drop the filter
@@ -346,6 +394,11 @@ class ReadyBox extends Component {
         // and only consumes the event for its overlays, so when no overlay is
         // up this listener gets the press.
         this._backHandlerSub = BackHandler.addEventListener('hardwareBackPress', this.backPressed);
+
+        // First-frame sync: componentDidUpdate does not run on mount, so
+        // without this the kebab would still list Audio/Video call until
+        // the next render pass.
+        this._reportSessionButtons();
         // Kick off the pulse immediately if we landed here already sharing
         // (e.g. user switched chats, or app reloaded mid-share). All the
         // "start/stop on change" logic lives in componentDidUpdate; this
@@ -491,7 +544,14 @@ class ReadyBox extends Component {
         // key, or we don't yet know: banner is definitely not allowed. Clear
         // any pending timer and hide. (During contact sync the import-key modal
         // is deferred, so showing a "no private key" banner would be premature.)
-        if (modalVisible || this.props.contactsSyncing || !noLocalKey) {
+        // `keyEscrowChecked` is the important one at startup. keyStatus.existsLocal
+        // is false both when the account genuinely has no key AND during the
+        // seconds before the key row / the addressbook escrow have been read, so
+        // the banner used to accuse the user of key loss on every cold start and
+        // then vanish once the restore landed. app.js flips keyEscrowChecked only
+        // once the answer is actually known (key restored, key generated, or the
+        // self contact read and carrying no escrow).
+        if (modalVisible || this.props.contactsSyncing || !this.props.keyEscrowChecked || !noLocalKey) {
             this._clearNoPrivateKeyWarningTimer();
             if (this.state.showNoPrivateKeyWarning) {
                 this.setState({ showNoPrivateKeyWarning: false });
@@ -564,6 +624,75 @@ class ReadyBox extends Component {
 	      this._reconcileProps(prevProps);
 	  }
 
+	  // ─── External dial link (tel: / sip:) ────────────────────────
+	  // app.js bumps dialUriSignal ({uri, id}) when a tel:/sip: link is
+	  // opened from outside the app — the user picked Blink from
+	  // Chrome's "Open with" chooser on a <a href="tel:...">, or dialed
+	  // from the system dialer. Mirror the destination into the URI
+	  // field exactly the way the in-list tap handler (handleSearch)
+	  // does: drop any selected contact and leave chat mode, so the
+	  // call-button bar shows against the prefilled number.
+	  //
+	  // Keyed on `id` (a fresh uuid per tap) rather than on the uri, so
+	  // tapping the SAME number a second time still refills a field the
+	  // user cleared in between.
+	  //
+	  // No auto-dial by design — see dialFromExternalUrl in app.js.
+	  const _dialSignal = this.props.dialUriSignal;
+	  const _prevDialSignal = prevProps.dialUriSignal;
+	  if (_dialSignal && _dialSignal.uri
+	          && (!_prevDialSignal || _prevDialSignal.id !== _dialSignal.id)) {
+	      // Re-run the trunk-zero repair with OUR pstnRules prop rather
+	      // than trusting what app.js managed at parse time: on a cold
+	      // start the account settings (and therefore replaceLeadingZero)
+	      // usually have not been read out of the DB yet when the deep
+	      // link is parsed. `raw` is the number exactly as the link had
+	      // it; `uri` is app.js's best effort at that moment.
+	      const _rawDial = _dialSignal.raw || _dialSignal.uri;
+	      const _fill = utils.stripTrunkZeroAfterCountryCode(_rawDial, this.props.pstnRules);
+	      utils.timestampedLog('[dial-link] ReadyBox prefill:', _fill,
+	                           '(raw', _rawDial + ')',
+	                           'pstnRules=' + JSON.stringify(this.props.pstnRules || {}));
+	      if (this.props.selectedContact) {
+	          this.props.selectContact(null);
+	      }
+	      // Remember what WE put in the field. As long as it is still
+	      // there untouched, the repair below may revise it once the
+	      // rules load; the moment the user edits it, the latch clears
+	      // and we never touch their input again.
+	      this._dialFilledValue = _fill;
+	      this.setState({targetUri: _fill, chat: false});
+	      if (typeof this.props.onDialUriConsumed === 'function') {
+	          this.props.onDialUriConsumed(_dialSignal.id);
+	      }
+	  }
+
+	  // Late-arriving PSTN rules. loadAccountSettings commits
+	  // state.accountSetting (and with it pstn.replaceLeadingZero, the
+	  // preference the whole trunk-zero repair is derived from) a good
+	  // while after a cold-start deep link has already been parsed and
+	  // prefilled. Retry the repair whenever this component re-renders
+	  // while the field still holds exactly the value we put there.
+	  // Self-limiting: once repaired the result is stable, so the next
+	  // pass is a no-op and there is no update loop.
+	  if (this._dialFilledValue) {
+	      if (this.state.targetUri !== this._dialFilledValue) {
+	          // User edited (or cleared) it — hands off from here on.
+	          this._dialFilledValue = null;
+	      } else {
+	          const _late = utils.stripTrunkZeroAfterCountryCode(
+	              this._dialFilledValue, this.props.pstnRules);
+	          if (_late !== this._dialFilledValue) {
+	              utils.timestampedLog('[dial-link] [pstn] trunk 0 dropped after rules loaded:',
+	                                   this._dialFilledValue, '->', _late,
+	                                   'pstnRules=' + JSON.stringify(this.props.pstnRules || {}));
+	              this._dialFilledValue = _late;
+	              this.setState({targetUri: _late});
+	          }
+	      }
+	  }
+
+
 	  // Sync targetUri when a chat is opened PROGRAMMATICALLY (push-tap →
 	  // selectChatContact, deep link, missed-call tap) rather than by the
 	  // in-list tap handler (which already sets targetUri). The constructor
@@ -628,7 +757,16 @@ class ReadyBox extends Component {
 	  const nowModal = !!this.props.showImportPrivateKeyModal;
 	  const prevExistsLocal = (prevProps.keyStatus || {}).existsLocal;
 	  const nowExistsLocal = (this.props.keyStatus || {}).existsLocal;
-	  if (prevModal !== nowModal || prevExistsLocal !== nowExistsLocal) {
+	  // Third condition is a safety net: if the banner is UP while a key now
+	  // exists, re-sync regardless of whether the props looked like they
+	  // changed. The edge comparison above is only as trustworthy as the
+	  // parent's immutability, and app.js used to mutate state.keyStatus in
+	  // place — which made prevProps and props read identical and left this
+	  // banner permanently on screen after a successful key generation.
+	  if (prevModal !== nowModal
+	      || prevProps.keyEscrowChecked !== this.props.keyEscrowChecked
+	      || prevExistsLocal !== nowExistsLocal
+	      || (this.state.showNoPrivateKeyWarning && nowExistsLocal !== false)) {
 	      this._syncNoPrivateKeyWarning();
 	  }
 
@@ -691,6 +829,47 @@ class ReadyBox extends Component {
 			this.props.toggleSearchContacts()
 		}
       }
+
+      // Keep the navbar kebab in sync with the action bar. Which session
+      // buttons are actually on screen is decided here (showButtonsBar +
+      // the per-button getters); NavigationBar must not re-derive that or
+      // the two will drift. Report on every update — the helper diffs and
+      // only calls up when a flag actually flips.
+      this._reportSessionButtons();
+    }
+
+    // Mirror the currently-rendered session buttons up to app.js so the
+    // NavigationBar kebab can drop the menu items that duplicate them
+    // ("Audio call" / "Video call" while the green phone + video buttons
+    // are showing, "Share location..." / "Stop sharing location" while
+    // the purple pin is showing). Only the buttons that have a matching
+    // per-contact menu entry are reported.
+    //
+    // isFolded is folded in here because SessionButtonsBar renders the
+    // whole button group as null on the cover display — showCallButtons
+    // already returns false when folded, but showLocationShareButton
+    // does not, so the pin would otherwise be reported as visible while
+    // nothing is drawn.
+    _reportSessionButtons() {
+        if (typeof this.props.onSessionButtonsChange !== 'function') {
+            return;
+        }
+
+        const barVisible = !!this.showButtonsBar && !this.props.isFolded;
+        const next = {
+            callButtons: barVisible && !!this.showCallButtons,
+            locationShare: barVisible && !!this.showLocationShareButton,
+        };
+
+        const prev = this._reportedSessionButtons;
+        if (prev
+            && prev.callButtons === next.callButtons
+            && prev.locationShare === next.locationShare) {
+            return;
+        }
+
+        this._reportedSessionButtons = next;
+        this.props.onSessionButtonsChange(next);
     }
 
     filterHistory(filter) {
@@ -1416,7 +1595,7 @@ class ReadyBox extends Component {
         this.setState({ confirmDialog: {
             title: 'Merge contacts',
             message: 'Merge the ' + uris.length + ' selected contacts into one?\n\n'
-                + 'All their addresses are combined into:\n' + (_winUri || 'the highlighted contact') + '\n\n'
+                + 'All addresses are combined into:\n' + (_winUri || 'the highlighted contact') + '\n\n'
                 + 'No messages are deleted.',
             actions: [
                 { label: 'Merge', onPress: () => {
@@ -1505,6 +1684,53 @@ class ReadyBox extends Component {
                 this.setState({searchString: inputText});
             }
             return;
+        }
+
+        // A tel: URI is just a phone number wearing a scheme. They reach
+        // this method from a paste (<a href="tel:..."> copied off a web
+        // page) and from QRCodeRead, which funnels its raw payload
+        // straight in here — and QR codes encode phone numbers as tel:
+        // URIs almost universally. Strip the scheme at this single
+        // entry point so everything downstream sees an ordinary number:
+        // the digit-ish contact matcher in ContactsListBox, the
+        // state.targetUri handed to startCall / getTargetUri, and the
+        // PSTN replaceLeadingZero / replacePlus rewrites Call.js applies
+        // at the SIP boundary all then behave exactly as if the user had
+        // typed the digits by hand.
+        if (typeof inputText === 'string') {
+            const _stripped = utils.stripTelScheme(inputText);
+            const _wasTel = _stripped !== inputText;
+            if (_wasTel) {
+                utils.timestampedLog('[pstn] tel: URI unwrapped in search bar:',
+                                     inputText, '->', _stripped);
+                inputText = _stripped;
+            }
+
+            // Clean up a number that arrived WHOLE — a tel: URI, a paste, a QR
+            // payload — collapsing its separators and dropping a national
+            // trunk prefix glued onto an already international number
+            // ('+31 (0)6 4137 2960', '+31-023-7993800').
+            //
+            // Gated on arriving whole, deliberately. This method runs on every
+            // keystroke, and someone midway through typing '+31023…' must not
+            // watch the field rewrite itself under their fingers. Typing
+            // advances the value by one character; a paste, a scan or a
+            // programmatic fill lands more than that at once, which is the
+            // tell. Dialing repairs regardless of how the text got here — see
+            // getTargetUri — so the worst case for a hand-typed number is that
+            // the field shows the user's own spelling until they press call.
+            const _prev = this.state.targetUri || '';
+            if (_wasTel || (inputText.length - _prev.length) > 1) {
+                const _cleaned = utils.cleanDialHandle(inputText);
+                const _repaired = utils.stripTrunkZeroAfterCountryCode(
+                    _cleaned, this.props.pstnRules);
+                if (_repaired !== inputText) {
+                    utils.timestampedLog('[pstn] search bar value repaired:',
+                                         inputText, '->', _repaired,
+                                         'pstnRules=' + JSON.stringify(this.props.pstnRules || {}));
+                    inputText = _repaired;
+                }
+            }
         }
 
         //console.log('handleSearch contact =', contact);
@@ -3303,6 +3529,50 @@ class ReadyBox extends Component {
                         : null}
 
 
+                        {/* Do-Not-Disturb pill. Sits directly under the
+                            navbar and ABOVE the search bar: a silenced
+                            phone should announce itself before the user
+                            starts typing, not after they scroll down to
+                            the contacts list (where this used to render,
+                            inside ContactsListBanners). It self-gates to
+                            the plain contacts list, and the category /
+                            sort bar above only appears when a contact IS
+                            selected, so the two never stack. */}
+                        <DndBanner
+                            appDnd={this.props.appDnd}
+                            onToggleDnd={this.props.toggleDnd}
+                            selectedContact={this.props.selectedContact}
+                            shareToContacts={this.props.shareToContacts}
+                            inviteContacts={this.props.inviteContacts}
+                            searchMessages={this.props.searchMessages}
+                            showQRCodeScanner={this.props.showQRCodeScanner}
+                        />
+
+                        {/* Status banners — "Syncing contacts…", "Blink storage is
+                            now up to date!", and the phonebook-permission notice.
+                            These sit directly under the navbar, ABOVE the search
+                            bar, for the same reason DndBanner does. They used to
+                            render inside the history container, which put them
+                            BETWEEN the search bar and the contacts list: the bar
+                            visibly detached from the list it filters and the whole
+                            list jumped down whenever a banner appeared or expired.
+                            The search bar now always sits flush on top of the
+                            contacts list, and transient status appears in one
+                            predictable place at the top of the screen. Each banner
+                            still self-gates to the plain contacts list. */}
+                        <ContactsListBanners
+                            selectedContact={this.props.selectedContact}
+                            shareToContacts={this.props.shareToContacts}
+                            inviteContacts={this.props.inviteContacts}
+                            searchMessages={this.props.searchMessages}
+                            showQRCodeScanner={this.props.showQRCodeScanner}
+                            contactsSyncing={this.props.contactsSyncing}
+                            storageUpToDate={this.props.storageUpToDate}
+                            contactSource={this.state.contactSource}
+                            abPermissionDenied={this.props.abPermissionDenied}
+                            onOpenAppSettings={this.props.openAppSettings}
+                        />
+
                         {/* Invite-to-conference and share-to-contacts
                             modes need the search bar BELOW the
                             Cancel/Invite action pair, glued to the
@@ -3473,21 +3743,6 @@ class ReadyBox extends Component {
                     />
                     {this.showContactsList ?
                     <View style={[historyContainer, borderClass]}>
-
-                   <ContactsListBanners
-                       selectedContact={this.props.selectedContact}
-                       shareToContacts={this.props.shareToContacts}
-                       inviteContacts={this.props.inviteContacts}
-                       searchMessages={this.props.searchMessages}
-                       showQRCodeScanner={this.props.showQRCodeScanner}
-                       contactsSyncing={this.props.contactsSyncing}
-                       storageUpToDate={this.props.storageUpToDate}
-                       appDnd={this.props.appDnd}
-                       onToggleDnd={this.props.toggleDnd}
-                       contactSource={this.state.contactSource}
-                       abPermissionDenied={this.props.abPermissionDenied}
-                       onOpenAppSettings={this.props.openAppSettings}
-                   />
 
                    {/* Invite / share search bar — relocated copy.
                        In normal modes the URIInput renders near the
@@ -3803,6 +4058,17 @@ class ReadyBox extends Component {
 }
 
 ReadyBox.propTypes = {
+    /* {uri, id} pushed by app.js when a tel:/sip: link is opened from
+       outside the app; prefills the URI field. */
+    dialUriSignal: PropTypes.object,
+    /* Called with the consumed signal's id once the URI field has been
+       prefilled, so app.js can clear state.externalDialUri. */
+    onDialUriConsumed: PropTypes.func,
+    /* Called with {callButtons, locationShare} whenever the set of
+       session buttons rendered under the navbar changes. app.js keeps it
+       in state and hands it to NavigationBar, which hides the kebab items
+       those buttons already provide. */
+    onSessionButtonsChange: PropTypes.func,
     account         : PropTypes.object,
     password        : PropTypes.string.isRequired,
     callHistoryUrl  : PropTypes.string,
@@ -3917,6 +4183,7 @@ ReadyBox.propTypes = {
     keys            : PropTypes.object,
     keyStatus       : PropTypes.object,
     showImportPrivateKeyModal : PropTypes.bool,
+    keyEscrowChecked          : PropTypes.bool,
     downloadFile    : PropTypes.func,
     uploadFile: PropTypes.func,
     decryptFunc     : PropTypes.func,

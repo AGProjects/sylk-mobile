@@ -136,7 +136,7 @@
     "react": "18.3.1",
     "react-mixin": "^4.0.0",
     "react-native-sass-transformer": "^2.1.1",
-    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#c9f7b90b54239a0a513c97c87d0da5fa9706aa88",
+    "react-native-sylkrtc": "AGProjects/react-native-sylkrtc.js#5f2c65af2ba4ee64ceabc4917b3d4bb73841020d",
     "react-notification-system": "^0.2.17",
     "react-router-component": "^0.39.1",
     "react-test-renderer": "18.3.1",

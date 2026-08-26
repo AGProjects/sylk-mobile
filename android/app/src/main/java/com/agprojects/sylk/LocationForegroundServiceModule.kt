@@ -14,15 +14,31 @@ class LocationForegroundServiceModule(reactContext: ReactApplicationContext) :
 
     override fun getName() = "LocationForegroundServiceModule"
 
+    // Both bridges are instrumented via SylkLogger so the exported log file
+    // shows the JS request AND the native outcome. startForegroundService()
+    // throws ForegroundServiceStartNotAllowedException on API 31+ when the app
+    // is not in a state allowed to start one; swallowing that is how a share
+    // ends up running with no foreground promotion, no network while the
+    // screen is off, and nothing in the log to explain it.
     @ReactMethod
     fun startService() {
-        val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
-        reactApplicationContext.startForegroundService(intent)
+        try {
+            val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
+            reactApplicationContext.startForegroundService(intent)
+            SylkLogger.d("[location] [fgs] startForegroundService dispatched")
+        } catch (t: Throwable) {
+            SylkLogger.e("[location] [fgs] startForegroundService REFUSED by platform", t)
+        }
     }
 
     @ReactMethod
     fun stopService() {
-        val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
-        reactApplicationContext.stopService(intent)
+        try {
+            val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
+            reactApplicationContext.stopService(intent)
+            SylkLogger.d("[location] [fgs] stopService dispatched")
+        } catch (t: Throwable) {
+            SylkLogger.e("[location] [fgs] stopService failed", t)
+        }
     }
 }

@@ -1,0 +1,4 @@
+ * Allow adjusting manually the aquired location in share modal
+ * Pass device id to outgoing calls
+ * Do not stop streaming video while screen sharing
+ * Fix arrows in video speedometer

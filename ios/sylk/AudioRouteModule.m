@@ -757,6 +757,85 @@ RCT_EXPORT_METHOD(start:(NSDictionary *)deviceMap
   });
 }
 
+/**
+ * reactivate()
+ *
+ * Repair the shared AVAudioSession for a call that is STILL LIVE after
+ * something else deactivated it underneath us.
+ *
+ * The case this exists for: an established 1:1 call is running, a second
+ * call is reported to CallKit from a VoIP push, the user ignores it (or
+ * answers it on another device), and CallKit ends it. CXProvider takes
+ * ownership of the audio session for the new call and hands it back by
+ * firing -provider:didDeactivateAudioSession: — a PROVIDER-level
+ * callback with no callUUID, so it fires even though the first call is
+ * still connected. CallKit does NOT re-fire didActivateAudioSession for
+ * a call it already considers connected, and we run WebRTC's audio
+ * device module in manual mode (RTCAudioSession.setManualAudio(true) at
+ * boot in app.js), so nothing restarts the VoIP audio unit. The call
+ * stays up, media keeps flowing, and the user hears silence.
+ *
+ * Unlike -start:, this does NOT snapshot _origCategory/_origOptions/
+ * _origMode — the call-lifecycle restore state belongs to the call that
+ * is still running and must survive untouched, so that whenever that
+ * call finally ends -stop: still restores the pre-call session. It also
+ * re-applies _currentRoute (the route the user picked) rather than
+ * re-running forceSelectBestDeviceAtStart, so a repair never silently
+ * moves audio to a different device mid-conversation.
+ */
+RCT_EXPORT_METHOD(reactivate:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [SylkLogger log:@"[audio] reactivate called (currentRoute=%@ started=%@)",
+      self->_currentRoute ?: @"(none)", self->_started ? @"YES" : @"NO"];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSError *err = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+
+    // Re-pin the VoIP configuration. Whoever deactivated the session may
+    // also have moved the category/mode off PlayAndRecord/VoiceChat.
+    if (![session setCategory:AVAudioSessionCategoryPlayAndRecord
+                  withOptions:(AVAudioSessionCategoryOptionAllowBluetooth)
+                        error:&err]) {
+      [SylkLogger log:@"[audio] reactivate: setCategory failed: %@", err];
+    }
+    err = nil;
+    if (![session setMode:AVAudioSessionModeVoiceChat error:&err]) {
+      [SylkLogger log:@"[audio] reactivate: setMode failed: %@", err];
+    }
+
+    err = nil;
+    BOOL activated = [session setActive:YES error:&err];
+    if (!activated) {
+      [SylkLogger log:@"[audio] reactivate: setActive YES FAILED: %@", err];
+    } else {
+      [SylkLogger log:@"[audio] reactivate: setActive YES OK"];
+    }
+
+    // The session is ours again — keep the start/stop bookkeeping honest
+    // so the eventual -stop: for the surviving call still runs.
+    self->_started = YES;
+
+    // Put the user's chosen route back. _currentRoute is the type string
+    // switchAudioRouteInternal last settled on (BUILTIN_SPEAKER,
+    // BLUETOOTH_SCO, WIRED_HEADSET, BUILTIN_EARPIECE).
+    if (self->_currentRoute.length > 0) {
+      NSDictionary *dev = @{@"id": @"", @"name": @"", @"type": self->_currentRoute};
+      if ([self switchAudioRouteInternal:dev]) {
+        [SylkLogger log:@"[audio] reactivate: route re-applied %@", self->_currentRoute];
+      } else {
+        [SylkLogger log:@"[audio] reactivate: could not re-apply route %@", self->_currentRoute];
+      }
+    }
+
+    [self sendReactNativeEvent];
+
+    if (resolve) {
+      resolve(@(activated));
+    }
+  });
+}
+
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {

@@ -356,7 +356,7 @@ row below).
 | `from_uri` / `to_uri`     | sender / account (incoming); account / peer (outgoing)                                                   |
 | `direction`               | `'incoming'` or `'outgoing'`                                                                             |
 | `timestamp` / `unix_timestamp` | ISO string / epoch **seconds** (ordering)                                                          |
-| `expire`                  | `now + 7 days` in epoch **seconds** — drives `purgeExpiredMessages()`                                    |
+| `expire`                  | `now + 30 days` in epoch **seconds** — drives `purgeExpiredMessages()`                                   |
 | `disposition_notification`| requested IMDN dispositions, comma-joined — **incoming** origin rows only                                |
 
 Write paths: `saveOutgoingMessage` (sender), `saveIncomingMessage` (live receive)
@@ -612,7 +612,7 @@ chronological place instead of piling them at the current time.
 
 ## Retention
 
-- All location-sharing rows carry `expire = now + 7 days`; the periodic sweep
+- All location-sharing rows carry `expire = now + 30 days`; the periodic sweep
   removes them after the window.
 - Plain live shares persist their per-tick trail for later playback; there is no
   peer stop signal beyond `location_stop` (the sender simply stops ticking).

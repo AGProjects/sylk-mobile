@@ -434,9 +434,9 @@ class ContactCard extends Component {
 			}
 		}
 		if (_mediaType === 'audio') {
-			subtitle = 'Audio Conference';
+			subtitle = 'Audio conference';
 		} else if (_mediaType === 'video') {
-			subtitle = 'Video Conference';
+			subtitle = 'Video conference';
 		} else {
 			subtitle = 'Conference';
 		}

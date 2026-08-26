@@ -3,7 +3,7 @@ import ThemedModalSurface from './ThemedModalSurface';
 import { getModalColors } from '../paperTheme';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
-import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions, Linking, AppState, StyleSheet } from 'react-native';
+import { Modal, View, TouchableWithoutFeedback, KeyboardAvoidingView, Platform, TouchableOpacity, Dimensions, Linking, AppState, StyleSheet, PanResponder } from 'react-native';
 import { Text, Button, Surface, RadioButton, Checkbox, ActivityIndicator as PaperActivityIndicator } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import { openSettings } from 'react-native-permissions';
@@ -16,7 +16,11 @@ import PrivacyRadiusSlider from './PrivacyRadiusSlider';
 // the user-pin/destination bounding box so when both points land
 // the map auto-zooms out instead of leaving the user pin offscreen
 // at street-level zoom.
-import { StaticMap, pickZoomToFitPoints } from './LocationBubble';
+// tileFracToLatLng / TILE_SIZE back the crosshair drag: the pan offset
+// we hand StaticMap is in pixels, and inverting the projection at the
+// frame centre turns that offset back into the coordinate sitting under
+// the crosshair.
+import { StaticMap, pickZoomToFitPoints, latLngToTileFrac, tileFracToLatLng, TILE_SIZE } from './LocationBubble';
 
 // Quick haversine-distance helper — matches the algorithm used in
 // NavigationBar's _haversineMeters but kept local so the modal
@@ -68,6 +72,43 @@ function initialsFromName(name) {
 const PREVIEW_MIN_ZOOM = 3;
 const PREVIEW_MAX_ZOOM = 18;
 const PREVIEW_DEFAULT_ZOOM = 15;
+
+// How far the crosshair may be dragged from the GPS fix, in pixels.
+// StaticMap renders a 5x5 tile grid once panned, so there are ~512 px
+// of real tiles in every direction; stopping at 240 keeps a full tile
+// of margin so the user never drags into the grey. In ground distance
+// this is zoom-dependent by design — ~1.1 km at street-level zoom 15,
+// tightening as you zoom in — which matches the intent: a coarse fix
+// gets coarse correction, a zoomed-in view gets fine correction.
+const PREVIEW_MAX_PAN_PX = 240;
+
+// Map-control chip colours. These buttons float over OSM Mapnik tiles,
+// which are a LIGHT basemap in every app theme — the tiles don't know
+// about Day/Night. So the controls are deliberately theme-INDEPENDENT:
+// dark glyph on a light chip, the usual map-control convention.
+//
+// They previously took their glyph colour from getModalColors().textPrimary,
+// which is near-white in Night mode: a white icon on a white chip, i.e.
+// invisible. Anything drawn on top of the tiles must be coloured against
+// the TILES, not against the modal surface.
+const MAP_CONTROL_BG = 'rgba(255,255,255,0.92)';
+const MAP_CONTROL_FG = '#222222';
+
+// Traces the preview map's interactions end-to-end in metro.log: which
+// preview branch rendered, raw touches arriving, responder negotiation,
+// pan offsets, and zoom requests. Behind a constant so it strips at build
+// time; the raw touch probes in particular fire per frame, so leave it off
+// unless something is actually being diagnosed.
+//
+// Kept because responder conflicts are invisible from the outside: the map
+// simply does not move, and that single symptom covers four very different
+// causes (wrong branch rendered / touches never arriving / responder lost
+// to an ancestor / state updating without a re-render). This trace is what
+// separated them last time — the answer was that the modal card's
+// TouchableWithoutFeedback claimed the responder first, and RN never
+// offers it to a descendant afterwards. See onStartShouldSetPanResponder.
+const DEBUG_MAP_UI = false;
+const mapLog = (...args) => { if (DEBUG_MAP_UI) console.log('[location][map-ui]', ...args); };
 
 // Match EditContactModal's look (Modal + Surface with borderRadius: 10)
 // so the dialog corners are subtly rounded instead of the pronounced
@@ -198,18 +239,14 @@ const pillStyles = StyleSheet.create({
         paddingHorizontal: 12,
         marginBottom: 8,
         marginRight: 6,
-        borderRadius: 24,
-        borderWidth: 2,
+        // No border and no corner radius: these rows are borderless by
+        // design. The mode is carried entirely by the icon, the coloured
+        // label and — on the active row — the check-circle tick.
+        //
+        // Selection used to be signalled by a heavier border (2 px -> 3 px);
+        // with no border at all the tick is now the ONLY selection cue, which
+        // is why it must stay unconditional in _renderLeftModeRow.
         minHeight: 44, // iOS HIG minimum tappable height
-    },
-    // Lift the selected pill off the sheet so the choice is legible even to
-    // someone who can't distinguish the tint from the fill.
-    pillSelected: {
-        elevation: 3,
-        shadowColor: '#000',
-        shadowOpacity: 0.25,
-        shadowRadius: 3,
-        shadowOffset: { width: 0, height: 1 },
     },
     pillLabel: {
         marginLeft: 8,
@@ -286,7 +323,166 @@ class ShareLocationModal extends Component {
             // acquire latency. We stay in the modal for that whole window and
             // only close once it clears.
             sharing: false,
+            // Crosshair drag offset for the simple-share preview map, in
+            // pixels, relative to the GPS fix. {x:0, y:0} means "the
+            // crosshair is exactly on the fix" — the untouched state.
+            // Positive x means the user dragged the tiles LEFT, i.e. the
+            // crosshair now sits EAST of the fix. Converted back to a real
+            // coordinate by _adjustedOrigin(); see PREVIEW_MAX_PAN_PX for
+            // the clamp.
+            originPan: {x: 0, y: 0},
         };
+        // Pan offset at the instant the current drag began. Kept on the
+        // instance rather than in state because it changes once per
+        // gesture, never per frame, and re-rendering on it would be pure
+        // overhead.
+        this._panAtGestureStart = {x: 0, y: 0};
+        // Built once, in the constructor: PanResponder captures the
+        // callbacks it is created with, so rebuilding it per render would
+        // both churn objects and risk a stale closure mid-gesture.
+        const _isDrag = (g) => Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3;
+        this._originPanResponder = PanResponder.create({
+            // Claim on touch START, in the BUBBLE phase. This looks
+            // heavy-handed next to "only claim once it's clearly a drag",
+            // and the gentler version genuinely does not work here. Why:
+            //
+            // The modal card is wrapped in <TouchableWithoutFeedback> (the
+            // tap-inside-doesn't-dismiss guard), so the card claims the
+            // responder the instant a finger lands anywhere in the modal.
+            // Once that has happened, RN's ResponderEventPlugin computes
+            //     bubbleShouldSetFrom = getLowestCommonAncestor(responder, target)
+            // and, because the card is an ANCESTOR of this map, that LCA is
+            // the card itself — so it sets skipOverBubbleShouldSetFrom and
+            // dispatches the shouldSet negotiation only along root -> card.
+            // This view is BELOW the card, so it is never on that path and
+            // its onMoveShouldSetPanResponder is never called. Not in the
+            // bubble phase, and not in the capture phase either — the whole
+            // traversal stops at the current responder.
+            //
+            // In short: once an ancestor holds the responder, a descendant
+            // can never take it. The only way to win is to not let the
+            // ancestor have it, which means claiming at touch-start.
+            //
+            // Bubble phase (not capture) is what keeps the buttons alive:
+            // the negotiation runs target -> root, so the zoom / reset
+            // TouchableOpacitys — which are DEEPER than this view — are
+            // asked first and win taps on themselves. We are asked next,
+            // before the card. A plain tap on the map claims the responder
+            // and then moves nothing, which is harmless.
+            onStartShouldSetPanResponder: () => true,
+            // Fallback only: reached when nothing claimed on start (e.g. if
+            // the card's Touchable wrapper is ever removed). Harmless to
+            // keep, and it keeps the drag working in that arrangement too.
+            onMoveShouldSetPanResponder: (evt, g) => {
+                const want = _isDrag(g);
+                if (want) mapLog('bubble-phase claim (fallback path)', g.dx.toFixed(0), g.dy.toFixed(0));
+                return want;
+            },
+            // Deliberately NOT claiming in the capture phase. Capture runs
+            // root -> leaf, so claiming there would take the touch before
+            // the zoom / reset buttons nested inside this view ever get
+            // asked, and they would stop responding to taps.
+            onStartShouldSetPanResponderCapture: () => false,
+            onPanResponderGrant: () => {
+                this._panAtGestureStart = {
+                    x: this.state.originPan.x,
+                    y: this.state.originPan.y,
+                };
+                mapLog('GRANTED on touch-start; pan at start =', JSON.stringify(this._panAtGestureStart));
+            },
+            onPanResponderMove: (evt, g) => {
+                // Tiles follow the finger: dragging RIGHT (+dx) should
+                // reveal the area to the WEST, which means the camera
+                // moves west, which is a NEGATIVE pan. Hence the minus.
+                this._setOriginPan(
+                    this._panAtGestureStart.x - g.dx,
+                    this._panAtGestureStart.y - g.dy
+                );
+            },
+            onPanResponderRelease: () => mapLog('released; pan =', JSON.stringify(this.state.originPan)),
+            // Refuse to hand the gesture over once we hold it. Something
+            // else asking mid-drag can only be an ancestor wanting to treat
+            // our drag as its own tap/scroll, which is exactly the failure
+            // we just fixed. A real interruption (incoming call) arrives as
+            // onPanResponderTerminate instead, which this does not block.
+            onPanResponderTerminationRequest: () => false,
+            onPanResponderTerminate: () => mapLog('TERMINATED — another view took the gesture'),
+        });
+    }
+
+    // How to name the peer in body copy. Prefers the contact's display
+    // name and falls back to the URI, because "with Anna" reads as a
+    // person while "with anna@sip2sip.info" reads as an address — and this
+    // line is the one place the user confirms WHO they are about to share
+    // their location with, so it should be the most recognisable form.
+    //
+    // Guarded on a non-empty trimmed string: `displayName` comes from
+    // selectedContact.name, which is routinely '' (or whitespace) for a
+    // contact the user never named. A blank name would otherwise render
+    // "with " and silently drop the peer from the sentence, which is worse
+    // than showing the raw URI.
+    _peerLabel() {
+        const name = (this.props.displayName == null) ? '' : String(this.props.displayName).trim();
+        if (name) return name;
+        const uri = (this.props.uri == null) ? '' : String(this.props.uri).trim();
+        if (uri) return uri;
+        return 'this contact';
+    }
+
+    // Clamp + store a pan offset. Clamping here rather than at read time
+    // means the pan we hand StaticMap and the pan we invert to a
+    // coordinate can never disagree.
+    _setOriginPan(x, y) {
+        const clamp = (v) => Math.max(
+            -PREVIEW_MAX_PAN_PX,
+            Math.min(PREVIEW_MAX_PAN_PX, Number(v) || 0)
+        );
+        const next = {x: clamp(x), y: clamp(y)};
+        const cur = this.state.originPan;
+        if (cur && cur.x === next.x && cur.y === next.y) {
+            mapLog('pan unchanged (at clamp limit?)', JSON.stringify(next));
+            return;
+        }
+        mapLog('pan ->', JSON.stringify(next));
+        this.setState({originPan: next});
+    }
+
+    // The coordinate the crosshair is currently sitting on, or null when
+    // the map has not been dragged (in which case callers should use the
+    // raw GPS fix — no point re-deriving a value we already hold exactly).
+    //
+    // The inversion: StaticMap centres the frame on the GPS fix, then
+    // translates its contents by -pan. So the world point now under the
+    // frame centre is the one that was `pan` pixels away before the
+    // translate, and pixels convert to tile fractions by TILE_SIZE.
+    //
+    // Both arguments default to "whatever the preview is showing right
+    // now", so the confirm handler can call this with no arguments and
+    // get exactly the point the user is looking at. The zoom default
+    // mirrors the render path's (meetPreviewZoom, else the default
+    // zoom), and _adjustMeetPreviewZoom keeps zoom and pan consistent
+    // in a single setState, so the two can't disagree.
+    _adjustedOrigin(userLocArg, zoomArg) {
+        const userLoc = userLocArg || this.props.userLocation;
+        const zoom = (typeof zoomArg === 'number')
+            ? zoomArg
+            : ((typeof this.state.meetPreviewZoom === 'number')
+                ? this.state.meetPreviewZoom
+                : PREVIEW_DEFAULT_ZOOM);
+        const pan = this.state.originPan;
+        if (!pan || (pan.x === 0 && pan.y === 0)) return null;
+        if (!userLoc
+                || typeof userLoc.latitude !== 'number'
+                || typeof userLoc.longitude !== 'number'
+                || typeof zoom !== 'number') {
+            return null;
+        }
+        const centerFrac = latLngToTileFrac(userLoc.latitude, userLoc.longitude, zoom);
+        return tileFracToLatLng(
+            centerFrac.xFrac + pan.x / TILE_SIZE,
+            centerFrac.yFrac + pan.y / TILE_SIZE,
+            zoom
+        );
     }
 
     // Static helper so the constructor and CWRP both pick the same
@@ -437,6 +633,36 @@ class ShareLocationModal extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        // A NEW GPS fix landing while the user has already dragged the
+        // crosshair: StaticMap re-centres on the new fix, so an unchanged
+        // pixel pan would silently drag their correction along with it.
+        // Re-express the pan against the new centre instead, so the
+        // crosshair stays on the ground point the user chose. Today the
+        // preview fetches exactly one fix so this rarely fires — it exists
+        // so that refining the fix (a high-accuracy re-acquire) can be
+        // added without quietly breaking a correction in progress.
+        if (nextProps.show && this.state.show) {
+            const _prev = this.props.userLocation;
+            const _next = nextProps.userLocation;
+            const _pan = this.state.originPan;
+            const _moved = _prev && _next
+                && typeof _prev.latitude === 'number' && typeof _next.latitude === 'number'
+                && (_prev.latitude !== _next.latitude || _prev.longitude !== _next.longitude);
+            if (_moved && _pan && (_pan.x !== 0 || _pan.y !== 0)) {
+                const _zoom = (typeof this.state.meetPreviewZoom === 'number')
+                    ? this.state.meetPreviewZoom
+                    : PREVIEW_DEFAULT_ZOOM;
+                const _target = this._adjustedOrigin(_prev, _zoom);
+                if (_target) {
+                    const _newCenter = latLngToTileFrac(_next.latitude, _next.longitude, _zoom);
+                    const _targetFrac = latLngToTileFrac(_target.latitude, _target.longitude, _zoom);
+                    this._setOriginPan(
+                        (_targetFrac.xFrac - _newCenter.xFrac) * TILE_SIZE,
+                        (_targetFrac.yFrac - _newCenter.yFrac) * TILE_SIZE
+                    );
+                }
+            }
+        }
         // When the modal is re-opened, reset to the default selection
         // for the (possibly updated) caregiver state of the contact.
         if (nextProps.show && !this.state.show) {
@@ -476,6 +702,11 @@ class ShareLocationModal extends Component {
                 // Fresh open → button idle again. Guards against a stale
                 // spinner if a previous attempt left it set.
                 sharing: false,
+                // Fresh open → crosshair back on the GPS fix. A correction
+                // the user made for a previous share was for a position
+                // they were standing in then; carrying it into a new share
+                // would silently misreport where they are now.
+                originPan: {x: 0, y: 0},
             });
         } else {
             this.setState({show: nextProps.show});
@@ -499,7 +730,42 @@ class ShareLocationModal extends Component {
             PREVIEW_MIN_ZOOM,
             Math.min(PREVIEW_MAX_ZOOM, base + delta)
         );
-        if (next === this.state.meetPreviewZoom) return;
+        mapLog('zoom request', (delta > 0 ? '+' : '') + delta,
+            '| state.meetPreviewZoom=' + String(this.state.meetPreviewZoom),
+            'autoFit=' + String(autoFitZoom),
+            '| base=' + base, '-> next=' + next,
+            (next === base
+                ? '(NO-OP: at ' + (delta > 0 ? 'max ' + PREVIEW_MAX_ZOOM : 'min ' + PREVIEW_MIN_ZOOM) + ')'
+                : ''),
+            '| pan=' + JSON.stringify(this.state.originPan));
+        if (next === this.state.meetPreviewZoom) {
+            mapLog('zoom: no state change (already', next + ') — ignoring');
+            return;
+        }
+        // Pan is stored in PIXELS, but a pixel covers half as much ground
+        // each time you zoom in. Rescale by 2^delta so a crosshair the
+        // user has already positioned stays glued to the same spot on the
+        // ground while they zoom in to refine it — which is the whole
+        // point of zooming after a rough drag. Without this, every zoom
+        // tap would fling their correction somewhere else.
+        const _pan = this.state.originPan;
+        if (_pan && (_pan.x !== 0 || _pan.y !== 0)) {
+            const scale = Math.pow(2, next - base);
+            mapLog('zoom: rescaling pan by', scale, 'to hold the crosshair on the same ground point');
+            this.setState({
+                meetPreviewZoom: next,
+                originPan: {
+                    // Clamp as we go: zooming OUT shrinks the offset (always
+                    // fine), zooming IN doubles it and can exceed the pan
+                    // ceiling. Clamping there costs a little accuracy at the
+                    // extreme rather than letting the crosshair run off the
+                    // rendered tiles.
+                    x: Math.max(-PREVIEW_MAX_PAN_PX, Math.min(PREVIEW_MAX_PAN_PX, _pan.x * scale)),
+                    y: Math.max(-PREVIEW_MAX_PAN_PX, Math.min(PREVIEW_MAX_PAN_PX, _pan.y * scale)),
+                },
+            });
+            return;
+        }
         this.setState({meetPreviewZoom: next});
     }
 
@@ -529,7 +795,7 @@ class ShareLocationModal extends Component {
 
     // A contact can already have a live meet AND/OR a live plain share. Those
     // options must be disabled in the picker so the user can't start a second
-    // of the same type. `liveTypes` = {meet, share}. Rules (per Adi's spec):
+    // of the same type. `liveTypes` = {meet, share}. Rules (per spec):
     //   • meet live  → disable "Until we meet".
     //   • share live → disable "Until stopped" + "Until I return" (only
     //                  "Until we meet" and "Once" remain startable).
@@ -756,11 +1022,34 @@ class ShareLocationModal extends Component {
         // try/finally guarantees we always clear the spinner and close.
         this.setState({sharing: true});
         try {
+            // Manually corrected origin, when the user dragged the
+            // preview's crosshair off the GPS fix. null (the common case)
+            // means "use the real fix" and every downstream path behaves
+            // exactly as before.
+            //
+            // This applies to the ORIGIN TICK only. Live kinds keep
+            // reporting real GPS for every subsequent update — a
+            // hand-picked offset is a correction to one bad reading, not a
+            // calibration, and carrying it forward would misreport the
+            // user's position for the whole session. It still matters for
+            // the live kinds though: the origin is what the privacy-radius
+            // geofence is measured from, so a fix that landed across the
+            // river would put the "don't report near home" circle across
+            // the river too.
+            const _manualOrigin = this.props.meetMode
+                ? null
+                : this._adjustedOrigin();
+            if (_manualOrigin) {
+                console.log('[location] modal-confirm: manual origin',
+                    _manualOrigin.latitude.toFixed(6) + ',' + _manualOrigin.longitude.toFixed(6),
+                    'kind=', option.kind);
+            }
             const result = this.props.onConfirm({
                 durationMs: option.durationMs,
                 periodLabel: option.periodLabel,
                 kind: option.kind,
                 excludeOriginRadiusMeters,
+                manualOrigin: _manualOrigin,
             });
             if (result && typeof result.then === 'function') {
                 await result;
@@ -849,23 +1138,14 @@ class ShareLocationModal extends Component {
             || this._liveTypeDisabled(mode);
         const _selected = this._leftMode() === mode;
         const _cfg = MODE_PILLS[mode] || MODE_PILLS.once;
-        // Every pill carries its colour in BOTH themes — an unselected pill is
-        // a tinted wash of its own colour, never plain white/transparent. The
-        // whole point is that a helper can say "press the green one" at any
-        // time, which fails if the unselected pills are colourless until you
-        // touch them. The tint is the same hue at low alpha, so the four rows
-        // stay tellable apart while the fully-saturated fill still marks the
-        // one that's actually selected.
-        //
-        // Alpha differs per theme: a 13% wash reads on white but disappears on
-        // a dark surface, so dark mode gets a stronger 33% wash.
+        // Every row carries its colour in BOTH themes, but there is no fill
+        // and no border — the colour lives in the icon and the label. A
+        // helper can still say "press the green one" at any time; selection
+        // is carried by the check-circle tick alone.
         const _isDark = getModalColors().isDark;
-        const _tint = _cfg.color + (_isDark ? '55' : '22');
-        const _fg = _selected
-            ? '#FFFFFF'
-            // On dark surfaces the mid-tone brand colour is too low-contrast
-            // for text, so unselected labels use the pale variant instead.
-            : (_isDark ? (_cfg.lightColor || _cfg.color) : _cfg.color);
+        // On dark surfaces the mid-tone brand colour is too low-contrast for
+        // text, so labels use the pale variant instead.
+        const _fg = _isDark ? (_cfg.lightColor || _cfg.color) : _cfg.color;
         return (
             <TouchableOpacity
                 key={mode}
@@ -880,27 +1160,23 @@ class ShareLocationModal extends Component {
                 style={[
                     pillStyles.pill,
                     {
-                        backgroundColor: _selected ? _cfg.color : _tint,
-                        borderColor: _selected
-                            ? _cfg.color
-                            : (_isDark ? (_cfg.lightColor || _cfg.color) : _cfg.color),
+                        backgroundColor: 'transparent',
                         opacity: _disabled ? 0.35 : 1,
                     },
-                    _selected ? pillStyles.pillSelected : null,
                 ]}
             >
                 <Icon name={_cfg.icon} size={20} color={_fg} />
                 <Text style={[pillStyles.pillLabel, { color: _fg }]} numberOfLines={1}>
                     {label}
                 </Text>
-                {/* Tick on the selected pill. Since every pill is now coloured,
-                    fill-vs-tint alone is a weaker selection cue than it was
-                    against a white background — the tick makes "this is the one
-                    that will happen" unambiguous without relying on colour. */}
+                {/* Tick on the selected row. With no border and no fill this is
+                    the ONLY thing distinguishing the active mode, so it must
+                    never become conditional on colour or theme — it is what
+                    makes "this is the one that will happen" unambiguous. */}
                 {_selected ? (
                     <>
                         <View style={{ flex: 1 }} />
-                        <Icon name="check-circle" size={18} color="#FFFFFF" />
+                        <Icon name="check-circle" size={18} color={_fg} />
                     </>
                 ) : null}
             </TouchableOpacity>
@@ -1138,7 +1414,7 @@ class ShareLocationModal extends Component {
                                         hugging the map. */}
                                     {!this.props.meetMode ? (
                                         <Text style={[styles.body, { paddingTop: 0, paddingBottom: 10 }]}>
-                                            with {this.props.uri || this.props.displayName || 'this contact'}
+                                            with {this._peerLabel()}
                                         </Text>
                                     ) : null}
 
@@ -1170,6 +1446,25 @@ class ShareLocationModal extends Component {
                                             Dimensions.get('window').width - 42
                                         );
                                         const PREVIEW_H = 180;
+                                        // The placeholder branch has NO pan
+                                        // handlers and no crosshair — if the
+                                        // map appears undraggable, the first
+                                        // thing to rule out is that the GPS
+                                        // fix simply hasn't landed yet and
+                                        // this is what's on screen.
+                                        mapLog('preview branch =', hasUserLoc ? 'MAP (draggable)' : 'PLACEHOLDER (acquiring, not draggable)');
+                                        // Theme-aware map-tile placeholder fill.
+                                        // Hoisted above the branch because BOTH
+                                        // the acquiring placeholder and the
+                                        // resolved map use it — the comment
+                                        // below promises the swap is seamless,
+                                        // which only holds if the two boxes are
+                                        // actually the same colour. The
+                                        // placeholder used to hardcode #e5e5e5,
+                                        // so in Night mode it was a light-grey
+                                        // box that jumped to dark grey the
+                                        // moment the fix landed.
+                                        const _placeholderBg = getModalColors().isDark ? '#2A2D31' : '#e5e5e5';
                                         if (!hasUserLoc) {
                                             // Render the map-area placeholder at the
                                             // SAME width AND height as the resolved
@@ -1194,7 +1489,7 @@ class ShareLocationModal extends Component {
                                                     height: PREVIEW_H,
                                                     borderRadius: 8,
                                                     overflow: 'hidden',
-                                                    backgroundColor: '#e5e5e5',
+                                                    backgroundColor: _placeholderBg,
                                                     alignSelf: 'center',
                                                     alignItems: 'center',
                                                     justifyContent: 'center',
@@ -1204,10 +1499,17 @@ class ShareLocationModal extends Component {
                                                         color="#2196F3"
                                                         animating={true}
                                                     />
+                                                    {/* Coloured against the
+                                                        PLACEHOLDER box, not the
+                                                        modal surface. Using the
+                                                        modal's textPrimary here
+                                                        put near-white text on a
+                                                        light-grey box in Night
+                                                        mode. */}
                                                     <Text style={{
                                                         marginTop: 10,
                                                         fontSize: 12,
-                                                        color: getModalColors().textPrimary,
+                                                        color: getModalColors().isDark ? '#E6E6E6' : '#444444',
                                                         textAlign: 'center',
                                                     }} numberOfLines={1}>
                                                         Acquiring your location…
@@ -1227,21 +1529,65 @@ class ShareLocationModal extends Component {
                                         const canZoomIn = zoom < PREVIEW_MAX_ZOOM;
                                         const canZoomOut = zoom > PREVIEW_MIN_ZOOM;
                                         const _ownerInitials = initialsFromName(this.props.myDisplayName);
-                                        // Theme-aware map-tile placeholder fill (matches the
-                                        // meet-destination preview below): neutral dark grey in
-                                        // dark mode, light grey otherwise.
-                                        const _placeholderBg = getModalColors().isDark ? '#2A2D31' : '#e5e5e5';
+                                        // Crosshair drag state. `_pan` is the
+                                        // pixel offset from the GPS fix;
+                                        // `_adjusted` is the coordinate now
+                                        // under the crosshair (null while the
+                                        // map is untouched, in which case the
+                                        // raw fix stands). `_movedM` drives the
+                                        // readout — a user correcting a bad fix
+                                        // wants to see HOW FAR they moved it,
+                                        // since that is the number that tells
+                                        // them whether they are fixing a fix or
+                                        // inventing a location.
+                                        const _pan = this.state.originPan || {x: 0, y: 0};
+                                        const _panned = _pan.x !== 0 || _pan.y !== 0;
+                                        const _adjusted = this._adjustedOrigin(userLoc, zoom);
+                                        const _shownCoord = _adjusted || userLoc;
+                                        const _movedM = _adjusted
+                                            ? haversineMeters(userLoc, _adjusted)
+                                            : null;
                                         return (
-                                            <View style={{
-                                                marginTop: 4,
-                                                marginBottom: 8,
-                                                width: PREVIEW_W,
-                                                height: PREVIEW_H,
-                                                borderRadius: 8,
-                                                overflow: 'hidden',
-                                                backgroundColor: _placeholderBg,
-                                                alignSelf: 'center',
-                                            }}>
+                                            <View
+                                                {...this._originPanResponder.panHandlers}
+                                                /* Raw touch probes. These are NOT
+                                                   part of responder negotiation —
+                                                   they fire on the view whether or
+                                                   not it won the responder — which
+                                                   is exactly what makes them the
+                                                   decisive diagnostic:
+                                                     • no touchStart at all  -> the
+                                                       touch never reaches this view
+                                                       (something above is eating it,
+                                                       or the branch isn't rendered)
+                                                     • touchStart/Move but no
+                                                       "claim"/"granted" line -> the
+                                                       touch arrives and PanResponder
+                                                       is losing the negotiation.
+                                                   Diagnostic only; they drive no
+                                                   state, so they cannot themselves
+                                                   affect the gesture. */
+                                                onTouchStart={DEBUG_MAP_UI ? ((e) => mapLog(
+                                                    'raw touchStart @',
+                                                    Math.round(e.nativeEvent.locationX) + ',' + Math.round(e.nativeEvent.locationY),
+                                                    'touches=' + (e.nativeEvent.touches ? e.nativeEvent.touches.length : '?')
+                                                )) : undefined}
+                                                onTouchMove={DEBUG_MAP_UI ? ((e) => mapLog(
+                                                    'raw touchMove @',
+                                                    Math.round(e.nativeEvent.locationX) + ',' + Math.round(e.nativeEvent.locationY)
+                                                )) : undefined}
+                                                onTouchEnd={DEBUG_MAP_UI ? (() => mapLog('raw touchEnd')) : undefined}
+                                                style={{
+                                                    marginTop: 4,
+                                                    marginBottom: 8,
+                                                    width: PREVIEW_W,
+                                                    height: PREVIEW_H,
+                                                    borderRadius: 8,
+                                                    overflow: 'hidden',
+                                                    backgroundColor: _placeholderBg,
+                                                    alignSelf: 'center',
+                                                }}
+                                            >
                                                 <StaticMap
                                                     /* No destinationLat/Lng:
                                                        StaticMap centers on
@@ -1254,7 +1600,87 @@ class ShareLocationModal extends Component {
                                                     mapWidth={PREVIEW_W}
                                                     mapHeight={PREVIEW_H}
                                                     zoom={zoom}
+                                                    /* The tiles AND the avatar
+                                                       pin slide together under
+                                                       the fixed crosshair, so
+                                                       the red pin keeps marking
+                                                       where GPS actually put
+                                                       you. Seeing the gap open
+                                                       up between pin and
+                                                       crosshair is what makes
+                                                       the correction legible. */
+                                                    panX={_pan.x}
+                                                    panY={_pan.y}
                                                 />
+
+                                                {/* Fixed crosshair at the frame
+                                                    centre. pointerEvents none so
+                                                    the drag underneath it is
+                                                    never interrupted. Drawn as a
+                                                    ring + centre dot rather than
+                                                    a pin: a pin's tip is
+                                                    ambiguous about which pixel
+                                                    it means, and this has to
+                                                    read as "exactly here". */}
+                                                <View
+                                                    pointerEvents="none"
+                                                    style={{
+                                                        position: 'absolute',
+                                                        left: PREVIEW_W / 2 - 14,
+                                                        top: PREVIEW_H / 2 - 14,
+                                                        width: 28,
+                                                        height: 28,
+                                                        borderRadius: 14,
+                                                        borderWidth: 2,
+                                                        borderColor: '#fff',
+                                                        backgroundColor: 'rgba(21,101,192,0.28)',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        shadowColor: '#000',
+                                                        shadowOpacity: 0.35,
+                                                        shadowRadius: 2,
+                                                        shadowOffset: {width: 0, height: 1},
+                                                        elevation: 4,
+                                                    }}
+                                                >
+                                                    <View style={{
+                                                        width: 6,
+                                                        height: 6,
+                                                        borderRadius: 3,
+                                                        backgroundColor: '#fff',
+                                                    }} />
+                                                </View>
+
+                                                {/* Reset — only once there is
+                                                    something to reset. Getting
+                                                    back to the untouched GPS fix
+                                                    must always be one tap, or
+                                                    the drag becomes a trap. */}
+                                                {_panned ? (
+                                                    <TouchableOpacity
+                                                        onPress={() => this._setOriginPan(0, 0)}
+                                                        hitSlop={{top: 6, bottom: 6, left: 6, right: 6}}
+                                                        accessibilityLabel="Reset pin to my GPS location"
+                                                        style={{
+                                                            position: 'absolute',
+                                                            top: 82,
+                                                            right: 6,
+                                                            width: 32,
+                                                            height: 32,
+                                                            borderRadius: 16,
+                                                            backgroundColor: MAP_CONTROL_BG,
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            shadowColor: '#000',
+                                                            shadowOpacity: 0.2,
+                                                            shadowRadius: 2,
+                                                            shadowOffset: {width: 0, height: 1},
+                                                            elevation: 3,
+                                                        }}
+                                                    >
+                                                        <Icon name="crosshairs-gps" size={20} color={MAP_CONTROL_FG} />
+                                                    </TouchableOpacity>
+                                                ) : null}
 
                                                 <TouchableOpacity
                                                     onPress={() => this._adjustMeetPreviewZoom(+1, _autoFitZoom)}
@@ -1268,7 +1694,7 @@ class ShareLocationModal extends Component {
                                                         width: 32,
                                                         height: 32,
                                                         borderRadius: 16,
-                                                        backgroundColor: 'rgba(255,255,255,0.92)',
+                                                        backgroundColor: MAP_CONTROL_BG,
                                                         alignItems: 'center',
                                                         justifyContent: 'center',
                                                         opacity: canZoomIn ? 1 : 0.4,
@@ -1279,7 +1705,7 @@ class ShareLocationModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="plus" size={20} color={getModalColors().textPrimary} />
+                                                    <Icon name="plus" size={20} color={MAP_CONTROL_FG} />
                                                 </TouchableOpacity>
 
                                                 <TouchableOpacity
@@ -1294,7 +1720,7 @@ class ShareLocationModal extends Component {
                                                         width: 32,
                                                         height: 32,
                                                         borderRadius: 16,
-                                                        backgroundColor: 'rgba(255,255,255,0.92)',
+                                                        backgroundColor: MAP_CONTROL_BG,
                                                         alignItems: 'center',
                                                         justifyContent: 'center',
                                                         opacity: canZoomOut ? 1 : 0.4,
@@ -1305,7 +1731,7 @@ class ShareLocationModal extends Component {
                                                         elevation: 3,
                                                     }}
                                                 >
-                                                    <Icon name="minus" size={20} color={getModalColors().textPrimary} />
+                                                    <Icon name="minus" size={20} color={MAP_CONTROL_FG} />
                                                 </TouchableOpacity>
 
                                                 {/* Coords overlay strip — same
@@ -1332,10 +1758,37 @@ class ShareLocationModal extends Component {
                                                         }}
                                                         numberOfLines={1}
                                                     >
-                                                        {userLoc.latitude.toFixed(5)
+                                                        {_shownCoord.latitude.toFixed(5)
                                                             + ', '
-                                                            + userLoc.longitude.toFixed(5)}
+                                                            + _shownCoord.longitude.toFixed(5)
+                                                            + (_movedM != null
+                                                                ? '  ·  moved '
+                                                                  + (_movedM < 1000
+                                                                      ? Math.round(_movedM) + ' m'
+                                                                      : (_movedM / 1000).toFixed(1) + ' km')
+                                                                : '')}
                                                     </Text>
+                                                    {/* Say plainly that this is
+                                                        no longer a GPS reading.
+                                                        A corrected pin that
+                                                        still looks like a
+                                                        measurement is the one
+                                                        way this feature could
+                                                        mislead the person
+                                                        receiving it. */}
+                                                    {_movedM != null ? (
+                                                        <Text
+                                                            style={{
+                                                                fontSize: 10,
+                                                                color: 'rgba(255,255,255,0.8)',
+                                                                textAlign: 'center',
+                                                                marginTop: 1,
+                                                            }}
+                                                            numberOfLines={1}
+                                                        >
+                                                            Adjusted by hand — drag to refine
+                                                        </Text>
+                                                    ) : null}
                                                 </View>
                                             </View>
                                         );
@@ -1561,7 +2014,7 @@ class ShareLocationModal extends Component {
                                                             width: 32,
                                                             height: 32,
                                                             borderRadius: 16,
-                                                            backgroundColor: 'rgba(255,255,255,0.92)',
+                                                            backgroundColor: MAP_CONTROL_BG,
                                                             alignItems: 'center',
                                                             justifyContent: 'center',
                                                             opacity: canZoomIn ? 1 : 0.4,
@@ -1576,7 +2029,7 @@ class ShareLocationModal extends Component {
                                                             elevation: 3,
                                                         }}
                                                     >
-                                                        <Icon name="plus" size={20} color={getModalColors().textPrimary} />
+                                                        <Icon name="plus" size={20} color={MAP_CONTROL_FG} />
                                                     </TouchableOpacity>
 
                                                     {/* Zoom - button (just below the +).
@@ -1597,7 +2050,7 @@ class ShareLocationModal extends Component {
                                                             width: 32,
                                                             height: 32,
                                                             borderRadius: 16,
-                                                            backgroundColor: 'rgba(255,255,255,0.92)',
+                                                            backgroundColor: MAP_CONTROL_BG,
                                                             alignItems: 'center',
                                                             justifyContent: 'center',
                                                             opacity: canZoomOut ? 1 : 0.4,
@@ -1608,7 +2061,7 @@ class ShareLocationModal extends Component {
                                                             elevation: 3,
                                                         }}
                                                     >
-                                                        <Icon name="minus" size={20} color={getModalColors().textPrimary} />
+                                                        <Icon name="minus" size={20} color={MAP_CONTROL_FG} />
                                                     </TouchableOpacity>
 
                                                     {/* Coordinates overlay strip along the
@@ -1769,7 +2222,7 @@ class ShareLocationModal extends Component {
                                             }}>
                                                 Share your live location with{' '}
                                                 <Text style={{fontWeight: 'bold'}}>
-                                                    {this.props.uri || this.props.displayName || 'this contact'}
+                                                    {this._peerLabel()}
                                                 </Text>
                                                 {' '}until both of you arrive at the destination above.
                                             </Text>
@@ -1901,7 +2354,7 @@ class ShareLocationModal extends Component {
                                         single reassurance instead of a stacked
                                         checklist. The retention clause swaps
                                         between the meetup wipe-on-end promise
-                                        and the 7-day fixed-share policy based
+                                        and the 30-day fixed-share policy based
                                         on which radio option is selected.
                                         Hidden when props.disclaimerSuppressed
                                         is true (the user previously confirmed
@@ -1959,7 +2412,7 @@ class ShareLocationModal extends Component {
                                                     }
                                                     return head
                                                         + 'Sharing can be stopped at any time by clicking on the location icon. '
-                                                        + 'Only the last learned GPS position is stored in the devices for maximum 7 days. '
+                                                        + 'Only the last learned GPS position is stored in the devices for maximum 30 days. '
                                                         + 'The location data can be deleted from both devices.';
                                                 })()}
                                             </Text>
@@ -2093,7 +2546,7 @@ class ShareLocationModal extends Component {
                                             disabled={_confirmDisabled || this.state.sharing}
                                             accessibilityLabel="Share location"
                                         >
-                                            {this.state.sharing ? 'Sharing…' : 'Share'}
+                                            {this.state.sharing ? 'Sharing…' : 'Start'}
                                         </Button>
                                     </View>
                                 </ThemedModalSurface>

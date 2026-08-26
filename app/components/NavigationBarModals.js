@@ -23,6 +23,7 @@ import RefetchMessagesModal from './RefetchMessagesModal';
 import DeleteFileTransfers from './DeleteFileTransfers';
 import AddContactModal from './AddContactModal';
 import EditContactModal from './EditContactModal';
+import DoNotDisturbModal from './DoNotDisturbModal';
 import DeleteAccountModal from './DeleteAccountModal';
 import SwitchAccountModal from './SwitchAccountModal';
 import PreferencesModal from './PreferencesModal';
@@ -34,6 +35,7 @@ import ActiveLocationSharesModal from './ActiveLocationSharesModal';
 import ExportPrivateKeyModal from './ExportPrivateKeyModal';
 import GenerateKeysModal from './GenerateKeysModal';
 import AutoDialerModal from './AutoDialerModal';
+import ConfirmActionModal from './ConfirmActionModal';
 
 export default function NavigationBarModals({ nav, callUrl, showEditModal, conferenceUrl, conferenceRoom }) {
     return (
@@ -119,6 +121,16 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     defaultDomain={nav.props.defaultDomain}
                 />
 
+                <DoNotDisturbModal
+                    show={nav.state.showDndModal}
+                    close={() => nav.hideDndModal()}
+                    uri={nav.props.selectedContact ? nav.props.selectedContact.uri : null}
+                    displayName={nav.props.selectedContact ? nav.props.selectedContact.name : null}
+                    selectedContact={nav.props.selectedContact}
+                    saveContactByUser={nav.props.saveContactByUser}
+                    refreshAddressBook={nav.props.refreshAddressBook}
+                />
+
                 <EditContactModal
                     show={showEditModal}
                     close={nav.hideEditContactModal}
@@ -131,6 +143,7 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     email={nav.props.selectedContact ? nav.props.selectedContact.email : nav.props.email}
                     myself={!nav.props.selectedContact || (nav.props.selectedContact && String(nav.props.selectedContact.uri || '').trim().toLowerCase() === String(nav.props.accountId || '').trim().toLowerCase()) ? true : false}
                     saveContactByUser={nav.props.saveContactByUser}
+                    refreshAddressBook={nav.props.refreshAddressBook}
                     contactHasStoredMessages={nav.props.contactHasStoredMessages}
                     /* Union of every group (tag) already used across the
                        address book, so EditContactModal can offer them as
@@ -665,6 +678,22 @@ export default function NavigationBarModals({ nav, callUrl, showEditModal, confe
                     show={nav.state.showGenerateKeysModal}
                     close={nav.hideGenerateKeysModal}
                     generateKeysFunc={nav.props.generateKeysFunc}
+                />
+
+                {/* Shared yes/no confirmation, driven by nav.state.confirmDialog
+                    ({title, message, actions}). One instance serves every
+                    simple prompt raised from the navbar kebab — currently
+                    "Request location..." — instead of a boolean + a bespoke
+                    modal per action. Same pattern as ContactsListBox / ChatBox
+                    / ConferenceBox. Actions stack vertically, so a long label
+                    can't clip off the right edge the way a native Alert's row
+                    does on Android. */}
+                <ConfirmActionModal
+                    visible={!!nav.state.confirmDialog}
+                    title={nav.state.confirmDialog ? nav.state.confirmDialog.title : ''}
+                    message={nav.state.confirmDialog ? nav.state.confirmDialog.message : ''}
+                    actions={nav.state.confirmDialog ? nav.state.confirmDialog.actions : []}
+                    onDismiss={nav.closeConfirmDialog}
                 />
         </Fragment>
     );

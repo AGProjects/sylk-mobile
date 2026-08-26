@@ -88,7 +88,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 	//      badge slots — now contributes 1).
 	//   2. A stable handle resetUnreadForContact uses to cancel the
 	//      missed-call notification when JS opens that contact in-app, so
-	//      the launcher badge actually decrements on tap (was Adi's
+	//      the launcher badge actually decrements on tap (from the
 	//      "i still have 3 native after clicking the contact" report).
 	public static final int MISSED_CALL_NOTIF_ID = 0x434B;
 	private static final String MISSED_CALL_PREFIX = "missed_call_";
@@ -316,7 +316,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 		// only refresh when the app is foregrounded). Without a contentIntent,
 		// setAutoCancel(true) is a no-op — tapping does nothing and the
 		// notification stays on the shade, which means the launcher icon
-		// badge stays at 1 forever (Adi's "i cannot clear the Android badge"
+		// badge stays at 1 forever (the "i cannot clear the Android badge"
 		// report). With a contentIntent + setAutoCancel(true), tap → open
 		// app → notification auto-cancels → badge clears.
 		Intent tapIntentTarget = new Intent(context, MainActivity.class);
@@ -1283,8 +1283,8 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			if (key.startsWith("unread_chat_")) {
 				Object value = entry.getValue();
 				// Defensive: handle the value coming back as something other
-				// than an Integer. Adi saw a case where getTotalUnread() = 2
-				// while getAllUnread() = {fluke33:2, living233:2} (sum 4) —
+				// than an Integer. A case was observed where getTotalUnread() = 2
+				// while getAllUnread() = {contactA:2, contactB:2} (sum 4) —
 				// meaning one entry was being silently dropped from the sum
 				// because it didn't pass the `instanceof Integer` check.
 				// Accept any Number subtype (Long, Short) and coerce String
@@ -1336,7 +1336,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// Same defensive coercion that getTotalUnreadCountStatic uses —
 			// the previous strict `instanceof Integer && > 0` check was
 			// silently dropping Long / String pref entries, producing the
-			// "native messages total=1 perContact={}" log Adi reported.
+			// reported "native messages total=1 perContact={}" log.
 			// Accept any Number subtype, parse numeric Strings, and log
 			// anything else so we can hunt the writer.
 			int n;
@@ -1778,7 +1778,16 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			String displayName = fromUri;
 
 			if (contact != null) {
-				displayName = contact.getDisplayName();
+				// Only adopt the contact's name if it HAS one. This assignment
+				// used to be unconditional, so a contacts row with an empty name
+				// discarded the pushDisplayName/fromUri fallback computed above and
+				// left displayName empty, which NotificationCompat.MessagingStyle
+				// rejects outright with "User's name must not be empty" -- killing
+				// the FCM service thread and losing the notification entirely.
+				String _cn = contact.getDisplayName();
+				if (_cn != null && !_cn.trim().isEmpty()) {
+					displayName = _cn;
+				}
                 tags = contact.getTags();
 			
 				SylkLogger.d("[call] [fcm] Display name: " + displayName);
@@ -1939,7 +1948,16 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			}
 
 			if (contact != null) {
-				displayName = contact.getDisplayName();
+				// Only adopt the contact's name if it HAS one. This assignment
+				// used to be unconditional, so a contacts row with an empty name
+				// discarded the pushDisplayName/fromUri fallback computed above and
+				// left displayName empty, which NotificationCompat.MessagingStyle
+				// rejects outright with "User's name must not be empty" -- killing
+				// the FCM service thread and losing the notification entirely.
+				String _cn = contact.getDisplayName();
+				if (_cn != null && !_cn.trim().isEmpty()) {
+					displayName = _cn;
+				}
                 tags = contact.getTags();
 
 				//SylkLogger.d("[message] [fcm] Display name: " + displayName);
@@ -2178,9 +2196,9 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 			// to build the icon badge, so passing the global total here would
 			// inflate the badge by O(N²) (each contact's notification carrying
 			// the sum, then the launcher summing those sums). Symptom before
-			// this fix: living233=2 + florig=2 in-app, but launcher showed 6
-			// because florig's notification got setNumber(4) (=total) on top
-			// of living233's existing setNumber(2).
+			// this fix: contactA=2 + contactB=2 in-app, but launcher showed 6
+			// because contactB's notification got setNumber(4) (=total) on top
+			// of contactA's existing setNumber(2).
 			int unreadCount = getUnreadForContact(fromUri);
 			//SylkLogger.d("[message] [fcm] Per-contact unread for " + fromUri + ":" + unreadCount + " (total inbox=" + getTotalUnreadCount() + ")");
 
@@ -2239,17 +2257,44 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
 			);
 			
-			// IMPORTANT: Bubble requires MUTABLE PI
-			PendingIntent bubbleIntent = PendingIntent.getActivity(
-					this,
-					("bubble_" + fromUri).hashCode(),
-					intent,
-					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE
-			);
-			
 			// ----- PERSON -----
+			// key  — a stable identity for this sender across notifications.
+			//        Without it Android has only the display name to go on, so
+			//        a rename (or two contacts sharing a name) splits or merges
+			//        conversations.
+			// uri  — what ties the sender to a real Android contact. A Sylk
+			//        address is user@domain, so it goes in as a mailto: URI and
+			//        Android matches it against the email fields on contact
+			//        cards. That match is what makes the DND People rules apply
+			//        to this sender, and it is the direct counterpart of the
+			//        email-type CXHandle the iOS side now reports.
+			// Resolved once and used TWICE. The shade draws the conversation
+			// avatar from the SHORTCUT's icon, not from the Person's, so setting
+			// it only on the Person left ic_launcher showing and the whole
+			// three-tier lookup invisible. Android's model is that a
+			// conversation shortcut carries the person's image -- it is the same
+			// icon the share sheet shows, where a face is also what belongs.
+			IconCompat avatarIcon = SylkAvatar.load(getApplicationContext(), toUri, fromUri, displayName);
+
+			// Last line of defence: a non-empty name whatever happened above.
+			// Person and MessagingStyle both THROW on empty rather than
+			// degrading, and this runs on the FCM service thread where an
+			// uncaught throw takes the whole delivery down -- no notification,
+			// no badge, nothing. IncomingCallService already carries the same
+			// guard for CallStyle; this keeps any future path from
+			// reintroducing the crash here.
+			if (displayName == null || displayName.trim().isEmpty()) {
+				displayName = (fromUri != null && !fromUri.trim().isEmpty())
+						? fromUri : "Unknown";
+				SylkLogger.w("[message] [fcm] empty display name for " + fromUri
+						+ ", falling back to '" + displayName + "'");
+			}
+
 			Person person = new Person.Builder()
 					.setName(displayName)
+					.setKey(fromUri)
+					.setUri("mailto:" + fromUri)
+					.setIcon(avatarIcon)
 					.build();
 			
 			// ----- SHORTCUT -----
@@ -2270,11 +2315,53 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 				}
 			
 				// Build and push the shortcut
+				// setLongLived + setPerson are what turn this from a plain
+				// launcher shortcut into a CONVERSATION shortcut.
+				//
+				// Android only classifies a notification as a conversation when
+				// MessagingStyle, a matching setShortcutId, and a LONG-LIVED
+				// shortcut all line up. The first two were already here; without
+				// the third the notification stayed a generic one, which meant
+				// it never appeared in the Conversations section and the user
+				// could not mark it Priority -- and "priority conversations" is
+				// exactly the Do Not Disturb exemption that lets one sender
+				// through while the rest stay silent. Everything else needed for
+				// it was already in place and inert.
+				//
+				// setPerson attaches the sender (now carrying a key and a
+				// mailto: uri) so the shortcut, the notification and the contact
+				// all describe the same person.
 				ShortcutInfoCompat shortcut = new ShortcutInfoCompat.Builder(this, shortcutId)
-						.setShortLabel("New message")
-						.setLongLabel("Message from " + fromUri)
+						.setShortLabel(displayName != null && displayName.length() > 0
+								? displayName : "New message")
+						// longLabel is what titles the per-conversation SETTINGS
+						// screen, so "Message from adam@sylk.link" became the
+						// heading of a page that is about a person. Use the name.
+						.setLongLabel(displayName != null && displayName.length() > 0
+								? displayName : fromUri)
 						.setIntent(intent)
-						.setIcon(IconCompat.createWithResource(this, R.drawable.ic_notification))
+						// ic_notification is the MONOCHROME status-bar icon: a
+						// white silhouette on transparent, sized 24dp. Handing it
+						// to a conversation shortcut made Android scale it up into
+						// the avatar circle, where white-on-white read as an
+						// unidentifiable blob. The launcher icon is the right
+						// asset here -- full colour, designed to be seen large,
+						// and this shortcut's other home is the launcher's
+						// long-press menu, where the app icon is what belongs.
+						//
+						// The Person deliberately carries NO icon, so the avatar
+						// in the shade falls back to Android's own person
+						// placeholder rather than showing an app logo where a
+						// face should be. Wiring the real contact photo through
+						// (contacts.photo holds a thumbnailPath from the OS
+						// address book) is the proper fix and a separate job.
+						// The person's avatar, or the app icon only if even the
+						// monogram could not be built.
+						.setIcon(avatarIcon != null
+								? avatarIcon
+								: IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+						.setLongLived(true)
+						.setPerson(person)
 						.build();
 			
 				ShortcutManagerCompat.pushDynamicShortcut(this, shortcut);
@@ -2288,18 +2375,32 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                 .addMessage(notifBody, System.currentTimeMillis(), displayName);
 
 			
-			// ----- BUBBLE METADATA -----
-			NotificationCompat.BubbleMetadata bubbleData = null;
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-				bubbleData = new NotificationCompat.BubbleMetadata.Builder(
-						bubbleIntent,
-						IconCompat.createWithResource(this, R.drawable.ic_notification)
-				)
-						.setDesiredHeight(600)
-						.setAutoExpandBubble(true)
-						.setSuppressNotification(false)
-						.build();
-			}
+			// ----- BUBBLE METADATA: deliberately not set -----
+			//
+			// This notification used to carry BubbleMetadata with
+			// setAutoExpandBubble(true). It never did anything, because Android
+			// only permits a bubble on a notification backed by a LONG-LIVED
+			// conversation shortcut, and the shortcut was not long-lived. Adding
+			// setLongLived(true) for the Do Not Disturb work (priority
+			// conversations) satisfied that prerequisite and switched the
+			// bubbles on as a side effect: a floating circle that auto-expanded
+			// and immediately collapsed again.
+			//
+			// It collapsed because bubbleIntent pointed at MainActivity, and a
+			// bubble runs its target in an EMBEDDED task. That needs
+			// android:allowEmbedded="true" and
+			// android:documentLaunchMode="always" on the activity; in our
+			// manifest only IncomingCallActivity has allowEmbedded, and
+			// MainActivity is a singleTask React Native host that cannot be
+			// embedded as-is. The feature was never finished.
+			//
+			// Bubbles are worth doing properly one day -- a small dedicated chat
+			// activity with the manifest attributes above and
+			// setAutoExpandBubble(false) so it docks quietly instead of taking
+			// over the screen. Until then we do not attach the metadata.
+			// Conversation status (and with it the priority-conversation DND
+			// exemption) comes from MessagingStyle + setShortcutId + the
+			// long-lived shortcut, NOT from bubbles, so nothing we want is lost.
 			
 			// ----- BUILD NOTIFICATION -----
 			// NOTE: deliberately no setNumber here. The launcher icon
@@ -2320,7 +2421,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 									: NotificationCompat.PRIORITY_HIGH)
 							.setStyle(style)
 							.setContentIntent(tapIntent)
-							.setBubbleMetadata(bubbleData)
 							.setShortcutId(shortcutId)
 							.setCategory(NotificationCompat.CATEGORY_MESSAGE)
 							.setVisibility(NotificationCompat.VISIBILITY_PRIVATE);

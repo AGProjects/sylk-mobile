@@ -36,6 +36,89 @@ static const NSUInteger kPeakBinSamples = 1600; // 16000 * 0.1
 // identical and the JS bubble can index either side the same way.
 static const NSUInteger kMaxPeaks = 1000;
 
+/**
+ * Resample an Int16 mono buffer to kOutputSampleRate. Port of
+ * Android's SylkCallRecorder.resampleTo() so both platforms behave
+ * identically; see the comment there for the rationale.
+ *
+ * The remote sink delivers at whatever rate WebRTC negotiated:
+ * 48 kHz for Opus, 16 kHz for G.722, 8 kHz for PCMA/PCMU (G.711 —
+ * i.e. every PSTN call). The writer pump and the AAC encoder are
+ * both fixed at 16 kHz, so anything that isn't 16 kHz has to be
+ * converted here.
+ *
+ *   inRate > outRate  → integer decimate with a box filter
+ *                       (averages `ratio` consecutive samples;
+ *                       crude, but suppresses aliasing well enough
+ *                       for voice and has no filter warm-up, so no
+ *                       leading silence).
+ *   inRate < outRate  → integer expand with linear interpolation.
+ *                       G.711 is band-limited to ~3.4 kHz so there's
+ *                       almost nothing above the source Nyquist to
+ *                       image; linear interp is adequate without
+ *                       pulling in a polyphase FIR.
+ *   equal             → straight copy.
+ *
+ * The upsample branch is the important one: without it the old code
+ * computed step = round(8000/16000) = round(0.5) = 1 and passed the
+ * 8 kHz samples through untouched, so the encoder consumed them as
+ * if they were 16 kHz — remote audio played back at 2× speed and an
+ * octave up ("chipmunk"), while the mic side (converted properly by
+ * AVAudioConverter) stayed correct. It also halved the effective
+ * remote sample throughput, so _drainWriter's MIN(mic, rem) pairing
+ * starved the mic queue and the finished file ran ~half the length
+ * of the call.
+ *
+ * Returns nil when there's nothing to emit.
+ */
+static NSData *SylkResampleMonoToOutputRate(const int16_t *src,
+                                            NSUInteger srcFrames,
+                                            double srcRate) {
+    if (!src || srcFrames == 0 || srcRate <= 0) return nil;
+
+    const NSInteger inRate  = (NSInteger)(srcRate + 0.5);
+    const NSInteger outRate = (NSInteger)kOutputSampleRate;
+    if (inRate <= 0) return nil;
+
+    if (inRate == outRate) {
+        return [NSData dataWithBytes:src length:srcFrames * sizeof(int16_t)];
+    }
+
+    if (inRate > outRate) {
+        NSUInteger ratio = (NSUInteger)(inRate / outRate);
+        if (ratio < 1) ratio = 1;
+        NSUInteger outFrames = srcFrames / ratio;
+        if (outFrames == 0) return nil;
+        NSMutableData *out = [NSMutableData dataWithLength:outFrames * sizeof(int16_t)];
+        int16_t *dst = (int16_t *)out.mutableBytes;
+        for (NSUInteger i = 0; i < outFrames; i++) {
+            int sum = 0;
+            NSUInteger base = i * ratio;
+            for (NSUInteger j = 0; j < ratio; j++) sum += src[base + j];
+            dst[i] = (int16_t)(sum / (int)ratio);
+        }
+        return out;
+    }
+
+    // Upsample. Non-integer ratios (nothing WebRTC actually emits)
+    // fall back to pass-through rather than guessing.
+    NSUInteger ratio = (NSUInteger)(outRate / inRate);
+    if (ratio < 2) {
+        return [NSData dataWithBytes:src length:srcFrames * sizeof(int16_t)];
+    }
+    NSUInteger outFrames = srcFrames * ratio;
+    NSMutableData *out = [NSMutableData dataWithLength:outFrames * sizeof(int16_t)];
+    int16_t *dst = (int16_t *)out.mutableBytes;
+    for (NSUInteger i = 0; i < srcFrames; i++) {
+        int a = src[i];
+        int b = (i + 1 < srcFrames) ? src[i + 1] : a;
+        for (NSUInteger j = 0; j < ratio; j++) {
+            dst[i * ratio + j] = (int16_t)(a + ((b - a) * (int)j) / (int)ratio);
+        }
+    }
+    return out;
+}
+
 @class SylkCallRecorder;
 
 @interface SylkConfMixRemote : NSObject {
@@ -70,23 +153,16 @@ static const NSUInteger kMaxPeaks = 1000;
     }
     const double srcRate = srcFormat.sampleRate;
     if (srcRate <= 0) return;
-    NSUInteger step = (NSUInteger)((srcRate / kOutputSampleRate) + 0.5);
-    if (step < 1) step = 1;
     const int16_t *src = pcmBuffer.int16ChannelData[0];
     if (!src) return;
-    NSUInteger srcFrames = pcmBuffer.frameLength;
-    NSUInteger outFrames = srcFrames / step;
-    if (outFrames == 0) return;
-
-    int16_t scratch[outFrames];
-    for (NSUInteger i = 0; i < outFrames; i++) {
-        int sum = 0;
-        NSUInteger base = i * step;
-        for (NSUInteger j = 0; j < step; j++) sum += src[base + j];
-        scratch[i] = (int16_t)(sum / (int)step);
-    }
+    // Bidirectional resample — decimate wideband codecs, upsample
+    // narrowband ones. Same helper the 1-to-1 path uses.
+    NSData *converted = SylkResampleMonoToOutputRate(src,
+                                                     pcmBuffer.frameLength,
+                                                     srcRate);
+    if (!converted || converted.length == 0) return;
     [lk lock];
-    [o->_rollBuffer appendBytes:scratch length:outFrames * sizeof(int16_t)];
+    [o->_rollBuffer appendData:converted];
     [lk unlock];
 }
 
@@ -159,6 +235,11 @@ static const NSUInteger kMaxPeaks = 1000;
     int _peakAccumRemote;
     NSUInteger _peakSamplesInBin;
 
+    // Last sample rate seen on the remote sink, so we log the
+    // negotiated rate once per change instead of per callback.
+    // Diagnostic only — the resampler reads the rate off every
+    // buffer.
+    double _lastRemoteSrcRate;
 }
 @end
 
@@ -308,6 +389,7 @@ RCT_EXPORT_METHOD(start:(NSInteger)micPcId
         _peakAccumLocal  = 0;
         _peakAccumRemote = 0;
         _peakSamplesInBin = 0;
+        _lastRemoteSrcRate = 0;
 
         // Mic capture via AVAudioEngine. We install a tap on the
         // engine's input node and convert whatever native format the
@@ -587,21 +669,20 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
     AVAudioFormat *srcFormat = pcmBuffer.format;
     if (!srcFormat || pcmBuffer.frameLength == 0) return;
 
-    // Manual decimation. AVAudioConverter at default quality produced
+    // Manual resampling. AVAudioConverter at default quality produced
     // aliasing noise; at AVAudioQualityHigh+Mastering it produced
-    // silence (filter latency too long for short input buffers).
-    // Since webrtc-sdk consistently delivers Int16 mono at 48 kHz on
-    // iOS we can decimate by hand: average each group of `step`
-    // input samples into one output sample. Box-filter is crude but
-    // suppresses the worst aliasing for voice and is sample-perfect
-    // (no filter warm-up so no leading silence).
-    //
-    // Supports any integer downsampling ratio; falls back to nearest
-    // sample if the rates aren't an integer multiple.
+    // silence (filter latency too long for short input buffers), so
+    // SylkResampleMonoToOutputRate() does it by hand — box-filter
+    // decimation above 16 kHz, linear-interp expansion below it.
+    // The rate is per-codec, NOT constant: 48 kHz on Opus but 8 kHz
+    // on PCMA/PCMU, which is what every PSTN call negotiates.
     const double srcRate = srcFormat.sampleRate;
     if (srcRate <= 0) return;
-    NSUInteger step = (NSUInteger)((srcRate / kOutputSampleRate) + 0.5);
-    if (step < 1) step = 1;
+    if (srcRate != _lastRemoteSrcRate) {
+        _lastRemoteSrcRate = srcRate;
+        [SylkLogger log:@"[call] [recorder] remote sink rate=%g Hz → resampling to %g Hz",
+              srcRate, kOutputSampleRate];
+    }
 
     // Read source as Int16 mono. We've verified via the
     // diagnostic log that the source format is Int16 interleaved
@@ -617,22 +698,13 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
     }
     const int16_t *src = pcmBuffer.int16ChannelData[0];
     if (!src) return;
-    NSUInteger srcFrames = pcmBuffer.frameLength;
-    NSUInteger outFrames = srcFrames / step;
-    if (outFrames == 0) return;
-
-    int16_t scratch[outFrames];
-    for (NSUInteger i = 0; i < outFrames; i++) {
-        int sum = 0;
-        NSUInteger base = i * step;
-        for (NSUInteger j = 0; j < step; j++) {
-            sum += src[base + j];
-        }
-        scratch[i] = (int16_t)(sum / (int)step);
-    }
+    NSData *converted = SylkResampleMonoToOutputRate(src,
+                                                     pcmBuffer.frameLength,
+                                                     srcRate);
+    if (!converted || converted.length == 0) return;
 
     [_queueLock lock];
-    [_remRoll appendBytes:scratch length:outFrames * sizeof(int16_t)];
+    [_remRoll appendData:converted];
     [_queueLock unlock];
 }
 
@@ -1177,6 +1249,7 @@ RCT_EXPORT_METHOD(stopConference:(RCTPromiseResolveBlock)resolve
     _peakAccumLocal  = 0;
     _peakAccumRemote = 0;
     _peakSamplesInBin = 0;
+    _lastRemoteSrcRate = 0;
 
     // Mic engine — same fallback chain -start: uses (degenerate
     // formats from RTCAudioSession's voice-chat mode etc.). Lifted

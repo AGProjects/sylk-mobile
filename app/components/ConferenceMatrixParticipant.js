@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
     // plenty of horizontal room. In a portrait 2x2 grid each
     // tile is ~50% screen width, and a 120-px left margin left
     // basically no room for the username text — long local-parts
-    // (android17, fluke33) wrapped to 2-3 lines on the narrow
+    // (two mid-length display names) wrapped to 2-3 lines on the narrow
     // right column. Tighten to 12 so the text starts near the
     // left edge of the gradient strip, and rely on the explicit
     // numberOfLines={1} on the rendered Title to truncate

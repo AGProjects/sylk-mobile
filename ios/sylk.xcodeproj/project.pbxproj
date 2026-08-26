@@ -44,6 +44,7 @@
 		2D02E4BF1E0B4AB3006451C7 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
 		2DCD954D1E0B4F2C00145EB5 /* sylkTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 00E356F21AD99517003FC87E /* sylkTests.m */; };
 		4BA9927F813E20D2757B5463 /* libPods-sylk-tvOSTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 343272235B5BBBF52F8F9507 /* libPods-sylk-tvOSTests.a */; };
+		5D1E5AFE000000000000A001 /* silence.wav in Resources */ = {isa = PBXBuildFile; fileRef = 5D1E5AFE000000000000A002 /* silence.wav */; };
 		642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 642006F924364F8D00F214A5 /* GoogleService-Info.plist */; };
 		64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */; };
 		64893BB52481601600F1ACB1 /* incallmanager_busytone.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */; };
@@ -178,6 +179,7 @@
 		539A17B648320418D6F20DD6 /* libPods-sylk-tvOS.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-sylk-tvOS.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5805B701B7D1E7EE9F42BD9A /* Pods-sylkTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-sylkTests.release.xcconfig"; path = "Target Support Files/Pods-sylkTests/Pods-sylkTests.release.xcconfig"; sourceTree = "<group>"; };
 		5B38C2D580B08521626A73B6 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = sylk/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		5D1E5AFE000000000000A002 /* silence.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = silence.wav; path = ../app/assets/sounds/silence.wav; sourceTree = "<group>"; };
 		5E291E62DA8FAEC7BFF415CC /* Pods-sylk.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-sylk.release.xcconfig"; path = "Target Support Files/Pods-sylk/Pods-sylk.release.xcconfig"; sourceTree = "<group>"; };
 		642006F924364F8D00F214A5 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		64893BB224815ED900F1ACB1 /* incallmanager_ringback.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = incallmanager_ringback.mp3; path = ../app/assets/sounds/incallmanager_ringback.mp3; sourceTree = "<group>"; };
@@ -338,6 +340,7 @@
 				1F31871A26495CFF0096C518 /* message_received.wav */,
 				1F31871B26495CFF0096C518 /* message_sent.wav */,
 				1F31871826495CFF0096C518 /* outbound_ringtone.wav */,
+				5D1E5AFE000000000000A002 /* silence.wav */,
 				1F31871926495CFF0096C518 /* participant_joined.wav */,
 				1F31871C26495CFF0096C518 /* participant_left.wav */,
 				64893BB42481601600F1ACB1 /* incallmanager_busytone.mp3 */,
@@ -679,6 +682,7 @@
 				642006FA24364F8D00F214A5 /* GoogleService-Info.plist in Resources */,
 				1F31872226495CFF0096C518 /* participant_left.wav in Resources */,
 				1F31871E26495CFF0096C518 /* outbound_ringtone.wav in Resources */,
+				5D1E5AFE000000000000A001 /* silence.wav in Resources */,
 				1F31872026495CFF0096C518 /* message_received.wav in Resources */,
 				1F31872126495CFF0096C518 /* message_sent.wav in Resources */,
 				64893BB324815ED900F1ACB1 /* incallmanager_ringback.mp3 in Resources */,
@@ -1180,7 +1184,7 @@
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 466;
+				CURRENT_PROJECT_VERSION = 488;
 				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
@@ -1196,7 +1200,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.3.1;
+				MARKETING_VERSION = 8.4.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -1223,7 +1227,7 @@
 				CODE_SIGN_ENTITLEMENTS = sylk/sylk.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 466;
+				CURRENT_PROJECT_VERSION = 488;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 4DFEFUDLKZ;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1238,7 +1242,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 8.3.1;
+				MARKETING_VERSION = 8.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

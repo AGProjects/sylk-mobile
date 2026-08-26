@@ -9,8 +9,13 @@ import MaterialCommunityIcon from '@react-native-vector-icons/material-design-ic
 // the render tree readable. Three independent, mutually-non-exclusive
 // banners, each self-gated:
 //   • Syncing-contacts pill  — first XCAP contacts import is running.
-//   • Do-Not-Disturb pill    — app DND is on; tap to turn it off.
 //   • Phonebook-access banner — AB source selected but OS permission denied.
+// The Do-Not-Disturb pill used to live here too, at the top of the contacts
+// list. It now renders higher up — directly under the navbar, above the
+// search bar — so a silenced phone says so before the user starts typing
+// rather than after they scroll. Exported separately as <DndBanner /> and
+// mounted by ReadyBox at that position; the styles stay here next to the
+// other banner styles.
 // Purely presentational: ReadyBox passes every gate flag and callback as an
 // explicit prop (same pattern as SessionButtonsBar / AudioRecorder).
 function ContactsListBanners(props) {
@@ -27,10 +32,6 @@ function ContactsListBanners(props) {
 
         // One-time "storage up to date" success banner (first-sync complete).
         storageUpToDate,
-
-        // DND pill.
-        appDnd,
-        onToggleDnd,
 
         // Phonebook-permission banner.
         contactSource,
@@ -77,47 +78,6 @@ function ContactsListBanners(props) {
                         Blink storage is now up to date!
                     </Text>
                 </View>
-            ) : null}
-
-            {/* App-DND status pill. Persistent reminder that the
-                in-app bell is on and incoming calls are being
-                delivered silently. Tapping toggles DND off via
-                the same toggleDnd action the navbar bell uses,
-                so the user can clear it without scrolling up
-                to the header. Scope: contacts-list view only,
-                i.e. no contact currently selected — once the
-                user opens a chat, the chat header / message
-                column take over and the pill would otherwise
-                hover above the conversation, which isn't its
-                job. Also hidden in invite / share / QR /
-                message-search flows where the contacts list
-                is repurposed and the pill would crowd the
-                modal-style UI. */}
-            {appDnd && inPlainContactsList ? (
-                <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={() => {
-                        if (typeof onToggleDnd === 'function') {
-                            onToggleDnd();
-                        }
-                    }}
-                    style={readyBoxDndPillStyles.pill}
-                >
-                    <MaterialCommunityIcon
-                        name="bell-off-outline"
-                        size={18}
-                        color="#7a1d1d"
-                        style={readyBoxDndPillStyles.pillIcon}
-                    />
-                    <View style={readyBoxDndPillStyles.pillTextWrap}>
-                        <Text style={readyBoxDndPillStyles.pillTitle}>
-                            Do Not Disturb is on
-                        </Text>
-                        <Text style={readyBoxDndPillStyles.pillBody}>
-                            Incoming calls arrive silently. Tap to turn off.
-                        </Text>
-                    </View>
-                </TouchableOpacity>
             ) : null}
 
             {/* "Phonebook access is off" banner. Rendered above
@@ -182,8 +142,6 @@ ContactsListBanners.propTypes = {
 
     storageUpToDate: PropTypes.bool,
 
-    appDnd: PropTypes.bool,
-    onToggleDnd: PropTypes.func,
 
     contactSource: PropTypes.string,
     abPermissionDenied: PropTypes.bool,
@@ -312,4 +270,74 @@ const readyBoxPermissionBannerStyles = StyleSheet.create({
     },
 });
 
+// Do-Not-Disturb pill, rendered by ReadyBox directly beneath the navbar and
+// above the search bar. Persistent reminder that the in-app bell is on and
+// incoming calls are being dropped; tapping toggles DND off via the same
+// action the navbar bell uses.
+//
+// Same visibility scope the pill has always had: the plain contacts list
+// only. Once a contact is selected the chat header and message column take
+// over, and in invite / share / QR / message-search flows the list is
+// repurposed and the pill would crowd a modal-style UI.
+function DndBanner(props) {
+    const {
+        appDnd,
+        onToggleDnd,
+        selectedContact,
+        shareToContacts,
+        inviteContacts,
+        searchMessages,
+        showQRCodeScanner,
+    } = props;
+
+    const inPlainContactsList =
+        !selectedContact
+        && !shareToContacts
+        && !inviteContacts
+        && !searchMessages
+        && !showQRCodeScanner;
+
+    if (!appDnd || !inPlainContactsList) {
+        return null;
+    }
+
+    return (
+        <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+                if (typeof onToggleDnd === 'function') {
+                    onToggleDnd();
+                }
+            }}
+            style={readyBoxDndPillStyles.pill}
+        >
+            <MaterialCommunityIcon
+                name="bell-off-outline"
+                size={18}
+                color="#7a1d1d"
+                style={readyBoxDndPillStyles.pillIcon}
+            />
+            <View style={readyBoxDndPillStyles.pillTextWrap}>
+                <Text style={readyBoxDndPillStyles.pillTitle}>
+                    Do Not Disturb is on
+                </Text>
+                <Text style={readyBoxDndPillStyles.pillBody}>
+                    Incoming calls arrive silently. Tap to turn off.
+                </Text>
+            </View>
+        </TouchableOpacity>
+    );
+}
+
+DndBanner.propTypes = {
+    appDnd: PropTypes.bool,
+    onToggleDnd: PropTypes.func,
+    selectedContact: PropTypes.object,
+    shareToContacts: PropTypes.bool,
+    inviteContacts: PropTypes.bool,
+    searchMessages: PropTypes.bool,
+    showQRCodeScanner: PropTypes.bool,
+};
+
+export { DndBanner };
 export default ContactsListBanners;

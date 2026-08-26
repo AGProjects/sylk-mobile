@@ -587,7 +587,7 @@ const EditConferenceModal = ({
       </View>
       {!pickerOpen && (
         <Text style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
-          Pick from your Sylk contacts. These addresses will be invited automatically
+          Pick from your Blink contacts. These addresses will be invited automatically
           when you start the conference.
         </Text>
       )}

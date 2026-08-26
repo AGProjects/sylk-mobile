@@ -392,13 +392,13 @@ class LocalMedia extends Component {
             {
                 key: 'front',
                 icon: 'camera-front',
-                label: 'Front Camera',
+                label: 'Front camera',
                 facing: 'front'
             },
             {
                 key: 'back',
                 icon: 'camera-rear',
-                label: 'Back Camera',
+                label: 'Back camera',
                 facing: 'back'
             }
         ]

@@ -28,6 +28,7 @@ Copyright 2019-2026 [AG Projects](https://ag-projects.com)
 
 * 1-to-1 audio and video calls (Opus, H.264, VP8, VP9)
 * Receive audio and video calls from web browsers
+* Classic telephony support (G.711 codec, dialplans, DTMF tones)
 * Multiparty conferencing for all media
 * Rich messaging (remote deletion, editing, replies, reactions)
 * File sharing to and from other mobile applications

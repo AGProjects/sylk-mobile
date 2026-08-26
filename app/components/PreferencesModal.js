@@ -1902,7 +1902,7 @@ const PreferencesModal = ({
                                     style={{ alignSelf: 'flex-end' }}
                                     labelStyle={{ fontSize: FS_CAPTION, marginVertical: 6, marginHorizontal: 16 }}
                                 >
-                                    Done
+                                    Close
                                 </Button>
                             </View>
                         </ThemedModalSurface>

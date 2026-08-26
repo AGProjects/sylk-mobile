@@ -1,11 +1,11 @@
 import React, { Component } from 'react';
-import ThemedModalSurface from './ThemedModalSurface';
 import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { Platform, View } from 'react-native';
 import { Dialog, Portal, Text, Button, Surface, TextInput } from 'react-native-paper';
 import KeyboardAwareDialog from './KeyBoardAwareDialog';
 import styles from '../assets/styles/blink/_PrivateKeyModal.scss';
+import utils from '../utils';
 
 // Use the keyboard-aware dialog on BOTH platforms. The import flow has a
 // numeric pincode field auto-focused on mount, so the OS keyboard pops
@@ -40,15 +40,27 @@ class ImportPrivateKeyModal extends Component {
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        // `confirm` is LOCAL two-tap state (Generate key → Confirm), not a prop —
+        // app.js has never passed one. Copying `nextProps.confirm` in here wrote
+        // `undefined` over it on EVERY parent re-render, and the parent re-renders
+        // constantly (key checks, contact updates, registration state). So the
+        // first tap set confirm=true, the next incidental re-render silently reset
+        // the button to "Generate key", and the second tap only ever re-armed it:
+        // the user could tap forever and never generate a key. Same for `password`
+        // (also not a prop). Both stay local.
         this.setState({show: nextProps.show,
-                       password: nextProps.password || this.state.password,
                        privateKey: nextProps.privateKey,
                        status: nextProps.status,
-                       confirm: nextProps.confirm,
                        success: nextProps.success,
                        keyStatus: nextProps.keyStatus,
                        keyDifferentOnServer: nextProps.keyDifferentOnServer
                        });
+
+        // A fresh open starts unarmed — a stale confirm from a previous showing
+        // must never turn the first tap of a new dialog into a destructive one.
+        if (nextProps.show && !this.props.show) {
+            this.setState({confirm: false});
+        }
 
         if (nextProps.success) {
             setTimeout(() => {
@@ -62,17 +74,24 @@ class ImportPrivateKeyModal extends Component {
     }
 
     generateKeys(event) {
+        // Log both taps. Whether the user reached the second one is otherwise
+        // invisible in a release log — the whole "I press Generate and nothing
+        // happens" report (the confirm-state clobber) was undiagnosable because
+        // this control was silent.
         if (this.state.confirm) {
+            utils.timestampedLog('[pgp] [modal] Generate key CONFIRMED — generating');
             this.setState({password: ''});
             this.props.close();
             this.props.generateKeysFunc();
         } else {
+            utils.timestampedLog('[pgp] [modal] Generate key armed — waiting for Confirm tap');
             this.setState({confirm: true});
         }
     }
 
     useExistingKeys(event) {
         event.preventDefault();
+        utils.timestampedLog('[pgp] [modal] Use this device key tapped');
         this.setState({password: ''});
         this.props.useExistingKeysFunc();
         this.props.close();
@@ -95,13 +114,28 @@ class ImportPrivateKeyModal extends Component {
     }
 
     render() {
-        const statusStyle = !this.state.status ? styles.statusFail: styles.status;
+        const statusStyle = this.state.success ? styles.status : styles.statusFailed;
+
+        // Which of the three faces is on screen. Logged once per opening so a
+        // report of "the modal is stuck" says WHICH dialog, and therefore which
+        // buttons the user actually had.
+        if (this.state.show) {
+            const _branch = this.state.privateKey ? 'import-pincode'
+                : this.state.keyDifferentOnServer ? 'key-differs-on-server (only "Use this device key")'
+                : 'no-local-key (offers "Generate key")';
+            if (this._loggedBranch !== _branch) {
+                this._loggedBranch = _branch;
+                utils.timestampedLog('[pgp] [modal] showing: ' + _branch);
+            }
+        } else if (this._loggedBranch) {
+            this._loggedBranch = null;
+        }
 
         if (this.state.privateKey) {
             return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                        <ThemedModalSurface style={styles.container}>
+                        <View style={styles.container}>
                             <Dialog.Title style={styles.title}>Import private key</Dialog.Title>
                              <Text style={styles.body}>
                                  {'Enter the pincode shown on the sending device to import your private key:'}
@@ -141,7 +175,7 @@ class ImportPrivateKeyModal extends Component {
                             </Text>
                             }
                             </View>
-                        </ThemedModalSurface>
+                        </View>
                     </DialogType>
                 </Portal>
             );
@@ -150,9 +184,10 @@ class ImportPrivateKeyModal extends Component {
                 return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                            <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
+                        <View style={styles.container}>
+                            <Dialog.Title style={styles.title}>Another Blink device?</Dialog.Title>
                              <Text style={styles.body}>
-                                 You have used Sylk on multiple devices. To decrypt your messages, you need the same private key on all devices.
+                                 You have used Blink on multiple devices. To decrypt your messages, you need the same private key on all devices.
                             </Text>
                              <Text style={styles.body}>
                                  To use the private key from another device, on that device chose the menu option 'Export private key'.
@@ -167,6 +202,7 @@ class ImportPrivateKeyModal extends Component {
                                 >Use this device key
                             </Button>
                             </View>
+                        </View>
                     </DialogType>
                 </Portal>
                 );
@@ -174,7 +210,8 @@ class ImportPrivateKeyModal extends Component {
                 return (
                 <Portal>
                     <DialogType visible={this.state.show} onDismiss={this.props.close}>
-                            <Dialog.Title style={styles.title}>Another Sylk device?</Dialog.Title>
+                        <View style={styles.container}>
+                            <Dialog.Title style={styles.title}>Another Blink device?</Dialog.Title>
                              <Text style={styles.body}>
                                  To decrypt messages, you need the same private key on all devices.
                             </Text>
@@ -185,6 +222,15 @@ class ImportPrivateKeyModal extends Component {
                              <Text style={styles.body}>
                                  In case you lost access to your old devices, you must generate a new key or restore it from a previous backup. If you generate a new key, older message cannot be read anymore.
                             </Text>
+                            {/* The button is a two-tap control: the first tap arms
+                                it, the second generates. Say so — the label
+                                flipping from "Generate key" to "Confirm" with no
+                                explanation reads as "nothing happened". */}
+                            {this.state.confirm ?
+                             <Text style={styles.body}>
+                                 Tap Confirm to generate a new key. Messages encrypted with your old key will stay unreadable.
+                            </Text>
+                            : null}
                             <View style={styles.buttonRow}>
                             <Button
                                 mode="contained"
@@ -195,6 +241,7 @@ class ImportPrivateKeyModal extends Component {
                                 >{this.state.confirm ? 'Confirm' : 'Generate key'}
                             </Button>
                             </View>
+                        </View>
                     </DialogType>
                 </Portal>
             );

@@ -36,6 +36,10 @@
 - (BOOL)shouldDisplayMessageFromPayload:(NSDictionary *)userInfo;
 - (NSString *)readSipBridgeDomainForAccount:(NSString *)account;
 - (void)postInConferenceMissedCallNotificationFrom:(NSString *)fromUri event:(NSString *)event;
+- (void)postSuppressedCallNotificationFrom:(NSString *)fromUri
+                                     event:(NSString *)event
+                                    reason:(NSString *)reason;
+- (NSDictionary<NSString *, NSString *> *)callKitHandleForUri:(NSString *)uri;
 @end
 
 @implementation AppDelegate
@@ -72,6 +76,13 @@
     // guarantees a clean slate; JS re-sets it when a real conference
     // is in progress.
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"inConference"];
+
+    // Same reasoning for the self-call push gate. "currentCall" holds the URI
+    // we are in a call with; it is owned by JS (set in outgoingCall, cleared
+    // on terminate), so a force-kill or crash mid-call leaves it set forever
+    // and every subsequent incoming call from that URI is silently dropped as
+    // a self-fork. Reset at boot; JS re-sets it when a real call is placed.
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"currentCall"];
 
     AVAudioSession *session = [AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
     
@@ -153,6 +164,11 @@
             if (granted) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [application registerForRemoteNotifications];
+                    // Without this line the log cannot distinguish "APNs never
+                    // answered" from "we never actually called register" - both
+                    // are just silence after granted=1.
+                    [SylkLogger log:@"[push] registerForRemoteNotifications called, isRegistered=%d",
+                        application.isRegisteredForRemoteNotifications];
                 });
             }
         }];
@@ -355,7 +371,7 @@
                                 autoAnswerFlag = @([(NSString *)v caseInsensitiveCompare:@"true"] == NSOrderedSame);
                             }
                         } else if (jsonErr) {
-                            [SylkLogger log:@"[app] getContact: bad local_properties for %@ — falling back to tags", uri];
+                            [SylkLogger log:@"[app] getContact: bad local_properties for %@ -- falling back to tags", uri];
                         }
                     }
                 }
@@ -385,6 +401,73 @@
     }
 
     return contact;
+}
+
+/// What CallKit should be told about `uri`, as @{@"handle": ..., @"type": ...}.
+///
+/// Objective-C counterpart of CallManager.callKitHandle() in app.js, which has
+/// done this correctly for OUTGOING calls since the Recents call-back fix. The
+/// incoming path never got it and hardcoded handleType "generic" with a
+/// display name, which iOS cannot resolve to anything.
+///
+/// That matters beyond cosmetics: a Focus's "Allow Calls From" list matches the
+/// caller against the user's contact cards, and a generic handle gives it
+/// nothing to match. With an email-type handle a SIP address resolves against
+/// the email field of a contact card, so per-person call filtering starts
+/// working -- the same route WhatsApp takes. Recents entries resolve to names
+/// and call-back from them works, for the same reason.
+///
+/// Rules mirror the JS helper:
+///   * A phone number goes in as "number" (CXHandleTypePhoneNumber). Only the
+///     unambiguous "00" international prefix is rewritten to "+", which is the
+///     same fallback pstnWireUriToE164 uses when the server rules have not
+///     loaded; a national-format number is passed through untouched rather
+///     than guessed at.
+///   * Anything else goes in as "email" with the full URI.
+///   * Conference rooms are excluded from the number branch explicitly:
+///     generateSillyName mints all-numeric room ids, and a room is never a
+///     telephone number however much it looks like one.
+///   * Anonymous / guest callers stay "generic". There is no contact to match
+///     and the raw "<uuid>@guest.<host>" URI must never reach the UI.
+- (NSDictionary<NSString *, NSString *> *)callKitHandleForUri:(NSString *)uri {
+    if (![uri isKindOfClass:[NSString class]] || uri.length == 0) {
+        return @{ @"handle": @"Unknown", @"type": @"generic" };
+    }
+
+    NSString *lower = [uri lowercaseString];
+
+    if ([lower containsString:@"anonymous"] || [lower containsString:@"@guest."]) {
+        return @{ @"handle": lower, @"type": @"generic" };
+    }
+
+    NSRange at = [lower rangeOfString:@"@"];
+    NSString *local  = (at.location != NSNotFound) ? [lower substringToIndex:at.location] : lower;
+    NSString *domain = (at.location != NSNotFound) ? [lower substringFromIndex:at.location + 1] : @"";
+
+    BOOL isRoom = [domain containsString:@"videoconference."];
+
+    if (!isRoom && [self looksLikePhoneNumber:local]) {
+        NSString *e164 = local;
+        if ([local hasPrefix:@"00"]) {
+            e164 = [@"+" stringByAppendingString:[local substringFromIndex:2]];
+        }
+        return @{ @"handle": e164, @"type": @"number" };
+    }
+
+    return @{ @"handle": lower, @"type": @"email" };
+}
+
+/// Optional leading "+" or "00", then digits only, at least five of them.
+/// Deliberately stricter than "contains digits" so a numeric SIP username on a
+/// normal domain is not mistaken for a phone number.
+- (BOOL)looksLikePhoneNumber:(NSString *)local {
+    if (local.length < 5) { return NO; }
+    NSString *digits = local;
+    if ([digits hasPrefix:@"+"])       { digits = [digits substringFromIndex:1]; }
+    else if ([digits hasPrefix:@"00"]) { digits = [digits substringFromIndex:2]; }
+    if (digits.length < 5) { return NO; }
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    return [digits rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
 }
 
 - (BOOL)isBlocked:(NSArray<NSString *> * _Nullable)contactTags {
@@ -430,7 +513,7 @@
     if (contact.autoAnswer != nil) {
         BOOL localSaysYes = [contact.autoAnswer boolValue];
         if (localSaysYes != tagSaysYes) {
-            [SylkLogger log:@"[app] auto-answer mismatch: local_properties=%@ tag=%@ — honouring local_properties",
+            [SylkLogger log:@"[app] auto-answer mismatch: local_properties=%@ tag=%@ -- honouring local_properties",
                   localSaysYes ? @"YES" : @"NO", tagSaysYes ? @"YES" : @"NO"];
         }
         return localSaysYes;
@@ -529,7 +612,7 @@
                         rejectNonContacts= [privacy[@"rejectNonContacts"] boolValue];
                     }
                 } else if (jsonErr) {
-                    [SylkLogger log:@"[app] settings JSON parse failed: %@ — failing open",
+                    [SylkLogger log:@"[app] settings JSON parse failed: %@ -- failing open",
                           jsonErr.localizedDescription];
                 }
             }
@@ -612,7 +695,7 @@
 
         const char *sql = "SELECT settings FROM accounts WHERE account = ?";
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-            [SylkLogger log:@"[app] isAppDndOn: prepare failed (failing OFF) — %s",
+            [SylkLogger log:@"[app] isAppDndOn: prepare failed (failing OFF) -- %s",
                   sqlite3_errmsg(db) ?: "unknown"];
             return NO;
         }
@@ -635,7 +718,7 @@
             }
         }
     } @catch (NSException *ex) {
-        [SylkLogger log:@"[app] isAppDndOn: read failed (failing OFF) — %@", ex.reason];
+        [SylkLogger log:@"[app] isAppDndOn: read failed (failing OFF) -- %@", ex.reason];
         return NO;
     } @finally {
         if (stmt) sqlite3_finalize(stmt);
@@ -653,15 +736,42 @@
 // Posted with category "missed_call" so iOS surfaces it in the
 // missed-call cluster on the lockscreen.
 - (void)postInConferenceMissedCallNotificationFrom:(NSString *)fromUri event:(NSString *)event {
+  [self postSuppressedCallNotificationFrom:fromUri
+                                     event:event
+                                    reason:@"you were in a conference"];
+}
+
+// Generalised form of the above: same silent missed-call entry, with the
+// WHY spelled out in the body. `reason` is the parenthesised tail —
+// "you were in a conference" for the in-conference drop, "Do Not Disturb"
+// for the system-Focus drop. Mirrors Android's
+// showSuppressedCallNotification(fromUri, event, reasonText), which takes
+// the same three arguments for the same three cases.
+- (void)postSuppressedCallNotificationFrom:(NSString *)fromUri
+                                     event:(NSString *)event
+                                    reason:(NSString *)reason {
   NSString *who = (fromUri.length > 0) ? fromUri : @"Unknown";
+  NSString *why = (reason.length > 0) ? reason : @"suppressed";
   NSString *bodyText = [event isEqualToString:@"incoming_conference_request"]
-        ? [NSString stringWithFormat:@"Conference invite from %@ (you were in a conference)", who]
-        : [NSString stringWithFormat:@"From %@ (you were in a conference)", who];
+        ? [NSString stringWithFormat:@"Conference invite from %@ (%@)", who, why]
+        : [NSString stringWithFormat:@"From %@ (%@)", who, why];
 
   UNMutableNotificationContent *content = [UNMutableNotificationContent new];
   content.title = @"Missed call";
   content.body = bodyText;
   content.categoryIdentifier = @"missed_call";
+  // Carry the same {data: {...}} envelope every other notification in this
+  // app uses. Without it -willPresentNotification found no data dict, logged
+  // "Missing event" and skipped the banner, and a tap routed nowhere because
+  // the tap handler reads data[@"from_uri"]. Inherited from
+  // postInConferenceMissedCallNotificationFrom, which never set userInfo.
+  content.userInfo = @{ @"data": @{
+      @"event": @"missed_call",
+      @"from_uri": who,
+      @"display_name": who,
+      @"reason": why,
+      @"origin": @"native",
+  } };
   // No content.sound — silent on iOS unless the user has the app
   // set to ring; the request was explicitly for a silent push.
 
@@ -755,6 +865,12 @@
        // sent through sendLocalNotification with bypass-throttle in
        // app.js should be exempt here too, otherwise active-chat
        // suppression silently swallows the banner.
+       // Missed-call banner posted by postSuppressedCallNotificationFrom
+       // (DND drop, in-conference drop). Not a message, so it falls through
+       // shouldDisplayMessageFromPayload below and used to be skipped with
+       // "Missing event".
+       BOOL isMissedCall = [event isEqualToString:@"missed_call"];
+
        BOOL isMeetingMilestone = ([event isEqualToString:@"meeting_proximity_near"] ||
                                   [event isEqualToString:@"meeting_proximity_met"] ||
                                   [event isEqualToString:@"meeting_arrived"] ||
@@ -802,6 +918,17 @@
        // (the NSE has already retitled them); the active-chat check above
        // still hides them while that chat is open.
        NSString *_ctype = [data[@"content_type"] isKindOfClass:[NSString class]] ? (NSString *)data[@"content_type"] : @"";
+       if (isMissedCall) {
+           [SylkLogger log:@"[app] presenting missed-call banner from=%@", fromUri];
+           if (@available(iOS 14.0, *)) {
+               completionHandler(UNNotificationPresentationOptionBanner
+                                 | UNNotificationPresentationOptionList);
+           } else {
+               completionHandler(UNNotificationPresentationOptionAlert);
+           }
+           return;
+       }
+
        BOOL _jsPostsForegroundBanner = !([_ctype isEqualToString:@"application/sylk-location-sharing"]
                                           || [_ctype isEqualToString:@"application/sylk-request"]);
        if ([event isEqualToString:@"message"]
@@ -898,11 +1025,20 @@ continueUserActivity:(NSUserActivity *)userActivity
     NSString *hexToken = [self hexStringFromDeviceToken:deviceToken];
     [SylkLogger log:@"[app] Device token: %@", hexToken];
 
-    // Send token to RN via APNSTokenModule
-    // APNSTokenModule *module = [self.bridge moduleForClass:[APNSTokenModule class]];
- 
     self.cachedAPNSToken = hexToken;
-    // Send to JS if bridge is ready
+
+    // Push to JS as well as caching. The cache is only ever read by JS's
+    // one startup pull (APNSTokenModule.emitCachedAPNSToken), and since
+    // the permission prompt moved behind first-login (2026-05-30) this
+    // callback fires long after that pull has run and returned <nil>. On
+    // a cold start the token therefore never reaches JS at all; it only
+    // appears to work in dev because a Metro reload re-runs the pull
+    // against a cache the previous session populated.
+    RCTBridge *bridge = self.bridge;
+    if (bridge != nil) {
+        APNSTokenModule *module = [bridge moduleForClass:[APNSTokenModule class]];
+        [module sendTokenToJS:hexToken];
+    }
 
     // Also register with FIRMessaging
     [FIRMessaging messaging].APNSToken = deviceToken;
@@ -964,7 +1100,7 @@ fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
         // write and only ever no-op via INSERT OR IGNORE.
         UIApplicationState _insertAppState = [UIApplication sharedApplication].applicationState;
         if (_insertAppState == UIApplicationStateActive) {
-            [SylkLogger log:@"[message] [apns] App is foreground — skipping native SQL insert; WS will deliver"];
+            [SylkLogger log:@"[message] [apns] App is foreground -- skipping native SQL insert; WS will deliver"];
         } else {
             NSString *(^coerceStr)(id) = ^NSString *(id obj) {
                 if ([obj isKindOfClass:[NSString class]]) return obj;
@@ -1176,7 +1312,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     // before completion() is called, even if we want to reject the call. Skipping this
     // triggers PKPushRegistry _terminateAppIfThereAreUnhandledVoIPPushes (SIGABRT).
     if (!([event isEqualToString:@"incoming_session"] || [event isEqualToString:@"incoming_conference_request"])) {
-        [SylkLogger log:@"[app] Unsupported VoIP event '%@' — reporting+ending call to satisfy PushKit", event];
+        [SylkLogger log:@"[app] Unsupported VoIP event '%@' -- reporting+ending call to satisfy PushKit", event];
         [RNVoipPushNotificationManager didReceiveIncomingPushWithPayload:payload forType:(NSString *)type];
         [self reportAndImmediatelyEndCallForPayload:payload
                                            calluuid:calluuid
@@ -1190,7 +1326,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     BOOL allow = [self shouldDisplayMessageFromPayload:userInfo];
 
     if (!allow) {
-        [SylkLogger log:@"[app] Notification suppressed — reporting+ending call to satisfy PushKit"];
+        [SylkLogger log:@"[app] Notification suppressed -- reporting+ending call to satisfy PushKit"];
         [self reportAndImmediatelyEndCallForPayload:payload
                                            calluuid:calluuid
                                             fromUri:fromUri
@@ -1259,37 +1395,62 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         [SylkLogger log:@"[app] Cannot auto-answer if the app is not active"];
     }
 
-    // App DND (privacy.dnd, the bell on the navbar) — soft gate:
-    // let the push through but tell the JS side to skip the ringtone.
-    // The CallKit hand-off still happens, so the call is visible and
-    // answerable; only the in-app ring (the JS-side incoming-call UI
-    // sound) is suppressed. Contacts tagged bypassdnd override and
-    // ring normally. Mirrors the Android IncomingCallService
-    // suppress_ringtone gate.
-    //
-    // NB: iOS's CallKit plays the system ringtone for VoIP pushes
-    // and that is not silenceable per-call by a third-party app
-    // (CXProviderConfiguration.ringtoneSound is provider-wide). So
-    // "silent push" on iOS means the JS-side ringer is muted and
-    // the system ringer rings only at whatever level the user has
-    // configured at the OS Focus/Silent layer.
     BOOL appDnd = [self isAppDndOn:lookupAccount];
     BOOL bypass = [self canBypassDnd:tags];
-    BOOL suppressRingtone = appDnd && !bypass;
+
+    // App DND gate — HARD drop, matching Android.
+    //
+    // This used to compute a `suppressRingtone` flag, log "delivering
+    // silent push", stash the flag in NSUserDefaults under
+    // suppress_ringtone:<uuid> … and then report the call to CallKit
+    // anyway. Nothing ever read that key, so Blink's own DND has never
+    // silenced a single call on iOS — the 2026-08-19 capture shows
+    // "[app] App DND on, delivering silent push for alice@sylk.link"
+    // immediately followed by a normal ring.
+    //
+    // The system-Focus route was tried first and abandoned:
+    // INFocusStatusCenter reports whether THIS APP's notifications are
+    // being silenced, not whether the device is in a Focus, so with Blink
+    // allow-listed under Settings -> Focus -> Apps it always answered
+    // "off". iOS exposes no API for the device's actual DND state. Blink's
+    // own DND is therefore the only signal we can trust — and it is the
+    // better one anyway: it is per-account, it syncs, and it already means
+    // exactly this on Android (MyFirebaseMessagingService, the
+    // `appDnd && !bypass` branch).
+    //
+    // reportAndImmediatelyEndCallForPayload satisfies PushKit's
+    // "every push must reportNewIncomingCall" contract with a CXProvider
+    // *report* (not a CXEndCallAction), so it tears down CallKit locally
+    // WITHOUT sending anything to the server. The session stays alive and
+    // the call keeps ringing on the user's other devices.
+    if (appDnd && !bypass) {
+        [SylkLogger log:@"[app] [drop] app DND on, dropping %@ from %@ (no bypassdnd tag)",
+              event, fromUri];
+        // No notification. This path used to call
+        // postSuppressedCallNotificationFrom (the counterpart of Android's
+        // showSuppressedCallNotification) to post "Missed call ... (Do Not
+        // Disturb)", but a banner is exactly what DND is supposed to prevent
+        // -- the point of the bell is silence, not a different bubble.
+        //
+        // Nothing is lost: the sylkrtc session stays live (see
+        // reportAndImmediatelyEndCallForPayload -- it is a CXProvider report,
+        // not a server-side decline), so the call terminates normally and the
+        // regular 'terminated' handler in app.js does the missed-call
+        // bookkeeping -- addHistoryEntry, the contact unread/missed badge,
+        // the chat breadcrumb. The user finds it in the app, quietly.
+        //
+        // The in-conference drop still posts one via
+        // postInConferenceMissedCallNotificationFrom; that case is not DND
+        // and a banner there is genuinely useful.
+        [self reportAndImmediatelyEndCallForPayload:payload
+                                           calluuid:calluuid
+                                            fromUri:fromUri
+                                         completion:completion];
+        return;
+    }
 
     if (appDnd && bypass) {
-        [SylkLogger log:@"[app] DND bypass for %@ (appDnd=YES)", fromUri];
-    }
-    if (suppressRingtone) {
-        [SylkLogger log:@"[app] App DND on, delivering silent push for %@", fromUri];
-    }
-
-    // Stash the suppress_ringtone hint under the call UUID so the JS
-    // side can pick it up when it wires up the incoming-call UI.
-    if (calluuid.length > 0) {
-        NSString *key = [NSString stringWithFormat:@"suppress_ringtone:%@",
-                         [calluuid lowercaseString]];
-        [[NSUserDefaults standardUserDefaults] setBool:suppressRingtone forKey:key];
+        [SylkLogger log:@"[app] DND bypass for %@ (app DND on)", fromUri];
     }
 
     // --- pass payload to RN side ---
@@ -1301,9 +1462,18 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
     [SylkLogger log:@"[app] REPORTING CALL WITH NAME: %@", callerName];
 
     @try {
+        // Handle vs display name are different jobs: localizedCallerName is
+        // what the user reads, handle is what iOS matches against Contacts
+        // (Focus "Allow Calls From", Recents, call-back). This used to pass
+        // the display name as a "generic" handle, so neither could work.
+        NSDictionary<NSString *, NSString *> *ckHandle =
+            [self callKitHandleForUri:fromUri];
+        [SylkLogger log:@"[app] CallKit handle for %@: %@ (type=%@)",
+              fromUri, ckHandle[@"handle"], ckHandle[@"type"]];
+
         [RNCallKeep reportNewIncomingCall: calluuid
-                                   handle: callerName
-                               handleType: @"generic"
+                                   handle: ckHandle[@"handle"]
+                               handleType: ckHandle[@"type"]
                                  hasVideo: [mediaType isEqualToString:@"video"]
                       localizedCallerName: callerName
                           supportsHolding: NO
@@ -1347,6 +1517,44 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 
     [SylkLogger log:@"[app] Reporting+ending suppressed VoIP call uuid=%@ handle=%@", uuid, handle];
 
+    // Silence the provider for the duration of this forced report.
+    //
+    // PushKit gives us no choice about reporting: every VoIP push must
+    // produce a reportNewIncomingCall before its completion handler runs or
+    // iOS terminates the app. CallKit then presents the call and plays the
+    // ringtone named by CXProviderConfiguration.ringtoneSound. There is no
+    // per-call ring control anywhere in the API -- CXCallUpdate, the object
+    // that describes THIS call, carries localizedCallerName, remoteHandle,
+    // hasVideo and four supports* flags, and nothing about sound. So the only
+    // dial available is the provider-wide one, turned as briefly as possible:
+    // silent before the report, restored once the end has landed.
+    //
+    // Consequence worth knowing: for the ~200ms this is in effect the
+    // provider is silent for ALL calls, so a genuine call arriving in that
+    // sliver would present without a ringtone. There is no narrower scope to
+    // apply it to. The durable fix is upstream -- don't send a VoIP push to a
+    // device that already has a live websocket -- which removes the forced
+    // report altogether.
+    __block NSString *savedRingtone = nil;
+    __block BOOL ringtoneSwapped = NO;
+    @try {
+        savedRingtone = [RNCallKeep providerRingtoneSound];
+        [RNCallKeep setProviderRingtoneSound:@"silence.wav"];
+        ringtoneSwapped = YES;
+    } @catch (NSException *ex) {
+        [SylkLogger log:@"[app] could not silence provider ringtone: %@", ex.reason];
+    }
+
+    void (^restoreRingtone)(void) = ^{
+        if (!ringtoneSwapped) { return; }
+        ringtoneSwapped = NO;
+        @try {
+            [RNCallKeep setProviderRingtoneSound:savedRingtone];
+        } @catch (NSException *ex) {
+            [SylkLogger log:@"[app] could not restore provider ringtone: %@", ex.reason];
+        }
+    };
+
     @try {
         // Queue the end BEFORE reportNewIncomingCall's completion
         // fires. Previously endCallWithUUID lived inside the
@@ -1367,9 +1575,15 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
         // Missed-call entry is still surfaced via our own
         // postInConferenceMissedCallNotificationFrom local
         // notification on the suppression paths that need it.
+        // Same resolvable handle as the ringing path, so the missed-call
+        // entry this leaves in Recents resolves to a contact name and can be
+        // called back, instead of showing a bare URI that goes nowhere.
+        NSDictionary<NSString *, NSString *> *ckHandle =
+            [self callKitHandleForUri:handle];
+
         [RNCallKeep reportNewIncomingCall:uuid
-                                   handle:handle
-                               handleType:@"generic"
+                                   handle:ckHandle[@"handle"]
+                               handleType:ckHandle[@"type"]
                                  hasVideo:NO
                       localizedCallerName:handle
                           supportsHolding:NO
@@ -1379,10 +1593,35 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
                               fromPushKit:YES
                                   payload:payload.dictionaryPayload
                     withCompletionHandler:^{
+            // Re-issue the end HERE, once CallKit has actually registered
+            // the call.
+            //
+            // reportNewIncomingCall wraps
+            // -reportNewIncomingCallWithUUID:update:completion:, which is
+            // ASYNCHRONOUS. The endCallWithUUID below therefore runs before
+            // the provider knows this UUID exists, and endCallWithUUID is
+            // -reportCallWithUUID:endedAtDate:reason: — a silent no-op for
+            // an unknown call. So on iOS versions that don't coalesce, the
+            // suppressed call was reported, never ended, and rang in full
+            // until the caller gave up (2026-08-19, iPhone 15 / iOS 26.5:
+            // "[app] Reporting+ending suppressed VoIP call" followed by a
+            // complete ringtone).
+            //
+            // Ending twice is harmless — the second is the no-op. Ending
+            // zero times is a full ring.
+            [RNCallKeep endCallWithUUID:uuid reason:4];
+            // Put the user's ringtone back the instant the end has landed.
+            restoreRingtone();
             if (completion) completion();
         }];
+        // Fast path, kept for the versions where it works: issued on the
+        // same run-loop turn as the report so CXProvider can coalesce the
+        // two transactions and present no UI at all. The completion-block
+        // end above is the guarantee that it ends either way.
         [RNCallKeep endCallWithUUID:uuid reason:4];
     } @catch (NSException *ex) {
+        // Never leave the provider muted because the report threw.
+        restoreRingtone();
         [SylkLogger log:@"[app] Exception in reportAndImmediatelyEnd: %@ - %@", ex.name, ex.reason];
         // Still call completion so we don't dangle, but at this point PushKit
         // will likely terminate us — this catch is just to surface the error.
@@ -1657,6 +1896,45 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 		if (isIncomingSession) {
 			lookupAccount = toUri;
 
+			// Self-call fork-back gate.
+			//
+			// When the user dials their own AoR (to ring their desktop), the
+			// SIP proxy forks the INVITE to every contact registered for that
+			// AoR -- this phone included. The push that comes back is our OWN
+			// outgoing call, carrying the same Call-ID, and iOS offers no way
+			// to decline delivery.
+			//
+			// Matching on call-id is not an option: SylkServer only reveals the
+			// SIP Call-ID of an outgoing leg at 183 progress / accepted /
+			// terminated (webrtcgateway/handler.py,
+			// _EH_janus_sip_event_progress: "the 183 progress is the earliest
+			// event that carries the SIP Call-ID for an outgoing call"), all of
+			// which land well AFTER this push. What we do know at push time is
+			// who we are calling: JS wrote it into "currentCall" during
+			// sylkrtc's synchronous 'outgoingCall' emit, before SylkServer had
+			// even sent the INVITE, so the flag is always in place before the
+			// fork can return.
+			//
+			// Returning NO routes the caller through
+			// reportAndImmediatelyEndCallForPayload, which satisfies PushKit's
+			// "every push must reportNewIncomingCall" contract with a
+			// CXProvider *report* (ended with reason 4 = answeredElsewhere, so
+			// no Missed entry) and sends nothing to the server -- the session
+			// stays alive and the call keeps ringing on the desktop, which is
+			// the entire point of the fork.
+			//
+			// Mirrors MyFirebaseMessagingService.java's "already in call with
+			// <uri>" drop. JS only sets the flag for a call to our own account,
+			// so a genuine second call from a third party is never suppressed.
+			NSString *activeCall = [[NSUserDefaults standardUserDefaults]
+			                        stringForKey:@"currentCall"];
+			if (activeCall.length > 0
+			    && [activeCall caseInsensitiveCompare:fromUri] == NSOrderedSame) {
+				[SylkLogger log:@"[app] [drop] already in a call with %@ -- fork of our own outgoing call (callId=%@)",
+				 activeCall, callId];
+				return NO;
+			}
+
 			// Drop the SIP-focus dial-in twin of a conferenceInvite.
 			// When a sylk user invites someone to a conference, the
 			// server sends BOTH:
@@ -1700,7 +1978,7 @@ didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
 							 host, sipBridgeDomain, callId];
 							return NO;
 						} else {
-							[SylkLogger log:@"[app] Keeping incoming_session push despite sipBridge match (app is background — push needed to wake app, callId=%@)",
+							[SylkLogger log:@"[app] Keeping incoming_session push despite sipBridge match (app is background -- push needed to wake app, callId=%@)",
 							 callId];
 						}
 					}

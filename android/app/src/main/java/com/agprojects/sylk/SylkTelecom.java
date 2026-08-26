@@ -34,7 +34,9 @@ public final class SylkTelecom {
 
     private static final String LOG_TAG = "SYLK_APP";
     private static final String PHONE_ACCOUNT_ID = "sylk-incoming-self-managed";
-    private static final String PHONE_ACCOUNT_LABEL = "Sylk";
+    // Shown in Settings -> Apps -> Default apps -> Calling accounts.
+    // Independent of app.json `name`, which is only the AppRegistry key.
+    private static final String PHONE_ACCOUNT_LABEL = "Blink";
 
 
     /** Extra: caller URI we received in the FCM payload. */
@@ -71,6 +73,7 @@ public final class SylkTelecom {
         if (phoneAccountRegistered) {
             return;
         }
+        unregisterStalePhoneAccounts(context);
         try {
             TelecomManager tm = (TelecomManager) context.getApplicationContext()
                     .getSystemService(Context.TELECOM_SERVICE);
@@ -79,12 +82,80 @@ public final class SylkTelecom {
                 return;
             }
             PhoneAccountHandle handle = phoneAccountHandle(context);
-            PhoneAccount account = PhoneAccount.builder(handle, PHONE_ACCOUNT_LABEL)
+            PhoneAccount.Builder accountBuilder = PhoneAccount.builder(handle, PHONE_ACCOUNT_LABEL)
                     .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED
                             | PhoneAccount.CAPABILITY_VIDEO_CALLING
                             | PhoneAccount.CAPABILITY_SUPPORTS_VIDEO_CALLING)
-                    .setShortDescription("Sylk incoming calls")
-                    .build();
+                    .setShortDescription("Blink incoming calls")
+                    // Which URI schemes this account handles. Left unset, a
+                    // PhoneAccount reports an EMPTY supported-scheme list --
+                    // malformed for anything asking "can this account handle
+                    // this address?". addressFor() below hands Telecom tel: for
+                    // phone numbers and sip: for everything else, so declare
+                    // both.
+                    .setSupportedUriSchemes(java.util.Arrays.asList(
+                            PhoneAccount.SCHEME_TEL, PhoneAccount.SCHEME_SIP));
+
+            // NOT opted into the SYSTEM call log, deliberately.
+            //
+            // Setting PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS here makes
+            // Telecom write our calls into content://call_log/calls -- the
+            // Android counterpart of iOS CallKit's includesCallsInRecents.
+            // We shipped that for a while and then removed it, because the
+            // resulting entries are unusable:
+            //
+            //   - The address is mangled. The call log has ONE address column
+            //     (CallLog.Calls.NUMBER) and no scheme column;
+            //     CallLogManager.getLogNumber() stores
+            //     handle.getSchemeSpecificPart(), so "sip:" is stripped and a
+            //     SIP address lands as a bare user@domain. Dialers then render
+            //     only the user-part, so a call from enry01@sip2sip.info shows
+            //     up as "enry01" -- indistinguishable from a mis-parsed number.
+            //
+            //   - The display name never arrives. CACHED_NAME is filled from
+            //     Telecom's own contacts lookup (call.getCallerInfo()), NOT
+            //     from Connection.setCallerDisplayName(), so every caller who
+            //     is not already in the address book logs as name=NULL. We
+            //     cannot write it ourselves: that needs WRITE_CALL_LOG, which
+            //     is Play-restricted to the default Phone/SMS/Assistant
+            //     handlers.
+            //
+            //   - Nothing is redialable, and the failure is not silent.
+            //     Telecom excludes SELF_MANAGED accounts when it picks a call
+            //     provider, so tapping a Recents row falls through to the SIM:
+            //     a SIP address like 4444@sylk.link does nothing at all, and a
+            //     phone number is placed as a REAL carrier call -- bypassing
+            //     our gateway and billing the user's carrier. Verified on a
+            //     motorola razr 60 ultra / Android 16 by reading
+            //     content://call_log/calls, which showed the fallback
+            //     attributed to TelephonyConnectionService.
+            //
+            // Filtering per call is not a way out. The opt-in is per
+            // PhoneAccount, and the one per-call escape hatch --
+            // TelecomManager.EXTRA_DO_NOT_LOG_CALL, checked in
+            // CallLogManager.shouldLogDisconnectedCall -- is @hide and gated
+            // behind the telecomSkipLogBasedOnExtra aconfig flag, so it
+            // no-ops on most builds. Splitting into two PhoneAccounts (one
+            // logging, one not) would work but puts a second entry under
+            // Settings -> Calling accounts, which unregisterStalePhoneAccounts
+            // below exists to avoid.
+            //
+            // Sylk's in-app history is the record instead. The matching
+            // removal for the OUTGOING side lives in
+            // patches/react-native-callkeep+4.3.16.patch; both have to stay
+            // off or one direction leaks back into Recents.
+            //
+            // iOS is unaffected: CallKit Recents entries DO route redial back
+            // into the app, so ios.includesCallsInRecents stays true in
+            // app/CallManager.js.
+            //
+            // The only Android architecture that routes redial back into the
+            // app is a MANAGED account (CAPABILITY_CALL_PROVIDER, what Zoom
+            // registers), and that hands the in-call UI to Telecom and
+            // requires the user to enable the account by hand. Deliberately
+            // not taken.
+
+            PhoneAccount account = accountBuilder.build();
             tm.registerPhoneAccount(account);
             phoneAccountRegistered = true;
             // Read it back so we can confirm Telecom actually accepted us.
@@ -241,6 +312,49 @@ public final class SylkTelecom {
     }
 
     @TargetApi(Build.VERSION_CODES.O)
+    /**
+     * Drop PhoneAccounts left behind by earlier builds.
+     *
+     * react-native-callkeep does NOT use a fixed id for its account: it calls
+     * getApplicationName() and passes the result as the PhoneAccountHandle id
+     * (RNCallKeepModule#initializeTelecomManager). That resolves to
+     * res/values/strings.xml app_name -- so renaming the app renames the
+     * account's identity, and Telecom keeps the old registration alive
+     * forever: the user sees TWO Blink entries under Settings -> Apps ->
+     * Default apps -> Calling accounts, one of them dead.
+     *
+     * Unregistering an account we own needs no permission. Unknown handles are
+     * ignored by Telecom, so this stays a cheap no-op once users have rolled
+     * past the rename.
+     */
+    private static void unregisterStalePhoneAccounts(Context context) {
+        final String[] retiredIds = { "Blink WebRTC", "Sylk" };
+        try {
+            TelecomManager tm = (TelecomManager) context.getApplicationContext()
+                    .getSystemService(Context.TELECOM_SERVICE);
+            if (tm == null) {
+                return;
+            }
+            ComponentName callkeep = new ComponentName(
+                    context.getApplicationContext().getPackageName(),
+                    "io.wazo.callkeep.VoiceConnectionService");
+            String current = context.getApplicationContext().getString(R.string.app_name);
+            for (String id : retiredIds) {
+                if (id.equals(current)) {
+                    continue;
+                }
+                try {
+                    tm.unregisterPhoneAccount(new PhoneAccountHandle(callkeep, id));
+                    SylkLogger.i("[call] [telecom] retired stale PhoneAccount id=" + id);
+                } catch (Exception ignored) {
+                    // Never registered on this device, or already gone.
+                }
+            }
+        } catch (Exception e) {
+            SylkLogger.w("[call] [telecom] stale PhoneAccount cleanup failed: " + e);
+        }
+    }
+
     static PhoneAccountHandle phoneAccountHandle(Context context) {
         ComponentName cn = new ComponentName(context.getApplicationContext(),
                 SylkCallConnectionService.class);
@@ -317,11 +431,52 @@ public final class SylkTelecom {
         if (isAnonymous || userPart == null || userPart.isEmpty() || "unknown".equals(userPart)) {
             // No usable identity at all — keep a sip: scheme so Telecom
             // doesn't think it's a real PSTN call from "unknown".
-            return Uri.fromParts("sip", "unknown", null);
+            return Uri.parse("sip:unknown");
         }
-        // tel:<userPart>. HFP 1.6+ kits read setCallerDisplayName for the
-        // CLIP NAME field and show the real name; older kits show the
-        // user-part here as the "number".
-        return Uri.fromParts(PhoneAccount.SCHEME_TEL, userPart, null);
+
+        // A phone number keeps tel: — the one form the platform call log and
+        // the dialer can actually act on.
+        if (isPhoneNumberLike(userPart)) {
+            return Uri.parse(PhoneAccount.SCHEME_TEL + ":" + userPart);
+        }
+
+        // Everything else is a SIP user and MUST go out as sip:user@domain.
+        //
+        // This used to be tel:<userPart>, picked so that older BT-HFP kits had
+        // something to render in their "number" field. It was wrong: anything
+        // that treats a tel: URI as dialable strips every non-dialable
+        // character, so "enry01" degrades to "01" (same failure mode as
+        // Uri.fromParts percent-encoding '+' into "%2B" and it reducing to a
+        // stray "2"). That bit us hardest while the system call log was
+        // enabled; the log opt-in is gone now (see register() above), but the
+        // address is still what Telecom hands to BT-HFP and Android Auto, so
+        // it has to be the truthful one. HFP 1.6+ kits read the CLIP NAME from
+        // setCallerDisplayName, which we always set, so nothing readable is
+        // lost by keeping the sip: form.
+        //
+        // Uri.parse, NOT Uri.fromParts: fromParts would encode the '@' to
+        // '%40' and the log would show "enry01%40example.com".
+        String sip = fromUri == null ? "" : fromUri.trim();
+        String lower = sip.toLowerCase();
+        if (lower.startsWith("sips:")) {
+            sip = sip.substring(5);
+        } else if (lower.startsWith("sip:")) {
+            sip = sip.substring(4);
+        }
+        if (sip.isEmpty() || sip.indexOf('@') < 0) {
+            // No domain to work with — a bare user is still better under sip:
+            // than under tel:, where the log would eat the letters.
+            sip = userPart;
+        }
+        return Uri.parse(PhoneAccount.SCHEME_SIP + ":" + sip);
+    }
+
+    /**
+     * '+' or '0' followed by digits — the same shape utils.isPhoneNumber
+     * accepts on the JS side, kept deliberately narrow so a SIP user whose
+     * name merely contains digits ("enry01") is never mistaken for a number.
+     */
+    private static boolean isPhoneNumberLike(String value) {
+        return value != null && value.matches("^[+0][0-9]+$");
     }
 }

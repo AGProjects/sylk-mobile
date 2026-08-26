@@ -56,6 +56,92 @@ function getLogfilePath() {
     return RNFS.DocumentDirectoryPath + '/logs.txt';
 }
 
+// --- Contact-deletion audit -------------------------------------------------
+//
+// The main log file is capped at MAX_LOG_LINES (5000) and trimmed every ~40
+// heartbeats, which on an active account is roughly four days of history. That
+// cost us the 2026-08-05 incident: 68 contacts were swept into the graveyard in
+// 34 seconds and by the time the user noticed (twelve days later) the lines
+// that would have named the responsible code path had long rolled off. All we
+// could do was reconstruct the event from the tombstone rows themselves.
+//
+// So destructive contact operations get their OWN file, which the trimmer never
+// touches:
+//
+//   logs.<account>.deletions.txt
+//
+// It is append-only, one line per event, and rare by nature — a normal user
+// produces a handful of lines a year. showLogs() prepends its contents to the
+// log body, so it travels with every "Send to support" upload and shows up in
+// the in-app viewer. deleteAccount() unlinks it alongside the main log so the
+// history dies with the identity it belonged to.
+//
+// The cap below only exists so a pathological delete loop can't grow the file
+// without bound. It keeps the OLDEST entries (the opposite of the main log)
+// because the first sweep is the one that explains the loss; later ones are
+// usually its echo. When it trips, a marker line records that fact.
+const MAX_AUDIT_LINES = 4000;
+
+function getDeletionAuditPath() {
+    if (_currentLogAccount) {
+        return RNFS.DocumentDirectoryPath + '/logs.' + _currentLogAccount + '.deletions.txt';
+    }
+    return RNFS.DocumentDirectoryPath + '/logs.deletions.txt';
+}
+
+// Append one audit line. Mirrors it into the normal log as well (via
+// timestampedLog) so a fresh log still reads chronologically — the audit file
+// is the copy that OUTLIVES the trim, not the only copy.
+//   text  — already-formatted event text, no newlines
+//   mirror — set false to write only to the audit file (avoids double lines
+//            when the caller has already logged its own richer trace)
+function auditContactDeletion(text, mirror = true) {
+    const flat = String(text).replace(/\r\n|\r|\n/g, ' \\n ').replace(/\s+$/, '');
+    const line = new Date().toISOString() + ' ' + flat;
+    if (mirror) {
+        timestampedLog('[trash] [audit] ' + flat);
+    } else {
+        console.log('[APPLOG] [trash] [audit] ' + flat);
+    }
+    RNFS.appendFile(getDeletionAuditPath(), line + '\r\n', 'utf8')
+        .then(() => _trimDeletionAudit())
+        .catch((err) => {
+            console.log('[trash] [audit] append failed:', err && err.message);
+        });
+}
+
+// Bounded-growth guard for the audit file. Unlike trimLogs() this keeps the
+// HEAD of the file — see the rationale above.
+let _auditTrimInFlight = false;
+function _trimDeletionAudit() {
+    if (_auditTrimInFlight) return;
+    _auditTrimInFlight = true;
+    const p = getDeletionAuditPath();
+    RNFS.readFile(p, 'utf8')
+        .then((content) => {
+            const lines = content.split('\n');
+            if (lines.length <= MAX_AUDIT_LINES + 50) return null;
+            const kept = lines.slice(0, MAX_AUDIT_LINES).join('\n');
+            const marker = new Date().toISOString()
+                + ' AUDIT TRUNCATED — file reached ' + lines.length
+                + ' lines; newest entries beyond ' + MAX_AUDIT_LINES + ' dropped';
+            return RNFS.writeFile(p, kept + '\r\n' + marker + '\r\n', 'utf8');
+        })
+        .catch((err) => {
+            // ENOENT simply means nothing has ever been deleted on this account.
+            console.log('[trash] [audit] trim skipped:', err && err.message);
+        })
+        .finally(() => { _auditTrimInFlight = false; });
+}
+
+// Read the audit file back for the log viewer / support upload. Resolves to ''
+// when the account has never deleted anything.
+function readDeletionAudit() {
+    return RNFS.readFile(getDeletionAuditPath(), 'utf8')
+        .then((content) => content || '')
+        .catch(() => '');
+}
+
 let HUGE_FILE_SIZE = 15 * 1000 * 1000;
 let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
 
@@ -1366,8 +1452,74 @@ function cleanHtml(html) {
     .replace(/<!doctype[^>]*>/gi, '');
 }
 
+/**
+ * If `localPart` is a phone number once its visual separators are collapsed,
+ * return the collapsed form; otherwise return null.
+ *
+ * The ORDER matters and is the whole reason this exists. isPhoneNumber anchors
+ * on a leading '+' or '0', so an ordinary address-book spelling like
+ * '(023) 799-3800' does NOT match in its stored form. Testing before
+ * collapsing therefore misclassified it as a SIP username and left the
+ * separators in — '023799-3800@domain' went on the wire. Collapse first, then
+ * ask.
+ *
+ * Returning null (rather than the input) for the non-number case keeps callers
+ * honest: 'bob smith' must not silently become 'bobsmith', and a SIP username
+ * like 'john-doe' has to keep its '-'.
+ */
+/**
+ * The two characters to draw inside an avatar circle for a contact that is a
+ * phone number and has no usable name.
+ *
+ * Initials are meaningless for a number: the first two characters are the
+ * country code, so every Dutch contact in the list wore an identical '+3'
+ * badge and none of them could be told apart at a glance. The LAST two digits
+ * are the part that actually varies per subscriber.
+ *
+ *   +31641372960 -> '60'
+ *   +31641371120 -> '20'
+ *   0031641372960 -> '60'   (the 00 wire form lands on the same label)
+ *
+ * Returns null when the URI is not a phone number, so callers fall through to
+ * their normal initials logic untouched.
+ */
+function phoneAvatarLabel(uri) {
+    if (typeof uri !== 'string' || !uri) {
+        return null;
+    }
+    const atIdx = uri.indexOf('@');
+    const localPart = atIdx > -1 ? uri.substring(0, atIdx) : uri;
+    const domain = atIdx > -1 ? uri.substring(atIdx + 1) : '';
+
+    // Conference room ids are all-digit (generateSillyName) but are never
+    // phone numbers. They have their own group-icon avatar; make sure a
+    // room can never be pulled into this branch by digit shape alone.
+    if (domain.indexOf('videoconference') > -1) {
+        return null;
+    }
+    if (!isPhoneNumber(localPart)) {
+        return null;
+    }
+
+    const digits = localPart.replace(/\D/g, '');
+    if (!digits) {
+        return null;
+    }
+    return digits.slice(-2);
+}
+
+function collapsedPhoneNumber(localPart) {
+    if (typeof localPart !== 'string') {
+        return null;
+    }
+    const collapsed = localPart.replace(/[\s\-_()]/g, '');
+    return isPhoneNumber(collapsed) ? collapsed : null;
+}
+
 function normalizeUri(uri, defaultDomain) {
-    let targetUri = uri;
+    // Unwrap tel: before anything else — the '@' split, the phone-number
+    // detection and the separator strip below all expect a bare number.
+    let targetUri = stripTelScheme(uri);
     let idx = targetUri.indexOf('@');
     let username;
     let domain;
@@ -1378,15 +1530,15 @@ function normalizeUri(uri, defaultDomain) {
         username = targetUri;
         domain = defaultDomain;
     }
-    if (isPhoneNumber(username)) {
-        // Phone-number usernames: collapse the human-friendly separators
-        // people type or paste — spaces, dashes, underscores and parens —
-        // so +1313131311131, +1-313-1313-11131 and +1313_1313_11131 all
-        // reduce to the same canonical +1313131311131. The leading
-        // '+'/'0' and digits are preserved. (Done before the generic strip
-        // below, which intentionally leaves '-'/'_' intact for ordinary
-        // SIP usernames like 'john-doe'.)
-        username = username.replace(/[\s\-_()]/g, '');
+    // Phone-number usernames: collapse the human-friendly separators people
+    // type or paste — spaces, dashes, underscores and parens — so
+    // '+1-313-1313', '+1 313 1313' and '(023) 799-3800' all reduce to their
+    // canonical digits. Anything that is NOT a number after collapsing
+    // takes the generic SIP strip instead, which deliberately leaves '-'
+    // and '_' alone so usernames like 'john-doe' survive intact.
+    const _collapsed = collapsedPhoneNumber(username);
+    if (_collapsed !== null) {
+        username = _collapsed;
     } else {
         username = username.replace(/[<>\s()\[\]\'\"\~\!\%\&\*\{\}\|\\]/g, '');
     }
@@ -1495,7 +1647,247 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, function(m) { return map[m]; });
 }
 
+/**
+ * Unwrap an RFC 3966 `tel:` URI down to the bare number it carries.
+ *
+ * A `tel:` prefix is decoration, not part of the number: it arrives from
+ * pasted web links (<a href="tel:+31612345678">), from QR codes (which
+ * encode phone numbers as tel: URIs almost universally) and from OS share
+ * intents. Everything downstream — isPhoneNumber below, normalizeUri, the
+ * digit-ish contact matcher in ContactsListBox and the PSTN
+ * replaceLeadingZero / replacePlus rewrites in Call.js — expects the bare
+ * number, so the scheme is stripped once, as early as possible, and the
+ * value then travels the ordinary PSTN path.
+ *
+ * Also dropped: the `//` some sources wrongly insert, the RFC 3966
+ * parameter tail (`;ext=42`, `;phone-context=+31`) which is not diallable,
+ * percent-encoded '+', and the visual separators RFC 3966 explicitly
+ * allows inside a tel: number (space, '-', '.', parens).
+ *
+ *   tel:+31612345678         -> +31612345678
+ *   TEL:+1-313-1313          -> +13131313
+ *   tel://0031612345678      -> 0031612345678
+ *   tel:%2B31612345678;ext=4 -> +31612345678
+ *
+ * Anything that is not a tel: URI is returned untouched.
+ */
+function stripTelScheme(uri) {
+    if (typeof uri !== 'string') {
+        return uri;
+    }
+    if (!/^\s*tel:/i.test(uri)) {
+        return uri;
+    }
+    let value = uri.trim().replace(/^tel:(\/\/)?/i, '');
+    const semi = value.indexOf(';');
+    if (semi > -1) {
+        value = value.substring(0, semi);
+    }
+    value = value.replace(/%2b/gi, '+');
+    // Visual separators only — '+', digits and the dial codes '*'/'#' stay.
+    value = value.replace(/[\s\-.()]/g, '');
+    return value;
+}
+
+/**
+ * Remove a national trunk prefix that a badly-formatted source glued onto
+ * an ALREADY international number.
+ *
+ * Click-to-dial widgets and hand-written <a href="tel:"> links get this
+ * wrong constantly: they take a number printed in national form WITH its
+ * trunk prefix (023 799 3800) and prepend the country code without
+ * dropping the 0 — tel:+31-023-7993800. E.164 has no room for a trunk
+ * prefix after a country code, so the resulting +310237993800 is not a
+ * dialable number; the gateway either rejects it or routes it somewhere
+ * unexpected.
+ *
+ * We can repair it without guessing, because the account already tells us
+ * which country it lives in. The "Replace 0 with" preference
+ * (pstn.replaceLeadingZero, e.g. '0031') is by construction
+ * <international access code><home country code>. Peel the access code
+ * (pstnRules.replacePlus, '00' by default) off the front and what is left
+ * is the home country code, '31'. A number starting '+31' or '0031'
+ * followed by a 0 is therefore carrying a trunk prefix that must go.
+ *
+ * Deliberately narrow — every one of these bounds is load-bearing:
+ *   • HOME country code only, never a foreign one. There is no country-code
+ *     table here, and guessing where a foreign CC ends would mangle good
+ *     numbers.
+ *   • Only when "Replace 0 with" is configured. No rule -> no known home
+ *     country -> no rewrite.
+ *   • Never for +39. Italy (and San Marino / Vatican, which share the code)
+ *     is the one country whose national numbers KEEP their leading 0 in
+ *     E.164 — +39 06 6982 is the Vatican switchboard, not a typo.
+ *   • Exactly one 0 is removed, and only from an otherwise all-digit local
+ *     part, so a half-typed number is never rewritten under the user.
+ *
+ *   +31-023-7993800   -> +31237993800   (after stripTelScheme)
+ *   00310237993800    -> 0031237993800
+ *   +310237993800@d   -> +31237993800@d
+ *   +31237993800      -> unchanged (already correct)
+ *   +390212345678     -> unchanged (Italy keeps its trunk 0)
+ *   0612345678        -> unchanged (national form; the replaceLeadingZero
+ *                                   rule in Call.js owns that case)
+ */
+/**
+ * Recover the canonical E.164 form of a PSTN number from the WIRE form the
+ * dialing rules produce — the inverse of the replaceLeadingZero /
+ * replacePlus rewrites Call.js applies at the SIP boundary.
+ *
+ * Both rules funnel into the same shape: the number leaves as
+ * <international-access-code><country-code><subscriber>, e.g. '+31612345678'
+ * -> '0031612345678' (replacePlus '00') and '0612345678' ->
+ * '0031612345678' (replaceLeadingZero '0031'). So one inverse covers both:
+ * swap a leading access code back for '+'.
+ *
+ * Needed because call.remoteIdentity.uri carries the WIRE form — that is what
+ * was actually dialed — while CallKit writes its handle into the iOS Recents
+ * list, where '0031612345678' reads as a foreign string and does not match
+ * the user's own contact cards. E.164 is what iOS expects there.
+ *
+ * The configured code (rules.replacePlus) is tried first, then a plain '00'
+ * fallback: '00' is the ITU international prefix, so a number stored
+ * nationally as '0031…' converts correctly even for accounts whose
+ * replacePlus is something else (e.g. the North-American '011').
+ *
+ * A local part that is already '+…', or that is not all digits, is returned
+ * untouched — as is a national number with no recoverable country code
+ * ('0612345678' stays as it is, because guessing a country would be wrong).
+ */
+/**
+ * Clean a dialable destination that arrived from OUTSIDE the app — an OS call
+ * intent's contact handle, a tel: link, a QR payload — WITHOUT appending a
+ * domain.
+ *
+ * Address books and web pages store numbers with the visual separators people
+ * read by: '+31 6 41 37 29 60', '(023) 799-3800', '+1-313-1313'. Those cannot
+ * travel any further: they break the URI field's contact matching and are not
+ * valid in a SIP request-URI.
+ *
+ * normalizeUri collapses the same separators, but it also appends the default
+ * domain — wrong for the URI field, where an external tel: link shows a bare
+ * number and a Contacts-card tap should look identical. Hence this narrower
+ * cousin: unwrap tel:, collapse separators when the value is a phone number,
+ * and stop there.
+ */
+function cleanDialHandle(uri) {
+    if (typeof uri !== 'string') {
+        return uri;
+    }
+    const value = stripTelScheme(uri).trim();
+    const atIdx = value.indexOf('@');
+    const localPart = atIdx > -1 ? value.substring(0, atIdx) : value;
+    const domainPart = atIdx > -1 ? value.substring(atIdx) : '';
+
+    // Same collapse-then-test rule as normalizeUri, shared so the two can
+    // never drift. When the collapsed form is not a number the original is
+    // returned verbatim: 'bob smith' must not become 'bobsmith'.
+    const collapsed = collapsedPhoneNumber(localPart);
+    return collapsed !== null ? collapsed + domainPart : value;
+}
+
+function pstnWireUriToE164(uri, rules) {
+    if (typeof uri !== 'string' || !uri) {
+        return uri;
+    }
+    const atIdx = uri.indexOf('@');
+    const localPart = atIdx > -1 ? uri.substring(0, atIdx) : uri;
+    const domainPart = atIdx > -1 ? uri.substring(atIdx) : '';
+
+    if (localPart.charAt(0) === '+') {
+        return uri;
+    }
+    if (!/^\d+$/.test(localPart)) {
+        return uri;
+    }
+
+    const configured = (rules && typeof rules.replacePlus === 'string')
+        ? rules.replacePlus.trim()
+        : '';
+    const codes = [];
+    if (configured) {
+        codes.push(configured);
+    }
+    if (codes.indexOf('00') === -1) {
+        codes.push('00');
+    }
+
+    for (let i = 0; i < codes.length; i++) {
+        const code = codes[i];
+        if (/^\d+$/.test(code)
+                && localPart.length > code.length
+                && localPart.indexOf(code) === 0) {
+            return '+' + localPart.substring(code.length) + domainPart;
+        }
+    }
+    return uri;
+}
+
+function stripTrunkZeroAfterCountryCode(uri, rules) {
+    if (typeof uri !== 'string' || !rules) {
+        return uri;
+    }
+
+    const replaceLeadingZero = typeof rules.replaceLeadingZero === 'string'
+        ? rules.replaceLeadingZero.trim()
+        : '';
+    if (!replaceLeadingZero) {
+        return uri;
+    }
+
+    const accessCode = (typeof rules.replacePlus === 'string' && rules.replacePlus)
+        ? rules.replacePlus
+        : '00';
+
+    let countryCode = null;
+    if (replaceLeadingZero.indexOf(accessCode) === 0) {
+        countryCode = replaceLeadingZero.substring(accessCode.length);
+    } else if (replaceLeadingZero.charAt(0) === '+') {
+        countryCode = replaceLeadingZero.substring(1);
+    } else if (replaceLeadingZero.indexOf('00') === 0) {
+        countryCode = replaceLeadingZero.substring(2);
+    }
+
+    if (!countryCode || !/^\d{1,3}$/.test(countryCode)) {
+        return uri;
+    }
+
+    if (countryCode === '39') {
+        return uri;
+    }
+
+    const atIdx = uri.indexOf('@');
+    const localPart = atIdx > -1 ? uri.substring(0, atIdx) : uri;
+    const domainPart = atIdx > -1 ? uri.substring(atIdx) : '';
+
+    // Both international spellings the app can be handed: the canonical
+    // '+31…' it keeps in state / history, and the '0031…' wire form the
+    // replacePlus rule produces (or that a web page wrote directly).
+    const prefixes = ['+' + countryCode];
+    if (prefixes.indexOf(accessCode + countryCode) === -1) {
+        prefixes.push(accessCode + countryCode);
+    }
+    if (prefixes.indexOf('00' + countryCode) === -1) {
+        prefixes.push('00' + countryCode);
+    }
+
+    for (let i = 0; i < prefixes.length; i++) {
+        const prefix = prefixes[i];
+        const tail = localPart.substring(prefix.length + 1);
+        if (localPart.indexOf(prefix + '0') === 0 && /^\d+$/.test(tail)) {
+            return prefix + tail + domainPart;
+        }
+    }
+
+    return uri;
+}
+
 function isPhoneNumber(uri, conferenceDomain) {
+    // A tel: URI is a phone number wearing a scheme. Unwrap it first so
+    // every caller of this detector (the PSTN pre-flight gate, the 'tel'
+    // auto-tag, normalizeUri below) agrees that tel:+31612345678 IS a
+    // phone number.
+    uri = stripTelScheme(uri);
     let username = uri;
     let domain = '';
     if (uri.indexOf('@') > -1) {
@@ -1525,13 +1917,31 @@ function isPhoneNumber(uri, conferenceDomain) {
     return username.match(/^(\+|0)([\d\-\(\)_\s]+)$/);
 }
 
-function isEmailAddress(uri) {
-    // The previous single regex /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/
-    // backtracks catastrophically: the OPTIONAL separator in ([\.-]?\w+)*
-    // makes it behave like (\w+)*, which is exponential and, on Hermes,
-    // throws "Maximum regex stack depth reached" for some contact values —
-    // aborting the whole addressbook migration. Split on '@' and use linear
-    // patterns (REQUIRED separators, no nesting) plus length/type guards.
+/* Split the address shape check into a strict ASCII form for SIP URIs and a
+ * Unicode-tolerant form for real email addresses. These are two different
+ * grammars and conflating them was wrong in both directions:
+ *
+ *   - A SIP address is an ASCII protocol identifier. It travels in REGISTER /
+ *     INVITE headers, in XCAP addressbook documents and in SQL contact keys,
+ *     none of which round-trip non-ASCII reliably. "андрей@sylk.link" must be
+ *     refused at the point the user types it.
+ *   - An email address MAY be internationalized (RFC 6531 / EAI). Refusing
+ *     "андрей@почта.рф" in the contact's Email field is simply a bug — that
+ *     field is metadata, not a routing key.
+ *
+ * BOTH keep the linear, non-backtracking structure introduced when the old
+ * single regex /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/ was replaced: the
+ * OPTIONAL separator in ([\.-]?\w+)* makes it behave like (\w+)*, which is
+ * exponential and, on Hermes, threw "Maximum regex stack depth reached" for
+ * some contact values — aborting the whole addressbook migration. Each group
+ * here is REQUIRED to consume a separator, so matching stays linear. Neither
+ * uses \p{...} property escapes, which are not dependable on Hermes; the
+ * "any non-ASCII" range \u0080-\uffff is used instead.
+ */
+
+// Strict ASCII. This is the SIP-address rule — sanitizeContact and the
+// add/edit contact address fields gate on it.
+function isSipAddress(uri) {
     if (typeof uri !== 'string') return false;
     uri = uri.trim().toLowerCase();
     if (uri.length === 0 || uri.length > 254) return false;
@@ -1542,6 +1952,51 @@ function isEmailAddress(uri) {
     const localRe  = /^\w+(?:[.-]\w+)*$/;          // linear: each group consumes a separator
     const domainRe = /^\w+(?:[.-]\w+)*\.[a-z]{2,}$/; // labels + a 2+ letter TLD
     return localRe.test(local) && domainRe.test(domain);
+}
+
+// Unicode-tolerant (EAI). This is the EMAIL-FIELD rule — it accepts every
+// address isSipAddress does, plus internationalized local parts, domain
+// labels and TLDs. Do NOT use it to validate a SIP URI.
+function isEmailAddress(uri) {
+    if (typeof uri !== 'string') return false;
+    uri = uri.trim().toLowerCase();
+    if (uri.length === 0 || uri.length > 254) return false;
+    const at = uri.indexOf('@');
+    if (at <= 0 || at !== uri.lastIndexOf('@')) return false; // exactly one '@', not leading
+    const local = uri.slice(0, at);
+    const domain = uri.slice(at + 1);
+    // Same shape as isSipAddress, with the word class widened to include any
+    // non-ASCII code point and the TLD allowed to be non-ASCII too (.рф, .中国).
+    const localRe  = /^[0-9a-z_\u0080-\uffff]+(?:[.-][0-9a-z_\u0080-\uffff]+)*$/;
+    const domainRe = /^[0-9a-z_\u0080-\uffff]+(?:[.-][0-9a-z_\u0080-\uffff]+)*\.[a-z\u0080-\uffff]{2,}$/;
+    return localRe.test(local) && domainRe.test(domain);
+}
+
+/* The accept rule for an address a USER typed into the Add/Edit contact
+ * address field, mirroring app.js sanitizeContact() so a modal can never
+ * submit something the sanitizer will refuse. sanitizeContact returns null
+ * for a rejected URI, newContact() propagates that null, and the save path
+ * then crashes on it -- the 8.3.5 "Cannot set property 'uri' of null".
+ * app.js guards that dereference now, but the modals gate their Save button
+ * on THIS so a typo is visible before the tap rather than swallowed.
+ *
+ * Deliberately ASCII-only for the address itself (via isSipAddress). The
+ * contact's Email field and Display name are separate and DO accept
+ * Cyrillic and other non-ASCII text.
+ *
+ * Keep in sync with sanitizeContact's accept set, in the same order.
+ */
+function isUsableContactAddress(value, defaultDomain) {
+    const v = (value || '').trim().toLowerCase();
+    if (!v) return false;
+    if (isPhoneNumber(v)) return true;
+    const call = parseSylkCallUrl(v);
+    const c = call ? String(call).toLowerCase() : v;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(c)) return true;
+    if (c.split('@')[0] === '*') return true;
+    const qualified = c.indexOf('@') === -1 ? c + '@' + (defaultDomain || '') : c;
+    if (isSipAddress(qualified)) return true;
+    return !!parseSylkConferenceUrl(c);
 }
 
 function isImage(filename, filetype=null) {
@@ -2224,7 +2679,15 @@ exports.isAnonymous = isAnonymous;
 exports.normalizeAnonymousUri = normalizeAnonymousUri;
 exports.html2text = html2text;
 exports.isEmailAddress = isEmailAddress;
+exports.isSipAddress = isSipAddress;
+exports.isUsableContactAddress = isUsableContactAddress;
 exports.isPhoneNumber = isPhoneNumber;
+exports.stripTelScheme = stripTelScheme;
+exports.stripTrunkZeroAfterCountryCode = stripTrunkZeroAfterCountryCode;
+exports.pstnWireUriToE164 = pstnWireUriToE164;
+exports.cleanDialHandle = cleanDialHandle;
+exports.collapsedPhoneNumber = collapsedPhoneNumber;
+exports.phoneAvatarLabel = phoneAvatarLabel;
 exports.isImage = isImage;
 exports.isAudio = isAudio;
 exports.isVideo = isVideo;
@@ -2256,6 +2719,9 @@ exports.extractQueryAddress = extractQueryAddress;
 exports.geocodeAddress = geocodeAddress;
 exports.setLogAccount = setLogAccount;
 exports.getLogfilePath = getLogfilePath;
+exports.getDeletionAuditPath = getDeletionAuditPath;
+exports.auditContactDeletion = auditContactDeletion;
+exports.readDeletionAudit = readDeletionAudit;
 
 
 

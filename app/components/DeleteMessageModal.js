@@ -57,7 +57,8 @@ class DeleteMessageModal extends Component {
             const remoteDelete = allowRemote && this.state.remoteDelete;
             this.setState({confirm: false, remoteDelete: allowRemote, afterDelete: false});
             for (const id of this.props.messages) {
-				this.props.deleteMessageFunc(id, this.state.uri, remoteDelete, this.state.afterDelete);
+				this.props.deleteMessageFunc(id, this.state.uri, remoteDelete, this.state.afterDelete,
+					'user:delete-bubble');
 		    }
             this.props.close();
         } else {

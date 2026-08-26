@@ -46,6 +46,33 @@ const MEDIA_LOSS_THRESHOLD_MS = 15000;
 // Janus → OpenSIPS → Janus and surfaces in call.headers on the peer.
 export const USER_AGENT_HEADER_NAME = 'X-Sylk-User-Agent';
 
+// Custom header carrying the id of the device that placed the call.
+//
+// The value is the same device id this client registers its push token
+// under (app.js: getUniqueIdSync() -> account.setDeviceToken(token,
+// platform, deviceId, ...)), so anything downstream that holds the push
+// token table can match a call back to exactly one token.
+//
+// Why it is worth putting on the wire: when a user dials their OWN AoR to
+// ring their other devices, the SIP proxy forks the INVITE to every
+// contact registered for that AoR -- including the phone that placed the
+// call. Nothing in a normal INVITE distinguishes "someone is calling me"
+// from "this is my own call coming back at me", so the fork produces a
+// push notification, and on iOS PushKit forces every VoIP push to be
+// reported to CallKit. Carrying the originating device id end-to-end lets
+// the push be skipped at its source (the proxy / push server can drop the
+// one token that matches) instead of being suppressed after the fact.
+//
+// Rides the same X-* pass-through as X-Sylk-User-Agent and X-Sylk-ZRTP:
+// Janus forwards unknown X- headers, OpenSIPS proxies them, and
+// SylkServer hands them back to the callee in AccountIncomingSessionEvent
+// (AccountInfo.incoming_header_prefixes defaults to ['X-']), where
+// sylkrtc surfaces them on call.headers.
+//
+// Sent on the INVITE only -- it describes who ORIGINATED the call, so it
+// would be meaningless on a 200 OK.
+export const DEVICE_ID_HEADER_NAME = 'X-Sylk-Device-Id';
+
 // Build getUserMedia constraints for the audio→video upgrade path
 // that match the initial-video path's profile (set once at app
 // startup via setVideoEncoderTarget in app.js). Previously the
@@ -189,7 +216,7 @@ class Call extends Component {
             // pickRealName: returns the first candidate that's a "real" display
             // name — i.e. not empty, not equal to the URI, not equal to the
             // URI's local part. Auto-created contacts are stored with
-            // `name = localPart` (e.g. "living233"), which has the same
+            // `name = localPart` (e.g. "user123"), which has the same
             // information value as no name at all; preferring the SIP From
             // header's display name in that case shows "My living" on the
             // call screen instead of the URI fragment. Matches the spec
@@ -466,6 +493,18 @@ class Call extends Component {
         const localUserAgent = (this.props.userAgent || '').trim();
         if (localUserAgent) {
             headers.push({name: USER_AGENT_HEADER_NAME, value: localUserAgent});
+        }
+        // INVITE only: identifies the device that ORIGINATED the call, so it
+        // has no meaning on the 200 OK answering someone else's. Like
+        // userAgent, the value is passed down from app.js rather than
+        // recomputed here, so it always matches the device id the push token
+        // is registered under. Absent prop (CallByUriBox guest calls) simply
+        // omits the header.
+        if (source === 'INVITE') {
+            const localDeviceId = (this.props.deviceId || '').trim();
+            if (localDeviceId) {
+                headers.push({name: DEVICE_ID_HEADER_NAME, value: localDeviceId});
+            }
         }
         const _cid = (this.state.call
             && (this.state.call._callId || this.state.call.callId || this.state.call.id))
@@ -1008,8 +1047,34 @@ class Call extends Component {
             utils.timestampedLog('[call] [ui] call_id=' + _cid,
                 '12 answerCall_invoked — call.answer() next');
 
-            if (!this.answering) {
+            // Two guards, because one is not enough.
+            //
+            // this.answering is per-COMPONENT and dies with the instance. On
+            // the call-swap path <Call> is keyed on activeCall.id, so it
+            // REMOUNTS while the answer is still in flight — the fresh
+            // instance starts with answering=false and happily answers the
+            // same sylkrtc call a second time. call.state is still 'incoming'
+            // at that moment (the server hasn't acked the first answer yet),
+            // so the state check above doesn't catch it either.
+            //
+            // sylkserver rejects the duplicate with
+            //     "Invalid state for answering session <id>: established"
+            // and sylkrtc's sendAnswer_request_error handler responds by
+            // TERMINATING the call — so a double answer doesn't just log an
+            // error, it kills the conversation.
+            //
+            // _sylkAnswerSent lives on the sylkrtc Call object, which
+            // outlives every component remount, so it is the guard that
+            // actually holds. A call is answered exactly once; mid-call
+            // renegotiation goes through answerUpdate(), not here.
+            if (this.state.call._sylkAnswerSent) {
+                utils.timestampedLog('[call] [ui] call_id=' + _cid,
+                    'answer ALREADY SENT for this call (component remounted) — skipping duplicate;',
+                    'a second answer would be rejected as "Invalid state for answering session"',
+                    'and sylkrtc would terminate the call');
+            } else if (!this.answering) {
                 this.answering = true;
+                this.state.call._sylkAnswerSent = true;
                 const connectionState = this.state.connection.state ? this.state.connection.state : null;
                 utils.timestampedLog('[call] [ui] call_id=' + _cid,
                     '13 sylkrtc_answer_send connectionState=' + connectionState);
@@ -1020,6 +1085,8 @@ class Call extends Component {
                 } catch (error) {
                     utils.timestampedLog('[call] [ui] call_id=' + _cid,
                         'sylkrtc_answer_threw:', error);
+                    // The answer never made it out — let a retry happen.
+                    this.state.call._sylkAnswerSent = false;
                     this.hangupCall('answer_failed')
                 }
             } else {
@@ -1426,8 +1493,35 @@ class Call extends Component {
         // gateway expects.
         //
         // Skipped for conferences (room names never start with '+').
-        let dialUri = this.state.targetUri;
+        // Last line of defence before the INVITE. targetUri should already be
+        // canonical by the time it gets here, but this is the single point
+        // every 1-to-1 outgoing call funnels through, so a number that
+        // slipped past normalizeUri (a contact row saved long ago with
+        // '(023) 799-3800' in it, a redial of such an entry) gets its
+        // separators collapsed here rather than going out in the
+        // request-URI. Idempotent, so the common case costs nothing.
+        let dialUri = utils.cleanDialHandle(this.state.targetUri);
+        if (dialUri !== this.state.targetUri) {
+            utils.timestampedLog('[pstn] separators collapsed before dialing:',
+                                 this.state.targetUri, '->', dialUri);
+        }
         const rules = this.props.pstnRules;
+
+        // Trunk prefix left in front of a home-country national number
+        // (+310237993800 from a malformed <a href="tel:+31-023-7993800">).
+        // Input normalisation already fixes the paths that go through the
+        // URI field or an external dial link; this is the safety net for
+        // everything that reaches targetUri some other way — an old call
+        // history entry recorded before this rule existed, a contact
+        // imported from the address book with the same mistake in it.
+        // No-op for numbers that are already correct. Runs before the two
+        // rewrites below because those assume a well-formed number.
+        const repairedDialUri = utils.stripTrunkZeroAfterCountryCode(dialUri, rules);
+        if (repairedDialUri !== dialUri) {
+            utils.timestampedLog('[pstn] trunk 0 after country code dropped:',
+                                 dialUri, '\u2192', repairedDialUri);
+            dialUri = repairedDialUri;
+        }
 
         // "Replace 0 with" rule (Preferences → Advanced → Audio Calls
         // → Phone numbers, persisted at pstn.replaceLeadingZero and
@@ -2163,6 +2257,7 @@ class Call extends Component {
 Call.propTypes = {
     skipCountdown           : PropTypes.bool,
     userAgent               : PropTypes.string,
+    deviceId                : PropTypes.string,
     targetUri               : PropTypes.string,
     pstnRules               : PropTypes.object,
     account                 : PropTypes.object,

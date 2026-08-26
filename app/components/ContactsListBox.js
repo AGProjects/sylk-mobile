@@ -901,7 +901,7 @@ class ContactsListBox extends Component {
                 actions: [
                     { label: 'Restore', onPress: () => { this.closeConfirmDialog(); if (this.props.reviveContact) this.props.reviveContact(contact); } },
                     { label: 'Block', onPress: () => { this.closeConfirmDialog(); if (this.props.blockDeletedContact) this.props.blockDeletedContact(contact); } },
-                    { label: 'Send to Graveyard', destructive: true, onPress: () => { this.closeConfirmDialog(); if (this.props.hardDeleteContacts) this.props.hardDeleteContacts([contact.uri]); } },
+                    { label: 'Send to graveyard', destructive: true, onPress: () => { this.closeConfirmDialog(); if (this.props.hardDeleteContacts) this.props.hardDeleteContacts([contact.uri]); } },
                     { label: 'Cancel', cancel: true, onPress: () => this.closeConfirmDialog() },
                 ],
             },
@@ -1849,8 +1849,8 @@ class ContactsListBox extends Component {
 
             // De-duplicate: if a URI is already part of a saved Sylk contact,
             // it must NOT also appear as a separate OS-phonebook / synthetic
-            // result (e.g. +40721253846 saved as "Flori Georgescu Mobile"
-            // shouldn't also list a bare phone "Flori Georgescu"). Build the
+            // result (e.g. +40721253846 saved as "Jane Doe Mobile"
+            // shouldn't also list a bare phone "Jane Doe"). Build the
             // set of every URI owned by a saved contact (across all of its
             // addresses), normalized so +number and +number@domain collapse
             // together, then drop any UNSAVED row whose URI is in that set.

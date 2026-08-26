@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ThemedModalSurface from './ThemedModalSurface';
 import { getModalColors } from '../paperTheme';
-import { Modal, View, Image, ActivityIndicator, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet } from 'react-native';
+import { Modal, View, Image, ActivityIndicator, TouchableOpacity, TouchableWithoutFeedback, KeyboardAvoidingView, ScrollView, Platform, Linking, Dimensions, Pressable, StyleSheet, NativeModules, AppState } from 'react-native';
 import { Text, Button, Surface, TextInput, Switch, Checkbox, Divider } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import PropTypes from 'prop-types';
@@ -12,6 +12,7 @@ import PlatformToggle from './PlatformToggle';
 import {Gravatar, GravatarApi} from '../gravatar';
 import {Keyboard} from 'react-native';
 import CryptoJS from "crypto-js";
+import Contacts from 'react-native-contacts';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
@@ -36,6 +37,7 @@ const EditContactModal = ({
   show,
   close,
   saveContactByUser,
+  refreshAddressBook,
   contactHasStoredMessages,
   uri: propUri,
   defaultDomain,
@@ -217,6 +219,149 @@ const EditContactModal = ({
   }, [show, uris, contactHasStoredMessages]);
   // Collapse the per-contact call overrides (video/audio codec + zRTP) under
   // an "Advanced" toggle so the common fields stay uncluttered.
+  // Whether this Blink contact is joined to an OS address-book card, and its
+  // id there. Shown as a one-line diagnostic under the email field.
+  //
+  // The join is invisible from inside the app, yet everything the OS does on
+  // this contact's behalf depends on it: Do Not Disturb / Focus match callers
+  // and senders by CONTACT, not by app, so a contact with no card can never be
+  // allowed through no matter what is ticked here or in the system settings.
+  // When someone reports "bypass is on but it still does not ring", this line
+  // answers the first question without a log capture.
+  const [osContacts, setOsContacts] = useState([]);
+  // Bumped after the user closes the system contact card. The lookup below is
+  // keyed on [show, uri], neither of which changes when someone edits the card
+  // from inside this modal -- so the "No phone contact linked" line survived
+  // the very edit that fixed it.
+  const [osReload, setOsReload] = useState(0);
+
+  useEffect(() => {
+    if (!show || !uri) { setOsContacts([]); return; }
+    let cancelled = false;
+    const done = (list) => {
+      if (!cancelled) { setOsContacts(Array.isArray(list) ? list : []); }
+    };
+    try {
+      if (Platform.OS === 'android') {
+        const m = NativeModules.AndroidSettings;
+        if (m && m.getSystemContacts) {
+          m.getSystemContacts(uri).then(done).catch(() => done([]));
+          return () => { cancelled = true; };
+        }
+      } else if (Platform.OS === 'ios') {
+        const m = NativeModules.APNSTokenModule;
+        if (m && m.hasSystemContactForUri) {
+          m.hasSystemContactForUri(uri)
+            .then((r) => done(r && r.matches))
+            .catch(() => done([]));
+          return () => { cancelled = true; };
+        }
+      }
+    } catch (e) {
+      console.log('[contact] OS contact lookup failed:', e && e.message);
+    }
+    done([]);
+    return () => { cancelled = true; };
+  }, [show, uri, osReload]);
+
+  // Anything that can have changed the OS card while this modal stayed open.
+  // Blink's avatar for a contact comes from the address-book snapshot
+  // getABContacts() takes once per launch, so without this the card the user
+  // just edited keeps showing the pre-edit photo (or none) until restart.
+  const _afterCardEdit = React.useCallback(() => {
+    if (typeof refreshAddressBook === 'function') {
+      try {
+        const pr = refreshAddressBook();
+        if (pr && typeof pr.catch === 'function') {
+          pr.catch((e) => console.log('[contact] address book refresh failed:', e && e.message));
+        }
+      } catch (e) {
+        console.log('[contact] address book refresh threw:', e && e.message);
+      }
+    }
+    setOsReload((n) => n + 1);
+  }, [refreshAddressBook]);
+
+  // Android's card opens in the Contacts app, so the only reliable "they are
+  // back" signal is the app returning to the foreground.
+  useEffect(() => {
+    if (!show) { return undefined; }
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') { _afterCardEdit(); }
+    });
+    return () => { sub && sub.remove && sub.remove(); };
+  }, [show, _afterCardEdit]);
+
+  // ── "same person, address missing" ────────────────────────────────────
+  // getSystemContacts() above is keyed on the EMAIL field: it finds cards that
+  // already list this address and nothing else. When it comes back empty the
+  // card is very often still there under the same full name -- it just does not
+  // carry the Blink address. That address is exactly what Android's Do Not
+  // Disturb call matching, the notification Person lookup and the avatar
+  // lookup all key on, so a card that is missing it is a card that cannot help.
+  //
+  // Look the name up and, when there is exactly ONE card carrying it, offer to
+  // put the address on that card. Android only for now; iOS has no equivalent
+  // native name lookup (its existing "Add to Contacts" action in the Do Not
+  // Disturb panel opens a prefilled NEW-card sheet instead).
+  const [nameMatch, setNameMatch] = useState(null);
+  // The SAVED name, not the live edit field -- otherwise every keystroke in the
+  // display-name box fires a content-provider query.
+  const _savedName = (selectedContact && selectedContact.name) || propDisplayName || '';
+  useEffect(() => {
+    if (!show || !uri || Platform.OS !== 'android' || osContacts.length > 0) {
+      setNameMatch(null);
+      return undefined;
+    }
+    // Never propose a card for a name that is not a name. Contacts minted from
+    // a call or a chat carry name === uri or the uri's local part, and a local
+    // part like "support" or "info" would cheerfully match a stranger.
+    const _n = (_savedName || '').trim();
+    const _u = (uri || '').trim();
+    const _at = _u.indexOf('@');
+    const _local = _at > -1 ? _u.substring(0, _at) : _u;
+    if (!_n || _n.toLowerCase() === _u.toLowerCase()
+        || _n.toLowerCase() === _local.toLowerCase()) {
+      setNameMatch(null);
+      return undefined;
+    }
+    let cancelled = false;
+    try {
+      const m = NativeModules.AndroidSettings;
+      if (m && m.getSystemContactsByName) {
+        m.getSystemContactsByName(_n)
+          .then((list) => {
+            if (cancelled) { return; }
+            // One candidate or none. Two cards under the same name is the case
+            // where a guess is worst -- an address written onto the wrong
+            // person's card, shared straight out to the dialer and every sync
+            // target -- so it falls through to the system picker instead.
+            setNameMatch(Array.isArray(list) && list.length === 1 ? list[0] : null);
+          })
+          .catch(() => { if (!cancelled) { setNameMatch(null); } });
+        return () => { cancelled = true; };
+      }
+    } catch (e) {
+      console.log('[contact] OS name lookup failed:', e && e.message);
+    }
+    setNameMatch(null);
+    return () => { cancelled = true; };
+  }, [show, uri, osReload, osContacts.length, _savedName]);
+
+  // Opens the OS editor with the address pre-filled -- straight into the
+  // matched card when we have one, otherwise the system "create new / add to
+  // existing" picker. The user still presses Save; Blink writes nothing.
+  // The refresh rides the AppState listener above, same as the card-edit path.
+  const _addUriToCard = React.useCallback(() => {
+    try {
+      NativeModules.AndroidSettings
+        .addEmailToContactCard(nameMatch ? nameMatch.lookupUri : null, uri, _savedName || '')
+        .catch((e) => console.log('[contact] add address to card failed:', e && e.message));
+    } catch (e) {
+      console.log('[contact] add address to card threw:', e && e.message);
+    }
+  }, [nameMatch, uri, _savedName]);
+
   const [showAdvanced, setShowAdvanced] = useState(false);
   useEffect(() => {
     if (focusUriIndex != null) {
@@ -560,6 +705,14 @@ const getTotalPrettyStorage = (entity) => {
         // so an explicit un-set persists as false rather than reverting to
         // the device/server default.
         caregiver: tags.includes('caregiver'),
+        // Auto-answer, same dual-state layout as caregiver: an 'autoanswer'
+        // tag (read by the native incoming-call path) plus a
+        // localProperties.autoanswer mirror (read in-app). Always an explicit
+        // boolean so switching it OFF persists as false instead of being
+        // deleted and falling back to whatever the server last said.
+        // saveContactByUser fires the multi-device metadata message on the
+        // off->on transition -- this used to be the contact kebab's job.
+        autoanswer: tags.includes('autoanswer'),
         encryptionMode: contactEncryption || null,
         preferredVideoCodec: contactVideoCodec || null,
         preferredAudioCodec: contactAudioCodec || null,
@@ -572,6 +725,14 @@ const getTotalPrettyStorage = (entity) => {
             : null,
       },
     };
+    // A submit with every URI row blanked leaves no primary address.
+    // app.js then qualifies '' to '@<defaultDomain>', which sanitizeContact
+    // rejects -- on the addContact path (My Account, no prior row) that used
+    // to hand a null contact to `contact.uri = uri` and crash the app.
+    // Nothing useful can be saved without an address, so stop here and leave
+    // the modal open so the user can put one back.
+    if (!contact.uri) { return; }
+
     saveContactByUser(contact, selectedContact);
 
     // Myself-only: validate-then-persist the mobile number. The
@@ -703,6 +864,24 @@ const getTotalPrettyStorage = (entity) => {
     return utils.isEmailAddress(email);
   };
 
+  // Is THIS address row something app.js sanitizeContact will accept?
+  // Read-only rows are exempt — the own-account identity and any address
+  // that already carries messages cannot be edited here, so a legacy value
+  // predating this check must not lock the Save button. Empty rows are
+  // dropped by handleSave's cleanUris pass, so they are fine too.
+  //
+  // The rule is ASCII-only for the address itself: a SIP address is a
+  // protocol identifier that travels in SIP headers, XCAP documents and
+  // SQL contact keys. The Display name and Email fields above are NOT
+  // restricted this way and accept Cyrillic and other non-ASCII text.
+  const uriRowInvalid = (u) => {
+    const v = (u || '').trim();
+    if (!v) return false;
+    if (myself || uriHasMessages[_nzUri(v)]) return false;
+    return !utils.isUsableContactAddress(v, defaultDomain);
+  };
+  const anyUriInvalid = () => uris.some(uriRowInvalid);
+
   if (!show) return null;
   // Match PreferencesModal's scrollable-pane treatment, but tightened
   // for this modal: EditContactModal has more chrome ABOVE the
@@ -728,7 +907,7 @@ const getTotalPrettyStorage = (entity) => {
   // scrollMaxHeight against (viewport - keyboardHeight) made the
   // modal float oddly mid-screen with lots of empty space above.
   const surfaceMaxHeight = Math.round(viewportH * 0.85);
-  let title = myself ? "My Blink account" : 'Edit Contact';
+  let title = myself ? "My Blink account" : 'Edit contact';
   
   if (publicKey) {
 	  title = 'Public key';
@@ -746,16 +925,11 @@ const getTotalPrettyStorage = (entity) => {
 	};
 
 	let editableTags = {
-	  bypassdnd: {          // <── lowercase key
-		description: 'Bypass Do Not Disturb',
-		invisibleIfTags: ['muted', 'blocked'],
-		removeTags: ['muted']
-	  },
-	  muted: {
-		description: 'Mute notifications',
-		invisibleIfTags: ['blocked', 'bypassdnd'],
-		removeTags: ['bypassdnd']
-	  },
+	  // bypassdnd AND muted both moved to their own screen
+	  // (DoNotDisturbModal, from the contact menu). They are two ends of one
+	  // decision -- always ring / never ring -- and are mutually exclusive, so
+	  // splitting them across two screens meant turning one on silently
+	  // cleared something the user could not see.
 	  noread: {
 		description: 'Read receipts',
 		invert: true
@@ -1109,12 +1283,17 @@ const getTotalPrettyStorage = (entity) => {
                               // distinct background for a locked (read-only) address.
                               style={[{ flex: 1 }, readOnly ? { backgroundColor: getModalColors().isDark ? '#2a2a2a' : '#ececec' } : null]}
                               // Label/keyboard adapt to the row's value (phone vs SIP).
-                              label={isTel ? 'Telephone number' : 'SIP Address'}
+                              label={isTel ? 'Telephone number' : 'SIP address'}
                               onChangeText={(value) => {
                                 const v = value.replace(/\s|\(|\)/g, '').toLowerCase();
                                 setUris((prev) => prev.map((x, j) => (j === i ? v : x)));
                               }}
                               value={u}
+                              // Flag an address the contact-save sanitizer
+                              // would refuse (non-ASCII local part, stray
+                              // punctuation, a trailing '@', ...). Save is
+                              // gated on the same check.
+                              error={uriRowInvalid(u)}
                               autoCapitalize="none"
                               autoCorrect={false}
                               autoComplete="off"
@@ -1262,9 +1441,12 @@ const getTotalPrettyStorage = (entity) => {
                         importantForAutofill="no"
                         textContentType="none"
                         // Live validation. Empty is allowed; anything
-                        // else has to match utils.isEmailAddress —
-                        // the same helper the contact-save sanitizer
-                        // uses. Inline error is shown below; Save is
+                        // else has to match utils.isEmailAddress, which
+                        // is Unicode-tolerant (RFC 6531): an
+                        // internationalized address is a valid email even
+                        // though it would NOT be a valid SIP address —
+                        // the address rows above gate on utils.isSipAddress
+                        // instead. Inline error is shown below; Save is
                         // gated on it.
                         onChangeText={(t) => {
                           setEmail(t);
@@ -1283,6 +1465,132 @@ const getTotalPrettyStorage = (entity) => {
                           {emailError}
                         </Text>
                       ) : null}
+
+                      {/* Which OS address-book card(s) this Blink contact is
+                          joined to, as a wrapping train of pills rather than a
+                          stack of lines. The same SIP address routinely sits on
+                          two cards -- a personal and a work one, an unmerged
+                          duplicate, two accounts -- and a line each pushed the
+                          password field down the panel for what is a footnote.
+                          The star is shown per pill because it is the switch Do
+                          Not Disturb reads for calls: with two cards it is easy
+                          to star the wrong one and see no effect. The empty
+                          case renders too -- the miss is the one worth seeing,
+                          and the "[dnd] [card] near miss:" log lines say why. */}
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap',
+                                     justifyContent: 'flex-end', alignItems: 'center',
+                                     marginTop: 5, paddingHorizontal: 4 }}>
+                        {osContacts.length === 0 ? (
+                          Platform.OS === 'android' ? (
+                            /* The empty state is the one worth acting on, so it
+                               is a button rather than a shrug. Same pill shape
+                               as a linked card: this is the row about which OS
+                               card this contact is joined to, and "not joined
+                               yet, tap to join" belongs in the same train. */
+                            <TouchableOpacity onPress={_addUriToCard}>
+                              <View style={{
+                                flexDirection: 'row', alignItems: 'center',
+                                borderWidth: StyleSheet.hairlineWidth,
+                                borderColor: '#9e9e9e',
+                                borderRadius: 11,
+                                paddingVertical: 2, paddingHorizontal: 7,
+                                marginLeft: 5, marginTop: 4,
+                              }}>
+                                <Icon name="account-plus-outline" size={12} color="#2e7d32"
+                                      style={{ marginRight: 4 }} />
+                                <Text style={{ fontSize: 11, opacity: 0.8, maxWidth: 160 }}
+                                      numberOfLines={1}>
+                                  {nameMatch
+                                    ? ('Link to \u201c' + nameMatch.name + '\u201d')
+                                    : 'Add to a phone contact'}
+                                </Text>
+                                <Icon name="open-in-new" size={11} color="#666666"
+                                      style={{ marginLeft: 3 }} />
+                              </View>
+                            </TouchableOpacity>
+                          ) : (
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              <Icon name="account-question-outline" size={13} color="#999999"
+                                    style={{ marginRight: 4 }} />
+                              <Text style={{ fontSize: 11, opacity: 0.6 }} numberOfLines={1}>
+                                No phone contact linked
+                              </Text>
+                            </View>
+                          )
+                        ) : osContacts.map((oc, i) => {
+                          const _label = (oc && oc.name) ? oc.name : ('Contact ' + (i + 1));
+                          // iOS was never tappable: the Android branch wants a
+                          // lookupUri and the iOS matches carry a CNContact
+                          // identifier instead, so every iOS pill fell through to
+                          // the plain View. Both platforms open the real OS card
+                          // now -- ContactsUI on iOS (presented over this modal,
+                          // since react-native-contacts walks to the topmost
+                          // presented view controller), the Contacts app on
+                          // Android.
+                          const _tappable = !!(oc && (
+                            (Platform.OS === 'android' && oc.lookupUri)
+                            || (Platform.OS === 'ios' && oc.id)));
+                          const _starred = !!(oc && oc.starred);
+                          const _pill = (
+                            <View style={{
+                              flexDirection: 'row', alignItems: 'center',
+                              borderWidth: StyleSheet.hairlineWidth,
+                              borderColor: _starred ? '#b26a00' : '#9e9e9e',
+                              borderRadius: 11,
+                              paddingVertical: 2, paddingHorizontal: 7,
+                              marginLeft: 5, marginTop: 4,
+                            }}>
+                              <Icon
+                                name={_starred ? 'star' : 'account-check-outline'}
+                                size={12}
+                                color={_starred ? '#b26a00' : '#2e7d32'}
+                                style={{ marginRight: 4 }}
+                              />
+                              {/* maxWidth keeps a long card name from stretching
+                                  the pill past the panel and breaking the wrap. */}
+                              <Text style={{ fontSize: 11, opacity: 0.8, maxWidth: 130 }}
+                                    numberOfLines={1}>
+                                {_label}
+                              </Text>
+                              {_tappable ? (
+                                <Icon name="open-in-new" size={11} color="#666666"
+                                      style={{ marginLeft: 3 }} />
+                              ) : null}
+                            </View>
+                          );
+                          return _tappable ? (
+                            <TouchableOpacity
+                              key={(oc && oc.id) || i}
+                              onPress={() => {
+                                try {
+                                  if (Platform.OS === 'ios') {
+                                    // Editable card, not the read-only viewer:
+                                    // the reason to come here is to add the SIP
+                                    // address as an email so Focus can match
+                                    // this person at all.
+                                    Contacts.openExistingContact({ recordID: oc.id })
+                                      .then(_afterCardEdit)
+                                      .catch((e) => console.log('[contact] open OS card failed:', e && e.message));
+                                  } else {
+                                    // Android leaves the app entirely, so there
+                                    // is no promise that means "done" -- the
+                                    // refresh rides the AppState listener.
+                                    NativeModules.AndroidSettings
+                                      .openContactCardByUri(oc.lookupUri)
+                                      .catch((e) => console.log('[contact] open OS card failed:', e && e.message));
+                                  }
+                                } catch (e) {
+                                  console.log('[contact] open OS card threw:', e && e.message);
+                                }
+                              }}
+                            >
+                              {_pill}
+                            </TouchableOpacity>
+                          ) : (
+                            <View key={(oc && oc.id) || i}>{_pill}</View>
+                          );
+                        })}
+                      </View>
 
                     {/* ── Change-password field ─────────────────────
                         Myself-only. Empty by default; non-empty value
@@ -1711,6 +2019,24 @@ const getTotalPrettyStorage = (entity) => {
 						    />
 						  )}
 
+						  {/* Auto answer — moved here from the contact kebab,
+						      for the same reason Caregiver was: it is a
+						      favorite-only per-contact attribute, and a quick
+						      toggle in the menu meant two controls writing one
+						      tag through different paths. Per-DEVICE, not
+						      per-account: handleSave mirrors it to
+						      localProperties.autoanswer and saveContactByUser
+						      announces an off->on flip to the other devices so
+						      only one of them answers. */}
+						  {tags.includes('favorite') && (
+						    <PlatformToggle
+						      key="autoanswer"
+						      value={tags.includes('autoanswer')}
+						      onValueChange={() => toggleTag('autoanswer')}
+						      label="Auto answer"
+						    />
+						  )}
+
 						</View>
                     )}
                       </>
@@ -1753,23 +2079,30 @@ const getTotalPrettyStorage = (entity) => {
                           >
                             Groups:
                           </Text>
-                          {/* Hide tags that are driven by the
-                              per-tag Switch/Checkbox above
-                              (editableTags keys: bypassdnd, muted,
-                              noread). Those have their own
-                              dedicated toggle and would just
-                              duplicate the same state if also shown
-                              as removable chips down here. The
-                              user pointed this out for bypassdnd
-                              specifically; same logic applies to
-                              every key in editableTags. */}
+                          {/* Hide tags that are driven by a dedicated
+                              control rather than by these chips: the
+                              editableTags keys (muted, noread), plus
+                              bypassdnd, which now has its own screen in
+                              the contact menu. Showing them here too would
+                              duplicate the same state in two places and
+                              let the user change it in the one that does
+                              not run the conflicting-tag rules. */}
                           {(() => {
                             const _hidden = new Set(Object.keys(editableTags || {}));
+                            // Not editableTags keys any more, but still flags
+                            // rather than groups -- both live in the Do Not
+                            // Disturb screen now.
+                            _hidden.add('bypassdnd');
+                            _hidden.add('muted');
                             // 'caregiver' has its own dedicated group toggle
                             // above (favorite-only), so keep it out of the
                             // chip list too — same anti-duplication rule as
                             // the editableTags keys.
                             _hidden.add('caregiver');
+                            // Same for 'autoanswer': its own favorite-only
+                            // toggle above, and it is a per-device flag rather
+                            // than a group (see _abNonGroupTags in app.js).
+                            _hidden.add('autoanswer');
                             const _visibleTags = tags.filter(t => !_hidden.has(t));
                             // Auto-generated groups (derived from chat / call
                             // activity) can't be removed by hand — they reappear
@@ -1849,6 +2182,14 @@ const getTotalPrettyStorage = (entity) => {
                             below with its Add button. */}
                         {editingTags ? (() => {
                           const _flag = new Set(Object.keys(editableTags || {}));
+                          // See above: bypassdnd and muted are flags, not
+                          // groups, even though they no longer live in
+                          // editableTags.
+                          _flag.add('bypassdnd');
+                          _flag.add('muted');
+                          // Dedicated favorite-only toggles, not groups.
+                          _flag.add('caregiver');
+                          _flag.add('autoanswer');
                           const _auto = new Set(['messages', 'chat', 'calls', 'missed', 'recent']);
                           const _assigned = new Set(tags.map(t => (t || '').toLowerCase()));
                           const _seen = new Set();
@@ -2310,7 +2651,7 @@ const getTotalPrettyStorage = (entity) => {
                            sanitizeContact would reject an empty uri
                            with a noisy toast. Disabling the button
                            gives an earlier, clearer affordance. */
-                        disabled={!validEmail() || !uri.trim()}
+                        disabled={!validEmail() || !uri.trim() || anyUriInvalid()}
                         onPress={handleSave}
                         icon="content-save"
                       >
@@ -2417,6 +2758,7 @@ EditContactModal.propTypes = {
   show: PropTypes.bool,
   close: PropTypes.func.isRequired,
   saveContactByUser: PropTypes.func,
+  refreshAddressBook: PropTypes.func,
   contactHasStoredMessages: PropTypes.func,
   uri: PropTypes.string,
   displayName: PropTypes.string,

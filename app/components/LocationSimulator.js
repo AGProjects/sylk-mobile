@@ -28,6 +28,8 @@
 //       geolocation,             // optional: @react-native-community/geolocation (for the requester-side seed)
 //   })
 
+import BackgroundTimer from 'react-native-background-timer';
+
 import { haversineMeters, pickMeetingDestinationKm } from './geoUtils';
 
 // The meet-up convergence simulator is no longer gated by this build
@@ -155,6 +157,40 @@ function log(msg) {
     } catch (e) { /* noop */ }
 }
 
+// Sim timers run on BackgroundTimer, not the JS setInterval.
+//
+// The JS event loop is paused once the app is backgrounded on Android, so a
+// plain setInterval silently stops firing the moment the app leaves the
+// foreground — which is why the simulator stopped whenever you switched away
+// or the screen went off. BackgroundTimer schedules on a native HandlerThread
+// (Android) / a beginBackgroundTask-wrapped dispatch_after (iOS), so the
+// walker keeps stepping while backgrounded.
+//
+// This is the same mechanism the REAL location tick uses
+// (LocationSharingManager arms its 60 s tick with BackgroundTimer.setInterval),
+// so the simulated walker now has the same lifetime as a real share. That is
+// the whole point: a simulator that only runs in the foreground cannot
+// reproduce the background bugs it exists to reproduce.
+//
+// Falls back to the global timers if the native module is unavailable, so the
+// simulator degrades to foreground-only instead of throwing.
+function simSetInterval(fn, ms) {
+    if (BackgroundTimer && typeof BackgroundTimer.setInterval === 'function') {
+        return BackgroundTimer.setInterval(fn, ms);
+    }
+    log('[sim] BackgroundTimer unavailable — falling back to foreground-only setInterval');
+    return setInterval(fn, ms);
+}
+
+function simClearInterval(id) {
+    if (id == null) return;
+    if (BackgroundTimer && typeof BackgroundTimer.clearInterval === 'function') {
+        BackgroundTimer.clearInterval(id);
+        return;
+    }
+    clearInterval(id);
+}
+
 export default class LocationSimulator {
     constructor({ enabled, trackEnabled, getEntry, shouldSendUpdateTick, sendLocationPayload, geolocation } = {}) {
         // Master switch for the meet-up convergence sim (start()). Driven
@@ -252,7 +288,7 @@ export default class LocationSimulator {
             // Stop any previous sim for this uri.
             const prev = this._simStates[uri];
             if (prev && prev.timerId) {
-                clearInterval(prev.timerId);
+                simClearInterval(prev.timerId);
             }
             const startCoord = entry.simulatedPosition;
             // The SENDER owns the meeting point. If none (the "3rd point")
@@ -284,7 +320,7 @@ export default class LocationSimulator {
                 isInviter,
                 stepIndex: 0,
                 intervalMs,
-                timerId: setInterval(() => {
+                timerId: simSetInterval(() => {
                     this._tick(uri);
                 }, intervalMs),
             };
@@ -416,7 +452,7 @@ export default class LocationSimulator {
         // Auto-stop the simulator so a stale interval doesn't keep firing
         // and burning a sendMessage every couple of seconds.
         if (!entry || !entry.simulatedPosition) {
-            if (sim.timerId) clearInterval(sim.timerId);
+            if (sim.timerId) simClearInterval(sim.timerId);
             delete this._simStates[uri];
             return;
         }
@@ -462,7 +498,7 @@ export default class LocationSimulator {
         if (!wp) {
             // Defensive: index past the end (arrival should have cleared the
             // timer on the last waypoint already).
-            if (sim.timerId) clearInterval(sim.timerId);
+            if (sim.timerId) simClearInterval(sim.timerId);
             delete this._simStates[uri];
             return;
         }
@@ -612,7 +648,7 @@ export default class LocationSimulator {
             // Stop any previous sim for this uri.
             const prev = this._simStates[uri];
             if (prev && prev.timerId) {
-                clearInterval(prev.timerId);
+                simClearInterval(prev.timerId);
             }
             this._simStates[uri] = {
                 mode: 'untilReturn',
@@ -620,7 +656,7 @@ export default class LocationSimulator {
                 radiusMeters,
                 stepIndex: 0,
                 intervalMs,
-                timerId: setInterval(() => {
+                timerId: simSetInterval(() => {
                     this._untilReturnTick(uri);
                 }, intervalMs),
             };
@@ -680,7 +716,7 @@ export default class LocationSimulator {
         // stopped, expiry). Kill the walker so a stale interval doesn't
         // keep firing.
         if (!entry || !entry.simulatedPosition) {
-            if (sim.timerId) clearInterval(sim.timerId);
+            if (sim.timerId) simClearInterval(sim.timerId);
             delete this._simStates[uri];
             return;
         }
@@ -691,7 +727,7 @@ export default class LocationSimulator {
             // before we reach here; if it didn't — e.g. this ran on a
             // non-untilIReturn share — hand control back to real GPS by
             // dropping the synthetic point.)
-            if (sim.timerId) clearInterval(sim.timerId);
+            if (sim.timerId) simClearInterval(sim.timerId);
             delete this._simStates[uri];
             entry.simulatedPosition = null;
             log(`[sim] UNTIL-RETURN round-trip complete for ${uri} — walker stopped`);
@@ -761,7 +797,7 @@ export default class LocationSimulator {
             };
             const prev = this._simStates[uri];
             if (prev && prev.timerId) {
-                clearInterval(prev.timerId);
+                simClearInterval(prev.timerId);
             }
             this._simStates[uri] = {
                 mode: 'randomWalk',
@@ -776,7 +812,7 @@ export default class LocationSimulator {
                 // origin→current radial to follow).
                 heading: Math.random() * 2 * Math.PI,
                 intervalMs,
-                timerId: setInterval(() => {
+                timerId: simSetInterval(() => {
                     this._randomWalkTick(uri);
                 }, intervalMs),
             };
@@ -827,7 +863,7 @@ export default class LocationSimulator {
         if (!sim || sim.mode !== 'randomWalk') return;
         const entry = this._getEntry(uri);
         if (!entry || !entry.simulatedPosition) {
-            if (sim.timerId) clearInterval(sim.timerId);
+            if (sim.timerId) simClearInterval(sim.timerId);
             delete this._simStates[uri];
             return;
         }
@@ -874,7 +910,7 @@ export default class LocationSimulator {
         const st = this._simStates[uri];
         if (!st) return;
         if (st.timerId) {
-            clearInterval(st.timerId);
+            simClearInterval(st.timerId);
         }
         // For the debug round-trip / random-walk walkers, hand control
         // back to real GPS by dropping the synthetic position so a share

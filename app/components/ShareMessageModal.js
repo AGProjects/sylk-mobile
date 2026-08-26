@@ -41,7 +41,7 @@ class ShareMessageModal extends Component {
 
     handleEmailButton(event) {
         const emailMessage = this.state.message.text;
-        const subject = 'Share Sylk message';
+        const subject = 'Share Blink message';
 
         /*
         let mailMessage = {

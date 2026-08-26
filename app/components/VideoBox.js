@@ -31,7 +31,7 @@ import Icon from '@react-native-vector-icons/material-design-icons';
 
 import { mediaDevices, ScreenCapturePickerView } from 'react-native-webrtc';
 import CallOverlay from './CallOverlay';
-import { CAP_SCREEN_SHARING, getPeerCallCapabilities } from './CallCapabilities';
+import { CAP_SCREEN_SHARING, CAP_POINTER, getPeerCallCapabilities } from './CallCapabilities';
 import NetworkSpeedometer from './NetworkSpeedometer';
 import MediaInfoPanel from './MediaInfoPanel';
 
@@ -63,6 +63,54 @@ const MAX_POINTS = 30;
 // a deadlocked capture left a viewer staring at a frozen frame for 52 seconds
 // with no cue at all.
 const REMOTE_SHARE_STALL_MS = 15000;
+
+// ---------------------------------------------------------------------------
+// Remote CAMERA video liveness (1-1 calls).
+//
+// The track's `muted` flag is not a bandwidth signal. libwebrtc raises it as
+// soon as no RTP has arrived for a short window, so a link that is merely SLOW
+// — 1-3 fps, multi-second gaps between frames, which is precisely what
+// congestion control degrades to — crosses that line over and over. Reacting
+// to the edge directly (which is what this file used to do) strobes the avatar
+// on and off over a stream that was never dead: the complaint that motivated
+// this change.
+//
+// So `muted` only opens an INVESTIGATION now; it no longer decides anything.
+// The RTCView keeps its last decoded frame while we look at getStats(), and
+// the verdict is byte-gated:
+//
+//   0 .. SOFT_MS          held frame, no UI at all. Absorbs ordinary stutter.
+//   SOFT_MS .. DEAD_MS    held frame + a quiet "Poor connection" pill. The
+//                         viewer is told the picture is stale instead of
+//                         believing a frozen face is live — the same honesty
+//                         the screen-share path above already provides.
+//   DEAD_MS, bytes flat   avatar. Only reachable when inbound video bytes have
+//                         not moved for the whole window; any byte arriving
+//                         restarts the clock, so a slow-but-alive stream never
+//                         gets here.
+//
+// PROBE_MS is the getStats() cadence, and it runs only while a stall is under
+// investigation — not for the life of the call.
+// ---------------------------------------------------------------------------
+const REMOTE_VIDEO_SOFT_MS  = 3000;
+const REMOTE_VIDEO_DEAD_MS  = 10000;
+const REMOTE_VIDEO_PROBE_MS = 1000;
+// A getStats() call outstanding longer than this is presumed lost, not slow,
+// and a fresh probe is issued. Without it one hung native call would freeze
+// the whole verdict for the remainder of the call.
+const REMOTE_VIDEO_PROBE_STALE_MS = 5000;
+
+// Ceiling for viewer-side zoom on a shared screen. Past ~5x a screen share
+// encoded for a phone is pure interpolation -- bigger blur, not more detail --
+// so the limit is about honesty rather than performance. The step buttons move
+// in REMOTE_ZOOM_STEP increments; pinch is continuous within the same range.
+const REMOTE_ZOOM_MAX = 5;
+const REMOTE_ZOOM_STEP = 0.5;
+// How far a finger may travel and still count as a tap rather than a drag.
+// Android's own touch slop is 8dp; below that, ordinary taps (which routinely
+// drift a few pixels) would be swallowed and the pointer click would silently
+// do nothing.
+const REMOTE_TAP_SLOP = 10;
 
 // Audio device picker variant. Change this value to switch styles:
 //   'cycle'    - tap the button to cycle through available devices (legacy behaviour)
@@ -121,6 +169,24 @@ class VideoBox extends Component {
         // works around.
         this._remoteRtcMountKey = 'rtc-remote-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 
+        // Camera-stall investigation state (see REMOTE_VIDEO_* at the top).
+        // `_remoteVideoSeen` gates the hold-the-last-frame behaviour: there is
+        // no point holding a frame we never decoded, so a track that stalls
+        // before delivering anything still falls back to the avatar at once.
+        this._remoteVideoStallTimer = null;
+        this._remoteVideoStallSince = 0;
+        this._remoteVideoWatchedSince = 0;
+        this._remoteVideoLastCounters = null;
+        this._remoteVideoProbeInFlight = false;
+        this._remoteVideoProbeSince = 0;
+        this._remoteVideoWatchGen = 0;
+        this._lastRemoteVideoTrackId = null;
+        this._remoteVideoSeen = (() => {
+            const rs = (this.props.call.getRemoteStreams && this.props.call.getRemoteStreams()[0]) || null;
+            const t = (rs && rs.getVideoTracks) ? rs.getVideoTracks()[0] : null;
+            return !!(t && t.muted !== true);
+        })();
+
         this.state = {
             remoteUri: this.props.remoteUri,
             photo: this.props.photo,
@@ -178,6 +244,11 @@ class VideoBox extends Component {
                 const t = (rs && rs.getVideoTracks) ? rs.getVideoTracks()[0] : null;
                 return !!(t && t.muted !== true);
             })(),
+            // The remote camera stream is struggling: the track has been muted
+            // for longer than REMOTE_VIDEO_SOFT_MS but is not yet confirmed
+            // dead, so we are still showing the last frame we decoded. Drives
+            // the "Poor connection" pill only — never the avatar.
+            remoteVideoDegraded: false,
             remoteSharesScreen: false,
             showEscalateConferenceModal: false,
             // Conference-request confirmation dialog (Material paper
@@ -289,6 +360,17 @@ class VideoBox extends Component {
 			// and the remote view is forced to 'contain' so the whole shared screen
 			// is visible and the tap maps exactly.
 			pointerMode: false,
+			// Viewer-side magnification of the peer's shared screen. A desktop
+			// screen scaled down to a phone is frequently unreadable (12pt text
+			// at 1/4 size), so the viewer can pinch to zoom and drag to pan.
+			// remoteZoom is the magnification (1 = fit-to-view); remoteZoomTx/Ty
+			// pan the magnified image in VIEW pixels, measured from the centred
+			// position, and are always clamped so the content edges can't be
+			// dragged inside the viewport. Only active while remotePeerSharing:
+			// on an ordinary camera call the gesture stays a plain tap.
+			remoteZoom: 1,
+			remoteZoomTx: 0,
+			remoteZoomTy: 0,
 			remoteVideoSize: null,
 			remoteVideoLayout: null,
 			// True when the PEER told us (application/sylk-screen-sharing 'start')
@@ -347,6 +429,194 @@ class VideoBox extends Component {
 		this.prevStats = {}; // initialize here
 		this.prevValues = {};
         this.overlayTimer = null;
+
+        // ---------------------------------------------------------------
+        // Remote-video gesture handler (tap / pinch-zoom / pan).
+        //
+        // One responder owns every touch on the remote video, because the
+        // three gestures share a start: a tap is only a tap once we know it
+        // did NOT become a drag or a pinch. Splitting them across separate
+        // responders is what produces the classic "tap fires on every pinch"
+        // bug. Release therefore does the tap action only when the gesture
+        // stayed within the slop AND never had a second finger down.
+        //
+        // The finger set can change mid-gesture -- a second finger lands, one
+        // lifts, a third joins, the OS reorders the touches array -- and every
+        // one of those changes the meaning of the numbers we measure from. So
+        // the handler keys off a signature of the active touches and RE-BASES
+        // (start distance, start zoom, start pan, anchor, drag origin) the
+        // moment it changes. Without that, lifting one finger after a pinch
+        // re-reads the new separation against the old baseline and the picture
+        // snaps to a random zoom.
+        //
+        // Zoom/pan are inert unless the peer is sharing a screen: on a camera
+        // call the far end already fills the frame and a stray pinch that
+        // silently magnified the picture would just look broken.
+        this._remoteGesture = null;
+        this._remoteTouchView = null;
+        // Window rect of the remote-video touch target, refreshed on layout.
+        this._remoteViewPageRect = null;
+        this._remoteZoomRaf = null;
+        this._pendingRemoteZoom = null;
+        this._remoteViewPanResponder = PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onStartShouldSetPanResponderCapture: () => false,
+            // Claim moves too, so a drag or a pinch that starts here stays
+            // here instead of being stolen by an ancestor responder.
+            onMoveShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponderCapture: () => false,
+            // Default (allow). Refusing here would let a finger resting on the
+            // video block every other control on the screen -- the zoom
+            // buttons and the navbar included -- until it lifts.
+            onPanResponderTerminationRequest: () => true,
+            onPanResponderGrant: (e) => {
+                const ne = e.nativeEvent || {};
+                let touches = this._videoTouches(ne);
+                if (!touches.length) {
+                    // Self-check: the touch that just granted us the responder
+                    // IS on this view, so a rect that excludes it is measured in
+                    // some other coordinate space (an inset/edge-to-edge quirk).
+                    // Drop it and stop filtering rather than silently ignoring
+                    // every finger and killing zoom outright.
+                    this._remoteViewPageRect = null;
+                    touches = (ne.touches || []);
+                }
+                const zoom = this._currentRemoteZoom();
+                this._remoteGesture = {
+                    startScale: zoom.scale,
+                    startTx: zoom.tx,
+                    startTy: zoom.ty,
+                    startDist: touches.length >= 2 ? this._touchDistance(touches) : 0,
+                    anchor: this._pinchAnchor(touches),
+                    // Signature of the touch set the baseline above describes.
+                    // Seeded here (not left null) so the first move does not
+                    // spend itself re-basing: under load that move can already
+                    // carry tens of pixels of travel, and re-basing on it would
+                    // leave the picture trailing the finger by that offset for
+                    // the rest of the drag.
+                    sig: this._touchSignature(touches),
+                    // Drag origin in gestureState space, re-based alongside
+                    // everything else -- g.dx accumulates across the whole
+                    // gesture, including across finger changes.
+                    baseDx: 0,
+                    baseDy: 0,
+                    pinched: false,
+                    moved: false,
+                    // Touches ON THIS VIEW at grant (normally 1). A second
+                    // finger here means the gesture was never a tap -- a
+                    // two-finger tap produces no move events at all, so the
+                    // flag has to be latched as touches arrive rather than
+                    // inferred at release.
+                    baseTouches: Math.max(1, touches.length),
+                    multiTouch: false,
+                    locX: ne.locationX,
+                    locY: ne.locationY,
+                };
+            },
+            // Fires for every ADDITIONAL touch, including ones that never move.
+            onPanResponderStart: (e) => {
+                const gs = this._remoteGesture;
+                if (!gs) return;
+                const touches = this._videoTouches(e.nativeEvent || {});
+                if (touches.length > gs.baseTouches) gs.multiTouch = true;
+                // Force the next move to re-base -- but only on a set we have
+                // not already baselined. This handler also fires immediately
+                // after the grant for the granting touch, and nulling the
+                // signature there would throw away the grant baseline and
+                // re-base on the first move instead: under load that move can
+                // already carry tens of pixels, which the picture would then
+                // trail by for the rest of the drag.
+                if (this._touchSignature(touches) !== gs.sig) gs.sig = null;
+            },
+            // A finger lifted (this fires for every touch end, the last one
+            // included). Whatever the remaining set is, the baseline no longer
+            // describes it -- and a pointer id freed here can be recycled by
+            // the next finger, so the signature alone would not notice.
+            onPanResponderEnd: () => {
+                const gs = this._remoteGesture;
+                if (gs) gs.sig = null;
+            },
+            onPanResponderMove: (e, g) => {
+                const gs = this._remoteGesture;
+                if (!gs) return;
+                const touches = this._videoTouches(e.nativeEvent || {});
+                if (touches.length > gs.baseTouches) gs.multiTouch = true;
+                // Only a finger somewhere else on the screen moved.
+                if (!touches.length) return;
+                if (!this.state.remotePeerSharing) {
+                    // No zoom on a camera call -- just remember that the finger
+                    // travelled, so release doesn't treat this as a tap.
+                    if (Math.abs(g.dx) > REMOTE_TAP_SLOP
+                        || Math.abs(g.dy) > REMOTE_TAP_SLOP) gs.moved = true;
+                    return;
+                }
+                // Re-base whenever the finger set changes (count, identity or
+                // order). Everything measured below is relative to a baseline
+                // that only describes THIS set of touches: reading a new pair's
+                // separation against the old baseline snaps the zoom.
+                const sig = this._touchSignature(touches);
+                if (sig !== gs.sig) {
+                    const cur = this._currentRemoteZoom();
+                    gs.sig = sig;
+                    gs.startScale = cur.scale;
+                    gs.startTx = cur.tx;
+                    gs.startTy = cur.ty;
+                    gs.baseDx = g.dx;
+                    gs.baseDy = g.dy;
+                    gs.startDist = touches.length >= 2 ? this._touchDistance(touches) : 0;
+                    gs.anchor = this._pinchAnchor(touches);
+                    return;
+                }
+                if (touches.length >= 2) {
+                    const d = this._touchDistance(touches);
+                    if (!d || !gs.startDist) return;
+                    gs.pinched = true;
+                    gs.moved = true;
+                    const scale = Math.max(1, Math.min(REMOTE_ZOOM_MAX,
+                        gs.startScale * (d / gs.startDist)));
+                    // Keep the anchored content point where it is:
+                    //   drawn = c + (p - c) * z + t   (see _remoteVideoStyle)
+                    // solved for t with p fixed at the anchor gives
+                    //   t = (A - c) * (1 - k) + t0 * k,   k = z / z0.
+                    const k = scale / (gs.startScale || 1);
+                    const layout = this.state.remoteVideoLayout;
+                    let tx = gs.startTx * k;
+                    let ty = gs.startTy * k;
+                    if (gs.anchor && layout && layout.w && layout.h) {
+                        tx = (gs.anchor.x - layout.w / 2) * (1 - k) + gs.startTx * k;
+                        ty = (gs.anchor.y - layout.h / 2) * (1 - k) + gs.startTy * k;
+                    }
+                    const pan = this._clampRemoteZoomPan(scale, tx, ty);
+                    this._applyRemoteZoom(scale, pan.tx, pan.ty);
+                    return;
+                }
+                const dx = g.dx - gs.baseDx;
+                const dy = g.dy - gs.baseDy;
+                if (Math.abs(dx) > REMOTE_TAP_SLOP || Math.abs(dy) > REMOTE_TAP_SLOP) {
+                    gs.moved = true;
+                }
+                const scale = this._currentRemoteZoom().scale;
+                if (scale <= 1) return;
+                const pan = this._clampRemoteZoomPan(scale, gs.startTx + dx, gs.startTy + dy);
+                this._applyRemoteZoom(scale, pan.tx, pan.ty);
+            },
+            onPanResponderRelease: (e) => {
+                const gs = this._remoteGesture;
+                this._remoteGesture = null;
+                if (!gs || gs.moved || gs.pinched || gs.multiTouch
+                    || gs.baseTouches > 1) return;
+                const ne = e.nativeEvent || {};
+                const lx = typeof ne.locationX === 'number' ? ne.locationX : gs.locX;
+                const ly = typeof ne.locationY === 'number' ? ne.locationY : gs.locY;
+                if (typeof lx !== 'number' || typeof ly !== 'number') return;
+                if (this.state.pointerMode) {
+                    this._sendPointer(lx, ly);
+                } else {
+                    this.toggleFullScreen();
+                }
+            },
+            onPanResponderTerminate: () => { this._remoteGesture = null; },
+        });
 
         // PanResponder for the i/speedometer view at the top-left of
         // the video. 15dp threshold so a normal tap (to toggle
@@ -1066,7 +1336,19 @@ class VideoBox extends Component {
                     if (w && h && (!this.state.remoteVideoSize
                         || this.state.remoteVideoSize.w !== w
                         || this.state.remoteVideoSize.h !== h)) {
-                        this.setState({ remoteVideoSize: { w, h } });
+                        const _sizeUpdate = { remoteVideoSize: { w, h } };
+                        // The letterbox changes with the frame's aspect (the
+                        // peer switched monitor or window, or rotated), so a
+                        // pan that was at the edge can now hang past it and
+                        // show a black gap inside the picture. Re-clamp against
+                        // the NEW geometry as part of the same update.
+                        const _cur = this._currentRemoteZoom();
+                        this.setState(_sizeUpdate);
+                        if (_cur.scale > 1) {
+                            const _pan = this._clampRemoteZoomPan(_cur.scale,
+                                _cur.tx, _cur.ty, null, { w, h });
+                            this._applyRemoteZoom(_cur.scale, _pan.tx, _pan.ty);
+                        }
                     }
                     const fps = inbound.framesPerSecond
                         || fmtRate(inbound.framesDecoded, prev.inF, 2);
@@ -1598,10 +1880,25 @@ class VideoBox extends Component {
             if (!data || data.callId !== myId) return;
             const update = { remotePeerSharing: !!data.sharing };
             if (!data.sharing && this.state.pointerMode) update.pointerMode = false;
+            // Either edge starts from fit-to-view: a leftover zoom would frame
+            // a new share at whatever corner the last one was parked on, and a
+            // zoom kept after the share ends would magnify the camera video.
+            this._pendingRemoteZoom = null;
+            update.remoteZoom = 1;
+            update.remoteZoomTx = 0;
+            update.remoteZoomTy = 0;
+            // An in-flight pointer ACK has nothing left to point at.
+            update.ackEcho = null;
             // Either edge of the share resets the stall verdict: a fresh share
             // has not stalled yet, and a stopped one is no longer stalled.
             this._clearRemoteShareStallTimer();
             update.remoteShareStalled = false;
+            // Either edge also ends any camera-stall investigation: the screen
+            // share has its own (much longer) deadline, and a "poor connection"
+            // pill left over from the camera would sit on top of a share that
+            // is behaving normally.
+            this._stopRemoteVideoStallWatch();
+            update.remoteVideoDegraded = false;
             // Share starting: force the remote view active so a stalled-camera
             // avatar (or the first sparse-frame 'mute') doesn't hide the screen.
             if (data.sharing) update.remoteVideoActive = true;
@@ -1614,9 +1911,53 @@ class VideoBox extends Component {
                 const t = this._monitoredRemoteVideoTrack;
                 if (t && t.muted === true) this._startRemoteShareStallTimer();
             }
+            // Share STOPPING has the mirror-image problem. We forced
+            // remoteVideoActive true when it started, and the peer's camera is
+            // very often muted for the whole share — so no 'mute' edge follows
+            // the handover and nothing would ever re-evaluate it: the viewer
+            // would sit on a dead camera view with no avatar and no cue. Re-
+            // derive from the track we actually have, and re-open the
+            // investigation if it is muted.
+            if (!data.sharing) {
+                const t = this._monitoredRemoteVideoTrack;
+                if (!t) {
+                    update.remoteVideoActive = false;
+                } else if (t.muted === true) {
+                    // Defer to the watcher (it may decide to hold the frame),
+                    // but only after this setState has landed.
+                    setTimeout(() => {
+                        if (this.unmounted) return;
+                        if (this.state.remotePeerSharing) return;   // re-shared meanwhile
+                        const tt = this._monitoredRemoteVideoTrack;
+                        if (tt && tt.muted === true) this._startRemoteVideoStallWatch();
+                    }, 0);
+                } else {
+                    update.remoteVideoActive = true;
+                }
+            }
             // New share → assume the sharer is in-app until told otherwise.
             if (data.sharing) update.remoteInApp = true;
-            this.setState(update);
+            this.setState(update, () => {
+                // While WATCHING the peer's screen the call controls live in a
+                // docked bottom bar (renderRemoteShareBar) and the shared screen
+                // is sized to the band between the appbar and that bar. The 4s
+                // auto-hide would drop us into immersive fullscreen and take
+                // both away, so:
+                //   share starts -> cancel the timer, and leave fullscreen if we
+                //                   are already in it, so the bar is on screen
+                //                   from the first frame of the share;
+                //   share ends   -> restore the normal auto-hide behaviour.
+                // A deliberate tap on the video still toggles fullscreen either
+                // way — only the AUTOMATIC hide is suppressed.
+                if (data.sharing) {
+                    clearTimeout(this.overlayTimer);
+                    if (this.state.fullScreen) {
+                        this.toggleFullScreen();
+                    }
+                } else {
+                    this.armOverlayTimer();
+                }
+            });
         });
 
         // Peer ACKed a pointer click WE sent (app.js routes it here). Echo the
@@ -1628,7 +1969,7 @@ class VideoBox extends Component {
             const pos = this._pendingPointers && this._pendingPointers[data.t];
             if (!pos) return;
             delete this._pendingPointers[data.t];
-            this._showLocalAck(pos.locX, pos.locY);
+            this._showLocalAck(pos.nx, pos.ny);
         });
 
         // Sharer (iOS) reports whether their app is foregrounded. When it's not,
@@ -1790,6 +2131,12 @@ class VideoBox extends Component {
     componentWillUnmount() {
         this._isMounted = false;
         try { if (this._screenSharingSub) this._screenSharingSub.remove(); } catch (e) { /* noop */ }
+        try {
+            if (this._remoteZoomRaf) {
+                cancelAnimationFrame(this._remoteZoomRaf);
+                this._remoteZoomRaf = null;
+            }
+        } catch (e) { /* noop */ }
         try { if (this._pointerAckSub) this._pointerAckSub.remove(); } catch (e) { /* noop */ }
         try { if (this._pointerVisSub) this._pointerVisSub.remove(); } catch (e) { /* noop */ }
         try { if (this._ackEchoTimer) clearTimeout(this._ackEchoTimer); } catch (e) { /* noop */ }
@@ -2155,13 +2502,209 @@ class VideoBox extends Component {
         this._remoteShareStallTimer = null;
     }
 
+    // ---------------------------------------------------------------
+    // Byte-gated camera-stall investigation. See the constants block
+    // at the top of this file for the reasoning and the timeline.
+    // ---------------------------------------------------------------
+
+    /** Sum inbound video counters across the connection.
+     *
+     *  Returns null ONLY when the stats could not be read at all (no peer
+     *  connection, getStats() threw). Unreadable is not evidence of a dead
+     *  stream and must never be treated as one — the same rule the screen-share
+     *  watchdog follows.
+     *
+     *  A successful read that finds no inbound video receiver is a different
+     *  thing entirely: it is positive evidence that nothing is arriving, so it
+     *  returns zeroed counters (`present: false`) and is allowed to condemn the
+     *  stream like any other flat sample. */
+    async _readRemoteVideoCounters() {
+        try {
+            const pc = this.props.call && this.props.call._pc;
+            if (!pc || typeof pc.getStats !== 'function') return null;
+            const stats = await pc.getStats();
+            let bytes = 0;
+            let frames = 0;
+            let present = false;
+            stats.forEach((r) => {
+                if (!r || r.type !== 'inbound-rtp') return;
+                const kind = r.kind || r.mediaType;
+                if (kind !== 'video') return;
+                present = true;
+                bytes  += Number(r.bytesReceived  || 0);
+                frames += Number(r.framesDecoded  || 0);
+            });
+            return { bytes, frames, present };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** The remote camera track went muted. Do NOT judge it yet — hold the last
+     *  frame and start sampling getStats(). */
+    _startRemoteVideoStallWatch() {
+        if (this._remoteVideoStallTimer) return;      // already investigating
+
+        // Nothing has ever been decoded from this track, so there is no frame
+        // to hold: an empty black rectangle is worse than the avatar. Fall
+        // back immediately, exactly as the old code did.
+        if (!this._remoteVideoSeen) {
+            if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
+            return;
+        }
+
+        // Two clocks, deliberately. `_remoteVideoStallSince` is reset by every
+        // byte that arrives and drives the DEAD verdict. `_remoteVideoWatchedSince`
+        // is not, and drives the pill — otherwise a trickling link would show
+        // the pill on the second probe of every brief hiccup, trading the
+        // avatar flicker we are removing for a pill flicker.
+        this._remoteVideoStallSince = Date.now();
+        this._remoteVideoWatchedSince = Date.now();
+        this._remoteVideoLastCounters = null;
+        this._remoteVideoProbeInFlight = false;
+        this._remoteVideoProbeSince = 0;
+
+        // Investigation generation. A mute/unmute/mute flap — the very thing
+        // this code exists for — can stop one investigation and start another
+        // while a probe from the first is still awaiting getStats(). Without a
+        // generation token that stale continuation would write its counters
+        // into the NEW investigation's state and skew its first comparison.
+        const gen = (this._remoteVideoWatchGen || 0) + 1;
+        this._remoteVideoWatchGen = gen;
+
+        const tick = async () => {
+            if (this.unmounted) return;
+            if (this._remoteVideoWatchGen !== gen) return;   // superseded
+
+            const track = this._monitoredRemoteVideoTrack;
+            // Recovered without an 'unmute' edge (they are not guaranteed).
+            if (track && track.muted !== true) {
+                this._stopRemoteVideoStallWatch({ recovered: true });
+                return;
+            }
+
+            // Skip while a probe is outstanding — but not forever. A getStats()
+            // that hangs rather than rejecting (the native bridge can) would
+            // otherwise latch this flag true and silently disable the pill AND
+            // the avatar for the rest of the call. Same escape hatch the QoS
+            // poller in this file uses.
+            if (this._remoteVideoProbeInFlight) {
+                if ((Date.now() - this._remoteVideoProbeSince) < REMOTE_VIDEO_PROBE_STALE_MS) return;
+                utils.timestampedLog('[video-track] [remote] getStats() probe stuck for',
+                    (REMOTE_VIDEO_PROBE_STALE_MS / 1000) + 's — abandoning it');
+            }
+            this._remoteVideoProbeInFlight = true;
+            this._remoteVideoProbeSince = Date.now();
+            let counters = null;
+            try {
+                counters = await this._readRemoteVideoCounters();
+            } finally {
+                this._remoteVideoProbeInFlight = false;
+            }
+            if (this.unmounted || !this._remoteVideoStallTimer) return;
+            if (this._remoteVideoWatchGen !== gen) return;   // superseded mid-probe
+
+            const now  = Date.now();
+            const prev = this._remoteVideoLastCounters;
+
+            if (counters) {
+                if (counters.frames > 0) this._remoteVideoSeen = true;
+                // Bytes moved: the link is slow, not dead. Restart the dead
+                // clock. This is the single line that keeps a congested
+                // stream out of the avatar state no matter how long it
+                // limps along — which is the whole point of the change.
+                if (prev && (counters.bytes > prev.bytes || counters.frames > prev.frames)) {
+                    this._remoteVideoStallSince = now;
+                    // A stream still delivering while the track reads muted is
+                    // the textbook slow link. Flag it — but only once the
+                    // episode itself has outlasted the soft window, so short
+                    // hiccups stay invisible.
+                    if (!this.state.remoteVideoDegraded
+                            && (now - this._remoteVideoWatchedSince) >= REMOTE_VIDEO_SOFT_MS) {
+                        this.setState({ remoteVideoDegraded: true });
+                    }
+                    // Frames are arriving, so whatever is on screen is not
+                    // as stale as the avatar would imply. Undo an earlier
+                    // dead verdict.
+                    if (!this.state.remoteVideoActive) {
+                        utils.timestampedLog('[video-track] [remote] inbound video resumed —',
+                            'restoring the picture');
+                        this.setState({ remoteVideoActive: true });
+                    }
+                }
+                this._remoteVideoLastCounters = counters;
+            }
+
+            const stalledMs = now - this._remoteVideoStallSince;
+
+            if (stalledMs >= REMOTE_VIDEO_SOFT_MS && !this.state.remoteVideoDegraded) {
+                utils.timestampedLog('[video-track] [remote] no new frames for',
+                    (REMOTE_VIDEO_SOFT_MS / 1000) + 's — holding the last frame,',
+                    'flagging a poor connection');
+                this.setState({ remoteVideoDegraded: true });
+            }
+
+            // Only counters we could actually READ may condemn the stream.
+            // With getStats() unavailable we keep holding the frame rather
+            // than guessing, and the 'ended' event remains the backstop.
+            if (stalledMs >= REMOTE_VIDEO_DEAD_MS && counters && this.state.remoteVideoActive) {
+                utils.timestampedLog('[video-track] [remote] inbound video flat for',
+                    (REMOTE_VIDEO_DEAD_MS / 1000) + 's —',
+                    'treating the stream as dead, showing the avatar',
+                    'callUUID=', (this.props.call && this.props.call.id));
+                this.setState({ remoteVideoActive: false });
+                // Deliberately keep probing: recovery may arrive as bytes
+                // rather than as an 'unmute' edge, and the branch above
+                // brings the picture back when it does.
+            }
+        };
+
+        this._remoteVideoStallTimer = setInterval(tick, REMOTE_VIDEO_PROBE_MS);
+    }
+
+    /** End the investigation. `recovered` means frames are flowing again, so
+     *  the picture comes back and both cues clear. */
+    _stopRemoteVideoStallWatch({ recovered = false } = {}) {
+        if (this._remoteVideoStallTimer) {
+            clearInterval(this._remoteVideoStallTimer);
+            this._remoteVideoStallTimer = null;
+        }
+        // Bump the generation so any probe still in flight from this
+        // investigation cannot write into the next one.
+        this._remoteVideoWatchGen = (this._remoteVideoWatchGen || 0) + 1;
+        this._remoteVideoLastCounters = null;
+        this._remoteVideoProbeInFlight = false;
+        this._remoteVideoProbeSince = 0;
+        this._remoteVideoStallSince = 0;
+        this._remoteVideoWatchedSince = 0;
+        if (this.unmounted) return;
+
+        const update = {};
+        if (this.state.remoteVideoDegraded) update.remoteVideoDegraded = false;
+        if (recovered && !this.state.remoteVideoActive) update.remoteVideoActive = true;
+        if (Object.keys(update).length > 0) this.setState(update);
+    }
+
     _attachRemoteVideoTrackListeners(remoteStream) {
         try {
+            const prevTrackId = this._lastRemoteVideoTrackId;
             this._detachRemoteVideoTrackListeners();
 
             const tracks = (remoteStream && remoteStream.getVideoTracks)
                 ? remoteStream.getVideoTracks() : [];
             const track = (tracks && tracks.length > 0) ? tracks[0] : null;
+
+            // "Have we ever decoded a frame" is a property of the TRACK, not of
+            // this component. A replaced call hands us a brand-new track that
+            // has produced nothing yet; carrying the old track's `seen` over
+            // would make us hold the previous call's last frame for the full
+            // dead window. Re-seed whenever the identity changes; a plain
+            // remount of the same track keeps its history.
+            const trackId = track ? track.id : null;
+            if (trackId !== prevTrackId) {
+                this._remoteVideoSeen = !!(track && track.muted !== true);
+            }
+            this._lastRemoteVideoTrackId = trackId;
 
             // No live/unmuted remote video track → show the avatar. But if the
             // peer is screen sharing, treat it as active regardless of the
@@ -2172,7 +2715,14 @@ class VideoBox extends Component {
             if (this.state.remoteVideoActive !== activeNow) {
                 this.setState({ remoteVideoActive: activeNow });
             }
-            if (!track) return;
+            // A track that is live right now has, by definition, something
+            // worth holding on to if it stalls later.
+            if (track && track.muted !== true) this._remoteVideoSeen = true;
+            if (!track) {
+                this._stopRemoteVideoStallWatch();
+                this._remoteVideoSeen = false;
+                return;
+            }
 
             this._remoteVideoOnMute = () => {
                 utils.timestampedLog('[video-track] [remote] mute', 'id=', track.id,
@@ -2193,13 +2743,21 @@ class VideoBox extends Component {
                     this._startRemoteShareStallTimer();
                     return;
                 }
-                if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
+                // CAMERA video. The edge alone proves nothing — a congested
+                // uplink mutes and unmutes repeatedly while still delivering.
+                // Hold the frame and let the byte-gated watcher decide.
+                this._startRemoteVideoStallWatch();
             };
             this._remoteVideoOnUnmute = () => {
                 utils.timestampedLog('[video-track] [remote] unmute', 'id=', track.id,
                     'callUUID=', (this.props.call && this.props.call.id));
                 this._clearRemoteShareStallTimer();
                 if (this.state.remoteShareStalled) this.setState({ remoteShareStalled: false });
+                this._remoteVideoSeen = true;
+                // Recovery is always immediate: there is no reason to make
+                // someone wait to see a picture we are already receiving.
+                // Hysteresis belongs on the way DOWN, not on the way up.
+                this._stopRemoteVideoStallWatch({ recovered: true });
                 if (!this.state.remoteVideoActive) this.setState({ remoteVideoActive: true });
             };
             this._remoteVideoOnEnded = () => {
@@ -2211,6 +2769,10 @@ class VideoBox extends Component {
                 // 'stop' signal never arrives — which is the whole premise of
                 // the bug this was added for.
                 if (this.state.remoteShareStalled) this.setState({ remoteShareStalled: false });
+                // 'ended' is definitive in a way 'mute' is not: the track is
+                // gone and no byte will ever follow. No grace period here.
+                this._stopRemoteVideoStallWatch();
+                this._remoteVideoSeen = false;
                 if (this.state.remoteVideoActive) this.setState({ remoteVideoActive: false });
             };
 
@@ -2224,6 +2786,14 @@ class VideoBox extends Component {
                 track.onended  = this._remoteVideoOnEnded;
             }
             this._monitoredRemoteVideoTrack = track;
+
+            // 'mute' is edge-triggered: a track that is ALREADY muted when we
+            // attach (remount mid-stall, or a stream handed over during a
+            // congestion episode) never emits another edge, so arm the watch
+            // here or nothing would ever re-evaluate it.
+            if (!this.state.remotePeerSharing && track.muted === true) {
+                this._startRemoteVideoStallWatch();
+            }
         } catch (e) {
             console.log('[video-track] remote attach failed:', e && e.message);
         }
@@ -2231,6 +2801,7 @@ class VideoBox extends Component {
 
     _detachRemoteVideoTrackListeners() {
         this._clearRemoteShareStallTimer();
+        this._stopRemoteVideoStallWatch();
         const track = this._monitoredRemoteVideoTrack;
         if (!track) return;
         try {
@@ -2456,11 +3027,19 @@ class VideoBox extends Component {
 					{!toggleOnly && this.state.audioDevicePickerVisible && otherDevices.length > 0 && (
 						<View style={{
 							position: 'absolute',
-							bottom: '100%',
+							// Portrait: the trigger sits in a bottom bar, so the
+							// stack opens UPWARD. Landscape while watching a
+							// remote share: the trigger lives in the navbar at
+							// the TOP of the screen, so opening upward would
+							// push it off-screen — flip to open DOWNWARD (same
+							// treatment ConferenceBox gives its pickers).
+							bottom: this._showRemoteShareNavbarControls() ? undefined : '100%',
+							top: this._showRemoteShareNavbarControls() ? '100%' : undefined,
 							left: 0,
 							right: 0,
 							alignItems: 'center',
-							marginBottom: 4,
+							marginBottom: this._showRemoteShareNavbarControls() ? undefined : 4,
+							marginTop: this._showRemoteShareNavbarControls() ? 4 : undefined,
 							zIndex: 100,
 							elevation: 10,
 						}}>
@@ -3106,12 +3685,7 @@ class VideoBox extends Component {
                 // VideoBox is unmounted (user is on the chat screen), so
                 // _stopScreenShare's inset refresh won't run — do it here so the
                 // returning app doesn't overlap the top/bottom system bars.
-                if (Platform.OS === 'android' && NativeModules.SylkBridge
-                        && typeof NativeModules.SylkBridge.refreshSystemInsets === 'function') {
-                    setTimeout(() => {
-                        try { NativeModules.SylkBridge.refreshSystemInsets(); } catch (e) { /* noop */ }
-                    }, 400);
-                }
+                this._refreshSystemInsets(400);
             }
             // Take the user back to the video-call screen. The share had
             // moved them to the chat; with nothing left to present, the call
@@ -3351,6 +3925,33 @@ class VideoBox extends Component {
                 });
             }
         } catch (e) { /* noop */ }
+
+        // Restore the safe-area padding. A share session hides the system bars
+        // and collapses the insets to 0; when the bars come back Android does
+        // not reliably redeliver WindowInsets, so JS keeps the zeros and — with
+        // edge-to-edge forced on by RN 0.76+ — paints the app under the status
+        // bar and under the navigation buttons.
+        //
+        // This belongs HERE, in the teardown primitive, rather than beside the
+        // individual stop paths. There are five ways a share can end and only
+        // two of them went through _stopScreenShare(); the other three —
+        // most importantly the call terminating while a share is still running,
+        // which is the common case — reached this function directly and skipped
+        // the fix entirely. Putting it at the single point they all funnel
+        // through is what makes the guarantee hold.
+        this._refreshSystemInsets();
+    }
+
+    /** Ask Android to re-show the system bars and re-dispatch window insets.
+     *  Deferred: on the system-pill stop path the app is still being raised to
+     *  the foreground, and insets requested before that lands are discarded. */
+    _refreshSystemInsets(delayMs = 350) {
+        if (Platform.OS !== 'android') return;
+        const bridge = NativeModules.SylkBridge;
+        if (!bridge || typeof bridge.refreshSystemInsets !== 'function') return;
+        setTimeout(() => {
+            try { bridge.refreshSystemInsets(); } catch (e) { /* noop */ }
+        }, delayMs);
     }
 
     /** Make sure the camera is actually producing again once a share ends.
@@ -3718,12 +4319,9 @@ class VideoBox extends Component {
         // status bar and bottom navigation bar and those become unreachable.
         // Deferred so it runs after the returning layout has settled (and, on
         // the system-pill path, after bringAppToForeground raises the app).
-        if (Platform.OS === 'android' && NativeModules.SylkBridge
-                && typeof NativeModules.SylkBridge.refreshSystemInsets === 'function') {
-            setTimeout(() => {
-                try { NativeModules.SylkBridge.refreshSystemInsets(); } catch (e) { /* noop */ }
-            }, 350);
-        }
+        // (_teardownScreenShareResources above already scheduled this; the
+        // repeat is harmless and keeps the guarantee local to this path.)
+        this._refreshSystemInsets();
         // Ready for the next share.
         this._iosBroadcastEnded = false;
     }
@@ -3732,10 +4330,239 @@ class VideoBox extends Component {
         this.setState({ pointerMode: !this.state.pointerMode });
     }
 
-    /** Tell the peer we started/stopped sharing our screen. Doubles as a
-     *  capability advertisement: only clients that implement the pointer
-     *  protocol send this, so a peer that receives 'start' knows it may show
-     *  its pointer button and that WE can render the marker they send back. */
+    // ---------------------------------------------------------------
+    // Viewer-side zoom on the peer's shared screen
+    // ---------------------------------------------------------------
+
+    /** Touches that are actually on the remote-video view, in window
+     *  coordinates against the rect measured at layout.
+     *
+     *  nativeEvent.touches lists EVERY finger on the screen, so a thumb resting
+     *  on the navbar or the zoom buttons otherwise reads as a second pinch
+     *  finger: it cancels taps, and once the real fingers lift it can go on
+     *  driving the pan by itself. Filtering by the touch's own `target` does
+     *  NOT work -- Android stamps every pointer of a gesture with the same
+     *  target tag, and on iOS the per-event target is the touch that changed --
+     *  so the geometric test is the portable one. Degrades to the raw list
+     *  until the first measurement lands. */
+    _videoTouches(ne) {
+        const all = (ne && ne.touches) || [];
+        const rect = this._remoteViewPageRect;
+        if (!rect || !rect.w || !rect.h) return all;
+        return all.filter(t => t
+            && typeof t.pageX === 'number' && typeof t.pageY === 'number'
+            && t.pageX >= rect.x && t.pageX <= rect.x + rect.w
+            && t.pageY >= rect.y && t.pageY <= rect.y + rect.h);
+    }
+
+    /** Midpoint between the two pinching fingers, held fixed for the pinch so
+     *  what the user pinched on stays under their fingers instead of drifting
+     *  toward the centre. Null when the platform gave us no per-touch
+     *  coordinates -- then the view centre is the anchor, which is less
+     *  pleasant, not wrong. */
+    _pinchAnchor(touches) {
+        if (!touches || touches.length < 2) return null;
+        const rect = this._remoteViewPageRect;
+        if (rect && rect.w && rect.h
+            && typeof touches[0].pageX === 'number'
+            && typeof touches[1].pageX === 'number') {
+            return {
+                x: (touches[0].pageX + touches[1].pageX) / 2 - rect.x,
+                y: (touches[0].pageY + touches[1].pageY) / 2 - rect.y,
+            };
+        }
+        if (typeof touches[0].locationX !== 'number'
+            || typeof touches[1].locationX !== 'number') return null;
+        return {
+            x: (touches[0].locationX + touches[1].locationX) / 2,
+            y: (touches[0].locationY + touches[1].locationY) / 2,
+        };
+    }
+
+    /** The zoom as it will be, not as it was last committed. _applyRemoteZoom
+     *  coalesces to one setState per frame (see there), so during a gesture
+     *  this.state can lag a frame behind -- and reading it back as the baseline
+     *  for the NEXT frame makes the picture pop back one increment, exactly
+     *  when the JS thread is loaded enough for the coalescing to matter. */
+    _currentRemoteZoom() {
+        const p = this._pendingRemoteZoom;
+        if (p) return { scale: p.scale, tx: p.tx, ty: p.ty };
+        return {
+            scale: this.state.remoteZoom || 1,
+            tx: this.state.remoteZoomTx || 0,
+            ty: this.state.remoteZoomTy || 0,
+        };
+    }
+
+    /** Identity of the current touch set: count plus the identifiers of the
+     *  two touches the pinch maths reads. Any change here (a finger added or
+     *  lifted, the array reordered by the OS) invalidates the gesture baseline,
+     *  because every measurement below is relative to a specific pair. */
+    _touchSignature(touches) {
+        if (!touches || !touches.length) return '0';
+        const id0 = touches[0] ? touches[0].identifier : '';
+        const id1 = touches[1] ? touches[1].identifier : '';
+        return touches.length + ':' + id0 + ':' + id1;
+    }
+
+    /** Distance between the first two active touches, for pinch scaling. */
+    _touchDistance(touches) {
+        if (!touches || touches.length < 2) return 0;
+        const dx = touches[0].pageX - touches[1].pageX;
+        const dy = touches[0].pageY - touches[1].pageY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /** Keep the magnified image covering the viewport: pan is limited to the
+     *  part of the picture that actually hangs outside it, so the user can
+     *  never drag the shared screen off into the black bars (which reads as a
+     *  frozen or lost share). Uses the true frame size when the stats poller
+     *  has reported one, so the limit follows the letterboxed CONTENT rather
+     *  than the view box. */
+    _clampRemoteZoomPan(scale, tx, ty, layoutOverride, sizeOverride) {
+        const layout = layoutOverride || this.state.remoteVideoLayout;
+        if (!layout || !layout.w || !layout.h || !(scale > 1)) return { tx: 0, ty: 0 };
+        const size = sizeOverride || this.state.remoteVideoSize;
+        let dispW = layout.w;
+        let dispH = layout.h;
+        if (size && size.w && size.h) {
+            const fit = Math.min(layout.w / size.w, layout.h / size.h);
+            dispW = size.w * fit;
+            dispH = size.h * fit;
+        }
+        const maxX = Math.max(0, (dispW * scale - layout.w) / 2);
+        const maxY = Math.max(0, (dispH * scale - layout.h) / 2);
+        return {
+            tx: Math.max(-maxX, Math.min(maxX, tx)),
+            ty: Math.max(-maxY, Math.min(maxY, ty)),
+        };
+    }
+
+    /** Forward projection: a normalized point on the peer's screen -> where it
+     *  is drawn in our view right now. The inverse of the mapping _sendPointer
+     *  applies, including the current zoom/pan, so a marker anchored to CONTENT
+     *  keeps sitting on that content while the user pans or zooms. Null until
+     *  the view has been laid out. */
+    _contentToViewPoint(nx, ny) {
+        const layout = this.state.remoteVideoLayout;
+        if (!layout || !layout.w || !layout.h) return null;
+        const size = this.state.remoteVideoSize;
+        let dispW = layout.w;
+        let dispH = layout.h;
+        let offX = 0;
+        let offY = 0;
+        if (size && size.w && size.h) {
+            const fit = Math.min(layout.w / size.w, layout.h / size.h);
+            dispW = size.w * fit;
+            dispH = size.h * fit;
+            offX = (layout.w - dispW) / 2;
+            offY = (layout.h - dispH) / 2;
+        }
+        const px = offX + nx * dispW;
+        const py = offY + ny * dispH;
+        const zoom = this.state.remoteZoom || 1;
+        if (!(zoom > 1)) return { x: px, y: py };
+        const cx = layout.w / 2;
+        const cy = layout.h / 2;
+        return {
+            x: cx + (px - cx) * zoom + (this.state.remoteZoomTx || 0),
+            y: cy + (py - cy) * zoom + (this.state.remoteZoomTy || 0),
+        };
+    }
+
+    /** Commit a zoom/pan, coalesced to one setState per frame. A pinch emits
+     *  touch moves faster than the renderer can resize (on Android the zoom is
+     *  a real SurfaceView relayout -- see _remoteVideoStyle), so applying every
+     *  event makes the gesture stutter and lag the finger. */
+    _applyRemoteZoom(scale, tx, ty) {
+        const z = { scale, tx, ty };
+        this._pendingRemoteZoom = z;
+        if (this._remoteZoomRaf) return;
+        this._remoteZoomRaf = requestAnimationFrame(() => {
+            this._remoteZoomRaf = null;
+            const pending = this._pendingRemoteZoom;
+            if (!pending || this._isMounted === false) return;
+            if (pending.scale === this.state.remoteZoom
+                && pending.tx === this.state.remoteZoomTx
+                && pending.ty === this.state.remoteZoomTy) {
+                this._pendingRemoteZoom = null;
+                return;
+            }
+            // Cleared only once the state actually carries this value, so
+            // _currentRemoteZoom keeps returning the newest zoom for the whole
+            // window between "requested" and "committed" -- not just until the
+            // frame fires. A newer request replaces it and clears itself.
+            this.setState(
+                { remoteZoom: pending.scale, remoteZoomTx: pending.tx, remoteZoomTy: pending.ty },
+                () => { if (this._pendingRemoteZoom === pending) this._pendingRemoteZoom = null; });
+        });
+    }
+
+    /** Back to fit-to-view. Also the state every share start/stop lands in --
+     *  a zoom left over from a previous share would frame the new one at a
+     *  random corner. (The share handler clears _pendingRemoteZoom itself, so
+     *  a gesture frame in flight can't undo that reset.) */
+    _resetRemoteZoom() {
+        const cur = this._currentRemoteZoom();
+        if (cur.scale === 1 && !cur.tx && !cur.ty) return;
+        this._applyRemoteZoom(1, 0, 0);
+    }
+
+    /** Button zoom, for the many phone users who never discover a pinch (and
+     *  for one-handed use, where a pinch is awkward). Anchored on the centre
+     *  of the current view, and the pan rescales with it so stepping in twice
+     *  keeps following the same region the user was reading. */
+    _stepRemoteZoom(delta) {
+        // Before the first onLayout there is no geometry to magnify against
+        // and _remoteVideoStyle would ignore the zoom -- the readout would
+        // claim 1.5x over an unchanged picture. Do nothing instead.
+        const layout = this.state.remoteVideoLayout;
+        if (!layout || !layout.w || !layout.h) return;
+        const cur = this._currentRemoteZoom();
+        const from = cur.scale;
+        const to = Math.max(1, Math.min(REMOTE_ZOOM_MAX,
+            Math.round((from + delta) * 100) / 100));
+        if (to === from) return;
+        if (to === 1) { this._resetRemoteZoom(); return; }
+        const k = to / from;
+        const pan = this._clampRemoteZoomPan(to, cur.tx * k, cur.ty * k);
+        this._applyRemoteZoom(to, pan.tx, pan.ty);
+    }
+
+    /** Style for the remote RTCView.
+     *
+     *  Zoom is done by ENLARGING THE VIEW'S FRAME and re-centring it, not with
+     *  `transform: [{scale}]`. On Android react-native-webrtc renders into a
+     *  SurfaceViewRenderer -- a SurfaceView, whose content is composited by the
+     *  system in its own layer and does NOT follow a React view transform: the
+     *  picture would stay exactly the same size while its touch target grew.
+     *  Resizing the frame makes the renderer scale the video for real, on both
+     *  platforms, and objectFit:'contain' keeps the aspect ratio while the
+     *  parent (overflow:'hidden') clips whatever hangs outside.
+     *
+     *  Geometry, with c = the view centre: a content point p is drawn at
+     *  c + (p - c) * scale + t. _sendPointer inverts exactly this. */
+    _remoteVideoStyle() {
+        if (!this.state.remotePeerSharing) return styles.video;
+        const scale = this.state.remoteZoom || 1;
+        const layout = this.state.remoteVideoLayout;
+        if (!(scale > 1) || !layout || !layout.w || !layout.h) {
+            return StyleSheet.absoluteFillObject;
+        }
+        return {
+            position: 'absolute',
+            width: layout.w * scale,
+            height: layout.h * scale,
+            left: -(layout.w * (scale - 1)) / 2 + (this.state.remoteZoomTx || 0),
+            top: -(layout.h * (scale - 1)) / 2 + (this.state.remoteZoomTy || 0),
+        };
+    }
+
+    /** Tell the peer we started/stopped sharing our screen, so their viewer
+     *  UI (contain-fit remote video, pointer slot, stall cue) can follow the
+     *  share. This is NOT a pointer-capability advertisement -- whether the
+     *  viewer may point is decided by the CAP_POINTER token we send at
+     *  'established' (components/CallCapabilities.js). */
     _sendScreenSharingSignal(action) {
         const call = this.props.call;
         if (!call || typeof call.sendMessage !== 'function') return;
@@ -3792,6 +4619,22 @@ class VideoBox extends Component {
     _peerCanShareScreen() {
         const caps = this.state.peerCapabilities;
         return Array.isArray(caps) && caps.indexOf(CAP_SCREEN_SHARING) !== -1;
+    }
+
+    /** Can we point at the screen this peer is sharing? Only when they
+     *  explicitly advertised the pointer protocol. A viewer looking at a
+     *  share from an older build (or from a client that captures a screen
+     *  but does not render guide markers) would tap into the void, so the
+     *  navbar pointer button stays hidden there -- absence of an
+     *  advertisement is a "no", same rule as every other gated control.
+     *
+     *  Note this is deliberately NOT inferred from the 'start' signal on
+     *  application/sylk-screen-sharing. That signal only says a screen is
+     *  on the wire; it says nothing about whether the sharer can draw our
+     *  pointer on it. */
+    _peerSupportsPointer() {
+        const caps = this.state.peerCapabilities;
+        return Array.isArray(caps) && caps.indexOf(CAP_POINTER) !== -1;
     }
 
     /** Human label for the peer, for the outcome banner. Same
@@ -3882,8 +4725,8 @@ class VideoBox extends Component {
             screenRequestPendingId: null,
         });
         this._showScreenRequestNotice(event.accepted
-            ? this._peerLabel() + ' accepted \u2014 waiting for their screen\u2026'
-            : this._peerLabel() + ' declined to share their screen');
+            ? this._peerLabel() + ' accepted \u2014 waiting for the screen\u2026'
+            : this._peerLabel() + ' declined to share the screen');
     }
 
     /** The local user accepted an incoming request (modal owned by
@@ -3910,19 +4753,47 @@ class VideoBox extends Component {
      *  on the peer's shared screen and send it (application/sylk-pointer). While
      *  pointerMode is on the remote view is 'contain', so account for the
      *  letterbox and ignore taps in the bars. */
-    /** Echo a just-ACKed click locally: a green dot at the tap position, in the
-     *  same (locationX/Y) coordinate space as the remote-video tap target.
-     *  Auto-clears after ~900ms. */
-    _showLocalAck(locX, locY) {
+    /** Echo a just-ACKed click locally: a green dot on the point of the peer's
+     *  screen we clicked. Stored NORMALIZED (not in view pixels) because the
+     *  ACK arrives a round trip later, by which time the user may have panned
+     *  or zoomed -- the dot has to stay on the thing that was clicked, not on
+     *  whatever moved under those pixels. Projected at render time by
+     *  _contentToViewPoint. Auto-clears after ~900ms. */
+    _showLocalAck(nx, ny) {
         const id = Date.now();
         this._ackEchoId = id;
-        this.setState({ ackEcho: { x: locX, y: locY, id } });
+        this.setState({ ackEcho: { nx, ny, id } });
         if (this._ackEchoTimer) clearTimeout(this._ackEchoTimer);
         this._ackEchoTimer = setTimeout(() => {
             if (this._ackEchoId === id && this._isMounted !== false) {
                 this.setState({ ackEcho: null });
             }
         }, 900);
+    }
+
+    /** The green "the peer rendered it" dot, positioned through the current
+     *  zoom/pan. Null while there is nothing to echo or before layout. */
+    _renderAckEcho() {
+        const echo = this.state.ackEcho;
+        // Normalized coordinates only mean something against the letterboxed
+        // share. If it ended while the ACK was in flight the view is back to
+        // the camera's fit, and the dot would land somewhere arbitrary on it.
+        if (!echo || !this.state.remotePeerSharing) return null;
+        const at = this._contentToViewPoint(echo.nx, echo.ny);
+        if (!at) return null;
+        return (
+            <View
+                pointerEvents="none"
+                style={{
+                    position: 'absolute',
+                    left: at.x - 11,
+                    top: at.y - 11,
+                    width: 22, height: 22, borderRadius: 11,
+                    borderWidth: 3, borderColor: '#4CAF50',
+                    backgroundColor: 'rgba(76,175,80,0.35)',
+                }}
+            />
+        );
     }
 
     _sendPointer(locX, locY) {
@@ -3933,6 +4804,21 @@ class VideoBox extends Component {
         const layout = this.state.remoteVideoLayout;
         if (!layout || !layout.w || !layout.h) return;
         const size = this.state.remoteVideoSize;
+        // Undo any viewer-side zoom first: the tap arrives in VIEW pixels, but
+        // the letterbox maths below describes the un-zoomed picture. Inverse of
+        // the geometry in _remoteVideoStyle -- drawn = c + (p - c) * z + t, so
+        // p = c + (drawn - c - t) / z. Without this, pointing while zoomed in
+        // lands the peer's marker somewhere near the middle of their screen
+        // instead of where the user is looking.
+        const z = this._currentRemoteZoom();
+        let vx = locX;
+        let vy = locY;
+        if (z.scale > 1) {
+            const cx = layout.w / 2;
+            const cy = layout.h / 2;
+            vx = cx + (locX - cx - z.tx) / z.scale;
+            vy = cy + (locY - cy - z.ty) / z.scale;
+        }
         let nx, ny;
         if (size && size.w && size.h) {
             const scale = Math.min(layout.w / size.w, layout.h / size.h);
@@ -3940,18 +4826,18 @@ class VideoBox extends Component {
             const dispH = size.h * scale;
             const offX = (layout.w - dispW) / 2;
             const offY = (layout.h - dispH) / 2;
-            nx = (locX - offX) / dispW;
-            ny = (locY - offY) / dispH;
+            nx = (vx - offX) / dispW;
+            ny = (vy - offY) / dispH;
         } else {
-            nx = locX / layout.w;
-            ny = locY / layout.h;
+            nx = vx / layout.w;
+            ny = vy / layout.h;
         }
         if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) return;
         const t = Date.now();
         // Remember where we clicked, keyed by t, so we can echo it locally when
         // the peer ACKs that it rendered this click. Prune stale (>5s) entries.
         this._pendingPointers = this._pendingPointers || {};
-        this._pendingPointers[t] = { locX, locY };
+        this._pendingPointers[t] = { nx, ny };
         Object.keys(this._pendingPointers).forEach((k) => {
             if (Number(k) < t - 5000) delete this._pendingPointers[k];
         });
@@ -3970,11 +4856,204 @@ class VideoBox extends Component {
         }
     }
 
+    /** Height of the docked control bar shown to the VIEWER of a remote screen
+     *  share in PORTRAIT. render() subtracts exactly this from the remote video
+     *  box so the shared screen ends where the bar begins — both sides must read
+     *  the number from here.
+     *
+     *  No safe-area padding is added under the bar: in the windowed (non-
+     *  immersive) call layout the bottom system inset is ALREADY excluded by
+     *  the parent — app.js applies marginBottom: insets.bottom in Android
+     *  portrait, and the app-level SafeAreaView has a 'bottom' edge on iOS —
+     *  so anything we add here is a second, empty band that just pushes the
+     *  bar up off the bottom of the screen (the gap that was reported). */
+    _remoteShareBarHeight() {
+        const buttonSize = this.props.isTablet ? 40 : 28;
+        // react-native-paper draws IconButton in a circular container roughly
+        // 1.5x the glyph; +12 leaves a little breathing room above and below
+        // without spending vertical pixels the shared screen wants.
+        return Math.round(buttonSize * 1.5) + 12;
+    }
+
+    /** Gentle breathing room above and below the docked bar, so it reads as a
+     *  floating strip rather than something welded to the shared screen and to
+     *  the bottom edge of the phone. */
+    _remoteShareBarGap() {
+        return 5;
+    }
+
+    /** Extra breathing room between the bar's top edge and the button row.
+     *  The row itself is vertically centred, so without this the buttons read
+     *  as sitting higher in the pill than they do low in it — the hairline
+     *  outline and the border width eat a pixel at the top, and the black gap
+     *  above merges into the share's letterbox while the one below sits over
+     *  the call background. A few px here restores the balance. */
+    _remoteShareBarPadTop() {
+        return 6;
+    }
+
+    /** Total vertical space the docked bar reserves: the button row plus the
+     *  gap on each side. This — not the bare row height — is what the remote
+     *  video box gives up, so the share ends _remoteShareBarGap() px above the
+     *  bar and the bar floats the same distance off the bottom. */
+    _remoteShareBarReserved() {
+        return this._remoteShareBarHeight()
+            + this._remoteShareBarPadTop()
+            + (2 * this._remoteShareBarGap());
+    }
+
+    /** True while we are watching the peer's shared screen in the windowed
+     *  PORTRAIT layout — the only state in which the docked bar exists.
+     *
+     *  Landscape has no bottom bar at all: vertical pixels are the scarce
+     *  resource there, so the same controls are rendered inline in the
+     *  CallOverlay navbar instead (see _remoteShareControls / the
+     *  inlineButtons prop), exactly like ConferenceHeader does with
+     *  buttons.bottom in a landscape conference.
+     *
+     *  A deliberate tap on the video still drops to fullscreen and takes the
+     *  bar with it; the 4s auto-hide is suppressed for the share (see
+     *  armOverlayTimer). */
+    _showRemoteShareBar() {
+        return !!this.state.remotePeerSharing
+            && !this.state.fullScreen
+            && !this.state.isLandscape;
+    }
+
+    /** True when the share controls belong in the navbar instead: landscape,
+     *  watching the peer's screen, navbar actually on screen. */
+    _showRemoteShareNavbarControls() {
+        return !!this.state.remotePeerSharing
+            && !this.state.fullScreen
+            && !!this.state.isLandscape;
+    }
+
+    /** The control set offered to the VIEWER of a remote screen share, as an
+     *  array of elements so it can be dropped either into the portrait bottom
+     *  bar or into the landscape navbar cluster.
+     *
+     *  The ordinary floating action bar hides almost every button while the
+     *  peer is sharing (they would sit on top of the shared content with no
+     *  background to read them against), which left the viewer with no way to
+     *  mute or hang up without first leaving the share.
+     *
+     *  Buttons: mic mute, the camera/video picker (our camera is still being
+     *  sent to the peer while we watch), the audio-output picker (only when
+     *  there is more than one device) and hangup. The pointer toggle and
+     *  "stop share" stay in the CallOverlay navbar where they already live. */
+    _remoteShareControls(buttonSize, buttonClass, inNavbar) {
+        const muteButtonIcon = this.state.audioMuted ? 'microphone-off' : 'microphone';
+        // In the navbar the buttons sit in a tight right-aligned cluster, so
+        // drop the wide flex slots (and the hangup's extra 30dp lead) that give
+        // the portrait bar its spread-out look.
+        const slotStyle = inNavbar ? null : styles.buttonContainer;
+        return [
+            (
+                <View key="rsb-mute" style={slotStyle}>
+                    <IconButton
+                        size={buttonSize}
+                        style={buttonClass}
+                        onPress={this.muteAudio}
+                        icon={muteButtonIcon}
+                    />
+                </View>
+            ),
+            // No camera / video picker here: while the peer's screen is on
+            // screen the local camera controls are noise, so renderVideoPicker
+            // stays hidden for the whole share (its own remotePeerSharing gate
+            // already returns null) and the bar carries only what the viewer
+            // actually needs — mute, audio output, hangup.
+            //
+            // cloneElement only to attach a list key — wrapping the picker in an
+            // extra View would break the flex slot it already carries (and it
+            // positions its floating panel against that slot).
+            (() => {
+                const el = this.renderAudioDevicePicker(buttonSize, buttonClass);
+                return el ? React.cloneElement(el, {key: 'rsb-audio'}) : null;
+            })(),
+            (
+                <View key="rsb-hangup" style={inNavbar ? null : [styles.buttonContainer, {marginLeft: 30}]}>
+                    <IconButton
+                        size={buttonSize}
+                        style={[buttonClass, inNavbar ? {marginLeft: 0, backgroundColor: '#E53935'} : styles.hangupButton]}
+                        onPress={this.hangupCall}
+                        icon="phone-hangup"
+                    />
+                </View>
+            ),
+        ].filter(Boolean);
+    }
+
+    /** Landscape: the same controls, sized down for the navbar row and handed
+     *  to CallOverlay, which renders them in its right-aligned cluster (same
+     *  contract as ConferenceHeader's buttons.bottom). Undefined when they
+     *  don't belong there, so CallOverlay renders nothing extra. */
+    _remoteShareNavbarControls() {
+        if (!this._showRemoteShareNavbarControls()) return undefined;
+        // Same landscape navbar sizing conference uses for its inline cluster
+        // (ConferenceBox audioBarButtonSize).
+        const buttonSize = this.props.isTablet ? 25 : 22;
+        const buttonClass = (Platform.OS === 'ios') ? styles.iosButton : styles.androidButton;
+        return this._remoteShareControls(buttonSize, buttonClass, true);
+    }
+
+    /** Portrait: solid bar docked to the bottom of the call surface. */
+    renderRemoteShareBar(buttonSize, buttonClass) {
+        if (!this._showRemoteShareBar()) return null;
+
+        return (
+            <View
+                style={{
+                    position: 'absolute',
+                    // Air on all four sides so the bar reads as a strip floating
+                    // over the share rather than a slab welded to it. The gap
+                    // above comes from the remote video box giving up
+                    // _remoteShareBarReserved(); this `bottom` is the matching
+                    // lift (the call surface already stops above the system nav
+                    // bar / home indicator — see _remoteShareBarHeight).
+                    left: 0,
+                    right: 0,
+                    bottom: this._remoteShareBarGap(),
+                    marginHorizontal: 10,
+                    // A near-black bar sitting in the black letterbox of a
+                    // 'contain'-fitted share is invisible, and so is any gap
+                    // around it — that is why the first attempt at a 5dp margin
+                    // read as "still tucked together". The rounded corners and
+                    // the hairline outline are what make the edges (and the gap)
+                    // actually visible; they are not decoration.
+                    borderRadius: 14,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: 'rgba(255,255,255,0.25)',
+                    // Sits above the button row (which is centred in its own
+                    // fixed height) and is counted in _remoteShareBarReserved,
+                    // so the shared screen still ends exactly at the bar.
+                    paddingTop: this._remoteShareBarPadTop(),
+                    backgroundColor: 'rgba(0,0,0,0.85)',
+                    // Above the PIP wrapper (1000) and the ordinary action bar
+                    // (2000) so the floating pickers hosted here win.
+                    zIndex: 2500,
+                    elevation: 24,
+                }}
+            >
+                <View style={{
+                    flexDirection: 'row',
+                    height: this._remoteShareBarHeight(),
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingHorizontal: 20,
+                }}>
+                    {this._remoteShareControls(buttonSize, buttonClass, false)}
+                </View>
+            </View>
+        );
+    }
+
     renderVideoPicker(buttonSize, buttonClass) {
         // Hide the camera-selection control while the peer is sharing (viewer:
         // our camera choices are noise while watching their screen) AND while WE
         // are sharing (sharer: the navbar Stop-share button is the only control
-        // needed to end the share and return to the video call).
+        // needed to end the share and return to the video call). This gate is
+        // why the docked remote-share bar carries no camera button.
         if (this.state.remotePeerSharing || this.state.screenSharing) return null;
         const facing = this.state.cameraFacing || 'front';
         const muted = this.state.videoMuted;
@@ -4014,13 +5093,13 @@ class VideoBox extends Component {
             {
                 key: 'front',
                 icon: 'camera-front',
-                label: 'Front Camera',
+                label: 'Front camera',
                 facing: 'front'
             },
             {
                 key: 'back',
                 icon: 'camera-rear',
-                label: 'Back Camera',
+                label: 'Back camera',
                 facing: 'back'
             }
         ]
@@ -4042,7 +5121,7 @@ class VideoBox extends Component {
         const screenRow = screenActive ? null : {
             key: 'screen',
             icon: 'monitor-share',
-            label: 'Share Screen',
+            label: 'Share screen',
             onPress: () => this.selectScreenShare()
         };
 
@@ -4059,7 +5138,7 @@ class VideoBox extends Component {
         // "Start video" row would be redundant. The mirror toggle,
         // swap-video and aspect-ratio rows also don't make sense when
         // there is no active local video yet — hide them too.
-        const items = muted ? [
+        let items = muted ? [
             ...cameraOptions,
             ...(screenRow ? [screenRow] : []),
         ] : screenActive ? [
@@ -4071,13 +5150,13 @@ class VideoBox extends Component {
             {
                 key: 'stopshare',
                 icon: 'monitor-off',
-                label: 'Stop Sharing',
+                label: 'Stop sharing',
                 onPress: () => this._stopScreenShare()
             },
             {
                 key: 'aspect',
                 icon: 'aspect-ratio',
-                label: 'Aspect Ratio',
+                label: 'Aspect ratio',
                 onPress: () => this.toggleAspectRatio()
             }
         ] : [
@@ -4108,13 +5187,13 @@ class VideoBox extends Component {
                 // camera-switch — matches the CallOverlay navbar swap
                 // button and kebab row (see swapIcon above).
                 icon: swapIcon,
-                label: 'Swap Video',
+                label: 'Swap video',
                 onPress: () => this.swapVideo()
             },
             {
                 key: 'aspect',
                 icon: 'aspect-ratio',
-                label: 'Aspect Ratio',
+                label: 'Aspect ratio',
                 onPress: () => this.toggleAspectRatio()
             },
             ...(screenRow ? [screenRow] : []),
@@ -4151,7 +5230,13 @@ class VideoBox extends Component {
                 {this.state.videoPickerVisible && (
                     <View style={{
                         position: 'absolute',
-                        bottom: '100%',
+                        // Portrait: the trigger is in a bottom bar, so the panel
+                        // opens UPWARD. Landscape while watching a remote share:
+                        // the trigger is in the navbar at the TOP of the screen,
+                        // so it opens DOWNWARD instead (same flip ConferenceBox
+                        // applies to its landscape pickers).
+                        bottom: this._showRemoteShareNavbarControls() ? undefined : '100%',
+                        top: this._showRemoteShareNavbarControls() ? '100%' : undefined,
                         // Anchor the left edge of the panel to the left
                         // edge of the trigger button so the icon column
                         // sits directly above the button below and the
@@ -4163,7 +5248,8 @@ class VideoBox extends Component {
                         // maxWidth: 54 which would otherwise force the
                         // label to wrap.
                         width: panelWidth,
-                        marginBottom: 8,
+                        marginBottom: this._showRemoteShareNavbarControls() ? undefined : 8,
+                        marginTop: this._showRemoteShareNavbarControls() ? 8 : undefined,
                         zIndex: 100,
                         elevation: 10,
                         backgroundColor: 'rgba(34,34,34,0.92)',
@@ -4409,6 +5495,14 @@ class VideoBox extends Component {
                 this.armOverlayTimer();
                 return;
             }
+            // Watching the peer's shared screen: the appbar and the docked
+            // control bar frame the share and must not auto-hide (the user can
+            // still tap the video to go fullscreen deliberately). Don't re-arm
+            // either — the sylkScreenSharingChanged handler re-arms when the
+            // share ends.
+            if (this.state.remotePeerSharing) {
+                return;
+            }
             this.toggleFullScreen();
         }, 4000);
     }
@@ -4611,7 +5705,10 @@ class VideoBox extends Component {
         let buttonsContainer = styles.buttonsContainer;
         let video = styles.video;
 
-        if (this.state.callOverlayVisible) {
+        // While the docked remote-share bar is up it carries every control, and
+        // this block would only add an empty, transparent container over the
+        // shared screen — skip it entirely.
+        if (this.state.callOverlayVisible && !this._showRemoteShareBar()) {
             let content = (<View style={buttonsContainerClass}>
                 {(!disablePlus && !this.state.pointerMode && !this.state.remotePeerSharing) ?
                 <View style={styles.buttonContainer}>
@@ -4727,10 +5824,31 @@ class VideoBox extends Component {
 			  pointerEvents: 'box-none'
 			};
 
+		// Viewer of a remote share, windowed: the docked control bar
+		// (renderRemoteShareBar) owns the strip along the bottom, so the shared
+		// screen has to stop at its top edge instead of running underneath it.
+		// Zero in every other state, which leaves those layouts untouched.
+		// Row height PLUS the gap above and below it — see _remoteShareBarReserved.
+		const shareBarHeight = this._showRemoteShareBar() ? this._remoteShareBarReserved() : 0;
+
 	    remoteVideoContainer = {
 			position: 'absolute',
 			top: this.state.fullScreen ? 0: headerBarHeight,
-			bottom: this.state.fullScreen ? -bottomInset : (this.state.remotePeerSharing ? bottomInset : 0),
+			// Watching a remote share:
+			//   portrait -> the docked bar owns the bottom strip and is flush
+			//               with the (already inset) bottom of the call
+			//               surface, so the video stops exactly at its top
+			//               edge. Adding bottomInset on top of that is what
+			//               left an empty band under the bar.
+			//   landscape -> no bar (its controls are in the navbar), so keep
+			//               the historical bottomInset, which clears the
+			//               Android system bar in the landscape layout where
+			//               app.js does NOT apply a bottom margin.
+			bottom: this.state.fullScreen
+				? -bottomInset
+				: (this.state.remotePeerSharing
+					? (shareBarHeight ? shareBarHeight : bottomInset)
+					: 0),
 			borderWidth: debugBorderWidth,
 			borderColor: 'red',
 			width: '100%',
@@ -4772,9 +5890,12 @@ class VideoBox extends Component {
 			//   box bottom (screen) = windowHeight - bottomInset  -> just above the home indicator
 			// top + height also take precedence over `bottom` in Yoga, so we
 			// drop `bottom` rather than leave a conflicting anchor behind.
+			//
+			// shareBarHeight comes off the bottom as well, so the picture ends
+			// at the top edge of the docked control bar rather than behind it.
 			remoteVideoContainer.marginTop = 0;
 			remoteVideoContainer.top = headerBarHeight;
-			remoteVideoContainer.height = height - topInset - headerBarHeight - bottomInset;
+			remoteVideoContainer.height = height - topInset - headerBarHeight - bottomInset - shareBarHeight;
 			delete remoteVideoContainer.bottom;
 
 			if (this.state.isLandscape) {
@@ -4853,6 +5974,18 @@ class VideoBox extends Component {
 				// so we don't render under the Android system
 				// buttons on the right.
 				remoteVideoContainer.right = this.state.fullScreen ? -rightInset : 0;
+				// The base style carries height: '100%' together with
+				// top: headerBarHeight. In Yoga, top + height take
+				// precedence over bottom, so the box was a full parent
+				// height TALL starting 60dp down — it overflowed the
+				// bottom of the screen by the appbar height and pushed
+				// the covered/contained video down with it. Drop the
+				// explicit height in windowed landscape and let
+				// top + bottom size the box to the visible area exactly.
+				// Fullscreen (immersive) keeps its own sizing.
+				if (!this.state.fullScreen) {
+					delete remoteVideoContainer.height;
+				}
 				if (this.state.fullScreen) {
 					corners = {
 						topLeft: { top: 0, left: -leftInset},
@@ -4864,8 +5997,8 @@ class VideoBox extends Component {
 				} else {
 					corners = {
 						topLeft: { top: headerBarHeight, left: -leftInset},
-						topRight: { top: headerBarHeight, right: -rightInset},
-						bottomRight: { bottom: 0, right: -rightInset},
+						topRight: { top: headerBarHeight, right: 0},
+						bottomRight: { bottom: 0, right: 0},
 						bottomLeft: { bottom: 0, left: -leftInset},
 						id: 'android-landscape'
 					};
@@ -5584,7 +6717,15 @@ class VideoBox extends Component {
                     screenSharing={this.state.screenSharing}
                     stopScreenShare={() => this._stopScreenShare()}
                     pointerMode={this.state.pointerMode}
-                    togglePointerMode={() => this.togglePointerMode()}
+                    /* undefined when the peer never advertised the pointer
+                       protocol -- CallOverlay only renders the navbar
+                       pointer button when this is a function, so an
+                       un-pointable share falls back to the swap-camera
+                       button instead. Same gating style as
+                       requestScreenShare below. */
+                    togglePointerMode={this._peerSupportsPointer()
+                        ? () => this.togglePointerMode()
+                        : undefined}
 					availableAudioDevices = {this.state.availableAudioDevices}
 					selectedAudioDevice = {this.state.selectedAudioDevice}
 					selectAudioDevice = {this.props.selectAudioDevice}
@@ -5610,6 +6751,13 @@ class VideoBox extends Component {
 					showMediaInfo = {this._openMediaInfoPanel}
 					callHasVideo = {this.props.callHasVideo}
 					switchCallView = {this.props.switchCallView}
+					/* LANDSCAPE while watching the peer's shared screen: the
+					   call controls are rendered inline in the navbar instead
+					   of a bottom bar, so every vertical pixel below the appbar
+					   belongs to the share. Same contract ConferenceHeader has
+					   with buttons.bottom in a landscape conference. undefined
+					   in every other state, so nothing extra appears. */
+					inlineButtons = {this._remoteShareNavbarControls()}
                 />
 
                 {/* Outcome of a screen-share request we sent (accepted /
@@ -5648,7 +6796,11 @@ class VideoBox extends Component {
                 {this.showRemote?
 					<View style={[container, remoteVideoContainer,
 					    this.state.remotePeerSharing
-					        ? { borderWidth: 5, borderColor: '#E53935', backgroundColor: '#000' }
+					        ? { borderWidth: 5, borderColor: '#E53935', backgroundColor: '#000',
+					            // Zoom enlarges the RTCView's frame beyond this box
+					            // (see _remoteVideoStyle); without clipping, the
+					            // overflow paints over the call UI around it.
+					            overflow: 'hidden' }
 					        : null]}>
 					  {/* Viewer-side cue: while the peer shares their screen, a
 					      thick red border + a red "REMOTE SCREEN" chip make it
@@ -5697,6 +6849,36 @@ class VideoBox extends Component {
 					      </View>
 					    </View>
 					  ) : null}
+					  {/* Camera video is struggling: frames have stopped arriving
+					      but the stream is not confirmed dead, so the RTCView below
+					      is still showing the last frame we decoded. Say so quietly
+					      — a small pill, not an overlay — because the picture
+					      underneath is the most useful thing we can show and the
+					      condition usually clears in a second or two. Suppressed
+					      once the avatar takes over (remoteVideoActive false), where
+					      it would be stating the obvious. */}
+					  {(!this.state.remotePeerSharing
+					        && this.state.remoteVideoDegraded
+					        && this.state.remoteVideoActive) ? (
+					    <View pointerEvents="none" style={{
+					        position: 'absolute', top: 8, alignSelf: 'center',
+					        left: 0, right: 0,
+					        alignItems: 'center',
+					        zIndex: 1998, elevation: 28,
+					    }}>
+					      <View style={{
+					          flexDirection: 'row', alignItems: 'center',
+					          backgroundColor: 'rgba(0,0,0,0.6)',
+					          borderRadius: 12,
+					          paddingHorizontal: 10, paddingVertical: 4,
+					      }}>
+					        <Icon name="wifi-strength-alert-outline" size={13} color="#FFB74D" />
+					        <Text style={{ color: '#fff', fontSize: 11, marginLeft: 5 }}>
+					          Poor connection
+					        </Text>
+					      </View>
+					    </View>
+					  ) : null}
 					  <DeferredRTCView
 					    // Force a fresh native view on every VideoBox
 					    // mount by keying on `_remoteRtcMountKey` (set
@@ -5721,49 +6903,115 @@ class VideoBox extends Component {
 						// resolve (video top-tucks). absoluteFill fills the box, and
 						// objectFit:'contain' then centres the video with equal black
 						// bars (container has a black background).
-						style={this.state.remotePeerSharing ? StyleSheet.absoluteFillObject : styles.video}
+						style={this._remoteVideoStyle()}
 						streamURL={this.remoteStreamUrl}
 					  />
 					  <View
+					      ref={(r) => { this._remoteTouchView = r; }}
 					      style={StyleSheet.absoluteFillObject}
 					      onLayout={(e) => {
+					          // Window rect of this view, used to tell fingers on
+					          // the video apart from fingers resting elsewhere on
+					          // the screen (_videoTouches). Measured here because
+					          // onLayout gives coordinates relative to the parent,
+					          // while touches report window coordinates.
+					          if (this._remoteTouchView
+					              && typeof this._remoteTouchView.measureInWindow === 'function') {
+					              try {
+					                  this._remoteTouchView.measureInWindow((mx, my, mw, mh) => {
+					                      if (mw && mh) this._remoteViewPageRect = { x: mx, y: my, w: mw, h: mh };
+					                  });
+					              } catch (err) { /* filtering just degrades to "all touches" */ }
+					          }
 					          const { width: lw, height: lh } = e.nativeEvent.layout;
-					          if (lw && lh && (!this.state.remoteVideoLayout
-					              || this.state.remoteVideoLayout.w !== lw
-					              || this.state.remoteVideoLayout.h !== lh)) {
-					              this.setState({ remoteVideoLayout: { w: lw, h: lh } });
+					          if (!lw || !lh) return;
+					          const prev = this.state.remoteVideoLayout;
+					          if (prev && prev.w === lw && prev.h === lh) return;
+					          const update = { remoteVideoLayout: { w: lw, h: lh } };
+					          // A rotation (or the overlay appearing/disappearing)
+					          // changes the box under a zoom that is already
+					          // panned. Re-clamp against the NEW geometry, or the
+					          // magnified picture stays parked past its limit and
+					          // shows a black gap along one edge.
+					          const scale = this.state.remoteZoom || 1;
+					          if (scale > 1) {
+					              const pan = this._clampRemoteZoomPan(scale,
+					                  this.state.remoteZoomTx || 0,
+					                  this.state.remoteZoomTy || 0,
+					                  { w: lw, h: lh });
+					              update.remoteZoomTx = pan.tx;
+					              update.remoteZoomTy = pan.ty;
 					          }
+					          this.setState(update);
 					      }}
-					      onStartShouldSetResponder={() => true}
-					      onResponderRelease={(e) => {
-					          if (this.state.pointerMode) {
-					              this._sendPointer(e.nativeEvent.locationX, e.nativeEvent.locationY);
-					          } else {
-					              this.toggleFullScreen();
-					          }
-					      }}
+					      /* Tap (fullscreen / pointer), pinch-to-zoom and
+					         drag-to-pan all start with a finger landing here, so
+					         one responder arbitrates between them -- see
+					         _remoteViewPanResponder in the constructor. Zoom and
+					         pan do nothing unless the peer is sharing a screen. */
+					      {...this._remoteViewPanResponder.panHandlers}
 					  />
 					  {/* Local echo of a click the peer ACKed rendering — green dot
-					      at the tap position (same locationX/Y space as the target
-					      above). Confirms the remote actually showed our pointer. */}
-					  {this.state.ackEcho ? (
-					    <View
-					      pointerEvents="none"
-					      style={{
-					        position: 'absolute',
-					        left: this.state.ackEcho.x - 11,
-					        top: this.state.ackEcho.y - 11,
-					        width: 22, height: 22, borderRadius: 11,
-					        borderWidth: 3, borderColor: '#4CAF50',
-					        backgroundColor: 'rgba(76,175,80,0.35)',
-					      }}
-					    />
+					      on the clicked point of their screen, re-projected through
+					      the current zoom/pan. Confirms the remote actually showed
+					      our pointer. */}
+					  {this._renderAckEcho()}
+					  {/* Zoom controls for the shared screen. A remote desktop
+					      scaled to a phone is often unreadable, and pinch alone
+					      is undiscoverable and awkward one-handed, so the same
+					      zoom is exposed as buttons. The readout doubles as the
+					      reset: tapping the magnification returns to fit. Sits
+					      ABOVE the touch overlay in the tree so its taps aren't
+					      swallowed by the tap/pinch responder underneath. */}
+					  {this.state.remotePeerSharing ? (
+					    <View style={{
+					        position: 'absolute', right: 6, top: '30%',
+					        alignItems: 'center',
+					        zIndex: 2001, elevation: 31,
+					        backgroundColor: 'rgba(0,0,0,0.45)',
+					        borderRadius: 22,
+					        paddingVertical: 2,
+					    }}>
+					      <IconButton
+					        size={22}
+					        icon="magnify-plus-outline"
+					        iconColor="#fff"
+					        disabled={(this.state.remoteZoom || 1) >= REMOTE_ZOOM_MAX}
+					        onPress={() => this._stepRemoteZoom(REMOTE_ZOOM_STEP)}
+					        accessibilityLabel="Zoom in"
+					        style={{ margin: 0 }}
+					      />
+					      {(this.state.remoteZoom || 1) > 1 ? (
+					        <TouchableOpacity
+					          onPress={() => this._resetRemoteZoom()}
+					          accessibilityLabel="Reset zoom"
+					          hitSlop={{top: 6, bottom: 6, left: 10, right: 10}}
+					        >
+					          <Text style={{
+					              color: '#fff', fontSize: 11, fontWeight: 'bold',
+					              paddingVertical: 2,
+					          }}>
+					            {(Math.round((this.state.remoteZoom || 1) * 10) / 10) + '\u00d7'}
+					          </Text>
+					        </TouchableOpacity>
+					      ) : null}
+					      <IconButton
+					        size={22}
+					        icon="magnify-minus-outline"
+					        iconColor="#fff"
+					        disabled={(this.state.remoteZoom || 1) <= 1}
+					        onPress={() => this._stepRemoteZoom(-REMOTE_ZOOM_STEP)}
+					        accessibilityLabel="Zoom out"
+					        style={{ margin: 0 }}
+					      />
+					    </View>
 					  ) : null}
-					  {/* Show the avatar (video-lost look) whenever the remote video
-					      would render — OR while WE are screen-sharing, so our
-					      captured screen never echoes the peer's own video back
-					      to them. */}
-					  {(!this.state.remoteVideoActive || this.state.screenSharing) ? (
+					  {/* Show the avatar (video-lost look) only when there is no
+					      remote video to render. While WE are screen-sharing the
+					      peer's video keeps flowing underneath and must stay
+					      visible — covering it with the avatar was hiding a live
+					      picture the user still wants to see. */}
+					  {(!this.state.remoteVideoActive) ? (
 					    <View
 					      pointerEvents="none"
 					      style={[StyleSheet.absoluteFillObject, {
@@ -5923,6 +7171,14 @@ class VideoBox extends Component {
                 ) : null}
 
                 {buttons}
+
+                {/* Viewer of a remote screen share: solid control bar docked to
+                    the bottom of the window. Rendered after {buttons} (and after
+                    the picker-dismiss backdrop above) so its own floating
+                    pickers stay on top and tappable. The remote video box is
+                    shortened by _remoteShareBarHeight() so the shared screen
+                    sits entirely between the appbar and this bar. */}
+                {this.renderRemoteShareBar(buttonSize, buttonClass)}
 
                 <EscalateConferenceModal
                     show={this.state.showEscalateConferenceModal}

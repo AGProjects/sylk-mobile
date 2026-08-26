@@ -94,7 +94,7 @@ const CallMeMaybeModal = ({ show, close, callUrl, notificationCenter }) => {
 				/>
               </View>
 
-              <Text style={styles.body}>Share this address with others:</Text>
+              <Text style={styles.body}>Share these addresses with others:</Text>
 
               <View style={styles.iconContainer}>
                 <IconButton size={34} onPress={handleClipboardButton} icon="content-copy" />

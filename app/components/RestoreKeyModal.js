@@ -118,7 +118,7 @@ const RestoreKeyModal = ({ show, close, saveFunc, success }) => {
   let buttonText = 'Paste';
   if (fullPrivateKey && password.length === 0 && !decryptedSuccessfully) buttonText = 'Clear';
   if (fullPrivateKey && !decryptedSuccessfully && password.length > 0) buttonText = 'Decrypt key';
-  if (decryptedSuccessfully) buttonText = 'Use Key';
+  if (decryptedSuccessfully) buttonText = 'Use key';
 
   if (!show) return null;
   let title = 'Restore private key';

@@ -1,0 +1,70 @@
+diff --git a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/AppRTC/AppRTCProximitySensor.java b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/AppRTC/AppRTCProximitySensor.java
+index 7ae52fc..da5da6a 100644
+--- a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/AppRTC/AppRTCProximitySensor.java
++++ b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/AppRTC/AppRTCProximitySensor.java
+@@ -57,7 +57,10 @@ public class AppRTCProximitySensor implements SensorEventListener {
+       // Proximity sensor is not supported on this device.
+       return false;
+     }
+-    sensorManager.registerListener(this, proximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
++    // 4-arg form: deliver sensor events on THIS (dedicated) thread's looper
++    // so onSensorChanged runs on the same thread as start()/stop() and the
++    // ThreadChecker stays valid, while the binder work stays off the UI thread.
++    sensorManager.registerListener(this, proximitySensor, SensorManager.SENSOR_DELAY_NORMAL, new android.os.Handler());
+     return true;
+   }
+   /** Deactivate the proximity sensor. */
+diff --git a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallProximityManager.java b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallProximityManager.java
+index 1411063..a0aa1b2 100644
+--- a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallProximityManager.java
++++ b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallProximityManager.java
+@@ -39,6 +39,23 @@ public class InCallProximityManager {
+     private boolean proximitySupported = false;
+     private AppRTCProximitySensor proximitySensor = null;
+ 
++    // Dedicated background thread for the proximity sensor. sensorManager
++    // (un)registerListener does a synchronous binder call to the system
++    // SensorService; on some devices that stalls ~10s at call end. The stock
++    // code ran it on the MAIN thread (UiThreadUtil), freezing the UI. Keep the
++    // whole lifecycle (create/start/stop + events) on this one thread so the UI
++    // never blocks and the ThreadChecker stays consistent.
++    private static android.os.HandlerThread sProximityThread;
++    private static android.os.Handler sProximityHandler;
++    private static synchronized android.os.Handler proximityHandler() {
++        if (sProximityHandler == null) {
++            sProximityThread = new android.os.HandlerThread("InCallProximity");
++            sProximityThread.start();
++            sProximityHandler = new android.os.Handler(sProximityThread.getLooper());
++        }
++        return sProximityHandler;
++    }
++
+     /** Construction */
+     static InCallProximityManager create(Context context, final InCallManagerModule inCallManager) {
+         return new InCallProximityManager(context, inCallManager);
+@@ -48,7 +65,7 @@ public class InCallProximityManager {
+         Log.d(TAG, "InCallProximityManager");
+         checkProximitySupport(context);
+         if (proximitySupported) {
+-            UiThreadUtil.runOnUiThread(() -> {
++            proximityHandler().post(() -> {
+                 proximitySensor = AppRTCProximitySensor.create(context, () -> {
+                     inCallManager.onProximitySensorChangedState(proximitySensor.sensorReportsNearState());               
+                 });
+@@ -107,14 +124,14 @@ public class InCallProximityManager {
+         if (!proximitySupported) {
+             return false;
+         }
+-        UiThreadUtil.runOnUiThread(() -> {
++        proximityHandler().post(() -> {
+             proximitySensor.start();
+         });
+         return true;
+     }
+ 
+     public void stop() {
+-        UiThreadUtil.runOnUiThread(() -> {
++        proximityHandler().post(() -> {
+             proximitySensor.stop();
+         });
+     }

@@ -21,8 +21,29 @@ import androidx.core.app.NotificationCompat
 class LocationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startInForeground()
+        // INSTRUMENTED. Whether this service is actually running decides
+        // whether the process keeps its network while the screen is off. A
+        // field log that shows location ticks being produced but never
+        // delivered needs to be able to answer "was the FGS up?" without a
+        // debugger, so both the request and the outcome are written to the
+        // APPLOG via SylkLogger (Log.d alone does not reach the exported file).
+        SylkLogger.d("[location] [fgs] onStartCommand flags=$flags startId=$startId")
+        try {
+            startInForeground()
+            SylkLogger.d("[location] [fgs] startForeground OK (type=location) — process promoted, network should survive screen-off")
+        } catch (t: Throwable) {
+            // On API 34+ a missing FOREGROUND_SERVICE_LOCATION permission or a
+            // start-from-background restriction throws here. Silently losing
+            // this is precisely how the process ends up firewalled with no
+            // explanation in the log.
+            SylkLogger.e("[location] [fgs] startForeground FAILED — sharing will run WITHOUT foreground promotion", t)
+        }
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        SylkLogger.d("[location] [fgs] service destroyed — foreground promotion released")
+        super.onDestroy()
     }
 
     private fun startInForeground() {

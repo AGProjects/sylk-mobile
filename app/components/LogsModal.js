@@ -26,13 +26,6 @@ import { throwTestCrash } from '../crashCapture';
 // that was never imported — a crash waiting to happen on first open).
 import containerStyles from '../assets/styles/ContainerStyles';
 import utils from '../utils';
-// Reuse the shared ContentStyles.button so the logs modal action
-// row matches EditContactModal / DeleteHistoryModal / the rest of
-// the dialog family — rounded corners, the same vertical breathing
-// room around each button, no fixed 33% width that the local
-// _LogsModal.scss button used to enforce.
-import contentStyles from '../assets/styles/ContentStyles';
-
 import styles from '../assets/styles/blink/_LogsModal.scss';
 
 // ---- helpers for the "Request support" flow ---------------------------------
@@ -106,6 +99,30 @@ const FONT_BASE = 10;
 const FONT_MIN_SCALE = 0.7;
 const FONT_MAX_SCALE = 2.0;
 const FONT_STEP = 0.15;
+
+// The log body is rendered as a SERIES of Text blocks rather than one
+// giant Text. Android refuses to draw a single hardware-accelerated view
+// taller than the GPU's max texture size (commonly 8192 px, 16384 on
+// newer parts). With MAX_LOG_LINES = 5000 in app.js a single Text reaches
+// ~67,000 px and silently renders BLANK — that was the bug where the
+// viewer showed an empty screen until a tag pill was tapped (which shrank
+// the text back under the limit) and went blank again on deselect.
+// Chunking keeps every individual Text a few thousand pixels tall, and
+// Android culls the off-screen chunks, so opening a big log is faster too.
+//
+// TARGET_CHUNK_PX is the height budget per chunk; ASSUMED_WRAP_FACTOR pads
+// it for lines that wrap to more than one visual row (log lines are long
+// and the viewer is narrow). The result is clamped so a huge font doesn't
+// spawn hundreds of tiny Texts and a tiny font doesn't grow one back
+// toward the limit.
+//
+// Tradeoff: a long-press text selection cannot span a chunk boundary. At
+// these sizes a selection unit is still 100+ lines, and "Send to support"
+// / the on-disk file always carry the whole log regardless.
+const TARGET_CHUNK_PX = 3500;
+const ASSUMED_WRAP_FACTOR = 2;
+const MIN_LINES_PER_CHUNK = 40;
+const MAX_LINES_PER_CHUNK = 300;
 
 // Match `[token]` where token is a letter-led identifier (so we don't
 // pick up timestamps like [19:40:52], device prefixes, or transfer
@@ -657,20 +674,39 @@ class ShowLogsModal extends Component {
         // on). Under an active tag filter the numbers read as a sparse set — the
         // same behaviour as the standalone HTML log viewer.
         const _idxs = filterIndices(this.state.selectedTags, this.state.selectedSubTags);
-        let filteredLogs;
-        if (this.state.showLineNumbers) {
-            const _w = String(_scanLines.length).length;
-            const _parts = new Array(_idxs.length);
-            for (let k = 0; k < _idxs.length; k++) {
-                const i = _idxs[k];
-                _parts[k] = String(i + 1).padStart(_w) + '  ' + _scanLines[i];
-            }
-            filteredLogs = _parts.join('\n');
-        } else {
-            const _parts = new Array(_idxs.length);
-            for (let k = 0; k < _idxs.length; k++) _parts[k] = _scanLines[_idxs[k]];
-            filteredLogs = _parts.join('\n');
+        const _showNums = this.state.showLineNumbers;
+        const _w = _showNums ? String(_scanLines.length).length : 0;
+        const _parts = new Array(_idxs.length);
+        for (let k = 0; k < _idxs.length; k++) {
+            const i = _idxs[k];
+            _parts[k] = _showNums
+                ? (String(i + 1).padStart(_w) + '  ' + _scanLines[i])
+                : _scanLines[i];
         }
+        // Font metrics are shared by every chunk Text and also drive how
+        // many lines fit in one chunk's pixel budget — see the
+        // TARGET_CHUNK_PX comment at the top of the file.
+        const _fontSize = FONT_BASE * this.state.fontScale;
+        const _lineHeight = Math.round(_fontSize * 1.35);
+        const _linesPerChunk = Math.max(
+            MIN_LINES_PER_CHUNK,
+            Math.min(
+                MAX_LINES_PER_CHUNK,
+                Math.floor(TARGET_CHUNK_PX / (_lineHeight * ASSUMED_WRAP_FACTOR)),
+            ),
+        );
+        const _chunks = [];
+        for (let k = 0; k < _parts.length; k += _linesPerChunk) {
+            _chunks.push(_parts.slice(k, k + _linesPerChunk).join('\n'));
+        }
+        // Nothing to draw: distinguish "your filter excluded everything"
+        // from "there is no log yet" so an empty viewer never reads as the
+        // blank-screen bug this chunking fixes.
+        const _emptyMessage = _chunks.length > 0
+            ? null
+            : ((this.state.selectedTags.size > 0 || this.state.selectedSubTags.size > 0)
+                ? 'No lines match the selected filters.'
+                : 'No log content yet.');
         const hasFilter = this.state.selectedTags.size > 0;
         const hasSubFilter = this.state.selectedSubTags.size > 0;
         // Only derive sub-tag candidates when there's a top filter to
@@ -784,27 +820,62 @@ class ShowLogsModal extends Component {
                                 onContentSizeChange={this._onContentSizeChange}
                                 scrollEventThrottle={120}
                             >
-                                {/* `selectable` enables long-press text
-                                    selection + the system Copy menu on
-                                    both iOS and Android, which is how the
-                                    user copies a snippet from the log
-                                    (there's no in-app Copy button). */}
-                                <Text
-                                    selectable={true}
-                                    selectionColor="rgba(46,125,50,0.35)"
-                                    style={[
-                                        styles.body,
-                                        {
-                                            fontSize: FONT_BASE * this.state.fontScale,
-                                            lineHeight: Math.round(FONT_BASE * this.state.fontScale * 1.35),
-                                        },
-                                        this.state.showLineNumbers
-                                            ? { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) }
-                                            : null,
-                                    ]}
-                                >
-                                    {filteredLogs}
-                                </Text>
+                                {/* One Text per ~N-line chunk, not one Text
+                                    for the whole log — see TARGET_CHUNK_PX
+                                    at the top of the file for why (Android
+                                    silently fails to draw a view taller
+                                    than the max texture size).
+
+                                    `margin: 0` overrides the 10 px margin
+                                    that _LogsModal.scss puts on .body: with
+                                    one Text that was harmless padding, with
+                                    many it would open a 20 px gap between
+                                    every chunk. The ScrollView's
+                                    contentContainerStyle supplies the
+                                    padding instead. `includeFontPadding:
+                                    false` (Android-only, ignored on iOS)
+                                    strips the extra ascent/descent space
+                                    TextView adds, so consecutive chunks butt
+                                    up seamlessly and every chunk's height is
+                                    exactly lines x lineHeight.
+
+                                    `selectable` enables long-press text
+                                    selection + the system Copy menu on both
+                                    iOS and Android, which is how the user
+                                    copies a snippet from the log (there's no
+                                    in-app Copy button). A selection can't
+                                    span two chunks. */}
+                                {_chunks.map((chunk, ci) => (
+                                    <Text
+                                        key={ci}
+                                        selectable={true}
+                                        selectionColor="rgba(46,125,50,0.35)"
+                                        style={[
+                                            styles.body,
+                                            {
+                                                margin: 0,
+                                                fontSize: _fontSize,
+                                                lineHeight: _lineHeight,
+                                                includeFontPadding: false,
+                                            },
+                                            _showNums
+                                                ? { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) }
+                                                : null,
+                                        ]}
+                                    >
+                                        {chunk}
+                                    </Text>
+                                ))}
+                                {_emptyMessage ? (
+                                    <Text style={{
+                                        marginTop: 24,
+                                        textAlign: 'center',
+                                        fontSize: 12,
+                                        color: getModalColors().textSecondary,
+                                    }}>
+                                        {_emptyMessage}
+                                    </Text>
+                                ) : null}
                             </ScrollView>
                             {/* Floating close — landscape only. The
                                 in-row header X is dropped in landscape
@@ -1184,66 +1255,101 @@ class ShowLogsModal extends Component {
                             borderTopColor: getModalColors().divider,
                             backgroundColor: getModalColors().surface,
                         }}>
-                            <View style={contentStyles.buttonRow}>
-                                {/* No in-app Copy button — selecting text in
-                                    the log above surfaces the native
-                                    Copy / Select-All menu on both iOS and
-                                    Android, which covers copying. */}
-                                {!_isViewingOthersLogs ? (
-                                    <Button
-                                        mode="contained"
-                                        style={[contentStyles.button, { flex: 1, marginHorizontal: 4 }]}
-                                        onPress={this._purge}
-                                        accessibilityLabel={hasFilter ? 'Purge selected categories' : 'Purge'}
-                                        icon="delete"
-                                        color="red"
-                                    >
-                                        {hasFilter ? 'Purge selected' : 'Purge'}
-                                    </Button>
-                                ) : null}
-                            </View>
-
+                            {/* No in-app Copy button — selecting text in
+                                the log above surfaces the native
+                                Copy / Select-All menu on both iOS and
+                                Android, which covers copying. */}
                             {!_isViewingOthersLogs ? (
                                 <React.Fragment>
-                                    <View style={{
-                                        height: StyleSheet.hairlineWidth,
-                                        backgroundColor: '#bdbdbd',
-                                        marginTop: 12,
-                                        marginBottom: 8,
-                                        alignSelf: 'stretch',
-                                    }} />
-
                                     <View style={{
                                         flexDirection: 'row',
                                         alignItems: 'center',
                                         justifyContent: 'space-between',
                                         flexWrap: 'wrap',
                                     }}>
+                                        {/* Purge, demoted from the old
+                                            full-width contained button to a
+                                            compact red icon-button that sits
+                                            immediately left of the
+                                            "Anonymize data" checkbox. Same
+                                            filter-aware behaviour: with tag
+                                            pills active it deletes only the
+                                            matching lines, otherwise the
+                                            whole log. */}
                                         <TouchableOpacity
-                                            onPress={() => this.setState({ anonymize: !this.state.anonymize })}
-                                            style={{ flexDirection: 'row', alignItems: 'center' }}
-                                            accessibilityLabel="Anonymize data toggle"
+                                            onPress={this._purge}
+                                            accessibilityLabel={hasFilter ? 'Delete selected categories' : 'Delete all logs'}
+                                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                            style={{
+                                                flexDirection: 'row',
+                                                alignItems: 'center',
+                                                marginRight: 4,
+                                            }}
                                         >
-                                            <Checkbox
-                                                status={this.state.anonymize ? 'checked' : 'unchecked'}
-                                                onPress={() => this.setState({ anonymize: !this.state.anonymize })}
-                                            />
-                                            <Text>Anonymize data</Text>
+                                            <Icon name="delete" size={18} color="#c62828" />
+                                            <Text style={{
+                                                color: '#c62828',
+                                                fontSize: 12,
+                                                fontWeight: '600',
+                                                marginLeft: 2,
+                                            }}>
+                                                {hasFilter ? 'Delete selected' : 'Delete'}
+                                            </Text>
                                         </TouchableOpacity>
-                                        <Button
-                                            mode="contained"
-                                            compact
-                                            buttonColor="#6A1B9A"
-                                            textColor="#ffffff"
-                                            onPress={this.requestSupport}
-                                            accessibilityLabel="Request support"
-                                            icon={this.state.sendingSupport ? 'progress-upload' : 'shield-key'}
-                                            labelStyle={{ fontSize: 12 }}
-                                            disabled={this.state.sendingSupport}
-                                            loading={this.state.sendingSupport}
-                                        >
-                                            {this.state.sendingSupport ? 'Sending…' : 'Send to support'}
-                                        </Button>
+                                        {/* Anonymize only feeds the "Send to
+                                            support" upload, so it hides
+                                            alongside that button while a tag
+                                            filter is active — a lone
+                                            checkbox with nothing to act on
+                                            would just be a dead control. */}
+                                        {!hasFilter ? (
+                                            <TouchableOpacity
+                                                onPress={() => this.setState({ anonymize: !this.state.anonymize })}
+                                                style={{ flexDirection: 'row', alignItems: 'center' }}
+                                                accessibilityLabel="Anonymize toggle"
+                                            >
+                                                <Checkbox
+                                                    status={this.state.anonymize ? 'checked' : 'unchecked'}
+                                                    onPress={() => this.setState({ anonymize: !this.state.anonymize })}
+                                                />
+                                                {/* Same 12 px as the "Send to
+                                                    support" button's labelStyle
+                                                    and the Delete label, so the
+                                                    three controls in this row
+                                                    read as one size. */}
+                                                <Text style={{ fontSize: 12 }}>Anonymize</Text>
+                                            </TouchableOpacity>
+                                        ) : null}
+                                        {/* "Send to support" uploads the FULL
+                                            log (requestSupport ships
+                                            state.logs, not the filtered
+                                            view), so offering it while a tag
+                                            filter is active is misleading —
+                                            the user would reasonably expect
+                                            to be sending just what they can
+                                            see. Hide it until the filter is
+                                            cleared; the spacer keeps Delete
+                                            and Anonymize pinned left instead
+                                            of letting space-between fling
+                                            them to opposite edges. */}
+                                        {!hasFilter ? (
+                                            <Button
+                                                mode="contained"
+                                                compact
+                                                buttonColor="#6A1B9A"
+                                                textColor="#ffffff"
+                                                onPress={this.requestSupport}
+                                                accessibilityLabel="Request support"
+                                                icon={this.state.sendingSupport ? 'progress-upload' : 'shield-key'}
+                                                labelStyle={{ fontSize: 12 }}
+                                                disabled={this.state.sendingSupport}
+                                                loading={this.state.sendingSupport}
+                                            >
+                                                {this.state.sendingSupport ? 'Sending…' : 'Send to support'}
+                                            </Button>
+                                        ) : (
+                                            <View style={{ flex: 1 }} />
+                                        )}
                                     </View>
                                 </React.Fragment>
                             ) : null}

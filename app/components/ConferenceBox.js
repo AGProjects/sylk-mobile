@@ -5016,7 +5016,7 @@ class ConferenceBox extends Component {
 
         // Cell width tracks the max label length (~20 chars in
         // _shortLabel + the optional self `*` suffix). Bumped from
-        // 8 so usernames like "android17" or "support" land
+        // 8 so short usernames land
         // legibly instead of being trimmed to a trailing tilde.
         const CW = 22;
         const rule1 = '+' + '-'.repeat(CW + 2) + '+';
@@ -6202,8 +6202,8 @@ class ConferenceBox extends Component {
         // facingMode the state and the actual camera agree, so the
         // icons can stay in their natural label-matching positions.
         const cameraOptions = [
-            {key: 'front', icon: 'camera-front', label: 'Front Camera', facing: 'front'},
-            {key: 'back',  icon: 'camera-rear',  label: 'Back Camera',  facing: 'back'}
+            {key: 'front', icon: 'camera-front', label: 'Front camera', facing: 'front'},
+            {key: 'back',  icon: 'camera-rear',  label: 'Back camera',  facing: 'back'}
         ]
             .filter(opt => muted || opt.facing !== facing)
             .map(opt => ({
@@ -9183,7 +9183,7 @@ class ConferenceBox extends Component {
                 // post-invite lookupContact runs. Fall back to the
                 // title-cased URI local part instead of the raw
                 // URI string so the row reads as a name rather
-                // than "adi@sylk.link".
+                // than "user@example.com".
                 _identity = {uri: _uri,
                              displayName: (_contact && _contact.displayName) ? _contact.displayName : toTitleCase(_uri.split('@')[0]),
                              photo: _contact ? _contact.photo: null
@@ -10307,7 +10307,7 @@ class ConferenceBox extends Component {
 				    //     border doesn't hug the magenta card border
 				    //     1:1 AND so a few dp of layout-rounding slop
 				    //     doesn't push the right edge past the
-				    //     participants column (the overflow Adi saw).
+				    //     participants column (the reported overflow).
 				    //
 				    //   PORTRAIT / chat-view / folded — keep the
 				    //     previous 115×153 box. There's no magenta
@@ -10389,7 +10389,7 @@ class ConferenceBox extends Component {
 				            // subtracting the bottom inset the math
 				            // treats window.height as the column's
 				            // bottom and lands the thumb too far down,
-				            // producing Adi's "gap below thumb is half
+				            // producing the reported "gap below thumb is half
 				            // the gap above" symptom.
 				            //   col_h = window.height - navbar - bottomInset
 				            //   top   = navbar + (col_h - thumb_h) / 2

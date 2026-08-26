@@ -526,14 +526,14 @@ class MeetingRequestModal extends Component {
                                     ) : null}
 
                                     {/* Policy notice — only when the user
-                                        has not yet agreed to Sylk's
+                                        has not yet agreed to Blink's
                                         location privacy policy. Tells them
                                         accepting will pop the policy modal
                                         first; consent is required for the
                                         meet session to proceed. */}
                                     {this.props.policyAcknowledged ? null : (
                                         <Text style={[styles.body, { marginTop: 8, fontSize: 12, opacity: 0.85, fontStyle: 'italic' }]}>
-                                            {'When you tap Accept, you will be asked to review and agree to Sylk\'s location privacy policy before any data is sent.'}
+                                            {'When you tap Accept, you will be asked to review and agree to Blink\'s location privacy policy before any data is sent.'}
                                         </Text>
                                     )}
 

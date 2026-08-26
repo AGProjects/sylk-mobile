@@ -166,16 +166,16 @@ class LocationPrivacyDisclosureModal extends Component {
 
                                         {/* RETENTION — single paragraph covering
                                             on-device + on-server purge schedules,
-                                            plus the 7-day default-expiry fallback. */}
+                                            plus the 30-day default-expiry fallback. */}
                                         <Text style={[styles.body, { marginTop: 12 }]}>
                                             On your device, location data is removed when a "Meet me"
-                                            session ends, and kept for at most 7 days for timed shares
+                                            session ends, and kept for at most 30 days for timed shares
                                             before automatic deletion. On Blink's server, the encrypted
                                             journal entry is automatically purged once the share's
                                             expiration date is reached — the server never holds an
                                             unexpired share past its own deadline, and never holds it in
                                             a form Blink can read. If no expiration date is given, a
-                                            7-day expiration is enforced.
+                                            30-day expiration is enforced.
                                         </Text>
 
                                         {/* Footer line whose wording matches the

@@ -551,6 +551,10 @@ class ChatBox extends Component {
     }
 
     componentWillUnmount() {
+        if (this._loadEarlierTimer) {
+            clearTimeout(this._loadEarlierTimer);
+            this._loadEarlierTimer = null;
+        }
         this.keyboardDidShowListener.remove();
         this.keyboardDidHideListener.remove();
         if (this.callStartingListener) {
@@ -2269,7 +2273,7 @@ class ChatBox extends Component {
 		}
 
 		let options = {
-			title: 'Share Message',
+			title: 'Share message',
 			subject: 'Blink shared message',
 			message: message.text
 		};    
@@ -3199,15 +3203,38 @@ class ChatBox extends Component {
     }
 
     loadEarlierMessages() {
+        // Re-entrancy guard. This used to setState({isLoadingEarlier: true})
+        // FIRST and then test this.state.isLoadingEarlier — which only
+        // worked because setState is async and the read still saw the old
+        // value. Test first, then set, so the guard doesn't depend on
+        // React's batching.
+        if (this.state.isLoadingEarlier) {
+            return;
+        }
+
         console.log('Load earlier messages...');
-        this.setState({scrollToBottom: false, 
+        this.setState({scrollToBottom: false,
                       isLoadingEarlier: true});
 
         let filter = {category: this.props.messagesCategoryFilter, pinned: this.props.pinned};
         //console.log('filter', filter);
-        if (!this.state.isLoadingEarlier) {
-			this.props.loadEarlierMessages(filter);
+        this.props.loadEarlierMessages(filter);
+
+        // Safety net for the spinner. isLoadingEarlier is normally cleared
+        // in componentDidUpdate when renderMessages changes. If a page
+        // brings nothing new (SQL error, or the loader bailed because the
+        // history is exhausted) that never fires and the spinner would
+        // stick for the rest of the session.
+        if (this._loadEarlierTimer) {
+            clearTimeout(this._loadEarlierTimer);
         }
+        this._loadEarlierTimer = setTimeout(() => {
+            this._loadEarlierTimer = null;
+            if (this.state.isLoadingEarlier) {
+                console.log('Load earlier messages: no new page arrived, releasing spinner');
+                this.setState({isLoadingEarlier: false});
+            }
+        }, 8000);
     }
 
     sendEditedMessage(message, text) {
@@ -3284,7 +3311,8 @@ class ChatBox extends Component {
 				this.props.sendMessage(uri, metadataMessage, 'application/sylk-message-metadata');
 			}
 
-			this.props.deleteMessage(message._id, this.state.selectedContact.uri);
+			this.props.deleteMessage(message._id, this.state.selectedContact.uri, true, false,
+				'user:edit-resend');
 
 			message._id = messageId;
 			message.key = messageId;
@@ -4933,7 +4961,11 @@ class ChatBox extends Component {
                     } else {
                         // Fallback: no reject handler wired — at least remove
                         // the bubble so the user's reject isn't a no-op.
-                        try { this.props.deleteMessage(currentMessage._id, this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri); } catch (e) { /* noop */ }
+                        // remote=false, matching the primary reject path in
+                        // app.js (_rejectMeetingRequest). Rejecting an invitation
+                        // hides it here; it is not a request to purge the map
+                        // from the server and from the other party's device.
+                        try { this.props.deleteMessage(currentMessage._id, this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri, false); } catch (e) { /* noop */ }
                     }
                 } else if (action === 'Accept meeting' || action === 'Show meeting request...') {
                     // Open the FULL Accept modal (destination preview,
@@ -6485,6 +6517,11 @@ class ChatBox extends Component {
 
 		if (prevState.renderMessages !== this.state.renderMessages) {
 			//console.log("==== renderMessages changed ====", this.state.renderMessages.length);
+			// The page landed — drop the spinner and cancel its watchdog.
+			if (this._loadEarlierTimer) {
+				clearTimeout(this._loadEarlierTimer);
+				this._loadEarlierTimer = null;
+			}
 			this.setState({isLoadingEarlier: false});
 
 		    /*
@@ -10014,8 +10051,24 @@ scrollToMessage(id) {
         const keysLoaded = !!this.props.keys;
         const hasPrivateKey = !!(this.props.keys && this.props.keys.private);
 
-        if (keysLoaded && !hasPrivateKey) {
-            chatInputClass = this.noKeyInputToolbar;
+        // No private key → nothing can be sent. The explanatory banner is NOT
+        // rendered here as GiftedChat's input toolbar: GiftedChat gives the
+        // message list an explicit height of (container - minInputToolbarHeight)
+        // and lets the toolbar render at its natural size below it, so any
+        // toolbar taller than that 44dp reservation simply hangs off the bottom
+        // of the container — under the Android navigation bar. (Feeding the
+        // measured height back via minInputToolbarHeight does not help: that
+        // prop is only consulted when a layout/keyboard/composer event
+        // recomputes messagesContainerHeight, which a prop change alone does
+        // not trigger.) Instead the toolbar is dropped entirely and the banner
+        // is rendered as a normal flex sibling BELOW the chat — see
+        // noPrivateKeyBanner in the JSX. minInputToolbarHeight goes to 0 so
+        // GiftedChat stops reserving an empty 44dp strip for the toolbar that
+        // is no longer there.
+        const noPrivateKeyBanner = keysLoaded && !hasPrivateKey;
+
+        if (noPrivateKeyBanner) {
+            chatInputClass = this.noChatInputToolbar;
         } else if (this.state.selectedContact) {
            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
                chatInputClass = this.noChatInputToolbar;
@@ -11165,6 +11218,11 @@ scrollToMessage(id) {
 				  }}
 				  
 				  bottomOffset={Platform.OS === 'ios' ? bottomInset : 0}
+				  /* With the no-key banner moved out of the toolbar slot
+				     (see noPrivateKeyBanner above) there is no toolbar left to
+				     reserve space for, so drop the 44dp default — otherwise the
+				     list would stop 44dp short of the banner. */
+				  minInputToolbarHeight={noPrivateKeyBanner ? 0 : 44}
                   innerRef={this.chatListRef}
                   messages={visibleMessages}
                   onSend={this.onSendMessage}
@@ -11420,6 +11478,13 @@ scrollToMessage(id) {
                 </Pressable>
 
 			   </KeyboardWrapper>
+
+				{/* "Cannot send messages" banner. A sibling of the flex:1
+				    KeyboardWrapper rather than GiftedChat's input toolbar, so
+				    it takes its natural height out of the column and the chat
+				    shrinks to fit — it can no longer overflow past the bottom
+				    of the screen and under the Android navigation bar. */}
+				{ noPrivateKeyBanner ? this.noKeyInputToolbar() : null }
 
 				{ (this.state.focusedMessages && !this.state.actionSheetDisplayed) ? this.renderFocusedMessagesControls(): null}
 				{((this.state.showScrollSideButtons || this.state.focusedMessages) && !this.state.actionSheetDisplayed)? this.renderScrollingControls(): null}

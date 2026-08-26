@@ -3008,7 +3008,7 @@ class AudioCallBox extends Component {
     //     (echo / IVR / playback — no human on the other end).
     //     If !canEscalate the "+" chip is hidden entirely; the
     //     previous behaviour of showing an empty panel was the
-    //     "black view with no button" Adi saw on Android 13.
+    //     "black view with no button" reported on Android 13.
     _renderConferenceRequestPlus(avatarSize) {
         const c = this.state.call;
         const callLive = c

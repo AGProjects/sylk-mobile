@@ -1,3 +1,23 @@
+Version 8.3.3 / 2026-08-20
+
+  * Added Screensharing
+  * Improve Location sharing
+  * Added day and night theme
+  * Added bug and crash reporter
+  * Improve telephony features
+  * Improve multiple audio device selection
+  * Fixes for XCAP contact replication
+  * Improve chat performance
+  * Added support for multiple URIs in contacts
+  * Conference improvements
+  * Allow server account deletion from the app
+  * Audio recorder improvements
+  * Allow encryption of large files
+  * zRTP fixes
+  * Many UI improvements
+  * Update ReactNative baseplate
+
+
 Version 4.8.1 / 2026-04-05
 
   * Added share multiple files capability

@@ -49,8 +49,22 @@
 			<key>CFBundleURLName</key>
 			<string>com.agprojects.sylk-ios</string>
 			<key>CFBundleURLSchemes</key>
+			<!-- Dial-out links from outside the app. iOS RESERVES tel: for the
+			     built-in Phone app - a third-party CFBundleURLSchemes entry for
+			     it is ignored and there is no "Open with" chooser, so the
+			     Android tel: intent-filter has no counterpart here. The
+			     supported route on iOS is INStartCallIntent, declared under
+			     NSUserActivityTypes below. These three schemes are NOT reserved
+			     and mirror the android:scheme list in AndroidManifest.xml:
+			     sip:/sips: for SIP links on web pages and mail signatures,
+			     callto: for the Skype-era spelling some CRM click-to-dial
+			     widgets still emit. All three land in app.js
+			     dialFromExternalUrl, which prefills the URI field rather than
+			     auto-dialing. -->
 			<array>
 				<string>sip</string>
+				<string>sips</string>
+				<string>callto</string>
 			</array>
 		</dict>
 	</array>
@@ -105,6 +119,31 @@
 	<string>Microphone is used for audio calls</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Library is used to send old photos and videos. No data is collected.</string>
+	<!-- Lets iOS offer Blink as a calling app: the "Call with..." entry on a
+	     Contacts card, the app row in Recents, and Siri "call Alice with
+	     Blink". iOS delivers the pick as an NSUserActivity carrying an
+	     INStartCallIntent, which AppDelegate.m's
+	     application:continueUserActivity: hands to RNCallKeep; that fires
+	     didReceiveStartCallAction -> CallManager._startedCall ->
+	     app.js startCallFromCallKeeper. Without this key iOS never sends the
+	     activity and that whole chain is unreachable. INStartCallIntent is
+	     iOS 13+; the Audio/Video pair is the pre-13 spelling, kept for older
+	     devices. -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<!-- INSendMessageIntent turns incoming message pushes into COMMUNICATION
+		     notifications. The notification service extension donates an
+		     INInteraction for the sender and calls contentByUpdatingWithProvider:,
+		     and iOS then attributes the banner to a person rather than to an app.
+		     That attribution is what lets a Focus's per PERSON allow list apply
+		     (Settings, Focus, People), the same route WhatsApp uses: an allowed
+		     contact breaks through without Blink itself being on the Apps allow
+		     list. It also gives the banner the sender's contact photo. -->
+		<string>INSendMessageIntent</string>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+		<string>INStartVideoCallIntent</string>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>MaterialDesignIcons.ttf</string>

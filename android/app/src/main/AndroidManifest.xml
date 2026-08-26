@@ -1,6 +1,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools" package="com.agprojects.sylk">
 
   <queries>
+    <!-- Contacts. Since Android 11 an app cannot SEE another package's
+         activities unless it declares them here. resolveActivity then returns
+         null for apps that are plainly installed, which is why "Open Contacts"
+         reported "nothing resolved" on a phone with a perfectly good address
+         book. -->
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.APP_CONTACTS" />
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.VIEW" />
+      <data android:mimeType="vnd.android.cursor.dir/contact" />
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.VIEW" />
+      <data android:mimeType="vnd.android.cursor.item/contact" />
+    </intent>
     <intent>
       <action android:name="android.intent.action.VIEW" />
       <data android:scheme="http"/>
@@ -35,6 +52,12 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
 
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- No WRITE_CONTACTS by design. The Do Not Disturb screen tells the user
+         to star a contact and opens the card for them, but never writes to the
+         address book itself. That data is shared with the dialer, the watch and
+         every sync target, and silently changing someone's Favourites from
+         inside a chat app is the kind of thing that is permitted and still
+         feels wrong when it is noticed. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- Required on Android 10+ (API 29) so watchPosition keeps firing while
@@ -205,6 +228,36 @@
           <category android:name="android.intent.category.DEFAULT" />
           <category android:name="android.intent.category.BROWSABLE" />
           <data android:scheme="sylk" />
+        </intent-filter>
+
+        <!-- Dial-out links from outside the app.
+
+             Chrome fires ACTION_VIEW + CATEGORY_BROWSABLE when the user
+             taps <a href="tel:+31612345678"> on a web page; the system
+             dialer and contacts app fire ACTION_DIAL with the same URI.
+             Declaring both here puts Blink in the "Open with" chooser
+             next to Phone / Zoom, and MainActivity.handleIntent rewrites
+             ACTION_DIAL to ACTION_VIEW so RN's Linking.getInitialURL()
+             (which only reports ACTION_VIEW) sees it on a cold start.
+
+             sip:/sips: cover SIP links on web pages and in mail signatures
+             — iOS already registers the sip scheme in ios/sylk/Info.plist,
+             so this brings Android in line. callto: is the legacy
+             Skype-era spelling still emitted by some CRMs and click-to-dial
+             widgets.
+
+             The destination is NOT dialed automatically: app.js
+             (dialFromExternalUrl) drops it into the URI field so the user
+             can check it and press call. -->
+        <intent-filter>
+          <action android:name="android.intent.action.VIEW" />
+          <action android:name="android.intent.action.DIAL" />
+          <category android:name="android.intent.category.DEFAULT" />
+          <category android:name="android.intent.category.BROWSABLE" />
+          <data android:scheme="tel" />
+          <data android:scheme="sip" />
+          <data android:scheme="sips" />
+          <data android:scheme="callto" />
         </intent-filter>
 
           <intent-filter>

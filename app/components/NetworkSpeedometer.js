@@ -620,15 +620,14 @@ export default class NetworkSpeedometer extends React.Component {
                 const head = codec || '?';
                 return tokens.length ? head + ' ' + tokens.join(' · ') : head;
             };
-            // Arrow convention (user-confirmed): ⇡ precedes the IN
-            // codec (what we receive — picture "video coming up the
-            // wire into the phone"), ⇣ precedes the OUT codec (what
-            // we send — picture "video going down the wire out of
-            // the phone"). Applied symmetrically to the bandwidth
-            // caption a few lines below so all four readouts in the
-            // dial share the same arrow→direction mapping.
-            const outStr = (vCodecOut || outT.length) ? '⇣ ' + join(vCodecOut, outT) : '';
-            const inStr  = (vCodecIn  || inT.length)  ? '⇡ ' + join(vCodecIn,  inT)  : '';
+            // Arrow convention: ⇡ precedes the OUT codec (what we
+            // send / upload), ⇣ precedes the IN codec (what we
+            // receive / download). Applied symmetrically to the
+            // bandwidth caption a few lines below so all four
+            // readouts in the dial share the same arrow→direction
+            // mapping, and matching the audio speedometer.
+            const outStr = (vCodecOut || outT.length) ? '⇡ ' + join(vCodecOut, outT) : '';
+            const inStr  = (vCodecIn  || inT.length)  ? '⇣ ' + join(vCodecIn,  inT)  : '';
             return [outStr, inStr].filter(Boolean);
         })();
         return (
@@ -649,21 +648,19 @@ export default class NetworkSpeedometer extends React.Component {
                        feature row below the dial. */
                     centerLabel={[{ text: 'Speed', color: COLOR_UPLOAD }]}
                     caption={
-                        /* Arrows reversed from the original
-                           upload-bias convention so the dial reads
-                           the way the user expects: ⇡ = data coming
-                           IN to the phone (download / decode side),
-                           ⇣ = data going OUT of the phone (upload /
-                           encode side). The `down` stats variable
-                           still holds bytesReceived (inbound) and
-                           `up` still holds bytesSent (outbound) —
-                           only the arrow glyphs change, not the
-                           underlying values, so history/colours stay
-                           consistent. */
+                        /* Arrow convention matches the audio
+                           speedometer and every other readout in the
+                           app: ⇡ = data going OUT of the phone
+                           (upload / encode side, `up` = bytesSent),
+                           ⇣ = data coming IN to the phone (download /
+                           decode side, `down` = bytesReceived). Only
+                           the arrow glyphs are paired with their
+                           matching value — the underlying stats and
+                           colours are unchanged. */
                         <Text style={styles.caption}>
-                            <Text style={{ color: COLOR_DOWNLOAD }}>⇡{fmtBits(down)}</Text>
+                            <Text style={{ color: COLOR_UPLOAD   }}>⇡{fmtBits(up)}</Text>
                             <Text> </Text>
-                            <Text style={{ color: COLOR_UPLOAD   }}>⇣{fmtBits(up)}</Text>
+                            <Text style={{ color: COLOR_DOWNLOAD }}>⇣{fmtBits(down)}</Text>
                         </Text>
                     }
                 />

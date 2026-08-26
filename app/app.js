@@ -317,6 +317,36 @@ const ENCRYPTABLE_FILE_SIZE_DEFAULT = 20 * 1000 * 1000;
 const MAX_TEXT_MESSAGE_BYTES = 4096;
 const CHUNK_MARKER_BUDGET_BYTES = 160; // reserved per chunk for the marker
 
+// Registration retry backoff. Delay for consecutive failure n is
+// REGISTER_BACKOFF_BASE * 2^n, capped at REGISTER_BACKOFF_CEILING, with
+// +/-25% jitter applied on top: roughly 2, 4, 8, 16, 32, 64, 120, 120... s.
+// Without this the client re-registered immediately on every failure, so a
+// SIP proxy answering 503 during a restart produced a REGISTER storm from the
+// whole fleet at network RTT. See _scheduleRegistrationRetry.
+const REGISTER_BACKOFF_BASE = 2000;       // first retry ~2s
+const REGISTER_BACKOFF_CEILING = 120000;  // never wait longer than 2 minutes
+const REGISTER_BACKOFF_MAX_STEP = 6;      // 2s * 2^6 = 128s, clipped by the ceiling
+
+// SIP responses to a REGISTER that will not get better by trying again with
+// the same credentials. Everything else (5xx, 408, 480, 503, transport
+// errors, no code at all) is treated as transient and retried with backoff.
+const REGISTER_TERMINAL_CODES = [401, 403, 404, 407, 603];
+
+// Hard ceiling on a single XCAP addressbook write (_abExec). Well above any
+// healthy round-trip (observed: tens of ms), so it only ever fires on a
+// callback the addressbook client never invokes — never on a slow-but-alive
+// server. Without it a lost callback strands every awaiting caller forever.
+const AB_EXEC_TIMEOUT_MS = 20000;
+
+// Dead-man's switch on the one-time first-contacts import (_abMigrate). That
+// import owns the "Syncing contacts…" spinner AND a silently-enabled DND,
+// both released only in its finally block — so ANY await inside it that never
+// settles leaves the user with a spinner that never stops and, far worse, a
+// phone that silently declines to ring. Generous enough that a legitimately
+// large first import (hundreds of contacts, each a server round-trip)
+// finishes well inside it.
+const AB_SETUP_WATCHDOG_MS = 180000;
+
 // OpenSIPS accepts a SIP message up to ~64KB over TCP (BUF_SIZE). Keep each
 // chunk's on-the-wire form well under that. The wire body is PGP-armored
 // (~1.4x the plaintext) plus SIP/CPIM headers, so the plaintext hard cap is
@@ -324,6 +354,18 @@ const CHUNK_MARKER_BUDGET_BYTES = 160; // reserved per chunk for the marker
 const CHUNK_WIRE_LIMIT_BYTES = 48 * 1024;              // safe wire ceiling (< 64KB OpenSIPS TCP max)
 const PGP_ARMOR_EXPANSION = 1.4;                       // armored PGP ≈ 1.4x plaintext
 const CHUNK_HARD_MAX_BYTES = Math.floor(CHUNK_WIRE_LIMIT_BYTES / PGP_ARMOR_EXPANSION); // ~35KB plaintext
+
+// How long a location row survives on the device before purgeExpiredMessages()
+// sweeps it. This is a USER-FACING PROMISE, not an implementation detail: the
+// same number appears in ShareLocationModal, LocationPrivacyDisclosureModal
+// and the store privacy text (docs/LocationSharing.txt). Change all four
+// together, or the app is telling users something it does not do.
+//
+// It used to be four separate `7 * 24 * 60 * 60` literals — outgoing rows,
+// incoming live rows, journal-replayed rows and the stop row — which is
+// exactly how a retention window drifts apart without anyone noticing.
+const LOCATION_RETENTION_DAYS = 30;
+const LOCATION_RETENTION_SEC = LOCATION_RETENTION_DAYS * 24 * 60 * 60;
 
 function _utf8CodePointLen(cp) {
     if (cp <= 0x7f) return 1;
@@ -656,6 +698,12 @@ const ACCOUNT_SETTINGS_DEFAULTS = Object.freeze({
     //   to coerce to true; preserve that semantic here.
     privacy: Object.freeze({
         dnd: false,
+        // True ONLY while the first contacts import owns the DND flag it
+        // turned on itself (beginDnd(true) in _abMigrate). Persisted so a
+        // launch that finds it still set knows the owning import never
+        // finished and can release DND — see _applyAccountSettings. Cleared
+        // by _abClearSetupUi on every normal completion.
+        dndSetupOwned: false,
         rejectAnonymous: false,
         rejectNonContacts: false,
         readReceipts: true,
@@ -951,6 +999,13 @@ import Call from './components/Call';
 // without the native module fails gracefully instead of red-boxing on launch.
 import LocationSimulator from './components/LocationSimulator';
 import LocationSharingManager from './components/LocationSharingManager';
+import {
+    LOCATION_PAYLOAD_VERSION,
+    jsonObject,
+    locationEnvelope,
+    messageLocationEnvelope,
+    splitLocationEnvelope,
+} from './locationEnvelope';
 let _AppGeolocation = null;
 try {
     // eslint-disable-next-line global-require
@@ -1511,6 +1566,11 @@ class Sylk extends Component {
         // See the comment on `isUnmounted` for why this isn't a getter.
         this.unmounted = false;
 
+        // Mirrors whether InCallManager's proximity sensor is currently
+        // running, so _syncProximitySensor() only talks to the native side
+        // when the wanted state actually changes (and the log stays readable).
+        this._proximitySensorOn = false;
+
         // SYNCHRONOUS native check at the very top of the constructor:
         // did this process get spawned by a sylk://message tap?
         // MainActivity.onCreate() stamps the launch URI into
@@ -1759,6 +1819,7 @@ class Sylk extends Component {
             organization: '',
             account: null,
             keyStatus: {},
+            keyEscrowChecked: false,
             // Server-journal sync cursor — RUNTIME STATE, not a user
             // setting. Persisted to dedicated columns
             // accounts.last_sync_id / accounts.last_sync_timestamp.
@@ -1835,6 +1896,13 @@ class Sylk extends Component {
             // the spinner instead of the contacts list. componentDidMount
             // then calls selectChatContact(from) so the chat view
             // actually mounts under the overlay.
+            // Bumped by dialFromExternalUrl when a tel:/sip:/callto:
+            // link is opened from outside the app (Chrome's "Open with"
+            // chooser, the system dialer). Shape: {uri, id} — id is a
+            // fresh uuid per tap so the SAME number tapped twice still
+            // re-fills a field the user has since cleared. Watched by
+            // ReadyBox via the dialUriSignal prop.
+            externalDialUri: null,
             chatOpenLoading: false, // spinner disabled on app-start-from-chat-push (was: !!this._launchMessageFrom)
             chatOpenUri: this._launchMessageFrom || null,
             // Stub contact pre-seeded ABOVE via this.newContact(...)
@@ -2182,6 +2250,14 @@ class Sylk extends Component {
         this.pushkittoken = null;
         this.intercomDtmfTone = null;
         this.registrationFailureTimer = null;
+        // Registration retry backoff. registrationRetryTimer holds the
+        // pending re-register attempt scheduled by registrationStateChanged
+        // after a retryable failure; registrationRetryCount is the number of
+        // consecutive failures and drives the delay. Both are reset on a
+        // successful register and on any user-driven (re)login. See
+        // _scheduleRegistrationRetry / _cancelRegistrationRetry.
+        this.registrationRetryTimer = null;
+        this.registrationRetryCount = 0;
         this.startedByPush = false;
         this.heartbeats = 0;
 
@@ -2208,13 +2284,29 @@ class Sylk extends Component {
         };
 
         // "Please share your current location" prompt — symmetric to
-        // meetingRequestModal but a one-shot Yes/No: on Yes we ship a
-        // single location bubble back via NavBar.shareLocationOnce.
+        // meetingRequestModal, but the answer now carries a duration. The
+        // modal offers "Once" (the default — a single location bubble via
+        // shareLocationOnce) plus 2h / 8h live windows, which instead arm a
+        // plain timed share (startLocationSharing, kind 'fixed') that lapses
+        // on its own.
+        //
+        // permissionLevel is the OS location grant, probed when the prompt is
+        // presented. Under a foreground-only ("While Using") grant the modal
+        // disables every interval, because the OS won't sustain a background
+        // share — only the single fix can complete. null = unknown → no gate.
+        //
+        // plainShareLive says a plain timed share to this same contact is
+        // already running. startLocationSharing refuses a second plain
+        // session to one peer, so an interval answer would be a silent
+        // no-op — the modal disables the intervals and the answer falls
+        // back to a single fix, which always ships.
         this.state.locationRequestModal = {
             show: false,
             fromUri: null,
             requestId: null,
             expiresAt: null,
+            permissionLevel: null,
+            plainShareLive: false,
         };
         // ===== Conference-request handshake (in-call "Escalate to
         // conference" via the avatar "+" panel) =====
@@ -2345,7 +2437,12 @@ class Sylk extends Component {
                                                 this.isUnmounted,
                                                 () => (this.state.accountSetting
                                                         && this.state.accountSetting.rtp
-                                                        && this.state.accountSetting.rtp.dtmfMode) || 'info'
+                                                        && this.state.accountSetting.rtp.dtmfMode) || 'info',
+                                                // Effective PSTN rules, read lazily: CallManager is
+                                                // constructed long before the server config and the
+                                                // account settings land, so a snapshot taken here
+                                                // would always be the defaults.
+                                                () => this.getEffectivePstnRules()
                                                 );
 
         if (InCallManager.recordPermission !== 'granted') {
@@ -2616,6 +2713,12 @@ class Sylk extends Component {
 		  const wasConnected = this._wasConnected;
 		  this._wasConnected = isConnected;
 
+		  // Cache reachability for the live-share watchdog. `isInternetReachable`
+		  // is tri-state (true / false / null while probing); only an explicit
+		  // false means "the platform knows there is no path", which is the one
+		  // case where nudging the socket is guaranteed to fail.
+		  this._netReachable = isConnected && state.isInternetReachable !== false;
+
 		  const isWifi = state.type === "wifi";
 		  const isMobile = state.type === "cellular";
 
@@ -2639,6 +2742,10 @@ class Sylk extends Component {
 		  // on a cold-boot-offline fresh install.
 		  if (isConnected && wasConnected === false) {
 			this.maybeRetryServerConfiguration('network-restored');
+			// A location share running through an outage has been standing down
+			// (see the watchdog). This transition is what ends the dark period:
+			// reconnect right now instead of waiting up to 30s for the next tick.
+			this._forceReconnectForShares('network-restored');
 		  }
 		});
 	  }
@@ -2867,6 +2974,7 @@ class Sylk extends Component {
                 } else {
                     console.log('[push] APNSTokenModule.requestNotificationPermission unavailable');
                 }
+
             } else if (Platform.OS === 'android') {
                 // Firebase Messaging's requestPermission is a no-op on
                 // Android < 13; on 13+ it surfaces the POST_NOTIFICATIONS
@@ -2889,7 +2997,7 @@ class Sylk extends Component {
 	  await notifee.requestPermission();
 	
 	  await notifee.displayNotification({
-		title: 'Join Conference',
+		title: 'Join conference',
 		body: 'Tap to join',
 		android: {
 		  channelId: 'calls',
@@ -3065,6 +3173,112 @@ class Sylk extends Component {
 
 	}
 
+    /*
+     * Cache whether the OS has allowlisted us from Doze / App Standby.
+     *
+     * Kept as a plain field rather than awaited at the point of use because
+     * the one consumer is the live-share watchdog, which runs while the JS
+     * thread is only briefly awake in Doze — an await there could simply
+     * never resolve. A slightly stale boolean printed reliably beats a fresh
+     * one that never arrives.
+     *
+     * Undefined until the first probe lands, and the watchdog prints '?' for
+     * that, so a missing answer is never silently reported as "not exempt".
+     */
+    // Live outgoing location sessions across BOTH stores — a meet-only session
+    // must keep the socket alive just like a plain share.
+    _activeShareCount() {
+        try {
+            const _le = this._locationEngine;
+            const _plain = (_le && _le.outgoingLocationSessions)
+                ? Object.keys(_le.outgoingLocationSessions).length : 0;
+            const _meet = (_le && _le.outgoingMeetSessions)
+                ? Object.keys(_le.outgoingMeetSessions).length : 0;
+            return _plain + _meet;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    // Drive a reconnect while the JS thread is provably alive.
+    //
+    // IMPORTANT: do NOT call `conn.reconnect()`. Sylkrtc's reconnect() merely
+    // queues a `setTimeout(_connect, 500)`, and on Android Doze / iOS
+    // suspended-app the JS-thread timer queue does NOT drain — BackgroundTimer
+    // wakes the JS thread for the calling callback only; the follow-up
+    // setTimeout is never serviced. A field trace on 2026-05-06 14:14–14:17
+    // showed 6 "nudging reconnect" lines with zero state transitions in
+    // between — the queued reconnects finally fired only when the user woke
+    // the phone. Drive `_connect()` directly instead, resetting _delay first so
+    // we don't inherit an exponential-backoff value from a failed cycle.
+    _driveReconnect(conn, why) {
+        if (!conn) return;
+        if (typeof conn._connect === 'function') {
+            try {
+                if (conn._timer) {
+                    clearTimeout(conn._timer);
+                    conn._timer = null;
+                }
+                conn._delay = 0.5 * 1000; // INITIAL_DELAY
+                conn._connect();
+            } catch (e) {
+                console.log('[location] ' + why + ': direct _connect() threw',
+                    e && e.message ? e.message : e);
+                // Fall back to the (less reliable) public path rather than
+                // leaving the user offline.
+                if (typeof conn.reconnect === 'function') {
+                    conn.reconnect();
+                }
+            }
+        } else if (typeof conn.reconnect === 'function') {
+            conn.reconnect();
+        }
+    }
+
+    // The network came back while a share is running: reconnect immediately.
+    // During an outage the watchdog deliberately stands down (there is nothing
+    // to connect over), so this edge is what restarts delivery.
+    _forceReconnectForShares(reason) {
+        try {
+            if (this._activeShareCount() === 0) return;
+            const conn = this.state.connection;
+            if (!conn) return;
+            const state = conn.state;
+            if (state === 'ready' || state === 'connecting') return;
+            utils.timestampedLog('[location] watchdog: ' + reason + ' — socket state='
+                + (state || 'none') + ' with ' + this._activeShareCount()
+                + ' active share(s), reconnecting now');
+            this._liveShareNetSkips = 0;
+            this._driveReconnect(conn, reason);
+        } catch (e) {
+            console.log('[location] _forceReconnectForShares failed',
+                e && e.message ? e.message : e);
+        }
+    }
+
+    async _refreshBattOptExempt() {
+        if (Platform.OS !== 'android') {
+            return;
+        }
+        try {
+            if (!AndroidSettings
+                    || typeof AndroidSettings.isIgnoringBatteryOptimizations !== 'function') {
+                // Old native side on a JS-only reload — say so rather than
+                // reporting false, which would read as "user hasn't granted it".
+                this._battOptExempt = 'nomodule';
+                return;
+            }
+            const _exempt = await AndroidSettings.isIgnoringBatteryOptimizations();
+            if (this._battOptExempt !== _exempt) {
+                utils.timestampedLog('[battopt] doze allowlist exempt=' + _exempt
+                    + (_exempt ? '' : ' — background sockets may be suspended with the screen off'));
+            }
+            this._battOptExempt = _exempt;
+        } catch (e) {
+            this._battOptExempt = 'error';
+        }
+    }
+
     async requestStoragePermission() {
         if (Platform.OS !== 'android') {
             return;
@@ -3073,7 +3287,7 @@ class Sylk extends Component {
         const granted = await PermissionsAndroid.request(
 			PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
 			{
-			  title: 'Storage Permission Required',
+			  title: 'Storage permission',
 			  message: 'App needs access to your storage to share files',
 			  buttonNeutral: 'Ask Me Later',
 			  buttonNegative: 'Cancel',
@@ -3261,6 +3475,14 @@ class Sylk extends Component {
 				console.log('[initWithCachedDomain] delegating connect to cdu-wsUrl');
 				utils.timestampedLog('[config] cache applied, ready');
 
+				// Mirror the download-success path: state.testNumbers has just
+				// been populated from the cache, so seed the test contacts too.
+				// Without this the cache fallback restored the configuration but
+				// still left a freshly enrolled account with no test contacts.
+				if (this.state.accountId) {
+					setTimeout(() => { this.createTestNumbers(); }, 100);
+				}
+
 				this.setState({
 					SylkServerDiscovery: false,
 					SylkServerDiscoveryResult: 'ready'
@@ -3305,7 +3527,10 @@ class Sylk extends Component {
 	  this.setState({configurationJson: null});
 
 	  try {
-		const response = await this.fetchWithTimeout(url, {}, 3000);
+		// 8s, not 3s. At sign-in / enrollment this races PGP key generation and the
+		// contact + journal load for the JS thread; 3s aborted a healthy request on
+		// a busy device (android32, 2026-08-23) and cost the session its config.
+		const response = await this.fetchWithTimeout(url, {}, 8000);
 
 		if (!response.ok) {
 		  this.setState({SylkServerDiscoveryResult: 'noJson',
@@ -3315,7 +3540,11 @@ class Sylk extends Component {
 		  console.log("Failed to download JSON: " + response.status);
 		  utils.timestampedLog('[config] download failed, HTTP', response.status, 'for', url);
 
-		  if (force) {
+		  // Fall back to the cached configuration whether or not this was a forced
+		  // refresh. The cache exists precisely so a failed refresh does not leave
+		  // the session on empty config (testNumbers, addressBookServer, pstn,
+		  // iceServers …). initWithCachedDomain no-ops when nothing is cached.
+		  {
 		    await this.initWithCachedDomain(domain);
 		  }
 
@@ -3436,9 +3665,11 @@ class Sylk extends Component {
 		  this.setState({SylkServerDiscovery: false, SylkServerStatus: 'DNS configuration unavailable'});
 		  console.log("downloadSylkConfiguration error:", error);
 		  utils.timestampedLog('[config] download error:', error && error.message ? error.message : String(error));
-		  if (force) {
-		    await this.initWithCachedDomain(domain);
-		  }
+		  // Same as the non-OK branch. This is what cost android32 its test
+		  // contacts: the 3s fetch aborted while the JS thread was busy generating
+		  // the RSA key, and nothing restored testNumbers from the perfectly good
+		  // cache written two minutes earlier.
+		  await this.initWithCachedDomain(domain);
 
 		  return;
 	  }
@@ -3625,11 +3856,20 @@ class Sylk extends Component {
     }
 
     async savePrivateKey(keys) {
-        let keyStatus = this.state.keyStatus;
+        // COPY, never alias. `this.state.keyStatus` is handed to ReadyBox /
+        // ImportPrivateKeyModal as a prop, and they detect change by comparing
+        // prevProps.keyStatus.existsLocal against this.props.keyStatus.existsLocal.
+        // Mutating the state object in place also mutates what prevProps points
+        // at, so both sides read the NEW value and the comparison says "nothing
+        // changed" — ReadyBox's componentDidUpdate then never calls
+        // _syncNoPrivateKeyWarning and the red "No private key on this device"
+        // banner stays up after a key has been generated (2026-08-23, iOS 12:41).
+        let keyStatus = {...this.state.keyStatus};
 
 		await this.waitForContactsLoaded();
 
         keyStatus.existsLocal = true;
+        this._markKeyEscrowChecked('private key saved');
 
         keyStatus.existsOnServer = true;
         keyStatus.serverPublicKey = keys.public;
@@ -4139,18 +4379,80 @@ class Sylk extends Component {
 		  let avatarPhotos = {};
 		  let avatarEmails = {};
 		  let seen_uris = new Map();
-		
+
+		  // Photo/email indexing is deliberately OUTSIDE the seen_uris dedup
+		  // guard below. seen_uris exists to stop the same address producing two
+		  // pickable rows in the phonebook list; it must not stop the SECOND
+		  // card that carries an address from registering its photo. Two AB
+		  // cards sharing a work address, or a card whose "phone number" is
+		  // really an @-address (WhatsApp entries), used to silently lose the
+		  // photo mapping for everything after the first hit.
+		  //
+		  // Keys are normalized via _abPhotoKey() so lookups from the Sylk side
+		  // (URIs are lowercased there) match address-book values typed with
+		  // whatever casing the user felt like: 'User.Name@Example.com' in Contacts
+		  // has to answer a lookup for 'user.name@example.com'.
+		  const _indexPhoto = (key, value) => {
+			const k = this._abPhotoKey(key);
+			if (!k || !value) return;
+			// First writer wins: a later card with the same address should not
+			// clobber an already-resolved photo with its own (the earlier card
+			// is the one whose row is in contact_cards).
+			if (!(k in avatarPhotos)) avatarPhotos[k] = value;
+		  };
+
+		  const _indexEmail = (key, value) => {
+			const k = this._abPhotoKey(key);
+			if (!k || !value) return;
+			if (!(k in avatarEmails)) avatarEmails[k] = value;
+		  };
+
 		  for (let contact of contacts) {
 			let name = contact.givenName && contact.familyName
 			  ? `${contact.givenName} ${contact.familyName}`
 			  : contact.givenName || contact.familyName || contact.company;
-		
+
 			if (!name) continue;
-		
+
 			let photo = contact.hasThumbnail ? contact.thumbnailPath : null;
-		
+
+			// iOS hands back a bare path inside the app's own data container
+			// (…/Application/<UUID>/Library/Caches/rncontacts_<id>.png) rather
+			// than a stable content:// URI like Android. Give it a file://
+			// scheme so every consumer treats it as a URL, and record the
+			// container it came from so a later launch can tell a live path
+			// from a stale one — see _abPhotoUsable().
+			photo = this._abNormalizePhotoUri(photo);
+
+			// The card's own display name is a fallback key for contacts whose
+			// Sylk URI does not appear in the address book at all (matched by
+			// name in loadSylkContacts). Registered once per card.
+			const _nameKey = name.trim();
+
+			// avatarEmails was declared and setState'd but never populated, so
+			// the contact.email backfill in loadSylkContacts could never fire.
+			// The first email on the card is the one we surface.
+			const _firstEmail = (contact.emailAddresses || [])
+			  .map(e => (e && e.email ? String(e.email).replace(/\s|\(|\)/g, '') : ''))
+			  .find(Boolean);
+
+			if (photo) _indexPhoto(_nameKey, photo);
+			if (_firstEmail) _indexEmail(_nameKey, _firstEmail);
+
 			contact.phoneNumbers.forEach(number => {
 			  let number_stripped = number.number.replace(/\s|\-|\(|\)/g, '');
+
+			  // Index every shape of the number the rest of the app might ask
+			  // for: as stored, plus the +/00 IDD variants and the bare-vs-
+			  // routed forms _phoneNumberVariants() already knows about.
+			  if (number_stripped && photo) {
+				_indexPhoto(number_stripped, photo);
+				for (const v of (this._phoneNumberVariants(number_stripped) || [])) {
+				  _indexPhoto(v, photo);
+				}
+			  }
+			  if (number_stripped && _firstEmail) _indexEmail(number_stripped, _firstEmail);
+
 			  if (number_stripped && !seen_uris.has(number_stripped)) {
 				contact_cards.push({
 				  id: uuid.v4(),
@@ -4168,13 +4470,19 @@ class Sylk extends Component {
 				  // otherwise be misclassified.
 				  tags: ['contact', 'phone'],
 				});
-				if (photo) avatarPhotos[name.trim().toLowerCase()] = photo;
 				seen_uris.set(number_stripped, true);
 			  }
 			});
 
 			contact.emailAddresses.forEach(email => {
 			  let email_stripped = email.email.replace(/\s|\(|\)/g, '');
+
+			  // THE case this whole path exists for: an OS contact whose email
+			  // address is literally the Sylk contact's URI. Indexed
+			  // unconditionally and case-folded so the lookup from the Sylk side
+			  // lands regardless of how the address was typed in Contacts.
+			  if (email_stripped && photo) _indexPhoto(email_stripped, photo);
+
 			  if (email_stripped && !seen_uris.has(email_stripped)) {
 				contact_cards.push({
 				  id: uuid.v4(),
@@ -4185,15 +4493,265 @@ class Sylk extends Component {
 				  label: email.label,
 				  tags: ['contact', 'email'],
 				});
-				if (photo) avatarPhotos[email_stripped] = photo;
 				seen_uris.set(email_stripped, true);
 			  }
 			});
 		  }
-		
+
+		  console.log('[ab] indexed', Object.keys(avatarPhotos).length, 'photo keys,',
+			  Object.keys(avatarEmails).length, 'email keys from',
+			  contact_cards.length, 'address book entries');
+
 		  this.setState({ contacts: contact_cards, avatarPhotos, avatarEmails });
 		  this.setState({addresBookLoaded: true });
 	}
+
+	// ---------------------------------------------------------------------
+	// Address-book photo resolution
+	// ---------------------------------------------------------------------
+
+	// Canonical key for the avatarPhotos / avatarEmails maps. Both sides of the
+	// lookup run through this, so casing and stray whitespace can never be the
+	// reason a photo is missed. Names and addresses share one keyspace; a
+	// collision between a person's name and an address is harmless (both point
+	// at the same card's photo in practice).
+	_abPhotoKey = (value) => {
+		if (!value) return '';
+		return String(value).trim().toLowerCase();
+	};
+
+	// iOS returns contact thumbnails as a bare filesystem path inside the app's
+	// data container; Android returns a stable content:// URI. Normalize the iOS
+	// form to a file:// URL so consumers see a real URL, and keep the raw path
+	// recoverable for the staleness check in _abPhotoUsable().
+	_abNormalizePhotoUri = (photo) => {
+		if (!photo) return null;
+		const p = String(photo).trim();
+		if (!p) return null;
+		// Already a URL (content://, file://, http(s)://, data:) — leave alone.
+		if (p.indexOf('://') > -1 || p.indexOf('data:') === 0) return p;
+		if (p.charAt(0) === '/') return 'file://' + p;
+		return p;
+	};
+
+	// Current iOS Caches directory, captured once per launch. The <APP-UUID>
+	// segment of this path changes on every reinstall / TestFlight update, which
+	// is precisely why photo paths persisted to SQL in an earlier launch go bad.
+	_abCachesPrefix = () => {
+		if (Platform.OS !== 'ios') return null;
+		if (this.__abCachesPrefix === undefined) {
+			try {
+				this.__abCachesPrefix = (RNFS && RNFS.CachesDirectoryPath) || null;
+			} catch (e) {
+				this.__abCachesPrefix = null;
+			}
+		}
+		return this.__abCachesPrefix;
+	};
+
+	// Is this stored photo value still worth handing to <Image>?
+	//
+	// content:// (Android), http(s)://, data: and anything non-path is always
+	// fine. An iOS file:// path is only fine if it still points inside the
+	// CURRENT app container: a path carrying a previous install's <APP-UUID> is
+	// guaranteed-dead, and rendering it just produces the empty grey circle
+	// UserIcon has to catch with onError. Rejecting it here lets the AB backfill
+	// replace it with a live path in the same pass.
+	_abPhotoUsable = (photo) => {
+		if (!photo) return false;
+		const p = String(photo).trim();
+		if (!p) return false;
+		if (p.indexOf('data:') === 0) return true;
+		if (p.indexOf('content://') === 0) return true;
+		if (p.indexOf('http://') === 0 || p.indexOf('https://') === 0) return true;
+
+		const isPath = p.indexOf('file://') === 0 || p.charAt(0) === '/';
+		if (!isPath) return true;   // unknown scheme — not ours to judge
+
+		if (Platform.OS !== 'ios') return true;
+
+		const raw = p.indexOf('file://') === 0 ? p.substring(7) : p;
+
+		// Only container-scoped paths are suspect. A path outside
+		// /var/mobile/Containers (or wherever RNFS reports) is left alone.
+		if (raw.indexOf('/Containers/Data/Application/') === -1) return true;
+
+		const prefix = this._abCachesPrefix();
+		if (!prefix) return true;   // can't tell — don't throw away a good photo
+
+		// Compare the container root (…/Application/<UUID>), not the full
+		// Caches path, so a thumbnail written under any subdirectory of the
+		// live container still passes.
+		const _containerRoot = (s) => {
+			const i = s.indexOf('/Containers/Data/Application/');
+			if (i === -1) return null;
+			const rest = s.substring(i + '/Containers/Data/Application/'.length);
+			const slash = rest.indexOf('/');
+			return slash === -1 ? rest : rest.substring(0, slash);
+		};
+
+		const stored = _containerRoot(raw);
+		const live = _containerRoot(prefix);
+		if (!stored || !live) return true;
+		return stored === live;
+	};
+
+	// Re-read the OS address book NOW and push what it says back over the
+	// loaded Sylk contacts.
+	//
+	// getABContacts() is a once-per-launch affair: loadPhoneAddressBook() skips
+	// it whenever state.addresBookLoaded is already true, and the map it builds
+	// (state.avatarPhotos) is the ONLY thing _abPhotoForContact reads. So a card
+	// the user edits from inside Blink -- adding the SIP address as an email, or
+	// setting a photo -- changed nothing on screen: the match and the photo were
+	// both being looked up in a snapshot taken before the edit. Calling
+	// getABContacts() directly bypasses that guard, and the explicit
+	// _abApplyPhotosToContacts() is needed because its usual trigger is the
+	// addresBookLoaded false->true EDGE, which cannot fire a second time.
+	refreshAddressBook = async () => {
+		try {
+			await this.getABContacts();
+		} catch (e) {
+			console.log('[ab] refresh failed:', e && e.message);
+			return;
+		}
+		this._abApplyPhotosToContacts();
+	};
+
+	// Re-apply address-book photos (and emails) over the already-loaded Sylk
+	// contacts. Called on the addresBookLoaded edge, i.e. the moment
+	// getABContacts() finally populates avatarPhotos, which is normally LONG
+	// after loadSylkContacts did its one-shot backfill.
+	//
+	// In-memory only by design: on iOS the resolved value is a container path
+	// that must not reach SQL (see _abPersistablePhoto), and on Android the
+	// content:// URI will be picked up and persisted by the next ordinary
+	// contact save anyway. Doing it as a single setState keeps this to one
+	// re-render regardless of address-book size.
+	_abApplyPhotosToContacts = () => {
+		if (!this.state.avatarPhotos || Object.keys(this.state.avatarPhotos).length === 0) {
+			return;
+		}
+
+		this.setState(prevState => {
+			const contacts = prevState.allContacts;
+			if (!Array.isArray(contacts) || contacts.length === 0) return null;
+
+			let changed = 0;
+			const next = contacts.map(c => {
+				if (!c || !c.uri) return c;
+
+				const patch = {};
+
+				// A photo the user explicitly set on the Sylk contact must not be
+				// overwritten by the address book. Only fill a hole — or replace a
+				// value we already know is dead.
+				if (!c.photo || !this._abPhotoUsable(c.photo)) {
+					const photo = this._abPhotoForContact(c.uri, c.name);
+					if (photo && photo !== c.photo) patch.photo = photo;
+					else if (c.photo && !this._abPhotoUsable(c.photo)) patch.photo = null;
+				}
+
+				if (!c.email) {
+					const email = prevState.avatarEmails
+						? (prevState.avatarEmails[this._abPhotoKey(c.uri)]
+						   || prevState.avatarEmails[this._abPhotoKey(c.name)])
+						: null;
+					if (email) patch.email = email;
+				}
+
+				if (Object.keys(patch).length === 0) return c;
+				changed = changed + 1;
+				return { ...c, ...patch };
+			});
+
+			if (changed === 0) return null;
+			utils.timestampedLog('[ab] [photos] applied address book data to', changed, 'contacts');
+			return { allContacts: next };
+		}, () => {
+			// allContacts identity changed — the uri/id lookup index points at
+			// the old objects otherwise, and callers reading through it would
+			// keep serving the photo-less copies.
+			if (typeof this.buildContactIndex === 'function') this.buildContactIndex();
+		});
+	};
+
+	// Is this photo value safe to write into the contacts.photo SQL column?
+	//
+	// No, if it is an iOS address-book thumbnail. Those live at
+	// …/Containers/Data/Application/<APP-UUID>/Library/Caches/rncontacts_<id>.png
+	// — the UUID is regenerated on every reinstall / TestFlight update and the
+	// Caches directory is purgeable by the OS at any time. Storing one produces a
+	// row that renders correctly today and as bare initials after the next
+	// update, with no way to tell the two apart. The address book is the source
+	// of truth for these; re-resolve them per launch instead of caching a
+	// pointer that outlives what it points at.
+	//
+	// Android content:// URIs, data: URIs and remote URLs are stable and are
+	// persisted as before.
+	_abPersistablePhoto = (photo) => {
+		if (!photo) return '';
+		const p = String(photo).trim();
+		if (!p) return '';
+		if (Platform.OS !== 'ios') return p;
+		const raw = p.indexOf('file://') === 0 ? p.substring(7) : p;
+		if (raw.charAt(0) !== '/') return p;
+		if (raw.indexOf('/Containers/Data/Application/') === -1) return p;
+		return '';
+	};
+
+	// Resolve an address-book photo for a Sylk contact.
+	//
+	// Order of preference:
+	//   1. exact URI match  — the OS contact carries this address (email OR
+	//      phone) verbatim. This is the "email of contact === uri of sylk
+	//      contact" case.
+	//   2. phone-number variants — +CC vs 00CC, bare vs @domain.
+	//   3. the URI's local part — 'user@example.com' matched against an address
+	//      book entry stored bare.
+	//   4. display name — last resort, and only when the name is a real name
+	//      (not a URI echo), because auto-created contacts store the URI as
+	//      their name and would match unrelated cards.
+	_abPhotoForContact = (uri, name) => {
+		const photos = this.state.avatarPhotos;
+		if (!photos) return null;
+
+		const _get = (k) => {
+			const key = this._abPhotoKey(k);
+			if (!key) return null;
+			const v = photos[key];
+			return this._abPhotoUsable(v) ? v : null;
+		};
+
+		let hit = _get(uri);
+		if (hit) return hit;
+
+		if (uri) {
+			for (const v of (this._phoneNumberVariants(uri) || [])) {
+				hit = _get(v);
+				if (hit) return hit;
+			}
+
+			const at = String(uri).indexOf('@');
+			if (at > -1) {
+				hit = _get(String(uri).substring(0, at));
+				if (hit) return hit;
+			}
+		}
+
+		const _name = (name || '').trim();
+		if (_name) {
+			const _uri = String(uri || '').trim().toLowerCase();
+			const _uriLocal = _uri.indexOf('@') > -1 ? _uri.split('@')[0] : _uri;
+			const _isEcho = _name.toLowerCase() === _uri || _name.toLowerCase() === _uriLocal;
+			if (!_isEcho) {
+				hit = _get(_name);
+				if (hit) return hit;
+			}
+		}
+
+		return null;
+	};
 
     async loadSylkContacts(origin, force=false) {
         if (this.state.contactsLoaded && !force) {
@@ -4259,6 +4817,40 @@ class Sylk extends Component {
                             contact.name = ab_contacts[0].name;
                             updated = 'name';
                         }
+
+                        // lookupABContacts already matched this Sylk URI against
+                        // every address-book card — including cards matched on an
+                        // EMAIL address, which is the case where the OS contact's
+                        // email is the Sylk URI. That match was only ever used for
+                        // the name; the photo went through the avatarPhotos map
+                        // instead and so was missed whenever the map keys didn't
+                        // line up. Take it straight from the matched card.
+                        const _abPhoto = this._abNormalizePhotoUri(
+                            (ab_contacts.find(c => c && c.photo) || {}).photo);
+                        if (_abPhoto && this._abPhotoUsable(_abPhoto) && _abPhoto !== contact.photo) {
+                            console.log('[load:update] photo', contact.uri, 'from matched AB card');
+                            contact.photo = _abPhoto;
+                            // Only worth a SQL write if the value actually
+                            // survives persistence — an iOS container path is
+                            // stored as '' (see _abPersistablePhoto), so marking
+                            // it dirty would re-save an unchanged row on every
+                            // single launch.
+                            if (this._abPersistablePhoto(_abPhoto)) updated = 'photo';
+                        }
+                    }
+
+                    // newContact() already refuses to surface a dead photo
+                    // pointer, so contact.photo is clean by now — but the ROW
+                    // still holds the stale string. Test the raw SQL value and
+                    // mark the contact dirty so the bad path is actually cleared
+                    // instead of being re-read and re-rejected on every launch.
+                    // (iOS embeds the install's container UUID in the path; it
+                    // changes on reinstall/update, and Library/Caches is
+                    // purgeable besides.)
+                    if (item.photo && !this._abPhotoUsable(item.photo)) {
+                        console.log('[load:update] photo', contact.uri, 'clearing stale container path from SQL');
+                        contact.photo = null;
+                        updated = 'photo';
                     }
 
                     if (contact.lastMessageId || contact.publicKey) {
@@ -4270,23 +4862,26 @@ class Sylk extends Component {
                     }
 
                     if (!contact.photo) {
-                        var name_idx = contact.name.trim().toLowerCase();
-                        if (name_idx in this.state.avatarPhotos) {
-                            console.log('[load:update] photo', contact.uri, 'backfill from avatarPhotos[name]');
-                            contact.photo = this.state.avatarPhotos[name_idx];
-                            updated = 'photo';
-                        } else if (contact.uri in this.state.avatarPhotos) {
-                            console.log('[load:update] photo', contact.uri, 'backfill from avatarPhotos[uri]');
-                            contact.photo = this.state.avatarPhotos[contact.uri];
-                            updated = 'photo';
+                        // _abPhotoForContact tries the URI first (exact, phone
+                        // variants, local part) and only falls back to the
+                        // display name, so an address-book card matched by email
+                        // wins over a coincidental name collision.
+                        const _photo = this._abPhotoForContact(contact.uri, contact.name);
+                        if (_photo) {
+                            console.log('[load:update] photo', contact.uri, 'backfill from address book');
+                            contact.photo = _photo;
+                            if (this._abPersistablePhoto(_photo)) updated = 'photo';
                         }
                     }
 
                     if (!contact.email) {
-                        var name_idx = contact.name.trim().toLowerCase();
-                        if (name_idx in this.state.avatarEmails) {
-                            console.log('[load:update] email', contact.uri, 'backfill from avatarEmails[name]');
-                            contact.email = this.state.avatarEmails[name_idx];
+                        const _email = this.state.avatarEmails
+                            ? (this.state.avatarEmails[this._abPhotoKey(contact.uri)]
+                               || this.state.avatarEmails[this._abPhotoKey(contact.name)])
+                            : null;
+                        if (_email) {
+                            console.log('[load:update] email', contact.uri, 'backfill from address book');
+                            contact.email = _email;
                             updated = 'email';
                         }
                     }
@@ -4513,6 +5108,7 @@ class Sylk extends Component {
                                });
 
                 this.syncDisplayNamesToNative(finalContacts);
+                this.syncBypassDndToNative(finalContacts);
 
                 try {
                     const _ts = finalContacts.filter(c => c && c.lastCallTimestamp != null);
@@ -4537,9 +5133,19 @@ class Sylk extends Component {
                 } catch (e) { console.log('[calls-diag] [load] error', e && e.message); }
             }
 
-			this.setState({contactsLoaded: true});
-
+			// ORDER MATTERS. These two are read together by _abReady(), and this
+			// runs inside a promise callback — outside React's batching — so the
+			// setState below flushes SYNCHRONOUSLY: componentDidUpdate (and with
+			// it _abMaybeRun('contactsLoaded')) runs before the next statement
+			// executes. With the assignment second, the contactsLoaded edge — the
+			// last readiness edge of a normal sign-in — fired at the one instant
+			// _contactsAccountId was still stale, so _abReady() rejected it with
+			// 'contactsAccountId=none' and, with no further edge to come, the
+			// whole addressbook pipeline stalled for the session (2026-08-23,
+			// iOS android31 12:16:56). Stamp the account FIRST.
 			this._contactsAccountId = this.state.accountId;
+
+			this.setState({contactsLoaded: true});
 
 			this._scheduleStorageRecompute();
 
@@ -4607,6 +5213,22 @@ class Sylk extends Component {
             setTimeout(() => {
                 //this.getMessages();
             }, 500);
+        }).catch((error) => {
+            // There was no catch here. Anything that rejected — the query
+            // itself, or a throw anywhere in the handler above — skipped the
+            // `contactsLoaded: true` / `_contactsAccountId` assignments and
+            // vanished as an unhandled rejection, with the last trace being the
+            // 'Loading Sylk contacts....' line. That silently wedges far more
+            // than the contacts list: _abReady() gates on both of those, so the
+            // addressbook reconcile never runs, which means no key check, no
+            // _onContactsReady, no migration, and the first journal sync waits
+            // forever on an import that will never finish. Observed on a freshly
+            // enrolled account (android19, 2026-08-23 11:25:08).
+            utils.timestampedLog('[contacts] LOAD FAILED for ' + this.state.accountId
+                + ' (origin=' + origin + ') — contactsLoaded stays false, which blocks the'
+                + ' addressbook reconcile, the PGP key check and the deferred journal sync: '
+                + (error && error.message ? error.message : error));
+            if (error && error.stack) console.log('[contacts] load stack:\n' + error.stack);
         });
 
     }
@@ -4815,7 +5437,7 @@ class Sylk extends Component {
 			 // native FCM dedupe (MyFirebaseMessagingService:1450) sees
 			 // null and lets the duplicate sipBridge "Tap to join"
 			 // push ring alongside the real conferenceInvite — the
-			 // exact symptom Adi reported on Nokia 6.2 / Android 11.
+			 // exact symptom reported on Nokia 6.2 / Android 11.
 			 // Source of truth is the in-memory conferenceSettings.sipBridge
 			 // already populated from the downloaded config; no
 			 // re-download needed.
@@ -4922,6 +5544,17 @@ class Sylk extends Component {
 
 	     if (this.state.addresBookLoaded != prevState.addresBookLoaded) {
 		     utils.timestampedLog('[ab] [contacts] loaded');
+		     // The OS address book loads lazily — only when the user opens the
+		     // Phonebook, the unified search, or the conference invite picker.
+		     // loadSylkContacts, which does the photo/email backfill, has almost
+		     // always already run by then (it fires at startup from
+		     // loadAccounts), so it read an EMPTY avatarPhotos map and every
+		     // avatar fell through to initials. Nothing re-ran the backfill
+		     // afterwards, so the photos only appeared after a full restart —
+		     // and on iOS not even then, because the path persisted by the
+		     // previous launch was already dead. Re-apply now that the map is
+		     // actually populated.
+		     if (this.state.addresBookLoaded) this._abApplyPhotosToContacts();
 		 }
 
 	     if (this.state.storageUsage != prevState.storageUsage) {
@@ -4998,7 +5631,12 @@ class Sylk extends Component {
 						 'lastMessageId=', this.state.selectedContact.lastMessageId,
 						 'hasPublicKey=', !!this.state.selectedContact.publicKey);
 					 
-					 this.setState({messageZoomFactor: 1});
+					 // Back to page 1 for the newly selected chat. Clear the
+					 // exhaustion flag too: it belongs to the contact we just
+					 // left, and leaving it set would hide "Load earlier
+					 // messages" in the new chat until its first slice lands.
+					 // getMessages republishes the correct value below.
+					 this.setState({messageZoomFactor: 1, totalMessageExceeded: false});
 
 	                 //this.getStorageUsage(uri);
 
@@ -5056,7 +5694,28 @@ class Sylk extends Component {
 		// a single 60s share.
 		const _screenSharingNow = !!(this.activeCall && this.activeCall._sylkScreenShare);
 
-		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && !_screenSharingNow && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
+		// Video calls suspend proximity too — see videoCallNow(). Keep the
+		// physical sensor in step with the call here as well as at call start:
+		// this catches the audio -> video upgrade mid-call and the video ->
+		// no-call teardown. _syncProximitySensor() no-ops unless the wanted
+		// state actually changed, so this is cheap on every update.
+		const _videoCallNow = this.videoCallNow();
+		this._syncProximitySensor('componentDidUpdate');
+
+		if (_videoCallNow && this.state.proximityNear) {
+			// The call became a video call while the phone was at the ear (or
+			// the sensor is stuck near). Clear it so the display comes back
+			// and the route branch below can't fire on the way out.
+			utils.timestampedLog('[proximity] video call — clearing proximityNear + screen ON');
+			this.setState({proximityNear: false});
+			if (Platform.OS === 'android') {
+				try { InCallManager.turnScreenOn(); } catch (e) {
+					utils.timestampedLog('[proximity] turnScreenOn (video) failed', e && e.message);
+				}
+			}
+		}
+
+		if (this.state.accountSetting.device.proximityEnabled && !this.headsetPresent() && !this.state.isFolded && !_screenSharingNow && !_videoCallNow && prevState.proximityNear !== this.state.proximityNear && this.activeCall) {
 			utils.timestampedLog('[proximity] in-call route change', prevState.proximityNear, '->', this.state.proximityNear, 'useInCallManger=' + !!this.useInCallManger);
 			if (this.state.proximityNear) {
 				utils.timestampedLog('[proximity] in-call -> EARPIECE + screen OFF');
@@ -5092,10 +5751,11 @@ class Sylk extends Component {
 			// proximityNear changed but the in-call route branch did not
 			// fire — log why so we can tell whether the gate (enabled /
 			// headset / folded) or the missing activeCall is the cause.
-			utils.timestampedLog('[proximity] in-call route skipped', prevState.proximityNear, '->', this.state.proximityNear, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'folded=' + !!this.state.isFolded, 'screenSharing=' + _screenSharingNow, 'inCall=' + (this.activeCall ? true : false));
-			// Never leave the display blanked while a share is running — e.g. the
-			// screen was already off from a proximity event when the share began.
-			if (_screenSharingNow && Platform.OS === 'android') {
+			utils.timestampedLog('[proximity] in-call route skipped', prevState.proximityNear, '->', this.state.proximityNear, 'enabled=' + !!(this.state.accountSetting && this.state.accountSetting.device && this.state.accountSetting.device.proximityEnabled), 'hasHeadset=' + !!this.state.hasHeadset, 'folded=' + !!this.state.isFolded, 'screenSharing=' + _screenSharingNow, 'video=' + _videoCallNow, 'inCall=' + (this.activeCall ? true : false));
+			// Never leave the display blanked while a share or a video call is
+			// running — e.g. the screen was already off from a proximity event
+			// when the share began / the call was upgraded to video.
+			if ((_screenSharingNow || _videoCallNow) && Platform.OS === 'android') {
 				try { InCallManager.turnScreenOn(); } catch (e) {
 					utils.timestampedLog('[proximity] turnScreenOn (screen share) failed', e && e.message);
 				}
@@ -5758,7 +6418,7 @@ class Sylk extends Component {
     }
 
     // AppStore GPS Review — deletes GPS/location rows whose retention window
-    // has elapsed. Enforces the user-facing retention promise ("max 7 days"
+    // has elapsed. Enforces the user-facing retention promise ("max 30 days"
     // for timed shares; session-scoped for meetups) at every startup.
     //
     // Delete messages whose `expire` (unix seconds) is in the past. Written
@@ -6904,21 +7564,85 @@ class Sylk extends Component {
     * @returns {resolve} results
     */
 
+    // Every SQL call in the app funnels through here, and this promise used to
+    // have THREE ways to never settle:
+    //
+    //   1. `if (!sql) return;` — a silent, permanently pending promise.
+    //   2. db.transaction() was called with NO transaction-error callback. Its
+    //      second argument is exactly that. Without it, any TRANSACTION-level
+    //      failure (SQLITE_BUSY under concurrent writes, a handle closed by a
+    //      logout, a locked database) means the success callback never runs,
+    //      executeSql never runs, and neither resolve nor reject is ever called.
+    //   3. Anything thrown synchronously by db.transaction escaped the executor.
+    //
+    // A never-settling promise here is not a lost query — it is a permanently
+    // stalled await in whatever called it, with nothing logged anywhere. That is
+    // the shape of every unexplained freeze chased in this session: the
+    // addressbook migration stopping dead at "reconcile 1/N" (holding the
+    // "Syncing contacts…" spinner and the setup DND open), and loadSylkContacts
+    // never reaching `contactsLoaded: true` (wedging the whole addressbook
+    // pipeline). Both stalled while the journal flush was hammering the same
+    // database from another task — precisely when a transaction-level failure is
+    // likely. Settle on every path, and say why.
     ExecuteQuery = (sql, params = []) => new Promise((resolve, reject) => {
         //console.log('-- Execute SQL query:', sql, params);
 
         if (!sql) {
+            reject(new Error('ExecuteQuery called with empty sql'));
             return;
         }
 
-        this.db.transaction((trans) => {
-          trans.executeSql(sql, params, (trans, results) => {
-            resolve(results);
-          },
-            (error) => {
-              reject(error);
+        let settled = false;
+        const _resolve = (r) => { if (settled) return; settled = true; if (_t) clearTimeout(_t); resolve(r); };
+        const _reject  = (e) => { if (settled) return; settled = true; if (_t) clearTimeout(_t); reject(e); };
+
+        // Last resort. If the driver calls back on none of its paths we still
+        // fail the caller instead of parking it forever. Generous enough that a
+        // legitimately slow query cannot trip it.
+        const _t = setTimeout(() => {
+            utils.timestampedLog('[sql] QUERY TIMED OUT after 60s — no callback from the'
+                + ' database driver: ' + String(sql).slice(0, 120));
+            _reject(new Error('SQL query timed out after 60s'));
+        }, 60000);
+
+        try {
+            this.db.transaction((trans) => {
+                trans.executeSql(sql, params,
+                    (t, results) => { _resolve(results); },
+                    // The statement error callback's ARITY VARIES in
+                    // react-native-sqlite-storage: some paths call it (error),
+                    // others (transaction, error). Assuming (transaction, error)
+                    // and taking the second argument produced an undefined error
+                    // and a synthetic "SQL statement failed" — which silently
+                    // broke saveSylkContact's insert-or-update fallback, since
+                    // that matches on the message containing 'UNIQUE constraint
+                    // failed'. The contact was then never written at all. Sniff
+                    // for whichever argument actually looks like an error.
+                    (a, b) => {
+                        const err = (b && (b.message || b.code)) ? b
+                                  : (a && (a.message || a.code)) ? a
+                                  : new Error('SQL statement failed');
+                        _reject(err);
+                    });
+            }, (txError) => {
+                // Only interesting when the statement callback did NOT already
+                // settle this promise: that is the true transaction-level
+                // failure this callback exists to catch. Otherwise it is just
+                // the echo of a statement error the caller is already handling
+                // (an insert-or-update UNIQUE conflict, for instance).
+                if (!settled) {
+                    utils.timestampedLog('[sql] transaction failed: '
+                        + ((txError && txError.message) ? txError.message : String(txError))
+                        + ' :: ' + String(sql).slice(0, 120));
+                }
+                _reject(txError || new Error('SQL transaction failed'));
             });
-        });
+        } catch (e) {
+            utils.timestampedLog('[sql] transaction threw: '
+                + ((e && e.message) ? e.message : String(e))
+                + ' :: ' + String(sql).slice(0, 120));
+            _reject(e);
+        }
       });
 
 	get _notificationCenter() {
@@ -7469,6 +8193,10 @@ class Sylk extends Component {
                     this.setState({
                                 contactMessages: [],
                                 messageZoomFactor: 1,
+                                // Paired with the page reset — a stale
+                                // exhaustion flag would suppress "Load
+                                // earlier messages" on the next chat.
+                                totalMessageExceeded: false,
                                 searchMessages: false
                                 });
                     if (this.contactMessageIndex) this.contactMessageIndex.clear();
@@ -7623,6 +8351,45 @@ class Sylk extends Component {
                     || reason === 'websocket disconnected'
                     || reason === 'enrollment';
 
+                // Never discard a call that is STILL RINGING just because we
+                // routed to /ready.
+                //
+                // This used to be a reason whitelist (accept_new_call /
+                // user_hangup_call), which silently broke the iOS call-swap.
+                // On CallKit's "End & Accept" the provider fulfils the
+                // CXEndCallAction for the ACTIVE call BEFORE the
+                // CXAnswerCallAction for the new one. The end action lands in
+                // CallManager._rnEnd, and because the active call's state is
+                // 'established' (not 'incoming') it hangs up with reason
+                // 'callkeep_hangup_call' — which is in the generic hangup
+                // whitelist and therefore does changeRoute('/ready', …) here.
+                // The reason isn't accept_new_call, so state.incomingCall —
+                // the call the user just asked to answer — was set to null.
+                // Milliseconds later the answer action arrives, acceptCall()
+                // finds no incomingCall, activeCall is null, <Call> mounts
+                // with call={null}, and call.answer() never fires: the old
+                // call ends correctly and the new one is never accepted.
+                //
+                // Keying on the call's own liveness instead of on the reason
+                // covers every route that reaches /ready mid-ring, whatever
+                // the caller called it. A ringing call is 'incoming' in
+                // sylkrtc's state machine; anything else (already terminated,
+                // answered, stale from a previous ring) still gets cleared
+                // exactly as before. rejectCall() clears it explicitly right
+                // after its own changeRoute, so declines are unaffected.
+                const _ringingIncoming = (this.state.incomingCall
+                        && this.state.incomingCall.state === 'incoming'
+                        && !this._terminatedCalls.has(this.state.incomingCall.id))
+                    ? this.state.incomingCall
+                    : null;
+                const _keepIncoming = (reason === 'accept_new_call' || reason === 'user_hangup_call')
+                    ? this.state.incomingCall
+                    : _ringingIncoming;
+                if (_keepIncoming && reason !== 'accept_new_call' && reason !== 'user_hangup_call') {
+                    utils.timestampedLog('[call] changeRoute /ready (' + reason + ') —',
+                        'holding still-ringing incoming call', _keepIncoming.id,
+                        'instead of discarding it');
+                }
                 const _stateUpdate = {
                             outgoingCallUUID: null,
                             currentCall: null,
@@ -7631,7 +8398,7 @@ class Sylk extends Component {
                             //shareToContacts: false,
                             selectedContacts: [],
                             sourceContact: null,
-                            incomingCall: (reason === 'accept_new_call' || reason === 'user_hangup_call') ? this.state.incomingCall: null,
+                            incomingCall: _keepIncoming,
                             reconnectingCall: false,
                             muted: false
                             };
@@ -7640,6 +8407,38 @@ class Sylk extends Component {
                     _stateUpdate.contactMessages = [];
                     if (this.contactMessageIndex) this.contactMessageIndex.clear();
                 }
+
+                // Release the OUTGOING call's local media BEFORE the state
+                // swap, not after.
+                //
+                // _stateUpdate nulls currentCall, so the moment it commits,
+                // activeCall becomes the held incomingCall and <Call>'s key
+                // (activeCall.id) changes — React unmounts the old Call and
+                // mounts a fresh one for the NEW call. If state.localMedia
+                // still holds the OLD call's stream at that instant, the
+                // fresh Call mounts with hasLocalMediaProp=true, and its
+                // componentDidMount -> mediaPlaying() -> answerCall() fires
+                // call.answer() IMMEDIATELY, using a stream we are about to
+                // close. Then the real accept path acquires proper media and
+                // answers again; sylkserver rejects the duplicate with
+                //     "Invalid state for answering session <id>: established"
+                // and sylkrtc's sendAnswer_request_error handler TERMINATES
+                // the call. Net effect: the swap tears down the call it was
+                // supposed to connect.
+                //
+                // Closing first means the fresh Call mounts with
+                // localMedia=null, logs "answerCall waiting for local media
+                // to arrive", and answers exactly once when the new call's
+                // own getLocalMedia resolves. closeLocalMedia() is idempotent
+                // (see its stream guard), so the call in the leaving-/call
+                // block below stays harmless.
+                if (_keepIncoming
+                        && (this.currentRoute === '/call' || this.currentRoute === '/conference')) {
+                    utils.timestampedLog('[call] releasing previous local media before activating',
+                        _keepIncoming.id, '— so the remounted call screen cannot answer with it');
+                    this.closeLocalMedia();
+                }
+
                 this.setState(_stateUpdate);
             }
 
@@ -7900,6 +8699,15 @@ class Sylk extends Component {
 		// events while folded.
 		if (this.state.isFolded) {
             utils.timestampedLog('[proximity] gate: device folded');
+            return;
+		}
+
+		// Video call: the user is watching the screen, so a near reading must
+		// not blank it or drop audio to the earpiece. The sensor is stopped
+		// for video calls (_syncProximitySensor), so this is belt-and-braces
+		// for events already in flight and for the audio -> video upgrade.
+		if (this.videoCallNow()) {
+            utils.timestampedLog('[proximity] gate: video call');
             return;
 		}
 
@@ -8475,7 +9283,12 @@ class Sylk extends Component {
                 }
             }
 
-            if (elem.direction === 'incoming' && elem.duration === 0) {
+            // A declined call also arrives as incoming/duration=0, but the
+            // user deliberately refused it — it is not "missed". Skipping the
+            // tag here keeps it out of both the Missed category and the
+            // unread badge (saveHistory bumps both off this tag).
+            if (elem.direction === 'incoming' && elem.duration === 0
+                    && !this._wasDeclinedNotMissed(elem.sessionId)) {
                 elem.tags.push('missed');
                 missedTagged++;
             }
@@ -9813,6 +10626,11 @@ class Sylk extends Component {
             // Delay the contact update by 5s so the server has time to commit
             // the new password before we re-encrypt the saved key with it.
             setTimeout(() => {
+                // The password just changed, so both cached verdicts about the
+                // escrow — "won't decrypt" and "verified against the password" —
+                // are stale.
+                this._abRestoreFailedSig = null;
+                this._abEscrowVerifiedSig = null;
                 this._abEnsureSelfKeys(account, { force: true, password: newPassword })
                     .catch((e) => {
                         console.log('changeSipPassword: re-escrow of encrypted key failed:', e && e.message);
@@ -10636,7 +11454,7 @@ class Sylk extends Component {
 		// setInterval — the JS event loop is paused on Android once the
 		// app is backgrounded, so a JS-only setInterval would silently
 		// stop firing the moment the screen turned off (which is exactly
-		// when the watchdog matters most). Florig's field log on
+		// when the watchdog matters most). A field log on
 		// 2026-05-05 showed precisely this regression: heartbeat fired
 		// for 60 attempts in background (BackgroundTimer-driven on the
 		// NavigationBar side), wss dropped 76 s after the share started,
@@ -10697,26 +11515,129 @@ class Sylk extends Component {
 			}
 		}, 30 * 1000);
 
+		// Seed the Doze-allowlist cache before the first nudge can print it.
+		this._refreshBattOptExempt();
+
 		this._liveShareWatchdog = BackgroundTimer.setInterval(() => {
 			try {
 				// Count active sessions across BOTH stores — a meet-only session
 				// must keep the socket alive just like a plain share.
-				const _plainCount = this._locationEngine.outgoingLocationSessions ? Object.keys(this._locationEngine.outgoingLocationSessions).length : 0;
-				const _meetCount = this._locationEngine.outgoingMeetSessions ? Object.keys(this._locationEngine.outgoingMeetSessions).length : 0;
-				const _shareCount = _plainCount + _meetCount;
+				const _shareCount = this._activeShareCount();
 				if (_shareCount === 0) return;
 				const conn = this.state.connection;
 				const state = conn && conn.state;
 				if (state === 'ready' || state === 'connecting') return;
 				if (!conn) return;
-				utils.timestampedLog('[location] watchdog: socket state=' + (state || 'none') + ' with ' + _shareCount + ' active share(s) — nudging reconnect');
+				// NETWORK-AWARE STAND-DOWN.
+				//
+				// When the platform reports no path at all there is nothing to
+				// connect over, and a nudge is a guaranteed sub-second failure
+				// that costs a radio wakeup. A 2026-08-24 field trace fired 29
+				// of them in 14 minutes, every one logging `net type=none
+				// connected=false reachable=false`, every one dead in ~330ms.
+				//
+				// Stand down and let the NetInfo false -> true edge
+				// (_forceReconnectForShares) restart us the instant the network
+				// is genuinely back. Safety valve: probe anyway every 10th tick
+				// (~5 min) in case the restore event was lost while the JS thread
+				// was frozen, so a stale cached `false` can never pin us offline.
+				if (this._netReachable === false) {
+					this._liveShareNetSkips = (this._liveShareNetSkips || 0) + 1;
+					const _probeAnyway = (this._liveShareNetSkips % 10 === 0);
+					if (this._liveShareNetSkips === 1 || _probeAnyway) {
+						utils.timestampedLog('[location] watchdog: no network — '
+							+ (_probeAnyway ? 'probing anyway (safety valve)' : 'standing down')
+							+ ' (skip #' + this._liveShareNetSkips + ', ' + _shareCount
+							+ ' active share(s)); reconnect will be driven by the NetInfo restore event');
+					}
+					if (!_probeAnyway) return;
+				} else {
+					this._liveShareNetSkips = 0;
+				}
+				this._liveShareNudges = (this._liveShareNudges || 0) + 1;
+				utils.timestampedLog('[location] watchdog: nudge #' + this._liveShareNudges
+					+ ' socket state=' + (state || 'none') + ' with ' + _shareCount + ' active share(s) — nudging reconnect');
+				// DIAGNOSTIC — why did the reconnect fail?
+				//
+				// In a 2026-08-19 field trace all 93 nudges produced
+				// `connecting -> disconnected` inside the SAME second. A real
+				// network failure (no route, DNS, unreachable host) takes
+				// longer than that; a sub-second refusal is what you get when
+				// the OS rejects the socket outright — Doze / app-standby /
+				// Samsung's "deep sleeping apps" firewall. The two cases need
+				// completely different fixes, and the log could not tell them
+				// apart, so ask the platform directly and write the answer
+				// down next to the attempt.
+				//
+				// NetInfo.fetch() is async and the JS thread may be frozen
+				// again by the time it resolves — that is itself a signal, so
+				// the line is stamped with the nudge number rather than
+				// assuming it lands in order.
+				const _nudgeNo = this._liveShareNudges;
+				try {
+					NetInfo.fetch().then((_net) => {
+						utils.timestampedLog('[location] watchdog: nudge #' + _nudgeNo
+							+ ' net type=' + ((_net && _net.type) || '?')
+							+ ' connected=' + ((_net && _net.isConnected) === true)
+							+ ' reachable=' + String(_net && _net.isInternetReachable)
+							+ ' appState=' + (this.state.appState || '?')
+							// The fork this whole trace exists to settle:
+							//   battOpt=false            -> not allowlisted; the Doze
+							//                               exemption is the fix.
+							//   battOpt=true + connected -> allowlisted and STILL refused,
+							//                               so it is an OEM layer the
+							//                               allowlist does not cover
+							//                               (Samsung "deep sleeping apps").
+							+ ' battOpt=' + (this._battOptExempt === undefined ? '?' : this._battOptExempt));
+						// Keep the cached reachability fresh from the watchdog's own
+						// probe too, so a lost NetInfo listener event cannot leave us
+						// stuck in stand-down.
+						if (_net) {
+							this._netReachable = (_net.isConnected === true
+								&& _net.isInternetReachable !== false);
+						}
+					}).catch(() => {});
+				} catch (e) { /* NetInfo unavailable — the missing line says so */ }
+				// Re-probe for the NEXT nudge. Fire and forget: if the JS thread
+				// freezes before it resolves the cached value simply stays put,
+				// which is the behaviour we want in Doze.
+				this._refreshBattOptExempt();
+				// Outcome tracer: one-shot listener that reports what the
+				// socket did after THIS nudge, so a failed attempt is
+				// attributable instead of having to eyeball interleaved
+				// `[wss] state changed` lines.
+				try {
+					// Drop the previous attempt's listener FIRST. If the JS
+					// thread froze before the socket resolved, that listener
+					// never fired and never removed itself; without this the
+					// 93 nudges of a 47-minute dead zone would leave 93 live
+					// listeners on the connection (and trip EventEmitter's
+					// max-listeners warning after 10).
+					if (this._liveShareNudgeListener) {
+						try { conn.removeListener('stateChanged', this._liveShareNudgeListener); } catch (e) {}
+						this._liveShareNudgeListener = null;
+					}
+					const _t0 = Date.now();
+					const _onceState = (oldState, newState) => {
+						if (newState === 'ready' || newState === 'disconnected' || newState === 'closed') {
+							utils.timestampedLog('[location] watchdog: nudge #' + _nudgeNo
+								+ ' outcome=' + newState + ' after ' + (Date.now() - _t0) + 'ms');
+							try { conn.removeListener('stateChanged', _onceState); } catch (e) {}
+							if (this._liveShareNudgeListener === _onceState) {
+								this._liveShareNudgeListener = null;
+							}
+						}
+					};
+					conn.on('stateChanged', _onceState);
+					this._liveShareNudgeListener = _onceState;
+				} catch (e) { /* not fatal */ }
 				// IMPORTANT: do NOT call `conn.reconnect()`. Sylkrtc's
 				// reconnect() merely queues a `setTimeout(_connect, 500)`,
 				// and on Android Doze / iOS suspended-app the JS-thread
 				// timer queue does NOT drain — our BackgroundTimer wakes
 				// the JS thread briefly for THIS callback only; the
-				// follow-up setTimeout is never serviced. Florig's
-				// 2026-05-06 14:14–14:17 trace showed 6 watchdog
+				// follow-up setTimeout is never serviced. A field
+				// trace on 2026-05-06 14:14–14:17 showed 6 watchdog
 				// "nudging reconnect" lines with zero `state changed`
 				// transitions in between — the queued reconnects
 				// finally fired only when the user manually woke the
@@ -10725,27 +11646,7 @@ class Sylk extends Component {
 				// just printed a log line). Reset _delay first so we
 				// don't inherit an exponential-backoff value left over
 				// from the previous failed cycle.
-				if (typeof conn._connect === 'function') {
-					try {
-						// Mirror the housekeeping reconnect() does on
-						// the happy path before scheduling _connect.
-						if (conn._timer) {
-							clearTimeout(conn._timer);
-							conn._timer = null;
-						}
-						conn._delay = 0.5 * 1000; // INITIAL_DELAY
-						conn._connect();
-					} catch (e) {
-						console.log('[location] watchdog: direct _connect() threw', e && e.message ? e.message : e);
-						// Fall back to the (less reliable) public path
-						// rather than leaving the user offline.
-						if (typeof conn.reconnect === 'function') {
-							conn.reconnect();
-						}
-					}
-				} else if (typeof conn.reconnect === 'function') {
-					conn.reconnect();
-				}
+				this._driveReconnect(conn, 'watchdog');
 			} catch (e) {
 				console.log('[location] watchdog tick failed', e && e.message ? e.message : e);
 			}
@@ -11069,14 +11970,16 @@ class Sylk extends Component {
 		this.setState({ userChangedAudioDevice: false });
 
 		// Proximity sensor is owned by incall-manager (see app/proximity.js).
-		// Start it explicitly on EVERY platform: on Android <31 InCallManager.start()
+		// Started explicitly on EVERY platform: on Android <31 InCallManager.start()
 		// below auto-starts it too, but the native isProximityRegistered guard makes
 		// this a harmless no-op there; on Android >=31 and iOS InCallManager.start()
 		// is never called (native AudioRouteModule / CallKeep own audio), so this is
 		// the only thing that turns the sensor on. Idempotent + best-effort.
-		try { InCallManager.startProximitySensor(); } catch (e) {
-			utils.timestampedLog('[proximity] startProximitySensor failed', e && e.message);
-		}
+		//
+		// Routed through _syncProximitySensor() so VIDEO calls never register
+		// the sensor at all — on iOS the OS blanks the screen natively while it
+		// is registered, which no JS gate can prevent.
+		this._syncProximitySensor('audioManagerStart');
 
 		if (this.useInCallManger) {
 		    InCallManager.start({media: 'audio'});
@@ -11249,7 +12152,297 @@ class Sylk extends Component {
 		_emit('conference recording', confMod);
 	}
 
-	audioManagerStop() {
+	/**
+	 * True when at least one call OTHER than `callUUID` is still alive.
+	 *
+	 * The audio stack (AudioRouteModule on iOS / Android >= 31,
+	 * InCallManager on Android < 31) is a PROCESS-WIDE SINGLETON with a
+	 * non-refcounted start/stop pair — AudioRouteModule.stop() does
+	 * `[AVAudioSession setActive:NO]` on the one shared session that
+	 * every live call's WebRTC audio unit is running on. So tearing it
+	 * down because ONE call ended kills audio for every other call still
+	 * in flight.
+	 *
+	 * That is exactly the second-incoming-call bug: while a 1:1 call is
+	 * established, a second call arrives via VoIP push, the user ignores
+	 * it (or answers it on another device, or the 45 s CallManager
+	 * timeout fires). The second call's 'terminated' event ran
+	 * audioManagerStop() unconditionally, the shared AVAudioSession was
+	 * deactivated, and the FIRST call went silent for good — CallKit
+	 * never re-fires didActivateAudioSession for a call it already
+	 * considers connected, and in manual-audio mode nothing else
+	 * restarts the audio unit.
+	 *
+	 * Same shape as the Android foreground-service bug fixed in
+	 * CallManager.endCall (`this._calls.size === 0`): a shared resource
+	 * released by whichever participant happens to exit first.
+	 *
+	 * A call counts as "still alive" when it is in callKeeper._calls,
+	 * is not the call we're tearing down, has not already been marked
+	 * terminated by this handler, and is in a state that actually owns
+	 * media ('accepted' / 'established'). A merely RINGING call owns no
+	 * audio session, so it must not keep the session pinned — see the
+	 * per-state note in the walk below.
+	 */
+	_hasOtherLiveCalls(callUUID) {
+		if (!callUUID || !this.callKeeper || !this.callKeeper._calls) {
+			return false;
+		}
+
+		// Call-swap window. When the user answers a second call while one is
+		// already up, acceptCall hangs up the old call and the new one is
+		// answered in the same tick. The old call's 'terminated' handler then
+		// lands ~150 ms later, and the walk below has NOT yet seen the new
+		// call reach 'accepted' in callKeeper._calls (the swap also nulls
+		// state.currentCall), so it used to conclude "nothing else is live"
+		// and run audioManagerStop() + playHangupTone() on top of the call
+		// the user just answered.
+		//
+		// Sony XQ-EC72, release.log 2026-08-18 09:51:00:
+		//   .375 AudioRouteModule stop  -> force-NORMAL, ignored
+		//        origAudioMode=IN_COMMUNICATION(3)      (the swap's own stop)
+		//   .5xx getUserMedia_ok + hangup_tone.wav      (the LATE second stop)
+		//   +500 AudioRouteModule.stop after: RINGTONE(1)
+		//   :03  AudioRouteModule start, "Original audio mode: RINGTONE(1)"
+		// libwebrtc's ADM had already created and started its AudioRecord in
+		// that window and never re-opens it when the mode is fixed 2.7 s
+		// later, so the mic captured digital silence for the whole call: the
+		// far end received 1911 pkts / 67 863 B = 35.5 B/pkt at 0 % loss,
+		// i.e. constant ~23-byte Opus silence frames.
+		//
+		// The parked call (acceptCall's sequential swap) is the swap window.
+		if (this._isCallSwapOpen(callUUID)) {
+			utils.timestampedLog('[audio] _hasOtherLiveCalls: call swap in progress —',
+				this._pendingSwapAccept.callUUID, 'owns the audio session (asked about',
+				callUUID + ')');
+			return true;
+		}
+
+		let others = 0;
+		try {
+			this.callKeeper._calls.forEach((c, uuid) => {
+				if (!uuid || uuid === callUUID) {
+					return;
+				}
+				if (this._terminatedCalls && this._terminatedCalls.has(uuid)) {
+					return;
+				}
+				// Only a call that is CARRYING MEDIA counts. sylkrtc's
+				// lifecycle is
+				//   incoming|progress -> accepted -> established -> terminated
+				// and only 'accepted' / 'established' own the audio session.
+				//
+				// Restricting to those two is what makes this predicate work
+				// for both directions of the problem:
+				//   • second call ignored while a conversation is up — the
+				//     established call is seen, so its session is protected;
+				//   • call SWAP — the old call ends while the new one is
+				//     merely RINGING, nothing owns media yet, so the session
+				//     is released normally and the new call's
+				//     audioManagerStart() comes up clean instead of
+				//     early-returning on a still-started AudioRouteModule.
+				const st = c && c.state;
+				if (st !== 'established' && st !== 'accepted') {
+					return;
+				}
+				others += 1;
+			});
+		} catch (e) {
+			// Never let the bookkeeping walk break call teardown — on
+			// error fall back to the historical behaviour (stop audio).
+			utils.timestampedLog('[audio] _hasOtherLiveCalls failed:', e && e.message);
+			return false;
+		}
+
+		return others > 0;
+	}
+
+	/** How long to wait for the outgoing call's teardown to finish before
+	 *  answering the parked call anyway. Teardown normally completes in
+	 *  200-600 ms; the cap only exists so a wedged native layer cannot strand
+	 *  a call the user has already accepted. */
+	_SWAP_TEARDOWN_TIMEOUT_MS = 3000;
+
+	/** Grace after the last teardown signal, before the parked call is
+	 *  answered. The JS-visible steps complete slightly ahead of their native
+	 *  counterparts (AudioRouteModule.stop's own follow-up is +500 ms, and the
+	 *  AudioDeviceModule stop lands on a WebRTC worker thread), so a short
+	 *  settle keeps the fresh getUserMedia clear of them. */
+	_SWAP_SETTLE_MS = 300;
+
+	/** Record one completed step of the outgoing call's teardown. No-op unless
+	 *  a sequential swap is actually waiting on it. */
+	_markSwapTeardown(step) {
+		if (!this._swapTeardown || this._swapTeardown[step]) {
+			return;
+		}
+		this._swapTeardown[step] = true;
+		utils.timestampedLog('[call] [swap] teardown step complete:', step,
+			JSON.stringify(this._swapTeardown));
+	}
+
+	/** Poll the teardown signals and answer the parked call once the old call
+	 *  is genuinely gone. Signals, not timers: the old call reaching
+	 *  'terminated', and its local tracks actually being released (the step
+	 *  that drops the last client of the shared AudioDeviceModule). */
+	_awaitTeardownThenAccept() {
+		const _t0 = Date.now();
+		const _tick = () => {
+			if (!this._pendingSwapAccept) {
+				// Parked call died, or someone else already resumed it.
+				return;
+			}
+			const _st = this._swapTeardown || {};
+			const _elapsed = Date.now() - _t0;
+			if (!(_st.terminated && _st.released)
+					&& _elapsed < this._SWAP_TEARDOWN_TIMEOUT_MS) {
+				setTimeout(_tick, 100);
+				return;
+			}
+			if (_st.terminated && _st.released) {
+				utils.timestampedLog('[call] [swap] old call fully torn down in',
+					_elapsed + 'ms — settling', this._SWAP_SETTLE_MS + 'ms, then answering');
+			} else {
+				utils.timestampedLog('[call] [swap] teardown did not signal within',
+					_elapsed + 'ms', JSON.stringify(_st),
+					'— answering the parked call anyway');
+			}
+			setTimeout(() => this._acceptParkedCall(), this._SWAP_SETTLE_MS);
+		};
+		setTimeout(_tick, 100);
+	}
+
+	/** Abandon the parked call. A parked call is invisible to state, so the
+	 *  in-call red button and CallKeep's end action both address the OLD
+	 *  call's UUID — without this, "get me out of this" during the
+	 *  "Connecting..." gap tore down the old call and then _acceptParkedCall()
+	 *  cheerfully answered the call the user had just refused. */
+	_cancelParkedCall(reason) {
+		const _p = this._pendingSwapAccept;
+		if (!_p) {
+			return;
+		}
+		this._pendingSwapAccept = null;
+		this._swapTeardown = null;
+		utils.timestampedLog('[call] [swap] cancelling parked call', _p.callUUID,
+			'reason=' + reason);
+		try {
+			if (_p.call && _p.call.state !== 'terminated'
+					&& !_p.call._sylkTerminateSent) {
+				_p.call._sylkTerminateSent = true;
+				_p.call.terminate();
+			}
+		} catch (e) {
+			utils.timestampedLog('[call] [swap] parked call terminate threw:',
+				(e && e.message) || String(e));
+		}
+		try {
+			this.callKeeper.endCall(_p.callUUID, 2);
+		} catch (e) { /* noop */ }
+		this.updateLoading(null, 'call_swap_cancelled');
+	}
+
+	/** Put the parked call back into state and run the ORDINARY first-call
+	 *  accept path on it. Nothing here is swap-specific by design — that is
+	 *  the whole point of sequencing. */
+	_acceptParkedCall() {
+		const _p = this._pendingSwapAccept;
+		this._pendingSwapAccept = null;
+		this._swapTeardown = null;
+		if (!_p) {
+			return;
+		}
+
+		const _state = _p.call && _p.call.state;
+		if (!_p.call || _state === 'terminated') {
+			utils.timestampedLog('[call] [swap] parked call', _p.callUUID,
+				'is gone (state=' + _state + ') — nothing left to answer');
+			this.updateLoading(null, 'call_swap_gone');
+			this.changeRoute('/ready', 'swap_parked_call_gone');
+			return;
+		}
+
+		if (this.unmounted) {
+			return;
+		}
+
+		utils.timestampedLog('[call] [ui] call_id=' + _p.callUUID,
+			'swap_resume — old call gone, answering the parked call as a fresh call',
+			'(parked for', (Date.now() - _p.parkedAt) + 'ms)');
+
+		// activeCall is currentCall || incomingCall. During the park BOTH slots
+		// are null, which sends every unrelated state tick into the tail `else`
+		// of callStateChanged — `newCurrentCall = call` — so a straggling tick
+		// from the dying call (or a third call ringing in) can put something
+		// back in currentCall. If that survived here it would shadow the parked
+		// call in activeCall, <Call> would never mount for it, and nothing would
+		// ever fire its answer(). Claim both slots.
+		if (this.state.currentCall) {
+			utils.timestampedLog('[call] [swap] clearing stale currentCall',
+				this.state.currentCall.id, 'before activating parked call', _p.callUUID);
+		}
+
+		this.updateLoading(null, 'call_swap_done');
+		// Back into state: <Call> is keyed on the active call's id, so this
+		// mounts a fresh call screen for the parked call with localMedia still
+		// null. It logs "waiting for local media" and answers exactly once,
+		// when getLocalMedia below resolves — the same order a first call has.
+		this.setState({currentCall: null,
+					   incomingCall: _p.call,
+					   incomingCallUUID: _p.callUUID,
+					   // Belt and braces for the subtitle: whatever the previous
+					   // call left behind is not this call's status.
+					   terminatedReason: null}, () => {
+			if (Platform.OS === 'android') {
+				// Inside the setState callback: activeCall already resolves to
+				// the parked call, so the telecom route pins to the right UUID.
+				this.audioManagerStart();
+			}
+			this.getLocalMedia({audio: true, video: _p.video}, '/call', _p.callUUID);
+			utils.timestampedLog('[call] [ui] call_id=' + _p.callUUID,
+				'06 getLocalMedia_started (async; getUserMedia_ok line follows when it resolves)');
+		});
+	}
+
+	/** How long a parked call may keep the swap "open" if the resume chain is
+	 *  ever lost. _pendingSwapAccept is cleared deterministically — answered,
+	 *  cancelled, or terminated while parked — so this is only a backstop
+	 *  against throttled timers; it must never suppress tones or routes for
+	 *  the rest of the session. */
+	_CALL_SWAP_MAX_PARK_MS = 15000;
+
+	/** True while a call swap is in flight for a call OTHER than `uuid` —
+	 *  i.e. a new call is parked, waiting for the previous one to finish
+	 *  tearing down. This used to be a separate `_callSwapInProgress` window
+	 *  with its own open/close/expiry bookkeeping; the parked call IS the
+	 *  window now, and it has an exact lifetime, so the window was redundant
+	 *  state that could only drift out of sync with it. */
+	_isCallSwapOpen(uuid) {
+		const _p = this._pendingSwapAccept;
+		return !!(_p
+			&& _p.callUUID
+			&& _p.callUUID !== uuid
+			&& (Date.now() - _p.parkedAt) < this._CALL_SWAP_MAX_PARK_MS);
+	}
+
+	/**
+	 * Tear down the shared audio session.
+	 *
+	 * Pass the callUUID of the call that is ending whenever this is
+	 * called from a per-call teardown path ('terminated', hangup, …).
+	 * With a callUUID we refuse to touch the SHARED session while any
+	 * other call is still live (see _hasOtherLiveCalls). Called with no
+	 * argument the stop is unconditional — that's the deliberate
+	 * "everything is over" / "release the mic before we swap calls"
+	 * usage (changeRoute's no_more_calls / accept_new_call paths).
+	 */
+	audioManagerStop(callUUID) {
+		if (callUUID && this._hasOtherLiveCalls(callUUID)) {
+			utils.timestampedLog('[audio] audioManagerStop SKIPPED for', callUUID,
+				'— other call(s) still live, keeping the shared audio session');
+			return;
+		}
+
 		// Route watchdog: the call is over — stop enforcing any route so
 		// post-call device events aren't treated as unsolicited changes.
 		this._desiredAudioRoute = null;
@@ -11270,6 +12463,7 @@ class Sylk extends Component {
 		// Stop the incall-manager proximity sensor. Placed before the
 		// useInCallManger early-return below so it runs on ALL platforms
 		// (Android <31's InCallManager.stop() also stops it — idempotent no-op).
+		this._proximitySensorOn = false;
 		try { InCallManager.stopProximitySensor(); } catch (e) {
 			utils.timestampedLog('[proximity] stopProximitySensor failed', e && e.message);
 		}
@@ -12513,6 +13707,112 @@ class Sylk extends Component {
 		}
 	}
 
+	// Mirror the `bypassdnd` tag into the shared app-group container so
+	// the SylkNotificationService extension can raise that sender's
+	// message push to .timeSensitive — the only interruption level that
+	// breaks through a system Focus / Do Not Disturb. The NSE cannot read
+	// sylk.db (it lives in the app's own container, not the app group),
+	// so the tag has to be mirrored the same way display names are.
+	// Point update from saveSylkContact, called after the tag list is
+	// normalised so blocking a contact (which strips bypassdnd) clears
+	// this too.
+	updateBypassDndInNativeMap(uri, tags) {
+		if (Platform.OS !== 'ios' || !uri) {
+			return;
+		}
+		try {
+			const list = Array.isArray(tags)
+				? tags
+				: String(tags || '').split(',');
+			const norm = list.map(t => String(t).trim().toLowerCase());
+			const enabled = norm.indexOf('bypassdnd') > -1
+				&& norm.indexOf('blocked') === -1;
+			NativeModules.APNSTokenModule.setContactBypassDnd(
+				String(uri).toLowerCase(), enabled);
+		} catch (e) {
+			console.log('updateBypassDndInNativeMap failed:', e && e.message);
+		}
+	}
+
+	// Whole-list replace of the bypassdnd URI set, one bridge call per
+	// contacts load — mirrors syncDisplayNamesToNative so an untag done
+	// on ANOTHER device (arriving via address-book sync) actually clears
+	// here instead of lingering in the extension's copy.
+	// May this caller ring through Blink's own Do Not Disturb?
+	//
+	// The `bypassdnd` TAG is the sole authority, on every path: this one (calls
+	// arriving over the websocket while the app is connected), AppDelegate's
+	// canBypassDnd: (PushKit) and MyFirebaseMessagingService.canBypassDnd (FCM).
+	//
+	// Being a Favorite used to grant a bypass here as well. That made the same
+	// caller behave differently depending on nothing the user controls -- ring
+	// through when the app happened to be foregrounded, get dropped when the
+	// call arrived as a push -- and, once the Do Not Disturb screen started
+	// stating a per-contact mode out loud, it made the panel lie: a Favorite
+	// left on Default rang anyway. One rule, three paths, and the switch in the
+	// modal is the thing that sets it.
+	_canBypassAppDnd = (uri) => {
+		const c = this.lookupContact(uri);
+		const tags = (c && Array.isArray(c.tags)) ? c.tags : [];
+		for (const t of tags) {
+			if (String(t).trim().toLowerCase() === 'bypassdnd') return true;
+		}
+		return false;
+	};
+
+	// Mirror privacy.dnd (the navbar bell) into the shared app-group
+	// container so SylkNotificationService can deliver message pushes
+	// quietly while it is on. The NSE cannot read sylk.db, so — exactly
+	// like the display-name map and the bypassdnd set — the flag has to be
+	// pushed across. Without it the bell had no effect whatsoever on
+	// message banners: the server alert push is rendered by iOS and the
+	// app never sees it.
+	//
+	// Called with an explicit value from setAccountSetting (the state
+	// commit may not have landed yet at that point) and with no argument
+	// from _applyAccountSettings, where reading state is correct.
+	syncAppDndToNative(value) {
+		if (Platform.OS !== 'ios') {
+			return;
+		}
+		try {
+			const on = (typeof value === 'boolean')
+				? value
+				: !!(this.state.accountSetting
+					&& this.state.accountSetting.privacy
+					&& this.state.accountSetting.privacy.dnd);
+			NativeModules.APNSTokenModule.setAppDnd(on);
+			console.log('[push] app DND mirrored to shared container:', on);
+		} catch (e) {
+			console.log('syncAppDndToNative failed:', e && e.message);
+		}
+	}
+
+	syncBypassDndToNative(contacts) {
+		if (Platform.OS !== 'ios') {
+			return;
+		}
+		try {
+			const uris = [];
+			(contacts || []).forEach((c) => {
+				if (!c || !c.uri || !Array.isArray(c.tags)) {
+					return;
+				}
+				const tags = c.tags.map(t => String(t).trim().toLowerCase());
+				// A blocked contact never bypasses anything. saveSylkContact
+				// strips bypassdnd alongside favorite/muted on block, but a
+				// row loaded straight from SQL may predate that.
+				if (tags.indexOf('bypassdnd') > -1 && tags.indexOf('blocked') === -1) {
+					uris.push(String(c.uri).toLowerCase());
+				}
+			});
+			NativeModules.APNSTokenModule.syncContactBypassDnd(uris);
+			console.log('[push] bypassdnd set: sent', uris.length, 'contacts to shared container');
+		} catch (e) {
+			console.log('syncBypassDndToNative failed:', e && e.message);
+		}
+	}
+
     updateTotalUread() {
        let total_unread = 0;
 
@@ -12677,11 +13977,26 @@ class Sylk extends Component {
     _onPushkitRegistered(token) {
         utils.timestampedLog(Platform.OS, '[account] VoIP push token', token, 'registered');
         this.pushkittoken = token;
+        this._maybeSendPushToken('pushkit');
     }
 
     _onPushRegistered(token) {
         utils.timestampedLog(Platform.OS, '[account] normal push token', token, 'registered');
         this.pushtoken = token;
+        this._maybeSendPushToken(Platform.OS === 'ios' ? 'apns' : 'fcm');
+    }
+
+    // _sendPushToken is fired once from the account-ready handler. On iOS
+    // the APNs token arrives after that (permission prompt is deferred to
+    // post-login), so that call finds this.pushtoken undefined and gives
+    // up permanently. Re-attempt when a token actually lands;
+    // pushTokenSent keeps it to one real send.
+    _maybeSendPushToken(source) {
+        if (this.pushTokenSent || !this.state.account) {
+            return;
+        }
+        utils.timestampedLog('[account]', source, 'token arrived after account setup, sending push token');
+        this._sendPushToken();
     }
 
     _sendPushToken() {
@@ -13046,15 +14361,61 @@ class Sylk extends Component {
 
     startCallFromCallKeeper(data) {
         utils.timestampedLog('[call] Starting call from OS...');
+        // Guard the handle: this method now sees the UUID-less OS intents
+        // too (see below), and a malformed one would take the whole app
+        // down on the .search() call.
+        if (!data || typeof data.handle !== 'string' || !data.handle.trim()) {
+            utils.timestampedLog('[call] ignoring OS call request with no handle:',
+                                 JSON.stringify(data || {}));
+            return;
+        }
         let callUUID = data.callUUID || uuid.v4();
         let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
+
+        // No callUUID means this is not our own outgoing call coming back
+        // to us — it is an iOS INStartCallIntent: the user tapped Blink on
+        // a Contacts card, in Recents, or asked Siri. Android always
+        // carries EXTRA_CALL_UUID, so this branch is iOS-only in practice.
+        // Treat it exactly like an external tel:/sip: link: prefill the URI
+        // field and let the user press call, rather than dialing behind
+        // their back from a screen they have not seen yet.
+        if (!data.callUUID && !is_conf) {
+            // CallManager already ran cleanDialHandle on the way in; run it
+            // again because this method is also reachable from paths that
+            // did not (and it is idempotent). Then repair a trunk 0 left
+            // after the country code, exactly as dialFromExternalUrl does.
+            let _target = utils.cleanDialHandle(data.handle);
+            _target = utils.stripTrunkZeroAfterCountryCode(
+                _target, this.getEffectivePstnRules());
+            utils.timestampedLog('[call] [os-intent] prefilling target',
+                                 data.handle, '->', _target);
+            this.prefillDialTarget(_target, data.handle, 'os_call_intent');
+            return;
+        }
 
         this.backToForeground();
 
         if (is_conf) {
             this.callKeepStartConference(data.handle, {audio: true, video: data.video || true, callUUID: callUUID});
         } else {
-            this.callKeepStartCall(data.handle, {audio: true, video: data.video, callUUID: callUUID});
+            // The handle arrives raw from the OS — an iOS INStartCallIntent
+            // (Contacts "Call with Blink", Recents, Siri) or an Android
+            // Telecom dial — so it is whatever the contact card stored:
+            // '+31 6 1234 5678', '(023) 799-3800', sometimes a tel: URI.
+            // callKeepStartCall only lowercases and appends the default
+            // domain, so those spaces and dashes would travel all the way to
+            // account.call(). Run the same cleanup the in-app search bar
+            // gets: normalizeUri (which unwraps tel: and collapses the
+            // visual separators) and then the trunk-0-after-country-code
+            // repair driven by the account's "Replace 0 with" rule — the
+            // same pairing dialFromExternalUrl uses for external links.
+            let _handle = utils.normalizeUri(data.handle, this.state.defaultDomain);
+            _handle = utils.stripTrunkZeroAfterCountryCode(_handle, this.getEffectivePstnRules());
+            if (_handle !== data.handle) {
+                utils.timestampedLog('[call] [pstn] OS handle normalized:',
+                                     data.handle, '->', _handle);
+            }
+            this.callKeepStartCall(_handle, {audio: true, video: data.video, callUUID: callUUID});
         }
 
         if (this._notificationCenter) {
@@ -13226,6 +14587,11 @@ class Sylk extends Component {
                     clearTimeout(this.registrationFailureTimer);
                     this.registrationFailureTimer = null;
                 }
+                // The websocket is gone, so a pending re-register would fire
+                // against a dead connection. sylkrtc reconnects and the
+                // 'ready' branch above re-registers; keep the failure count
+                // so a flapping link still backs off.
+                this._cancelRegistrationRetry('[wss] disconnected');
                 if (this.state.currentCall && this.state.currentCall.direction === 'outgoing') {
                     // Only tear the call down if the *media* plane is
                     // also unhealthy. The Sylk WSS is a control-plane
@@ -13407,6 +14773,65 @@ class Sylk extends Component {
         }
     }
 
+    _cancelRegistrationRetry(reason) {
+        if (this.registrationRetryTimer) {
+            utils.timestampedLog('[account] [register] cancel retry timer' + (reason ? ' (' + reason + ')' : ''));
+            clearTimeout(this.registrationRetryTimer);
+            this.registrationRetryTimer = null;
+        }
+    }
+
+    _resetRegistrationRetry(reason) {
+        this._cancelRegistrationRetry(reason);
+        this.registrationRetryCount = 0;
+    }
+
+    /*
+     * Schedule a re-register after a retryable failure, with exponential
+     * backoff and jitter.
+     *
+     * This used to be an unconditional this.state.account.register() with no
+     * delay whenever registrationKeepalive was set - which it always is once
+     * the account has registered at least once. When the SIP proxy restarts
+     * and answers 503, that turns into a hot loop at network RTT (~4
+     * REGISTERs/second per client) for as long as the outage lasts, from
+     * every client at once, hammering the proxy exactly while it is trying to
+     * come back up. The delay doubles per consecutive failure up to a
+     * 2-minute ceiling, and the +/-25% jitter keeps the fleet from retrying
+     * in lockstep after a common trigger.
+     */
+    _scheduleRegistrationRetry(code) {
+        this._cancelRegistrationRetry();
+
+        const n = Math.min(this.registrationRetryCount, REGISTER_BACKOFF_MAX_STEP);
+        const base = Math.min(REGISTER_BACKOFF_BASE * Math.pow(2, n), REGISTER_BACKOFF_CEILING);
+        const delay = Math.round(base * (0.75 + Math.random() * 0.5));
+        this.registrationRetryCount = this.registrationRetryCount + 1;
+
+        utils.timestampedLog('[account] [register] retry in ' + Math.round(delay / 1000) + 's'
+            + ' (failure ' + this.registrationRetryCount + ', code ' + (code || 'none') + ')');
+
+        this.registrationRetryTimer = setTimeout(() => {
+            this.registrationRetryTimer = null;
+            if (this.unmounted || this.signOut) {
+                return;
+            }
+            if (!this.state.account) {
+                utils.timestampedLog('[account] [register] retry skipped, no account');
+                return;
+            }
+            if (!this.state.connection || this.state.connection.state !== 'ready') {
+                // The websocket is down; connectionStateChanged re-registers
+                // on 'ready', so there is nothing useful to do here. Keep the
+                // failure count so a flapping connection still backs off.
+                utils.timestampedLog('[account] [register] retry skipped, [wss] not ready');
+                return;
+            }
+            utils.timestampedLog('[account] [register] retrying now');
+            this.state.account.register();
+        }, delay);
+    }
+
     registrationStateChanged(oldState, newState, data) {
         //console.log('registrationStateChanged', oldState, newState);
         if (this.unmounted) {
@@ -13426,34 +14851,51 @@ class Sylk extends Component {
         }
 
         if (newState === 'failed') {
-            let reason = data.reason;
+            // data.reason is normally the string the gateway builds as
+            // '<code> <phrase>' (e.g. "503 Service Unavailable"), but the
+            // sylkrtc request-error path emits an arbitrary Error string and
+            // some paths hand us a bare number - normalise before matching.
+            // (The old code compared this value against 500/408 numerically,
+            // which is always false for a string and left the delayed-retry
+            // branch dead.)
+            const reasonText = (data.reason === null || data.reason === undefined) ? '' : String(data.reason);
+            const codeMatch = reasonText.match(/\b(\d{3})\b/);
+            const code = codeMatch ? parseInt(codeMatch[1], 10) : null;
 
-            if (reason.indexOf('904') > -1) {
-                // Sofia SIP: WAT
+            let reason = reasonText;
+            const wrongAuth = reasonText.indexOf('904') > -1;   // Sofia SIP: WAT
+
+            if (wrongAuth) {
                 reason = 'Wrong account or password';
-            } else if (reason === 408) {
+            } else if (code === 408) {
                 reason = 'Timeout';
             }
 
             this.showRegisterFailure(reason);
 
-            if (this.state.registrationKeepalive) {
-                if (this.state.connection !== null && this.state.connection.state === 'ready') {
-                    utils.timestampedLog('[account] Retry to register...');
-                    this.state.account.register();
-                }
+            // Retrying a 401/403/404 with the same credentials just produces
+            // the same answer, so those stop here (showRegisterFailure has
+            // already torn the account down for the wrong-password case).
+            // Everything else - 5xx from a restarting proxy, 408, transport
+            // errors - is transient and goes through the backoff.
+            const terminal = wrongAuth || (code !== null && REGISTER_TERMINAL_CODES.indexOf(code) > -1);
+
+            // The 10s watchdog armed by processRegistration exists to catch a
+            // register that never gets an answer. A failure IS an answer, so
+            // disarm it here - otherwise it fires anyway and calls
+            // processRegistration, which would re-register every 10s and
+            // defeat the backoff below.
+            if (this.registrationFailureTimer) {
+                utils.timestampedLog('[account] [register] cancel timer');
+                clearTimeout(this.registrationFailureTimer);
+                this.registrationFailureTimer = null;
+            }
+
+            if (terminal) {
+                utils.timestampedLog('[account] [register] not retrying, terminal failure: ' + reasonText);
+                this._resetRegistrationRetry('terminal failure');
             } else {
-                // add a timer to retry register after awhile
-                if (reason >= 500 || reason === 408) {
-                    utils.timestampedLog('[account] Retry to register after 5 seconds delay...');
-                    setTimeout(this.state.account.register(), 5000);
-                } else {
-                    if (this.registrationFailureTimer) {
-                        utils.timestampedLog('[account] [register] cancel timer');
-                        clearTimeout(this.registrationFailureTimer);
-                        this.registrationFailureTimer = null;
-                    }
-                }
+                this._scheduleRegistrationRetry(code);
             }
 
             if (this.currentRoute === '/login' && this.state.accountVerified)  {
@@ -13461,6 +14903,11 @@ class Sylk extends Component {
             }
 
         } else if (newState === 'registered') {
+
+            // Registration recovered - drop any pending retry and rewind the
+            // backoff so the next outage starts again at ~2s instead of at
+            // the ceiling inherited from the previous one.
+            this._resetRegistrationRetry('registered');
 
             // Now authenticated: re-run the addressbook reconcile so any
             // XCAP writes deferred while unauthenticated (see _abWritesReady)
@@ -13842,6 +15289,27 @@ class Sylk extends Component {
         const stored = parseAccountSettingsBlob(raw);
         const props = applyAccountSettingDefaults(stored);
 
+        // Leaked setup-DND recovery. The first-contacts import turns DND on for
+        // its own duration (beginDnd(true)) and persists privacy.dnd — silently,
+        // and with the DND UI hidden. If that import never reached its finally,
+        // DND stayed on across restarts and the phone quietly stopped ringing
+        // with nothing on screen to explain it. The marker below is written by
+        // the import and cleared the moment it releases DND, so finding it still
+        // set on a fresh load means the owning import is long gone.
+        if (props.privacy && props.privacy.dndSetupOwned) {
+            utils.timestampedLog('[ab] [migrate] leaked setup DND found on load for ' + accountId
+                + ' (dnd=' + !!props.privacy.dnd + ') — releasing');
+            props.privacy = { ...props.privacy, dnd: false, dndSetupOwned: false };
+            try {
+                await this.ExecuteQuery(
+                    'UPDATE accounts SET settings = ? WHERE account = ?',
+                    [JSON.stringify(props), accountId]
+                );
+            } catch (e) {
+                console.log('[ab] leaked setup DND persist failed:', e && e.message);
+            }
+        }
+
         // Enforce the zRTP <-> codec invariant at load time. The off->on
         // transition in setAccountSetting only corrects NEW enables; an account
         // that already had zRTP enabled with H.264 stored (e.g. enabled before
@@ -13867,6 +15335,11 @@ class Sylk extends Component {
         }
 
         this.setState({ accountSetting: props }, () => {
+            // Push the loaded bell state across to the notification
+            // extension. setAccountSetting covers later toggles; this covers
+            // login / app start, where the flag may already be on from a
+            // previous session or from another device's sync.
+            this.syncAppDndToNative();
             // Stamp WHICH account these settings belong to, the moment they
             // commit. The addressbook layer reads this.state.accountSetting for
             // per-contact attributes / self-privacy; on an account switch
@@ -14063,6 +15536,12 @@ class Sylk extends Component {
         });
         await this._persistAccountSettings(next);
 
+        if (path === 'privacy.dnd') {
+            // Keep the notification extension's copy of the bell in step the
+            // moment it is toggled — a message arriving seconds later must
+            // already be quiet.
+            this.syncAppDndToNative(!!value);
+        }
         if (path === 'rtp.preferredVideoCodec'
             && sylkrtc.utils
             && sylkrtc.utils.setPreferredVideoCodec) {
@@ -14480,6 +15959,18 @@ class Sylk extends Component {
         this._endedLocationSessions = this._endedLocationSessions || new Set();
         const _already = this._endedLocationSessions.has(sessionId);
         this._endedLocationSessions.add(sessionId);
+        // "Session is ended" and "the stop row is on disk" are tracked
+        // SEPARATELY. Marking a session ended is cheap and always succeeds;
+        // WRITING its stop row can fail — a msg_id collision, or an
+        // ExecuteQuery that times out under load (field trace 2026-08-24 11:20:09:
+        // "stop row FAILED — SQL query timed out after 60s", while the
+        // call-history import was hammering the DB). Conflating the two meant
+        // the first call marked the session ended, the write failed, and every
+        // later call short-circuited on `_already` — leaving a session
+        // permanently ended in memory with no stop row on disk, which is what
+        // hasStoredLocationStop() reads on the next boot.
+        this._locationStopRows = this._locationStopRows || new Set();
+        const _stopRowWritten = this._locationStopRows.has(sessionId);
         this._endedLocationSessionReasons = this._endedLocationSessionReasons || {};
         this._endedLocationSessionReasons[sessionId] = reason || 'ended';
         this._endedLocationSessionEndedAt = this._endedLocationSessionEndedAt || {};
@@ -14490,30 +15981,91 @@ class Sylk extends Component {
         // in-chat "Share location" button stops pulsing immediately (it reads
         // the mirror via isShareActiveForUri) instead of waiting for the sweep.
         try { if (uri) this._clearRemoteShareForUri(uri); } catch (e) {}
-        if (_already) return;
+        // INSTRUMENTED. This function is the single point that ends a track,
+        // and until now it was completely silent — which is why "A2 still shows
+        // Stop sharing / the ended track is still live" could not be diagnosed
+        // from a log.
+        //
+        // The stored location_stop row this writes is what
+        // _endSessionsThisLoad reads on the NEXT chat load, and that set is the
+        // only thing stopping the mirror boot-replay from resurrecting a
+        // stopped share out of its still-recent trail. So "was the row
+        // written?" is the load-bearing question, and it now has an answer in
+        // the log — including the UNIQUE(account, msg_id) collision case, which
+        // is silently swallowed below and is exactly how a stop row can go
+        // missing without any sign.
+        utils.timestampedLog('[location] end track ' + (direction || 'incoming')
+            + ' session=' + sessionId
+            + ' msg=' + (msgId || '(derived)')
+            + ' reason=' + (reason || 'ended')
+            + ' peer=' + uri
+            + (_already
+                ? (_stopRowWritten
+                    ? ' — already ended, stop row present'
+                    : ' — already ended but stop row MISSING, retrying the write')
+                : ''));
+        if (_already && _stopRowWritten) return;
         // Persist the location_stop as a linked row.
         try {
             const _ts = timestamp != null ? timestamp : Date.now();
             const _tsMs = typeof _ts === 'number' ? _ts : new Date(_ts).getTime();
             const _unix = Math.floor(_tsMs / 1000);
-            const _mid = msgId || (sessionId + ':stop');
+            // NEVER reuse the session id as the stop row's msg_id — that id
+            // belongs to the ORIGIN row, so the INSERT hits
+            // UNIQUE(account, msg_id), the catch below swallows it, and the
+            // session silently ends up with no stop row at all. The next chat
+            // load then can't see the track as ended and the mirror
+            // boot-replay resurrects a stopped share. Callers that only know
+            // the session id (stopLocationSharing) pass it as msgId, so derive
+            // a distinct id for them. 6 collisions across the 2026-08-22..24
+            // traces came through exactly this line.
+            const _mid = (msgId && msgId !== sessionId) ? msgId : (sessionId + ':stop');
             const _dir = direction || 'incoming';
             const _from = _dir === 'outgoing' ? this.state.accountId : uri;
             const _to = _dir === 'outgoing' ? uri : this.state.accountId;
-            const _expire = _unix + 7 * 24 * 60 * 60;
+            const _expire = _unix + LOCATION_RETENTION_SEC;
             const _meta = JSON.stringify({ ended: true, reason: reason || 'ended', sessionId });
             const params = [this.state.accountId, 0, _mid, JSON.stringify(_ts), _unix, '',
                 'application/sylk-location-sharing', _meta, _from, _to, _dir, 0,
                 'location_stop', sessionId, '', _expire, null, null, null];
             this._normalizeInsertUris(params, 8, 9);
-            await this.ExecuteQuery('INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params).catch((error) => {
-                if (!error || (error.message || '').indexOf('UNIQUE constraint failed') === -1) {
-                    console.log('[location] stop-row INSERT error:', error && error.message);
+            await this.ExecuteQuery('INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, received, related_action, related_msg_id, disposition_notification, expire, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params).then(() => {
+                this._locationStopRows.add(sessionId);
+                utils.timestampedLog('[location] end track: stop row WRITTEN session=' + sessionId
+                    + ' msg=' + _mid + ' dir=' + _dir);
+            }).catch((error) => {
+                const _msg = (error && error.message) || String(error);
+                if (_msg.indexOf('UNIQUE constraint failed') > -1) {
+                    // A row already owns this msg_id. Benign when the stop was
+                    // already stored by the send path; NOT benign when _mid
+                    // collided with the session's ORIGIN row (that happens when
+                    // the caller passes the session id as msgId), because then
+                    // no stop row exists at all and the next chat load will not
+                    // see the track as ended.
+                    // A row already owning this msg_id means the stop IS stored
+                    // (the send path wrote it first). With the _mid fix above
+                    // the origin-collision case can no longer happen, but keep
+                    // the branch: if it ever does, do NOT mark the row written,
+                    // so a later call retries with a derived id.
+                    if (_mid !== sessionId) {
+                        this._locationStopRows.add(sessionId);
+                    }
+                    utils.timestampedLog('[location] end track: stop row NOT written session=' + sessionId
+                        + ' msg=' + _mid + ' — msg_id already exists'
+                        + (_mid === sessionId ? ' (COLLIDES WITH THE ORIGIN ROW — no stop row for this session)' : ' (already stored)'));
+                } else {
+                    utils.timestampedLog('[location] end track: stop row FAILED session=' + sessionId
+                        + ' msg=' + _mid + ' — ' + _msg);
                 }
             });
         } catch (e) {
-            console.log('[location] _endLocationTrack persist failed', e && e.message ? e.message : e);
+            utils.timestampedLog('[location] end track: persist threw session=' + sessionId
+                + ' — ' + (e && e.message ? e.message : e));
         }
+        // Everything below is the live UI flip, and it only needs to run the
+        // first time a session ends. A retry that got here purely to rewrite a
+        // missing stop row stops at this point.
+        if (_already) return;
         // Live flip: stamp the in-memory metadata for this session so the OPEN
         // bubble's footer updates to "Track ended" / "Returned" immediately,
         // without depending solely on the reload below (which can miss the flip).
@@ -14673,8 +16225,8 @@ class Sylk extends Component {
 				// updateSqlAccount fix would race with the current one —
 				// the closure-shared `account`/`password` vars get
 				// clobbered by later iterations and the WRONG account
-				// gets registered (see metro.log "Auto login ag@sylk.link"
-				// after signing in as support@sylk.link).
+				// gets registered (see metro.log "Auto login alice@sylk.link"
+				// after signing in as bob@sylk.link).
 				if ((item.active == "1" || item.active == 1) && !init_active_account) {
 					if (typeof item.password !== 'string' || item.password.length === 0) {
 						// Empty stored password would crash sylkrtc.addAccount on
@@ -14714,8 +16266,8 @@ class Sylk extends Component {
 							// one: registration fails with "403 This domain is
 							// not served here" while the whole session keeps the
 							// other server's configuration
-							// (configurations[domain.sylk.link] applied to
-							// ag@sylk.link — 2026-07-17 incident). Cross-server:
+							// (configurations[domain.sylk.link] applied to the
+							// signed-in account — 2026-07-17 incident). Cross-server:
 							// arm signIn and re-discover the account's own
 							// server, exactly like switchAccount's cross-server
 							// path; the new connection's 'ready' event completes
@@ -14809,7 +16361,7 @@ class Sylk extends Component {
             utils.timestampedLog('[storage] messages in SQL at start:', _n, 'for', this.state.accountId);
         } catch (e) { console.log('[storage] message count query failed:', e && e.message); }
 
-        let keyStatus = this.state.keyStatus;
+        let keyStatus = {...this.state.keyStatus};   // copy, never alias — see savePrivateKey
 
 		let query = "SELECT * FROM accounts where account = ?";
 
@@ -15218,7 +16770,7 @@ class Sylk extends Component {
             displayName = from;
         }
 
-        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+        if (this.state.accountSetting.privacy.dnd && !this._canBypassAppDnd(from)) {
             console.log('Do not disturb is enabled');
             this._notificationCenter.postSystemNotification('Missed call from ' + from);
             return;
@@ -15231,7 +16783,19 @@ class Sylk extends Component {
             return;
         }
 
-		this.audioManagerStart();
+		// Don't re-run the call-start audio setup for a SECOND incoming
+		// call that arrives while another call is already up. The native
+		// AudioRouteModule.start() early-returns on _started, but the JS
+		// side would still reset the route watchdog (_desiredAudioRoute /
+		// userChangedAudioDevice) to this new call's computed default and
+		// re-pin the Telecom route — yanking the route out from under the
+		// conversation the user is actually having.
+		if (this._hasOtherLiveCalls(callId) || this.state.currentCall) {
+			utils.timestampedLog('[audio] alert panel for', callId,
+				'— another call is already in progress, keeping the current audio setup');
+		} else {
+			this.audioManagerStart();
+		}
 
         this.setState({incomingCallUUID: callId,
                        incomingContact: contact,
@@ -15414,6 +16978,41 @@ class Sylk extends Component {
         }
     }
 
+    /**
+     * Push the URI of the party we are calling down to the native push
+     * handlers, so they can drop an "incoming_session" push that is really
+     * our own call forked back at us.
+     *
+     * Set ONLY for a call to our own account. That is the case where the SIP
+     * proxy forks the INVITE to every contact of the AoR, this device
+     * included, and a push arrives for a call we placed ourselves. A normal
+     * call to somebody else must never set this -- it would suppress a
+     * genuine second call from that same person.
+     *
+     * Android has done this since forever (SylkBridge.setActiveCall ->
+     * SharedPreferences "currentCall" -> MyFirebaseMessagingService's
+     * "already in call with" drop), which is why the loop only ever showed up
+     * on iOS. iOS needs it more: PushKit forces every VoIP push to be reported
+     * to CallKit, so without the flag the phone has no way to stay silent.
+     *
+     * Idempotent and safe to call from any state-change path.
+     */
+    setNativeActiveCall(uri) {
+        try {
+            if (Platform.OS === 'android') {
+                if (SylkBridge && typeof SylkBridge.setActiveCall === 'function') {
+                    SylkBridge.setActiveCall(uri || null);
+                }
+            } else if (Platform.OS === 'ios') {
+                if (SharedDataModule && typeof SharedDataModule.setActiveCall === 'function') {
+                    SharedDataModule.setActiveCall(uri || null);
+                }
+            }
+        } catch (e) {
+            console.log('setNativeActiveCall failed:', e);
+        }
+    }
+
 	/**
 	 * True when any headset (BT / wired / USB) is connected. Checks the
 	 * live audioOutputs list in addition to the state flags — setState is
@@ -15430,6 +17029,73 @@ class Sylk extends Component {
 		return outputs.some(d => d.type === 'BLUETOOTH_SCO'
 			|| d.type === 'WIRED_HEADSET'
 			|| d.type === 'USB_HEADSET');
+	}
+
+	/**
+	 * True when the active call carries VIDEO.
+	 *
+	 * Video calls suspend proximity entirely: the user is looking at the
+	 * screen, not holding the phone to the ear, so blanking the display and
+	 * yanking audio to the earpiece is wrong on its own terms — a hand
+	 * passing over the sensor, the phone lying face-up on a desk, or a
+	 * sensor that reads near through a case would kill the picture
+	 * mid-call. On Android an off display also pauses the camera preview
+	 * the peer is watching. Same reasoning as the screen-share suspension
+	 * in componentDidUpdate.
+	 *
+	 * mediaTypes is stamped on incoming calls (incomingCallFromWebSocket);
+	 * outgoing calls only have their local streams at that point, so fall
+	 * back to inspecting the local video tracks exactly the way
+	 * callStateChanged's 'progress' branch does.
+	 */
+	videoCallNow() {
+		const call = this.activeCall;
+		if (!call) {
+			return false;
+		}
+		if (call.mediaTypes && call.mediaTypes.video) {
+			return true;
+		}
+		try {
+			const streams = (typeof call.getLocalStreams === 'function') ? call.getLocalStreams() : [];
+			const stream = streams && streams[0];
+			if (stream && typeof stream.getVideoTracks === 'function'
+					&& stream.getVideoTracks().length > 0) {
+				return true;
+			}
+		} catch (e) { /* stream torn down mid-check — treat as audio */ }
+		return false;
+	}
+
+	/**
+	 * Start / stop the physical proximity sensor to match the current call:
+	 * ON for an audio call, OFF otherwise (no call, or a video call).
+	 *
+	 * The JS gates in handleProximity / componentDidUpdate are not enough on
+	 * their own. On iOS the blanking is done by the OS via
+	 * UIDevice.proximityMonitoringEnabled for as long as the sensor is
+	 * registered — no JS event is in that loop at all — so a video call has
+	 * to turn the SENSOR off, not just ignore its events. Idempotent: the
+	 * native side has its own isProximityRegistered guard and the flag here
+	 * keeps us from re-logging on every componentDidUpdate.
+	 */
+	_syncProximitySensor(reason) {
+		const wanted = !!this.activeCall && !this.videoCallNow();
+		if (wanted === this._proximitySensorOn) {
+			return;
+		}
+		this._proximitySensorOn = wanted;
+		utils.timestampedLog('[proximity]', wanted ? 'startProximitySensor' : 'stopProximitySensor',
+			'(' + (reason || '') + ')', 'video=' + this.videoCallNow(), 'inCall=' + (this.activeCall ? true : false));
+		try {
+			if (wanted) {
+				InCallManager.startProximitySensor();
+			} else {
+				InCallManager.stopProximitySensor();
+			}
+		} catch (e) {
+			utils.timestampedLog('[proximity] sensor toggle failed', e && e.message);
+		}
 	}
 
 	setProximityChosenDevice() {
@@ -15471,6 +17137,23 @@ class Sylk extends Component {
 		// on userChangedAudioDevice like the headset default above.
 		if (this.state.isFolded && !this.state.userChangedAudioDevice) {
 			utils.timestampedLog('[proximity] setProximityChosenDevice -> SPEAKER (folded)');
+			if (this.useInCallManger) {
+				this.speakerphoneOn();
+			} else {
+				this.selectAudioDevice('BUILTIN_SPEAKER');
+			}
+			return;
+		}
+
+		// Video call with no headset: proximity never picks the route. Speaker
+		// is the right default for a call the user is watching, and it is what
+		// the branch below would already pick in the FAR state — this makes it
+		// unconditional so a stale/stuck near reading (or an audio call that
+		// was upgraded to video while at the ear) can't land us on the
+		// earpiece. The sensor is stopped for the duration anyway, see
+		// _syncProximitySensor().
+		if (this.videoCallNow() && !this.headsetPresent() && !this.state.isFolded) {
+			utils.timestampedLog('[proximity] setProximityChosenDevice -> SPEAKER (video call)');
 			if (this.useInCallManger) {
 				this.speakerphoneOn();
 			} else {
@@ -15528,6 +17211,27 @@ class Sylk extends Component {
         const connection = this.getConnection();
         utils.timestampedLog('Sylkrtc [call]', callUUID, 'state change:', oldState, '->', newState);
 
+        // A PARKED call (sequential swap) is deliberately outside the state
+        // machine until the previous call has finished tearing down. Letting
+        // its ticks through here is what used to alias it into currentCall /
+        // incomingCall and let the old call's teardown clobber it.
+        if (this._pendingSwapAccept && this._pendingSwapAccept.callUUID === callUUID) {
+            if (newState !== 'terminated') {
+                utils.timestampedLog('[call] [swap] ignoring', oldState, '->', newState,
+                    'for parked call', callUUID,
+                    '— it re-enters the state machine when we answer it');
+                return;
+            }
+            // Cancelled by the caller (or the server) while parked. Unpark so
+            // _acceptParkedCall() doesn't try to answer a dead call, then let
+            // the normal terminated handling below clean up CallKeep/history.
+            utils.timestampedLog('[call] [swap] parked call', callUUID,
+                'terminated before we could answer it — unparking');
+            this._pendingSwapAccept = null;
+            this._swapTeardown = null;
+            this.updateLoading(null, 'call_swap_cancelled');
+        }
+
         // Auto-dialer soak loop — no-op unless it owns this call.
         try { this._autodialerOnCallState(call, callUUID, newState); }
         catch (e) { utils.timestampedLog('[autodialer] state hook threw:', (e && e.message) || String(e)); }
@@ -15575,8 +17279,14 @@ class Sylk extends Component {
         // calls are no-ops if the bars are already showing or if the
         // native module never armed.
         if (newState === 'terminated' && Platform.OS === 'android') {
-            try { Immersive.off(); } catch (e) { /* best effort */ }
+            // Order matters. StatusBar.setHidden(false) goes through RN's
+            // WindowUtil, which pokes the window's fullscreen flags;
+            // Immersive.off() runs the native showSystemBars() restore,
+            // which shows the bars through WindowInsetsController AND
+            // re-dispatches WindowInsets. Running it LAST means nothing
+            // after it can leave the window half-restored.
             try { StatusBar.setHidden(false, 'fade'); } catch (e) { /* best effort */ }
+            try { Immersive.off(); } catch (e) { /* best effort */ }
         }
 
         /*
@@ -15598,14 +17308,80 @@ class Sylk extends Component {
         let tracks;
         let readyDelay = 5000;
 
-        if (this.state.incomingCall && this.state.currentCall) {
+        // ONE RULE FOR ALL FOUR BRANCHES BELOW: a state tick may only move
+        // the slots for the call it is ABOUT. If the event belongs to neither
+        // slot, both are left exactly as they are.
+        //
+        // Each branch used to decide this for itself, and each got it wrong in
+        // its own way:
+        //   • both slots set — `incomingCall == currentCall` nulled both
+        //     whichever call terminated, so during a swap the old call's
+        //     terminate wiped the new one (release.log 10:09:42 → the answered
+        //     call ended up established with no UI and no mic);
+        //   • currentCall only — `newState === 'terminated' ? null : call`
+        //     nulled the LIVE call when a REJECTED second call terminated,
+        //     because rejectCall() had already cleared incomingCall
+        //     (release.log 11:15:56 → 'Will go to ready in 5 seconds' →
+        //     no_more_calls closed the media on the call in progress);
+        //   • incomingCall only — promoted the ringing call into currentCall
+        //     on an unrelated call's tick.
+        //
+        // The "neither slot set" case still falls through to the tail branch,
+        // which deliberately ADOPTS the call: that is the outgoing-conference
+        // race where our own setState hasn't flushed yet (see the comment
+        // there). A parked call never reaches any of this — callStateChanged
+        // returns early for it.
+        const _tickIsOurs =
+            (this.state.currentCall && this.state.currentCall.id === callUUID)
+            || (this.state.incomingCall && this.state.incomingCall.id === callUUID);
+
+        if (!_tickIsOurs && (this.state.currentCall || this.state.incomingCall)) {
+            utils.timestampedLog('[call]', callUUID, newState,
+                '— not ours, keeping currentCall='
+                + ((this.state.currentCall && this.state.currentCall.id) || 'null')
+                + ' incomingCall='
+                + ((this.state.incomingCall && this.state.incomingCall.id) || 'null'));
+            newCurrentCall = this.state.currentCall;
+            newincomingCall = this.state.incomingCall;
+        } else if (this.state.incomingCall && this.state.currentCall) {
 
 			if (this.state.searchContacts) {
 				this.setState({searchContacts: false});
 			}
 
             if (newState === 'terminated') {
-                if (this.state.incomingCall == this.state.currentCall) {
+                // Default to LEAVING BOTH SLOTS ALONE. A 'terminated' can
+                // arrive for a call that is in NEITHER slot — the call-swap
+                // case: hangupCall('accept_new_call') has already moved the
+                // new call into incomingCall, the new call's own 'accepted'
+                // tick copied it into currentCall as well, and only THEN does
+                // the old call's terminate land here.
+                //
+                // Without these defaults the equality test below fired on
+                // incomingCall === currentCall (both the NEW call) and nulled
+                // both slots on behalf of a call that is not ours. The
+                // `!currentCall && !incomingCall` guard at the bottom of this
+                // handler then took the remote-hangup fast path and ran
+                // changeRoute('/ready', 'remote_hangup_call') — unmounting
+                // AudioCallBox, closing the local media and stopping the
+                // audio session of the call the user had just answered.
+                // release.log 2026-08-18 10:09:42: the swap itself completed
+                // cleanly (prewarm reused, audio session held, no hangup
+                // tone), and was then undone by
+                //   '/call -> /ready : remote_hangup_call inCall=false'
+                //   'AudioCallBox will unmount'
+                //   'Close local [media]'
+                //   'released 1 local track(s) — native capturer disposed' x2
+                // leaving call 61175de5 established with no UI and no mic.
+                //
+                // Which slot ordering wins is a race between the new call's
+                // 'accepted' and the old call's 'terminated' — on 09:51 the
+                // accepted tick arrived second and the bug stayed hidden.
+                newCurrentCall = this.state.currentCall;
+                newincomingCall = this.state.incomingCall;
+
+                if (this.state.incomingCall == this.state.currentCall
+                        && this.state.currentCall.id === call.id) {
                     newCurrentCall = null;
                     newincomingCall = null;
                 }
@@ -15684,6 +17460,8 @@ class Sylk extends Component {
             }
 
         } else if (this.state.currentCall) {
+            // Reaching here means the tick IS for this call — the
+            // ownership guard at the head of the chain handles anything else.
             utils.timestampedLog('[call]', callUUID, 'state changed', newState);
             newCurrentCall = newState === 'terminated' ? null : call;
             newincomingCall = null;
@@ -15807,6 +17585,32 @@ class Sylk extends Component {
                 this.setProximityChosenDevice();
                 break;
             case 'established':
+                // Mic sanity check + self-heal. Logs the real state of the
+                // local audio track the moment the call goes live, which is
+                // what distinguishes "the track was muted" from "the audio
+                // device stopped recording" when the far end reports silence
+                // — the two are indistinguishable on the wire (both give a
+                // steady 50 pps of constant ~23-byte Opus frames).
+                // sylkrtc's closeMediaStream() sets enabled=false on the
+                // tracks it stops, so a teardown that touched the wrong
+                // stream would show up here as enabled=false.
+                try {
+                    const _lm = this.state.localMedia;
+                    const _ats = (_lm && typeof _lm.getAudioTracks === 'function')
+                        ? _lm.getAudioTracks() : [];
+                    utils.timestampedLog('[call] [media] call_id=' + callUUID,
+                        'local audio tracks at established:', _ats.length,
+                        _ats.map((t) => 'enabled=' + t.enabled
+                            + ' readyState=' + t.readyState
+                            + ' muted=' + t.muted).join(' | ') || '(none)');
+                    _ats.forEach((t) => {
+                        if (t && t.enabled === false && this.state.muted !== true) {
+                            utils.timestampedLog('[call] [media] call_id=' + callUUID,
+                                'local audio track was DISABLED at established — re-enabling');
+                            t.enabled = true;
+                        }
+                    });
+                } catch (e) { /* noop */ }
                 this.setProximityChosenDevice();
 
                 callsState = this.state.callsState;
@@ -15978,6 +17782,9 @@ class Sylk extends Component {
                     _termTLast = now;
                 };
                 _termMark('enter');
+                // Teardown signal for a sequential swap: the OUTGOING call
+                // reaching 'terminated' is half of "the old call is gone".
+                this._markSwapTeardown('terminated');
                 let uri = call.remoteIdentity.uri.toLowerCase();
                 // Canonicalize PSTN URI 00→+ for downstream
                 // saveSystemMessage / addHistoryEntry. The wire form
@@ -16029,8 +17836,12 @@ class Sylk extends Component {
                     this.timeoutIncomingTimer = null;
                 }
 
-				if (direction === 'outgoing' && Platform.OS === 'android') {
-					SylkBridge.setActiveCall(null);
+				// Release the self-call push gate (set in outgoingCall for a
+				// call to our own account). Unconditional on direction rather
+				// than platform now -- iOS reads the same flag from
+				// NSUserDefaults "currentCall".
+				if (direction === 'outgoing') {
+					this.setNativeActiveCall(null);
 				}
 
                 // The native in-conference flag is cleared by
@@ -16200,6 +18011,7 @@ class Sylk extends Component {
                     && !this.isConference(call)
                     && oldState !== 'accepted'
                     && oldState !== 'established'
+                    && !this._wasDeclinedNotMissed(callUUID)
                 ) ? (call._callId || call.callId || callUUID) : null;
 
                 // Persist the unique roster of this conference run into
@@ -16267,19 +18079,44 @@ class Sylk extends Component {
                     play_busy_tone = false;
                 }
                 _termMark('before-audio-stop');
+                // A call that ends while ANOTHER call is still live must not
+                // touch the shared audio stack. This branch used to run
+                // audioManagerStop() / InCallManager.stop() unconditionally,
+                // so an ignored second incoming call (push arrives during an
+                // established call; user doesn't answer, answers elsewhere,
+                // or the 45 s CallManager timeout fires) deactivated the one
+                // AVAudioSession the FIRST call's audio unit was running on
+                // and killed its audio permanently. See _hasOtherLiveCalls.
+                //
+                // The tones are suppressed for the same reason: a hangup /
+                // busy tone belongs to the call the USER is on, and playing
+                // one over a live conversation is both wrong and another
+                // route grab.
+                const _otherCallsLive = this._hasOtherLiveCalls(callUUID);
+                if (_otherCallsLive) {
+                    utils.timestampedLog('[audio] [call]', callUUID,
+                        'terminated while other call(s) are still live —',
+                        'keeping the audio session and skipping the end-of-call tone');
+                }
                 if (play_busy_tone && (oldState === 'established' || startTime)) {
                     // Established call ended normally → play the real
                     // hangup tone (hangup_tone.wav). Previously this
                     // path went through InCallManager.stop({busytone})
                     // which played the BUSY tone on every hangup.
-                    this.audioManagerStop();
-                    this.playHangupTone();
+                    this.audioManagerStop(callUUID);
+                    if (!_otherCallsLive) {
+                        this.playHangupTone();
+                    }
                 } else if (play_busy_tone) {
                     // Outgoing call failed before establishing (busy,
-                    // not found, timeout, ...) → busy tone.
-                    InCallManager.stop({busytone: '_BUNDLE_'});
+                    // not found, timeout, ...) → busy tone. InCallManager.stop()
+                    // also tears down the shared session on iOS, so it gets
+                    // the same guard.
+                    if (!_otherCallsLive) {
+                        InCallManager.stop({busytone: '_BUNDLE_'});
+                    }
                 } else {
-                    this.audioManagerStop();
+                    this.audioManagerStop(callUUID);
                     // Conferences never take the busy-tone branch
                     // (play_busy_tone is false for them), so play the
                     // hangup tone here when an established conference
@@ -16287,7 +18124,9 @@ class Sylk extends Component {
                     // startTime, never established) stay silent, as
                     // does the 1:1→conference escalation hangup
                     // (skipNextHangupTone — not a conference call).
-                    if (this.isConference(call) && (oldState === 'established' || startTime)) {
+                    if (!_otherCallsLive
+                            && this.isConference(call)
+                            && (oldState === 'established' || startTime)) {
                         this.playHangupTone();
                     }
                 }
@@ -16420,8 +18259,20 @@ class Sylk extends Component {
                     // currently being shown; the old terminator can
                     // still drive the system-notification path below
                     // for non-call routes via the else branch.
+                    // The same guard has to cover the SEQUENTIAL swap, where
+                    // there is deliberately no active call at all: the new one
+                    // is parked out of state while this one tears down, so
+                    // `!_active` is true and the old call's reason used to be
+                    // written anyway. The user then saw the NEW caller on the
+                    // call screen with the PREVIOUS call's "Call terminated
+                    // after X seconds" underneath it.
                     const _active = this.state.currentCall || this.state.incomingCall;
-                    if (!_active || _active.id === call.id) {
+                    const _parked = this._pendingSwapAccept;
+                    if (_parked && _parked.callUUID !== call.id) {
+                        utils.timestampedLog('[call]', call.id,
+                            'terminated while', _parked.callUUID,
+                            'is parked — not writing its reason to the call screen');
+                    } else if (!_active || _active.id === call.id) {
                         this.setState({terminatedReason: reason});
                     }
                 } else {
@@ -16648,7 +18499,23 @@ class Sylk extends Component {
             incomingCall: newincomingCall
         });
 
-		if (!this.state.currentCall && !this.state.incomingCall) {
+		if (this._isCallSwapOpen(callUUID)) {
+			// Belt and braces for the slot-defaults fix above: while a swap is
+			// in flight, the outgoing call's 'terminated' must never schedule
+			// or take a route away from the call being answered — not even if
+			// the state bookkeeping loses it again for some other reason.
+			utils.timestampedLog('[app] call swap in progress for',
+				this._pendingSwapAccept.callUUID,
+				'— not routing to /ready on terminate of', callUUID);
+		} else if (this._hasOtherLiveCalls(callUUID)) {
+			// Backstop that does not depend on the state slots being right:
+			// callKeeper still has a call in 'accepted'/'established', so a call
+			// IS live and /ready is simply wrong. Had this been here on
+			// 2026-08-18 11:15:56 it would have caught the rejected-second-call
+			// bug above on its own.
+			utils.timestampedLog('[app] not routing to /ready on terminate of',
+				callUUID, '— another call is still established/accepted');
+		} else if (!this.state.currentCall && !this.state.incomingCall) {
 			if (!this.state.reconnectingCall) {
 				if (this.currentRoute !== '/ready') {
 					// Remote-hangup fast-path: when the call had
@@ -16915,6 +18782,16 @@ class Sylk extends Component {
     handleEnrollment(account) {
         console.log('Enrollment for new account', account);
 
+        // Remember that THIS account was created on THIS device, and survive the
+        // `enrollment: false` reset that fires the moment registration succeeds
+        // (generateKeysIfNecessary runs later, once the keys row has loaded).
+        // It is the only signal that distinguishes "brand-new identity" from
+        // "existing identity, key lives on another device" — and the server can
+        // report a public key for a freshly enrolled URI when that name was
+        // enrolled, keyed and deleted before. See the override in
+        // generateKeysIfNecessary.
+        this._enrolledAccountId = account.id;
+
 		// Enrollment is a fresh sign-in on a (possibly new) server. If the user
 		// had previously signed out (on the previous domain), this.signOut is
 		// still true and will poison processRegistration and loadAccount. Mirror
@@ -16928,7 +18805,23 @@ class Sylk extends Component {
                        enrollment: true, 
                        email: account.email});
 
-        this.handleRegistration(account.id, account.password, 'handleEnrollment');
+        // Load THIS account's per-account settings before registering — exactly
+        // what handleSignIn does, and for the same reason. _applyAccountSettings
+        // is what stamps _accountSettingId, and _abReady() gates on that stamp
+        // matching the active account. Enrollment reached handleRegistration
+        // directly, so a freshly enrolled account kept the PREVIOUS account's
+        // stamp and the addressbook gate stayed false forever: no reconcile, no
+        // _onContactsReady, the first journal sync parked on 'Wait for [journal]
+        // first sync until addressbook import is finished' indefinitely, and the
+        // test contacts (created off the post-first-sync path) never appeared.
+        // Observed on iOS android32, 2026-08-23 13:05:56, blocker
+        // 'accountSettingId=android31@sylk.link'.
+        this._applyAccountSettings(account.id)
+            .catch((e) => console.log('[enrollment] _applyAccountSettings failed for',
+                account.id, ':', e && e.message))
+            .then(() => {
+                this.handleRegistration(account.id, account.password, 'handleEnrollment');
+            });
     }
 
     /**
@@ -17395,6 +19288,13 @@ class Sylk extends Component {
             return;
         }
 
+        // A (re)registration is being driven from outside registrationStateChanged
+        // - sign-in, account switch, the 10s register watchdog. Drop any retry
+        // we had pending for the previous attempt and rewind the backoff, so
+        // the user's own action is acted on immediately rather than inheriting
+        // a long delay from an earlier outage.
+        this._resetRegistrationRetry('processRegistration');
+
         if (this.state.account && this.state.connection) {
 			console.log('Remove connection account');
             this.state.connection.removeAccount(this.state.account,
@@ -17532,8 +19432,8 @@ class Sylk extends Component {
 				// the previous account's server-side key and fire
 				// the misleading "keys are different" modal — which
 				// is exactly the symptom we saw at 14:36:31 in
-				// metro.log (local key = ag@sylk.link, "server" key
-				// = android55@sylk.link's blob arriving late).
+				// metro.log (local key from one account, "server" key
+				// = the other account's blob arriving late).
 				const _requestAccountId = options.account;
 				account.checkIfKeyExists((serverKey) => {
 					if (this.state.accountId !== _requestAccountId) {
@@ -17543,7 +19443,9 @@ class Sylk extends Component {
 							this.state.accountId || '(none)', ')');
 						return;
 					}
-					let keyStatus = this.state.keyStatus;
+					// Copy, never alias — see savePrivateKey. Mutating state in place
+					// makes every prevProps comparison downstream read the new value.
+					let keyStatus = {...this.state.keyStatus};
 					keyStatus.existsOnServer = false;
 
 					if (serverKey) {
@@ -17572,7 +19474,8 @@ class Sylk extends Component {
         // loadSylkAccount finishes loading the private key, so existsLocal is
         // still stale/false here — and the "import your key from another Sylk
         // device" modal fired on the very device that OWNS the key
-        // (2026-07-17 incident, switching back to ag@sylk.link). A later call
+        // (2026-07-17 incident, switching back to a previously used
+        // account). A later call
         // always follows once the keys are loaded (loadSylkAccount triggers
         // the keyStatus update path), so deferring here loses nothing.
         if (this._keysLoadedForAccount !== this.state.accountId) {
@@ -17580,7 +19483,7 @@ class Sylk extends Component {
             return;
         }
 
-        let keyStatus = this.state.keyStatus;
+        let keyStatus = {...this.state.keyStatus};   // copy, never alias — see savePrivateKey
 
         // Contacts are 'ready' once the addressbook has fully SYNCED for this
         // account (contacts imported + groups reconciled), not merely once the
@@ -17612,12 +19515,30 @@ class Sylk extends Component {
                     }
                 } else {
                     console.log('[pgp] key does not exist local');
-					// Defer the import-key modal until contacts are imported.
-					if (!_contactsReady) {
-						this._pendingKeyModal = true;
-					} else {
-						this.setState({showImportPrivateKeyModal: true});
-					}
+                    if (this._enrolledAccountId === this.state.accountId) {
+                        // This identity was created on this device moments ago, so
+                        // there is no "other device" to import from — asking for one
+                        // strands the user with no key at all. The server reporting a
+                        // public key for this URI does not contradict that: the SIP
+                        // account is new, but a public key published by a PREVIOUS
+                        // account of the same name can outlive it in the server's key
+                        // store. Ours is the authoritative identity now — generate.
+                        utils.timestampedLog('[pgp] account enrolled on this device and has no'
+                            + ' local key — generating one (server reports a key for '
+                            + this.state.accountId + ', which is a leftover from an earlier'
+                            + ' account with this name, not a key we could ever import)');
+                        this._enrolledAccountId = null;
+                        this._pendingKeyModal = false;
+                        this.generateKeys();
+                    } else if (!_contactsReady) {
+                        // Defer the import-key modal until contacts are imported.
+                        this._pendingKeyModal = true;
+                    } else {
+                        // Contacts already imported (warm reload). Still not
+                        // automatically a reason to ask — route through the same
+                        // hold logic as the deferred path.
+                        this._surfaceOrHoldKeyModal('keys check, contacts already imported');
+                    }
                 }
             } else {
                 if (!keyStatus.existsLocal) {
@@ -17731,8 +19652,22 @@ class Sylk extends Component {
                 return;
             }
             if (_state === 'incoming') {
-                // Still ringing — send the decline/bye to the server/caller.
-                _call.terminate();
+                // Still ringing — send the decline/bye to the server/caller,
+                // but exactly once. rejectCall() reaches this helper first and
+                // then terminates again itself; by the time the second one
+                // goes out the server has already dropped the session and
+                // answers "Unknown session <uuid>" (release.log 2026-08-18
+                // 11:26:00, two terminate_entry lines 279 ms apart). Harmless
+                // — the call is gone either way — but it is a wasted
+                // round-trip and a stack trace in every decline.
+                //
+                // The flag lives on the sylkrtc Call object, so it outlives
+                // component remounts and state churn. Same idiom as Call.js's
+                // _sylkAnswerSent, where the duplicate is NOT harmless.
+                if (!_call._sylkTerminateSent) {
+                    _call._sylkTerminateSent = true;
+                    _call.terminate();
+                }
             }
             // Close the prewarmed PC NOW regardless of whether the server's
             // terminated event has already landed. Stops ICE immediately.
@@ -18190,6 +20125,12 @@ class Sylk extends Component {
                 utils.timestampedLog('[trash] soft-delete ' + uri + ' contact_id=' + (cid || '(none)')
                     + ' rowsAffected=' + ra
                     + (ra === 0 ? ' — NOT a saved contact (nothing to move to Deleted)' : ''));
+                if (ra !== 0) {
+                    // Recoverable, but it is the first step of every permanent
+                    // removal — so it belongs in the durable audit too.
+                    this._auditContactEvent('SOFT-DELETE', c || {uri, id: cid}, 'deleted-folder',
+                        'rows=' + ra);
+                }
                 await this._setMessagesDeletedForUri(uri, 1);
             } catch (e) { console.log('[trash] soft-delete failed for', uri, e && e.message); }
         }
@@ -18294,7 +20235,7 @@ class Sylk extends Component {
             // THEN delete the loser rows — relink-before-delete, never the reverse.
             await this.saveSylkContact(keeper.uri, keeper, 'editContact');
             for (const l of losers) {
-                try { await this.deleteSylkContact(l); }
+                try { await this.deleteSylkContact(l, {reason: 'merge-loser'}); }
                 catch (e) { console.log('[merge] delete loser failed', l && l.uri, e && e.message); }
             }
 
@@ -18395,8 +20336,91 @@ class Sylk extends Component {
         utils.timestampedLog('[trash] purged storage for ' + this._abNormalizeUri(contact.uri));
     }
 
+    // --- Destructive-contact-op audit ---------------------------------------
+    //
+    // Everything that removes a contact — soft delete, tombstone, eject —
+    // writes one line to logs.<account>.deletions.txt, which the log trimmer
+    // never touches (see utils.auditContactDeletion). The main log holds ~4
+    // days on an active account; that is how the 2026-08-05 sweep of 68
+    // contacts became unexplainable by the time it was reported.
+    //
+    // `reason` is the CALLER, not the SQL operation: hard-delete, merge-loser,
+    // uri-steal, remove-contact, block, conversation-remove. A tombstone whose
+    // reason is 'unknown' means a code path reached the delete without
+    // declaring itself — that is a bug in the caller, and the audit says so.
+    _auditContactEvent(event, contact, reason, extra = '') {
+        try {
+            const uri = (contact && contact.uri) ? this._abNormalizeUri(contact.uri) : '?';
+            const line = event
+                + ' uri=' + uri
+                + ' reason=' + (reason || 'unknown')
+                + ' id=' + ((contact && contact.id) || '?')
+                + ' remote_id=' + ((contact && contact.remote_id) || '∅')
+                + (extra ? ' ' + extra : '');
+            utils.auditContactDeletion(line);
+        } catch (e) {
+            console.log('[trash] [audit] failed to record', event, e && e.message);
+        }
+    }
+
+    // Bulk-delete detector. Individual audit lines already survive the trim, so
+    // this only adds the ONE loud line that says "a sweep happened here" —
+    // count, wall-clock span and which caller drove it — instead of leaving
+    // that to be reconstructed from N rows after the fact.
+    //
+    // The window is deliberately wide: the 08-05 sweep had a 7.3 s stall in the
+    // middle of it (a slow XCAP round-trip), and splitting one incident into
+    // two summaries would defeat the point.
+    _noteContactDeletion(uri, reason) {
+        const now = Date.now();
+        const WINDOW = 15000;
+        if (!this._deleteBurst || (now - this._deleteBurst.last) > WINDOW) {
+            this._deleteBurst = { first: now, last: now, count: 0, uris: [], reasons: {}, timer: null };
+        }
+        const b = this._deleteBurst;
+        b.last = now;
+        b.count += 1;
+        b.reasons[reason || 'unknown'] = (b.reasons[reason || 'unknown'] || 0) + 1;
+        if (b.uris.length < 250) b.uris.push(uri || '?');
+        if (b.timer) clearTimeout(b.timer);
+        b.timer = setTimeout(() => this._flushContactDeleteBurst(), WINDOW);
+    }
+
+    // Emit the burst summary. Called by the quiet-window timer, and again from
+    // showLogs() so the summary is already on disk when a user opens the viewer
+    // or hits "Send to support" moments after a sweep (the timer might not have
+    // fired yet, or the app might have been killed before it did).
+    //
+    // minQuietMs: refuse to close a burst that is still running. showLogs()
+    // passes a value because the log viewer re-reads every 2 s while open —
+    // without it, a sweep happening WITH the viewer open would be chopped into
+    // one summary line every 2 s instead of one line for the whole sweep.
+    _flushContactDeleteBurst(minQuietMs = 0) {
+        const b = this._deleteBurst;
+        if (!b) return;
+        if (minQuietMs && (Date.now() - b.last) < minQuietMs) return;
+        if (b.timer) { clearTimeout(b.timer); b.timer = null; }
+        this._deleteBurst = null;
+        // A handful of deletions is an ordinary user action — a small merge, a
+        // few contacts cleaned out of the Deleted folder — and each already has
+        // its own durable audit line. The summary exists to make a SWEEP
+        // unmissable, so it starts where hand-driven deleting stops.
+        if (b.count < 5) return;
+        const secs = ((b.last - b.first) / 1000).toFixed(1);
+        const reasons = Object.keys(b.reasons)
+            .map(k => k + '=' + b.reasons[k]).join(' ');
+        const shown = b.uris.slice(0, 12).join(', ');
+        const more = b.uris.length > 12 ? ' …(+' + (b.uris.length - 12) + ' more)' : '';
+        utils.auditContactDeletion('*** BULK CONTACT DELETE — ' + b.count
+            + ' contact(s) in ' + secs + 's'
+            + ' | reasons: ' + reasons
+            + ' | first=' + new Date(b.first).toISOString()
+            + ' last=' + new Date(b.last).toISOString()
+            + ' | uris: ' + shown + more);
+    }
+
     // Tombstone a contact (deleted = 1, row KEPT)
-    async _finalizeContactTombstone(contact) {
+    async _finalizeContactTombstone(contact, reason = 'unknown') {
         if (!contact || !contact.storagePurged) {
             return false; // storage not purged yet → must NOT tombstone
         }
@@ -18406,14 +20430,21 @@ class Sylk extends Component {
             await this.ExecuteQuery(
                 'UPDATE contacts SET deleted = 1, deleted_timestamp = COALESCE(deleted_timestamp, ?) WHERE account = ? AND contact_id = ?',
                 [ts, account, contact.id]);
-        } catch (e) { console.log('[trash] tombstone failed', e && e.message); return false; }
+        } catch (e) {
+            console.log('[trash] tombstone failed', e && e.message);
+            utils.timestampedLog('[trash] tombstone FAILED for ' + this._abNormalizeUri(contact.uri)
+                + ' reason=' + reason + ': ' + (e && e.message));
+            return false;
+        }
         this.setState(prev => ({
             allContacts: (prev.allContacts || []).filter(x => !(x && x.id === contact.id)),
         }));
         if (this.state.selectedContact?.id === contact.id) this.setState({selectedContact: null});
         this._addTombstoneToGraveyardState(contact, ts); // real-time Graveyard update (+ count)
         utils.timestampedLog('[trash] tombstoned ' + this._abNormalizeUri(contact.uri)
-            + ' (storage purged + delete confirmed)');
+            + ' reason=' + reason + ' (storage purged + delete confirmed)');
+        this._auditContactEvent('TOMBSTONE', contact, reason, 'storage_purged=' + contact.storagePurged);
+        this._noteContactDeletion(contact.uri, reason);
         return true;
     }
 
@@ -18446,6 +20477,10 @@ class Sylk extends Component {
         utils.timestampedLog('[trash] revived ' + this._abNormalizeUri(contact.uri)
             + (wasTombstone ? ' (from Graveyard)' : '')
             + ' — cleared deleted/storage_purged/deleted_timestamp, reset server id, re-pushed');
+        // Recorded in the same audit file as the deletions: reading a delete
+        // without seeing whether it was later undone has cost us time before.
+        this._auditContactEvent(wasTombstone ? 'REVIVE-FROM-GRAVEYARD' : 'REVIVE',
+            contact, 'revive');
     }
 
     // Revive a deleted contact when GENUINELY NEW activity (an incoming
@@ -18613,7 +20648,7 @@ class Sylk extends Component {
             try {
                 const allUris = (this.getAllContactUris(c) || [c.uri]).filter(Boolean);
                 await this._purgeContactStorage(c);
-                await this.deleteSylkContact(c, {force: true});
+                await this.deleteSylkContact(c, {force: true, reason: 'hard-delete'});
                 if (this.state.account
                     && c.uri
                     && !(account && c.uri.toLowerCase() === account.toLowerCase())) {
@@ -18642,7 +20677,12 @@ class Sylk extends Component {
                 await this.ExecuteQuery(
                     'DELETE FROM contacts WHERE account = ? AND lower(uri) = lower(?)', [account, contact.uri]);
             }
-        } catch (e) { console.log('[trash] eject failed', e && e.message); return; }
+        } catch (e) {
+            console.log('[trash] eject failed', e && e.message);
+            utils.timestampedLog('[trash] eject FAILED for ' + this._abNormalizeUri(contact.uri)
+                + ': ' + (e && e.message));
+            return;
+        }
         this.setState(prev => ({
             allContacts: (prev.allContacts || []).filter(x => !(x && (x.id === contact.id || x.uri === contact.uri))),
             graveyardContacts: (prev.graveyardContacts || []).filter(x => !(x && (x.id === contact.id || x.uri === contact.uri))),
@@ -18650,6 +20690,11 @@ class Sylk extends Component {
         this.refreshGraveyardCount(); // a tombstone was permanently ejected
         utils.timestampedLog('[trash] ejected (row permanently deleted from SQL): '
             + this._abNormalizeUri(contact.uri));
+        // The one operation with NO recovery path: after this the row is gone
+        // from SQL and the audit line is the only remaining record that the
+        // contact ever existed.
+        this._auditContactEvent('EJECT', contact, 'graveyard-eject', 'row physically deleted from SQL');
+        this._noteContactDeletion(contact.uri, 'graveyard-eject');
     }
 
     async callKeepStartConference(targetUri, options={audio: true, video: true, participants: []}, domain=null) {
@@ -18851,7 +20896,13 @@ class Sylk extends Component {
 
 
         this.resetGoToReadyTimer();
-        targetUri = targetUri.trim().toLowerCase();
+        // Safety net for the dial paths that don't come through
+        // utils.normalizeUri (redial, deep links, OS call intents): unwrap
+        // tel:, and collapse the visual separators an address book or a web
+        // page may have baked into the number. Anything that looks like a
+        // phone number must reach the SIP layer without spaces, dashes or
+        // parens — those are not valid in a request-URI.
+        targetUri = utils.cleanDialHandle(targetUri).trim().toLowerCase();
         let callUUID = options.callUUID || uuid.v4();
 
         if (targetUri.indexOf('@') === -1 && !options.conference) {
@@ -19448,10 +21499,98 @@ class Sylk extends Component {
         return !!(id && this._autoAnsweredCalls.has(id));
     }
 
+    /** True when this INCOMING call is from a contact flagged as a caregiver
+     *  on this device. Read in render() alongside _isAutoAnsweredCall to decide
+     *  whether the camera comes up live or behind the "Enable your camera?"
+     *  prompt.
+     *
+     *  A caregiver call is one where the person being called may not be able to
+     *  walk over and tap "Start camera" — that is the entire point of the flag —
+     *  so a VIDEO call from a caregiver goes straight to live video on accept.
+     *  This does NOT auto-accept anything: the call still rings and the user
+     *  still answers by hand (or the separate autoanswer flag answers for
+     *  them); only the camera prompt is skipped. Audio calls are unaffected
+     *  because VideoBox — and therefore the prompt — is only mounted for calls
+     *  that carry video. Both platforms: the prompt is driven by the same
+     *  videoMuted computation on Android and iOS.
+     *
+     *  The caregiver flag is dual-state everywhere it is read: the per-device
+     *  localProperties.caregiver mirror is authoritative, with the 'caregiver'
+     *  tag as the fallback for a contact synced from another device before the
+     *  mirror was written.
+     *
+     *  The positive result is stamped on the call object (same pattern as
+     *  _sylkAutoAnswered) so the decision is stable for the whole call —
+     *  VideoBox only reads props.videoMuted at mount and on VALUE change, so a
+     *  contact edit mid-call must not flip it back and re-mute a live camera. */
+    _isCaregiverCall(call) {
+        if (!call) return false;
+        if (call._sylkCaregiverCall === true) return true;
+        // Outgoing calls never show the prompt; skip the lookup for them.
+        if (call.direction && call.direction !== 'incoming') return false;
+
+        const uri = (call.remoteIdentity && call.remoteIdentity.uri) || null;
+        if (!uri) return false;
+
+        let contact = null;
+        try {
+            // Index hit, no create: this runs on the render path.
+            contact = this.lookupContact(uri);
+        } catch (e) {
+            return false;
+        }
+        if (!contact) return false;
+
+        const isCaregiver = !!(
+            (contact.localProperties && contact.localProperties.caregiver === true)
+            || (Array.isArray(contact.tags) && contact.tags.indexOf('caregiver') > -1)
+        );
+
+        if (isCaregiver) {
+            try {
+                call._sylkCaregiverCall = true;
+            } catch (e) { /* best-effort stamp */ }
+            if (!this._loggedCaregiverCalls) this._loggedCaregiverCalls = new Set();
+            const _id = call.id || call._callId;
+            if (_id && !this._loggedCaregiverCalls.has(_id)) {
+                this._loggedCaregiverCalls.add(_id);
+                utils.timestampedLog('[call] [ui] call_id=' + _id,
+                    'from caregiver', uri, '— camera starts without the enable prompt');
+                setTimeout(() => {
+                    if (this._loggedCaregiverCalls) this._loggedCaregiverCalls.delete(_id);
+                }, 5 * 60 * 1000);
+            }
+        }
+
+        return isCaregiver;
+    }
+
     closeLocalMedia() {
         if (this.state.localMedia != null) {
-            utils.timestampedLog('[call] Close local [media]');
             const _stream = this.state.localMedia;
+
+            // Idempotence guard. This is now called from two places on the
+            // same teardown (changeRoute closes the media BEFORE swapping the
+            // active call into state, and the leaving-/call block below still
+            // calls it), and React may not have committed the
+            // setState({localMedia: null}) from the first call by the time the
+            // second one reads this.state. Releasing the same tracks twice
+            // would double-dispose the native capturer, so remember the last
+            // stream we closed and only clear the state on a repeat call.
+            if (this._lastClosedLocalMedia === _stream) {
+                this.setState({localMedia: null});
+                // Nothing left to release on this stream — an earlier call
+                // already scheduled it. Report the step ONLY if that release
+                // has already run; otherwise it will report for us when it
+                // does, which is the honest moment.
+                if (!this._pendingTrackReleases) {
+                    this._markSwapTeardown('released');
+                }
+                return;
+            }
+            this._lastClosedLocalMedia = _stream;
+
+            utils.timestampedLog('[call] Close local [media]');
 
             // stop() the tracks (JS-side readyState/enabled bookkeeping)...
             sylkrtc.utils.closeMediaStream(_stream);
@@ -19506,7 +21645,16 @@ class Sylk extends Component {
             // serial thread, never on the shared executor. Worst case a wedged
             // HAL stalls that one daemon thread and later disposals queue behind
             // it, i.e. we degrade back to the old leak instead of freezing.
-            setTimeout(() => {
+            // One in-flight release per scheduled teardown. The sequential
+            // swap waits on this signal to decide the old call is gone, and
+            // an early "yes" is worse than a late one: it puts the fresh
+            // getUserMedia right back on top of the old tracks' disposal,
+            // which is the ADM-teardown overlap the sequencing exists to
+            // avoid. So the shortcuts below only report the step when the
+            // counter says nothing is actually pending.
+            this._pendingTrackReleases = (this._pendingTrackReleases || 0) + 1;
+
+            const _releaseTracks = () => {
                 let _released = 0;
                 try {
                     _stream.getTracks().forEach((t) => {
@@ -19520,7 +21668,23 @@ class Sylk extends Component {
                 } catch (e) { /* noop */ }
                 utils.timestampedLog('[call] [media] released', _released,
                     'local track(s) — native capturer disposed');
-            }, 400);
+                this._pendingTrackReleases =
+                    Math.max(0, (this._pendingTrackReleases || 1) - 1);
+                if (this._pendingTrackReleases === 0) {
+                    this._markSwapTeardown('released');
+                }
+            };
+
+            // Disposing the old audio track drops the last live recording
+            // client of libwebrtc's process-wide AudioDeviceModule, which is
+            // why the OLD overlapping swap ended up with a dead microphone in
+            // both directions (35.5 B/pkt of Opus silence at a full 50 pps,
+            // measured three times on the Sony XQ-EC72). The sequential swap
+            // removes that hazard by construction: the new call is not
+            // answered until this release has actually run — see
+            // _awaitTeardownThenAccept, which waits on the very signal
+            // _releaseTracks emits.
+            setTimeout(_releaseTracks, 400);
 
             this.setState({localMedia: null});
         }
@@ -19738,12 +21902,107 @@ class Sylk extends Component {
         this.resetGoToReadyTimer();
         this.updateLoading(null, 'accept_call');
 
+        if (this._pendingSwapAccept
+                && this._pendingSwapAccept.callUUID === callUUID) {
+            // Already parked and waiting. A second accept for the same call
+            // (CallKeep and the in-app panel can both land) must not re-park
+            // it — that would reset the teardown signals under the waiter and
+            // start a second hangup of a call that is already going away.
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                'swap_park_duplicate — already parked, ignoring this accept');
+            return;
+        }
+
         if (this.state.currentCall) {
+            // SEQUENTIAL CALL SWAP.
+            //
+            // The old design answered the new call while the previous one was
+            // still tearing itself down, and every failure we chased came out
+            // of that overlap: the old call's audioManagerStop() forcing the
+            // mode back to NORMAL after the new call was accepted; its hangup
+            // tone flipping the mode to RINGTONE; its deferred track
+            // release() disposing the last live client of the process-wide
+            // AudioDeviceModule 1-2 s before the new sender went active (both
+            // directions silent, 35.5 B/pkt of Opus silence at a full 50 pps);
+            // its 'terminated' handler nulling currentCall/incomingCall that
+            // by then belonged to the NEW call; and its route to /ready
+            // unmounting the call screen underneath the answer.
+            //
+            // So: don't overlap. Park the new call OUT of state entirely —
+            // it is not incomingCall, not currentCall, and callStateChanged
+            // ignores its ticks — tear the old call down through the ordinary
+            // path, wait for that to actually finish, and only then answer.
+            // At that point the second call is indistinguishable from a first
+            // call, which is the case that has always worked.
+            const _parked = (this.state.incomingCall
+                    && this.state.incomingCall.id === callUUID)
+                ? this.state.incomingCall
+                : (this.callKeeper && this.callKeeper._calls
+                    ? this.callKeeper._calls.get(callUUID)
+                    : null);
+
+            if (!_parked) {
+                // No Call object to park — nothing we can usefully sequence.
+                // Fall back to the plain hangup and let the normal incoming
+                // path pick the call up if it materialises.
+                utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                    'swap_park_failed — no Call object found, hanging up the current call only');
+                this.hangupCall(this.state.currentCall.id, 'accept_new_call');
+                return;
+            }
+
+            let _parkedVideo = !!(_parked.mediaTypes && _parked.mediaTypes.video);
+            if ('video' in options) {
+                _parkedVideo = _parkedVideo && options.video;
+            }
+
+            // Drop the MIC prewarm. That stream was opened with getUserMedia
+            // while the old call still owned the microphone, so it is exactly
+            // the kind of shared-audio-device entanglement this rewrite is
+            // getting rid of; the parked call warms its mic from scratch like
+            // any first call.
+            //
+            // The PC prewarm is deliberately NOT closed: it holds no media,
+            // costs nothing across the gap, and _closePrewarmedCall()
+            // terminate()s a call that is still 'incoming' — it would hang up
+            // the very call we are parking.
+            try {
+                this._closePrewarmedMicStream('call_swap_sequential');
+            } catch (e) { /* noop */ }
+
+            this._pendingSwapAccept = {
+                callUUID: callUUID,
+                call: _parked,
+                options: options,
+                video: _parkedVideo,
+                parkedAt: Date.now(),
+            };
+            // Seed the teardown signals from what is already true. If the
+            // old call died on its own a moment before the user pressed
+            // Accept, its 'terminated' has already been and gone and would
+            // never be observed — the wait would sit out its full timeout.
+            this._swapTeardown = {
+                terminated: !!(this.state.currentCall
+                    && this.state.currentCall.state === 'terminated'),
+                released: false,
+            };
+
+            utils.timestampedLog('[call] [ui] call_id=' + callUUID,
+                'swap_parked — holding the new call out of state until the old call is fully torn down',
+                '(video=' + _parkedVideo + ')');
+
+            // Out of state. Nothing in the old call's teardown can see it,
+            // alias it, null it or route away from it.
+            this.setState({incomingCall: null, incomingCallUUID: null});
+
             utils.timestampedLog('[call] [ui] call_id=' + callUUID,
                 'will hangup current call first',
                 this.state.currentCall.id);
             this.hangupCall(this.state.currentCall.id, 'accept_new_call');
-            // call will continue after transition to /ready
+            // After hangupCall — it opens with setState({loading: null}) and
+            // would wipe the label if we set it first.
+            this.updateLoading('Connecting...', 'call_swap');
+            this._awaitTeardownThenAccept();
         } else {
             let hasVideo = (this.state.incomingCall && this.state.incomingCall.mediaTypes && this.state.incomingCall.mediaTypes.video) ? true : false;
             if ('video' in options) {
@@ -19755,9 +22014,61 @@ class Sylk extends Component {
         }
     }
 
+    /** True when THIS user explicitly declined the call, as opposed to
+     *  leaving it unanswered. A decline is a deliberate act: it must not tag
+     *  the contact 'missed' or raise the unread badge (release.log 2026-08-18
+     *  11:26:00 — declining a call still logged 'foreground missed call …
+     *  bumping unread badge').
+     *
+     *  Deliberately keyed on rejectCall() having run, NOT on the 486 the
+     *  server sends back for it. sylkrtc auto-rejects a second incoming call
+     *  with that same 486, and THAT one the user never saw — it is genuinely
+     *  missed, and reading the wire reason would quietly hide it. Accepts
+     *  either the local callUUID or the SIP Call-ID, since rejectCall records
+     *  the call under both. */
+    _wasDeclinedNotMissed(id) {
+        return !!(id && this._userRejectedCalls && this._userRejectedCalls.has(id));
+    }
+
     rejectCall(callUUID) {
         // called by Call Keep when user rejects call
         utils.timestampedLog('User rejected [call]', callUUID);
+
+        // Remember the decline so the 'terminated' handler doesn't count it
+        // as a missed call. Recorded before anything below can throw or
+        // return early, so every reject path is covered.
+        if (!this._userRejectedCalls) {
+            this._userRejectedCalls = new Map();
+        }
+        this._userRejectedCalls.set(callUUID, true);
+        // ...and under the SIP Call-ID, because the +5 s server call-history
+        // sync re-derives "missed" from `direction === 'incoming' &&
+        // duration === 0` — which a decline also satisfies — and keys on
+        // sessionId, i.e. the SIP Call-ID rather than the local callUUID.
+        // Without this the badge we suppress here comes straight back.
+        try {
+            const _rc = (this.state.incomingCall && this.state.incomingCall.id === callUUID)
+                ? this.state.incomingCall
+                : (this.callKeeper && this.callKeeper._calls
+                    ? this.callKeeper._calls.get(callUUID)
+                    : null);
+            const _sipId = _rc && (_rc._callId || _rc.callId);
+            if (_sipId) {
+                this._userRejectedCalls.set(_sipId, true);
+            }
+        } catch (e) { /* noop */ }
+
+        // The parked call is not in state.incomingCall, so the terminate
+        // below would never find it. Handle it explicitly.
+        if (this._pendingSwapAccept && this._pendingSwapAccept.callUUID === callUUID) {
+            this.hideInternalAlertPanel('reject');
+            this._cancelParkedCall('rejected');
+            if (!this.state.currentCall) {
+                this.changeRoute('/ready', 'rejected');
+            }
+            return;
+        }
+
         this.hideInternalAlertPanel('reject');
         this._closePrewarmedMicStream('rejected');
         this._closePrewarmedCall(callUUID, 'rejected');
@@ -19767,8 +22078,17 @@ class Sylk extends Component {
         }
 
         if (this.state.incomingCall && this.state.incomingCall.id === callUUID) {
-            utils.timestampedLog('Sylkrtc terminate [call]', callUUID, 'in', this.state.incomingCall.state, 'state');
-            this.state.incomingCall.terminate();
+            // _closePrewarmedCall above already declined this call if it was
+            // still ringing; don't send a second terminate the server will
+            // reject as "Unknown session".
+            if (this.state.incomingCall._sylkTerminateSent) {
+                utils.timestampedLog('Sylkrtc terminate [call]', callUUID,
+                    '— already sent, skipping duplicate');
+            } else {
+                utils.timestampedLog('Sylkrtc terminate [call]', callUUID, 'in', this.state.incomingCall.state, 'state');
+                this.state.incomingCall._sylkTerminateSent = true;
+                this.state.incomingCall.terminate();
+            }
             // Clear the incoming-call UI state NOW instead of waiting for the
             // server's 'terminated' round-trip (several seconds on the push-
             // reject path). props.call = currentCall || incomingCall, so until
@@ -19912,6 +22232,20 @@ class Sylk extends Component {
 
     hangupCall(callUUID, reason) {
         utils.timestampedLog('[call]', callUUID, 'hangup with reason:', reason);
+
+        // Sequential swap: the parked call is deliberately out of state, so
+        // both the red button (which reads state.call) and CallKeep address
+        // the OLD call's UUID here. Any USER-initiated hangup during the park
+        // means "end this", not "carry on with the swap" — drop the parked
+        // call too. 'accept_new_call' is the swap's own teardown and must not
+        // match.
+        if (this._pendingSwapAccept
+                && typeof reason === 'string'
+                && (reason.indexOf('user_') === 0
+                    || reason === 'callkeep_hangup_call'
+                    || reason === 'rejected')) {
+            this._cancelParkedCall(reason);
+        }
 
         // Manual hangup breaks the auto-dialer soak loop. Every hangup the USER
         // initiates carries a 'user_' reason ('user_hangup_call' from the in-call
@@ -20066,12 +22400,14 @@ class Sylk extends Component {
             // remoteIdentity-based callContact resolution in render()
             // (see app.call() ~line 34354).
             //
-            // We inline the same cleanup the changeRoute('/ready', ...)
-            // path did for this reason:
-            //   - clear stale 1:1-call state but PRESERVE incomingCall
+            // As of the sequential swap this branch is TEARDOWN ONLY:
+            //   - clear stale 1:1-call state (incomingCall included — the new
+            //     call is parked in _pendingSwapAccept, out of state)
             //   - release the old audio session + local media
-            //   - re-acquire media for the new call
-            // …minus the changeRoute itself.
+            // …minus the changeRoute, and minus any media acquisition. The
+            // new call is answered by _acceptParkedCall() once these steps
+            // have actually completed, so the screen stays on /call with a
+            // "Connecting..." label for the ~0.5 s in between.
             if (this.contactMessageIndex) this.contactMessageIndex.clear();
             this.setState({
                 outgoingCallUUID: null,
@@ -20082,9 +22418,10 @@ class Sylk extends Component {
                 inviteContacts: false,
                 selectedContacts: [],
                 sourceContact: null,
-                // Hold the new incoming call across the swap — it's
-                // the call we're about to answer below.
-                incomingCall: this.state.incomingCall,
+                // The new call is NOT held here any more. acceptCall has
+                // parked it in _pendingSwapAccept, deliberately out of state,
+                // so that nothing in this teardown can see or clobber it.
+                incomingCall: null,
                 reconnectingCall: false,
                 muted: false,
                 // Clear any stale subtitle reason from a prior call.
@@ -20097,16 +22434,24 @@ class Sylk extends Component {
             });
 
             this.stopRingback();
+            // Unconditional, and it must stay that way: native
+            // AudioRouteModule.start() early-returns on `started`, so
+            // _acceptParkedCall()'s audioManagerStart() would be a no-op if
+            // the session were left up. Safe here because no media exists for
+            // the new call yet — it is parked and un-answered.
             this.audioManagerStop();
             this.closeLocalMedia();
 
-            if (this.state.incomingCall) {
-                const _hasVideo = !!(this.state.incomingCall.mediaTypes
-                                     && this.state.incomingCall.mediaTypes.video);
-                // getLocalMedia eventually does changeRoute('/call',
-                // 'media_ready'); since we're already on /call this is
-                // a no-op (changeRoute short-circuits on route equality).
-                this.getLocalMedia(Object.assign({audio: true, video: _hasVideo}), '/call');
+            // PURE TEARDOWN. Media acquisition for the new call used to
+            // happen right here, racing everything above. It now happens in
+            // _acceptParkedCall(), after _awaitTeardownThenAccept() has seen
+            // this teardown actually complete.
+            //
+            // If there is no local media to close, the release step can never
+            // signal, so record it as already done or the wait would sit out
+            // its full timeout on every swap.
+            if (this.state.localMedia == null && !this._pendingTrackReleases) {
+                this._markSwapTeardown('released');
             }
         } else if (reason === 'user_cancel_call' ||
             reason === 'user_hangup_call' ||
@@ -20133,9 +22478,11 @@ class Sylk extends Component {
             if (reason === 'local_media_timeout') {
                 this._notificationCenter.postSystemNotification('Cannot get local media');
             }
-            this.audioManagerStop();
+            // callUUID-scoped: never deactivate the shared audio session
+            // while another call is still live (see _hasOtherLiveCalls).
+            this.audioManagerStop(callUUID);
         } else if (reason === 'user_hangup_conference') {
-            this.audioManagerStop();
+            this.audioManagerStop(callUUID);
             if (!this.conferenceEndedTimer ) {
                 //utils.timestampedLog('Save conference maybe?');
                 this.conferenceEndedTimer = setTimeout(() => {
@@ -20143,7 +22490,7 @@ class Sylk extends Component {
                 }, 15000);
             }
         } else if (reason === 'user_cancelled_conference') {
-            this.audioManagerStop();
+            this.audioManagerStop(callUUID);
             if (!this.conferenceEndedTimer ) {
                 //utils.timestampedLog('Save conference maybe?');
                 this.conferenceEndedTimer = setTimeout(() => {
@@ -20151,7 +22498,7 @@ class Sylk extends Component {
                 }, 15000);
             }
         } else if (reason === 'cancelled_call') {
-            this.audioManagerStop();
+            this.audioManagerStop(callUUID);
             utils.timestampedLog('[app] Will go to ready in 6 seconds (cancel)');
             this.setState({terminatedReason: 'Call cancelled'});
 
@@ -20428,9 +22775,16 @@ class Sylk extends Component {
         this.setState({currentCall: call});
         this.callKeeper.startOutgoingCall(call);
         this.updateLoading(null, 'outgoing_call');
-		if (Platform.OS === 'android' && call.remoteIdentity.uri == this.state.accountId) {
-		    console.log('save to native'); 
-			SylkBridge.setActiveCall(call.remoteIdentity.uri);
+		// Self-call: we are dialling our own AoR to ring our other devices.
+		// The proxy forks the INVITE back to this device too, so tell the
+		// native push layer who we are calling and let it drop the resulting
+		// "incoming_session" push instead of ringing. Done here, inside
+		// sylkrtc's synchronous 'outgoingCall' emit (account.call() ->
+		// emit('outgoingCall')), so the flag is written before SylkServer
+		// sends the INVITE and therefore always beats the fork back.
+		// Cleared in callStateChanged on 'terminated'.
+		if (call.remoteIdentity.uri == this.state.accountId) {
+			this.setNativeActiveCall(call.remoteIdentity.uri);
 		}
     }
 
@@ -20698,9 +23052,159 @@ class Sylk extends Component {
         DeepLinking.evaluateUrl(event.url);
     }
 
+    /**
+     * Handle a tel:, sip:, sips: or callto: URL opened from OUTSIDE the
+     * app: a <a href="tel:+31612345678"> tap in Chrome (the manifest now
+     * puts Blink in the "Open with" chooser next to Phone), a sip: link
+     * in a mail signature, or an ACTION_DIAL from the system dialer that
+     * MainActivity rewrote to ACTION_VIEW.
+     *
+     * Returns true when the URL was consumed, false when it is not a
+     * dial link and the normal sylk:/https: parsing should continue.
+     *
+     * We deliberately do NOT place the call. The destination came from a
+     * page we do not control, and the digits usually still need the
+     * account's PSTN rewrites (replaceLeadingZero / replacePlus) plus a
+     * human eyeball — a mistyped href would otherwise dial a chargeable
+     * number on one tap. Prefilling the URI field keeps the call button
+     * one press away while leaving the user in control.
+     */
+    dialFromExternalUrl(url) {
+        if (typeof url !== 'string') {
+            return false;
+        }
+
+        const parsed = url.match(/^\s*(tel|sip|sips|callto):(.*)$/i);
+        if (!parsed) {
+            return false;
+        }
+
+        const scheme = parsed[1].toLowerCase();
+        let target;
+
+        if (scheme === 'tel') {
+            // utils.stripTelScheme already unwraps tel: and tel://,
+            // drops ;params (;ext=4), decodes %2B and strips the visual
+            // separators pages love (spaces, dashes, dots, parens).
+            target = utils.stripTelScheme(url);
+        } else {
+            // sip:alice@example.com;transport=tls?subject=hi
+            //   -> alice@example.com
+            target = parsed[2].replace(/^\/\//, '').split(';')[0].split('?')[0];
+            try {
+                target = decodeURIComponent(target);
+            } catch (e) {
+                // Malformed escape in the href — use it verbatim rather
+                // than dropping the link on the floor.
+            }
+            target = target.replace(/\s/g, '');
+        }
+
+        target = (target || '').trim();
+
+        if (!target) {
+            utils.timestampedLog('[dial-link] ignoring empty', scheme, 'URL:', url);
+            return true;
+        }
+
+        // The classic bad click-to-dial href: a national number printed
+        // with its trunk prefix, given a country code but not stripped of
+        // the 0 — tel:+31-023-7993800 lands here as +310237993800. Repair
+        // it from the account's own "Replace 0 with" rule BEFORE it
+        // reaches the URI field, so what the user sees, what contact
+        // matching searches for and what call history records are all the
+        // real E.164 number. See utils.stripTrunkZeroAfterCountryCode.
+        //
+        // TIMING: on a cold start (the user picked Blink from Chrome's
+        // chooser while it was not running) this runs from
+        // Linking.getInitialURL, which resolves LONG before the account
+        // settings are read back out of the accounts table — see the
+        // setState({accountSetting}) in loadAccountSettings. So
+        // replaceLeadingZero is very often still '' right here and the
+        // repair no-ops. That is why the RAW number travels with the
+        // signal: ReadyBox re-runs the repair when pstnRules finally
+        // arrives, as long as the user has not edited the field.
+        const rawTarget = target;
+        const dialRules = this.getEffectivePstnRules();
+
+        utils.timestampedLog('[dial-link] [pstn] rules at prefill:',
+                             JSON.stringify(dialRules || {}),
+                             'accountSettingsLoaded=' + !!(this.state.accountSetting
+                                 && this.state.accountSetting.pstn));
+
+        const repaired = utils.stripTrunkZeroAfterCountryCode(target, dialRules);
+        if (repaired !== target) {
+            utils.timestampedLog('[dial-link] [pstn] trunk 0 after country code dropped:',
+                                 target, '->', repaired);
+            target = repaired;
+        }
+
+        utils.timestampedLog('[dial-link] external', scheme, 'link:', url,
+                             '-> prefilling target', target);
+
+        this.prefillDialTarget(target, rawTarget, 'dial_link');
+
+        return true;
+    }
+
+    /**
+     * Latch a destination into the URI field and route to /ready so the
+     * user can check it and press call. Shared by every "something outside
+     * the app named a destination" path: tel:/sip:/sips:/callto: links
+     * (dialFromExternalUrl) and the OS call intents that arrive with no
+     * callUUID (startCallFromCallKeeper). It deliberately never dials by
+     * itself — the same rule the Android dial-link intent-filter documents.
+     *
+     * `raw` is the pre-repair spelling. It travels with the signal because
+     * on a cold start the account settings (and therefore
+     * replaceLeadingZero) land AFTER this runs, so ReadyBox re-runs the
+     * trunk-zero repair once pstnRules finally arrive.
+     */
+    prefillDialTarget(target, raw, origin) {
+        this.backToForeground();
+
+        this.setState({
+            targetUri: target,
+            externalDialUri: {uri: target, raw: raw || target, id: uuid.v4()}
+        });
+
+        // Never yank the user out of a live call or conference — the
+        // prefill is already latched in state and ReadyBox picks it up
+        // as soon as the call ends and we route back to /ready.
+        if (!this.activeCall
+                && this.currentRoute !== '/call'
+                && this.currentRoute !== '/conference') {
+            this.changeRoute('/ready', origin || 'dial_link');
+        }
+    }
+
+    /**
+     * ReadyBox calls this once it has mirrored an external dial link
+     * into its URI field. Clearing the signal keeps a later ReadyBox
+     * remount from re-filling a field the user already cleared. Guarded
+     * on the id so a signal that arrived WHILE the old one was being
+     * consumed (two chooser taps in quick succession) is not dropped.
+     */
+    clearExternalDialUri(id) {
+        this.setState((prev) => (
+            prev.externalDialUri && prev.externalDialUri.id === id
+                ? {externalDialUri: null}
+                : null
+        ));
+    }
+
     eventFromUrl(url) {
         console.log('Event from url', url);
         url = decodeURI(url);
+
+        // Dial links (tel:/sip:/sips:/callto:) carry a bare
+        // scheme:destination with no path — no callUUID, no direction.
+        // Intercept them before the parsing below, which splits on '/'
+        // and would read the whole URI as url_parts[0] (the "scheme"),
+        // match none of the sylk:/https: branches, and silently drop it.
+        if (this.dialFromExternalUrl(url)) {
+            return;
+        }
 
         try {
             let direction;
@@ -21370,7 +23874,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (this.state.accountSetting.privacy.dnd && this.state.favoriteUris.indexOf(from) === -1) {
+        if (this.state.accountSetting.privacy.dnd && !this._canBypassAppDnd(from)) {
             // Effectively unreachable on Android: MyFirebaseMessagingService
             // enforces privacy.dnd natively (drops the push and posts the
             // silent "Missed call … (Do Not Disturb)" banner on
@@ -21428,7 +23932,7 @@ class Sylk extends Component {
         // 1. Silent missed-call notification on rejected_calls_channel_v2.
         // skipNotification=true when the native FCM service already posted
         // the notification via the [fcm] [drop] OS/App DND branch — calling
-        // it again here would double-post (the original Adi "two Missed Call
+        // it again here would double-post (the original "two Missed Call
         // notifications when DND on" bug).
         if (!skipNotification
                 && Platform.OS === 'android' && SylkBridge
@@ -21594,6 +24098,44 @@ class Sylk extends Component {
             console.log('sipBridge dedupe check failed:', e && e.message);
         }
 
+        // Self-call fork-back, websocket edition.
+        //
+        // Suppressing the VoIP push (AppDelegate.shouldDisplayMessageFromPayload
+        // / MyFirebaseMessagingService) stops the ring, but the forked leg ALSO
+        // arrives here over the live websocket: SylkServer sends
+        // AccountIncomingSessionEvent to every connection of the account, the
+        // caller's own included. Left alone it lands in state.incomingCall and
+        // the UI sits on a phantom "incoming call" for a call this very device
+        // placed -- the stuck-unanswered-call symptom.
+        //
+        // Reject it. A 486 prunes only THIS branch of the fork, so the user's
+        // other devices keep ringing and we keep hearing ringback. Gated on
+        // there being an outgoing call to our own account in progress, so a
+        // genuine call from a third party is never touched.
+        try {
+            const _self = this.state.accountId;
+            const _current = this.state.currentCall;
+            const _outgoingToSelf = _current
+                && _current.direction === 'outgoing'
+                && _current.remoteIdentity
+                && _current.remoteIdentity.uri === _self;
+            if (_outgoingToSelf && typeof from === 'string' && from === _self) {
+                utils.timestampedLog('[call] Dropping incoming [wss] call', callUUID,
+                    'from', from, '- fork of our own outgoing self-call');
+                this.callKeeper.rejectCall(callUUID);
+                return;
+            }
+        } catch (e) {
+            console.log('self-call fork dedupe check failed:', e && e.message);
+        }
+
+        // Set when this device must stay SILENT for an incoming call it is
+        // still fully participating in. Read further down as skipNativePanel:
+        // the CallKit panel is withheld, the sylkrtc session is untouched, so
+        // the call keeps ringing on the user's other devices and the caller
+        // hears normal ringback. See the app-DND gate below.
+        let _dndSilent = false;
+
         // Same display-name backfill the push paths do (callEventHandler,
         // FCM notification tap), only now we sourced the display name
         // from sylkrtc's parsed SIP From header instead of from the FCM
@@ -21602,7 +24144,7 @@ class Sylk extends Component {
         // event never fires — without this, the in-call navbar keeps
         // showing the stale "URI local part" contact name (the bug the
         // user reported: bubble showed "My living", call screen still
-        // showed "living233").
+        // showed the stale local part).
         try {
             const sipDisplayName = call.remoteIdentity && call.remoteIdentity.displayName;
             if (sipDisplayName) {
@@ -21661,8 +24203,19 @@ class Sylk extends Component {
                 osDnd = await NativeModules.AndroidSettings.isOsDndOn();
             } catch (e) { /* fail open */ }
         }
-        const isFavorite = this.state.favoriteUris.indexOf(from) !== -1;
-        if ((appDnd || osDnd) && !isFavorite) {
+        // Bypass list. The `bypassdnd` TAG is the authority — it is what
+        // both native gates read (AppDelegate canBypassDnd:,
+        // MyFirebaseMessagingService.canBypassDnd), so keying this purely on
+        // favoriteUris meant JS and native disagreed about who may ring.
+        // favoriteUris is kept as an additional pass so setups that relied on
+        // it don't suddenly go quiet.
+        const _dndContact = this.lookupContact(from);
+        const _dndTags = (_dndContact && Array.isArray(_dndContact.tags))
+            ? _dndContact.tags.map(t => String(t).trim().toLowerCase())
+            : [];
+        const canBypassDnd = _dndTags.indexOf('bypassdnd') > -1;
+
+        if ((appDnd || osDnd) && !canBypassDnd) {
             // FCM-handled dedupe: if the native FCM service already saw
             // this callUUID (callPrepEventHandler populated _handledPrepCalls
             // when the bridge "prep emit" event fired), then
@@ -21677,9 +24230,28 @@ class Sylk extends Component {
             // UI (contact-on-top with badge=1, chat breadcrumb, missed-call
             // history) is JS-owned. Pass skipNotification=true to suppress
             // only the duplicate native post.
-            const fcmAlreadyHandled = !!(this._handledPrepCalls && this._handledPrepCalls.has(callUUID));
-            this._handleDndDrop(call, callUUID, from, osDnd, fcmAlreadyHandled);
-            return;
+            if (Platform.OS === 'ios') {
+                // SILENCE, don't drop. _handleDndDrop ends with
+                // callKeeper.rejectCall, which sends a decline to the SERVER
+                // and so cancels the call on the user's OTHER devices — a
+                // phone on DND must not hang up for the iPad or the desktop.
+                // Withholding the CallKit panel is the whole suppression:
+                // silent here, still ringing elsewhere, and the normal
+                // 'terminated' handler does the missed-call bookkeeping once,
+                // when the call actually ends.
+                //
+                // Android keeps the old path: MyFirebaseMessagingService has
+                // usually already dropped the push natively, and _handleDndDrop
+                // exists to reconcile that case.
+                _dndSilent = true;
+                utils.timestampedLog('[call] app DND — silencing [wss] call', callUUID,
+                    'from', from, '(no bypassdnd tag, tags=[' + _dndTags.join(', ')
+                    + ']) — call left live for other devices');
+            } else {
+                const fcmAlreadyHandled = !!(this._handledPrepCalls && this._handledPrepCalls.has(callUUID));
+                this._handleDndDrop(call, callUUID, from, osDnd, fcmAlreadyHandled);
+                return;
+            }
         }
 
         let autoAccept = this.autoAcceptIncomingCall(callUUID, from);
@@ -21937,7 +24509,10 @@ class Sylk extends Component {
             this.setState({showCallMeMaybeModal: false});
         }
 
-        let skipNativePanel = false;
+        // _dndSilent (app DND on, caller not tagged bypassdnd) rides the SAME
+        // switch: withhold the native panel, leave the session alone so the
+        // call keeps ringing on this user's other devices.
+        let skipNativePanel = _dndSilent;
 
         if (autoAccept) {
 			this.changeRoute('/call', 'accept_call');
@@ -21990,11 +24565,39 @@ class Sylk extends Component {
     }
 
     sendPublicKey(puri, force=false) {
-        let random_uri = uuid.v4() + '@' + this.state.defaultDomain;
-        let uri =  puri || random_uri;
-		console.log('[pubkey-send] sendPublicKey called for', uri, 'force=', force);
+        // Default to OUR OWN address, not an invented one.
+        //
+        // This used to be `uuid.v4() + '@' + this.state.defaultDomain`: with no
+        // explicit recipient the key was published by sending it to a random,
+        // non-existent address. Registration works either way (the server
+        // harvests the key from any outbound text/pgp-public-key), but nobody is
+        // ever at <uuid>@sylk.link, so the server ACKed the queue and the IMDN
+        // then came back `failed` — a guaranteed failed message on EVERY key
+        // generation, in every log since this was written:
+        //   [pubkey-send] sendPublicKey called for 0b9c46b4-…@sylk.link
+        //   [pubkey-send] sendPublicKey ACK from server
+        //   [message] Message 55b0e024-… [imdn] state changed to failed
+        //
+        // Self is the right target and is what useExistingKeys() already passes
+        // explicitly: the server registers the key exactly the same, the message
+        // forks to the user's OTHER devices (which is the point of publishing a
+        // public key), and it is delivered rather than failed. Nothing surfaces
+        // in the UI either — incoming text/pgp-public-key is consumed and
+        // returned on early, and _contentBumpsRecency excludes it, so no bubble
+        // and no recency bump on the self contact.
+        const uri = puri || this.state.accountId;
+        console.log('[pubkey-send] sendPublicKey called for', uri, 'force=', force);
 
         this.mustSendPublicKey = false;
+
+        if (!uri) {
+            // No account yet — nothing to send to. Re-arm so the send happens
+            // once we register (see the mustSendPublicKey check in the
+            // registration handler).
+            console.log('[pubkey-send] sendPublicKey deferred - no accountId yet');
+            this.mustSendPublicKey = true;
+            return;
+        }
 
         if (this.state.keyDifferentOnServer && !force) {
  			console.log('[pubkey-send] skipped: keyDifferentOnServer && !force, uri=', uri);
@@ -22108,20 +24711,35 @@ class Sylk extends Component {
         this.setState({showCallMeMaybeModal: false});
     }
 
-	waitForContactsLoaded() {
+	// Wait for the local contact index, but NEVER forever. This is awaited by
+	// saveSylkContact / updateSylkContact / savePrivateKey / decryptMessage —
+	// i.e. by the addressbook migration, which owns the "Syncing contacts…"
+	// spinner and the setup DND. An unbounded poll here means one stuck flag
+	// silently wedges all of that with no diagnostic whatsoever. Resolve after
+	// the bound instead and say so; the callers all re-check account identity
+	// (or tolerate a stale index) immediately afterwards.
+	waitForContactsLoaded(timeoutMs = 30000) {
 		if (this.state.contactsLoaded) {
-			return Promise.resolve();
+			return Promise.resolve(true);
 		}
-	
+
+		const _acc = this.state.accountId;
+		const _t0 = Date.now();
 		return new Promise(resolve => {
 			const check = () => {
-				//console.log('Waiting for contactsLoaded...');
-
 				if (this.state.contactsLoaded) {
-					resolve();
-				} else {
-					setTimeout(check, 50);
+					resolve(true);
+					return;
 				}
+				if (Date.now() - _t0 >= timeoutMs) {
+					utils.timestampedLog('[contacts] waitForContactsLoaded TIMED OUT after '
+						+ Math.round(timeoutMs / 1000) + 's (account at entry=' + (_acc || 'none')
+						+ ', now=' + (this.state.accountId || 'none') + ') — contactsLoaded never'
+						+ ' became true; proceeding so the caller cannot hang forever');
+					resolve(false);
+					return;
+				}
+				setTimeout(check, 50);
 			};
 			check();
 		});
@@ -22202,7 +24820,7 @@ class Sylk extends Component {
             uri,
             uris,
             contact.email || '',
-            contact.photo || '',
+            this._abPersistablePhoto(contact.photo),
             unixTime,
             contact.name || '',
             contact.organization || '',
@@ -22419,6 +25037,12 @@ class Sylk extends Component {
 		}
 		
 		contact.tags = tags;
+
+		// Keep the iOS notification-extension bypassdnd set in step with
+		// the tag edit. Placed AFTER the normalisation above (not next to
+		// updateDisplayNameInNativeMap) so the blocked-contact strip has
+		// already run — blocking someone must also revoke their bypass.
+		this.updateBypassDndInNativeMap(uri, tags);
 		
 	    let selectedContact = this.state.selectedContact;
 
@@ -22548,8 +25172,19 @@ class Sylk extends Component {
         let conference = contact.conference ? 1: 0;
         let participants = contact.participants.toString();
         let uris = contact.uris ? contact.uris.toString() : '';
-        let properties = contact.properties ? JSON.stringify(contact.properties) : {};
-        let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : {};
+        // '' , not {}. These are SQL bind parameters: passing a plain JS OBJECT
+        // across the bridge to react-native-sqlite-storage makes the native side
+        // swallow the statement entirely — no success callback, no statement
+        // error, no transaction error, nothing. The promise never settled, which
+        // froze the addressbook migration mid-reconcile with the "Syncing
+        // contacts…" spinner and the setup DND stuck on (2026-08-23 iOS
+        // android33/34/35; confirmed by '[sql] QUERY TIMED OUT after 60s — no
+        // callback from the database driver: UPDATE contacts set …').
+        // _buildContactInsertParams — the INSERT twin of this code — has always
+        // used '' here, which is why inserts never hit it and only the UPDATE
+        // path hung.
+        let properties = contact.properties ? JSON.stringify(contact.properties) : '';
+        let localProperties = contact.localProperties ? JSON.stringify(contact.localProperties) : '';
 
         // last_call_timestamp (v13) — Unix-seconds of the most recent
         // call involving this URI. Persisted via this column so the
@@ -22584,7 +25219,7 @@ class Sylk extends Component {
         // call. Re-enable locally if you need to debug a specific
         // origin again.
 
-        const baseParams = [contact.uri, uris, contact.photo, contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
+        const baseParams = [contact.uri, uris, this._abPersistablePhoto(contact.photo), contact.email, contact.lastMessage, contact.lastMessageId, unixTime, contact.name || '', contact.organization || '', unread_messages || '', contact.publicKey || '', tags, participants, contact.direction, media, conference, contact.lastCallId, contact.lastCallDuration];
         // remote_id (server addressbook id) must be persisted too — otherwise
         // the server link is lost on reload (server_id shows '-').
         //
@@ -22791,6 +25426,8 @@ class Sylk extends Component {
 		if (!this._deletingContacts) this._deletingContacts = new Set();
 		if (_key && this._deletingContacts.has(_key)) {
 			console.log('deleteSylkContact: already deleting', _key, '— skipping duplicate');
+			utils.timestampedLog('[trash] [delete] duplicate suppressed for '
+				+ this._abNormalizeUri(contact && contact.uri) + ' reason=' + (opts.reason || 'unknown'));
 			return;
 		}
 		if (_key) this._deletingContacts.add(_key);
@@ -22802,19 +25439,45 @@ class Sylk extends Component {
     }
 
     async _deleteSylkContactImpl(contact, opts = {}) {
-		console.log('deleteSylkContact enter id=', contact && contact.id, 'uri=', contact && contact.uri,
-			'account=', this.state.accountId);
+		// WHY timestampedLog and not console.log: only timestampedLog output
+		// reaches the on-disk log file that users attach to a support request.
+		// console.log goes to Metro alone, which meant this entire code path —
+		// the one that tombstones contacts — was INVISIBLE in every log we ever
+		// received from the field. The 2026-08-05 incident (68 contacts swept in
+		// 34s) had to be reconstructed from graveyard rows because of it.
+		//
+		// opts.reason names the CALLER (hard-delete / merge-loser / uri-steal /
+		// remove-contact). 'unknown' means someone added a new call site without
+		// declaring itself — the audit line below will say so out loud.
+		const _reason = opts.reason || 'unknown';
+		utils.timestampedLog('[trash] [delete] ENTER ' + this._abNormalizeUri(contact && contact.uri)
+			+ ' reason=' + _reason
+			+ ' id=' + ((contact && contact.id) || '?')
+			+ ' remote_id=' + ((contact && contact.remote_id) || '∅')
+			+ ' force=' + (opts.force ? 'yes' : 'no')
+			+ ' storage_purged=' + ((contact && contact.storagePurged) || 'null'));
+		if (_reason === 'unknown') {
+			utils.timestampedLog('[trash] [delete] WARNING: delete without a declared reason —'
+				+ ' add {reason: ...} at the call site');
+		}
 		// The user's own contact must never be deleted (locally or on the
 		// server) — we always keep a self contact.
 		if (contact && contact.uri && this.state.accountId
 			&& contact.uri.toLowerCase() === this.state.accountId.toLowerCase()) {
 			console.log('deleteSylkContact: refusing to delete own contact', contact.uri);
+			utils.timestampedLog('[trash] [delete] refused — own account contact '
+				+ this._abNormalizeUri(contact.uri));
 			return;
 		}
 
 		// Propagate the deletion to the server addressbook. The server's
 		// delete also removes the contact from any groups (cascade) — but it
 		// does NOT delete a group left with no members, so we delete those.
+		//
+		// Recorded in the audit line at the end: a delete that reached XCAP is
+		// not recoverable by a re-sync, so knowing which of the two happened is
+		// the difference between "revive locally" and "re-upload to the server".
+		let _serverDeleted = 'no';
 		try {
 			const ab = this.state.connection && this.state.connection.addressbook;
 			if (ab && contact) {
@@ -22838,6 +25501,7 @@ class Sylk extends Component {
 				if (rid) {
 					await this._abExec('deleteContact ' + rid + ' (' + contact.uri + ')',
 						cb => ab.deleteContact(rid, cb));
+					_serverDeleted = 'yes';
 					// Any group whose only member was this contact is now empty.
 					for (const g of (ab.groups || [])) {
 						if (this._abIsPurgeGroup(g.name)) continue;
@@ -22854,6 +25518,9 @@ class Sylk extends Component {
 			}
 		} catch (e) {
 			console.log('[ab] [replicate] deleteContact error', e && e.message);
+			_serverDeleted = 'failed';
+			utils.timestampedLog('[ab] [delete] server delete FAILED for '
+				+ this._abNormalizeUri(contact && contact.uri) + ': ' + (e && e.message));
 		}
 		// The contact ROW is never physically removed — it is kept as a
 		// permanent tombstone (deleted = 1, deleted_timestamp preserved/stamped)
@@ -22881,14 +25548,19 @@ class Sylk extends Component {
 			}
 		}).catch((error) => {
 			console.log('SQL deleteSylkContact tombstone error:', error);
+			utils.timestampedLog('[trash] [delete] SQL tombstone error for '
+				+ this._abNormalizeUri(contact && contact.uri) + ': ' + (error && error.message));
 		});
 
+		let _matchedBy = rowsAffected > 0 ? 'contact_id' : 'none';
 		if (rowsAffected === 0 && contact && contact.uri) {
 			console.log('deleteSylkContact: contact_id matched 0 rows, retrying tombstone by uri=', contact.uri);
 			await this.ExecuteQuery(
 				'UPDATE contacts SET deleted = 1, deleted_timestamp = COALESCE(deleted_timestamp, ?) WHERE account = ? AND lower(uri) = lower(?)',
 				[_nowTs, this.state.accountId, contact.uri]).then((result) => {
 				const byUri = result.rowsAffected || 0;
+				rowsAffected = byUri;
+				if (byUri > 0) _matchedBy = 'uri';
 				console.log('deleteSylkContact: tombstoned by uri rowsAffected=', byUri, 'for uri=', contact.uri);
 				if (byUri > 0) {
 					this.setState(prevState => ({
@@ -22903,7 +25575,26 @@ class Sylk extends Component {
 				}
 			}).catch((error) => {
 				console.log('SQL deleteSylkContact tombstone uri-fallback error:', error);
+				utils.timestampedLog('[trash] [delete] SQL uri-fallback tombstone error for '
+					+ this._abNormalizeUri(contact.uri) + ': ' + (error && error.message));
 			});
+		}
+
+		// One durable line per deleted contact, written to the audit file that
+		// the log trimmer never touches, plus a burst counter so a sweep also
+		// leaves a single summary line behind it.
+		utils.timestampedLog('[trash] [delete] DONE ' + this._abNormalizeUri(contact && contact.uri)
+			+ ' reason=' + _reason
+			+ ' rows=' + rowsAffected + ' matched_by=' + _matchedBy
+			+ ' server_delete=' + _serverDeleted);
+		if (rowsAffected > 0) {
+			this._auditContactEvent('TOMBSTONE', contact, _reason,
+				'server_delete=' + _serverDeleted + ' matched_by=' + _matchedBy
+				+ ' storage_purged=' + ((contact && contact.storagePurged) || 'null'));
+			this._noteContactDeletion(contact && contact.uri, _reason);
+		} else {
+			this._auditContactEvent('TOMBSTONE-NOOP', contact, _reason,
+				'server_delete=' + _serverDeleted + ' (no SQL row matched)');
 		}
     }
 
@@ -23348,7 +26039,94 @@ class Sylk extends Component {
         }
     }
 
-    async savePublicKey(uri, key) {
+    // A PGP public key pushed at us by a peer we have NO contact for.
+    //
+    // We keep it in memory but do NOT create a contact: an unsolicited
+    // text/pgp-public-key is a message from a stranger, and a stranger must
+    // not be able to write themselves into the user's contact book. Doing so
+    // put an un-deletable row in the contact list for anyone who knew the
+    // user's address, and — since a stored key is what marks a contact as
+    // "someone we have a chat with" — it also let a stranger unlock features
+    // gated on that, the incoming location-request prompt among them.
+    //
+    // Keeping the key costs nothing and preserves the cross-domain first-
+    // contact handshake it was originally auto-creating for: server-side key
+    // lookup is only authoritative within our own domain, so a cross-domain
+    // peer pushes their key ahead of the first message. We hold it here and
+    // apply it the moment the user actually engages with that peer (see the
+    // drain in lookupPublicKey, which runs on chat-open and on send) — i.e.
+    // when a contact exists because the USER made one, not the sender.
+    //
+    // Memory-only and capped: this map is filled by unauthenticated remote
+    // senders, so it must not grow without bound or survive a restart. FIFO
+    // eviction — a key old enough to be evicted is one the user never engaged
+    // with, and the peer re-pushes on their next attempt anyway.
+    // Map key for the held-key store. The stash is filled from a raw wire URI
+    // (message.sender.uri) and read back with a contact's uri, and contact URIs
+    // are always lowercased on the way in (sanitizeContact) — so without
+    // folding case here a sender whose URI arrives with any uppercase would be
+    // stashed under a key the drain never looks up, and their key would sit
+    // held until eviction while E2EE silently never engaged.
+    _pubKeyStashKey(uri) {
+        return String(uri || '').trim().toLowerCase();
+    }
+
+    _stashUnsolicitedPublicKey(uri, key) {
+        if (!uri || !key) return;
+        if (!this._unsolicitedPublicKeys) this._unsolicitedPublicKeys = new Map();
+        const _MAX = 50;
+        const _k = this._pubKeyStashKey(uri);
+        // Re-insert so a repeat push refreshes both the value and its position
+        // in the eviction order. The owning account rides along: the map
+        // outlives a logout, and a key held while account A was signed in must
+        // not be applied to account B's contact for the same peer.
+        this._unsolicitedPublicKeys.delete(_k);
+        this._unsolicitedPublicKeys.set(_k, {key, account: this.state.accountId});
+        while (this._unsolicitedPublicKeys.size > _MAX) {
+            const _oldest = this._unsolicitedPublicKeys.keys().next().value;
+            this._unsolicitedPublicKeys.delete(_oldest);
+        }
+        console.log('[pgp] [message] held unsolicited public key for non-contact', uri,
+            '— not creating a contact (held', this._unsolicitedPublicKeys.size + ')');
+    }
+
+    // Apply a held key now that a real contact for `uri` exists. Called from
+    // lookupPublicKey, which fires when the user opens a chat with the peer or
+    // sends to them — the first moment the relationship is the user's doing.
+    _drainUnsolicitedPublicKey(uri) {
+        if (!uri || !this._unsolicitedPublicKeys) return;
+        const _k = this._pubKeyStashKey(uri);
+        const _held = this._unsolicitedPublicKeys.get(_k);
+        if (!_held || !_held.key) return;
+        // Held under a different identity (logout / account switch since the
+        // push). Drop it — judging and storing another account's inbound key
+        // here is exactly what savePublicKey's own accountId guard exists to
+        // prevent.
+        if (_held.account !== this.state.accountId) {
+            this._unsolicitedPublicKeys.delete(_k);
+            return;
+        }
+        // Consume ONLY once the key is certain to land. Every reason
+        // savePublicKey could bail must be excluded first, because the peer
+        // won't push again this session (sentPublicKeyUris dedups on their
+        // side) and a consumed-but-dropped key is gone for good:
+        //   • no active accountId — savePublicKey early-returns;
+        //   • no contact — the stash would just be refilled, and this method
+        //     also runs for speculative address-book browsing where no Sylk
+        //     contact was ever created.
+        if (!this.state.accountId) return;
+        if (this.lookupContacts(uri).length === 0) return;
+        this._unsolicitedPublicKeys.delete(_k);
+        console.log('[pgp] [message] applying held public key for', uri, '— contact now exists');
+        this.savePublicKey(uri, _held.key);
+    }
+
+    // opts.unsolicited — the key arrived as a text/pgp-public-key message
+    //   PUSHED by the peer (websocket arrival / journal replay), as opposed to
+    //   the server answering a lookup we ourselves asked for. When there is no
+    //   contact for the sender, such a key is held (see
+    //   _stashUnsolicitedPublicKey) instead of auto-creating one.
+    async savePublicKey(uri, key, opts = {}) {
         console.log('[pgp] [message] savePublicKey enter uri=', uri,
             'keyLen=', key ? key.length : 0,
             'rejectNonContacts=', !!this.state.accountSetting.privacy.rejectNonContacts);
@@ -23435,6 +26213,14 @@ class Sylk extends Component {
         }
 
 		let contacts = this.lookupContacts(uri);
+		// Unsolicited push from someone we have no contact for: hold the key,
+		// create nothing. Checked BEFORE the speculative bookkeeping below so
+		// an unrelated pending speculative flag isn't consumed by a stranger's
+		// push.
+		if (contacts.length === 0 && opts.unsolicited) {
+			this._stashUnsolicitedPublicKey(uri, key);
+			return;
+		}
 		// Receiving someone's PGP public key is itself a strong "we're
 		// about to talk" signal — strong enough that the contact book
 		// should learn about them now. Without this, the cross-domain
@@ -23529,7 +26315,9 @@ class Sylk extends Component {
 		}
     }
 
-    async savePublicKeySync(uri, key) {
+    // opts.unsolicited — see savePublicKey. The journal-replay arrival of a
+    //   peer-pushed key is unsolicited in exactly the same way.
+    async savePublicKeySync(uri, key, opts = {}) {
         console.log('[pgp] [message] savePublicKeySync enter uri=', uri,
             'keyLen=', key ? key.length : 0);
         if (!key) {
@@ -23550,6 +26338,12 @@ class Sylk extends Component {
         }
 
 		let contacts = this.lookupContacts(uri);
+		// Unsolicited push with no contact: hold it, create nothing. Same rule
+		// as savePublicKey — see _stashUnsolicitedPublicKey.
+		if (contacts.length === 0 && opts.unsolicited) {
+			this._stashUnsolicitedPublicKey(uri, key);
+			return;
+		}
 		// Same autocreate as savePublicKey — the journal-replay path
 		// catches keys that were queued server-side while we were
 		// offline, and those equally need a contact record to land on.
@@ -23594,28 +26388,101 @@ class Sylk extends Component {
         this.saveConferenceMessage(this.state.currentCall.remoteIdentity.uri, message);
     }
 
-    _sendMessage(uri, text, id, contentType, timestamp, skipJournal=false, skipDisposition=false) {
-        // Send outgoing messages
+    // `metadata` is opaque, application-defined data shipped ALONGSIDE the
+    // content (server-side: the message journal's `metadata` column, relayed
+    // to the peer in the CPIM envelope). It is NOT encrypted, so only ever
+    // pass the cleartext part of a payload. An object is serialized by
+    // sylkrtc; a string is passed through; null/undefined omits the field.
+    _sendMessage(uri, text, id, contentType, timestamp, skipJournal=false, skipDisposition=false, metadata=null) {
+        // Surface the location-sharing action so a meet stream is legible in the
+        // log (meeting_request vs meeting_update vs meeting_end vs meeting_reject).
+        //
+        // Parsed BEFORE the canSend() gate: the action is what makes the
+        // "did not send" line below useful, and the version stamp then applies
+        // to the same bytes whichever way we exit.
+        let _act = '';
+        let _locAction = null;
+        let _locMeta = null;
+        if (contentType === 'application/sylk-location-sharing' && typeof text === 'string') {
+            // PROTOCOL 2.0 SPLIT — the single point where a location payload
+            // becomes wire bytes.
+            //
+            // Everything upstream (both envelope builders in
+            // _sendLocationSharing, every resend, every signal) still hands us
+            // ONE whole envelope: {action, value, sessionId, expires, perm, …}.
+            // Here it is split in two, per app/locationEnvelope.js:
+            //
+            //   content  ← the PGP blob ALONE (empty for a coordinate-free
+            //              signal, which has no coordinates to carry)
+            //   metadata ← everything else, stamped version 2.0
+            //
+            // The lifecycle fields are then readable by the server (which uses
+            // them to decide whether a tick warrants a push, and rebuilds the
+            // old single-JSON body for the push payload so the native banner
+            // builders need no change) and by the receiving client, without
+            // anyone parsing — let alone decrypting — the body.
+            //
+            // `value` is moved, never copied: metadata is explicitly NOT
+            // encrypted, and sylkrtc's own API notes say it "travels beside the
+            // content… do not put anything in it that has to stay encrypted".
+            // Copying the blob there would also double the wire size of a tick.
+            //
+            // A payload that is not a JSON envelope is left exactly as it came
+            // in, so nothing can be mangled on its way out.
+            const _wire = splitLocationEnvelope(text);
+            if (_wire) {
+                _locAction = _wire.metadata.action || null;
+                if (_locAction) {
+                    _act = 'action=' + _locAction;
+                }
+                text = _wire.content;
+                _locMeta = _wire.metadata;
+            }
+        }
+
+        // Send outgoing messages.
+        //
+        // This gate used to return silently, which is why a 47-minute share
+        // could log 48 healthy-looking "[location] tick" lines while exactly
+        // one message reached the server: the tick line is emitted before the
+        // send, and the send then evaporated here without a trace. Both exits
+        // now leave a line keyed by msg_id, so one grep follows a tick across
+        // A1 / A2 / B logs.
         if (!this.canSend()) {
+            if (contentType === 'application/sylk-location-sharing') {
+                const _why = !this.state.account ? 'no account'
+                    : !this.state.connection ? 'no connection'
+                    : this.signOut ? 'signed out'
+                    : 'socket=' + ((this.state.connection && this.state.connection.state) || 'none');
+                utils.timestampedLog('[location] NOT SENT ' + (_locAction || 'unknown')
+                    + ' id=' + id + ' → ' + uri + ' — ' + _why
+                    + '; row pending=1, sweep will retry');
+            }
+            // Refused only because the handshake had not finished? Arm a
+            // one-shot flush on 'ready' rather than waiting for the next sweep.
+            const _connState = this.state.connection && this.state.connection.state;
+            if (_connState === 'connecting' || _connState === 'connected') {
+                this._flushPendingWhenReady(_connState);
+            }
             return;
         }
 
-        // Surface the location-sharing action so a meet stream is legible in the
-        // log (meeting_request vs meeting_update vs meeting_end vs meeting_reject).
-        let _act = '';
-        if (contentType === 'application/sylk-location-sharing' && typeof text === 'string') {
-            try {
-                const _o = JSON.parse(text);
-                if (_o && _o.action) _act = 'action=' + _o.action;
-                // Stamp a protocol version on EVERY location payload — all
-                // application/sylk-location-sharing messages funnel through here
-                // (value-bearing ticks AND coordinate-free signals), so this is
-                // the single point that covers them. Idempotent.
-                if (_o && _o.version === undefined) {
-                    _o.version = '1.0';
-                    text = JSON.stringify(_o);
-                }
-            } catch (e) {}
+        if (contentType === 'application/sylk-location-sharing') {
+            // Positive confirmation that this payload was handed to the
+            // transport. A "[location] tick" line with no matching wire line
+            // means the tick never left the device.
+            utils.timestampedLog('[location] wire → ' + uri + ' ' + (_locAction || 'unknown')
+                + ' id=' + id
+                + ' v=' + LOCATION_PAYLOAD_VERSION
+                + ' coords=' + (text ? text.length + 'B' : 'none')
+                + ' journal=' + (skipJournal ? 'skip' : 'yes')
+                + ' disposition=' + (skipDisposition ? 'skip' : 'request')
+                + ' socket=ready'
+                // Which envelope fields ride in the (cleartext) metadata slot.
+                // Names only, never values: this is the one part of a location
+                // message that is NOT encrypted, so the log should make it easy
+                // to spot if something sensitive ever ends up in it.
+                + ' meta=[' + (_locMeta ? Object.keys(_locMeta).join(',') : '') + ']');
         }
         console.log('Send', contentType, _act, 'message', id, 'to', uri,
             'disposition=' + (skipDisposition ? 'skip' : 'request'),
@@ -23623,6 +26490,14 @@ class Sylk extends Component {
         const _sendOpts = {id: id, timestamp: timestamp};
         if (skipJournal) _sendOpts.skipJournal = true;
         if (skipDisposition) _sendOpts.skipDisposition = true;
+        if (metadata !== null && metadata !== undefined) {
+            _sendOpts.metadata = metadata;
+        } else if (_locMeta) {
+            // Location messages carry their cleartext envelope in `metadata`
+            // too (see above). An explicit caller-supplied metadata always
+            // wins — this only fills the slot when nobody set it.
+            _sendOpts.metadata = _locMeta;
+        }
         let message = this.state.account.sendMessage(uri, text, contentType, _sendOpts, (error) => {
             if (error) {
                 console.log('Message', id, 'sending error:', error);
@@ -23649,7 +26524,18 @@ class Sylk extends Component {
     // fields go into metadata / related_action / related_msg_id via
     // saveOutgoingMessage, so tagging/filtering never needs decryption.
     // message.metadata.value holds the plaintext coords.
-    async _sendLocationSharing(uri, message) {
+    // opts.wireOnly — build and transmit the wire envelope, but do NOT render
+    // locally and do NOT store. Used by the pending sweep when re-sending a
+    // location row after an outage: the SQL row and the on-screen bubble were
+    // both created by the original attempt, so only the transmission needs
+    // repeating.
+    //
+    // The sweep routes location rows back through THIS function rather than
+    // building the envelope itself, because the envelope rules live here and a
+    // second copy would drift — this is where skipJournal for meeting_update is
+    // decided, and journaling a meet tick is a privacy regression.
+    async _sendLocationSharing(uri, message, opts = {}) {
+        const _wireOnly = opts && opts.wireOnly === true;
         const _meta0 = message.metadata || {};
         // Stop signal: a plain live share ended. It carries NO coordinates
         // (nothing to encrypt), just the cleartext lifecycle fields, so the peer
@@ -23678,19 +26564,78 @@ class Sylk extends Component {
             // sessionId ties the signal to its map — the same grouping key the
             // ticks use. messageId is kept alongside it for the meet handlers
             // that still read it (updateMetadataFromRemote / meeting_end wipe).
-            const _sigSid = _meta0.sessionId || _meta0.messageId || _meta0.meeting_session_id;
+            // A lifecycle END signal (location_stop / meeting_end) MUST carry a
+            // session id. It is the only key that ties "this share is over" back
+            // to its track — on the peer, on our own sibling devices, and in the
+            // journal. Fall back to this message's own id rather than shipping a
+            // stop with no sessionId at all: a stop nobody can attribute leaves
+            // the map pinned "live" forever.
+            const _isEndSignal = (_meta0.action === 'location_stop' || _meta0.action === 'meeting_end');
+            const _sigSid = _meta0.sessionId || _meta0.messageId || _meta0.meeting_session_id
+                || (_isEndSignal ? mId : null);
             if (_sigSid) fields.sessionId = _sigSid;
+            if (_isEndSignal && !fields.sessionId) {
+                utils.timestampedLog('[location] WARNING: ' + _meta0.action + ' ' + mId
+                    + ' has no sessionId — receiver cannot attribute it to a track');
+            }
             fields.messageId = _meta0.messageId || mId;
+            // location_stop is identified by sessionId ALONE — that is the
+            // mandatory field, and the only one that ties "this share is over"
+            // back to its track. `messageId` on a stop never carried anything
+            // else: both slots held the same origin id, e.g.
+            //
+            //   {action: location_stop, reason: returned,
+            //    sessionId: 6aceb67c-…, messageId: 6aceb67c-…}
+            //
+            // Drop it. The stop's OWN id is already on the SIP envelope
+            // (message.id), so nothing is lost. Guarded on sessionId being
+            // present so a stop can never go out with neither — E1 above
+            // guarantees that, and this is the belt to its braces.
+            //
+            // Readers below take `sessionId || messageId`, so a 2.0 peer still
+            // running the old sender (which sends both) keeps working.
+            if (_meta0.action === 'location_stop' && fields.sessionId) {
+                delete fields.messageId;
+            }
             // Cleartext sending-device id on every coord-free location/meet
             // signal (meeting_request/accept/end/reject, location_request/stop)
             // so the acting device is always identifiable on the wire.
             if (this.deviceId) fields.deviceId = this.deviceId;
+            const _sigWire = JSON.stringify(fields);
+            // location_stop / meeting_end are outgoing messages like any other
+            // and get a SQL row, so the pending sweep can re-send them after an
+            // outage. Without a row a stop sent while the socket was down was
+            // lost for good and the peer's map stayed "live" until the app was
+            // next opened.
+            //
+            // encrypted=0 and content = the wire verbatim: a coord-free signal
+            // has nothing to encrypt, so unlike a coord tick (whose row holds
+            // plaintext coords while the wire is an envelope around a PGP blob)
+            // this row's `content` IS exactly what goes out. That makes the
+            // resend a straight re-transmit — no envelope to rebuild.
+            //
+            // Stored BEFORE _endLocationTrack and awaited: that function
+            // inserts its own "track ended" marker row under the SAME msg_id,
+            // and whichever INSERT lands first wins (the loser hits
+            // UNIQUE(account, msg_id) and its catch swallows the error). Ours
+            // has to be the winner — the marker row carries content='' and
+            // pending=0 and could never be re-sent.
+            if (_meta0.action === 'location_stop' || _meta0.action === 'meeting_end') {
+                message.text = _sigWire;
+                message.metadata = fields;
+                message.contentType = 'application/sylk-location-sharing';
+                try {
+                    await this.saveOutgoingMessage(uri, message, 0, 'application/sylk-location-sharing');
+                } catch (e) {
+                    console.log('[location] signal row store failed', _meta0.action, e && e.message ? e.message : e);
+                }
+            }
             // Our OWN track ended — mark it so our outgoing bubble shows
             // "Track ended" and any straggler self-echo ticks are dropped.
             if (_meta0.action === 'location_stop') {
                 try { this._endLocationTrack(uri, _sigSid || fields.messageId, _meta0.reason, mId, message.createdAt, 'outgoing'); } catch (e) {}
             }
-            this._sendMessage(uri, JSON.stringify(fields), mId, 'application/sylk-location-sharing', message.createdAt);
+            this._sendMessage(uri, _sigWire, mId, 'application/sylk-location-sharing', message.createdAt);
             return;
         }
         const contact = this.lookupContact(uri);
@@ -23709,6 +26654,21 @@ class Sylk extends Component {
             // session starts, so reaching here means it went away mid-session —
             // don't ship this tick, and END the session (via the manager) rather
             // than letting the timer spin failing ticks that can never encrypt.
+            //
+            // NEVER on a resend. This branch also fires when lookupContact()
+            // simply hasn't hydrated yet, and the sweep runs from 'registered',
+            // which on a cold start can beat the contact index. Left unguarded
+            // a replay would push one "no encryption key" bubble per replayed
+            // tick AND call stopLocationSharing with a STALE session id, which
+            // on a miss falls back to whatever share is live for that peer and
+            // tears it down. A resend either transmits or it doesn't; it must
+            // never mutate session state. Leaving the row pending=1 means the
+            // next sweep retries it.
+            if (_wireOnly) {
+                utils.timestampedLog('[location] resend deferred for ' + message._id
+                    + ' → ' + uri + ' — no encryption key available yet; row stays pending');
+                return;
+            }
             this.renderSystemMessage(uri, 'Cannot share location: no encryption key for this contact', 'outgoing');
             try {
                 const _m = message.metadata || {};
@@ -23744,7 +26704,14 @@ class Sylk extends Component {
         try {
             valueBlob = await OpenPGP.encrypt(_payloadStr, public_keys);
         } catch (error) {
-            this.renderSystemMessage(uri, 'Cannot encrypt location', 'outgoing');
+            // A resend must not add chat noise — the original attempt already
+            // told the user whatever there was to tell.
+            if (_wireOnly) {
+                utils.timestampedLog('[location] resend encrypt failed for ' + message._id
+                    + ' → ' + uri + '; row stays pending');
+            } else {
+                this.renderSystemMessage(uri, 'Cannot encrypt location', 'outgoing');
+            }
             return;
         }
         // Cleartext lifecycle fields = the whole tick MINUS the geo (value +
@@ -23801,6 +26768,23 @@ class Sylk extends Component {
             if (fields.privacyDeferredRadiusMeters != null) wire.privacyDeferredRadiusMeters = fields.privacyDeferredRadiusMeters;
             if (fields.dummy) wire.dummy = true;
         }
+        // Sender's system location-permission state, captured at session start
+        // by the location engine ('always' | 'whenInUse' | 'foregroundOnly' |
+        // 'blocked' | 'undetermined' | 'unavailable'). Cleartext, and ORIGIN
+        // ticks ONLY — location_start, location_once, meeting_start and the
+        // value-bearing meeting_request (the inviter's meet origin). Update
+        // ticks never carry it. Receivers read it straight off the wire (the
+        // incoming path copies every non-`value` field into `fields`) and it
+        // persists via _locationStoredMetadata.
+        if (fields.perm
+                && (_wireAction === 'location_start'
+                    || _wireAction === 'location_once'
+                    || _wireAction === 'meeting_start'
+                    || _wireAction === 'meeting_request')) {
+            wire.perm = fields.perm;
+            utils.timestampedLog('[location] outgoing', _wireAction, 'to', uri,
+                'session=', fields.messageId, 'os permission=' + fields.perm);
+        }
         // requestId correlates a one-shot ANSWER to the location_request it
         // replies to (rides even on a one-shot, which omits sessionId).
         if (fields.requestId) wire.requestId = fields.requestId;
@@ -23817,9 +26801,15 @@ class Sylk extends Component {
         // Immediate local render. Reconstruct the plaintext content (cleartext
         // fields + decrypted geo) so it matches the shape the old
         // sylk-message-metadata path produced — meet-me logic included.
+        //
+        // Skipped on a resend: the bubble is already on screen from the
+        // original attempt, and re-running handleLocationPayload for a whole
+        // replayed trail would fire one setState per tick.
         const _localContent = Object.assign({}, fields, { value: coords, action: 'location' });
         if (_destCoords) _localContent.destination = _destCoords;
-        if (fields.one_shot) {
+        if (_wireOnly) {
+            // no local render — fall through to the wire send
+        } else if (fields.one_shot) {
             // Static one-shot: a single map bubble, no trail / update-in-place.
             try { this._injectLocationBubble(uri, Object.assign({}, _localContent, { author: this.state.accountId }), fields.messageId); } catch (e) {}
         } else {
@@ -23848,7 +26838,9 @@ class Sylk extends Component {
         // trail row. This keeps exactly one row per leg, so the reload has a
         // single deterministic entry — no trail, no "pick best of many ticks",
         // no role-dedup. Plain-live shares still append trail rows (playback).
-        if (_isMeetTick && _isUpdateTick) {
+        if (_wireOnly) {
+            // Resend of a row that is already in SQL — nothing to store.
+        } else if (_isMeetTick && _isUpdateTick) {
             const _sid = fields.messageId;   // session id
             // TWO-ROW MEET MODEL (outgoing) — last-known only, no trail. Our own
             // meeting_update row is SEPARATE from our meeting_start (origin) row
@@ -23892,7 +26884,9 @@ class Sylk extends Component {
         // 'displayed' receipt for *_update rows (confirmRead) — the effective
         // enforcement if the server relays the request regardless.
         const _skipDisposition = (_wireAction === 'location_update' || _wireAction === 'meeting_update');
-        // Ship the envelope on the wire.
+        // Hand the whole envelope to _sendMessage, which splits it into the
+        // protocol 2.0 wire pair — blob in the content, lifecycle fields in
+        // the metadata. Builders here never need to know the version.
         this._sendMessage(uri, JSON.stringify(wire), mId, 'application/sylk-location-sharing', message.createdAt, _skipJournal, _skipDisposition);
     }
 
@@ -24164,15 +27158,59 @@ class Sylk extends Component {
 
         if (this.state.connection.state !== 'ready') {
             //console.log('Wait for wss connection ready...');
-            return;
+            return false;
         }
 
         if (this.signOut) {
             console.log('Wait because we signed out');
-            return;
+            return false;
         }
 
         return true;
+    }
+
+    // One-shot "flush the pending queue the moment the socket reaches ready".
+    //
+    // canSend() gates on state === 'ready', but 'connecting' and 'connected'
+    // are MID-HANDSHAKE, not down — the transport is seconds, often
+    // milliseconds, from usable. A send refused in that window used to be left
+    // entirely to the next pending sweep. A 2026-08-24 field trace lost a
+    // location_stop exactly this way:
+    //
+    //   11:20:10 NOT SENT location_stop 063ea303 — socket=connected
+    //   11:20:10 [wss] 1 state changed: connected -> ready
+    //
+    // Idempotent: a burst of refused sends arms exactly one listener, and the
+    // listener disarms itself on ready (flushing) or on a terminal state (so
+    // the next refusal can arm a fresh one).
+    _flushPendingWhenReady(fromState) {
+        try {
+            const conn = this.state.connection;
+            if (!conn || typeof conn.on !== 'function') return;
+            if (this._pendingReadyFlushArmed) return;
+            this._pendingReadyFlushArmed = true;
+            const _onState = (oldState, newState) => {
+                if (newState !== 'ready') {
+                    if (newState === 'disconnected' || newState === 'closed') {
+                        try { conn.removeListener('stateChanged', _onState); } catch (e) {}
+                        this._pendingReadyFlushArmed = false;
+                    }
+                    return;
+                }
+                try { conn.removeListener('stateChanged', _onState); } catch (e) {}
+                this._pendingReadyFlushArmed = false;
+                utils.timestampedLog('[message] ready-flush: socket reached ready after a send was'
+                    + ' refused in ' + fromState + ' — flushing pending queue now');
+                try { this.sendPendingMessages(); } catch (e) {
+                    console.log('[message] ready-flush sendPendingMessages failed',
+                        e && e.message ? e.message : e);
+                }
+            };
+            conn.on('stateChanged', _onState);
+        } catch (e) {
+            this._pendingReadyFlushArmed = false;
+            console.log('[message] _flushPendingWhenReady failed', e && e.message ? e.message : e);
+        }
     }
 
 		async resizeBeforeUpload(localUrl, size=2400) {
@@ -25296,7 +28334,7 @@ class Sylk extends Component {
 
     // AppStore GPS Review — persists outgoing GPS/location records to SQL.
     // Stamps the `expire` column so purgeExpiredMessages() can enforce the
-    // retention policy ("destroyed after meetup" for meeting shares, 7 days
+    // retention policy ("destroyed after meetup" for meeting shares, 30 days
     // for fixed-duration shares and location announcements).
     async saveOutgoingMessage(uri, message, encrypted=0, content_type="text/plain") {
 		//console.log('saveOutgoingMessage', message._id, content_type);
@@ -25314,16 +28352,26 @@ class Sylk extends Component {
 			let related_msg_id = null;
 			let related_action = null;
 
+			// Defensive: a caller may hand us a message whose metadata never got
+			// attached — e.g. a sylkrtc Message instance, whose `metadata` is a
+			// getter-only accessor that silently swallows assignment. Reading
+			// `.messageId` straight off null used to throw here, which dropped the
+			// whole row on the floor; degrade to a metadata-less row instead.
+			const _meta = message.metadata || {};
 			if (content_type == 'application/sylk-message-metadata') {
-				related_msg_id = message.metadata.messageId;
-				related_action = message.metadata.action;
+				related_msg_id = _meta.messageId;
+				related_action = _meta.action;
 			}
 			if (content_type === 'application/sylk-location-sharing') {
 				// related_action = the row's purpose (location / location_once /
 				// meeting_request / meeting_accept / location_update); related_msg_id
 				// = the session origin id so the reload query groups the trail.
 				related_action = this._locationEngine._locationRelatedAction(message.metadata);
-				related_msg_id = message.metadata.messageId;
+				related_msg_id = _meta.messageId;
+				if (!message.metadata) {
+					console.log('[location] saveOutgoingMessage: tick has no metadata object,'
+						+ ' storing without session grouping', message._id, 'to', uri);
+				}
 			}
 
 			let ts =  message.createdAt;
@@ -25347,7 +28395,6 @@ class Sylk extends Component {
 			//     (locationAnnouncement:true) follows the same rule so the
 			//     explanatory preamble disappears alongside the coords.
 			let expire = 0;
-			const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
 			const nowSecForExpire = Math.floor(Date.now() / 1000);
 			const isLocationAnnouncement = message.metadata
 				&& message.metadata.locationAnnouncement === true;
@@ -25355,10 +28402,10 @@ class Sylk extends Component {
 				// Announcement only ever goes out for non-meetup shares
 				// (NavigationBar.startLocationSharing gates it on
 				// kind !== 'meetingRequest' / 'meetingAccept'), so it
-				// always uses the 7-day retention window.
-				expire = nowSecForExpire + SEVEN_DAYS_SEC;
+				// always uses the 30-day retention window.
+				expire = nowSecForExpire + LOCATION_RETENTION_SEC;
 			} else if (content_type === 'application/sylk-location-sharing') {
-				expire = nowSecForExpire + SEVEN_DAYS_SEC;
+				expire = nowSecForExpire + LOCATION_RETENTION_SEC;
 			}
 
 			const _cat = this._classifyMessageCategory(content_type, message.metadata, related_action, message.text);
@@ -25372,13 +28419,27 @@ class Sylk extends Component {
 			// that's the CIPHERTEXT, not the plaintext. We can't
 			// reliably probe for URLs, so leave has_link NULL and
 			// let the lazy decrypt-time update path fill it in.
-			// Location shares are delivered out-of-band via _sendMessage, never via
-			// the pending-resend queue, and their pending flag is never cleared
-			// (no delivery-state callback). Store them pending=0 so they don't
-			// accumulate as a phantom retry backlog that sendPendingMessages would
-			// re-upload — the root of the multi-device location send storm. Every
-			// other content type keeps the pending=1 send-retry semantics.
-			const _pendingFlag = content_type === 'application/sylk-location-sharing' ? "0" : "1";
+			// pending=1 means "we still owe the server this message" — the
+			// sendPendingMessages sweep re-sends it on the next registration,
+			// and the server's `accepted` clears the flag. Location rows follow
+			// the same rule as text now.
+			//
+			// The ONE exception is a CARBON: a message that arrived through
+			// outgoingMessage(), i.e. the server replicating to us something
+			// ANOTHER device on this account already sent. The originating
+			// device does not get its own message back — only its siblings do —
+			// so on a sibling this row is a local copy of something already
+			// delivered. It was never ours to send.
+			//
+			// That distinction is the whole storm. Stored pending=1, a carbon
+			// is indistinguishable from a row we failed to send: the sweep
+			// filters on `pending = 1 AND from_uri = <account>`, and both rows
+			// carry direction='outgoing' and from_uri=<account>. The sibling
+			// would re-upload its sibling's tick, the server would replicate
+			// that to every other device, each would store it pending=1, and so
+			// on across the fleet.
+			const _isCarbon = message && message._carbon === true;
+			const _pendingFlag = _isCarbon ? "0" : "1";
 			let params = [this.state.accountId, message._id, JSON.stringify(ts), unix_timestamp, message.text, content_type, JSON.stringify(_metaForStore), this.state.accountId, uri, "outgoing", _pendingFlag, encrypted, related_msg_id, related_action, expire, _cat, null];
 			this._normalizeInsertUris(params, 7, 8);
 			await this.ExecuteQuery("INSERT INTO messages (account, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, encrypted, related_msg_id, related_action, expire, category, has_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
@@ -25604,8 +28665,13 @@ class Sylk extends Component {
     // user-facing "stop & erase" control for an ongoing GPS share: this
     // method also tears down the in-memory share timer so no further GPS
     // ticks are written back to disk after the row is gone.
-    async deleteMessage(id, uri, remote=true, after=false) {
-        utils.timestampedLog('[message] deleteMessage', id, 'remote', remote, 'to', uri);
+    // `reason` is free-text provenance for the location delete audit. Every
+    // call site that represents a real user decision MUST pass one — see
+    // deleteMetadataForMessage. Automatic/housekeeping callers deliberately
+    // pass nothing, so they show up in the log as unattributed.
+    async deleteMessage(id, uri, remote=true, after=false, reason=null) {
+        utils.timestampedLog('[message] deleteMessage', id, 'remote', remote, 'to', uri,
+            reason ? ('reason=' + reason) : '');
         let query;
 
         if (!id) {
@@ -25630,7 +28696,7 @@ class Sylk extends Component {
 				// Only stop the active share when the deleted bubble IS
 				// the active session's origin. Plain-share trail rows
 				// keep older bubbles around long after their session
-				// ended (origins live for the 7-day expire window) —
+				// ended (origins live for the 30-day expire window) —
 				// deleting one of those should NOT tear down whichever
 				// share happens to be currently sharing to the same
 				// uri. Compare against outgoingLocationSessions[uri].originLocationId
@@ -25756,7 +28822,7 @@ class Sylk extends Component {
         for (let j = 0; j < message_ids.length; j++) {
             var _id = message_ids[j];
             this.deleteFilesForMessage(_id, uri);
-            this.deleteMetadataForMessage(_id);
+            this.deleteMetadataForMessage(_id, reason);
 			this.deleteRenderMessage(_id, uri);
 
             // TODO delete replyIds as well
@@ -25808,9 +28874,55 @@ class Sylk extends Component {
 		}
     }
 
-    async deleteMetadataForMessage(id) {
-		// (delete-cascade pre-scan diagnostic removed — the cascade is verified
-		// working; the extra SELECT + log per session-delete were noise.)
+    async deleteMetadataForMessage(id, auditReason) {
+		// LOCATION DELETE AUDIT — the tripwire.
+		//
+		// The statement below is the single point at which a location track is
+		// destroyed: it takes the bubble's own row AND every tick sharing it.
+		// Until 2026-08-24 that could happen with no trace beyond an id, which
+		// is why an automatic purge could wipe a whole session and leave
+		// nothing in the exported log to explain it.
+		//
+		// So: before the delete runs, ask which LOCATION rows it is about to
+		// take, and say so. Only location rows are reported — an ordinary
+		// text-message delete stays silent, which keeps this cheap and keeps
+		// the signal readable.
+		//
+		// `auditReason` is the load-bearing part. Every deliberate, user-driven
+		// call site passes one. A delete that arrives WITHOUT a reason is by
+		// definition not attributable to a user action, and is flagged. Grep an
+		// exported log for "NO REASON GIVEN" — if that line never appears, no
+		// location data was deleted by mistake. tools/check-location-deletes.py
+		// does this and more.
+		try {
+			const _pre = await this.ExecuteQuery(
+				"SELECT msg_id, content_type, related_action FROM messages"
+				+ " WHERE account = ? AND (msg_id = ? OR related_msg_id = ?)"
+				+ " AND (content_type = 'application/sylk-location-sharing'"
+				+ "      OR related_action LIKE 'location%'"
+				+ "      OR related_action LIKE 'meeting%')",
+				[this.state.accountId, id, id]);
+			const _n = (_pre && _pre.rows && _pre.rows.length) || 0;
+			if (_n > 0) {
+				const _tally = {};
+				for (let i = 0; i < _n; i++) {
+					const _r = _pre.rows.item(i);
+					const _k = (_r && _r.related_action) || (_r && _r.content_type) || '?';
+					_tally[_k] = (_tally[_k] || 0) + 1;
+				}
+				const _rows = Object.keys(_tally).map((k) => k + '=' + _tally[k]).join(',');
+				utils.timestampedLog('[location] [audit] DELETING ' + _n + ' location row(s)'
+					+ ' id=' + id
+					+ ' reason=' + (auditReason || 'UNSPECIFIED')
+					+ ' rows=[' + _rows + ']'
+					+ (auditReason
+						? ''
+						: '  *** NO REASON GIVEN — this delete is not attributable to a user action ***'));
+			}
+		} catch (e) {
+			// The audit must never block or fail a delete.
+			console.log('[location] [audit] pre-scan failed', e && e.message ? e.message : e);
+		}
 
 		// (1) Origin + trail in ONE statement: the bubble's own row (msg_id)
 		//     AND every tick sharing it (related_msg_id = origin) — i.e. all
@@ -26037,7 +29149,121 @@ class Sylk extends Component {
         }
     }
 
+    // Re-send one pending location row.
+    //
+    // Two shapes, because the two kinds of location row relate to the wire
+    // differently:
+    //
+    //   • location_stop / meeting_end — coord-free signals. Nothing is
+    //     encrypted, so the row's `content` IS the wire. Retransmit verbatim;
+    //     there is no envelope to rebuild and no chance of rebuilding it wrong.
+    //
+    //   • coord ticks — `content` is the plaintext coords; the wire is
+    //     {action, sessionId, deviceId, expires, …, value: PGP(coords)}.
+    //     Rebuild the INPUT to _sendLocationSharing and let that function build
+    //     the envelope, rather than writing a second builder here that would
+    //     drift from it.
+    async _resendLocationRow(item, timestamp) {
+        try {
+            // Parse the row's payload ONCE, up front, and let it decide which
+            // kind of row this is.
+            //
+            // The signal test used to key off `related_action` alone. That is a
+            // DERIVED column, and when the deriver mislabelled a stop as
+            // 'location_start' this function took the coordinate branch, found
+            // no coordinates in a stop payload, and CLEARED PENDING — silently
+            // dropping the stop, leaving the peer and every sibling device
+            // showing a live track that had already ended.
+            //
+            // The payload cannot lie about itself: for a coord-free signal the
+            // stored `content` IS the wire, `action` included. Trust it first,
+            // and keep related_action only as the fallback for a row whose
+            // content will not parse.
+            let _payload = null;
+            try { _payload = JSON.parse(item.content); } catch (e) { /* handled below */ }
+            const _payloadAction = (_payload && typeof _payload.action === 'string')
+                ? _payload.action : null;
+            const _isSignal = _payloadAction
+                ? (_payloadAction === 'location_stop' || _payloadAction === 'meeting_end')
+                : (item.related_action === 'location_stop' || item.related_action === 'meeting_end');
+
+            if (_isSignal) {
+                if (typeof item.content !== 'string' || item.content === '') {
+                    // Nothing to send (e.g. a pre-upgrade marker row stored
+                    // with content=''). Clear so it is not retried forever.
+                    await this.ExecuteQuery('UPDATE messages SET pending = 0 WHERE account = ? AND msg_id = ?',
+                        [this.state.accountId, item.msg_id]);
+                    return;
+                }
+                utils.timestampedLog('[location] resend '
+                    + (_payloadAction || item.related_action) + ' ' + item.msg_id
+                    + ' → ' + item.to_uri
+                    + ((_payloadAction && _payloadAction !== item.related_action)
+                        ? ' (row mislabelled related_action=' + item.related_action + ')'
+                        : ''));
+                this._sendMessage(item.to_uri, item.content, item.msg_id,
+                    'application/sylk-location-sharing', timestamp);
+                return;
+            }
+
+            // content is EITHER bare coords or { value, destination } (meet) —
+            // the same two shapes the chat reload unpacks.
+            let coords = null, _dest = null;
+            if (_payload && typeof _payload.latitude === 'number') {
+                coords = _payload;
+            } else if (_payload && _payload.value && typeof _payload.value.latitude === 'number') {
+                coords = _payload.value;
+                _dest = (_payload.destination && typeof _payload.destination.latitude === 'number')
+                    ? _payload.destination : null;
+            }
+
+            if (!coords || typeof coords.latitude !== 'number') {
+                await this.ExecuteQuery('UPDATE messages SET pending = 0 WHERE account = ? AND msg_id = ?',
+                    [this.state.accountId, item.msg_id]);
+                utils.timestampedLog('[location] resend skipped ' + item.msg_id
+                    + ' → ' + item.to_uri + ' — no readable coordinates; pending cleared');
+                return;
+            }
+
+            // Rebuild the lifecycle fields from the row's columns + metadata
+            // blob. _locationContentFromRow is the SAME reconstructor the chat
+            // reload uses, so a stored row has exactly one interpretation.
+            const _meta = this._locationEngine._locationContentFromRow(item, coords, _dest);
+            utils.timestampedLog('[location] resend ' + (item.related_action || 'location')
+                + ' ' + item.msg_id + ' → ' + item.to_uri);
+            await this._sendLocationSharing(item.to_uri, {
+                _id: item.msg_id,
+                createdAt: timestamp,
+                metadata: _meta,
+            }, {wireOnly: true});
+        } catch (e) {
+            utils.timestampedLog('[location] resend FAILED ' + item.msg_id
+                + ' → ' + item.to_uri + ': ' + (e && e.message ? e.message : e));
+        }
+    }
+
     async sendPendingMessages() {
+        // RE-ENTRANCY GUARD. Reached from replayJournal(), which fires on
+        // 'registered' AND at the end of every addJournal() (mark-read, delete,
+        // remove-conversation). That overlap used to be harmless because every
+        // row was dispatched synchronously inside the SELECT callback. It is
+        // not harmless now: the location drain parks rows and then awaits — up
+        // to 10 s for the contact index, plus one encrypt per row — and a row
+        // stays pending=1 until the server's `accepted` lands. A second sweep
+        // starting in that window selects the same rows and sends them again,
+        // so the peer gets a doubled trail and every sibling a doubled carbon.
+        if (this._sendPendingRunning) {
+            return;
+        }
+        this._sendPendingRunning = true;
+        try {
+            await this._sendPendingMessagesInner();
+        } finally {
+            this._sendPendingRunning = false;
+        }
+    }
+
+    async _sendPendingMessagesInner() {
         //console.log('sendPendingMessages');
 
         if (this.signOut) {
@@ -26047,43 +29273,11 @@ class Sylk extends Component {
         let content;
         let metadata;
 
-        // One-time backlog heal (per app session): older builds stored EVERY
-        // location tick — original sends AND multi-device carbons — as pending=1,
-        // so devices upgrading into this fix carry a pile of stale pending
-        // location rows. The SELECT below already excludes them from the resend,
-        // but clear their pending flag once so they can never be picked up again
-        // (e.g. by any future query change) and the DB is left clean. Cheap,
-        // idempotent, guarded to run a single time after login.
-        if (!this._clearedPendingLocationRows && this.state.accountId) {
-            this._clearedPendingLocationRows = true;
-            this.ExecuteQuery(
-                "UPDATE messages SET pending = 0 WHERE from_uri = ? AND pending = 1 AND content_type = 'application/sylk-location-sharing'",
-                [this.state.accountId]
-            ).then((res) => {
-                if (res && res.rowsAffected) {
-                    console.log('[location] cleared stale pending flag on', res.rowsAffected, 'location row(s)');
-                }
-            }).catch((e) => {
-                console.log('[location] clear stale pending location rows failed', e && e.message);
-            });
-        }
-
         //await this.ExecuteQuery("SELECT * from messages where pending = 1 and content_type like 'text/%' and from_uri = ?", [this.state.accountId]).then((results) => {
-        // EXCLUDE application/sylk-location-sharing from the pending-resend sweep.
-        // Location delivery is always out-of-band via _sendMessage at send time;
-        // the SQL row's pending=1 is spurious bookkeeping that is NEVER cleared
-        // for a location tick (no delivery-state callback lands for it, and a
-        // multi-device CARBON — stored by _renderOwnLocationCarbon — was never
-        // ours to deliver in the first place). Left in the sweep, every restart /
-        // reconnect re-uploaded every pending location row to the server, which
-        // replicated a carbon back to every sibling of the account, which re-
-        // persisted it pending=1 and re-uploaded it again: an exponential send
-        // storm (dozens of application/sylk-location-sharing writes/sec on the
-        // server). Re-sending a stale, ephemeral, time-sensitive location tick on
-        // restart is never desirable regardless of the loop, so location shares
-        // simply never belong in this retry queue. (IS NULL kept so legacy rows
-        // with a null content_type are still retried.)
-        await this.ExecuteQuery("SELECT rowid, * from messages where pending = 1 and from_uri = ? and (content_type IS NULL OR content_type != 'application/sylk-location-sharing')", [this.state.accountId]).then((results) => {
+        // Location rows are IN this sweep. A location tick is an outgoing
+        // message: it is stored pending=1 and retried like every other one.
+        const _locationRows = [];
+        await this.ExecuteQuery("SELECT rowid, * from messages where pending = 1 and from_uri = ?", [this.state.accountId]).then((results) => {
             let rows = results.rows;
             for (let i = 0; i < rows.length; i++) {
                 if (this.signOut) {
@@ -26100,8 +29294,15 @@ class Sylk extends Component {
                 }
                  
                 if (!item.to_uri) {
-                    console.log('Skip broken item without to_uri');
-					this.deleteMessage(item.msg_id, item.to_uri);
+                    // LOCAL ONLY. A row with no to_uri is unsendable, but that is
+                    // our own storage problem — it must not become a removeMessage
+                    // on the server. Location rows are IN this sweep (they are
+                    // stored pending=1), and a remote delete of one cascades by
+                    // sessionId across the whole track. Note `uri` is undefined
+                    // here anyway, so a remote delete had no valid receiver.
+                    utils.timestampedLog('[message] pending sweep: dropping row with no to_uri (local only)',
+                        item.msg_id, 'contentType=', item.content_type || '(none)');
+                    this.deleteMessage(item.msg_id, item.to_uri, false);
                     continue;
                 }
 
@@ -26118,6 +29319,23 @@ class Sylk extends Component {
 
                 let timestamp = new Date(item.unix_timestamp * 1000);
                 console.log('Pending outgoing [message]', item.msg_id, item.content_type, item.to_uri);
+
+                if (item.content_type === 'application/sylk-location-sharing') {
+                    // Location rows cannot use the generic resend below: it
+                    // does OpenPGP.encrypt(item.content) and ships the result
+                    // as the whole body, which assumes `content` is exactly
+                    // what a fresh send transmits. That holds for text and for
+                    // nothing in location.
+                    //
+                    // Collected here, dispatched after the loop, because the
+                    // rebuild needs to await (the contact index, then one
+                    // encrypt per row) and this callback is not async. Doing it
+                    // in-loop would also race the ticks against each other, and
+                    // a trail delivered out of order draws a scrambled path.
+                    _locationRows.push({item: item, timestamp: timestamp});
+                    continue;
+                }
+
                 if (item.content_type === 'application/sylk-file-transfer') {
                     try {
                         metadata = JSON.parse(item.metadata);
@@ -26159,6 +29377,34 @@ class Sylk extends Component {
         }).catch((error) => {
             console.log('sendPendingMessages SQL error:', error);
         });
+
+        // Re-send the collected location rows, oldest first, one at a time.
+        if (_locationRows.length) {
+            utils.timestampedLog('[location] resend: ' + _locationRows.length + ' pending row(s)');
+            // Wait for the contact index ONCE. Without a contact,
+            // _sendLocationSharing takes its no-key branch, and the sweep runs
+            // from 'registered', which on a cold start can beat contact
+            // hydration. Bounded: waitForContactsLoaded polls forever and never
+            // rejects, so a load that never finishes would hang this function
+            // and everything after it. If the wait times out we go anyway — the
+            // rows stay pending=1 and the next sweep retries them.
+            try {
+                await Promise.race([
+                    this.waitForContactsLoaded(),
+                    new Promise((resolve) => setTimeout(resolve, 10000)),
+                ]);
+            } catch (e) { /* rows stay pending */ }
+            for (const _r of _locationRows) {
+                if (this.signOut) break;
+                if (!this.canSend()) {
+                    utils.timestampedLog('[location] resend halted — socket='
+                        + ((this.state.connection && this.state.connection.state) || 'none')
+                        + '; remaining rows stay pending');
+                    break;
+                }
+                await this._resendLocationRow(_r.item, _r.timestamp);
+            }
+        }
 
         // IMDN catch-up: walk incoming messages we never managed to
         // confirm delivery for (received=0) and re-fire `delivered`.
@@ -27076,24 +30322,34 @@ class Sylk extends Component {
         }
     }
 
+    // "Load earlier messages". Bumps the page counter and re-runs the
+    // loader; getMessages does the real paging work (see the keyset probe
+    // there) and is also what decides whether any history is left.
+    //
+    // messageZoomFactor now counts PAGES OF BUBBLES, not pages of SQL rows:
+    // page N asks for messageLimit × N renderable messages, so every press
+    // adds a full messageLimit of visible bubbles regardless of how many
+    // reactions, edits and file-transfer metadata rows are interleaved with
+    // them.
+    //
+    // The stop test used to read contact.totalMessages, a number the loader
+    // decrements for every skipped control row — it shrank below the window
+    // size and hid the button while plenty of history was still unread.
+    // Exhaustion is now published by getMessages as state.totalMessageExceeded,
+    // derived from SQL, and we simply refuse to page past it.
     async loadEarlierMessages(filter) {
         console.log('loadEarlierMessages', filter);
         if (!this.state.selectedContact) {
             return;
         }
 
-        let limit = this.state.messageLimit * this.state.messageZoomFactor;
-
-        if (this.state.selectedContact.totalMessages < limit) {
-            this.setState({totalMessageExceeded: true});
-			console.log('No more messages for', uri);
+        if (this.state.totalMessageExceeded) {
+            console.log('No more messages for', this.state.selectedContact.uri);
             return;
         }
 
-        let messageZoomFactor = this.state.messageZoomFactor;
-        messageZoomFactor = messageZoomFactor + 1;
-        this.setState({messageZoomFactor: messageZoomFactor, 
-                       totalMessageExceeded: false});
+        const messageZoomFactor = this.state.messageZoomFactor + 1;
+        this.setState({messageZoomFactor: messageZoomFactor});
 
         setTimeout(() => {
             this.getMessages(this.state.selectedContact, {category: filter?.category, origin: 'loadEarlier'});
@@ -28443,6 +31699,17 @@ class Sylk extends Component {
         // filed under a group named "Test" (e.g. support@sylk.link) has a
         // server key and must be able to fetch/exchange it like any other.
 
+        // A contact for this peer exists (the caller passed one) and the user
+        // is engaging with them — chat opened, or a message being sent. If we
+        // are holding a key they pushed before that contact existed, this is
+        // the moment to apply it: the relationship is now the user's doing,
+        // not the sender's. Cheap no-op when nothing is held.
+        //
+        // Ahead of the connection guard on purpose: storing an already-received
+        // key is local work, so opening the chat offline should still arm E2EE
+        // for the next send.
+        this._drainUnsolicitedPublicKey(contact.uri);
+
         if (!this.state.connection) {
             return;
         }
@@ -29465,6 +32732,165 @@ class Sylk extends Component {
         let uris = this.getAllContactUris(contact);
         const placeholders = uris.map(() => '?').join(', ');
 
+        // ------------------------------------------------------------------
+        // Keyset paging anchor ("Load earlier messages").
+        //
+        // The old scheme was `LIMIT 0, messageLimit × zoom` — a window of
+        // SQL ROWS anchored at offset 0. Two things were wrong with it:
+        //
+        //   1. Rows are not bubbles. Reactions, replies, edits, delete
+        //      markers, file-transfer metadata, audio peaks, IMDN and the
+        //      other control rows all occupy a row in the slice and are
+        //      then `continue`d past in the loop below without producing
+        //      anything on screen. In a media- or reaction-heavy chat a
+        //      100-row page rendered as 20-30 bubbles, so each press of
+        //      "Load earlier" appeared to do almost nothing.
+        //
+        //   2. Exhaustion was decided from `contact.totalMessages`, which
+        //      the loop below DECREMENTS for every skipped row. The next
+        //      press compared that shrunken number against the next window
+        //      size and concluded "no more messages" while a large part of
+        //      the history had never been read.
+        //
+        // Both are fixed by paging on RENDERABLE rows instead. We ask SQL
+        // for the timestamp of the Nth-newest renderable row (N = the
+        // requested bubble count) and then slice on
+        // `unix_timestamp >= thatTimestamp` rather than on a row offset.
+        // The window therefore always contains at least N bubbles plus
+        // whatever control rows are interleaved with them, and it grows by
+        // a full N every press.
+        //
+        // Two index-covered probes:
+        //   a) the timestamp of the Nth-newest renderable row → the cutoff.
+        //      No such row means the conversation is shorter than one page,
+        //      so we drop the bound and load all of it.
+        //   b) whether any renderable row is STRICTLY OLDER than the cutoff
+        //      → whether "Load earlier messages" still has anything to give.
+        //
+        // (b) is a separate question from (a) because of ties: unix_timestamp
+        // is second-granular and `>=` deliberately pulls in every row sharing
+        // the cutoff second (better one bubble too many than a second split in
+        // half with a message lost in the gap). So a page can overshoot N —
+        // 250 messages posted inside the same second all arrive on page 1. Had
+        // we inferred "more available" from the probe returning a second row,
+        // those extra rows would have looked like unread history and the next
+        // two presses would have re-fetched the identical window and rendered
+        // nothing new. Asking SQL directly for something older is exact.
+        //
+        // `idx_messages_account_time` (account, unix_timestamp DESC) covers
+        // both, so together they cost about what the COUNT below costs.
+        //
+        // Filtered loads (category chip / pinned / calendar pill) do not
+        // paginate at all: they already fetch up to FILTERED_LIMIT rows in
+        // one round-trip, so the anchor is left null for them.
+        let messageCutoff = null;      // unix_timestamp lower bound, or null for "no bound"
+        let noMoreMessages = false;    // becomes state.totalMessageExceeded
+        let targetBubbles = 0;         // bubbles this page asked SQL for
+
+        if (has_filter) {
+            // No anchor and no exhaustion flag — a filtered load already
+            // holds its entire result set, and the flag it would publish
+            // could not be cleared again (see the commit at the end).
+            messageCutoff = null;
+        } else {
+            // Self-correcting page size. The gate below is a close but not
+            // perfect model of the row loop: a handful of rows it counts as
+            // renderable still get dropped in JS — consecutive duplicates
+            // (same body, same direction) collapse into one bubble, and
+            // sql2GiftedChat can decline a row outright. Those are not
+            // expressible in SQL, so instead of guessing we measure: the
+            // commit at the end records how far the last page fell short and
+            // we add that back here. One press of self-correction and the
+            // pages land on target.
+            //
+            // Carried on the contact object, so it is naturally per-contact
+            // and starts at zero for a chat opened fresh. Capped at one page
+            // so a pathological chat can't inflate the request without bound.
+            const _pageBase = Math.max(1, this.state.messageLimit * this.state.messageZoomFactor);
+            const _shortfall = Math.min(_pageBase, Math.max(0, contact.pagingShortfall || 0));
+            targetBubbles = _pageBase + _shortfall;
+            // Rows that actually become a bubble. Mirrors the branch chain
+            // in the row loop below:
+            //   text/plain, text/html          → text bubble
+            //   application/sylk-file-transfer → file/media bubble
+            //   image/*                        → inline image bubble
+            //   sylk-location-sharing + location_once → one-shot map bubble
+            // Everything else (sylk-message-metadata, imdn, contact-update,
+            // conversation-read/remove, message-remove, sylk-request,
+            // pgp-public-key-imported, unknown types) is consumed without
+            // rendering. Legacy one-shot location rows that carry one_shot
+            // in their metadata JSON instead of related_action are not
+            // matched here; they only cause a slight over-fetch, never a
+            // short page.
+            // Two extra exclusions beyond the content types above, both
+            // decided from indexed/narrow columns so the probe stays cheap:
+            //
+            //   encrypted = 3  → "failed to decrypt". These hit the "Broken
+            //                    message" branch in the loop and are dropped,
+            //                    so they must not consume a slot in a page.
+            //   ZRTP envelopes → rejected by isMessageAllowed(), never render.
+            //
+            // isMessageAllowed also rejects legacy plaintext "File transfer
+            // available at …" notices, but spotting those needs a LIKE over
+            // the content column on every candidate row — too expensive for a
+            // query whose whole job is to be cheaper than the fetch. They are
+            // left to the shortfall correction instead.
+            const renderableGate = `(
+                content_type IN ('text/plain', 'text/html', 'application/sylk-file-transfer')
+                OR content_type LIKE 'image/%'
+                OR (content_type = 'application/sylk-location-sharing' AND related_action = 'location_once')
+            )
+            AND (encrypted IS NULL OR encrypted != 3)
+            AND content_type != 'application/sylk-zrtp-negotiation'`;
+            const probeWhere = `FROM messages WHERE account = ? AND
+                ((from_uri = ? AND to_uri IN (${placeholders})) OR (from_uri IN (${placeholders}) AND to_uri = ?))
+                AND (deleted IS NULL OR deleted = 0)
+                AND (related_action IS NULL OR related_action NOT IN ('location_update', 'meeting_update'))
+                AND ${renderableGate}`;
+            const probeParams = [
+                this.state.accountId,
+                this.state.accountId,
+                ...uris,
+                ...uris,
+                this.state.accountId
+            ];
+            try {
+                // (a) cutoff
+                const probe = await this.ExecuteQuery(
+                    `SELECT unix_timestamp ${probeWhere} ORDER BY unix_timestamp DESC LIMIT 1 OFFSET ?`,
+                    probeParams.concat([targetBubbles - 1]));
+                if (probe.rows.length === 0) {
+                    // Fewer renderable rows than requested — the whole
+                    // conversation fits inside this page.
+                    messageCutoff = null;
+                    noMoreMessages = true;
+                } else {
+                    messageCutoff = probe.rows.item(0).unix_timestamp;
+                    // (b) is there anything older than the cutoff?
+                    const older = await this.ExecuteQuery(
+                        `SELECT 1 as more ${probeWhere} AND unix_timestamp < ? LIMIT 1`,
+                        probeParams.concat([messageCutoff]));
+                    noMoreMessages = older.rows.length === 0;
+                }
+            } catch (error) {
+                // Probe failure must never cost the user their history —
+                // fall back to the old row-count window.
+                console.log('[message] paging probe SQL error:', error);
+                messageCutoff = null;
+                noMoreMessages = false;
+            }
+            // Safety valve. With the cutoff doing the real narrowing, the
+            // row LIMIT only exists so a pathological chat (a bubble buried
+            // under thousands of metadata rows in the same second) cannot
+            // pull the entire table into memory.
+            limit = messageCutoff === null ? FILTERED_LIMIT
+                                           : Math.min(FILTERED_LIMIT, targetBubbles * 20 + 1000);
+            utils.timestampedLog('[message] paging: page', this.state.messageZoomFactor,
+                '— want', targetBubbles, 'bubbles (base', _pageBase, '+ carried shortfall', _shortfall + ')',
+                'cutoff', messageCutoff === null ? '(none — whole history)' : messageCutoff,
+                'row cap', limit, 'more available', !noMoreMessages);
+        }
+
         //utils.timestampedLog('[message] Get messages with contact', contact.id, 'from', uris.join(', '), 'with zoom factor', this.state.messageZoomFactor, 'limit', limit, 'filter', has_filter ? (category || 'pinned') : 'none');
         
         query = `
@@ -29668,6 +33094,14 @@ class Sylk extends Component {
             query = query + ' and unix_timestamp <= ?';
         }
 
+        // Keyset anchor from the paging probe above. This is what actually
+        // sizes an unfiltered page now — the row LIMIT that follows is only
+        // a safety cap. `>=` so rows sharing the cutoff second come along
+        // whole rather than being split across two pages.
+        if (messageCutoff !== null) {
+            query = query + ' and unix_timestamp >= ?';
+        }
+
         query = query + ' order by unix_timestamp desc limit ?, ?';
 		params = [
 			this.state.accountId,
@@ -29681,6 +33115,7 @@ class Sylk extends Component {
 		}
 		if (dateFrom != null) params.push(dateFrom);
 		if (dateTo   != null) params.push(dateTo);
+		if (messageCutoff !== null) params.push(messageCutoff);
 		params.push(this.state.messageStart, limit);
 
 		await this.ExecuteQuery(query, params).then(async (results) => {
@@ -30042,7 +33477,14 @@ class Sylk extends Component {
 												metaArray[existingIndex] = metadataContent;
 												updateOriginal = true;
 											} else {
-												this.deleteMessage(item.msg_id, item.to_uri);
+												// LOCAL ONLY. De-duplicating our own stale
+												// metadata rows on chat open is housekeeping,
+												// not a user deletion — it must not journal a
+												// removeMessage. The delete cascade keys on
+												// `msg_id OR related_msg_id`, so a metadata row
+												// whose id collides with a location session id
+												// would otherwise take the whole track with it.
+												this.deleteMessage(item.msg_id, item.to_uri, false);
 											}
 										}
 										// If new has no timestamp and old has -> keep old
@@ -31000,7 +34442,16 @@ class Sylk extends Component {
 					// exists (or we ended it this session). Without this, boot-replay would
 					// resurrect a stopped share from its still-recent trail (resume-after-stop).
 					if (_endedSessionsThisLoad.has(messageId)
-							|| (this._endedLocationSessions && this._endedLocationSessions.has(messageId))) continue;
+							|| (this._endedLocationSessions && this._endedLocationSessions.has(messageId))) {
+						// Logged because this is the guard that decides whether a
+						// STOPPED share comes back to life on a reload. Seeing the
+						// line means the stop row was found and the mirror was
+						// correctly left alone; NOT seeing it for a session you
+						// know has ended means the stop row is missing — pair it
+						// with the "[location] end track" lines to tell which.
+						//utils.timestampedLog('[location] [mirror] boot replay: skipping ended session ' + messageId + ' for ' + uri + ' (src=' + (_endedSessionsThisLoad.has(messageId) ? 'stop row in SQL' : 'ended this session') + ')');
+						continue;
+					}
 					let latestOwn = null;
 					let latestOwnTs = -Infinity;
 					for (const e of arr) {
@@ -31485,7 +34936,45 @@ class Sylk extends Component {
 				const _selForView = this.state.selectedContact;
 				const _selUrisForView = _selForView ? this.getAllContactUris(_selForView) : [];
 				if (_selForView && _selUrisForView.indexOf(orig_uri) !== -1) {
-					_contactMessagesUpdate = { contactMessages: this._buildContactMessages(messages[orig_uri], messagesMetadata) };
+					const _built = this._buildContactMessages(messages[orig_uri], messagesMetadata);
+					_contactMessagesUpdate = { contactMessages: _built };
+					// "Load earlier messages" visibility, decided from what SQL
+					// actually holds (the paging probe above) — NOT from
+					// contact.totalMessages, which the row loop decrements for
+					// every control row it skips and which therefore used to
+					// hide the button while history remained unread.
+					//
+					// Only unfiltered loads publish it. A filtered load
+					// (category chip / pinned / calendar pill) fetches its
+					// whole result set in one go, and nothing re-runs
+					// getMessages when the chip is cleared — so setting the
+					// flag there would leave the button hidden for the rest of
+					// the visit to that chat.
+					if (!has_filter) {
+						_contactMessagesUpdate.totalMessageExceeded = noMoreMessages;
+
+						// Feed the page-size correction (see the probe above).
+						// `delivered` is what the user actually ends up
+						// looking at — the built render list, so location
+						// bubbles and anything else synthesised after the row
+						// loop are counted the same way the loop's own output
+						// is. Whatever the SQL gate counted but JS then
+						// dropped — collapsed duplicates, rows sql2GiftedChat
+						// declined — shows up as the difference and is added
+						// to the next request. Once the history is exhausted
+						// the shortfall is meaningless (there is simply
+						// nothing more to fetch), so it is cleared rather
+						// than carried.
+						const _delivered = (_built || []).length;
+						contact.pagingShortfall = noMoreMessages
+							? 0
+							: Math.max(0, targetBubbles - _delivered);
+						if (contact.pagingShortfall > 0) {
+							utils.timestampedLog('[message] paging: delivered', _delivered,
+								'of', targetBubbles, 'bubbles — carrying',
+								contact.pagingShortfall, 'into the next page');
+						}
+					}
 				}
 			} catch (e) {
 				console.log('[contactMessages] build failed', e && e.message ? e.message : e);
@@ -31696,7 +35185,7 @@ class Sylk extends Component {
                }
 
 			   //console.log('Delete file transfer id', item.msg_id);
-			   this.deleteMessage(item.msg_id, uri, remote);
+			   this.deleteMessage(item.msg_id, uri, remote, false, 'user:delete-history');
             }
 
         }).catch((error) => {
@@ -31960,7 +35449,7 @@ class Sylk extends Component {
 
 			for (const item of purgeMessages) {
 				if (!filter.simulate) {	
-					this.deleteMessage(item, uri, remote);
+					this.deleteMessage(item, uri, remote, false, 'user:delete-history');
 				}
 			}
 
@@ -32018,6 +35507,7 @@ class Sylk extends Component {
             clearTimeout(this.registrationFailureTimer);
             this.registrationFailureTimer = null;
         }
+        this._resetRegistrationRetry('deleteAccount');
 
         // 1. Unregister from server (best-effort — ignore errors).
         if (this.state.account && this.state.connection
@@ -32110,18 +35600,25 @@ class Sylk extends Component {
         //    active log account, then unlink the file. unlink throws
         //    when the file doesn't exist (account never produced a
         //    log line) — swallow that.
+        const _safeAccount = (accountId || '').replace(/[^A-Za-z0-9._@+-]/g, '_');
         const _deletedLogPath =
-            RNFS.DocumentDirectoryPath + '/logs.' + (accountId || '').replace(/[^A-Za-z0-9._@+-]/g, '_') + '.txt';
+            RNFS.DocumentDirectoryPath + '/logs.' + _safeAccount + '.txt';
+        // The contact-deletion audit is a second per-account file with the same
+        // lifetime rules — it must not outlive the identity it describes either.
+        const _deletedAuditPath =
+            RNFS.DocumentDirectoryPath + '/logs.' + _safeAccount + '.deletions.txt';
         utils.setLogAccount(null);
-        RNFS.unlink(_deletedLogPath)
-            .then(() => {
-                console.log('[deleteAccount] purged log file', _deletedLogPath);
-            })
-            .catch((err) => {
-                // ENOENT is expected when the account never logged anything.
-                console.log('[deleteAccount] log purge skipped',
-                    _deletedLogPath, err && err.message ? err.message : err);
-            });
+        [_deletedLogPath, _deletedAuditPath].forEach((_p) => {
+            RNFS.unlink(_p)
+                .then(() => {
+                    console.log('[deleteAccount] purged log file', _p);
+                })
+                .catch((err) => {
+                    // ENOENT is expected when the account never logged anything.
+                    console.log('[deleteAccount] log purge skipped',
+                        _p, err && err.message ? err.message : err);
+                });
+        });
 
         this.changeRoute('/login', 'account deleted');
 
@@ -32315,7 +35812,10 @@ class Sylk extends Component {
 		}
 
 		try {
-			await this.deleteMessage(message.id, uri, false);
+			// A peer (or one of our own other devices) explicitly deleted this.
+			// That IS a user decision — someone else's — and we honour it. It is
+			// attributed so the audit can tell it apart from a local accident.
+			await this.deleteMessage(message.id, uri, false, false, 'peer:removeMessage');
 		} catch (error) {
 			return;
 		}
@@ -32471,7 +35971,7 @@ class Sylk extends Component {
                     // (Graveyard). _finalizeContactTombstone requires storage_purged,
                     // which _purgeContactStorage sets.
                     await this._purgeContactStorage(contact);
-                    await this._finalizeContactTombstone(contact);
+                    await this._finalizeContactTombstone(contact, 'conversation-remove');
                     utils.timestampedLog('[trash] removeConversation: purged + tombstoned '
                         + this._abNormalizeUri(contact.uri) + ' (delete confirmed)');
                 } else {
@@ -32583,7 +36083,7 @@ class Sylk extends Component {
 			this._syncContactMessagesToLegacy();
 		}
 
-        this.deleteSylkContact(contact);
+        this.deleteSylkContact(contact, {reason: 'remove-contact'});
     }
 
 	  async writeJournal(messages, journalDirectory) {
@@ -32946,11 +36446,10 @@ class Sylk extends Component {
                 let _endAdded = false;
                 for (const _m of messages) {
                     if (!_m || _m.contentType !== 'application/sylk-location-sharing') continue;
-                    let _env = null;
-                    const _c = _m.content;
-                    if (typeof _c === 'string' && _c.trim().startsWith('{')) {
-                        try { _env = JSON.parse(_c); } catch (e2) { _env = null; }
-                    } else if (_c && typeof _c === 'object') { _env = _c; }
+                    // Envelope from the metadata (2.0) or the body (1.0) —
+                    // messageLocationEnvelope covers both, so an end signal
+                    // from either kind of peer still tombstones its session.
+                    const _env = messageLocationEnvelope(_m);
                     if (!_env) continue;
                     const _act = _env.action;
                     const _isEnd = _act === 'meeting_end' || _act === 'meeting_reject'
@@ -33608,7 +37107,7 @@ class Sylk extends Component {
 					// / meeting_update / meeting_end / location_once / location_request)
 					// so a journal replay of a share is legible in the log.
 					let _lwAction = '(unparsed)';
-					try { const _lw = JSON.parse(message.content); _lwAction = (_lw && _lw.action) || '(none)'; } catch (e) {}
+					try { const _lw = messageLocationEnvelope(message); _lwAction = (_lw && _lw.action) || '(none)'; } catch (e) {}
 					console.log('Process journal', i, 'of', messages.length, message.id, direction, message.contentType, uri, 'action=', _lwAction);
 			    }
 				
@@ -33625,14 +37124,53 @@ class Sylk extends Component {
 	
 				let d = new Date(2019);
 	
-				if (messageTimestamp < d) {
-					console.log('Skip broken journal message with broken date', message.id);
+				// NOTE: `new Date(2019)` above is 2019 MILLISECONDS past the epoch
+				// (1970-01-01T00:00:02Z), not the year 2019, so this guard has never
+				// actually fired. Left as-is deliberately — "fixing" it to a real
+				// date would start purging historical rows. Location rows are exempt
+				// either way (see the empty-body guard below for why).
+				if (messageTimestamp < d && message.contentType !== 'application/sylk-location-sharing') {
+					utils.timestampedLog('[journal] purge (local only): broken date', message.id);
 					purgeMessages.push(message.id);
 					continue;
 				}
 	
-				if (!message.content) {
-					console.log('Skip broken journal message with empty body', message.id);
+				// EMPTY BODY IS NOT THE SAME AS EMPTY MESSAGE.
+				//
+				// Since PROTOCOL 2.0 a message carries its payload across TWO
+				// slots: splitLocationEnvelope() (app/locationEnvelope.js) puts
+				// the PGP blob in `content` and the rest of the envelope in
+				// cleartext `metadata`. A coordinate-free location signal —
+				// location_stop, location_request, meeting_request / accept /
+				// reject / end — has nothing to encrypt, so its content is the
+				// empty string while its entire meaning, sessionId included,
+				// rides in metadata. It is a perfectly valid message.
+				//
+				// This guard used to look at `content` alone and therefore
+				// classified every such signal as broken. That was destructive,
+				// not merely wasteful: the purge journaled a removeMessage, and
+				// SylkServer cascades a removal to every sibling carrying the
+				// same sessionId — so discarding one empty-bodied location_stop
+				// wiped the whole track (origin + every tick) from the server and
+				// from every device. That is how session a7798f4d was lost on
+				// 2026-08-24.
+				//
+				// An entry is only genuinely empty when BOTH slots are empty.
+				// Anything with either slot populated falls through to the normal
+				// handling, which reads whichever slot the version puts it in.
+				const _emptyBody = !message.content;
+				const _emptyMetadata = (() => {
+					// sylkrtc exposes `metadata` as a getter that may hand back a
+					// parsed object, a raw JSON string, or nothing at all.
+					const _m = message.metadata;
+					if (_m === null || _m === undefined) return true;
+					if (typeof _m === 'string') return _m.trim().length === 0;
+					if (typeof _m === 'object') return Object.keys(_m).length === 0;
+					return false;
+				})();
+				if (_emptyBody && _emptyMetadata) {
+					utils.timestampedLog('[journal] purge (local only): empty body AND empty metadata',
+						message.id, 'contentType=', message.contentType || '(none)');
 					purgeMessages.push(message.id);
 					continue;
 				}
@@ -33694,7 +37232,7 @@ class Sylk extends Component {
 				});
 
 				if (contacts.length === 0 && message.contentType !== 'application/sylk-conversation-remove') {
-					if (uri.indexOf('@') > -1 && !utils.isEmailAddress(uri)) {
+					if (uri.indexOf('@') > -1 && !utils.isSipAddress(uri)) {
 						//console.log('Skip bad uri', uri);
 						continue;
 					}
@@ -33978,7 +37516,7 @@ class Sylk extends Component {
 						let _isLocOriginJournal = false;
 						if (message.contentType === 'application/sylk-location-sharing') {
 							try {
-								const _lw = JSON.parse(message.content);
+								const _lw = messageLocationEnvelope(message);
 								_isLocOriginJournal = _lw && typeof _lw.value === 'string' && _lw.action !== 'location_update' && _lw.action !== 'meeting_update'; // origin = coord tick whose action is NOT an update
 							} catch (e) { _isLocOriginJournal = false; }
 						}
@@ -34131,15 +37669,102 @@ class Sylk extends Component {
 
         if (this._pendingKeyModal) {
             this._pendingKeyModal = false;
-            // Re-check: if the private key has since loaded, do NOT nag the user
-            // to import a key they already have.
-            if (this.state.keys && this.state.keys.private) {
-                utils.timestampedLog('[pgp] deferred import-key modal cancelled — private key is present');
-            } else {
-                utils.timestampedLog('[pgp] addressbook synced — showing deferred import-key modal');
-                setTimeout(() => { if (!this.unmounted) this.setState({ showImportPrivateKeyModal: true }); }, 0);
-            }
+            this._surfaceOrHoldKeyModal('addressbook synced');
         }
+    }
+
+    // Decide whether to SHOW the import-key modal now or HOLD it until the
+    // automatic escrow restore has had its turn.
+    //
+    // Holding matters because the modal is a dead-end question for a user whose
+    // key is about to arrive by itself: it asks them to fetch the key off another
+    // device while _abRestoreSelfKeys is seconds away from decrypting the escrow
+    // on their own contact. Two situations must hold it:
+    //
+    //   1. The escrow is there and we hold the password -> the restore will run.
+    //   2. The server addressbook has NOT been read yet for this account -> we
+    //      cannot yet know whether an escrow exists, and claiming "no key
+    //      available" before looking at the self contact is simply false. This is
+    //      the case the first version missed: on a warm reload contacts are
+    //      already 'ready', so the modal was raised immediately, five seconds
+    //      before the addressbook arrived and the restore succeeded
+    //      (2026-08-23 iOS, modal at 12:44:34, restored at 12:44:40).
+    //
+    // Every hold is released by _releaseHeldKeyModal — from each failing path in
+    // _abRestoreSelfKeys, from _abEnsureSelfKeys when there is no escrow at all,
+    // and from a 15s backstop timer — so a held modal can never be stranded.
+    _surfaceOrHoldKeyModal(origin) {
+        if (this.state.keys && this.state.keys.private) {
+            this._pendingKeyModal = false;
+            utils.timestampedLog('[pgp] import-key modal cancelled (' + origin + ') — private key is present');
+            return;
+        }
+
+        const _serverDataIn = this._abServerDataAccount === this.state.accountId;
+
+        if (!_serverDataIn || this._abSelfEscrowRestorable()) {
+            this._pendingKeyModal = true;
+            utils.timestampedLog('[pgp] import-key modal held (' + origin + ') — '
+                + (_serverDataIn ? 'escrowed key on own contact, trying restore first'
+                                 : 'server addressbook not read yet, cannot know if a key escrow exists'));
+            if (this._heldKeyModalTimer) clearTimeout(this._heldKeyModalTimer);
+            this._heldKeyModalTimer = setTimeout(() => {
+                this._heldKeyModalTimer = null;
+                this._releaseHeldKeyModal('restore never reported back (15s)');
+            }, 15000);
+            return;
+        }
+
+        this._pendingKeyModal = false;
+        utils.timestampedLog('[pgp] showing import-key modal (' + origin + ')');
+        setTimeout(() => { if (!this.unmounted) this.setState({ showImportPrivateKeyModal: true }); }, 0);
+    }
+
+    // True when our own contact carries an escrowed private key AND we hold the
+    // account password needed to decrypt it — i.e. _abRestoreSelfKeys has a real
+    // chance of producing a key, so the import-key modal should wait for it.
+    _abSelfEscrowRestorable() {
+        try {
+            if (!(this.state.password && this.state.password.trim())) return false;
+            const selfServer = this._abSelfServerContact();
+            const serverKeys = this._abParseSelfKeys(selfServer);
+            return !!(serverKeys && serverKeys.private_key && serverKeys.public_key);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // Release a modal held by the branch above. Called from every path in
+    // _abRestoreSelfKeys that ends without a key, so a held modal can never be
+    // stranded — the user always ends up with either a key or the dialog.
+    // "Have we finished asking whether a key is coming?" — false from sign-in
+    // until we have either restored a key, generated one, or actually READ the
+    // self contact and found no escrow on it. Everything that tells the user
+    // they have no private key (the red ReadyBox banner, the chat's "Cannot send
+    // messages" bar) must wait for this: at startup `keyStatus.existsLocal ===
+    // false` merely means "not loaded yet", and announcing key loss during the
+    // seconds before the addressbook arrives is a false alarm — the escrow
+    // restore lands right after it.
+    _markKeyEscrowChecked(reason) {
+        if (this.state.keyEscrowChecked) return;
+        utils.timestampedLog('[pgp] key availability settled — ' + reason);
+        this.setState({ keyEscrowChecked: true });
+    }
+
+    _releaseHeldKeyModal(reason) {
+        if (this._heldKeyModalTimer) {
+            clearTimeout(this._heldKeyModalTimer);
+            this._heldKeyModalTimer = null;
+        }
+        // Whatever happens to the modal, reaching here means the question has an
+        // answer — mark it settled BEFORE the pending-modal early return, which
+        // is taken on every path where no modal was ever held.
+        this._markKeyEscrowChecked(reason);
+        if (!this._pendingKeyModal) return;
+        this._pendingKeyModal = false;
+        if (this.state.keys && this.state.keys.private) return;
+        utils.timestampedLog('[pgp] showing held import-key modal — ' + reason);
+        setTimeout(() => { if (!this.unmounted) this.setState({ showImportPrivateKeyModal: true }); }, 0);
     }
 
     async afterSyncTasks() {
@@ -34197,8 +37822,17 @@ class Sylk extends Component {
 
 		let purgeMessages = [...this.state.purgeMessages];
 
+        // LOCAL ONLY — note the explicit `false`.
+        //
+        // Everything in purgeMessages got here through a client-side "this row
+        // looks broken" heuristic, and a heuristic must never be allowed to
+        // mutate the SHARED server journal. deleteMessage(..., remote=true)
+        // journals a removeMessage; for a location row SylkServer then purges
+        // every sibling with the same sessionId, so a single wrong judgement
+        // here wipes an entire track for every device on the account. Remote
+        // deletion happens only when the user explicitly asks for it.
         purgeMessages.forEach((id) => {
-            this.deleteMessage(id, this.state.accountId);
+            this.deleteMessage(id, this.state.accountId, false);
         });
 
         this.setState({purgeMessages:[],
@@ -34585,10 +38219,11 @@ class Sylk extends Component {
         } catch (e) {}
 
         if (message.contentType === 'application/sylk-location-sharing') {
-            let _lw = null;
-            try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+            const _lw = messageLocationEnvelope(message);
             if (_lw) {
-				utils.timestampedLog('Incoming [location]', message.contentType, _lw.action, message.id, 'from', message.sender.uri);
+				// src=live pairs with the src=journal counterpart on the journal
+				// replay path, so the receiver's log says which way a tick arrived.
+				utils.timestampedLog('Incoming [location]', message.contentType, _lw.action, message.id, 'from', message.sender.uri, 'src=live', 'v=' + (_lw.version || '(none)'));
 			}
 		} else {
 			utils.timestampedLog('Incoming [message]', message.id, 'from', message.sender.uri, 'from [wss]', message.contentType);
@@ -34614,7 +38249,7 @@ class Sylk extends Component {
             console.log('[pgp] [message] websocket arrival from', message.sender.uri,
                 'msgId=', message.id,
                 'contentLen=', message.content ? message.content.length : 0);
-            this.savePublicKey(message.sender.uri, message.content);
+            this.savePublicKey(message.sender.uri, message.content, {unsolicited: true});
             return;
         }
 
@@ -34663,8 +38298,10 @@ class Sylk extends Component {
         }
 
         // Screen-sharing start/stop signal from the peer. Tells the far side
-        // that we're presenting (so their pointer button can appear) and, by
-        // its mere arrival, that the sender supports the pointer protocol.
+        // that we're presenting. It says nothing about pointer support --
+        // that is gated on the CAP_POINTER token in the peer's capability
+        // advertisement (components/CallCapabilities.js), so a viewer only
+        // gets the pointer button when the sharer can actually draw it.
         if (message.contentType === 'application/sylk-screen-sharing') {
             try {
                 const _scall = this._findActiveCallForUri(message.sender.uri);
@@ -34835,11 +38472,13 @@ class Sylk extends Component {
             return;
         }
 
-        // application/sylk-location-sharing: the wire body is cleartext JSON
-        // (lifecycle fields) with only `value` PGP-encrypted. The whole-message
-        // is_encrypted path below would try to decrypt the JSON and fail, so
-        // route it straight through — saveIncomingMessage splits it into the
-        // encrypted-coords `content` column and the cleartext columns.
+        // application/sylk-location-sharing never goes through the generic
+        // whole-message decrypt below, on either protocol version: a 1.0 body
+        // is cleartext JSON that decryption would choke on, and a 2.0 body is
+        // the coords blob, which must stay encrypted at rest and is decrypted
+        // lazily on chat open. Route it straight through — saveIncomingMessage
+        // rebuilds the envelope and stores the blob in the `content` column
+        // with the cleartext fields beside it.
         if (message.contentType === 'application/sylk-location-sharing') {
             // DEBUG (location one-shot bring-up): dump the raw wire body as
             // received. Commented out — it printed the full PGP blob on every
@@ -36135,7 +39774,7 @@ class Sylk extends Component {
 			}
 
 			// GC pass: drop ids whose underlying SQL row has been
-			// purged (7-day expire sweep, manual delete, etc.). The
+			// purged (30-day expire sweep, manual delete, etc.). The
 			// dedup gates only matter as long as a wire event could
 			// still arrive referencing that id — once the bubble's
 			// row is gone the gate is dead weight, and the persisted
@@ -36597,8 +40236,14 @@ class Sylk extends Component {
 
 	_registerMeetingRequestFromPush(from, content) {
 		try {
-			const _env = (typeof content === 'string' && content.trim().startsWith('{'))
-				? JSON.parse(content) : (content && typeof content === 'object' ? content : null);
+			// A push always carries the WHOLE envelope in its body, on either
+			// protocol version: the server rebuilds the single-JSON payload for
+			// the push from the 2.0 metadata + blob (location_push_content in
+			// sylkserver's location.py), precisely so the native banner
+			// builders and this modal keep reading one shape. A bare blob here
+			// means an un-upgraded server, and yields no invite — the modal
+			// then opens off the WS/journal copy instead.
+			const _env = jsonObject(content);
 			if (!_env || _env.action !== 'meeting_request') return;
 			const _sid = _env.sessionId || _env.messageId;
 			// Never prompt ourselves on a replicated outgoing echo.
@@ -37508,7 +41153,7 @@ class Sylk extends Component {
 				try { this._closeMeetingRequestModal(); } catch (e) { /* noop */ }
 			}
 			if (requestId && fromUri && typeof this.deleteMessage === 'function') {
-				this.deleteMessage(requestId, fromUri, false).catch((e) => {
+				this.deleteMessage(requestId, fromUri, false, false, 'user:reject-meeting').catch((e) => {
 					console.log('[meeting] reject: deleteMessage failed', e && e.message);
 				});
 			}
@@ -37519,7 +41164,76 @@ class Sylk extends Component {
 
 	// ===== One-shot location-request handshake =====
 
-	_noteIncomingLocationRequest(fromUri, metadataContent) {
+	// Can the known-sender gate below be TRUSTED right now?
+	//
+	// The gate reads contact.publicKey out of the in-memory contact index. On
+	// a cold start driven by a push, the request can be handled before
+	// contacts have loaded (or after contactsLoaded flips but before
+	// buildContactIndex has run) — and in that window EVERY sender looks
+	// unknown. Since a failed gate drops the request permanently, answering
+	// "not ready" here and retrying is the difference between a correct
+	// refusal and silently swallowing a request from a real contact.
+	_locationRequestGateReady() {
+		if (!this.state.contactsLoaded) return false;
+		// contactsLoaded flips before componentDidUpdate rebuilds the index, so
+		// an empty index means "not built yet", not "no contacts": a user with
+		// zero contacts can't have a key for anyone anyway, so deferring costs
+		// nothing and closes the race.
+		return !!(this.contactIndex && Object.keys(this.contactIndex).length > 0);
+	}
+
+	// May a location request from `uri` prompt at all?
+	//
+	// Gate: we must already hold this contact's PGP public key. The key is
+	// fetched and cached the first time a conversation with them exists
+	// (createChatContact on chat open, saveOutgoingChatUri on send, or the
+	// server's publicKey push for a peer we're already talking to), so
+	// holding it means there is a real, established chat relationship —
+	// which is also the only state in which we could answer, since every
+	// location payload is encrypted to that key.
+	//
+	// Without it the request is from a stranger, and a stranger must not be
+	// able to put a modal on the user's screen: that is an unsolicited
+	// interrupt from an unknown sender, and answering it would disclose the
+	// user's position to someone they have never spoken to.
+	//
+	// lookupContact WITHOUT create/save — an unsolicited request must never
+	// mint or persist a contact row as a side effect of being evaluated.
+	_locationRequestSenderIsKnown(uri) {
+		if (!uri) return false;
+		let _contact = null;
+		try { _contact = this.lookupContact(uri); } catch (e) { _contact = null; }
+		const _key = (_contact && _contact.publicKey)
+			? String(_contact.publicKey).trim() : '';
+		return _key.length > 0;
+	}
+
+	// Drop a request we will never prompt for. Marks the id handled so a
+	// replay / carbon / push of the SAME request can't resurrect it later in
+	// this session, and clears any pending entry. Silent by design — no reply
+	// is sent, exactly like the user pressing Decline, so the sender learns
+	// nothing about why.
+	//
+	// Deliberately MEMORY-ONLY: no _persistMeetingHandshakeState() call. That
+	// set is never garbage-collected, and this path is driven by unauthenticated
+	// remote senders — persisting here would let anyone grow the account's
+	// stored handshake blob (and force a read-modify-write of it) one request
+	// at a time. Losing the marker across a restart is harmless: re-evaluating
+	// a redelivered stranger request just reaches the same verdict again.
+	_dropLocationRequest(uri, requestId, why) {
+		try {
+			if (requestId) this._locationEngine.handledLocationRequestIds.add(requestId);
+			if (uri) delete this._locationEngine.pendingLocationRequests[uri];
+		} catch (e) { /* noop */ }
+		try {
+			utils.timestampedLog('[location] LOCATION REQUEST IGNORED ←', uri,
+				'— request', requestId ? String(requestId).slice(0, 8) : '(none)', '—', why);
+		} catch (e) { /* noop */ }
+	}
+
+	// `_attempt` is the retry counter for the "contacts not in memory yet"
+	// case below; external callers always omit it.
+	_noteIncomingLocationRequest(fromUri, metadataContent, _attempt = 0) {
 		const requestId = metadataContent && metadataContent.messageId;
 		if (!requestId) return;
 		const expiresAt = this._parseExpiresToMs(metadataContent.expires);
@@ -37530,12 +41244,71 @@ class Sylk extends Component {
 			this._persistMeetingHandshakeState();
 			return;
 		}
+		// Contacts not in memory yet (cold start from a push): re-run this whole
+		// function once they land rather than judging the sender against an empty
+		// index. Re-entry is idempotent — the handled-id and expiry checks above
+		// run again, and an expiry that lapsed during the wait is correctly
+		// treated as stale.
+		//
+		// setTimeout, NOT waitForContactsLoaded().then(). Readiness needs the
+		// contact INDEX, which is built in componentDidUpdate — a macrotask.
+		// waitForContactsLoaded resolves the moment `contactsLoaded` flips, so
+		// chaining on it would re-enter in a microtask, find the index still
+		// empty, and re-defer — a microtask chain that never yields to the very
+		// render pass that would build the index. A timer yields by construction.
+		if (!this._locationRequestGateReady()) {
+			const _RETRY_MS = 300;
+			const _MAX_RETRIES = 40; // ~12 s — a cold start's contact load, with room
+			if (_attempt < _MAX_RETRIES) {
+				if (_attempt === 0) {
+					utils.timestampedLog('[location] location request from', fromUri,
+						'— contacts not in memory yet, deferring the known-sender check');
+				}
+				const _acct = this.state.accountId;
+				setTimeout(() => {
+					// Signed out / switched account while we waited: this request
+					// belongs to another identity's inbox. Abandon it rather than
+					// judge it against the new account's contacts.
+					if (this.state.accountId !== _acct) return;
+					try { this._noteIncomingLocationRequest(fromUri, metadataContent, _attempt + 1); }
+					catch (e) { /* noop */ }
+				}, _RETRY_MS);
+				return;
+			}
+			if (!this.state.contactsLoaded) {
+				// Whole budget spent and there is still no contact store (signed
+				// out, or the load failed). Give up WITHOUT a verdict — don't mark
+				// it handled, since we never actually judged the sender and a later
+				// redelivery deserves a fresh evaluation.
+				utils.timestampedLog('[location] location request from', fromUri,
+					'— contacts never loaded, ignoring without a verdict');
+				return;
+			}
+			// contactsLoaded true but the index never filled: that is not a race,
+			// it is an account with no contacts at all. We hold nobody's key, so
+			// the sender is by definition unknown — fall through and drop.
+		}
+		// Unknown sender (no public key ⇒ no established chat): drop it here,
+		// at the single registration point, so it never reaches
+		// pendingLocationRequests and therefore can't be surfaced by ANY of the
+		// present paths — chat-open drain, push deep-link tap, or reconnect.
+		if (!this._locationRequestSenderIsKnown(fromUri)) {
+			this._dropLocationRequest(fromUri, requestId, 'no public key for sender (no established chat)');
+			return;
+		}
 		this._locationEngine.pendingLocationRequests[fromUri] = {requestId, expiresAt, fromUri};
 		// User-visible breadcrumb in the chat log.
 		try {
 			utils.timestampedLog('[location] [meet] LOCATION REQUEST RECEIVED ←', fromUri, '— request', requestId.slice(0, 8));
 		} catch (e) { /* noop */ }
-		if (this.state.selectedContact && this.state.selectedContact.uri === fromUri) {
+		// Present when the user is already looking at this conversation — or on
+		// ANY deferred run (_attempt > 0). In the deferred case our caller's own
+		// _presentLocationRequestModalForUri already fired, synchronously, while
+		// the entry didn't exist yet and returned a no-op; without this the
+		// cold-start-from-push case — the exact one the deferral exists for —
+		// would never show the prompt at all.
+		if (_attempt > 0
+			|| (this.state.selectedContact && this.state.selectedContact.uri === fromUri)) {
 			this._presentLocationRequestModalForUri(fromUri);
 		}
 	}
@@ -37550,6 +41323,24 @@ class Sylk extends Component {
 		if (Date.now() >= entry.expiresAt) {
 			this._locationEngine.handledLocationRequestIds.add(entry.requestId);
 			delete this._locationEngine.pendingLocationRequests[uri];
+			return;
+		}
+		// Re-check the known-sender gate here too. _noteIncomingLocationRequest
+		// already drops strangers at arrival, but a pending entry can also come
+		// from restored handshake state (persisted before this gate existed, or
+		// written by a future path), and the contact's key can be dropped after
+		// the request was registered. This is the last point before the modal,
+		// so nothing gets past it.
+		if (!this._locationRequestGateReady()) {
+			// Don't judge — and above all don't DROP — against a cold index. Leave
+			// the pending entry intact; the chat-open drain, the push tap or the
+			// deferred arrival re-run will present it once contacts are up.
+			utils.timestampedLog('[location] deferring accept-share modal for', uri,
+				'— contacts not loaded yet');
+			return;
+		}
+		if (!this._locationRequestSenderIsKnown(uri)) {
+			this._dropLocationRequest(uri, entry.requestId, 'no public key for sender (no established chat)');
 			return;
 		}
 		// Mark handled before showing — same "show once" guarantee
@@ -37591,6 +41382,25 @@ class Sylk extends Component {
 					policyAcknowledged = await readLocationDisclosure(this.state.accountId);
 				} catch (e) { /* noop */ }
 			}
+			// OS location grant, probed (never prompted) so the modal knows
+			// whether a timed answer is even possible on this device: a
+			// foreground-only ("While Using") grant can't sustain a background
+			// share, so the modal greys out the 2h / 8h rows and forces the
+			// answer to a single fix. Best-effort — an unknown level never gates.
+			let permissionLevel = null;
+			try {
+				permissionLevel = await this._locationEngine.getLocationPermissionStatus();
+			} catch (e) { /* noop */ }
+			// Is a plain timed share to this contact already running? The engine
+			// refuses a second plain session to the same peer, so an interval
+			// answer would be a silent no-op and the requester would get nothing
+			// back. The modal disables the intervals in that state and answers
+			// with a single fix instead (which is still useful — it is a fresh
+			// point, and it is what the peer explicitly asked for).
+			let plainShareLive = false;
+			try {
+				plainShareLive = !!this._locationEngine.isPlainShareLiveForUri(entryCopy.fromUri);
+			} catch (e) { /* noop */ }
 			utils.timestampedLog('[location] presenting accept-share modal from', entryCopy.fromUri, 'request', entryCopy.requestId, 'expires in', Math.max(0, Math.round((entryCopy.expiresAt - Date.now()) / 1000)), 's');
 			this.setState({locationRequestModal: {
 				show: true,
@@ -37598,6 +41408,8 @@ class Sylk extends Component {
 				requestId: entryCopy.requestId,
 				expiresAt: entryCopy.expiresAt,
 				policyAcknowledged,
+				permissionLevel,
+				plainShareLive,
 			}});
 			// 90s auto-dismiss, mirroring the meet modal behaviour.
 			if (this._locationRequestModalDismissTimerId) {
@@ -37623,10 +41435,17 @@ class Sylk extends Component {
 		}
 		this.setState({locationRequestModal: {
 			show: false, fromUri: null, requestId: null, expiresAt: null,
+			permissionLevel: null, plainShareLive: false,
 		}});
 	}
 
-	_acceptLocationRequest() {
+	// `option` is what the user picked in the modal's duration rows:
+	// {durationMs, periodLabel, kind}. kind 'once' answers with a single
+	// fix (the default, and the only answer under a foreground-only
+	// grant); kind 'fixed' arms a plain timed live share for durationMs.
+	// Absent or malformed falls back to the one-shot, which is what this
+	// handler did before the picker existed.
+	_acceptLocationRequest(option) {
 		const src = this.state.locationRequestModal || {};
 		const fromUri = src.fromUri;
 		const requestId = src.requestId;
@@ -37634,6 +41453,40 @@ class Sylk extends Component {
 		if (!fromUri) return;
 		if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
 			console.log('[location] [meet] location request expired, ignoring', 'id=', requestId);
+			return;
+		}
+		const _kind = (option && option.kind) || 'once';
+		const _durationMs = Number(option && option.durationMs) || 0;
+		const _periodLabel = (option && option.periodLabel) || 'now';
+		// Re-check the already-sharing guard at answer time, not just at
+		// present time: this modal can sit open for 45 s, and a share to the
+		// same contact may have been started from the share picker (or by a
+		// sibling device) in between. startLocationSharing would refuse the
+		// second plain session and return silently, leaving the requester
+		// with no answer at all — so fall back to the one-shot, which always
+		// ships.
+		let _plainLive = false;
+		try {
+			_plainLive = !!this._locationEngine.isPlainShareLiveForUri(fromUri);
+		} catch (e) { /* noop */ }
+		if (_kind === 'fixed' && _durationMs > 0 && _plainLive) {
+			utils.timestampedLog('[location] location request: interval answer requested but a plain share to',
+				fromUri, 'is already live — answering with a single location instead');
+		}
+		if (_kind === 'fixed' && _durationMs > 0 && !_plainLive) {
+			try {
+				utils.timestampedLog('[location] [meet] LOCATION REQUEST ACCEPTED ←', fromUri, '— sharing location for', _periodLabel);
+			} catch (e) { /* noop */ }
+			// A timed answer is an ordinary plain live share: same prominent
+			// disclosure + permission gates, same expiry teardown, same "stop
+			// sharing" affordances as one started from the share picker. It
+			// only differs in carrying the request id, so the answerer's OTHER
+			// devices see the replicated origin tick and close their own
+			// still-open prompt for the same request.
+			this._locationEngine.startLocationSharing(fromUri, _durationMs, _periodLabel, {
+				kind: 'fixed',
+				answersRequestId: requestId,
+			});
 			return;
 		}
 		try {
@@ -37792,6 +41645,19 @@ class Sylk extends Component {
 			try { this._presentMeetingRequestForUri(fromUri); } catch (e) { /* noop */ }
 		} else {
 			console.log('[request] _handleSylkRequest: unknown request_type', body.request_type);
+			return;
+		}
+		// A location request we are ignoring (unknown sender — see
+		// _locationRequestSenderIsKnown) must leave no trace at all: no timeline
+		// breadcrumb, and in particular no contact bump, since
+		// _bumpContactForIncomingRequest does lookupContact(uri, true) and would
+		// MINT and persist a contact row for a stranger, then float them to the
+		// top of the conversation list. Only skip when the gate can actually
+		// answer; against a cold contact index we fall through and behave as
+		// before rather than suppressing a legitimate requester's breadcrumb.
+		if (body.request_type === 'location'
+			&& this._locationRequestGateReady()
+			&& !this._locationRequestSenderIsKnown(fromUri)) {
 			return;
 		}
 		// The modal is presented directly above and carries fromUri /
@@ -39216,7 +43082,7 @@ class Sylk extends Component {
             console.log('[pgp] [message] journal arrival from', message.sender.uri,
                 'msgId=', message.id,
                 'contentLen=', message.content ? message.content.length : 0);
-            this.savePublicKeySync(message.sender.uri, message.content);
+            this.savePublicKeySync(message.sender.uri, message.content, {unsolicited: true});
             return;
         }
 
@@ -39281,6 +43147,19 @@ class Sylk extends Component {
         // renders and persists.
         const _persistOnly = opts && opts.persistOnly === true;
         const _action = wire.action;
+        // The sibling hop. Until now this whole path was silent in the log
+        // file (failures went to console.log, which the exported log never
+        // sees), so a tick that A1 sent and B received left no evidence of
+        // whether A2 ever saw it.
+        //
+        // src distinguishes the two ways a carbon arrives, which is exactly
+        // what separates live from offline replication: `live` = the server
+        // pushed it while we were connected; `journal` = we were offline and
+        // picked it up on the catch-up replay (persistOnly is only set by that
+        // path). Same msg_id as A1's "wire →" line and B's "incoming" line.
+        utils.timestampedLog('[location] carbon ← ' + uri + ' ' + _action
+            + ' id=' + (message && message.id)
+            + ' src=' + (_persistOnly ? 'journal' : 'live'));
         // Coordinate-free lifecycle signals: end/stop our own track on this
         // sibling; nothing to decrypt or render.
         if (_action === 'location_stop' || _action === 'meeting_end' || _action === 'meeting_reject') {
@@ -39336,6 +43215,19 @@ class Sylk extends Component {
         if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') return false;
 
         const _isUpdate = _action === 'location_update' || _action === 'meeting_update';
+        // ONE-SHOT ("Send my current location") carbon. The slim wire for a
+        // one-shot carries NO `one_shot` flag and NO `sessionId` — the action
+        // name IS the marker (see the send path's `if (!fields.one_shot)` wire
+        // gate). The incoming paths already rebuild the flag from the action
+        // (saveIncomingMessage / the incoming journal replay); this outgoing
+        // CARBON path did not, so a sibling device saw a flagless coord tick
+        // and treated our one-shot as a live share: handleLocationPayload gave
+        // it the live bubble (Stop sharing), _mirrorStampFromSelfEcho lit the
+        // pulsing session-bar indicator, and the SQL row stored as
+        // related_action='location_start' so a reload resurrected the same
+        // phantom session. Rebuild the flag here and take the same static
+        // branch the SENDING device takes.
+        const _isOneShot = _action === 'location_once';
         // Reconstruct the plaintext content object the sender rendered/stored:
         // the cleartext wire fields, minus the wire action, with action:'location'
         // and the decrypted geo folded back in. messageId = session origin id
@@ -39351,11 +43243,21 @@ class Sylk extends Component {
         _content.uri = uri;
         _content.value = coords;
         if (destination) _content.destination = destination;
+        if (_isOneShot) _content.one_shot = true;
 
         // Render via the SAME pipeline the sender uses for its own echo
         // (no `author` = our outgoing echo -> _injectLocationBubble + metadata).
         // Skipped in persist-only journal replay (bubble builds from SQL on open).
-        if (!_persistOnly) { try { this.handleLocationPayload(uri, JSON.stringify(_content)); } catch (e) {} }
+        // A one-shot is NOT a session: it takes _injectLocationBubble directly
+        // (static map bubble, no trail / update-in-place, no live affordances),
+        // exactly as the sending device does for its own one-shot echo.
+        if (!_persistOnly) {
+            if (_isOneShot) {
+                try { this._injectLocationBubble(uri, Object.assign({}, _content, { author: this.state.accountId }), _content.messageId); } catch (e) {}
+            } else {
+                try { this.handleLocationPayload(uri, JSON.stringify(_content)); } catch (e) {}
+            }
+        }
 
         // Initialize / refresh the multi-device sharing state (the mirror map +
         // its React-state twin) DIRECTLY from this outgoing carbon, so a
@@ -39367,7 +43269,9 @@ class Sylk extends Component {
         // are handled/ignored above so this only runs for live coord ticks.
         // Skipped in persist-only journal replay (no live pulse to light on a
         // backlog catch-up; the pulse reflects only currently-live sessions).
-        if (!_persistOnly) { try { this._mirrorStampFromSelfEcho(uri, _content); } catch (e) {} }
+        // One-shots are excluded: there is no session to mirror, so lighting the
+        // pulse (and the active-shares stop panel) here was the session-bar bug.
+        if (!_persistOnly && !_isOneShot) { try { this._mirrorStampFromSelfEcho(uri, _content); } catch (e) {} }
 
         // Persist PLAINTEXT (encrypted=2) so the map survives reload, mirroring
         // the sender's store. Meet UPDATE ticks upsert the single per-leg row
@@ -39375,31 +43279,54 @@ class Sylk extends Component {
         const _payloadStr = destination
             ? JSON.stringify({ value: coords, destination })
             : JSON.stringify(coords);
-        message.text = _payloadStr;
-        message.metadata = _content;
-        message.contentType = 'application/sylk-location-sharing';
-        // The carbon `message` object carries `id` / `timestamp`, but
-        // saveOutgoingMessage (and the meet-update UPSERT) read `_id` /
-        // `createdAt`. Without these the SQL params come out `undefined`, which
-        // corrupts the native bridge batch ("Malformed calls from JS: field
-        // sizes are different"). Normalise before any store.
-        if (message._id == null) message._id = message.id;
-        if (message.createdAt == null) message.createdAt = message.timestamp || new Date();
-        if (message._id == null) { return true; }  // no id to key on — skip store, render already done
+        // The carbon `message` is a sylkrtc `Message` INSTANCE, not a plain
+        // object: `metadata`, `content`, `contentType`, `id` and `timestamp`
+        // are getter-ONLY accessors on its prototype (see
+        // node_modules/react-native-sylkrtc/lib/message.js). Assigning to them
+        // is a silent no-op, so `message.metadata = _content` never took —
+        // `message.metadata` stayed the wire value, which for a location carbon
+        // is `null` (the coords ride in `content`, never in the envelope's
+        // metadata field). saveOutgoingMessage then read
+        // `message.metadata.messageId` off null and threw "Cannot read property
+        // 'messageId' of null", so the sibling's SQL row for every location
+        // tick was silently lost — the carbon arrived, the pulse started, and
+        // no map ever rendered.
+        //
+        // Build a PLAIN store object instead and leave the Message untouched.
+        // It also carries the `_id` / `createdAt` aliases saveOutgoingMessage
+        // (and the meet-update UPSERT) read — without them the SQL params come
+        // out `undefined`, which corrupts the native bridge batch ("Malformed
+        // calls from JS: field sizes are different").
+        const _storeId = message._id || message.id;
+        if (_storeId == null) { return true; }  // no id to key on — skip store, render already done
+        const _storeTs = message.createdAt || message.timestamp || new Date();
+        const _storeMsg = {
+            _id: _storeId,
+            createdAt: _storeTs,
+            text: _payloadStr,
+            metadata: _content,
+            contentType: 'application/sylk-location-sharing',
+            // A SIBLING device broadcast this tick; the server echoed it to us
+            // so our map matches theirs. It is already delivered and was never
+            // ours to send, so it must be stored pending=0 — see the long note
+            // in saveOutgoingMessage. Re-uploading carbons is what turned the
+            // pending sweep into an exponential send storm.
+            _carbon: true,
+        };
         const _isMeetTick = wire.meeting_request === true || !!wire.role
             || wire.privacyDeferred === true || wire.dummy === true || !!destination;
         try {
             if (_isMeetTick && _isUpdate) {
                 const _sid = _content.messageId;
-                const _oTsRaw = message.timestamp || message.createdAt;
+                const _oTsRaw = _storeTs;
                 const _oUnix = Math.floor(((_oTsRaw instanceof Date ? _oTsRaw.getTime() : new Date(_oTsRaw).getTime())) / 1000);
                 const _ur = await this.ExecuteQuery(
                     'UPDATE messages SET content = ?, encrypted = 2, unix_timestamp = ?, timestamp = ? '
                     + "WHERE account = ? AND related_msg_id = ? AND related_action = 'meeting_update' AND direction = ?",
                     [_payloadStr, _oUnix, JSON.stringify(_oTsRaw), this.state.accountId, _sid, 'outgoing']);
-                if (!_ur || !_ur.rowsAffected) this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+                if (!_ur || !_ur.rowsAffected) this.saveOutgoingMessage(uri, _storeMsg, 2, 'application/sylk-location-sharing');
             } else {
-                this.saveOutgoingMessage(uri, message, 2, 'application/sylk-location-sharing');
+                this.saveOutgoingMessage(uri, _storeMsg, 2, 'application/sylk-location-sharing');
             }
         } catch (e) {
             console.log('[location] sibling carbon store failed', e && e.message ? e.message : e);
@@ -39447,13 +43374,19 @@ class Sylk extends Component {
         // secondary device (decrypt the coord blob → drive the same location
         // pipeline the sender used) so the map + live trail appear here too.
         if (message.contentType === 'application/sylk-location-sharing') {
-            let _lw = null;
-            try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+            // Rebuilt from whichever protocol version the sibling device sent
+            // — our own 2.0 carbon has its envelope in the metadata.
+            const _lw = messageLocationEnvelope(message);
             if (_lw) {
                 const _peer = message.receiver;
 				utils.timestampedLog('Outgoing [location]', message.contentType, _lw.action, message.id, 'to', message.receiver);
 
-                if (_lw.action === 'location_once' && _lw.requestId) {
+                // Either shape of answer to a location_request closes the
+                // prompt on our other devices: the one-shot reply
+                // (location_once) and the origin tick of a timed answer
+                // (location_start) — both stamped with the request id.
+                if ((_lw.action === 'location_once' || _lw.action === 'location_start')
+                        && _lw.requestId) {
                     this._noteSiblingAnsweredLocationRequest(_lw.requestId, _peer);
                 }
                 // ANY invited-role carbon for a session is proof that another of
@@ -39762,7 +43695,7 @@ class Sylk extends Component {
 				let _locationSuppressBump = false;
 				if (message.contentType === 'application/sylk-location-sharing') {
 					try {
-						const _lwire = JSON.parse(content);
+						const _lwire = locationEnvelope(content, message.metadata);
 						const _la = _lwire && _lwire.action;
 						if (_la === 'location_stop' || _la === 'meeting_end'
 								|| _la === 'location_update' || _la === 'meeting_update') {
@@ -39858,8 +43791,7 @@ class Sylk extends Component {
 		// a large backlog can't storm setState / saturate the bridge (the bubble +
 		// trail build from SQL on chat open, same as the incoming journal path).
 		if (message.contentType === 'application/sylk-location-sharing') {
-			let _lw = null;
-			try { _lw = JSON.parse(message.content); } catch (e) { _lw = null; }
+			const _lw = messageLocationEnvelope(message);
 			if (_lw) {
 				try {
 					await this._renderOwnLocationCarbon(message, _lw, message.receiver, { persistOnly: true });
@@ -40701,7 +44633,7 @@ class Sylk extends Component {
         // When we stored the decrypted plaintext (encrypted=2), keep the
         // original ciphertext so it can be recovered later; null otherwise.
         const content_encrypted = info?.decryptedBody ? message.content : null;
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl, content_encrypted];
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(message.timestamp), unix_timestamp, content, message.contentType, this._serverMetadata(message), message.sender.uri, message.receiver, "outgoing", pending, sent, received, message.state, disposition_notification, _cat, _hl, content_encrypted];
         this.pendingNewSQLMessages.push(params);
 
         if (this.pendingNewSQLMessages.length > 49) {
@@ -41208,6 +45140,36 @@ class Sylk extends Component {
         }
     }
 
+    // Opaque per-message metadata set by the sender and relayed by the server
+    // (stored in the journal's `metadata` column, carried to the peer in the
+    // agp.Metadata CPIM header). We do not interpret it — it is persisted in
+    // the local `metadata` column so it is there when something wants it.
+    //
+    // ALWAYS returns the raw wire STRING, never the parsed object: this value
+    // is bound straight into a TEXT column, and binding an object there stores
+    // the useless "[object Object]". sylkrtc's Message exposes both forms —
+    // `.metadata` parsed for callers, `.metadataString` verbatim for storage.
+    _serverMetadata(message) {
+        if (!message) {
+            return '';
+        }
+        if (typeof message.metadataString === 'string') {
+            return message.metadataString;
+        }
+        const _m = message.metadata;
+        if (typeof _m === 'string') {
+            return _m;
+        }
+        if (_m && typeof _m === 'object') {
+            try {
+                return JSON.stringify(_m);
+            } catch (e) {
+                return '';
+            }
+        }
+        return '';
+    }
+
     // AppStore GPS Review — persists incoming GPS/location records to SQL.
     // Non-meetup location payloads are stamped with `expire = now + 7d` so
     // received GPS data is auto-purged after the retention window; meetup
@@ -41249,9 +45211,22 @@ class Sylk extends Component {
         // decrypt pool (content is a real PGP blob → decryptMessage's location
         // branch). We also decrypt once here for the immediate bubble.
         if (message.contentType === 'application/sylk-location-sharing') {
-            let wire = null;
-            try { wire = JSON.parse(message.content); } catch (e) {}
-            try { utils.timestampedLog('[location] incoming action=', (wire && wire.action) || '(none)', 'session=', wire && (wire.sessionId || wire.messageId || wire.meeting_session_id), 'id=', message.id, 'from', uri); } catch (e) {}
+            // The whole envelope, whichever protocol version it arrived in: a
+            // 2.0 peer puts it in the metadata and sends only the blob as the
+            // content, a 1.0 peer puts all of it in the content. Everything
+            // below reads the same `wire` shape either way, so this line is
+            // the only place in the receive path that knows the difference.
+            const wire = messageLocationEnvelope(message);
+            try { utils.timestampedLog('[location] incoming action=', (wire && wire.action) || '(none)', 'session=', wire && (wire.sessionId || wire.messageId || wire.meeting_session_id), 'id=', message.id, 'from', uri, 'v=', (wire && wire.version) || '(none)'); } catch (e) {}
+            // Origin ticks carry the sender's OS location-permission state
+            // (see _sendLocationSharing). Log it on arrival so a stalled trail
+            // can be traced back to a foreground-only grant on their side.
+            try {
+                if (wire && wire.perm) {
+                    utils.timestampedLog('[location] incoming', wire.action || '(none)', 'from', uri,
+                        'sender os permission=' + wire.perm);
+                }
+            } catch (e) {}
             // Drop coordinate ticks for a meet session that already ENDED (met /
             // expired / cancelled / declined / rejected). A late or in-flight update
             // tick — encrypted just before meet-end but delivered after it — would
@@ -41273,7 +45248,17 @@ class Sylk extends Component {
                 // bubble stays (frozen at its last position) for playback. No
                 // coordinates ride a stop signal, so there is nothing to decrypt
                 // or store.
-                const _stopSid = wire.messageId || wire.sessionId;
+                // sessionId FIRST. It is the mandatory identifier on a stop;
+                // messageId is only a fallback for older senders that still
+                // ship the duplicate. This order used to be reversed, which
+                // would have silently broken the moment the sender stopped
+                // emitting messageId.
+                const _stopSid = wire.sessionId || wire.messageId;
+                if (!_stopSid) {
+                    utils.timestampedLog('[location] WARNING: incoming location_stop from ' + uri
+                        + ' id=' + (message && message.id)
+                        + ' carries NO sessionId — cannot attribute it to a track');
+                }
                 // Duplicate stop (sender re-sent, or a late stop for a session we
                 // already ended): don't post a second note or re-process.
                 if (_stopSid && this._endedLocationSessions
@@ -41307,7 +45292,7 @@ class Sylk extends Component {
                         _stopNote = `📍 ${_name} stopped sharing live location${_atSuffix}`;
                     }
                     if (_stopNote) { this.saveSystemMessage(uri, _stopNote, 'incoming', false, 1, null, null, null, _stopSid); }
-                    utils.timestampedLog('[location] incoming location_stop from', uri, 'origin=', wire.messageId);
+                    utils.timestampedLog('[location] incoming location_stop from', uri, 'origin=', _stopSid);
                 } catch (e) {}
                 // Mark the track ended: persist an `ended` flag on the origin
                 // bubble (so its footer shows "Track ended" instead of a now-
@@ -41396,8 +45381,7 @@ class Sylk extends Component {
             const tsMs = typeof message.timestamp === 'number'
                 ? message.timestamp : new Date(message.timestamp).getTime();
             const unix_ts = Math.floor(tsMs / 1000);
-            const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
-            const expire = Math.floor(Date.now() / 1000) + SEVEN_DAYS_SEC;
+            const expire = Math.floor(Date.now() / 1000) + LOCATION_RETENTION_SEC;
             const disposition = message.dispositionNotification
                 ? message.dispositionNotification.join(',') : '';
             let _contacts = this.lookupContacts(uri);
@@ -41791,7 +45775,10 @@ class Sylk extends Component {
         let received = 1;
         let unix_timestamp = Math.floor(message.timestamp / 1000);
         let encrypted = decryptedBody === null ? 0 : 2;
-        let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : '';
+        // File transfers keep using the content as their local metadata (the
+        // transfer descriptor); every other type falls back to whatever
+        // metadata the server relayed, so it survives into the SQL column.
+        let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : this._serverMetadata(message);
         let file_transfer = {};
         let related_action;
         let related_msg_id;
@@ -42082,16 +46069,23 @@ class Sylk extends Component {
         // saveIncomingMessage path does — the encrypted coords blob goes into
         // `content`, the cleartext lifecycle fields into metadata /
         // related_action / related_msg_id — WITHOUT decrypting the coordinates.
-        // The wire body is cleartext JSON with only `value` (the coords)
-        // PGP-encrypted, so the split costs a JSON.parse, not a decrypt: a
-        // journal carrying 1000 location updates stores with zero PGP work.
-        // The coords are decrypted lazily on chat load (secondary query /
-        // decrypt pool). Signal-only ticks (location_stop / meeting_end /
-        // location_request) carry no coordinates and leave no bubble, so they
-        // are skipped here.
+        // The envelope is cleartext on both protocol versions — in the
+        // metadata on 2.0, in the body on 1.0 — so the split costs a
+        // JSON.parse, not a decrypt: a journal carrying 1000 location updates
+        // stores with zero PGP work. The coords are decrypted lazily on chat
+        // load (secondary query / decrypt pool). Signal-only ticks
+        // (location_stop / meeting_end / location_request) carry no
+        // coordinates and leave no bubble, so they are skipped here.
         if (message.contentType === 'application/sylk-location-sharing') {
-            let _lwire = null;
-            try { _lwire = JSON.parse(content); } catch (e) {}
+            // Same rebuild as the live path — see saveIncomingMessage.
+            const _lwire = locationEnvelope(content, message.metadata);
+            // The receiver hop, offline variant. The live path already logs
+            // "Incoming [location] …"; this is its journal counterpart, so a
+            // tick that arrived because the peer was offline is distinguishable
+            // from one delivered live. Same msg_id as A1's "wire →" line.
+            utils.timestampedLog('[location] incoming '
+                + ((_lwire && _lwire.action) || 'unknown')
+                + ' id=' + message.id + ' from ' + message.sender.uri + ' src=journal');
             // VALUE-BEARING meeting_request (the modern single-message "meet up"
             // invite carries the inviter's coords in `value`) must ALSO present
             // the accept modal on journal replay — this is how a request that was
@@ -42151,12 +46145,13 @@ class Sylk extends Component {
                             // old breadcrumb at the current time and they all sort
                             // to the bottom of the chat.
                             this.saveSystemMessage(message.sender.uri, _snote, 'incoming', false, 1, null, null, message.timestamp,
-                                _lwire.messageId || _lwire.sessionId);
+                                _lwire.sessionId || _lwire.messageId);
                         }
                     } catch (e) {}
                     // Persist the ended flag + remember the session (see the live
                     // path) so the bubble shows "Track ended" and zombie ticks drop.
-                    try { this._endLocationTrack(message.sender.uri, _lwire.messageId || _lwire.sessionId, _lwire.reason, message.id, message.timestamp, 'incoming'); } catch (e) {}
+                    // sessionId first — see the live path above.
+                    try { this._endLocationTrack(message.sender.uri, _lwire.sessionId || _lwire.messageId, _lwire.reason, message.id, message.timestamp, 'incoming'); } catch (e) {}
                 }
                 // location_request / meeting_request: journaled + replayed so a peer
                 // who was offline when the ask was sent still sees it on reconnect. The
@@ -42224,10 +46219,10 @@ class Sylk extends Component {
             const _ltsMs = typeof message.timestamp === 'number'
                 ? message.timestamp : new Date(message.timestamp).getTime();
             const _lunix = Math.floor(_ltsMs / 1000);
-            const _lSevenDays = 7 * 24 * 60 * 60;
-            // Keep for 7 days from replay time, matching the live path's
+            // Keep for the retention window from REPLAY time, matching the live
+            //  path's
             // ephemeral-location sweep window (purgeExpiredMessages).
-            const _lexpire = Math.floor(Date.now() / 1000) + _lSevenDays;
+            const _lexpire = Math.floor(Date.now() / 1000) + LOCATION_RETENTION_SEC;
             const _ldisp = message.dispositionNotification
                 ? message.dispositionNotification.join(',') : '';
             const _lrelAction = _lwire.action || this._locationEngine._locationRelatedAction(_lfields);
@@ -42341,7 +46336,10 @@ class Sylk extends Component {
         let sent;
 		const ts = typeof message.timestamp === 'number' ? message.timestamp: new Date(message.timestamp).getTime();
 		const unix_timestamp = Math.floor(ts / 1000);
-        let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : '';
+        // File transfers keep using the content as their local metadata (the
+        // transfer descriptor); every other type falls back to whatever
+        // metadata the server relayed, so it survives into the SQL column.
+        let metadata = message.contentType === 'application/sylk-file-transfer' ? message.content : this._serverMetadata(message);
         let disposition_notification = message.dispositionNotification ? message.dispositionNotification.join(",") : '';
 
         //console.log('Sync metadata', message.id, message.contentType, metadata, typeof(message.content));
@@ -42676,8 +46674,8 @@ class Sylk extends Component {
 	// Display name with the display_name learned from the push
 	// notification". Implementation extends the "URI" check to cover the
 	// URI's local part as well, because newly-auto-created contacts are
-	// stored with `name = localPart` (e.g. living233@sip2sip.info →
-	// "living233"), which is functionally indistinguishable from "no
+	// stored with `name = localPart` (e.g. user123@example.com →
+	// "user123"), which is functionally indistinguishable from "no
 	// name set" but isn't bare-empty/null.
 	//
 	// Returns the updated contact (with the new name applied) so the
@@ -43415,10 +47413,21 @@ class Sylk extends Component {
 	        const keysVal = ourKeys || existingKeys;
 	        if (keysVal != null && String(keysVal).length) attrs.keys = String(keysVal);
 	    } else {
-	        if (tags.includes('bypassdnd')) attrs.bypassdnd = true;
-	        if (tags.includes('muted')) attrs.muted = true;
-	        if (tags.includes('noread')) attrs.read_receipts = false; // default is true
-	        if (lp.caregiver) attrs.caregiver = true;
+	        // Write these EXPLICITLY, true or false. Only setting them when the
+	        // tag is present meant turning a flag off omitted the attribute, and
+	        // XCAP merges rather than replaces — so the server kept the old
+	        // value and the very next [ab] [get] re-adopted the tag. Observed as
+	        // "Bypass DND jumps back on its own": a save wrote
+	        // tags=[...no bypassdnd] and attrs={}, then one second later
+	        // "[ab] [get] +tags [bypassdnd,muted]" put both straight back.
+	        //
+	        // caregiver is a localProperty (per device by design) and read_receipts
+	        // is inverted, so each keeps its own shape; what matters is that the
+	        // key is always present.
+	        attrs.bypassdnd = tags.includes('bypassdnd');
+	        attrs.muted = tags.includes('muted');
+	        attrs.read_receipts = !tags.includes('noread'); // default is true
+	        attrs.caregiver = !!lp.caregiver;
 	    }
 	    return attrs;
 	};
@@ -43702,7 +47711,7 @@ class Sylk extends Component {
 	            }));
 
 	            if (c.storagePurged) {
-	                await this._finalizeContactTombstone(c); // storage already purged → tombstone now
+	                await this._finalizeContactTombstone(c, 'xcap-server-delete'); // storage already purged → tombstone now
 	            } else {
 					await this._setMessagesDeletedForUri(uri, 1);
 	            }
@@ -44683,7 +48692,7 @@ class Sylk extends Component {
 	            if (_onServer) continue;
 	            utils.timestampedLog('[ab] [get] storage-purged contact already gone from server — finalizing tombstone: '
 	                + this._abNormalizeUri(c.uri));
-	            await this._finalizeContactTombstone(c);
+	            await this._finalizeContactTombstone(c, 'ab-sync-gone-from-server');
 	        }
 	        // ORPHAN → GRAVEYARD: a contact that WAS on the server (carries a
 	        // remote_id) but whose server entry is GONE and whose URI is no longer
@@ -45202,11 +49211,43 @@ class Sylk extends Component {
 	//      write into a still-empty / not-yet-loaded document and SEED it - the
 	//      seeding that lets a bogus empty fetch slip past the safety gate and
 	//      mass-bury every contact (2026-07-30 incident).
+	// Hard ceiling on a single XCAP write. Chosen well above any healthy
+	// round-trip (observed: tens of ms) so it only ever fires on a lost
+	// callback, never on a slow-but-alive server.
 	_abWritesReady = () => !!(
 	    this.state.registrationState === 'registered'
 	    && this.state.connection && this.state.connection.state === 'ready'
 	    && this._abServerFetched
 	);
+
+	// Release the first-import setup UI: the amber "Syncing contacts…" pill
+	// and the DND that _abMigrate turned on for the duration of the import.
+	// Idempotent, and the ONLY place either is cleared, so the normal
+	// completion path and the watchdog can't half-clear it between them.
+	// Migration breadcrumb. Records the step for the watchdog AND logs it, so a
+	// stall is located from an ordinary release log instead of having to wait out
+	// the 180s watchdog. The reconcile loop is a handful of contacts, so this is
+	// a dozen lines per sign-in at most.
+	_abStep = (label) => {
+	    this._abMigStep = label;
+	    utils.timestampedLog('[ab] [migrate] step: ' + label);
+	};
+
+	_abClearSetupUi = async (reason) => {
+	    if (this._abSetupWatchdogId) {
+	        clearTimeout(this._abSetupWatchdogId);
+	        this._abSetupWatchdogId = null;
+	    }
+	    if (this._abMigDndActive) {
+	        this._abMigDndActive = false;
+	        utils.timestampedLog('[ab] [migrate] releasing setup DND + syncing spinner (' + reason + ')');
+	        try { await this.endDnd(true); } catch (e) { /* non-fatal */ }
+	        try { await this.setAccountSetting('privacy.dndSetupOwned', false); } catch (e) { /* non-fatal */ }
+	    }
+	    if (this.state._setupDndActive || this.state.contactsSyncing) {
+	        this.setState({ _setupDndActive: false, contactsSyncing: false });
+	    }
+	};
 
 	_abExec = (label, fn) => new Promise((resolve) => {
 	    // FINAL CHOKE POINT for every XCAP write. No server addressbook on
@@ -45235,16 +49276,38 @@ class Sylk extends Component {
 	    // consecutive passes with identical write sets trigger the
 	    // exponential backoff in _abRunReconcile's finally block.
 	    if (this._abPassWrites) this._abPassWrites.push(label);
+	    // Every caller AWAITS this promise, and several of them (notably
+	    // _abMigrate) hold user-visible state — the "Syncing contacts…"
+	    // spinner and a silently-enabled DND — that is only released after
+	    // the await returns. A callback the addressbook client never invokes
+	    // therefore does not just lose one write: it strands the whole import
+	    // and everything it owns. Settle on our own clock instead. The write
+	    // is not lost — local state stays authoritative and the next
+	    // reconcile pass re-PUTs anything the server didn't take.
+	    let _settled = false;
+	    let _timer = null;
+	    const _settle = (ok) => {
+	        if (_settled) return;
+	        _settled = true;
+	        if (_timer) { clearTimeout(_timer); _timer = null; }
+	        resolve(ok);
+	    };
+	    _timer = setTimeout(() => {
+	        utils.timestampedLog('[ab] ' + tag + label + ' TIMED OUT after '
+	            + Math.round(AB_EXEC_TIMEOUT_MS / 1000) + 's — no callback from the addressbook client');
+	        this._abFailCount = (this._abFailCount || 0) + 1;
+	        _settle(false);
+	    }, AB_EXEC_TIMEOUT_MS);
 	    try {
 	        fn((err) => {
 	            if (err) { utils.timestampedLog('[ab] ' + tag + label + ' FAILED: ' + (err && err.message ? err.message : err)); this._abFailCount = (this._abFailCount || 0) + 1; }
 	            else utils.timestampedLog('[ab] ' + tag + label + ' ok');
-	            resolve(!err);
+	            _settle(!err);
 	        });
 	    } catch (e) {
 	        utils.timestampedLog('[ab] ' + tag + label + ' threw ' + (e && e.message));
 	        this._abFailCount = (this._abFailCount || 0) + 1;
-	        resolve(false);
+	        _settle(false);
 	    }
 	});
 
@@ -45320,10 +49383,25 @@ class Sylk extends Component {
 	    // accept both string and native-boolean forms.
 	    const _true = (v) => v === true || v === 'true';
 	    const _false = (v) => v === false || v === 'false';
+	    const removeTag = (tag) => {
+	        contact.tags = contact.tags.filter(t => (t || '').toLowerCase() !== tag);
+	    };
+	    // Symmetric with _abBuildAttrs: an explicit false CLEARS the tag. Only
+	    // ever adding on true meant a flag the user had just turned off could
+	    // never come back off through a sync — it could only ever be re-added,
+	    // which is the other half of the "jumps back on its own" loop. An
+	    // absent attribute still means "no opinion", so older server entries
+	    // that predate explicit writes are left alone.
 	    if (_true(a.bypassdnd)) addTag('bypassdnd');
+	    else if (_false(a.bypassdnd)) removeTag('bypassdnd');
 	    if (_true(a.muted)) addTag('muted');
+	    else if (_false(a.muted)) removeTag('muted');
 	    if (_false(a.read_receipts)) addTag('noread'); // default true
+	    else if (_true(a.read_receipts)) removeTag('noread');
 	    if (_true(a.caregiver)) contact.localProperties = { ...(contact.localProperties || {}), caregiver: true };
+	    else if (_false(a.caregiver) && contact.localProperties && contact.localProperties.caregiver) {
+	        contact.localProperties = { ...contact.localProperties, caregiver: false };
+	    }
 	};
 
 	// Addressbook migration version. Bump to force a cross-device re-run; stored in
@@ -45420,6 +49498,8 @@ class Sylk extends Component {
 	            + ' hasPassword=' + (!!(this.state.password && this.state.password.trim()))
 	            + ' account=' + account);
 
+	        if (hasLocal) this._markKeyEscrowChecked('local key present at escrow check');
+
 	        if (!hasLocal) {
 	            // New device (or a device that lost its key): no local keypair.
 	            // If our own contact carries an escrowed key, try to restore it
@@ -45429,18 +49509,78 @@ class Sylk extends Component {
 	            // exists locally, so return either way.
 	            if (serverKeys && serverKeys.private_key) {
 	                await this._abRestoreSelfKeys(account, serverKeys);
+	            } else {
+	                // We have now READ the self contact and there is no escrow on
+	                // it. A modal held pending that answer must be released here,
+	                // rather than waiting out the 15s backstop.
+	                this._releaseHeldKeyModal('own contact carries no key escrow');
 	            }
 	            return;
 	        }
 
-	        if (serverKeys && !force) {
-	            //utils.timestampedLog('[ab] [keys] present on own contact' + ' — device="' + (serverKeys.device || '?') + '"' + ' timestamp=' + (serverKeys.timestamp || '?'));
-	            return;
+	        // "Something is escrowed" is NOT the same as "the right thing is
+	        // escrowed". The old short-circuit here was `serverKeys && !force`,
+	        // which meant that once ANY escrow existed it was never replaced
+	        // except by a password change made through this app. Generate a new
+	        // keypair (or import a different one) and the self contact went on
+	        // advertising the SUPERSEDED key forever: the backup could only ever
+	        // restore a key the account no longer uses, its public_key was wrong
+	        // for anything that reads it, and nothing in the app would ever
+	        // correct it. Compare identities instead of presence.
+	        const _normKey = (k) => String(k || '').replace(/\r/g, '').trim();
+	        const _escrowedPub = _normKey(serverKeys && serverKeys.public_key);
+	        const _escrowIsCurrentKey = !!_escrowedPub && _escrowedPub === _normKey(keys.public);
+	        // A blob this session already failed to decrypt is not a backup,
+	        // whatever key it names — replace it now that we hold a usable one.
+	        const _escrowUnusable = !!this._abRestoreFailedSig;
+
+	        if (serverKeys && !force && _escrowIsCurrentKey && !_escrowUnusable) {
+	            // Right KEY — but the invariant is that the escrow is readable with
+	            // the CURRENT account password, and the public key says nothing
+	            // about that. A password changed on the web, on another client, or
+	            // on a device that wasn't running when it happened leaves the same
+	            // keypair encrypted under a password nobody has any more, and the
+	            // public keys still agree, so nothing here would ever notice. That
+	            // is precisely how android17 ended up with a June escrow that no
+	            // longer opened: dead backup, no warning, discovered only on the
+	            // new device that needed it.
+	            //
+	            // We hold both halves right now (hasLocal + password), so just try
+	            // it. Cached per (account, escrow write, blob length, password
+	            // length) so this costs one symmetric decrypt per escrow per
+	            // session, not one per addressbook load.
+	            const _pw = ((options.password || this.state.password) || '').trim();
+	            if (!_pw) return;   // can't verify without a password; leave it alone
+	            const _verifySig = account
+	                + '#' + (serverKeys.timestamp || '?')
+	                + '#' + String(serverKeys.private_key || '').length
+	                + '#' + _pw.length;
+	            if (this._abEscrowVerifiedSig === _verifySig) return;
+	            let _opens = false;
+	            try {
+	                const _rt = await OpenPGP.decryptSymmetric(serverKeys.private_key, _pw);
+	                _opens = !!(_rt && _rt.indexOf('BEGIN PGP PRIVATE KEY') > -1);
+	            } catch (e) {
+	                _opens = false;
+	            }
+	            if (_opens) {
+	                this._abEscrowVerifiedSig = _verifySig;
+	                return;
+	            }
+	            utils.timestampedLog('[ab] [keys] escrowed key is this device\'s key but NO LONGER OPENS'
+	                + ' with the current account password (escrow written ' + (serverKeys.timestamp || '?')
+	                + ' by device="' + (serverKeys.device || '?') + '") — the password must have changed'
+	                + ' outside this app; re-encrypting the escrow with the current password');
+	            // fall through and re-escrow
 	        }
 
-	        utils.timestampedLog(serverKeys
-	            ? '[ab] [keys] forced re-escrow (password change) — re-encrypting this device key'
-	            : '[ab] [keys] not present on own contact — escrowing this device key');
+	        utils.timestampedLog('[ab] [keys] escrowing this device key — '
+	            + (force ? 'forced re-escrow (password change)'
+	               : !serverKeys ? 'not present on own contact'
+	               : _escrowUnusable ? 'escrowed blob failed to decrypt this session — replacing it'
+	               : 'escrowed key is NOT this device\'s current key'
+	                 + ' (escrow device="' + (serverKeys.device || '?') + '"'
+	                 + ' written=' + (serverKeys.timestamp || '?') + ') — superseded, replacing it'));
 
 	        // Per-account in-flight guard: don't fire concurrent / repeated writes
 	        // within a session before the server round-trips the new attribute.
@@ -45464,6 +49604,30 @@ class Sylk extends Component {
 	            // react-native-fast-openpgp: (message, passphrase, fileHints,
 	            // options) — KeyOptions is the 4th arg (see exportPrivateKey).
 	            const encryptedPrivate = await OpenPGP.encryptSymmetric(private_key, password, undefined, KeyOptions);
+
+	            // SELF-CHECK before publishing. The escrow is written once and
+	            // then never re-validated (see the `serverKeys && !force`
+	            // short-circuit above), so a blob that cannot be decrypted is
+	            // discovered years later on a new device — at the exact moment
+	            // the user needs it, with no way left to tell a bad blob from a
+	            // changed password. Prove the round-trip HERE, with the same
+	            // arguments the restore path will use (note: restore passes no
+	            // KeyOptions, so neither does this check — if that asymmetry
+	            // ever matters, it fails here instead of silently shipping an
+	            // unrestorable backup).
+	            try {
+	                const _rt = await OpenPGP.decryptSymmetric(encryptedPrivate, password);
+	                if (!_rt || _rt.replace(/\r/g, '').trim() !== private_key) {
+	                    utils.timestampedLog('[ab] [keys] escrow SELF-CHECK FAILED — round-trip did not'
+	                        + ' reproduce the private key; NOT uploading (blob=' + encryptedPrivate.length + ' chars)');
+	                    return;
+	                }
+	                utils.timestampedLog('[ab] [keys] escrow self-check ok — blob=' + encryptedPrivate.length + ' chars');
+	            } catch (e) {
+	                utils.timestampedLog('[ab] [keys] escrow SELF-CHECK THREW — NOT uploading: '
+	                    + (e && e.message ? e.message : e));
+	                return;
+	            }
 
 	            const keyRecord = {
 	                private_key: encryptedPrivate,   // symmetric, account-password protected
@@ -45491,6 +49655,18 @@ class Sylk extends Component {
 	            const ok = await this._abExec(label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
 	            utils.timestampedLog('[ab] [keys] escrow upload ' + (ok ? 'ok' : 'failed')
 	                + ' — device="' + keyRecord.device + '" timestamp=' + keyRecord.timestamp);
+	            // The self contact now carries a blob we just proved decryptable
+	            // with the current password, so any earlier failure verdict is
+	            // obsolete — let a future restore attempt run again.
+	            if (ok) {
+	                this._abRestoreFailedSig = null;
+	                // Freshly written and self-checked against this password — the
+	                // next check can skip straight past the verification decrypt.
+	                this._abEscrowVerifiedSig = account
+	                    + '#' + keyRecord.timestamp
+	                    + '#' + String(encryptedPrivate).length
+	                    + '#' + password.length;
+	            }
 	        } finally {
 	            this._abSelfKeysWriting.delete(account);
 	        }
@@ -45506,11 +49682,15 @@ class Sylk extends Component {
 	// returns false, leaving the manual import-key modal as the fallback.
 	async _abRestoreSelfKeys(account, serverKeys) {
 	    try {
-	        if (!serverKeys || !serverKeys.private_key || !serverKeys.public_key) return false;
+	        if (!serverKeys || !serverKeys.private_key || !serverKeys.public_key) {
+	            this._releaseHeldKeyModal('no usable escrow on own contact');
+	            return false;
+	        }
 
 	        const password = (this.state.password || '').trim();
 	        if (!password) {
 	            utils.timestampedLog('[ab] [keys] escrowed key on own contact but no account password — cannot restore');
+	            this._releaseHeldKeyModal('no account password to open the escrow');
 	            return false;
 	        }
 
@@ -45520,17 +49700,56 @@ class Sylk extends Component {
 	        if (this._abSelfKeysRestoring.has(account)) return false;
 	        this._abSelfKeysRestoring.add(account);
 
+	        // Don't re-attempt an identical (blob, password) pair. _abEnsureSelfKeys
+	        // runs on EVERY addressbook load, so one bad escrow produced a burst of
+	        // identical failures per sign-in (3 in one second in the 2026-08-23
+	        // report). Keyed on the blob tail + password length so a re-escrow from
+	        // another device, or the user correcting the password, retries at once.
+	        // Identify the ATTEMPT, not the armor. The first version of this keyed
+	        // on the blob's last 24 characters — which for any armored PGP message
+	        // is '---END PGP MESSAGE-----\n', identical for every blob ever
+	        // written. That made the latch match a brand-new escrow and silently
+	        // suppress the restore it was supposed to allow. Key on the fields
+	        // that genuinely change between escrows instead: the account, the
+	        // escrow's own write timestamp (stamped per upload), the blob length,
+	        // and the password length.
+	        const _attemptSig = account
+	            + '#' + (serverKeys.timestamp || '?')
+	            + '#' + String(serverKeys.private_key).length
+	            + '#' + password.length;
+	        if (this._abRestoreFailedSig === _attemptSig) {
+	            this._releaseHeldKeyModal('this escrow already failed to decrypt');
+	            return false;
+	        }
+
 	        try {
 	            utils.timestampedLog('[ab] [keys] restoring escrowed key from own contact'
 	                + ' — device="' + (serverKeys.device || '?') + '"'
-	                + ' timestamp=' + (serverKeys.timestamp || '?'));
+	                + ' timestamp=' + (serverKeys.timestamp || '?')
+	                + ' blob=' + String(serverKeys.private_key).length + ' chars');
 
 	            let decrypted;
 	            try {
 	                decrypted = await OpenPGP.decryptSymmetric(serverKeys.private_key, password);
 	            } catch (e) {
-	                utils.timestampedLog('[ab] [keys] restore failed — could not decrypt with account'
-	                    + ' password (wrong password?): ' + (e && e.message ? e.message : e));
+	                this._abRestoreFailedSig = _attemptSig;
+	                this._releaseHeldKeyModal('escrowed key would not decrypt');
+	                // Do NOT assert "wrong password". Registration already proved the
+	                // password is right for the ACCOUNT; what it cannot prove is that
+	                // it is the password the escrow was encrypted WITH. Since the
+	                // escrow is written once and never refreshed, any password change
+	                // made after that date — or on another device / the web — leaves a
+	                // permanently stale blob that fails exactly like a corrupt one.
+	                // Report what we actually know and let the reader decide.
+	                const _armorOk = String(serverKeys.private_key).indexOf('BEGIN PGP MESSAGE') > -1;
+	                utils.timestampedLog('[ab] [keys] restore failed — escrowed key would not decrypt.'
+	                    + ' escrow: device="' + (serverKeys.device || '?') + '"'
+	                    + ' written=' + (serverKeys.timestamp || '?')
+	                    + ' blob=' + String(serverKeys.private_key).length + ' chars'
+	                    + ' armor=' + (_armorOk ? 'ok' : 'MISSING')
+	                    + '. Most likely the account password changed after that date'
+	                    + ' (the escrow is never refreshed), otherwise the stored blob is damaged.'
+	                    + ' openpgp said: ' + (e && e.message ? e.message : e));
 	                return false;
 	            }
 
@@ -45538,10 +49757,12 @@ class Sylk extends Component {
 	            const public_key = (serverKeys.public_key || '').replace(/\r/g, '').trim();
 	            if (!private_key || private_key.indexOf('BEGIN PGP PRIVATE KEY') < 0) {
 	                utils.timestampedLog('[ab] [keys] restore failed — decrypted blob is not a PGP private key');
+	                this._releaseHeldKeyModal('escrow did not contain a private key');
 	                return false;
 	            }
 	            if (!public_key || public_key.indexOf('BEGIN PGP PUBLIC KEY') < 0) {
 	                utils.timestampedLog('[ab] [keys] restore failed — escrow missing a valid public key');
+	                this._releaseHeldKeyModal('escrow missing a valid public key');
 	                return false;
 	            }
 
@@ -45557,6 +49778,7 @@ class Sylk extends Component {
 	        }
 	    } catch (e) {
 	        utils.timestampedLog('[ab] [keys] restore self keys error', e && e.message);
+	        this._releaseHeldKeyModal('restore threw: ' + (e && e.message));
 	        return false;
 	    }
 	};
@@ -45715,7 +49937,28 @@ class Sylk extends Component {
 	    if (ranVersion === 0) {
 	        // _setupDndActive hides the DND UI for this internal setup DND (call-dropping still
 	        // reads privacy.dnd); contactsSyncing drives the syncing spinner and defers the key modal.
-	        try { await this.beginDnd(true); this._abMigDndActive = true; this.setState({ _setupDndActive: true, contactsSyncing: true }); } catch (e) { /* non-fatal */ }
+	        try {
+	            await this.beginDnd(true);
+	            this._abMigDndActive = true;
+	            // Persist WHO owns this DND. If the import below never reaches its
+	            // finally, the flag is all a later launch has to tell "the user
+	            // asked for DND" apart from "an import turned it on and died".
+	            try { await this.setAccountSetting('privacy.dndSetupOwned', true); } catch (e) { /* non-fatal */ }
+	            this.setState({ _setupDndActive: true, contactsSyncing: true });
+	        } catch (e) { /* non-fatal */ }
+	        // Dead-man's switch. The import is a long chain of awaited server and
+	        // SQL calls; a single one that never settles used to strand the
+	        // spinner AND leave DND silently on (the setup path suppresses the
+	        // notification and hides the DND UI, so the user cannot even see it).
+	        if (this._abSetupWatchdogId) clearTimeout(this._abSetupWatchdogId);
+	        this._abSetupWatchdogId = setTimeout(() => {
+	            this._abSetupWatchdogId = null;
+	            utils.timestampedLog('[ab] [migrate] SETUP WATCHDOG fired after '
+	                + Math.round(AB_SETUP_WATCHDOG_MS / 1000) + 's — import never finished at step: '
+	                + (this._abMigStep || '(none recorded)')
+	                + '; releasing DND + spinner so the app is usable and calls ring again');
+	            this._abClearSetupUi('watchdog');
+	        }, AB_SETUP_WATCHDOG_MS);
 	    }
 	    this._abCtx = '[migrate] '; // sub-tag for all _abExec logs during migration
 	    this._abFailCount = 0;      // any failed server op (contact OR group)
@@ -45782,6 +50025,11 @@ class Sylk extends Component {
 	            const newUri = this._abNormServerUri(this._abChosenDefaultUri(s)) || serverUris[0];
 	            reconcileIdx++;
 	            utils.timestampedLog('[ab] [migrate] reconcile ' + reconcileIdx + '/' + reconcileTotal + ' ' + (newUri || '?'));
+	            // Breadcrumb every await in this loop. The loop stalls on ONE of
+	            // them (2026-08-23: iOS android31 and Android android19 both froze
+	            // at 'reconcile 1/3' with no further output), and the watchdog can
+	            // then report which one instead of just "it never finished".
+	            this._abStep('reconcile ' + reconcileIdx + '/' + reconcileTotal + ' ' + (newUri || '?') + ' :: enter');
 	            const byRemote = (this.state.allContacts || []).filter(c => c.remote_id && c.remote_id === s.id);
 	            const byUri = [];
 	            serverUris.forEach(u => this.lookupContacts(u).forEach(c => byUri.push(c)));
@@ -45802,9 +50050,11 @@ class Sylk extends Component {
 	                // Timestamp = chat recency if we have message history, else the fixed historic date
 	                // so pure imports sort below contacts we've talked to.
 	                {
+	                    this._abStep('reconcile ' + reconcileIdx + ' :: insert :: _abLatestMessageTimestamp');
 	                    const lastMsgTs = await this._abLatestMessageTimestamp(contact.uri);
 	                    contact.timestamp = lastMsgTs ? new Date(lastMsgTs * 1000) : this._abImportTimestamp;
 	                }
+	                this._abStep('reconcile ' + reconcileIdx + ' :: insert :: saveSylkContact');
 	                await this.saveSylkContact(contact.uri, contact, 'addressbook-migrate');
 	            } else if (matches.length === 1) {
 	                const c = matches[0];
@@ -45826,15 +50076,18 @@ class Sylk extends Component {
 	                this._abApplyServerAttrs(c, s);
 	                // No message history -> pin to the fixed historic date; contacts with history
 	                // keep their real timestamp (no churn).
+	                this._abStep('reconcile ' + reconcileIdx + ' :: match :: _abLatestMessageTimestamp');
 	                if (!(await this._abLatestMessageTimestamp(c.uri))) c.timestamp = this._abImportTimestamp;
 	                if (sig(c) !== before) {
 	                    // Existing row -> UPDATE directly (skip the INSERT that would just UNIQUE-fail).
+	                    this._abStep('reconcile ' + reconcileIdx + ' :: match :: updateSylkContact');
 	                    await this.updateSylkContact(c, 'addressbook-migrate');
 	                }
 	                // Name sync-up: local name is real but server has only an echo -> put it up so
 	                // every device gets it. Never the reverse.
 	                if (c.remote_id && c.name && !this._abIsUriEcho(c.name, this._abLocalContactUris(c))
 	                    && this._abIsUriEcho(s.name, [newUri || c.uri, ...this._abServerUris(s)])) {
+	                    this._abStep('reconcile ' + reconcileIdx + ' :: match :: _abExec name-sync');
 	                    await this._abExec('updateContact ' + this._abLocalToServerUri(c.uri) + ' (name-sync)',
 	                        cb => ab.updateContact(this._abServerContactPayload(c, c.remote_id), cb));
 	                }
@@ -45926,11 +50179,7 @@ class Sylk extends Component {
 	        this._abMigrationRunning = false;
 	        // Clear the setup UI (spinner + DND) first, then surface any deferred modal so it
 	        // never overlaps the spinner.
-	        if (this._abMigDndActive) {
-	            this._abMigDndActive = false;
-	            try { await this.endDnd(true); } catch (e) { /* non-fatal */ }
-	        }
-	        this.setState({ _setupDndActive: false, contactsSyncing: false });
+	        await this._abClearSetupUi('migration finished');
 	        if (this._abMigCleanDone) {
 	            this._abMigCleanDone = false;
 	            this._onContactsReady();
@@ -46108,8 +50357,43 @@ class Sylk extends Component {
 	    return n ? Math.min(base * Math.pow(2, n), 300000) : base;
 	};
 
+	// Which _abReady() preconditions are currently unmet, as a readable list.
+	// _abReady is consulted from five different readiness edges and returns a
+	// bare false, so a pipeline stalled on ONE missing precondition produced no
+	// output at all — the 2026-08-23 fresh-enrollment stall was invisible in the
+	// logs except as an absence. Name the blockers instead.
+	_abReadyBlockers = () => {
+	    const acc = this.state.accountId;
+	    const missing = [];
+	    if (!acc) missing.push('accountId=none');
+	    if (this.state.addressBookServer !== true) missing.push('addressBookServer=' + this.state.addressBookServer);
+	    if (!(this.state.connection && this.state.connection.state === 'ready')) {
+	        missing.push('connection=' + (this.state.connection ? this.state.connection.state : 'null'));
+	    }
+	    if (!this.state.contactsLoaded) missing.push('contactsLoaded=false');
+	    if (this._contactsAccountId !== acc) missing.push('contactsAccountId=' + (this._contactsAccountId || 'none'));
+	    if (this._accountSettingId !== acc) missing.push('accountSettingId=' + (this._accountSettingId || 'none'));
+	    if (this._abServerDataAccount !== acc) missing.push('serverDataAccount=' + (this._abServerDataAccount || 'none'));
+	    return missing;
+	};
+
 	_abMaybeRun = (source) => {
-	    if (!this._abReady()) return;
+	    if (!this._abReady()) {
+	        // Log only when the blocking SET changes, not on every edge — this
+	        // fires in bursts and the steady state during a normal sign-in is
+	        // "not ready yet" for a second or two. A blocker list that stops
+	        // changing is the signature of a permanent stall.
+	        const _blockers = this._abReadyBlockers().join(', ');
+	        if (this._abLastBlockers !== _blockers) {
+	            this._abLastBlockers = _blockers;
+	            utils.timestampedLog('[ab] not ready (edge=' + source + ') — waiting on: ' + _blockers);
+	        }
+	        return;
+	    }
+	    if (this._abLastBlockers) {
+	        utils.timestampedLog('[ab] ready (edge=' + source + ')');
+	        this._abLastBlockers = null;
+	    }
 	    this._abPendingSource = source;
 	    if (this._abDebounceTimer) return;            // a reconcile is already scheduled
 	    const _delay = this._abNextDelay(500);
@@ -46290,7 +50574,11 @@ class Sylk extends Component {
 			contact.deletedTimestamp = item.deleted_timestamp || null;
 			contact.storagePurged = item.storage_purged || null;
 			contact.uris = item.uris ? item.uris.split(',').map(u => u.trim()).filter(Boolean) : [];
-			contact.photo = item.photo;
+			// A stored photo can be a dead pointer (iOS container paths change
+			// on every reinstall / OS purge of Library/Caches). Reject it at the
+			// point it enters the object graph so no consumer renders an empty
+			// grey circle; the address-book backfill fills it back in.
+			contact.photo = this._abPhotoUsable(item.photo) ? item.photo : null;
 			contact.publicKey = item.public_key;
 			contact.direction = item.direction;
 			contact.tags = item.tags ? item.tags.split(',').map(tag => tag.trim()) : [];
@@ -46535,7 +50823,7 @@ class Sylk extends Component {
                 // setUnreadForContact x N calls applied the new values, and
                 // by the time getAllUnread executed it saw the populated
                 // map. Result was the visually-impossible log line
-                // "native messages total=0 perContact={fluke33:1, living233:1}".
+                // "native messages total=0 perContact={contactA:1, contactB:1}".
                 // Summing the map gives one atomic snapshot — no race.
                 UnreadModule.getAllUnread().then((nativeMap) => {
                     const _missedFetch = (typeof UnreadModule.getAllMissedCalls === 'function')
@@ -46730,6 +51018,19 @@ class Sylk extends Component {
 			contact = this.newContact(uri);
 		}
 
+        // newContact() -> sanitizeContact() returns null for any URI the
+        // sanitizer refuses (non-ASCII local part, stray punctuation, a
+        // trailing '@', a display name typed into the address field, ...).
+        // Without this guard the next line dereferenced null and took the
+        // whole app down from a plain Save tap -- see the 8.3.5 crash
+        // "TypeError: Cannot set property 'uri' of null". The identical
+        // check already existed after the second sanitizeContact() call
+        // further down; it just never covered the creation path.
+        if (!contact) {
+            this._notificationCenter.postSystemNotification('Invalid contact ' + uri);
+            return;
+        }
+
         contact.uri = uri;
         // Multi-URI support: the edit modal can submit several addresses. Each
         // bare entry gets the default domain; the primary (contact.uri) is kept
@@ -46761,12 +51062,27 @@ class Sylk extends Component {
         // the URI echo. Store '' instead so the next load doesn't
         // re-seed the same bad value, and the user can type a real
         // name without first clearing the field.
-        contact.name = (
-            typeof contactObject.displayName === 'string'
-            && contactObject.displayName.trim().toLowerCase() === uri.toLowerCase()
-        ) ? '' : contactObject.displayName;
-        contact.organization = contactObject.organization;
-        contact.email = contactObject.email;
+        //
+        // GUARD: only the editor modals (Add/Edit contact) speak the
+        // `displayName` / `organization` / `email` shape. Other callers hand us
+        // a CONTACT-shaped object instead — DoNotDisturbModal submits
+        // `{...selectedContact, tags}`, which carries `name`, not
+        // `displayName`. Assigning unconditionally set contact.name to
+        // `undefined`, saveSylkContact then wrote `contact.name || ''` and the
+        // real display name was gone; worse, origin 'editContact' replicated
+        // the empty name to the server, so every device lost it too. A field
+        // the caller did not supply must be left exactly as it was.
+        if (contactObject.displayName !== undefined) {
+            contact.name = (
+                typeof contactObject.displayName === 'string'
+                && contactObject.displayName.trim().toLowerCase() === uri.toLowerCase()
+            ) ? '' : contactObject.displayName;
+        } else if (typeof contactObject.name === 'string') {
+            // Contact-shaped submit: honour its own `name` field.
+            contact.name = contactObject.name;
+        }
+        if (contactObject.organization !== undefined) contact.organization = contactObject.organization;
+        if (contactObject.email !== undefined) contact.email = contactObject.email;
         // Editing a contact's metadata (name / org / email / tags) is NOT
         // conversation activity, so it must NOT bump the sort timestamp — the
         // list orders by it and the user shouldn't see an edited contact jump
@@ -46850,11 +51166,29 @@ class Sylk extends Component {
             return;
         }
 
-        if (!contact.photo) {
-            var name_idx = contact.name.trim().toLowerCase();
-            if (name_idx in this.state.avatarPhotos) {
-                contact.photo = this.state.avatarPhotos[name_idx];
+        // Auto-answer moved from the contact kebab into EditContactModal, so
+        // this save path is now one of the two places it can be switched on.
+        // The tag + localProperties mirror travel with contactObject like any
+        // other field; what does NOT travel is the multi-device metadata
+        // message, which is the whole reason toggleAutoAnswer() existed. Fire
+        // it here on the off->on transition only -- turning it off is local
+        // and needs no announcement.
+        try {
+            const _prevAA = !!((originalContact || fallbackExisting || {}).localProperties || {}).autoanswer;
+            const _nextAA = !!(contact.localProperties && contact.localProperties.autoanswer);
+            if (_nextAA && !_prevAA) {
+                utils.timestampedLog('[ab] [edit] autoanswer false→true → replicating OFF to other devices');
+                this._replicateAutoAnswer(contact.uri || uri, true);
             }
+        } catch (e) { /* replication must never break a save */ }
+
+        // Same resolution order as the load path: URI first (this is where an
+        // OS contact whose email IS the Sylk URI gets matched), display name
+        // only as a fallback. The old name-only lookup missed every contact
+        // saved under a name that differs from the address-book spelling.
+        if (!contact.photo || !this._abPhotoUsable(contact.photo)) {
+            const _photo = this._abPhotoForContact(contact.uri || uri, contact.name);
+            contact.photo = _photo || null;
         }
 
         // Log what the user actually changed, in the SAME field format as the
@@ -46869,6 +51203,7 @@ class Sylk extends Component {
                 email: (x && x.email) || '',
                 tags: [...((x && Array.isArray(x.tags)) ? x.tags : [])].sort(),
                 caregiver: !!(x && x.localProperties && x.localProperties.caregiver),
+                autoanswer: !!(x && x.localProperties && x.localProperties.autoanswer),
                 uris: [...((x && Array.isArray(x.uris)) ? x.uris : (x && x.uri ? [x.uri] : []))].sort(),
             });
             const _pe = _snapE(_prior);
@@ -46886,6 +51221,7 @@ class Sylk extends Component {
             if (_uAdd.length) _ed.push('+uris ' + JSON.stringify(_uAdd));
             if (_uDel.length) _ed.push('-uris ' + JSON.stringify(_uDel));
             if (_pe.caregiver !== _ne.caregiver) _ed.push('caregiver ' + _pe.caregiver + '→' + _ne.caregiver);
+            if (_pe.autoanswer !== _ne.autoanswer) _ed.push('autoanswer ' + _pe.autoanswer + '→' + _ne.autoanswer);
             const _hdr = '[ab] [edit] ' + action + ' by user → ' + this._abNormalizeUri(uri);
             if (!_ed.length) {
                 utils.timestampedLog(_hdr + ' | no field changes');
@@ -47020,7 +51356,7 @@ class Sylk extends Component {
                 if (remaining.length === 0) {
                     utils.timestampedLog('[ab] [uri-steal] ' + (other.uri || other.id)
                         + ' left with no URI after move → delete');
-                    await this.deleteSylkContact(other, {force: true});
+                    await this.deleteSylkContact(other, {force: true, reason: 'uri-steal'});
                 } else {
                     other.uri = remaining[0];   // re-home the primary to a survivor
                     other.uris = remaining;
@@ -47297,7 +51633,7 @@ class Sylk extends Component {
         let uuidPattern = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/gi;
         let isUUID = uri.match(uuidPattern);
 
-        if (!isUUID && !isNumber && !utils.isEmailAddress(uri) && username !== '*') {
+        if (!isUUID && !isNumber && !utils.isSipAddress(uri) && username !== '*') {
             //console.log('Sanitize check failed for uri:', uri);
             conferenceObject = utils.parseSylkConferenceUrl(uri);
             if (!conferenceObject) {
@@ -47444,26 +51780,36 @@ class Sylk extends Component {
         this.saveSylkContact(contact.uri, contact, 'toggleAutoAnswer');
 
 		if (autoanswer && replicate) {
-			const mId = uuid.v4();
-			const timestamp = new Date();
-			
-			const metadataContent = {
-									 action: 'autoanswer',
-									 value: autoanswer,
-									 timestamp: timestamp,
-									 uri: contact.uri,
-									 device: this.deviceId
-									 };
-		
-			const metadataMessage = {_id: mId,
-								   key: mId,
-								   createdAt: timestamp,
-								   metadata: metadataContent,
-								   text: JSON.stringify(metadataContent),
-								   };
-	
-			this.sendMessage(this.state.accountId, metadataMessage, 'application/sylk-message-metadata');
+			this._replicateAutoAnswer(contact.uri, autoanswer);
 		}
+    }
+
+    // Auto-answer is a PER-DEVICE setting, so switching it ON here has to tell
+    // the other devices to switch it OFF -- otherwise two of them race to pick
+    // up the same call. Extracted from toggleAutoAnswer() because the toggle is
+    // no longer only in the contact kebab: EditContactModal now carries it (next
+    // to Caregiver) and commits it through saveContactByUser, which calls this
+    // on the same off->on transition.
+    _replicateAutoAnswer(uri, value) {
+        const mId = uuid.v4();
+        const timestamp = new Date();
+
+        const metadataContent = {
+                                 action: 'autoanswer',
+                                 value: value,
+                                 timestamp: timestamp,
+                                 uri: uri,
+                                 device: this.deviceId
+                                 };
+
+        const metadataMessage = {_id: mId,
+                               key: mId,
+                               createdAt: timestamp,
+                               metadata: metadataContent,
+                               text: JSON.stringify(metadataContent),
+                               };
+
+        this.sendMessage(this.state.accountId, metadataMessage, 'application/sylk-message-metadata');
     }
 
     // Toggles the 'caregiver' tag (and its localProperties mirror) on
@@ -48765,7 +53111,7 @@ class Sylk extends Component {
         // app load), and a freshly saved room would silently invite
         // the previous people the very next time the user starts it.
         // Observed live: edit the room from {costindinu,mi} →
-        // {tijmen,fluke33}, save (SQL update succeeds), then start the
+        // {contactA,contactB}, save (SQL update succeeds), then start the
         // call ~8min later → callKeepStartConference receives
         // {costindinu,mi} instead. Bucket key is the room's LOCAL
         // part to match how loadSylkContacts populates this map
@@ -48816,8 +53162,8 @@ class Sylk extends Component {
 			let newContact = this.newContact(uri);
 
 			// newContact() returns null whenever sanitizeContact() rejects the
-			// URI - i.e. it is not a UUID, not a phone number, not email-shaped
-			// per utils.isEmailAddress and not a sylk://<host>/conference/<room>
+			// URI - i.e. it is not a UUID, not a phone number, not address-shaped
+			// per utils.isSipAddress and not a sylk://<host>/conference/<room>
 			// URL. Real cases seen off a SIP trunk: an IP-address domain
 			// (alice@192.168.1.5 - the domain regex demands an alphabetic TLD),
 			// a :port suffix, a leftover `sip:` prefix in the local part, and
@@ -48837,7 +53183,7 @@ class Sylk extends Component {
 
 			// First-time contact creation for a phone-number call: copy
 			// over identity from the system address book (display name +
-			// photo) so the new Sylk row reads "Flori Georgescu" instead
+			// photo) so the new Sylk row reads "Jane Doe" instead
 			// of just "+40xxxx", and tag it 'tel' so other code paths
 			// can branch on "this is a telephone number, not a SIP user"
 			// (e.g. disable chat/forwarding, route to a phone icon, etc.).
@@ -49360,6 +53706,11 @@ return (
 				    multi-batch sync. To restrict the blocking overlay to the
 				    first sync only, add `&& !this.state.lastSyncId`. */}
 				{this.state.journalSyncActive && !this.state.lastSyncId && !this.state.selectedContact && (
+					/* [navbar-vanish fix] Rendered through a Portal (same host the
+					   known-good LoadingScreen uses) instead of as an in-tree sibling
+					   of <Switch>. A toggled full-screen sibling was leaving the
+					   NavigationBar un-composited on Android when it unmounted. */
+					<Portal>
 					<View
 					  pointerEvents="auto"
 					  style={{
@@ -49372,12 +53723,21 @@ return (
 						alignItems: 'center',
 						backgroundColor: 'rgba(0,0,0,0.2)', // optional dim
 						zIndex: 9999,
-						elevation: 9999, // Android
+						// [navbar-vanish fix] elevation deliberately NOT set (was 9999).
+						// Same defect already fixed on the chatOpenLoading overlay above:
+						// an extreme native Android elevation on a TOGGLED full-screen
+						// sibling leaves the NavigationBar (and the tablet button bar)
+						// un-composited when the overlay is torn down. This one only
+						// mounts on a FIRST journal sync (journalSyncActive && !lastSyncId),
+						// i.e. exactly the first sign-in of a new account — which is where
+						// the 'app is naked, no navbar' report came from. zIndex alone is
+						// enough for stacking here.
 					  }}
 						>
 						<ActivityIndicator animating={true} size={'large'} color={"#D32F2F"} />
 						<Title style={{ color: '#fff', textAlign: 'center'}}>Sync messages from server...</Title>
 					</View>
+					</Portal>
 					)
 					}
 
@@ -49964,6 +54324,12 @@ return (
     showLogs() {
        this.setState({showLogsModal: true});
        const _logfile = utils.getLogfilePath();
+       // Close any settled delete burst first so its summary line is already in
+       // the audit file if the user is opening this to report a sweep that just
+       // happened. 3 s of quiet required — a sweep still in progress keeps
+       // accumulating into one summary instead of being chopped up by the
+       // viewer's 2 s refresh.
+       this._flushContactDeleteBurst(3000);
        RNFS.readFile(_logfile, 'utf8').then((content) => {
            // Only emit the "Read N bytes" trace when the file size has
            // actually changed since the last poll. The live-tail timer
@@ -49974,7 +54340,25 @@ return (
                this._lastLogReadSize = content.length;
            }
            const lastlines = content.split('\n').slice(-MAX_LOG_LINES).join('\n');
-           this.setState({logs: lastlines});
+           // Prepend the contact-deletion audit. The main log only reaches back
+           // ~4 days on an active account; the audit does not roll over, so a
+           // deletion reported weeks later still arrives with the evidence
+           // attached. It goes at the TOP so the viewer's live-tail still lands
+           // on the newest ordinary log line, and it travels with every "Send
+           // to support" upload because LogsModal ships exactly this body
+           // (anonymizeEmails() runs over it too, so URIs stay consistent with
+           // the rest of the log).
+           utils.readDeletionAudit().then((audit) => {
+               const body = audit
+                   ? ('===== CONTACT DELETION AUDIT (persistent, never trimmed) =====\n'
+                      + audit.replace(/\s+$/, '')
+                      + '\n===== END CONTACT DELETION AUDIT =====\n\n'
+                      + lastlines)
+                   : lastlines;
+               this.setState({logs: body});
+           }).catch(() => {
+               this.setState({logs: lastlines});
+           });
        });
     }
 
@@ -50257,7 +54641,6 @@ return (
                     deleteMessage = {this.deleteMessage}
                     deleteFiles = {this.deleteFiles}
                     toggleFavorite = {this.toggleFavorite}
-                    toggleAutoAnswer = {this.toggleAutoAnswer}
                     toggleAutoDialer = {this.toggleAutoDialer}
                     startAutoDialer = {this.startAutoDialer}
                     autoDialerUri = {this.state.autoDialerUri}
@@ -50274,6 +54657,7 @@ return (
                     startCall = {this.callKeepStartCall}
                     startConference = {this.callKeepStartConference}
                     saveContactByUser = {this.saveContactByUser}
+                    refreshAddressBook = {this.refreshAddressBook}
                     contactHasStoredMessages = {this.contactHasStoredMessages}
                     sendPublicKey = {this.sendPublicKeyToUri}
                     sendMessage = {this.sendMessage}
@@ -50489,6 +54873,13 @@ return (
                     backupMessages = {this.backupMessages}
                     openRestoreMessages = {this.openRestoreMessages}
                     activeContactsFilter = {this.state.activeContactsFilter}
+                    /* {callButtons, locationShare} — which session buttons
+                       ReadyBox is currently rendering under this navbar.
+                       The kebab hides the items those buttons already
+                       cover (Audio call / Video call / Share-Stop
+                       location) so the same action isn't offered twice
+                       one tap apart. */
+                    sessionButtons = {this.state.sessionButtons}
                     // Fires every time NavigationBar's internal
                     // activeLocationShares map changes. We mirror it into
                     // app.js state so ReadyBox can render its own pulsing
@@ -50625,6 +55016,22 @@ return (
                     restoreGraveyardContacts = {this.restoreGraveyardContacts}
                     contactHasStoredMessages = {this.contactHasStoredMessages}
                     onContactsFilterChange = {(f) => this.setState({activeContactsFilter: f})}
+                    /* ReadyBox owns the decision about which session
+                       buttons are on screen (showButtonsBar + the
+                       per-button getters). It reports the subset that has
+                       a matching kebab entry up here; NavigationBar reads
+                       it below to drop those duplicated menu items. Only
+                       set state when a flag actually flips — ReadyBox
+                       already diffs, this is belt-and-braces against a
+                       render loop. */
+                    onSessionButtonsChange = {(flags) => {
+                        const cur = this.state.sessionButtons || {};
+                        if (cur.callButtons === flags.callButtons
+                            && cur.locationShare === flags.locationShare) {
+                            return;
+                        }
+                        this.setState({sessionButtons: flags});
+                    }}
                     callHistoryUrl = {this.state.callHistoryUrl}
                     refreshAccountInfo = {() => this.refreshAccountInfo({ force: true })}
                     fontScale = {this.state.fontScale}
@@ -50730,6 +55137,11 @@ return (
                                  && this.state.accountSetting.privacy
                                  && this.state.accountSetting.privacy.dnd)}
                     contactsSyncing = {!!this.state.contactsSyncing}
+                    /* False until the "is a key coming?" question has an answer.
+                       Gates every "you have no private key" surface so none of
+                       them can fire during the startup window where the key is
+                       simply not loaded yet. */
+                    keyEscrowChecked = {!!this.state.keyEscrowChecked}
                     storageUpToDate = {!!this.state.storageUpToDateBanner}
                     toggleDnd = {this.toggleDnd}
                     isTablet = {this.state.isTablet}
@@ -50791,6 +55203,10 @@ return (
                     pinMessage = {this.pinMessage}
                     unpinMessage = {this.unpinMessage}
                     selectContact = {this.selectContact}
+                    /* External tel:/sip: dial link → prefill the URI
+                       field (see dialFromExternalUrl). */
+                    dialUriSignal = {this.state.externalDialUri}
+                    onDialUriConsumed = {this.clearExternalDialUri}
                     inviteContacts = {this.state.inviteContacts}
                     shareToContacts = {this.state.shareToContacts}
                     selectedContacts = {this.state.selectedContacts}
@@ -51008,6 +55424,11 @@ return (
                 <LocationRequestModal
                     show={this.state.locationRequestModal.show}
                     fromUri={this.state.locationRequestModal.fromUri}
+                    /* Lets the modal notice that a DIFFERENT request has taken
+                       over an already-open prompt (the peer re-sent the ask
+                       inside our 45 s window and we re-present in place), so
+                       its duration picker resets to "Once" for the new one. */
+                    requestId={this.state.locationRequestModal.requestId}
                     fromName={(() => {
                         const _u = this.state.locationRequestModal.fromUri;
                         if (!_u) return null;
@@ -51015,7 +55436,9 @@ return (
                         return (_c && _c.name && _c.name !== _u) ? _c.name : null;
                     })()}
                     policyAcknowledged={this.state.locationRequestModal.policyAcknowledged}
-                    onAccept={() => this._acceptLocationRequest()}
+                    permissionLevel={this.state.locationRequestModal.permissionLevel}
+                    plainShareLive={this.state.locationRequestModal.plainShareLive}
+                    onAccept={(option) => this._acceptLocationRequest(option)}
                     onDecline={() => this._declineLocationRequest()}
                     close={() => this._closeLocationRequestModal()}
                 />
@@ -51135,8 +55558,16 @@ return (
         // is sufficient on its own: VideoBox gates BOTH the prompt
         // (videoEnableDialogVisible) and the initial `track.enabled = false`
         // on props.videoMuted.
+        //
+        // ...and EXCEPT for a call from a caregiver contact, for the same
+        // reason in a different shape: a caregiver rings precisely because the
+        // person on this end may not be able to reach the phone and tap
+        // "Start camera", so their video call goes live immediately. The call
+        // still rings and is still answered by hand — only the prompt is
+        // skipped. See _isCaregiverCall.
         const videoMuted = !!this.state.incomingCall
-            && !this._isAutoAnsweredCall(this.state.incomingCall);
+            && !this._isAutoAnsweredCall(this.state.incomingCall)
+            && !this._isCaregiverCall(this.state.incomingCall);
 
         // Compute the <Call> mount key (see the comment on the key prop
         // below for what this is for). When activeCall is non-null we
@@ -51208,6 +55639,11 @@ return (
                    INVITE / 200 OK (see _buildOutgoingHeaders). Same
                    constant NavigationBar shows and QoS reports embed. */
                 userAgent = {USER_AGENT}
+                /* Device id this client registers its push token under
+                   (getUniqueIdSync, see setDeviceToken) — Call.js puts it
+                   on the outgoing INVITE as X-Sylk-Device-Id so the
+                   originating device is identifiable end-to-end. */
+                deviceId = {this.deviceId}
                 account = {this.state.account}
                 targetUri = {this.state.targetUri}
                 /* PSTN dialing rules from the per-domain
@@ -51652,6 +56088,16 @@ return (
         // pass re-imported the ENTIRE previous account's server addressbook
         // (contacts + groups) after the contact index was wiped above.
         this._abGeneration = (this._abGeneration || 0) + 1;
+        // The "this escrow won't decrypt" latch belongs to the account we are
+        // leaving. Signing back in (or into another account) must get a fresh
+        // restore attempt, not inherit the previous session's verdict.
+        this._abRestoreFailedSig = null;
+        this._abEscrowVerifiedSig = null;
+        // "Created on this device" belongs to the account we are leaving.
+        this._enrolledAccountId = null;
+        // Forget the blocker set so the next account logs its own readiness
+        // trail from scratch instead of inheriting the old one's.
+        this._abLastBlockers = null;
         if (this._abDebounceTimer) {
             clearTimeout(this._abDebounceTimer);
             this._abDebounceTimer = null;
@@ -51702,6 +56148,7 @@ return (
             clearTimeout(this.registrationFailureTimer);
             this.registrationFailureTimer = null;
         }
+        this._resetRegistrationRetry('logout');
 
         // NOTE on what is CLEARED here vs PRESERVED:
         //   Cleared (account-specific): accountId, password, registrationState,
@@ -51724,6 +56171,7 @@ return (
                        status: null,
                        keys: null,
                        keyStatus: {},
+                       keyEscrowChecked: false,
                        lastSyncId: null,
                        lastSyncTimestamp: null,
                        accountVerified: false,

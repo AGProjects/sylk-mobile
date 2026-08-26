@@ -23,6 +23,7 @@
 //
 
 #import "NotificationService.h"
+@import Intents;   // INSendMessageIntent -- communication notifications
 
 static NSString *const kAppGroup = @"group.com.agprojects.sylk-ios";
 
@@ -42,7 +43,50 @@ static NSDictionary *SylkReadDisplayNames(void) {
     return [plist isKindOfClass:[NSDictionary class]] ? plist : nil;
 }
 
+// Reads the set of contact URIs the app has tagged `bypassdnd`. Returns
+// nil if the file is absent or unreadable, which means "nobody bypasses"
+// — a missing file must never upgrade a stranger's push.
+static NSSet<NSString *> *SylkReadBypassDnd(void) {
+    NSURL *c = [[NSFileManager defaultManager]
+        containerURLForSecurityApplicationGroupIdentifier:kAppGroup];
+    if (c == nil) { return nil; }
+    NSString *path = [[c URLByAppendingPathComponent:@"contactBypassDnd.plist"] path];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data == nil) { return nil; }
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                         options:0
+                                                          format:NULL
+                                                           error:NULL];
+    if (![plist isKindOfClass:[NSArray class]]) { return nil; }
+    NSMutableSet<NSString *> *set = [NSMutableSet set];
+    for (id v in (NSArray *)plist) {
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+            [set addObject:[(NSString *)v lowercaseString]];
+        }
+    }
+    return set;
+}
+
+// Reads the mirrored in-app DND flag. NO when absent or unreadable, so a
+// missing file can never silence anything.
+static BOOL SylkReadAppDnd(void) {
+    NSURL *c = [[NSFileManager defaultManager]
+        containerURLForSecurityApplicationGroupIdentifier:kAppGroup];
+    if (c == nil) { return NO; }
+    NSString *path = [[c URLByAppendingPathComponent:@"appDnd.plist"] path];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data == nil) { return NO; }
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                         options:0
+                                                          format:NULL
+                                                           error:NULL];
+    if (![plist isKindOfClass:[NSDictionary class]]) { return NO; }
+    id v = ((NSDictionary *)plist)[@"dnd"];
+    return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : NO;
+}
+
 @interface NotificationService ()
+- (void)donateAndDeliverForUri:(NSString *)fromUri displayName:(NSString *)displayName;
 @property (nonatomic, strong) void (^contentHandler)(UNNotificationContent *contentToDeliver);
 @property (nonatomic, strong) UNMutableNotificationContent *bestAttemptContent;
 @end
@@ -54,6 +98,12 @@ static NSDictionary *SylkReadDisplayNames(void) {
 {
     self.contentHandler = contentHandler;
     self.bestAttemptContent = [request.content mutableCopy];
+
+    // Set inside the @try, read after it. A suppressed notification must not
+    // be donated: donating would tell the system this is a communication
+    // worth surfacing, which is the opposite of what the bell asked for.
+    __block BOOL suppressedForDnd = NO;
+    __block NSString *commFromUri = nil;
 
     @try {
         NSDictionary *data = request.content.userInfo[@"data"];
@@ -191,10 +241,196 @@ static NSDictionary *SylkReadDisplayNames(void) {
             NSLog(@"[SYLK_APP] [nse] sylk-location-sharing banner action='%s' from '%s'",
                   [locAction UTF8String], [who UTF8String]);
         }
+        // Do-Not-Disturb bypass. A notification delivered at the default
+        // UNNotificationInterruptionLevelActive is exactly what a system
+        // Focus / DND silences, so the app's per-contact `bypassdnd` tag
+        // had no effect at all on message pushes — it was only ever read
+        // on the PushKit call path (AppDelegate canBypassDnd:). Raising
+        // the level to .timeSensitive here is what actually breaks a
+        // message banner through.
+        //
+        // Requires the com.apple.developer.usernotifications.time-sensitive
+        // entitlement on BOTH this extension and the containing app;
+        // without it iOS silently downgrades back to .active — no error,
+        // no log, which is why this is worth logging explicitly.
+        //
+        // Note the user still owns the final say: a Focus has a per-app
+        // "Time Sensitive Notifications" toggle (on by default). If they
+        // turn it off for Sylk, nothing short of .critical gets through,
+        // and that needs a separate Apple-approved entitlement.
+        if (fromUri != nil) {
+            NSSet<NSString *> *bypass = SylkReadBypassDnd();
+            BOOL bypassing = [bypass containsObject:fromUri];
+            BOOL appDndOn = SylkReadAppDnd();
+
+            // Log the gate inputs UNCONDITIONALLY, every message. Logging
+            // only the branch that fires makes "the gate said no" and "this
+            // build doesn't have the gate" indistinguishable in a capture —
+            // which is exactly what happened chasing the app-DND case on
+            // 2026-08-19. bypassSet is the entry count so a silently empty
+            // or unreadable contactBypassDnd.plist shows up here too.
+            NSLog(@"[SYLK_APP] [nse] gate: appDnd=%s bypassing=%s bypassSet=%lu",
+                  appDndOn ? "ON" : "off",
+                  bypassing ? "yes" : "no",
+                  (unsigned long)bypass.count);
+
+            // In-app DND (privacy.dnd, the navbar bell) applied to MESSAGE
+            // pushes. The call paths enforce this natively, but a message
+            // banner is drawn by iOS from the server's alert push and the
+            // app never got a say — so with the bell on, a text still
+            // popped a bubble.
+            //
+            // .passive delivers the notification straight to Notification
+            // Center: no banner, no sound, no lock-screen wake. The message
+            // is not lost, it just stops interrupting — which is what the
+            // bell means. Contacts tagged bypassdnd skip this entirely and
+            // go on to the time-sensitive upgrade below.
+            if (!bypassing && appDndOn) {
+                // Deliver CONTENT WITH NOTHING TO DISPLAY.
+                //
+                // .passive alone was not enough: it stops the screen waking
+                // and the sound, but iOS still draws the banner while the
+                // user is on the device, so a text still popped a bubble
+                // with the bell on (verified 2026-08-19 14:17 -- the gate
+                // fired, the banner appeared anyway).
+                //
+                // Apple gives a notification service extension no way to
+                // cancel a push. Handing back an empty UNMutableNotification-
+                // Content is the accepted workaround: no title, no body, no
+                // sound means there is no alert to render. userInfo is
+                // carried over so anything that inspects the payload still
+                // sees it.
+                //
+                // This is not a documented guarantee -- it is behaviour, and
+                // Apple could change it. The durable fix is server-side:
+                // don't send the alert push at all when the account's DND is
+                // on and the sender isn't tagged bypassdnd.
+                UNMutableNotificationContent *quiet =
+                    [[UNMutableNotificationContent alloc] init];
+                quiet.userInfo = self.bestAttemptContent.userInfo ?: @{};
+                if (@available(iOS 15.0, *)) {
+                    quiet.interruptionLevel = UNNotificationInterruptionLevelPassive;
+                }
+                self.bestAttemptContent = quiet;
+                suppressedForDnd = YES;
+                NSLog(@"[SYLK_APP] [nse] app DND -- suppressing banner for '%s'",
+                      [fromUri UTF8String]);
+            }
+
+            commFromUri = fromUri;
+
+            if (bypassing) {
+                if (@available(iOS 15.0, *)) {
+                    self.bestAttemptContent.interruptionLevel =
+                        UNNotificationInterruptionLevelTimeSensitive;
+                    // Float it to the top of a grouped/summarised stack too.
+                    self.bestAttemptContent.relevanceScore = 1.0;
+                    NSLog(@"[SYLK_APP] [nse] dnd-bypass: time-sensitive for '%s'",
+                          [fromUri UTF8String]);
+                }
+            }
+        }
     } @catch (NSException *e) {
-        NSLog(@"[SYLK_APP] [nse] exception %s — delivering unchanged",
+        NSLog(@"[SYLK_APP] [nse] exception %s -- delivering unchanged",
               [(e.reason ?: @"(nil)") UTF8String]);
         // Fall through and deliver the unmodified copy.
+    }
+
+    // Communication notification. Donating an INSendMessageIntent for the
+    // sender and re-deriving the content from it is what makes iOS treat this
+    // as a message from a PERSON rather than an alert from an app: contact
+    // avatar in the banner, and -- the reason we are here -- eligibility for
+    // Focus's per-person allow list, so one contact can break through a Focus
+    // while the rest stay silent, without Blink being allow-listed wholesale.
+    //
+    // Skipped when the bell suppressed the notification: there is nothing to
+    // decorate, and donating would assert the opposite of what DND asked for.
+    if (!suppressedForDnd && commFromUri != nil) {
+        [self donateAndDeliverForUri:commFromUri
+                         displayName:self.bestAttemptContent.title];
+        return;
+    }
+
+    self.contentHandler(self.bestAttemptContent);
+}
+
+/// Donate the interaction, then deliver content derived from it. Falls back to
+/// the plain content on any failure -- a communication notification is an
+/// upgrade, and never getting one must never cost the user the banner.
+- (void)donateAndDeliverForUri:(NSString *)fromUri displayName:(NSString *)displayName
+{
+    if (@available(iOS 15.0, *)) {
+        @try {
+            // A Sylk address is user@domain -- exactly the shape of an email
+            // handle -- so iOS matches it against the email fields of the
+            // user's contact cards. That match is the whole mechanism: it is
+            // what puts the sender on a contact card and makes Focus's People
+            // allow list apply. Apple requires the handle type AND
+            // suggestionType none together for an exact contact match.
+            //
+            // customIdentifier carries the URI so a sender with no contact
+            // card still gets a stable identity (and a contact suggestion)
+            // rather than collapsing into one anonymous person.
+            INPersonHandle *handle =
+                [[INPersonHandle alloc] initWithValue:fromUri
+                                                 type:INPersonHandleTypeEmailAddress];
+            INPerson *sender =
+                [[INPerson alloc] initWithPersonHandle:handle
+                                        nameComponents:nil
+                                           displayName:(displayName.length > 0 ? displayName : fromUri)
+                                                 image:nil
+                                     contactIdentifier:nil
+                                      customIdentifier:fromUri
+                                                  isMe:NO
+                                        suggestionType:INPersonSuggestionTypeNone];
+
+            // content stays nil: the notification body is already set (and for
+            // an encrypted message we do not have the plaintext here anyway).
+            // conversationIdentifier is the peer URI, stable for a 1-to-1
+            // thread, which is what groups the banners together.
+            INSendMessageIntent *intent =
+                [[INSendMessageIntent alloc] initWithRecipients:nil
+                                            outgoingMessageType:INOutgoingMessageTypeOutgoingMessageText
+                                                        content:nil
+                                             speakableGroupName:nil
+                                         conversationIdentifier:fromUri
+                                                    serviceName:@"Sylk"
+                                                         sender:sender
+                                                    attachments:nil];
+
+            INInteraction *interaction =
+                [[INInteraction alloc] initWithIntent:intent response:nil];
+            interaction.direction = INInteractionDirectionIncoming;
+
+            __weak NotificationService *weakSelf = self;
+            [interaction donateInteractionWithCompletion:^(NSError * _Nullable error) {
+                NotificationService *strongSelf = weakSelf;
+                if (strongSelf == nil) { return; }
+                if (error != nil) {
+                    NSLog(@"[SYLK_APP] [nse] comm-notification donate failed: %s -- plain banner",
+                          [[error localizedDescription] UTF8String]);
+                    strongSelf.contentHandler(strongSelf.bestAttemptContent);
+                    return;
+                }
+                NSError *updErr = nil;
+                UNNotificationContent *updated =
+                    [strongSelf.bestAttemptContent contentByUpdatingWithProvider:intent
+                                                                           error:&updErr];
+                if (updated != nil && updErr == nil) {
+                    NSLog(@"[SYLK_APP] [nse] comm-notification for '%s'",
+                          [fromUri UTF8String]);
+                    strongSelf.contentHandler(updated);
+                } else {
+                    NSLog(@"[SYLK_APP] [nse] comm-notification update failed: %s -- plain banner",
+                          [[updErr localizedDescription] UTF8String]);
+                    strongSelf.contentHandler(strongSelf.bestAttemptContent);
+                }
+            }];
+            return;
+        } @catch (NSException *e) {
+            NSLog(@"[SYLK_APP] [nse] comm-notification exception %s -- plain banner",
+                  [(e.reason ?: @"(nil)") UTF8String]);
+        }
     }
 
     self.contentHandler(self.bestAttemptContent);

@@ -1,8 +1,107 @@
 diff --git a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
-index 025480a..4fafb89 100644
+index 025480a..3a892df 100644
 --- a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
 +++ b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
-@@ -1178,6 +1178,17 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+@@ -439,6 +439,49 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+         this.displayIncomingCall(uuid, number, callerName, false, null);
+     }
+ 
++    /**
++     * Build a properly-schemed URI for an address handed to Telecom. (patched)
++     *
++     * Every destination this app dials is a SIP address; a PSTN call is just a
++     * SIP address whose user part happens to be a phone number. This URI is
++     * what Telecom forwards to the in-call UI, to Bluetooth HFP and to Android
++     * Auto, and all of them key off the SCHEME -- so a bare string
++     * ("4444@sylk.link", which Uri.parse turns into a SCHEMELESS uri), or the
++     * wrong scheme (Uri.fromParts(SCHEME_TEL, ...) produced the nonsensical
++     * "tel:4444@sylk.link"), leaves the address unrenderable downstream.
++     *
++     *   already schemed (tel:/sip:/sips:) -> kept verbatim
++     *   contains '@'                      -> sip:user@domain
++     *   otherwise                         -> tel:<number>
++     *
++     * The two cases are already separated upstream: CallManager.callKitHandle
++     * strips the domain off a phone number, so numbers arrive bare
++     * ("+31641372960") while SIP addresses keep their '@'.
++     */
++    static Uri toTelecomUri(String address) {
++        if (address == null) {
++            return null;
++        }
++        String value = address.trim();
++        if (value.isEmpty()) {
++            return null;
++        }
++        String lower = value.toLowerCase();
++        if (lower.startsWith("tel:") || lower.startsWith("sip:") || lower.startsWith("sips:")) {
++            return Uri.parse(value);
++        }
++        // Uri.parse, NOT Uri.fromParts. fromParts percent-ENCODES the
++        // scheme-specific part, so "4444@sylk.link" becomes
++        // "sip:4444%40sylk.link". Telecom itself decodes that via
++        // getSchemeSpecificPart, but the ENCODED form is what anything that
++        // renders the address verbatim ends up showing. Uri.parse keeps the
++        // literal form. (patched)
++        if (value.indexOf('@') > -1) {
++            return Uri.parse(PhoneAccount.SCHEME_SIP + ":" + value);
++        }
++        return Uri.parse(PhoneAccount.SCHEME_TEL + ":" + value);
++    }
++
+     @ReactMethod
+     public void displayIncomingCall(String uuid, String number, String callerName, boolean hasVideo) {
+         this.displayIncomingCall(uuid, number, callerName, hasVideo, null);
+@@ -453,7 +496,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+         Log.d(TAG, "[RNCallKeepModule] displayIncomingCall, uuid: " + uuid + ", number: " + number + ", callerName: " + callerName + ", hasVideo: " + hasVideo + ", payload: " + payload);
+ 
+         Bundle extras = new Bundle();
+-        Uri uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, number, null);
++        Uri uri = toTelecomUri(number); // (patched) sip: for SIP addresses
+ 
+         extras.putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, uri);
+         extras.putString(EXTRA_CALLER_NAME, callerName);
+@@ -502,7 +545,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+         }
+ 
+         Bundle extras = new Bundle();
+-        Uri uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, number, null);
++        Uri uri = toTelecomUri(number); // (patched) sip: for SIP addresses
+ 
+         Bundle callExtras = new Bundle();
+         callExtras.putString(EXTRA_CALLER_NAME, callerName);
+@@ -944,7 +987,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+             return;
+         }
+ 
+-        conn.setAddress(Uri.parse(uri), TelecomManager.PRESENTATION_ALLOWED);
++        conn.setAddress(toTelecomUri(uri), TelecomManager.PRESENTATION_ALLOWED); // (patched)
+         conn.setCallerDisplayName(displayName, TelecomManager.PRESENTATION_ALLOWED);
+     }
+ 
+@@ -1135,6 +1178,21 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+             builder.setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER);
+         }
+ 
++        // NOT opted into the system call log: PhoneAccount
++        // .EXTRA_LOG_SELF_MANAGED_CALLS is deliberately left unset here, to
++        // match SylkTelecom.register(). See the long rationale there --
++        // mangled sip: addresses, name=NULL on every non-contact, and Recents
++        // redial falling through to the SIM as a real carrier call. (patched)
++
++        // Declare which URI schemes this account handles. Unset, the account
++        // reports an EMPTY supported-scheme list, which makes it malformed for
++        // anything that asks "can this account handle this address?" -- the
++        // outgoing account picker among them. tel: is what placeCall() builds
++        // (Uri.fromParts(SCHEME_TEL, ...)); sip: covers SIP addresses.
++        // (patched)
++        builder.setSupportedUriSchemes(java.util.Arrays.asList(
++                PhoneAccount.SCHEME_TEL, PhoneAccount.SCHEME_SIP));
++
+         if (_settings != null && _settings.hasKey("imageName")) {
+             int identifier = appContext.getResources().getIdentifier(_settings.getString("imageName"), "drawable", appContext.getPackageName());
+             Icon icon = Icon.createWithResource(appContext, identifier);
+@@ -1178,6 +1236,17 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
  
          boolean hasPermissions = true;
          for (String permission : permissions) {
@@ -20,6 +119,23 @@ index 025480a..4fafb89 100644
              int permissionCheck = ContextCompat.checkSelfPermission(context, permission);
              if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
                  hasPermissions = false;
+diff --git a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnection.java b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnection.java
+index 1ea76fb..ddc719e 100644
+--- a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnection.java
++++ b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnection.java
+@@ -70,7 +70,11 @@ public class VoiceConnection extends Connection {
+         String name = handle.get(EXTRA_CALLER_NAME);
+ 
+         if (number != null) {
+-            setAddress(Uri.parse(number), TelecomManager.PRESENTATION_ALLOWED);
++            // (patched) Uri.parse("4444@sylk.link") yields a SCHEMELESS uri, and
++            // this is the address Telecom hands to BT-HFP and Android Auto.
++            // Route it through the shared helper so a SIP address becomes
++            // sip:user@domain and a bare number becomes tel:<number>.
++            setAddress(RNCallKeepModule.toTelecomUri(number), TelecomManager.PRESENTATION_ALLOWED);
+         }
+         if (name != null && !name.equals("")) {
+             setCallerDisplayName(name, TelecomManager.PRESENTATION_ALLOWED);
 diff --git a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java b/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java
 index 5d58692..d1cd6d7 100644
 --- a/node_modules/react-native-callkeep/android/src/main/java/io/wazo/callkeep/VoiceConnectionService.java
@@ -88,11 +204,31 @@ index 5d58692..d1cd6d7 100644
      @Override
      public void onConference(Connection connection1, Connection connection2) {
          Log.d(TAG, "[VoiceConnectionService] onConference");
+diff --git a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.h b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.h
+index c8e7bbd..3d01dd4 100644
+--- a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.h
++++ b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.h
+@@ -47,4 +47,15 @@ continueUserActivity:(NSUserActivity *)userActivity
+ 
+ + (void)setup:(NSDictionary *)options;
+ 
++// Read / replace CXProviderConfiguration.ringtoneSound on the LIVE provider.
++// CallKit has no per-call ring control -- CXCallUpdate carries no sound
++// property -- so the only way to make one specific reportNewIncomingCall
++// silent is to retune the provider around it and put it back afterwards.
++// Used by AppDelegate's suppressed-call path (DND / blocked / muted /
++// anonymous / in-conference), where PushKit forces us to report a call we
++// intend to end immediately and the system ringtone would otherwise blare
++// for the moment it is on screen.
+++ (NSString * _Nullable)providerRingtoneSound;
+++ (void)setProviderRingtoneSound:(NSString * _Nullable)soundName;
++
+ @end
 diff --git a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
-index 786045f..0098257 100644
+index 786045f..8708a82 100644
 --- a/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
 +++ b/node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m
-@@ -370,6 +370,11 @@ RCT_EXPORT_METHOD(endCall:(NSString *)uuidString)
+@@ -370,6 +370,11 @@ + (void)setup:(NSDictionary *)options {
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][endCall] uuidString = %@", uuidString);
  #endif
@@ -104,7 +240,30 @@ index 786045f..0098257 100644
      NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
      CXEndCallAction *endCallAction = [[CXEndCallAction alloc] initWithCallUUID:uuid];
      CXTransaction *transaction = [[CXTransaction alloc] initWithAction:endCallAction];
-@@ -913,34 +918,54 @@ RCT_EXPORT_METHOD(getAudioRoutes: (RCTPromiseResolveBlock)resolve
+@@ -876,6 +881,22 @@ + (int)getHandleType:(NSString *)handleType
+     }
+ }
+ 
+++ (NSString * _Nullable)providerRingtoneSound
++{
++    if (sharedProvider == nil) { return nil; }
++    return sharedProvider.configuration.ringtoneSound;
++}
++
+++ (void)setProviderRingtoneSound:(NSString * _Nullable)soundName
++{
++    if (sharedProvider == nil) { return; }
++    // CXProviderConfiguration is a value object; mutate a copy and reassign,
++    // which is the supported way to update a live provider's configuration.
++    CXProviderConfiguration *cfg = [sharedProvider.configuration copy];
++    cfg.ringtoneSound = soundName;
++    sharedProvider.configuration = cfg;
++}
++
+ + (CXProviderConfiguration *)getProviderConfiguration:(NSDictionary*)settings
+ {
+ #ifdef DEBUG
+@@ -913,34 +934,54 @@ + (CXProviderConfiguration *)getProviderConfiguration:(NSDictionary*)settings
  - (void)configureAudioSession
  {
  #ifdef DEBUG
@@ -166,7 +325,7 @@ index 786045f..0098257 100644
  }
  
  + (BOOL)application:(UIApplication *)application
-@@ -1080,6 +1105,10 @@ RCT_EXPORT_METHOD(reportUpdatedCall:(NSString *)uuidString contactIdentifier:(NS
+@@ -1080,6 +1121,10 @@ - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAct
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performAnswerCallAction]");
  #endif
@@ -177,7 +336,7 @@ index 786045f..0098257 100644
      [self configureAudioSession];
      [self sendEventWithNameWrapper:RNCallKeepPerformAnswerCallAction body:@{ @"callUUID": [action.callUUID.UUIDString lowercaseString] }];
      [action fulfill];
-@@ -1091,6 +1120,11 @@ RCT_EXPORT_METHOD(reportUpdatedCall:(NSString *)uuidString contactIdentifier:(NS
+@@ -1091,6 +1136,11 @@ - (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)
  #ifdef DEBUG
      NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performEndCallAction]");
  #endif

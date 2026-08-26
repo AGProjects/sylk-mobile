@@ -476,7 +476,7 @@ class DeleteHistoryModal extends Component {
                     </Text>
                 ) : (
                     <Text style={styles.body}>
-                        Delete Sylk data from this device.
+                        Delete Blink data from this device.
                         {"\n"}{"\n"}
                         Messages will remain on the server. To delete messages on the server too, you must delete individually all contacts.
                     </Text>

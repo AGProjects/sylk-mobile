@@ -29,7 +29,7 @@ const ConferenceDrawerFiles = (props) => {
     return (
         <Fragment>
             <List.Section>
-                <List.Subheader>Shared Files</List.Subheader>
+                <List.Subheader>Shared files</List.Subheader>
                 {entries}
             </List.Section>
         </Fragment>

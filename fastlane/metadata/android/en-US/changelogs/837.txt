@@ -1,0 +1,2 @@
+Fix for mounting navbar at 1st start
+Fixes for enrollment

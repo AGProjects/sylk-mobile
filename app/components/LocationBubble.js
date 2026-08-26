@@ -129,6 +129,26 @@ function latLngToTileFrac(latitude, longitude, zoom) {
     return { xFrac, yFrac, maxTile: n };
 }
 
+// Inverse of latLngToTileFrac: fractional slippy-tile coords back to
+// lat/lng. Used by the share-location picker's crosshair, which reads
+// the coordinate sitting under the centre of the frame after the user
+// has dragged the tiles around underneath it. Web Mercator is a pure
+// function of the tile fraction, so this is exact (to float precision)
+// for any zoom — it is NOT an approximation that degrades when zoomed
+// out. Latitude is clamped by the projection itself: yFrac outside
+// [0, n] would mean "off the top/bottom of the world", which the
+// caller prevents by clamping the pan offset.
+function tileFracToLatLng(xFrac, yFrac, zoom) {
+    const n = Math.pow(2, zoom);
+    const longitude = (xFrac / n) * 360 - 180;
+    // atan(sinh(...)) is the inverse of the asinh(tan(...)) above.
+    const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * yFrac) / n)));
+    return {
+        latitude: (latRad * 180) / Math.PI,
+        longitude,
+    };
+}
+
 // Pick a zoom level that fits all supplied points inside the map frame
 // with a little padding on each side. Walks zoom from MAX_ZOOM down
 // and returns the highest (i.e. most zoomed-in) zoom at which the
@@ -320,7 +340,7 @@ function haversineMeters(a, b) {
 //     ("John Doe" → "JD", "Mary Jane Wilkins" → "MJ").
 //   • Single-word name → first two letters ("Alice" → "AL").
 //   • URI / email-like string → first two letters of the local part
-//     ("ag@ag-projects.com" → "AG", "sip:bob@…" → "BO").
+//     ("alice@ag-projects.com" → "AL", "sip:bob@…" → "BO").
 // Returns "?" when the input is empty or unusable so the avatar still
 // renders a stable shape rather than collapsing.
 function initialsFromName(name) {
@@ -575,7 +595,14 @@ const StaticMap = memo((props) => {
     // of the frame — cheap insurance against blank strips at the side.
     // The tile cache dedupes across bubbles so extra tiles here cost a
     // first-paint only.
-    const span = visiblePoints.length > 1 ? 2 : 1;
+    // Widen to 5x5 whenever the frame is panned away from centre. The
+    // prop doc above promises "~512 px of pan headroom in every
+    // direction", but a single-point map used to render only 3x3, so
+    // panning past ~128 px walked straight off the rendered tiles and
+    // into grey. Any non-zero pan (the bubble's arrow buttons, or the
+    // share picker's crosshair drag) now gets the wider grid.
+    const _isPanned = (Number(panX) || 0) !== 0 || (Number(panY) || 0) !== 0;
+    const span = (visiblePoints.length > 1 || _isPanned) ? 2 : 1;
     for (let dx = -span; dx <= span; dx++) {
         for (let dy = -span; dy <= span; dy++) {
             const tx = xTile + dx;
@@ -2995,5 +3022,12 @@ export { StaticMap };
 // user pin offscreen). The modal's own +/- buttons then adjust
 // FROM the fitted value.
 export { pickZoomToFitPoints };
+
+// The forward/inverse Web-Mercator projection pair, exported so the
+// share-location picker can turn a pixel pan offset back into a real
+// coordinate without duplicating (and drifting from) this math.
+// TILE_SIZE goes with them: pan offsets are in pixels, and the caller
+// needs the same pixels-per-tile constant StaticMap lays tiles out on.
+export { latLngToTileFrac, tileFracToLatLng, TILE_SIZE };
 
 export default LocationBubble;

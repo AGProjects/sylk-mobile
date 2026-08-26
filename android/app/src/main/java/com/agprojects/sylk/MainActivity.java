@@ -158,6 +158,23 @@ public class MainActivity extends ReactActivity {
 
         //SylkLogger.d("[app] handleIntent action=" + action + " data=" + data);
 
+        // Dial-out intents. The system dialer, the contacts app and
+        // some click-to-dial widgets send ACTION_DIAL with a tel:/sip:
+        // URI instead of the ACTION_VIEW a browser uses. Both mean the
+        // same thing to us, but React Native's LinkingModule only
+        // reports ACTION_VIEW from getInitialURL(), so a cold start via
+        // ACTION_DIAL would reach JS with no URL at all. Rewrite the
+        // action in place — this is the activity's own intent object, so
+        // the setIntent() below (and the one onNewIntent already did)
+        // point at the same instance — and let the ACTION_VIEW branch
+        // handle it from here.
+        if (Intent.ACTION_DIAL.equals(action) && data != null) {
+            SylkLogger.d("[app] Dial intent rewritten to ACTION_VIEW: " + data);
+            intent.setAction(Intent.ACTION_VIEW);
+            setIntent(intent);
+            action = Intent.ACTION_VIEW;
+        }
+
         // This exactly mirrors what SplashActivity forwarded
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
 			SylkLogger.d("[app] handleViewIntent");

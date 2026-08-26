@@ -55,7 +55,31 @@ const UserIcon = (props) => {
     // "  John   Smith" still yields "JS".
     let initials = '';
 
-    if (name) {
+    // Phone numbers get the LAST two digits instead of the first two
+    // characters. Running the rule above on '+31641372960' produced '+3'
+    // for every Dutch number in the list — same badge, same generated
+    // colour bucket neighbours, nothing to tell them apart. The tail
+    // digits vary per subscriber: +31641372960 -> '60',
+    // +31641371120 -> '20'.
+    //
+    // Only when there is no real name to use. A contact may carry no name
+    // at all, or a "name" that is just the URI or the number echoed back —
+    // addHistoryEntry auto-creates contacts for calls to unknown numbers,
+    // and older rows stored the URI as the display name (saveContactByUser
+    // now refuses to, but the existing rows are still out there).
+    const _uri = props.identity.uri || '';
+    const _rawName = (props.identity.name || '').trim();
+    const _uriLocal = _uri.indexOf('@') > -1 ? _uri.split('@')[0] : _uri;
+    const _hasRealName = !!_rawName
+        && _rawName.toLowerCase() !== _uri.trim().toLowerCase()
+        && _rawName.toLowerCase() !== _uriLocal.trim().toLowerCase()
+        && !utils.isPhoneNumber(_rawName);
+
+    const _phoneLabel = _hasRealName ? null : utils.phoneAvatarLabel(_uri);
+
+    if (_phoneLabel) {
+        initials = _phoneLabel;
+    } else if (name) {
         const parts = name.trim().split(/\s+/).filter(Boolean);
         if (parts.length >= 2) {
             initials = parts[0][0] + parts[1][0];
