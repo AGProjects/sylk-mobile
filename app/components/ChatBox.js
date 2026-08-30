@@ -1088,9 +1088,15 @@ class ChatBox extends Component {
         // Derived reads (filter=contactsFilter, targetUri, selectMode,
         // graveyardContacts||[], contactSource||'sylk') are computed inline
         // from props at their use sites now.
+        // NOTE: showDeleteMessageModal is *not* mirrored here. No parent
+        // ever passes it (it is opened by the bubble context menu via
+        // setState and closed by closeDeleteMessageModal), so mirroring it
+        // wrote `undefined` into state on every single prop update — and
+        // file-transfer progress ticks re-render this component several
+        // times a second, which silently dismissed the delete dialog while
+        // the user was still looking at it.
         this.setState({isTyping: nextProps.isTyping,
                        messagesCategoryFilter: nextProps.messagesCategoryFilter,
-                       showDeleteMessageModal: nextProps.showDeleteMessageModal,
                        })
 
         if (nextProps.isTyping) {
@@ -7934,15 +7940,38 @@ class ChatBox extends Component {
 					   </View>
 					  </View>
 
-					  {/* Play — opens the standalone player card. Sits on the
-						  kebab line, to the right of the label. */}
+					  {/* Play — opens the standalone player card. The same
+						  blue disc the player card itself uses, rather than
+						  a bare glyph tinted like the label beside it: this
+						  is the one thing in the bubble you press, and on a
+						  white Day-mode bubble a dark triangle read as
+						  punctuation next to the text rather than as a
+						  control. Centred on the bubble's cross axis and
+						  held at the right edge, so it sits opposite the
+						  kebab whatever height the label and the transfer
+						  bar give the row. */}
 					  {!isTransfering ?
 					  <IconButton
 						icon="play"
-						size={24}
+						// A quarter off the diameter. IconButton sizes its disc
+						// from the glyph, so the glyph is what shrinks: 24 -> 18.
+						size={18}
 						onPress={() => this.toggleAudioPlayback(currentMessage)}
-						style={{ margin: 0 }}
-						iconColor={_audioTextFg}
+						style={[styles.playAudioButton, {
+							alignSelf: 'center',
+							// The bubble is a FIXED width (_audioWrapperWidth in
+							// ChatBubble.js) and this row has no horizontal
+							// padding, so a disc flush against the right edge
+							// rides over the rounded corner and its border.
+							// Held clear of it, and nudged down off the label's
+							// baseline so it reads as a control beside the text
+							// rather than punctuation at the end of it.
+							marginLeft: 0,
+							marginRight: 12,
+							marginTop: 8,
+							marginBottom: 0,
+						}]}
+						iconColor="white"
 					  />
 					  : null}
 				</View>

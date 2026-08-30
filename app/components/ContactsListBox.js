@@ -775,7 +775,6 @@ class ContactsListBox extends Component {
                        keys: nextProps.keys,
                        sourceContact: nextProps.sourceContact,
                        isTexting: nextProps.isTexting,
-                       showDeleteMessageModal: nextProps.showDeleteMessageModal,
                        selectMode: nextProps.shareToContacts || nextProps.inviteContacts || nextProps.contactSelectMode,
                        searchMessages: nextProps.searchMessages,
                        searchString: nextProps.searchString,

@@ -48,6 +48,11 @@ function SessionButtonsBar(props) {
         callButtonDisabled,
         videoButtonDisabled,
         conferenceButtonDisabled,
+        // Share-to-contacts: no recipient picked yet -> Share is a no-op
+        // (shareContent() would just tear the share session down and drop
+        // the incoming file), so the button stays greyed until at least
+        // one contact is ticked in the list.
+        shareContentDisabled,
 
         // Location-share visual state.
         isSharingCurrentContact,
@@ -291,7 +296,8 @@ function SessionButtonsBar(props) {
                   <View style={styles.buttonContainer}>
                       <TouchableHighlight style={styles.roundshape}>
                         <IconButton
-                            style={!shareToContacts ? disabledBlueButtonClass : blueButtonClass}
+                            style={shareContentDisabled ? disabledBlueButtonClass : blueButtonClass}
+                            disabled={shareContentDisabled}
                             size={32}
                             onPress={onShareContent}
                             icon="share"
@@ -352,6 +358,7 @@ SessionButtonsBar.propTypes = {
     callButtonDisabled: PropTypes.bool,
     videoButtonDisabled: PropTypes.bool,
     conferenceButtonDisabled: PropTypes.bool,
+    shareContentDisabled: PropTypes.bool,
 
     isSharingCurrentContact: PropTypes.bool,
     locationSharePulse: PropTypes.any,

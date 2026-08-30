@@ -138,6 +138,11 @@ The current actions that piggyback on this pattern are:
   [`sylk-message-metadata.md`](./sylk-message-metadata.md#consumed).
 - `peaks` — per-100ms amplitude waveform for audio recordings. See
   [`sylk-message-metadata.md`](./sylk-message-metadata.md#peaks).
+- `call_recording` — which conversation a call recording belongs in, with
+  the party PGP-armoured. A recording is uploaded from the account to
+  itself, so its addresses cannot say, and `call_recording_party` on the
+  upload is dropped here like everything else. See
+  [`sylk-message-metadata.md`](./sylk-message-metadata.md#call_recording).
 
 Receivers handle the **wire-ordering race** (the small follow-up can
 overtake the broadcast, especially since the broadcast is gated on the

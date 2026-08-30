@@ -46,7 +46,7 @@ without decrypting it.
 | [`text/pgp-private-key`](./pgp-private-key.md)             | self | yes | Multi-device private-key sync (account → own devices)  |
 | [`text/pgp-public-key-imported`](./pgp-public-key-imported.md) | self | no | Notify own devices that a private key was imported     |
 | [`application/sylk-file-transfer`](./sylk-file-transfer.md)   | both | yes | File / image / audio / video attachment                |
-| [`application/sylk-message-metadata`](./sylk-message-metadata.md) | both | yes | Out-of-band metadata about another message ("consumed", per-contact toggles, audio waveform peaks). Also carried location ticks before they moved to their own type |
+| [`application/sylk-message-metadata`](./sylk-message-metadata.md) | both | yes | Out-of-band metadata about another message ("consumed", per-contact toggles, audio waveform peaks, where a call recording belongs). Also carried location ticks before they moved to their own type |
 | [`application/sylk-location-sharing`](./sylk-location-sharing-v2.md) | both | coords only | One-shot / live / meet-me location sharing. Cleartext lifecycle envelope in `metadata`, PGP-encrypted coordinates in `content`. Current wire is **[v2](./sylk-location-sharing-v2.md)**; **[v1](./sylk-location-sharing-v1.md)** (whole envelope inside `content`) is still accepted on receive |
 | [`application/sylk-live-location`](./sylk-live-location.md)   | local | n/a | Synthetic UI bubble — never sent on the wire           |
 | [`application/sylk-contact-update`](./sylk-contact-update.md) | self | yes | Replicate contact edits across own devices             |

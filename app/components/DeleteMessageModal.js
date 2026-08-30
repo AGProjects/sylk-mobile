@@ -32,20 +32,40 @@ class DeleteMessageModal extends Component {
             remoteDelete: canDeleteRemote,
             afterDelete: false,
             confirm: false,
+            messages: Array.isArray(this.props.messages) ? this.props.messages.slice() : [],
         }
     }
 
     UNSAFE_componentWillReceiveProps(nextProps) {
+        // Only (re)seed when the dialog actually opens. The parent
+        // (ChatBox) re-renders on every file-transfer progress tick, and
+        // re-seeding on each of those threw away whatever the user had
+        // toggled mid-dialog. While the dialog stays open we own our own
+        // state: the message ids were already snapshotted on open and
+        // that's all the delete needs.
+        const opening = nextProps.show && !this.state.show;
+        if (!opening) {
+            if (!nextProps.show && this.state.show) {
+                this.setState({show: false});
+            }
+            return;
+        }
+
         const canDeleteRemote = nextProps.canDeleteRemote !== false;
-        this.setState({show: nextProps.show,
+        this.setState({show: true,
                        uri: nextProps.contact ? nextProps.contact.uri : null,
                        username: nextProps.contact && nextProps.contact.uri ? nextProps.contact.uri.split('@')[0] : null,
                        displayName: nextProps.contact ? nextProps.contact.name : null,
-                       confirm: nextProps.confirm,
+                       confirm: false,
                        contact: nextProps.contact,
-                       // Reset the toggle to match what's allowed each time
+                       // Reset the toggles to match what's allowed each time
                        // a new selection opens the modal.
                        remoteDelete: canDeleteRemote,
+                       afterDelete: false,
+                       // Snapshot the target ids: the delete only needs
+                       // these, so nothing that happens in the chat view
+                       // afterwards can change what we're about to delete.
+                       messages: Array.isArray(nextProps.messages) ? nextProps.messages.slice() : [],
                        });
     }
 
@@ -56,7 +76,10 @@ class DeleteMessageModal extends Component {
             const allowRemote = this.props.canDeleteRemote !== false;
             const remoteDelete = allowRemote && this.state.remoteDelete;
             this.setState({confirm: false, remoteDelete: allowRemote, afterDelete: false});
-            for (const id of this.props.messages) {
+            const targets = (this.state.messages && this.state.messages.length)
+                ? this.state.messages
+                : (this.props.messages || []);
+            for (const id of targets) {
 				this.props.deleteMessageFunc(id, this.state.uri, remoteDelete, this.state.afterDelete,
 					'user:delete-bubble');
 		    }
@@ -83,6 +106,9 @@ class DeleteMessageModal extends Component {
         // incoming message (can't instruct the remote device to delete
         // messages it originated). Defaults to true for back-compat.
         let canDeleteRemote = this.props.canDeleteRemote !== false;
+        const msgCount = (this.state.messages && this.state.messages.length)
+            ? this.state.messages.length
+            : (this.props.messages ? this.props.messages.length : 0);
 
         return (
         <Portal>
@@ -99,7 +125,7 @@ class DeleteMessageModal extends Component {
 
                     </View>
                          <Text style={styles.body}>
-                             Are you sure you want to delete {this.props.messages?.length} {this.props.messages?.length == 1 ? 'message' : 'messages'}?
+                             Are you sure you want to delete {msgCount} {msgCount == 1 ? 'message' : 'messages'}?
                          </Text>
                         {canDeleteRemote && (
                             <PlatformToggle

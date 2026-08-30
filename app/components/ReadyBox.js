@@ -2060,6 +2060,15 @@ class ReadyBox extends Component {
         return this.callButtonDisabled;
     }
 
+    // Share-from-outside mode: the blue Share button in the top action
+    // strip must stay inert until the user has ticked at least one
+    // recipient. Firing shareContent() with an empty selection just calls
+    // endShareContent() and silently drops the incoming attachment, which
+    // reads as "Share did nothing".
+    get shareContentDisabled() {
+        return !(this.props.selectedContacts && this.props.selectedContacts.length > 0);
+    }
+
     get conferenceButtonDisabled() {
         if (!this.props.canSend()) {
             return true;
@@ -3673,6 +3682,7 @@ class ReadyBox extends Component {
                             callButtonDisabled={this.callButtonDisabled}
                             videoButtonDisabled={this.videoButtonDisabled}
                             conferenceButtonDisabled={this.conferenceButtonDisabled}
+                            shareContentDisabled={this.shareContentDisabled}
 
                             isSharingCurrentContact={this._isSharingCurrentContact(this.props)}
                             locationSharePulse={this._locationSharePulse}

@@ -19,7 +19,7 @@ Every `sylk-message-metadata` body is a JSON object with at least:
 
 ```jsonc
 {
-  "action":     "<consumed|autoanswer|caregiver|location|location_request>",
+  "action":     "<label|consumed|autoanswer|caregiver|location|location_request|peaks|call_recording>",
   "messageId":  "<UUID — the message this metadata is about>",
   "metadataId": "<UUID — null on the origin tick, set on follow-ups>",
   "value":      "<action-specific>",
@@ -30,6 +30,11 @@ Every `sylk-message-metadata` body is a JSON object with at least:
 `messageId` and `metadataId` together let the receiver tell "first event for
 this thing" (`metadataId == null`) apart from "follow-up update" (the
 location-share follow-up tick is the canonical case).
+
+`call_recording` is the exception on both counts: it keys on
+`fileTransferId` — the same kind of id `peaks` carries as `messageId`, but
+named for what it is — and has no `metadataId`, because nothing follows up
+on it. New actions should follow it rather than the older shape.
 
 ## Sub-types by `action`
 
@@ -222,6 +227,92 @@ only special-case is at message-load time: the replay loop writes
 `existingMsg.metadata.peaks = value` (where the bubble reads from) instead of
 the default `existingMsg[action] = value` (which is where rotation / label /
 reply go because their renderers read top-level fields).
+
+### `call_recording`
+
+Says which conversation a call recording belongs in. Sent by the recording
+device to **its own account**, so every device of that account files the
+recording under the person who was on the call.
+
+Why it is needed at all: a call recording is uploaded from the account to
+**itself**. SylkServer will not accept an upload claiming a sender other
+than the account that authorises it, and nobody but the recorder should
+receive the recording of a call — so the transfer's `sender` and `receiver`
+are both us, and a device filing it by its addresses puts it in the
+notes-to-self chat. `call_recording` and `call_recording_party` stamped on
+the upload do not help: both are outside the broadcast's allow-list and are
+dropped (see
+[`sylk-file-transfer.md`](./sylk-file-transfer.md#custom-fields-and-the-sylkserver-broadcast)).
+
+**The party does not travel in clear.** Who was on the call is the one
+sensitive fact here, so `value` is PGP-armoured to the recording account's
+own key — the same split as
+[`sylk-location-sharing` v2](./sylk-location-sharing-v2.md), where the
+lifecycle is cleartext and the coordinates are sealed. The cleartext says
+only what any observer of the upload already knows: that some transfer is a
+call recording, and which one.
+
+```jsonc
+{
+  "action":         "call_recording",
+  "fileTransferId": "109f3804-be11-4834-ad98-38d06bafa1df",
+  "value":          "-----BEGIN PGP MESSAGE-----\n…\n-----END PGP MESSAGE-----",
+  "timestamp":      "2026-08-30T09:38:50.792486+02:00"
+}
+```
+
+and the armour opens to:
+
+```json
+{"uri": "bob@sip2sip.info", "display_name": "Bob", "duration": 212.4}
+```
+
+Two deviations from the common envelope, both deliberate:
+
+- **`fileTransferId`, not `messageId`.** In `peaks`, `label` and `consumed`,
+  `messageId` holds a *transfer* id under a name that says message, and every
+  reader of that code has to be told so. This action names the field for what
+  it is.
+- **No `metadataId`.** The message already has an id of its own on the wire;
+  a second one names nothing that needs naming. Nothing edits or revokes a
+  placement — a recording belongs to the call it was made on.
+
+There is no `uri` field either. In `peaks` it names the conversation peer,
+which here is precisely the secret.
+
+**Receiving.** Decrypt with the account's own key, then:
+
+| state of the transfer row | what to do |
+|---|---|
+| not here yet | remember `fileTransferId → uri`; file the transfer under it when the broadcast lands |
+| filed under our own address | move it to the shape a locally-made recording has: `from_uri` = the party, `to_uri` = us, `direction` = incoming, and the body's own `sender` rewritten to match |
+| already filed under the party | nothing — this is the device that made the recording |
+
+The first row is the normal case, not the exception: the sender emits the
+note before it starts the upload, precisely so the answer is in hand when
+the transfer lands. Whichever order they arrive in, **the transfer id is
+the only thing the two messages share.** The broadcast that carries the
+recording is anonymous — it has been rebuilt from the upload URL, so
+`call_recording` is gone along with every other custom field, and there is
+nothing in it that says it is a recording. A receiver that looks for such a
+marker before consulting its `fileTransferId → uri` table will never place
+anything: it must key on the id alone.
+
+A note that cannot be decrypted is a **no-op**. Every device of an account
+holds that key, so one that will not open was not addressed to us, and
+moving somebody's transfer into another conversation on a guess is worse
+than leaving a recording where it landed.
+
+The last row is what makes the recording device free of special cases: it
+wrote the bubble under the party before the upload started, so when the
+server's echo arrives and the placement is applied *before* the INSERT, the
+echo carries the same `msg_id` and is refused by the UNIQUE constraint
+instead of drawing the recording a second time in the notes-to-self chat.
+
+The **filename is not part of this protocol**. It says the file is a
+recording and nothing else — encoding the party into it would put "who
+called whom" in the server's logs and in every device's file list, which is
+the thing the armour exists to prevent.
 
 ## Apply / replay lifecycle
 

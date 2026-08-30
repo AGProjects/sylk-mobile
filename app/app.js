@@ -27213,31 +27213,210 @@ class Sylk extends Component {
         }
     }
 
-		async resizeBeforeUpload(localUrl, size=2400) {
-		  //console.log('Image to resize', localUrl);
-		  // Uses react-native-compressor (already used for video transcoding
-		  // below) instead of the dead react-native-image-resizer package.
-		  // Returns the same { path, size } shape the caller expects.
-		  // compress() with 'manual' scales the image down to fit
-		  // maxWidth/maxHeight (never upscales) and re-encodes as JPEG,
-		  // stripping metadata like the old keepMeta:false did.
-		  try {
-			const uri = await ImageCompressor.compress(localUrl, {
-			  compressionMethod: 'manual',
-			  maxWidth: size,
-			  maxHeight: size,
-			  quality: 0.95,
-			  output: 'jpg'
-			});
-			const path = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
-			const stat = await RNFS.stat(path);
-			//console.log('Image resized:', uri);
-			return { uri: uri, path: path, size: stat.size };  // new file to upload
-		  } catch (err) {
-			console.error('Image resize failed:', err);
-			return null;
-		  }
-		}
+    // Scale a picture down before upload and hand back the file to send.
+    //
+    // Uses react-native-compressor (already used for video transcoding
+    // below) instead of the dead react-native-image-resizer package.
+    // Returns { uri, path, size }, or null when the re-encode failed.
+    //
+    // sourceLongEdge is the picture's true long edge in pixels, and it
+    // matters: the library's 'manual' resize does NOT clamp its scale to 1.
+    // findTargetSize (ios/Image/ImageCompressor.swift) and findActualSize
+    // (android/.../Image/ImageCompressor.kt) both pin the long edge to
+    // maxWidth/maxHeight unconditionally, so a 400x300 picture came back
+    // UPSCALED to 1200x900 and re-encoded — a bigger file than the user
+    // picked, for nothing. Capping the request at the source's own long edge
+    // makes the target the source size at worst and a real downscale
+    // otherwise. Where the dimensions aren't known (the share-intent path
+    // doesn't stamp them) we probe for them, and the size guard at the call
+    // site is the final backstop.
+    async resizeBeforeUpload(localUrl, size=2400, sourceLongEdge=0) {
+        let longEdge = Number(sourceLongEdge) || 0;
+        if (!longEdge) {
+            longEdge = await this.imageLongEdge(localUrl);
+        }
+        const cap = longEdge > 0 ? Math.min(size, longEdge) : size;
+        try {
+            const uri = await ImageCompressor.compress(localUrl, {
+                compressionMethod: 'manual',
+                maxWidth: cap,
+                maxHeight: cap,
+                quality: 0.95,
+                output: 'jpg'
+            });
+            const path = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
+            // The library copies the SOURCE file's metadata onto its output
+            // and offers no way to ask it not to, so undo that here: the
+            // compressed copy travels without the camera's GPS fix. Sending
+            // the original is the path that keeps the metadata intact.
+            await this.stripJpegMetadata(path);
+            const stat = await RNFS.stat(path);
+            //console.log('Image resized:', uri);
+            return { uri: uri, path: path, size: Number(stat.size) || 0 };
+        } catch (err) {
+            console.error('Image resize failed:', err);
+            return null;
+        }
+    }
+
+    // The picture's true long edge in pixels, EXIF orientation applied, or 0
+    // when it can't be determined. Same probe file2GiftedChat uses.
+    async imageLongEdge(localUrl) {
+        try {
+            // A scheme is required on both platforms here — Android hands
+            // us bare /data/... paths, and an iOS path straight off the
+            // transfer record has none either.
+            const probeUri = /^[a-z][a-z0-9+.-]*:\/\//i.test(localUrl)
+                ? localUrl
+                : 'file://' + localUrl;
+            const sized = await new Promise((resolve, reject) => {
+                Image.getSize(probeUri, (w, h) => resolve({ w, h }), reject);
+            });
+            return Math.max(Number(sized.w) || 0, Number(sized.h) || 0);
+        } catch (e) {
+            console.log('[upload] image size probe failed', e && (e.message || e));
+            return 0;
+        }
+    }
+
+    // Remove the metadata segments from a JPEG, in place.
+    //
+    // react-native-compressor copies the source's metadata onto its output on
+    // BOTH platforms — copyExifInfo in ImageCompressor.swift merges the whole
+    // CGImageSource property dictionary, copyExifInfo in ImageCompressor.kt
+    // walks an exifAttributes list that includes every GPS* tag — and there
+    // is no option to turn it off. So a "compressed" picture shipped the
+    // camera's GPS fix, timestamp and serial number with it. EXIF is to be
+    // preserved only when the user chooses to send the ORIGINAL; on the
+    // compressed path it goes.
+    //
+    // Segment surgery rather than another re-encode: drop APP1 (EXIF and
+    // XMP), APP13 (IPTC / Photoshop) and COM, keep APP0 (JFIF) and APP2 (the
+    // ICC profile — dropping that visibly shifts the colours of anything shot
+    // in Display P3). Everything from SOS on is the entropy-coded image and
+    // is copied verbatim. Anything unexpected in the structure aborts and
+    // leaves the file alone.
+    //
+    // Returns the new size in bytes, or 0 when the file was left untouched
+    // (not a JPEG, malformed, or nothing to remove). Never throws.
+    async stripJpegMetadata(filePath) {
+        try {
+            const path = filePath.startsWith('file://')
+                ? filePath.slice('file://'.length) : filePath;
+            const s = atob(await RNFS.readFile(path, 'base64'));
+            if (s.length < 4 || s.charCodeAt(0) !== 0xFF || s.charCodeAt(1) !== 0xD8) {
+                return 0;  // not a JPEG — PNG/GIF/HEIC go through untouched
+            }
+            const DROP = {0xE1: true, 0xED: true, 0xFE: true};
+            let out = s.slice(0, 2);
+            let pos = 2;
+            let dropped = 0;
+            while (pos + 1 < s.length) {
+                if (s.charCodeAt(pos) !== 0xFF) { return 0; }  // desynchronised
+                const marker = s.charCodeAt(pos + 1);
+                if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+                    // Standalone marker, no payload.
+                    out += s.slice(pos, pos + 2);
+                    pos += 2;
+                    continue;
+                }
+                if (marker === 0xDA) {
+                    // Start of scan: the compressed image follows, as it is.
+                    out += s.slice(pos);
+                    break;
+                }
+                if (pos + 3 >= s.length) { return 0; }
+                const length = (s.charCodeAt(pos + 2) << 8) | s.charCodeAt(pos + 3);
+                const end = pos + 2 + length;
+                if (length < 2 || end > s.length) { return 0; }
+                if (DROP[marker]) {
+                    dropped += (end - pos);
+                } else {
+                    out += s.slice(pos, end);
+                }
+                pos = end;
+            }
+            if (dropped === 0) { return 0; }
+            await RNFS.writeFile(path, btoa(out), 'base64');
+            const stat = await RNFS.stat(path);
+            console.log('[upload] stripped', dropped, 'bytes of metadata from', path);
+            return Number(stat.size) || 0;
+        } catch (e) {
+            console.log('[upload] metadata strip failed', e && (e.message || e));
+            return 0;
+        }
+    }
+
+    // A metadata-free copy of a picture we are about to send as it is.
+    //
+    // The compressed path must not ship the camera's GPS fix even when the
+    // re-encode gained nothing and we fall back to the user's own file — but
+    // it must never modify what is on disc either, because that file belongs
+    // to the user. So: copy into our own cache, strip the copy, send that.
+    // Returns { path, size }, or null when there was nothing to strip (the
+    // caller then sends the original untouched).
+    async copyWithoutMetadata(localUrl, file_transfer) {
+        let dest = null;
+        try {
+            const src = localUrl.startsWith('file://')
+                ? localUrl.slice('file://'.length) : localUrl;
+            const dir = RNFS.CachesDirectoryPath + '/sylk-strip/' + file_transfer.transfer_id;
+            await RNFS.mkdir(dir);
+            dest = dir + '/' + file_transfer.filename;
+            await RNFS.copyFile(src, dest);
+            const newSize = await this.stripJpegMetadata(dest);
+            if (!newSize) {
+                try { await RNFS.unlink(dest); } catch (e) {}
+                return null;
+            }
+            return { path: dest, size: newSize };
+        } catch (e) {
+            console.log('[upload] metadata-free copy failed', e && (e.message || e));
+            if (dest) { try { await RNFS.unlink(dest); } catch (e2) {} }
+            return null;
+        }
+    }
+
+    // Heuristic twin of shouldCompressVideo, for pictures. file2GiftedChat
+    // stamps the EXIF-corrected width/height on the file_transfer, so we can
+    // tell without decoding anything whether a re-encode has something to
+    // give. A picture already inside the box AND already small on disc gains
+    // nothing from a JPEG round-trip — it would only cost a generation of
+    // quality, and before the cap in resizeBeforeUpload it was actively
+    // upscaled and INFLATED by it. Anything larger on either axis still goes
+    // through; unknown dimensions default to resizing, as for video, since
+    // the size guard at the call site keeps the original either way.
+    //
+    // Skipping the resize does not mean skipping the metadata strip: the
+    // caller sends a stripped copy instead.
+    shouldResizeImage(file_transfer, maxEdge) {
+        try {
+            if (file_transfer.resized === true) {
+                console.log('[upload] image already handled, skipping resize',
+                    'transfer_id=', file_transfer.transfer_id);
+                return false;
+            }
+
+            const w = Number(file_transfer.width) || 0;
+            const h = Number(file_transfer.height) || 0;
+            const sizeBytes = Number(file_transfer.filesize) || 0;
+            const longEdge = Math.max(w, h);
+
+            // 1 MB: below that a 1200px-capped re-encode at quality 0.95
+            // reliably comes out no smaller than what it replaced.
+            const COMPACT_BYTES = 1024 * 1024;
+
+            if (longEdge > 0 && longEdge <= maxEdge
+                && sizeBytes > 0 && sizeBytes <= COMPACT_BYTES) {
+                console.log('[upload] image already compact, skipping resize',
+                    'longEdge=', longEdge, 'size=', sizeBytes);
+                return false;
+            }
+        } catch (e) {
+            console.log('[upload] shouldResizeImage error', e && e.message);
+        }
+        return true;
+    }
 
     // Transcode a video to a WhatsApp-like clip before upload. The camera/
     // library hands us the original capture (often 1080p/4K, HEVC or high-
@@ -27439,22 +27618,65 @@ class Sylk extends Component {
 		this.updateFileTransferBubble(file_transfer);
 
         if (utils.isImage(file_transfer.filename, file_transfer.filetype)) {
-            // scale down local_url file to 1200px width
+            // Scale down to IMAGE_MAX_EDGE unless the user asked to send the
+            // original (fullSize) — mirrors the video branch below.
+            //
+            // Two things are guarded here that were not before:
+            //
+            //  * the re-encode is adopted ONLY if it came out smaller. The
+            //    resize used to be swapped in unconditionally, and since the
+            //    library upscales anything under the cap (see
+            //    resizeBeforeUpload), a small picture was reliably sent LARGER
+            //    than the user picked it.
+            //
+            //  * whatever we end up sending on this path carries no metadata.
+            //    If the re-encode is not the file that goes, the fallback is a
+            //    stripped COPY of the user's file, never the file itself —
+            //    EXIF survives only on the fullSize path.
+            const IMAGE_MAX_EDGE = 1200;
             if (!file_transfer.fullSize) {
-				const resized = await this.resizeBeforeUpload(local_url, 1200);
-				if (resized) {
-					try {
-						file_transfer.filesize = resized.size;
-						file_transfer.filetype = 'image/jpg';
-						file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
-						file_transfer.path = resized.path;
-						local_url = resized.path;
-						//console.log('resized.path', resized.path);
-						//console.log('New transfer', file_transfer);
-					} catch (e) {
-						console.log('error resize', e);
-					}
-				}
+                const alreadyHandled = file_transfer.resized === true;
+                let adopted = null;
+                let asJpeg = false;
+
+                if (this.shouldResizeImage(file_transfer, IMAGE_MAX_EDGE)) {
+                    const longEdge = Math.max(Number(file_transfer.width) || 0,
+                                              Number(file_transfer.height) || 0);
+                    const resized = await this.resizeBeforeUpload(
+                        local_url, IMAGE_MAX_EDGE, longEdge);
+                    if (resized && resized.size > 0 &&
+                        (!file_transfer.filesize || resized.size < file_transfer.filesize)) {
+                        adopted = resized;
+                        asJpeg = true;
+                    } else if (resized) {
+                        console.log('[upload] resized image not smaller, keeping original',
+                            'newSize=', resized.size, 'origSize=', file_transfer.filesize);
+                        try { await RNFS.unlink(resized.path); } catch (e) {}
+                    }
+                }
+
+                if (!adopted && !alreadyHandled) {
+                    adopted = await this.copyWithoutMetadata(local_url, file_transfer);
+                }
+
+                if (adopted) {
+                    try {
+                        file_transfer.filesize = adopted.size;
+                        if (asJpeg) {
+                            file_transfer.filetype = 'image/jpg';
+                            file_transfer.url = file_transfer.url.replace(/\.[^/.]+$/, '.jpg');
+                        }
+                        file_transfer.path = adopted.path;
+                        local_url = adopted.path;
+                        // Record that this picture has been through the
+                        // pipeline, so a forward of it skips straight away —
+                        // the flag persists with the metadata, like the video
+                        // branch's `compressed`.
+                        file_transfer.resized = true;
+                    } catch (e) {
+                        console.log('error resize', e);
+                    }
+                }
             }
         } else if (utils.isVideo(file_transfer.filename, file_transfer.filetype)) {
             // Transcode before upload, unless the user asked to send the
@@ -28512,7 +28734,16 @@ class Sylk extends Component {
                     return;
                 }
 
-                let uri = file_transfer.sender.uri === this.state.accountId ? file_transfer.receiver.uri : file_transfer.sender.uri;
+                if (!file_transfer || typeof file_transfer !== 'object') {
+                    // JSON.parse("null") is not an error, it is null -- and
+                    // reading a field off it threw INSIDE this .then, where
+                    // the throw lands in the select's catch and reads as a
+                    // SQL error. The cost was the whole rest of this method:
+                    // local_url never written, the file never decrypted. A
+                    // downloaded recording that never becomes playable.
+                    console.log('saveDownloadTask: row', id, 'has no usable envelope');
+                    return;
+                }
                 file_transfer.local_url = local_url;
                 file_transfer.paused = false;
 
@@ -36999,6 +37230,28 @@ class Sylk extends Component {
             return;
         }
 
+        // Every call_recording note in this batch, read BEFORE the batch
+        // is walked. A recording travels as two messages -- the note
+        // saying which conversation it belongs in, and the transfer
+        // itself -- and nothing guarantees the journal hands them over in
+        // that order (the sender emits the note first, but the transfer
+        // is journalled when its upload lands, which is a different
+        // clock). Reading the notes first makes the order irrelevant: by
+        // the time any transfer in this page is filed, everything this
+        // page knows about where recordings belong is already known.
+        try {
+            for (const _m of messages) {
+                if (!_m || _m.contentType !== 'application/sylk-message-metadata') continue;
+                if (typeof _m.content !== 'string' || _m.content.startsWith('-----BEGIN PGP')) continue;
+                let _note;
+                try { _note = JSON.parse(_m.content); } catch (e) { continue; }
+                if (!_note || _note.action !== 'call_recording') continue;
+                await this.placeCallRecording(_note);
+            }
+        } catch (e) {
+            console.log('[call] journal call_recording pre-scan failed', e && e.message);
+        }
+
         let i = 0;
         let idx;
         let uri;
@@ -37070,6 +37323,19 @@ class Sylk extends Component {
 				console.log('cannot convert messageTimestamp', message.timestamp, e);
 				continue;
 			}
+
+			// A call recording of ours, before anything reads its
+			// addresses. It was uploaded from this account to itself, so
+			// by its addresses alone it is a conversation with ourselves
+			// -- which is what `uri` and `direction` are about to be
+			// derived from, and what the contact bump, the unread count
+			// and the SQL row would then all agree on. The note that says
+			// whose recording it is has already been read by the pre-scan
+			// above, so the answer is here by the time it is needed
+			// whichever order the two arrived in.
+			try {
+				this._rerouteCallRecording(message);
+			} catch (e) { /* never lose a journal entry over a reroute */ }
 
 			try {
 				if (message.contentType === 'application/sylk-message-remove') {
@@ -37373,7 +37639,7 @@ class Sylk extends Component {
 						         j = j + 1;
 						         continue;
 						     }
-						     this.handleMessageMetadata(this.state.account.id, message.content);
+						     await this.handleMessageMetadata(this.state.account.id, message.content);
 						 } else {
 							// Cross-device-synced call recordings have wire
 							// envelope alice → alice (same accountId for
@@ -37386,12 +37652,10 @@ class Sylk extends Component {
 							// saveCallRecording / saveIncomingMessage's
 							// reroute branch on receive.
 							let _isCallRec = false;
-							if (message.contentType === 'application/sylk-file-transfer') {
+							if (message.contentType === 'application/sylk-file-transfer'
+									&& uri === this.state.accountId) {
 								try {
-									const _ft = JSON.parse(message.content);
-									if (_ft && _ft.call_recording === true) {
-										_isCallRec = true;
-									}
+									_isCallRec = this._looksLikeCallRecording(JSON.parse(message.content));
 								} catch (_e) {}
 							}
 							if (!_isCallRec) {
@@ -37464,8 +37728,9 @@ class Sylk extends Component {
 								// arrived while the app was dead should surface as
 								// one unread after launch (journal replay). Count
 								// it alongside the normal unread types.
-								if (unreadCounterTypes.has(message.contentType)
-										|| message.contentType === 'application/sylk-request') {
+								if ((unreadCounterTypes.has(message.contentType)
+										|| message.contentType === 'application/sylk-request')
+										&& !message.call_recording_rerouted) {
 									for (const contact of contacts) {
 										// Only treat user as "in chat" if app is in foreground.
 										const isActiveChat =
@@ -38877,6 +39142,24 @@ class Sylk extends Component {
 
 		if (metadataContent.action === 'location') {
 			return;
+		}
+
+		// A call recording note. It says which conversation a recording
+		// belongs in, and the party is sealed to this account's own key —
+		// who we called is the one thing in it worth hiding, and the
+		// cleartext says no more than any observer of the upload already
+		// knows.
+		//
+		// Handled HERE, before the selected-contact gate further down,
+		// which would otherwise drop it: the note is addressed to
+		// ourselves, and our own chat is never the one on screen when a
+		// recording of a call with somebody else arrives.
+		if (metadataContent.action === 'call_recording') {
+			// Returned, not fired and forgotten: a journal batch carries
+			// the note and the recording it places one entry apart, and
+			// the caller has to be able to wait for the first before it
+			// files the second.
+			return this.placeCallRecording(metadataContent);
 		}
 
 
@@ -43451,7 +43734,21 @@ class Sylk extends Component {
             return;
         }
 
-		let uri = message.receiver;
+		// A recording of ours, replicated back by the server. Rerouted
+		// before `uri` is taken, so the contact lookup, the bubble and the
+		// SQL row all land in the chat with the person on the call rather
+		// than in our own. When the note has not arrived yet this does
+		// nothing and placeCallRecording moves the row when it does.
+		let _recordingParty = null;
+		try {
+			_recordingParty = this._rerouteCallRecording(message);
+		} catch (e) { /* never lose a replicated message over a reroute */ }
+
+		// The party when we know it, our own address otherwise. `uri` is
+		// what everything below keys off -- the contact lookup, the bump,
+		// the bubble, the render map -- so rewriting the message without
+		// rewriting this rerouted nothing.
+		let uri = _recordingParty || message.receiver;
 		const contacts = this.lookupContacts(uri);
 		//console.log('Matched contacts', contacts.length);
 
@@ -43584,12 +43881,10 @@ class Sylk extends Component {
 					// file_transfer isn't a current code path, but if
 					// it ever becomes one, don't bump self-contact.
 					let _isCallRecEnc = false;
-					if (message.contentType === 'application/sylk-file-transfer') {
+					if (message.contentType === 'application/sylk-file-transfer'
+							&& uri === this.state.accountId) {
 						try {
-							const _ft = JSON.parse(content);
-							if (_ft && _ft.call_recording === true) {
-								_isCallRecEnc = true;
-							}
+							_isCallRecEnc = this._looksLikeCallRecording(JSON.parse(content));
 						} catch (_e) {}
 					}
 					if (!_isCallRecEnc) {
@@ -43670,13 +43965,18 @@ class Sylk extends Component {
 				// after recording, until you navigate away and back"
 				// symptom — the SQL row never got the bump, but the
 				// in-memory contact object did.
+				// Only while the recording is still filed under our own
+				// address. The guard exists so recording a call does not
+				// shove OUR account to the top of the conversation list;
+				// once the bubble has been placed in the party's chat it is
+				// ordinary new activity there, and suppressing it left the
+				// recording sitting in a conversation that never moved --
+				// which reads, from the list, as a recording that never came.
 				let _isCallRec = false;
-				if (message.contentType === 'application/sylk-file-transfer') {
+				if (message.contentType === 'application/sylk-file-transfer'
+						&& uri === this.state.accountId) {
 					try {
-						const _ft = JSON.parse(content);
-						if (_ft && _ft.call_recording === true) {
-							_isCallRec = true;
-						}
+						_isCallRec = this._looksLikeCallRecording(JSON.parse(content));
 					} catch (_e) {}
 				}
 				// Only real conversation activity advances the contact's sort
@@ -43880,6 +44180,7 @@ class Sylk extends Component {
         let encrypted = 0;
         let content = decryptedBody || message.content;
         let metadata;
+        let metadataColumn = '';
         let related_msg_id;
         let related_action;
 
@@ -43959,15 +44260,44 @@ class Sylk extends Component {
         console.log('saveOutgoingMessageSql', message.contentType);
 
         if (message.contentType === 'application/sylk-file-transfer') {
-             message.metadata = content;
-             try {
-                 metadata = JSON.parse(message.metadata);
-             } catch (e) {
-                 console.log('saveOutgoingMessageSql error parsing json', message.metadata);
-             }
-
+            // The envelope, from wherever it actually came. A transfer the
+            // SERVER generated -- a completed upload, replicated to our own
+            // devices -- has been seen to arrive with the body "null" and
+            // its envelope in `metadata`. Parsing "null" is not an error,
+            // it just yields null, so nothing here complained: the row was
+            // inserted, and then the success path threw reading
+            // `transfer_id` of null. The throw landed in the INSERT's own
+            // catch, where it read as a SQL error, and the two things that
+            // matter -- the bubble and the DOWNLOAD -- were skipped. That
+            // is a call recording that never arrives while the app is
+            // running.
+            const _parse = (raw) => {
+                if (raw && typeof raw === 'object') return raw;
+                if (typeof raw !== 'string' || raw.length === 0) return null;
+                try {
+                    const v = JSON.parse(raw);
+                    return (v && typeof v === 'object') ? v : null;
+                } catch (e) { return null; }
+            };
+            metadata = _parse(content) || _parse(message.metadata);
+            if (!metadata) {
+                // Nothing here names a file. Storing the row anyway leaves a
+                // bubble nothing can draw and no download; the journal and
+                // the incoming broadcast both carry the same transfer with
+                // a real envelope, so it is not lost by waiting for one.
+                console.log('saveOutgoingMessageSql: file transfer with no envelope, not stored',
+                    message.id, 'body=', typeof content === 'string' ? content.slice(0, 40) : typeof content);
+                return;
+            }
+            // Held locally rather than stamped back onto `message`: on the
+            // live path `message` is a sylkrtc Message, whose `metadata` is
+            // a getter with no setter, so the assignment this method used
+            // to rely on quietly did nothing and the column was written
+            // from whatever the wire happened to carry.
+            metadataColumn = JSON.stringify(metadata);
+            content = metadataColumn;
         } else {
-            message.metadata = '';
+            metadataColumn = '';
         }
 
         if (decryptedBody !== null) {
@@ -44000,7 +44330,7 @@ class Sylk extends Component {
         //console.log('--- metadata', metadata);
 
         let unix_timestamp = Math.floor(ts / 1000);
-        const _cat = this._classifyMessageCategory(message.contentType, message.metadata, related_action, content);
+        const _cat = this._classifyMessageCategory(message.contentType, metadataColumn, related_action, content);
         // `content` here is what gets stored — ciphertext when
         // encrypted is set. Leave has_link NULL on encrypted text
         // (decrypt-time path fills it); compute eagerly when the
@@ -44009,18 +44339,40 @@ class Sylk extends Component {
         // Preserve the original ciphertext when we stored decrypted
         // plaintext (encrypted=2); null when the row wasn't decrypted here.
         const content_encrypted = decryptedBody !== null ? message.content : null;
-        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, message.metadata, message.sender.uri, message.receiver, "outgoing", pending, sent, received, related_msg_id, related_action, _cat, _hl, content_encrypted];
+        // A rerouted call recording is written in the shape a locally-made
+        // one has: from the party, to us, incoming. Left as "outgoing" the
+        // row would claim we sent the party's recording to ourselves, and
+        // every query that pairs direction with the addresses would put it
+        // in a different conversation than the one from_uri names.
+        const _direction = message.call_recording_rerouted ? "incoming" : "outgoing";
+        let params = [this.state.accountId, encrypted, message.id, JSON.stringify(ts), unix_timestamp, content, message.contentType, metadataColumn, message.sender.uri, message.receiver, _direction, pending, sent, received, related_msg_id, related_action, _cat, _hl, content_encrypted];
         this._normalizeInsertUris(params, 8, 9);
         this.ExecuteQuery("INSERT INTO messages (account, encrypted, msg_id, timestamp, unix_timestamp, content, content_type, metadata, from_uri, to_uri, direction, pending, sent, received, related_msg_id, related_action, category, has_link, content_encrypted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params).then((result) => {
             console.log('SQL inserted outgoing', message.contentType, 'message to', message.receiver, 'encrypted =', encrypted);
 
-            if (message.contentType === 'application/sylk-file-transfer') {
+            if (message.contentType === 'application/sylk-file-transfer' && metadata) {
                 this.updateFileTransferBubble(metadata);
                 this.autoDownloadFile(metadata);
+                // The waveform, if it got here first. This is the same
+                // race saveIncomingMessage has handled for a long time --
+                // the transfer's broadcast waits on the upload finishing
+                // while the small companion hops straight across, so the
+                // levels routinely arrive before the row they belong to.
+                // This path never asked, and a call recording replicated
+                // from our own other device comes in HERE, not there: the
+                // levels sat in the database and the bubble drew a bare
+                // bar.
+                try {
+                    if (metadata.transfer_id) {
+                        this._applyPendingPeaks(metadata.transfer_id);
+                    }
+                } catch (e) {
+                    console.log('_applyPendingPeaks error:', e && e.message);
+                }
             }
 
         }).catch((error) => {
-            if (error.message.indexOf('UNIQUE constraint failed') === -1) {
+            if (String(error && error.message).indexOf('UNIQUE constraint failed') === -1) {
                 console.log('saveOutgoingMessageSql SQL error:', error);
             } else {
                 if (message.contentType === 'application/sylk-file-transfer') {
@@ -44051,6 +44403,428 @@ class Sylk extends Component {
      *  peaks        — { l: number[], r: number[] }; single-channel
      *                 voice memos pass r:[] which is fine.
      */
+    // transfer id -> the conversation that recording belongs in, learned
+    // from a call_recording note. The note and the file_transfer
+    // broadcast are separate messages and can cross; whichever lands
+    // first waits here for the other.
+    _callRecordingParties = {};
+
+    /**
+     *  Which chat a call recording belongs in, or null.
+     *
+     *  Two spellings, and they are not equivalent. The note is the only
+     *  one Blink offers: the party is sealed inside it, because who was
+     *  on the call is the one thing here that must not travel in clear,
+     *  and the transfer body says nothing but that it IS a recording.
+     *  `call_recording_party` is the older mobile-to-mobile spelling,
+     *  which puts the party in the transfer body in the clear; it is read
+     *  second so a recording made by an earlier build still lands where
+     *  it belongs.
+     *
+     *  Our own address is not an answer: a recording of a call with
+     *  ourselves is not a thing, and returning it would file the bubble
+     *  in exactly the chat this whole mechanism exists to move it out of.
+     */
+    /**
+     *  Whether a file transfer is a call recording, from the wire alone.
+     *
+     *  `call_recording` is only trustworthy on the device that MADE the
+     *  recording. A recording that came up through the upload endpoint
+     *  reaches every other device in an envelope SylkServer rebuilt from
+     *  the URL, and every custom field is gone from it -- so asking for
+     *  that flag on the receiving side answers "no" for every recording
+     *  Blink ever sends. That is how a recording that correctly moved
+     *  into the party's chat still left our own contact stamped with the
+     *  time it arrived: the flag the bump guard reads was never there.
+     *
+     *  So: the flag when it survives, the note when it has landed, and
+     *  otherwise the name, which is the last thing the rebuild keeps.
+     *  `audio-recording-` is what Blink uploads a call recording as and
+     *  `sylk-call-recording-` / `sylk-conf-recording-` are mobile's; a
+     *  voice note is `sylk-audio-recording` and matches none of them.
+     */
+    _looksLikeCallRecording(ft) {
+        if (!ft || typeof ft !== 'object') return false;
+        if (ft.call_recording === true) return true;
+        const tid = ft.transfer_id;
+        if (tid && this._callRecordingParties[tid]) return true;
+        let name = ft.filename;
+        if (typeof name !== 'string') return false;
+        name = name.toLowerCase();
+        if (name.endsWith('.asc')) name = name.slice(0, -4);
+        return name.startsWith('audio-recording-')
+            || name.startsWith('sylk-call-recording-')
+            || name.startsWith('sylk-conf-recording-');
+    }
+
+    _callRecordingPartyFor(transferId, ft) {
+        let party = transferId ? this._callRecordingParties[transferId] : null;
+        if (!party
+                && ft && ft.call_recording === true
+                && ft.call_recording_party
+                && typeof ft.call_recording_party.uri === 'string') {
+            party = ft.call_recording_party.uri;
+        }
+        if (!party || party === this.state.accountId) {
+            return null;
+        }
+        return party;
+    }
+
+    /**
+     *  Rewrite a self-addressed call recording as one from the party.
+     *
+     *  A recording is uploaded from an account to itself — the server
+     *  takes an upload from nobody else — so by its addresses alone it
+     *  opens a conversation with ourselves. Given the party, this turns
+     *  the entry into the shape saveCallRecording writes on the device
+     *  that made the recording: incoming, from the party, with the
+     *  transfer body's own `sender` rewritten to match, so every reader
+     *  downstream (the contact lookup, the unread count, the SQL row, the
+     *  bubble) keys off one URI and agrees.
+     *
+     *  Returns the party it filed the recording under, or null when this
+     *  is not a recording of ours or nothing has said whose it is yet.
+     */
+    _rerouteCallRecording(message, body) {
+        try {
+            if (!message) return null;
+            const _ct = message.contentType;
+            if (_ct !== 'application/sylk-file-transfer'
+                    && _ct !== 'application/sylk-message-metadata') {
+                return null;
+            }
+            const raw = body != null ? body : message.content;
+            if (typeof raw !== 'string' || raw.startsWith('-----BEGIN PGP')) {
+                return null;
+            }
+            const ft = JSON.parse(raw);
+            if (!ft || typeof ft !== 'object') {
+                return null;
+            }
+            if (_ct === 'application/sylk-message-metadata') {
+                // A recording's companions -- the waveform above all --
+                // are addressed to us exactly like the note, so they are
+                // filed in our own conversation while the recording they
+                // describe now lives in the party's. A bubble's metadata
+                // is read from the conversation the bubble is in, so left
+                // where they landed the recording draws a bare bar: the
+                // levels are in the database, in the wrong chat. Keyed on
+                // the transfer id, which is what these carry -- under
+                // `messageId` in the older companions, `fileTransferId`
+                // in the note.
+                const _tid = ft.fileTransferId || ft.messageId;
+                const _party = _tid ? this._callRecordingParties[_tid] : null;
+                if (!_party || _party === this.state.accountId) {
+                    return null;
+                }
+                message.sender = {uri: _party, displayName: _party};
+                message.receiver = this.state.accountId;
+                message.call_recording_rerouted = true;
+                return _party;
+            }
+            // Keyed on the transfer id and nothing else. A recording that
+            // came up through the upload endpoint arrives ANONYMOUS:
+            // SylkServer rebuilds the envelope it broadcasts from the
+            // upload URL and keeps a fixed field set -- filename, sizes,
+            // addresses, the id -- so `call_recording` is dropped on the
+            // way out exactly like `peaks` is, and the body that lands
+            // here says nothing about being a recording at all. The id is
+            // the only thing this message and the note share, which is
+            // why the note is keyed on it.
+            const party = this._callRecordingPartyFor(ft.transfer_id || message.id, ft);
+            if (!party) {
+                return null;
+            }
+            const displayName = (ft.call_recording_party
+                                 && ft.call_recording_party.displayName) || party;
+            ft.sender = {uri: party, displayName: displayName};
+            message.sender = {uri: party, displayName: displayName};
+            message.receiver = this.state.accountId;
+            message.content = JSON.stringify(ft);
+            if (message.metadata && typeof message.metadata === 'string') {
+                message.metadata = message.content;
+            }
+            // Our own recording, wearing the party's address so it lands
+            // in their chat. Marked so the paths that treat an incoming
+            // message as something the user has not seen can tell the
+            // difference: nobody sent this to us.
+            message.call_recording_rerouted = true;
+            utils.timestampedLog('[call] recording', ft.transfer_id || message.id,
+                'filed in the chat with', party, '— it arrived addressed to us at both ends');
+            return party;
+        } catch (e) {
+            // A body nothing can parse is not a recording we can place.
+            return null;
+        }
+    }
+
+    /**
+     *  Take in a call_recording note and place its recording.
+     *
+     *  The transfer itself cannot say where it belongs: SylkServer
+     *  rebuilds the envelope it broadcasts from the upload URL and drops
+     *  every custom field (the same reason peaks travel separately), and
+     *  the addresses that do survive are our own at both ends, because
+     *  the server accepts an upload from nobody but the account that
+     *  authorises it.
+     *
+     *  A note we cannot decrypt is a no-op. Every device of an account
+     *  holds that key, so one we cannot open was not addressed to us.
+     */
+    async placeCallRecording(metadataContent) {
+        try {
+            const transferId = metadataContent.fileTransferId;
+            const armour = metadataContent.value;
+            if (!transferId || !isPgpEncryptedBody(armour)) {
+                utils.timestampedLog('[call] call_recording note is not usable — transfer',
+                    transferId || '(none)', 'sealed party', isPgpEncryptedBody(armour) ? 'yes' : 'no');
+                return;
+            }
+            let value;
+            try {
+                value = JSON.parse(await OpenPGP.decrypt(armour, this.state.keys.private));
+            } catch (e) {
+                console.log('[call] call_recording note cannot be opened — ignoring',
+                    transferId);
+                return;
+            }
+            const party = value && value.uri;
+            if (!party || party === this.state.accountId) {
+                utils.timestampedLog('[call] call_recording note names no other party — transfer',
+                    transferId);
+                return;
+            }
+            this._callRecordingParties[transferId] = party;
+            console.log('[call] recording', transferId, 'belongs to the chat with', party);
+
+            // The companions that came before the note -- the waveform
+            // above all. Same reasoning as the reroute of the recording
+            // itself: they are addressed to us at both ends, so they are
+            // filed in our own conversation while the recording they
+            // describe lives in the party's, and a bubble's metadata is
+            // read from the conversation the bubble is in. Left where
+            // they landed the recording draws a bare bar with its levels
+            // sitting in the database, in the wrong chat.
+            //
+            // Done BEFORE the transfer is looked at and whatever comes of
+            // that: the sender emits the note first, but the waveform and
+            // the transfer are separate messages and any of the three can
+            // arrive in any order. Ones that land after this are rerouted
+            // on arrival instead.
+            try {
+                await this.ExecuteQuery(
+                    "UPDATE messages SET from_uri = ?, to_uri = ?, direction = ? "
+                    + "WHERE account = ? AND related_msg_id = ? "
+                    + "AND content_type = 'application/sylk-message-metadata' "
+                    + "AND from_uri = ? AND to_uri = ?",
+                    [party, this.state.accountId, 'incoming',
+                     this.state.accountId, transferId,
+                     this.state.accountId, this.state.accountId]);
+            } catch (e) {
+                console.log('[call] cannot move the companions of', transferId,
+                    e && e.message);
+            }
+
+            // The transfer may already be here, filed under our own
+            // address: the two messages cross, and the note is not always
+            // the first to land. On the device that MADE the recording
+            // there is nothing to move — it wrote the row under the party
+            // before the upload started, and the echo was refused by the
+            // msg_id UNIQUE constraint.
+            const rows = await this.ExecuteQuery(
+                "SELECT from_uri, to_uri, content, metadata, unix_timestamp FROM messages WHERE msg_id = ? AND account = ?",
+                [transferId, this.state.accountId]);
+            if (!rows || !rows.rows || rows.rows.length === 0) {
+                return;                     // it has not arrived yet
+            }
+            const row = rows.rows.item(0);
+            if (row.from_uri === party) {
+                return;                     // already where it belongs
+            }
+            // The whole row, not just from_uri. A recording filed by its
+            // own addresses is an OUTGOING row from us to us; leaving
+            // to_uri and direction alone would move the bubble into the
+            // party's chat while it still claims we sent it to ourselves,
+            // and every reader that derives the conversation from the
+            // other two columns would disagree with the one that reads
+            // from_uri. This is the shape a recording made on this device
+            // is written with: incoming, from the party, to us.
+            const displayName = (value && value.display_name) || party;
+            let body = row.content;
+            let meta = row.metadata;
+            try {
+                const ft = JSON.parse(row.content);
+                if (ft && typeof ft === 'object') {
+                    ft.sender = {uri: party, displayName: displayName};
+                    ft.direction = 'incoming';
+                    body = JSON.stringify(ft);
+                    if (typeof meta === 'string' && meta.length > 0) {
+                        meta = body;
+                    }
+                }
+            } catch (e) { /* keep the body as it stands */ }
+            await this.ExecuteQuery(
+                "UPDATE messages SET from_uri = ?, to_uri = ?, direction = ?, content = ?, metadata = ? "
+                + "WHERE msg_id = ? AND account = ?",
+                [party, this.state.accountId, 'incoming', body, meta,
+                 transferId, this.state.accountId]);
+            utils.timestampedLog('[call] moved recording', transferId, 'from the chat with',
+                row.from_uri, 'to the one with', party);
+            // The row moved; the screen has to move with it. Whichever
+            // conversation is open, exactly one of these two applies: the
+            // one it LEFT still has the bubble in memory and must drop it,
+            // and the one it arrived in has to re-read the conversation to
+            // show it. Without this the recording is in the right chat in
+            // SQL and in the wrong one on screen until the app is
+            // restarted -- which is what "it does not work in real time"
+            // looks like from the outside.
+            try {
+                const sel = this.state.selectedContact;
+                const openUris = sel ? this.getAllContactUris(sel) : [];
+                if (openUris.indexOf(party) !== -1) {
+                    if (typeof this.getMessages === 'function') {
+                        this.getMessages(sel.uri);
+                    }
+                } else if (openUris.length > 0) {
+                    this._removeContactMessage(transferId);
+                }
+            } catch (e) { /* the bubble lands on the next chat open */ }
+            // Re-apply the waveform over the moved row. The move rewrites
+            // the row's content and metadata to change the sender, from a
+            // copy read a moment earlier -- so any levels written into it
+            // in between are overwritten. Cheap to redo, and it also
+            // covers the case where the levels were stored but never
+            // applied because the recording was not here yet.
+            try {
+                this._applyPendingPeaks(transferId);
+            } catch (e) {
+                console.log('_applyPendingPeaks error:', e && e.message);
+            }
+            // The chat it ARRIVED in has to move up the list. Nothing else
+            // will do it: the bump was suppressed when the transfer landed
+            // -- correctly, it was filed under our own address then -- and
+            // no later message re-stamps the party. Skipping this is how a
+            // recording ends up sitting in the right conversation, playable,
+            // in a chat that never rose to the top: from the list, a
+            // recording that never came.
+            try {
+                const _party = this.lookupContact(party, false);
+                if (_party) {
+                    const _rowMs = row.unix_timestamp ? row.unix_timestamp * 1000 : Date.now();
+                    const _partyMs = _party.timestamp ? new Date(_party.timestamp).getTime() : 0;
+                    if (_rowMs > _partyMs) {
+                        _party.timestamp = new Date(_rowMs);
+                        _party.direction = 'incoming';
+                        _party.lastMessageId = transferId;
+                        if (_party.tags && _party.tags.indexOf('messages') === -1) {
+                            _party.tags.push('messages');
+                        }
+                        this.saveSylkContact(party, _party, 'placeCallRecording');
+                        this.updateContactInState(_party);
+                    }
+                }
+            } catch (e) { /* the list corrects itself on the next message */ }
+            // The chat it left must not go on advertising it. A contact
+            // whose last message is one that now lives somewhere else
+            // shows a recording in the conversation list that its own
+            // chat no longer contains -- and, worse, keeps the arrival
+            // time as its own activity time. The chat-open refresh will
+            // not undo that: it never moves a contact's time BACKWARDS,
+            // by design, so a stamp put there by a message that has since
+            // left would sit at the top of the conversation list for ever.
+            // This is the one place that knows the stamp was wrong, so
+            // this is where it is taken back -- to the newest message the
+            // conversation actually still holds.
+            try {
+                const _left = this.lookupContact(row.from_uri, false);
+                if (_left) {
+                    let _dirty = false;
+                    if (_left.lastMessageId === transferId) {
+                        _left.lastMessage = null;
+                        _left.lastMessageId = null;
+                        _dirty = true;
+                    }
+                    const _rest = await this.ExecuteQuery(
+                        "SELECT MAX(unix_timestamp) AS ts FROM messages WHERE account = ? "
+                        + "AND ((from_uri = ? AND to_uri = ?) OR (from_uri = ? AND to_uri = ?)) "
+                        + "AND (deleted IS NULL OR deleted = 0)",
+                        [this.state.accountId,
+                         this.state.accountId, row.from_uri,
+                         row.from_uri, this.state.accountId]);
+                    const _ts = _rest && _rest.rows && _rest.rows.length > 0
+                        ? _rest.rows.item(0).ts : null;
+                    const _newest = _ts ? new Date(_ts * 1000) : null;
+                    const _cur = _left.timestamp ? new Date(_left.timestamp).getTime() : 0;
+                    if (_newest && _newest.getTime() < _cur) {
+                        _left.timestamp = _newest;
+                        _dirty = true;
+                    }
+                    if (_dirty) {
+                        this.saveSylkContact(row.from_uri, _left, 'placeCallRecording');
+                        this.updateContactInState(_left);
+                    }
+                }
+            } catch (e) { /* the list corrects itself on the next message */ }
+            // And the file itself. The transfer arrived before we knew
+            // where it belonged, so whatever ran then filed it under our
+            // own address; ask for it again now that it has a home.
+            try {
+                const _ft = JSON.parse(body);
+                if (_ft && typeof this.autoDownloadFile === 'function') {
+                    this.autoDownloadFile(_ft);
+                }
+            } catch (e) { /* it downloads on the next chat open */ }
+        } catch (e) {
+            console.log('placeCallRecording error:', e && e.message);
+        }
+    }
+
+    /**
+     *  Tell our own devices which chat a recording belongs in.
+     *
+     *  Same pipeline as sendPeaksMessage and for the same reason, keyed
+     *  on the transfer id — named fileTransferId, because that is what it
+     *  is; the older companions carry a transfer id under `messageId`.
+     *  The party goes in sealed: it is the only sensitive thing here, and
+     *  the wire says only that some transfer is a call recording.
+     */
+    async sendCallRecordingNote(uri, transferId, party, displayName, durationSec) {
+        if (!uri || !transferId || !party) return;
+        try {
+            const value = { uri: party };
+            if (displayName) value.display_name = displayName;
+            if (durationSec) value.duration = Number(durationSec);
+            let armour;
+            try {
+                armour = await OpenPGP.encrypt(JSON.stringify(value), this.state.keys.public);
+            } catch (e) {
+                console.log('[call] cannot seal the recording note for', transferId,
+                    '— the party does not go out in clear:', e && e.message);
+                return;
+            }
+            const timestamp = new Date();
+            const metadataContent = {
+                fileTransferId: transferId,
+                action: 'call_recording',
+                value: armour,
+                timestamp: timestamp,
+            };
+            const mId = uuid.v4();
+            this.sendMessage(uri, {
+                _id: mId,
+                key: mId,
+                createdAt: timestamp,
+                metadata: metadataContent,
+                text: JSON.stringify(metadataContent),
+            }, 'application/sylk-message-metadata');
+            console.log('[call] recording', transferId, 'placed in the chat with', party,
+                'for our other devices');
+        } catch (e) {
+            console.log('sendCallRecordingNote error:', e && e.message);
+        }
+    }
+
     sendPeaksMessage(uri, transferId, peaks) {
         if (!uri || !transferId) return;
         if (!peaks
@@ -45684,33 +46458,15 @@ class Sylk extends Component {
         // the originating device.
         if (message.contentType === 'application/sylk-file-transfer'
                 && uri === this.state.accountId) {
-            try {
-                const body = decryptedBody || message.content;
-                const ft = JSON.parse(body);
-                if (ft && ft.call_recording === true
-                        && ft.call_recording_party
-                        && typeof ft.call_recording_party.uri === 'string'
-                        && ft.call_recording_party.uri !== this.state.accountId) {
-                    const partyUri = ft.call_recording_party.uri;
-                    const partyName = ft.call_recording_party.displayName || partyUri;
-                    console.log('[call] saveIncomingMessage: call_recording from self, rerouting to party',
-                        partyUri);
-                    uri = partyUri;
-                    message.sender = {
-                        uri: partyUri,
-                        displayName: partyName,
-                    };
-                    // Rewrite the persisted JSON's sender so chat
-                    // bubble rendering shows the right contact, and
-                    // re-stringify message.content so the downstream
-                    // INSERT writes the rerouted shape into SQL.
-                    ft.sender = { uri: partyUri, displayName: partyName };
-                    message.content = JSON.stringify(ft);
-                }
-            } catch (e) {
-                // Unparseable JSON body — fall through. Anything
-                // truly malformed will be dropped by the standard
-                // file-transfer parse later in this function.
+            // Both spellings, through one door: the sealed note (the
+            // only one Blink sends) and the cleartext
+            // `call_recording_party` of older mobile builds. Reading
+            // only the second is how a Blink recording stayed in our own
+            // chat — its transfer body deliberately names nobody.
+            const _party = this._rerouteCallRecording(
+                message, decryptedBody || message.content);
+            if (_party) {
+                uri = _party;
             }
         }
 
@@ -52538,6 +53294,18 @@ class Sylk extends Component {
             };
             utils.timestampedLog('[call] saveCallRecording: replicating to other devices via',
                 accountId, 'transfer_id=', id, 'party=', remoteUri);
+            // Which chat this recording belongs in — BEFORE the transfer,
+            // not after it. Same reason the peaks go separately (the
+            // file-transfer broadcast carries none of our own metadata,
+            // so call_recording_party never reaches the sibling), and the
+            // order matters: the broadcast is gated on the upload
+            // finishing while this is a few hundred bytes on the message
+            // queue, so sending it first is what makes it ARRIVE first.
+            // A device that has it in hand files the recording in the
+            // right chat on arrival, instead of dropping it into
+            // notes-to-self and moving it a moment later.
+            this.sendCallRecordingNote(accountId, id, remoteUri, remoteDisplayName,
+                durationSec);
             this.sendMessage(accountId, selfMsg, 'application/sylk-file-transfer');
             // Ship peaks separately so other devices on this account
             // see the waveform too. The SylkServer file-transfer

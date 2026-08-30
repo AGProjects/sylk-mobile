@@ -1384,9 +1384,17 @@ function beautyFileNameForBubble(metadata, lastMessage=false) {
     // recording" instead of the 1-to-1 "Call recording" — same look
     // and feel, just an unambiguous label for the multi-party file
     // (mic L, sum of all remote participants on R).
+    // `call_recording` is the reliable signal only on the device that made
+    // the recording. A recording that came up through the upload endpoint
+    // arrives with an envelope SylkServer rebuilt from the URL, and every
+    // custom field is gone from it -- so on every OTHER device the name is
+    // all there is. `audio-recording-` is what Blink uploads a call
+    // recording as; a voice note is `sylk-audio-recording` and keeps the
+    // plain label.
     const isCallRecording = (metadata.call_recording === true)
         || (file_name && file_name.toLowerCase().startsWith('sylk-call-recording-'))
-        || (file_name && file_name.toLowerCase().startsWith('sylk-conf-recording-'));
+        || (file_name && file_name.toLowerCase().startsWith('sylk-conf-recording-'))
+        || (file_name && file_name.toLowerCase().startsWith('audio-recording-'));
     const isConferenceRecording = (metadata.is_conference === true)
         || (file_name && file_name.toLowerCase().startsWith('sylk-conf-recording-'));
 
